@@ -185,6 +185,11 @@ impl MqttState {
         Ok(outgoing)
     }
 
+    pub fn clear_collision(&mut self) {
+        self.collision = None;
+        self.collision_ping_count = 0;
+    }
+
     fn handle_incoming_suback() -> Result<Option<Packet>, StateError> {
         Ok(None)
     }
