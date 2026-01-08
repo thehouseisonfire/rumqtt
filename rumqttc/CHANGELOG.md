@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Fix v5 auth continuation lock-scrutinee lifetime pattern to avoid holding lock guard longer than necessary.
 * Tighten helper signatures/ownership in state handlers and packet helpers (fewer unnecessary mutable/value parameters).
 * Improve debug output behavior for `MqttOptions` manual `Debug` impls via non-exhaustive finishing.
+* Clear collision state on reconnection with clean session.
 ### Security
 
 
