@@ -247,6 +247,11 @@ impl MqttState {
         self.outgoing_disconnect(DisconnectReasonCode::ProtocolError)
     }
 
+    pub fn clear_collision(&mut self) {
+        self.collision = None;
+        self.collision_ping_count = 0;
+    }
+
     fn handle_incoming_suback(suback: &SubAck) -> Result<Option<Packet>, StateError> {
         for reason in &suback.return_codes {
             match reason {
