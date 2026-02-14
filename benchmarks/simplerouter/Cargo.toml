@@ -12,5 +12,5 @@ authors.workspace = true
 bytes = "1"
 log = "0.4"
 pretty_env_logger = "0.5"
-thiserror = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["net", "sync", "rt-multi-thread", "io-util", "macros"] }
