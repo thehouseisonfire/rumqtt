@@ -1,6 +1,6 @@
 ## Library Design
 
-There are two main libraries which are part of rumqtt, the client(`rumqttc`) and the broker(`rumqttd`). In this document we shall discuss the high-level design for the client library, `rumqttc` as described in the diagram below. 
+This document discusses the high-level design for the client library, `rumqttc`, as described in the diagram below.
 
 ```text
       ┌──────┐
