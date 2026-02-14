@@ -1,4 +1,4 @@
-//! Example of how to configure rumqttd to connect to a server using TLS and authentication.
+//! Example of how to configure rumqttc to connect to a server using TLS and authentication.
 use std::error::Error;
 
 use rumqttc::{AsyncClient, MqttOptions, TlsConfiguration, Transport};

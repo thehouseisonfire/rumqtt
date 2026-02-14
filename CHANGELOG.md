@@ -4,7 +4,6 @@ New CHANGELOG entries can be found in individual crate root.
 
 rumqttc: [rumqttc/CHANGELOG.md](./rumqttc/CHANGELOG.md)
 
-rumqttd: [rumqttd/CHANGELOG.md](./rumqttd/CHANGELOG.md)
 
 ### R19
 ---
@@ -15,7 +14,6 @@ rumqttc v0.19.0
 - MQTTv5!: Remove `Connect` from `ConnectionError::StateError` (#541)
 - MQTTv5: Send last_will and login info with connect (#478)
 
-rumqttd v0.12.1
 -------
 - Remove build.rs as it is not required now (#544)
 - Stress test router to against 10k connections (#511)
@@ -27,9 +25,7 @@ rumqttd v0.12.1
 
 misc
 ---
-- Remove rumqttd-old in favour of rumqttd (#530)
 - Optimize Github CI workflow (#526)
-- Revamp Readme and rename demo.toml to rumqttd.toml (#532)
 ---
 
 ### R18
@@ -40,7 +36,6 @@ rumqttc v0.18.0
 - Fixed panicking in `recv_timeout` and `try_recv` by entering tokio runtime context (#492, #497)
 - Removed unused dependencies and updated version of some of used libraries to fix dependabots warning (#475)
 
-rumqttd v0.12.0-beta.2
 -------
 - Add meters related to router, subscriptions, and connections (#508)
 - Allow multi-tenancy validation for mtls clients with `Org` set in certificates (#505)
@@ -62,11 +57,9 @@ rumqttc v0.17.0
 - Don't create a new runtime in `Iter::drop` (#405)
 - Unpin exact version dependency on `tokio-rustls` (#448)
 
-rumqttd v0.12.0-beta.1
 -------
 - MQTT5 support, StructOpt/Clap based CLI, change in config format (next generation broker) (#442)
 - Make dependency on `rustls-pemfile` optional (#439)
-- Build rumqttd docker image with alpine (#461)
 -----------
 
 ### R16
@@ -123,7 +116,6 @@ rumqttc v0.12.0
 - Use `get_mut()` instead of index based access to ensure no panic (#384)
 - Better error messages (#385) 
 
-rumqttd v0.11.0
 -----------
 - Enable compilation without rustls as a dependency using `--no-default-features` (#365)
 - Better error messages (#385)
@@ -137,7 +129,6 @@ rumqttc v0.11.0
 - `rustls` upgraded to 0.20
 - Manual acknowledgment of Publishes received by setting `MqttOptions.manual_acks = true` and passing received publish packet to `Client.ack()`
 
-rumqttd v0.10.0
 -----------
 - `tokio_rustls` upgraded to 0.23.2
 
@@ -156,7 +147,6 @@ rumqttc v0.10.0
 - From<Url> for MqttOptions
 - Change keepalive api from u16 to Duration
 
-rumqttd v0.9.0
 -----------
 - Use updated mqttbytes
 
@@ -175,7 +165,6 @@ rumqttc v0.9.0
 -----------
 - Add unix sockets support
 
-rumqttd v0.8.0
 -----------
 - Add server side password check
 
@@ -193,7 +182,6 @@ rumqttc v0.6.0
 - **fix** Fix packet collisions and always enable collision protection [**breaking**] 
 - **fix** Fix wrong error name
 
-rumqttd v0.7.0
 -----------
 - **changed** Update to mqttbytes 0.4
 - **changed** Native tls support
@@ -209,7 +197,6 @@ rumqttc v0.5.0
 -----------
 - **changed** Update to mqttbytes 0.3 [**breaking**]
 
-rumqttd v0.4.0
 -----------
 - **changed** Update to mqttbytes 0.2 [**breaking**]
 -**changed** Make profiler a feature, not target.cfg (#243)
@@ -227,7 +214,6 @@ mqttbytes v0.2.1
 -----------
 - **changed** Update README
 
-rumqttd v0.5.0
 -----------
 - **changed** Improve error reporting
 - **changed** Update to warp 0.3 and remove tokio compat
@@ -251,7 +237,6 @@ rumqttc v0.5.0
 -----------
 - **changed** Update to mqttbytes 0.2 [**breaking**]
 
-rumqttd v0.4.0
 -----------
 - **changed** Update to mqttbytes 0.2 [**breaking**]
 
@@ -271,7 +256,6 @@ rumqttc v0.4.0
 -----------
 - **changed** Update to tokio 1.0 [**breaking**]
 
-rumqttd v0.3.0
 -----------
 - **changed** Update to tokio 1.0 and `bytes` 1.0 [**breaking**]
 
@@ -299,7 +283,6 @@ rumqttc v0.3.0
 - **feature** Refactor transport with websockets support
 - **changed** Update to tokio 0.3 [**breaking**]
 
-rumqttd v0.2.0
 -----------
 - **feature** Metrics server
 - **feature** Improve configuration schema
@@ -326,7 +309,6 @@ rumqttc v0.2.0
 - **internal** Improve packet framing
 - **fixed** Simplify collisions and fix collision event notification
 
-rumqttd v0.1.0
 -----------
 - **fixed** 0 keepalive handling
 - **fixed** Disconnect and qos 2 handling
@@ -349,7 +331,6 @@ rumqttlog v0.2.0
 - Redesign by embedding tracker inside router's connection
 - Redesign with a hybrid of push and pull model
 
-rumqttd v0.0.6
 -----------
 - Manually setup 1 router thread and 1 io thread
 - Add names to threads

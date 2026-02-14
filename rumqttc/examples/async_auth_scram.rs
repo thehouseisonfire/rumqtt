@@ -48,8 +48,7 @@ impl<'a> ScramAuthManager<'a> {
 impl<'a> AuthManager for ScramAuthManager<'a> {
     fn auth_continue(
         &mut self,
-        #[allow(unused_variables)]
-        auth_prop: Option<AuthProperties>,
+        #[allow(unused_variables)] auth_prop: Option<AuthProperties>,
     ) -> Result<Option<AuthProperties>, String> {
         #[cfg(feature = "auth-scram")]
         {
@@ -82,7 +81,7 @@ impl<'a> AuthManager for ScramAuthManager<'a> {
             // Get the client final message and reassign the SCRAM state.
             let (_, client_final) = scram.client_final();
 
-            Ok(Some(AuthProperties{
+            Ok(Some(AuthProperties {
                 method: Some("SCRAM-SHA-256".to_string()),
                 data: Some(client_final.into()),
                 reason: None,

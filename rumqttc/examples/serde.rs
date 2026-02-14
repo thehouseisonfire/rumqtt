@@ -1,11 +1,9 @@
-use bincode::ErrorKind;
 use rumqttc::{Client, Event, Incoming, MqttOptions, QoS};
-use serde::{Deserialize, Serialize};
-use std::convert::TryFrom;
 use std::thread;
 use std::time::{Duration, SystemTime};
+use wincode::{SchemaRead, SchemaWrite};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(SchemaWrite, SchemaRead, Debug)]
 struct Message {
     i: usize,
     time: SystemTime,
@@ -13,28 +11,28 @@ struct Message {
 
 impl From<&Message> for Vec<u8> {
     fn from(value: &Message) -> Self {
-        bincode::serialize(value).unwrap()
+        wincode::serialize(value).unwrap()
     }
 }
 
 impl From<Message> for Vec<u8> {
     fn from(value: Message) -> Self {
-        bincode::serialize(&value).unwrap()
+        Vec::from(&value)
     }
 }
 
 impl TryFrom<&[u8]> for Message {
-    type Error = Box<ErrorKind>;
+    type Error = wincode::ReadError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        bincode::deserialize(value)
+        wincode::deserialize(value)
     }
 }
 
 fn main() {
-    let mqqt_opts = MqttOptions::new("test-1", "localhost", 1883);
+    let mqtt_opts = MqttOptions::new("test-1", "localhost", 1883);
 
-    let (client, mut connection) = Client::new(mqqt_opts, 10);
+    let (client, mut connection) = Client::new(mqtt_opts, 10);
     client.subscribe("hello/rumqtt", QoS::AtMostOnce).unwrap();
     thread::spawn(move || {
         for i in 0..10 {
