@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+* Add `v5::ValidatedTopic` and `v5::InvalidTopic` for one-time topic validation and reuse across publish APIs.
 ### Changed
+* Make v5 publish APIs accept `v5::Topic` and support skipping repeated validation when using `v5::ValidatedTopic`.
 ### Deprecated
 ### Removed
 ### Fixed 

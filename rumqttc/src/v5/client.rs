@@ -16,6 +16,87 @@ use futures_util::FutureExt;
 use tokio::runtime::{self, Runtime};
 use tokio::time::timeout;
 
+/// An error returned when a topic string fails validation against the MQTT specification.
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[error("Invalid MQTT topic: '{0}'")]
+pub struct InvalidTopic(String);
+
+/// A newtype wrapper that guarantees its inner `String` is a valid MQTT topic.
+///
+/// This type prevents the cost of repeated validation for topics that are used
+/// frequently. It can only be constructed via [`ValidatedTopic::new`], which
+/// performs a one-time validation check.
+///
+/// Use this when publishing repeatedly to the same topic to avoid per-call
+/// validation overhead in publish APIs that accept [`Topic`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedTopic(String);
+
+impl ValidatedTopic {
+    /// Constructs a new `ValidatedTopic` after validating the input string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidTopic`] if the topic string does not conform to the MQTT specification.
+    pub fn new<S: Into<String>>(topic: S) -> Result<Self, InvalidTopic> {
+        let topic_string = topic.into();
+        if valid_topic(&topic_string) {
+            Ok(Self(topic_string))
+        } else {
+            Err(InvalidTopic(topic_string))
+        }
+    }
+}
+
+impl From<ValidatedTopic> for String {
+    fn from(topic: ValidatedTopic) -> Self {
+        topic.0
+    }
+}
+
+/// A private module to seal the [`Topic`] trait.
+/// Sealing the trait prevents users from implementing [`Topic`]
+/// for their own type, which would circumvent validation
+mod private {
+    use super::ValidatedTopic;
+    pub trait Sealed {}
+    impl Sealed for ValidatedTopic {}
+    impl Sealed for String {}
+    impl<'a> Sealed for &'a str {}
+}
+
+/// Abstracts over topic types for publishing (as opposed to filters).
+///
+/// This sealed trait is implemented for string types (`String`, `&str`) and
+/// for [`ValidatedTopic`]. It allows client methods to efficiently handle
+/// both pre-validated and unvalidated topic inputs.
+pub trait Topic: private::Sealed {
+    /// Indicates whether the topic requires validation.
+    const NEEDS_VALIDATION: bool;
+    fn into_string(self) -> String;
+}
+
+impl Topic for ValidatedTopic {
+    const NEEDS_VALIDATION: bool = false;
+    fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl Topic for String {
+    const NEEDS_VALIDATION: bool = true;
+    fn into_string(self) -> String {
+        self
+    }
+}
+
+impl<'a> Topic for &'a str {
+    const NEEDS_VALIDATION: bool = true;
+    fn into_string(self) -> String {
+        self.to_owned()
+    }
+}
+
 /// Client Error
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -79,16 +160,21 @@ impl AsyncClient {
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
-        let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload, properties);
+        let topic = topic.into_string();
+        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
+
+        // This is zero-cost for `ValidatedTopic`,
+        // `S::NEEDS_VALIDATION` is false, and the entire conditional is
+        // removed.
+        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
             return Err(ClientError::Request(publish));
         }
+
         self.request_tx.send_async(publish).await?;
         Ok(())
     }
@@ -102,7 +188,7 @@ impl AsyncClient {
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, Some(properties))
@@ -117,7 +203,7 @@ impl AsyncClient {
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, None).await
@@ -133,16 +219,18 @@ impl AsyncClient {
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
-        let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload, properties);
+        let topic = topic.into_string();
+        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
+
+        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
             return Err(ClientError::TryRequest(publish));
         }
+
         self.request_tx.try_send(publish)?;
         Ok(())
     }
@@ -156,7 +244,7 @@ impl AsyncClient {
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.handle_try_publish(topic, qos, retain, payload, Some(properties))
@@ -170,7 +258,7 @@ impl AsyncClient {
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.handle_try_publish(topic, qos, retain, payload, None)
@@ -221,15 +309,17 @@ impl AsyncClient {
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
     {
-        let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload, properties);
+        let topic = topic.into_string();
+        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
-            return Err(ClientError::TryRequest(publish));
+
+        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
+            return Err(ClientError::Request(publish));
         }
+
         self.request_tx.send_async(publish).await?;
         Ok(())
     }
@@ -243,7 +333,7 @@ impl AsyncClient {
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
     {
         self.handle_publish_bytes(topic, qos, retain, payload, Some(properties))
             .await
@@ -257,7 +347,7 @@ impl AsyncClient {
         payload: Bytes,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
     {
         self.handle_publish_bytes(topic, qos, retain, payload, None)
             .await
@@ -520,17 +610,19 @@ impl Client {
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
-        let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload, properties);
+        let topic = topic.into_string();
+        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
         publish.retain = retain;
-        let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
-            return Err(ClientError::Request(publish));
+        let request = Request::Publish(publish);
+
+        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
+            return Err(ClientError::Request(request));
         }
-        self.client.request_tx.send(publish)?;
+
+        self.client.request_tx.send(request)?;
         Ok(())
     }
 
@@ -543,7 +635,7 @@ impl Client {
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, Some(properties))
@@ -557,7 +649,7 @@ impl Client {
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, None)
@@ -572,7 +664,7 @@ impl Client {
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.client
@@ -587,7 +679,7 @@ impl Client {
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Into<String>,
+        S: Topic,
         P: Into<Bytes>,
     {
         self.client.try_publish(topic, qos, retain, payload)
@@ -947,5 +1039,203 @@ mod test {
             .try_reauth(Some(props.clone()))
             .expect("Should be able to reauth");
         let _ = connection.iter().next().expect("Should have event");
+    }
+
+    #[test]
+    fn can_publish_with_validated_topic() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let valid_topic = ValidatedTopic::new("hello/world").unwrap();
+        client
+            .publish(valid_topic, QoS::ExactlyOnce, false, "good bye")
+            .expect("Should be able to publish");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn validated_topic_ergonomics() {
+        let valid_topic = ValidatedTopic::new("hello/world").unwrap();
+        let valid_topic_can_be_cloned = valid_topic.clone();
+        // ValidatedTopic can be compared
+        assert_eq!(valid_topic, valid_topic_can_be_cloned);
+    }
+
+    #[test]
+    fn creating_invalid_validated_topic_fails() {
+        assert_eq!(
+            ValidatedTopic::new("a/+/b"),
+            Err(InvalidTopic("a/+/b".to_string()))
+        );
+    }
+
+    #[test]
+    fn publish_with_properties_accepts_validated_topic() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let valid_topic = ValidatedTopic::new("hello/world").unwrap();
+        client
+            .publish_with_properties(
+                valid_topic,
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+                PublishProperties::default(),
+            )
+            .expect("Should be able to publish");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn try_publish_accepts_validated_topic() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let valid_topic = ValidatedTopic::new("hello/world").unwrap();
+        client
+            .try_publish(valid_topic, QoS::ExactlyOnce, false, "good bye")
+            .expect("Should be able to publish");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn try_publish_with_properties_accepts_validated_topic() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let valid_topic = ValidatedTopic::new("hello/world").unwrap();
+        client
+            .try_publish_with_properties(
+                valid_topic,
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+                PublishProperties::default(),
+            )
+            .expect("Should be able to publish");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn publishing_invalid_raw_topic_fails() {
+        let (tx, _) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let err = client
+            .publish("a/+/b", QoS::ExactlyOnce, false, "good bye")
+            .expect_err("Invalid publish topic should fail");
+        assert!(matches!(err, ClientError::Request(Request::Publish(_))));
+    }
+
+    #[test]
+    fn async_publish_paths_accept_validated_topic() {
+        let (tx, rx) = flume::bounded(4);
+        let client = AsyncClient::from_senders(tx);
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            client
+                .publish(
+                    ValidatedTopic::new("hello/world").unwrap(),
+                    QoS::ExactlyOnce,
+                    false,
+                    "good bye",
+                )
+                .await
+                .expect("Should be able to publish");
+
+            client
+                .publish_with_properties(
+                    ValidatedTopic::new("hello/world").unwrap(),
+                    QoS::ExactlyOnce,
+                    false,
+                    "good bye",
+                    PublishProperties::default(),
+                )
+                .await
+                .expect("Should be able to publish");
+
+            client
+                .publish_bytes(
+                    ValidatedTopic::new("hello/world").unwrap(),
+                    QoS::ExactlyOnce,
+                    false,
+                    Bytes::from_static(b"good bye"),
+                )
+                .await
+                .expect("Should be able to publish");
+
+            client
+                .publish_bytes_with_properties(
+                    ValidatedTopic::new("hello/world").unwrap(),
+                    QoS::ExactlyOnce,
+                    false,
+                    Bytes::from_static(b"good bye"),
+                    PublishProperties::default(),
+                )
+                .await
+                .expect("Should be able to publish");
+        });
+
+        let _ = rx.try_recv().expect("Should have message");
+        let _ = rx.try_recv().expect("Should have message");
+        let _ = rx.try_recv().expect("Should have message");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn async_try_publish_paths_accept_validated_topic() {
+        let (tx, rx) = flume::bounded(4);
+        let client = AsyncClient::from_senders(tx);
+
+        client
+            .try_publish(
+                ValidatedTopic::new("hello/world").unwrap(),
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+            )
+            .expect("Should be able to publish");
+
+        client
+            .try_publish_with_properties(
+                ValidatedTopic::new("hello/world").unwrap(),
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+                PublishProperties::default(),
+            )
+            .expect("Should be able to publish");
+
+        let _ = rx.try_recv().expect("Should have message");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn async_publishing_invalid_raw_topic_fails() {
+        let (tx, _) = flume::bounded(1);
+        let client = AsyncClient::from_senders(tx);
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let err = client
+                .publish("a/+/b", QoS::ExactlyOnce, false, "good bye")
+                .await
+                .expect_err("Invalid publish topic should fail");
+            assert!(matches!(err, ClientError::Request(Request::Publish(_))));
+
+            let err = client
+                .publish_bytes(
+                    "a/+/b",
+                    QoS::ExactlyOnce,
+                    false,
+                    Bytes::from_static(b"good bye"),
+                )
+                .await
+                .expect_err("Invalid publish topic should fail");
+            assert!(matches!(err, ClientError::Request(Request::Publish(_))));
+        });
     }
 }
