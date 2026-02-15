@@ -35,6 +35,18 @@ pub use crate::proxy::{Proxy, ProxyAuth, ProxyType};
 
 pub type Incoming = Packet;
 
+/// Controls how incoming packet size limits are enforced locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum IncomingPacketSizeLimit {
+    /// Enforce [`MqttOptions::default_max_incoming_size`].
+    #[default]
+    Default,
+    /// Disable incoming packet size checks.
+    Unlimited,
+    /// Enforce a user-specified maximum size.
+    Bytes(u32),
+}
+
 pub trait AuthManager: std::fmt::Debug + Send {
     /// Process authentication data received from the server and generate authentication data to be sent back.
     ///
@@ -119,6 +131,8 @@ pub struct MqttOptions {
     /// Default value of for maximum incoming packet size.
     /// Used when `max_incomming_size` in `connect_properties` is NOT available.
     default_max_incoming_size: u32,
+    /// Local incoming packet size policy.
+    incoming_packet_size_limit: IncomingPacketSizeLimit,
     /// Connect Properties
     connect_properties: Option<ConnectProperties>,
     /// If set to `true` MQTT acknowledgements are not sent automatically.
@@ -162,6 +176,7 @@ impl MqttOptions {
             last_will: None,
             conn_timeout: 5,
             default_max_incoming_size: 10 * 1024,
+            incoming_packet_size_limit: IncomingPacketSizeLimit::Default,
             connect_properties: None,
             manual_acks: false,
             network_options: NetworkOptions::new(),
@@ -340,6 +355,10 @@ impl MqttOptions {
 
     /// set connection properties
     pub fn set_connect_properties(&mut self, properties: ConnectProperties) -> &mut Self {
+        self.incoming_packet_size_limit = match properties.max_packet_size {
+            Some(max_size) => IncomingPacketSizeLimit::Bytes(max_size),
+            None => IncomingPacketSizeLimit::Default,
+        };
         self.connect_properties = Some(properties);
         self
     }
@@ -393,6 +412,11 @@ impl MqttOptions {
 
     /// set max packet size on connection properties
     pub fn set_max_packet_size(&mut self, max_size: Option<u32>) -> &mut Self {
+        self.incoming_packet_size_limit = match max_size {
+            Some(max_size) => IncomingPacketSizeLimit::Bytes(max_size),
+            None => IncomingPacketSizeLimit::Default,
+        };
+
         if let Some(conn_props) = &mut self.connect_properties {
             conn_props.max_packet_size = max_size;
             self
@@ -409,6 +433,50 @@ impl MqttOptions {
             conn_props.max_packet_size
         } else {
             None
+        }
+    }
+
+    /// set local incoming packet size policy
+    ///
+    /// This controls packet size enforcement in the decoder:
+    /// - [`IncomingPacketSizeLimit::Default`] uses `default_max_incoming_size`
+    /// - [`IncomingPacketSizeLimit::Unlimited`] disables incoming size checks
+    /// - [`IncomingPacketSizeLimit::Bytes`] enforces an explicit limit
+    pub fn set_incoming_packet_size_limit(&mut self, limit: IncomingPacketSizeLimit) -> &mut Self {
+        self.incoming_packet_size_limit = limit;
+
+        if let Some(conn_props) = &mut self.connect_properties {
+            conn_props.max_packet_size = match limit {
+                IncomingPacketSizeLimit::Bytes(max_size) => Some(max_size),
+                IncomingPacketSizeLimit::Default | IncomingPacketSizeLimit::Unlimited => None,
+            };
+            return self;
+        }
+
+        if let IncomingPacketSizeLimit::Bytes(max_size) = limit {
+            let mut conn_props = ConnectProperties::new();
+            conn_props.max_packet_size = Some(max_size);
+            self.set_connect_properties(conn_props)
+        } else {
+            self
+        }
+    }
+
+    /// disable local incoming packet size checks
+    pub fn set_unlimited_incoming_packet_size(&mut self) -> &mut Self {
+        self.set_incoming_packet_size_limit(IncomingPacketSizeLimit::Unlimited)
+    }
+
+    /// get local incoming packet size policy
+    pub fn incoming_packet_size_limit(&self) -> IncomingPacketSizeLimit {
+        self.incoming_packet_size_limit
+    }
+
+    pub(crate) fn max_incoming_packet_size(&self) -> Option<u32> {
+        match self.incoming_packet_size_limit {
+            IncomingPacketSizeLimit::Default => Some(self.default_max_incoming_size),
+            IncomingPacketSizeLimit::Unlimited => None,
+            IncomingPacketSizeLimit::Bytes(max_size) => Some(max_size),
         }
     }
 
@@ -756,7 +824,7 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             return Err(OptionError::Unknown(opt.into_owned()));
         }
 
-        options.connect_properties = Some(connect_props);
+        options.set_connect_properties(connect_props);
         Ok(options)
     }
 }
@@ -786,6 +854,57 @@ impl Debug for MqttOptions {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn incoming_packet_size_limit_defaults_to_default_policy() {
+        let mqtt_opts = MqttOptions::new("client", "127.0.0.1", 1883);
+        assert_eq!(
+            mqtt_opts.incoming_packet_size_limit(),
+            IncomingPacketSizeLimit::Default
+        );
+        assert_eq!(
+            mqtt_opts.max_incoming_packet_size(),
+            Some(mqtt_opts.default_max_incoming_size)
+        );
+    }
+
+    #[test]
+    fn set_max_packet_size_remains_backward_compatible() {
+        let mut mqtt_opts = MqttOptions::new("client", "127.0.0.1", 1883);
+
+        mqtt_opts.set_max_packet_size(Some(2048));
+        assert_eq!(
+            mqtt_opts.incoming_packet_size_limit(),
+            IncomingPacketSizeLimit::Bytes(2048)
+        );
+        assert_eq!(mqtt_opts.max_packet_size(), Some(2048));
+        assert_eq!(mqtt_opts.max_incoming_packet_size(), Some(2048));
+
+        mqtt_opts.set_max_packet_size(None);
+        assert_eq!(
+            mqtt_opts.incoming_packet_size_limit(),
+            IncomingPacketSizeLimit::Default
+        );
+        assert_eq!(mqtt_opts.max_packet_size(), None);
+        assert_eq!(
+            mqtt_opts.max_incoming_packet_size(),
+            Some(mqtt_opts.default_max_incoming_size)
+        );
+    }
+
+    #[test]
+    fn incoming_packet_size_limit_unlimited_disables_local_check() {
+        let mut mqtt_opts = MqttOptions::new("client", "127.0.0.1", 1883);
+        mqtt_opts.set_unlimited_incoming_packet_size();
+
+        assert_eq!(
+            mqtt_opts.incoming_packet_size_limit(),
+            IncomingPacketSizeLimit::Unlimited
+        );
+        assert_eq!(mqtt_opts.max_incoming_packet_size(), None);
+        assert_eq!(mqtt_opts.max_packet_size(), None);
+        assert!(mqtt_opts.connect_properties.is_none());
+    }
 
     #[test]
     #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
@@ -874,5 +993,19 @@ mod test {
     #[test]
     fn allow_empty_client_id() {
         let _mqtt_opts = MqttOptions::new("", "127.0.0.1", 1883).set_clean_start(true);
+    }
+
+    #[test]
+    #[cfg(feature = "url")]
+    fn from_url_uses_default_incoming_limit_when_unspecified() {
+        let mqtt_opts = MqttOptions::parse_url("mqtt://host:42?client_id=foo").unwrap();
+        assert_eq!(
+            mqtt_opts.incoming_packet_size_limit(),
+            IncomingPacketSizeLimit::Default
+        );
+        assert_eq!(
+            mqtt_opts.max_incoming_packet_size(),
+            Some(mqtt_opts.default_max_incoming_size)
+        );
     }
 }
