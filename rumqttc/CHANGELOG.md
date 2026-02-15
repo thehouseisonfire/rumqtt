@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 ### Removed
 ### Fixed 
+* Derive `Eq` and `PartialEq` for `client::ClientError` to make downstream error assertions easier in tests.
 ### Security
 
 
