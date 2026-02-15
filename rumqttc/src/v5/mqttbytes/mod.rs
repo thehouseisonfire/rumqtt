@@ -8,18 +8,13 @@ pub mod v5;
 
 /// Quality of service
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Default)]
 #[allow(clippy::enum_variant_names)]
 pub enum QoS {
+    #[default]
     AtMostOnce = 0,
     AtLeastOnce = 1,
     ExactlyOnce = 2,
-}
-
-impl Default for QoS {
-    fn default() -> Self {
-        Self::AtMostOnce
-    }
 }
 
 /// Maps a number to QoS

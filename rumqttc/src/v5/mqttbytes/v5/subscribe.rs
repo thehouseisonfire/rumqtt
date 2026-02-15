@@ -179,17 +179,12 @@ impl Filter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RetainForwardRule {
+    #[default]
     OnEverySubscribe,
     OnNewSubscribe,
     Never,
-}
-
-impl Default for RetainForwardRule {
-    fn default() -> Self {
-        Self::OnEverySubscribe
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
