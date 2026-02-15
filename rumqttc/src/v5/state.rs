@@ -166,7 +166,8 @@ impl MqttState {
 
         // remove and collect pending releases
         for pkid in self.outgoing_rel.ones() {
-            let request = Request::PubRel(PubRel::new(pkid as u16, None));
+            let pkid = u16::try_from(pkid).expect("fixedbitset index always fits in u16");
+            let request = Request::PubRel(PubRel::new(pkid, None));
             pending.push(request);
         }
         self.outgoing_rel.clear();
@@ -217,19 +218,19 @@ impl MqttState {
         &mut self,
         mut packet: Incoming,
     ) -> Result<Option<Packet>, StateError> {
-        self.events.push_back(Event::Incoming(packet.to_owned()));
+        self.events.push_back(Event::Incoming(packet.clone()));
 
         let outgoing = match &mut packet {
             Incoming::PingResp(_) => self.handle_incoming_pingresp()?,
             Incoming::Publish(publish) => self.handle_incoming_publish(publish)?,
-            Incoming::SubAck(suback) => self.handle_incoming_suback(suback)?,
-            Incoming::UnsubAck(unsuback) => self.handle_incoming_unsuback(unsuback)?,
+            Incoming::SubAck(suback) => Self::handle_incoming_suback(suback)?,
+            Incoming::UnsubAck(unsuback) => Self::handle_incoming_unsuback(unsuback)?,
             Incoming::PubAck(puback) => self.handle_incoming_puback(puback)?,
             Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec)?,
             Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel)?,
             Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp)?,
             Incoming::ConnAck(connack) => self.handle_incoming_connack(connack)?,
-            Incoming::Disconnect(disconn) => self.handle_incoming_disconn(disconn)?,
+            Incoming::Disconnect(disconn) => Self::handle_incoming_disconn(disconn)?,
             Incoming::Auth(auth) => self.handle_incoming_auth(auth)?,
             _ => {
                 error!("Invalid incoming packet = {:?}", packet);
@@ -246,11 +247,8 @@ impl MqttState {
         self.outgoing_disconnect(DisconnectReasonCode::ProtocolError)
     }
 
-    fn handle_incoming_suback(
-        &mut self,
-        suback: &mut SubAck,
-    ) -> Result<Option<Packet>, StateError> {
-        for reason in suback.return_codes.iter() {
+    fn handle_incoming_suback(suback: &SubAck) -> Result<Option<Packet>, StateError> {
+        for reason in &suback.return_codes {
             match reason {
                 SubscribeReasonCode::Success(qos) => {
                     debug!("SubAck Pkid = {:?}, QoS = {:?}", suback.pkid, qos);
@@ -263,11 +261,8 @@ impl MqttState {
         Ok(None)
     }
 
-    fn handle_incoming_unsuback(
-        &mut self,
-        unsuback: &mut UnsubAck,
-    ) -> Result<Option<Packet>, StateError> {
-        for reason in unsuback.reasons.iter() {
+    fn handle_incoming_unsuback(unsuback: &UnsubAck) -> Result<Option<Packet>, StateError> {
+        for reason in &unsuback.reasons {
             if reason != &UnsubAckReason::Success {
                 warn!("UnsubAck Pkid = {:?}, Reason = {:?}", unsuback.pkid, reason);
             }
@@ -275,10 +270,7 @@ impl MqttState {
         Ok(None)
     }
 
-    fn handle_incoming_connack(
-        &mut self,
-        connack: &mut ConnAck,
-    ) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_connack(&mut self, connack: &ConnAck) -> Result<Option<Packet>, StateError> {
         if connack.code != ConnectReturnCode::Success {
             return Err(StateError::ConnFail {
                 reason: connack.code,
@@ -287,7 +279,7 @@ impl MqttState {
 
         if let Some(props) = &connack.properties {
             if let Some(topic_alias_max) = props.topic_alias_max {
-                self.broker_topic_alias_max = topic_alias_max
+                self.broker_topic_alias_max = topic_alias_max;
             }
 
             if let Some(max_inflight) = props.receive_max {
@@ -300,10 +292,7 @@ impl MqttState {
         Ok(None)
     }
 
-    fn handle_incoming_disconn(
-        &mut self,
-        disconn: &mut Disconnect,
-    ) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_disconn(disconn: &Disconnect) -> Result<Option<Packet>, StateError> {
         let reason_code = disconn.reason_code;
         let reason_string = if let Some(props) = &disconn.properties {
             props.reason_string.clone()
@@ -338,7 +327,7 @@ impl MqttState {
                 topic.clone_into(&mut publish.topic);
             } else {
                 self.handle_protocol_error()?;
-            };
+            }
         }
 
         match qos {
@@ -484,7 +473,7 @@ impl MqttState {
         Ok(None)
     }
 
-    fn handle_incoming_auth(&mut self, auth: &mut Auth) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_auth(&mut self, auth: &Auth) -> Result<Option<Packet>, StateError> {
         match auth.code {
             AuthReasonCode::Success => Ok(None),
             AuthReasonCode::Continue => {
@@ -498,7 +487,8 @@ impl MqttState {
                 let auth_manager = self.auth_manager.clone().unwrap();
 
                 // Call auth_continue method of auth manager
-                let out_auth_props = match auth_manager.lock().unwrap().auth_continue(props) {
+                let auth_data = auth_manager.lock().unwrap().auth_continue(props);
+                let out_auth_props = match auth_data {
                     Ok(data) => data,
                     Err(err) => return Err(StateError::AuthError(err)),
                 };
@@ -507,7 +497,9 @@ impl MqttState {
 
                 self.outgoing_auth(client_auth)
             }
-            _ => Err(StateError::AuthError("Authentication Failed!".to_string())),
+            AuthReasonCode::ReAuthenticate => {
+                Err(StateError::AuthError("Authentication Failed!".to_string()))
+            }
         }
     }
 
@@ -537,7 +529,7 @@ impl MqttState {
             // packet yet. This error is possible only when broker isn't acking sequentially
             self.outgoing_pub[pkid as usize] = Some(publish.clone());
             self.inflight += 1;
-        };
+        }
 
         debug!(
             "Publish. Topic = {}, Pkid = {:?}, Payload Size = {:?}",
@@ -559,7 +551,7 @@ impl MqttState {
                     });
                 }
             }
-        };
+        }
 
         let event = Event::Outgoing(Outgoing::Publish(pkid));
         self.events.push_back(event);

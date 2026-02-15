@@ -129,6 +129,7 @@ pub struct FixedHeader {
 }
 
 impl FixedHeader {
+    #[must_use]
     pub fn new(byte1: u8, remaining_len_len: usize, remaining_len: usize) -> FixedHeader {
         FixedHeader {
             byte1,
@@ -160,6 +161,7 @@ impl FixedHeader {
 
     /// Returns the size of full packet (fixed header + variable header + payload)
     /// Fixed header is enough to get the size of a frame in the stream
+    #[must_use]
     pub fn frame_length(&self) -> usize {
         self.fixed_header_len + self.remaining_len
     }
@@ -274,7 +276,8 @@ fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
 
 /// Serializes bytes to stream (including length)
 fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
-    stream.put_u16(bytes.len() as u16);
+    let len = u16::try_from(bytes.len()).expect("MQTT string/bytes length must fit in u16");
+    stream.put_u16(len);
     stream.extend_from_slice(bytes);
 }
 
@@ -294,7 +297,7 @@ fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize, Er
     let mut count = 0;
 
     while !done {
-        let mut byte = (x % 128) as u8;
+        let mut byte = u8::try_from(x % 128).expect("remainder in 0..=127 always fits in u8");
         x /= 128;
         if x > 0 {
             byte |= 128;

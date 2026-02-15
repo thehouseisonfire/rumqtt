@@ -58,7 +58,6 @@ pub trait AuthManager: std::fmt::Debug + Send {
     ///
     /// * `Ok(auth_prop)` - The authentication Properties to be sent back to the server.
     /// * `Err(error_message)` - An error indicating that the authentication process has failed or terminated.
-
     fn auth_continue(
         &mut self,
         auth_prop: Option<AuthProperties>,
@@ -847,7 +846,7 @@ impl Debug for MqttOptions {
             .field("conn_timeout", &self.conn_timeout)
             .field("manual_acks", &self.manual_acks)
             .field("connect properties", &self.connect_properties)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

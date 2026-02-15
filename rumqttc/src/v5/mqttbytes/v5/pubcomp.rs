@@ -18,6 +18,7 @@ pub struct PubComp {
 }
 
 impl PubComp {
+    #[must_use]
     pub fn new(pkid: u16, properties: Option<PubCompProperties>) -> Self {
         Self {
             pkid,
@@ -26,6 +27,7 @@ impl PubComp {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         if self.reason == PubCompReason::Success && self.properties.is_none() {
             return 4;
