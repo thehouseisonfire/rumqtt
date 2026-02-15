@@ -57,7 +57,7 @@ fn main() {
     common::profile("bench.pb", guard);
 }
 
-fn generate_data(count: usize, payload: &[u8]) -> Vec<ClientOp> {
+fn generate_data(count: usize, payload: &[u8]) -> Vec<ClientOp<'_>> {
     let mut data = Vec::with_capacity(count);
 
     for _ in 0..count {
