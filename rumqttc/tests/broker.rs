@@ -66,11 +66,15 @@ impl Broker {
 
     // Reads a publish packet from the stream with 2 second timeout
     pub async fn read_publish(&mut self) -> Option<Publish> {
+        self.read_publish_with_timeout(Duration::from_secs(2)).await
+    }
+
+    pub async fn read_publish_with_timeout(&mut self, timeout: Duration) -> Option<Publish> {
         loop {
             let packet = if !self.incoming.is_empty() {
                 self.incoming.pop_front().unwrap()
             } else {
-                let packet = time::timeout(Duration::from_secs(2), async {
+                let packet = time::timeout(timeout, async {
                     self.framed.readb(&mut self.incoming).await.unwrap();
                     self.incoming.pop_front().unwrap()
                 })
@@ -91,6 +95,20 @@ impl Broker {
                 packet => panic!("Expecting a publish. Received = {:?}", packet),
             }
         }
+    }
+
+    pub async fn wait_for_n_publishes(
+        &mut self,
+        count: usize,
+        timeout: Duration,
+    ) -> Option<Vec<Publish>> {
+        let mut publishes = Vec::with_capacity(count);
+        for _ in 0..count {
+            let publish = self.read_publish_with_timeout(timeout).await?;
+            publishes.push(publish);
+        }
+
+        Some(publishes)
     }
 
     /// Reads next packet from the stream
@@ -120,6 +138,12 @@ impl Broker {
     pub async fn ack(&mut self, pkid: u16) {
         let packet = Packet::PubAck(PubAck::new(pkid));
         self.framed.write(packet).await.unwrap();
+    }
+
+    pub async fn ack_many(&mut self, packet_ids: &[u16]) {
+        for pkid in packet_ids {
+            self.ack(*pkid).await;
+        }
     }
 
     /// Sends an acknowledgement
