@@ -252,6 +252,7 @@ impl DisconnectProperties {
 }
 
 impl Disconnect {
+    #[must_use]
     pub fn new(reason: DisconnectReasonCode) -> Self {
         Self {
             reason_code: reason,
@@ -266,21 +267,18 @@ impl Disconnect {
             return 2; // Packet type + 0x00
         }
 
-        let mut length = 0;
+        let mut length = 1; // Disconnect Reason Code
 
         if let Some(properties) = &self.properties {
-            length += 1; // Disconnect Reason Code
-
             let properties_len = properties.len();
             let properties_len_len = len_len(properties_len);
             length += properties_len_len + properties_len;
-        } else {
-            length += 1;
         }
 
         length
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         if len == 2 {
@@ -300,11 +298,11 @@ impl Disconnect {
 
         if packet_type != PacketType::Disconnect as u8 {
             return Err(Error::InvalidPacketType(packet_type));
-        };
+        }
 
         if flags != 0x00 {
             return Err(Error::MalformedPacket);
-        };
+        }
 
         if fixed_header.remaining_len == 0 {
             return Ok(Self::new(DisconnectReasonCode::NormalDisconnection));

@@ -71,7 +71,7 @@ impl Network {
             match self.framed.next().now_or_never() {
                 Some(r) => res = r,
                 _ => break,
-            };
+            }
         }
 
         Ok(())

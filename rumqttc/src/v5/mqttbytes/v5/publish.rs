@@ -93,9 +93,9 @@ impl Publish {
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         let len = self.len();
 
-        let dup = self.dup as u8;
+        let dup = u8::from(self.dup);
         let qos = self.qos as u8;
-        let retain = self.retain as u8;
+        let retain = u8::from(self.retain);
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
         let count = write_remaining_length(buffer, len)?;
@@ -151,11 +151,11 @@ impl PublishProperties {
         }
 
         if let Some(topic) = &self.response_topic {
-            len += 1 + 2 + topic.len()
+            len += 1 + 2 + topic.len();
         }
 
         if let Some(data) = &self.correlation_data {
-            len += 1 + 2 + data.len()
+            len += 1 + 2 + data.len();
         }
 
         for (key, value) in self.user_properties.iter() {
@@ -167,7 +167,7 @@ impl PublishProperties {
         }
 
         if let Some(typ) = &self.content_type {
-            len += 1 + 2 + typ.len()
+            len += 1 + 2 + typ.len();
         }
 
         len

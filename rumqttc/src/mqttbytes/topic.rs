@@ -1,9 +1,11 @@
 /// Checks if a topic or topic filter has wildcards
+#[must_use]
 pub fn has_wildcards(s: &str) -> bool {
     s.contains('+') || s.contains('#')
 }
 
 /// Checks if a topic is valid
+#[must_use]
 pub fn valid_topic(topic: &str) -> bool {
     // topic can't contain wildcards
     if topic.contains('+') || topic.contains('#') {
@@ -16,6 +18,7 @@ pub fn valid_topic(topic: &str) -> bool {
 /// Checks if the filter is valid
 ///
 /// <https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718106>
+#[must_use]
 pub fn valid_filter(filter: &str) -> bool {
     if filter.is_empty() {
         return false;
@@ -60,15 +63,14 @@ pub fn valid_filter(filter: &str) -> bool {
 /// **NOTE**: 'topic' is a misnomer in the arg. this can also be used to match 2 wild subscriptions
 /// **NOTE**: make sure a topic is validated during a publish and filter is validated
 /// during a subscribe
+#[must_use]
 pub fn matches(topic: &str, filter: &str) -> bool {
     if !topic.is_empty() && topic[..1].contains('$') {
         return false;
     }
 
     let mut topics = topic.split('/');
-    let mut filters = filter.split('/');
-
-    for f in filters.by_ref() {
+    for f in filter.split('/') {
         // "#" being the last element is validated by the broker with 'valid_filter'
         if f == "#" {
             return true;
@@ -79,11 +81,9 @@ pub fn matches(topic: &str, filter: &str) -> bool {
         // filter = a/b/c/d should not match topic = a/b/c
         let top = topics.next();
         match top {
-            Some("#") => return false,
-            Some(_) if f == "+" => continue,
-            Some(t) if f != t => return false,
-            Some(_) => continue,
-            None => return false,
+            Some("#") | None => return false,
+            Some(t) if f != "+" && f != t => return false,
+            Some(_) => {}
         }
     }
 

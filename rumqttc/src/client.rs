@@ -61,6 +61,7 @@ impl AsyncClient {
     ///
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
+    #[must_use]
     pub fn from_senders(request_tx: Sender<Request>) -> AsyncClient {
         AsyncClient { request_tx }
     }
@@ -272,6 +273,7 @@ impl Client {
     ///
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
+    #[must_use]
     pub fn from_sender(request_tx: Sender<Request>) -> Client {
         Client {
             client: AsyncClient::from_senders(request_tx),

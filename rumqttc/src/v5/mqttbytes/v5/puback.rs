@@ -24,6 +24,7 @@ pub struct PubAck {
 }
 
 impl PubAck {
+    #[must_use]
     pub fn new(pkid: u16, properties: Option<PubAckProperties>) -> Self {
         Self {
             pkid,
@@ -32,6 +33,7 @@ impl PubAck {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         if self.reason == PubAckReason::Success && self.properties.is_none() {
             return 4;

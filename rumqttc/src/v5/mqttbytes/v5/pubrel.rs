@@ -18,6 +18,7 @@ pub struct PubRel {
 }
 
 impl PubRel {
+    #[must_use]
     pub fn new(pkid: u16, properties: Option<PubRelProperties>) -> Self {
         Self {
             pkid,
@@ -26,6 +27,7 @@ impl PubRel {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         // If there are no properties during success, sending reason code is optional
         if self.reason == PubRelReason::Success && self.properties.is_none() {

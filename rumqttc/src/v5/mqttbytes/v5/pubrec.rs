@@ -25,6 +25,7 @@ pub struct PubRec {
 }
 
 impl PubRec {
+    #[must_use]
     pub fn new(pkid: u16, properties: Option<PubRecProperties>) -> Self {
         Self {
             pkid,
@@ -33,6 +34,7 @@ impl PubRec {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);
@@ -55,7 +57,7 @@ impl PubRec {
             let properties_len_len = len_len(properties_len);
             len += properties_len_len + properties_len;
         } else {
-            len += 1
+            len += 1;
         }
 
         len

@@ -10,6 +10,7 @@ pub struct SubAck {
 }
 
 impl SubAck {
+    #[must_use]
     pub fn new(pkid: u16, return_codes: Vec<SubscribeReasonCode>) -> SubAck {
         SubAck { pkid, return_codes }
     }
@@ -18,6 +19,7 @@ impl SubAck {
         2 + self.return_codes.len()
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);

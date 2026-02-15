@@ -205,7 +205,7 @@ impl EventLoop {
                 match time::timeout(network_timeout, network.flush()).await {
                     Ok(inner) => inner?,
                     Err(_)=> return Err(ConnectionError::FlushTimeout),
-                };
+                }
                 Ok(self.state.events.pop_front().unwrap())
             },
              // Handles pending and new requests.
@@ -248,7 +248,7 @@ impl EventLoop {
                     match time::timeout(network_timeout, network.flush()).await {
                         Ok(inner) => inner?,
                         Err(_)=> return Err(ConnectionError::FlushTimeout),
-                    };
+                    }
                     Ok(self.state.events.pop_front().unwrap())
                 }
                 Err(_) => Err(ConnectionError::RequestsDone),
@@ -266,7 +266,7 @@ impl EventLoop {
                 match time::timeout(network_timeout, network.flush()).await {
                     Ok(inner) => inner?,
                     Err(_)=> return Err(ConnectionError::FlushTimeout),
-                };
+                }
                 Ok(self.state.events.pop_front().unwrap())
             }
         }
@@ -318,7 +318,7 @@ async fn connect(
     Ok((network, connack))
 }
 
-pub(crate) async fn socket_connect(
+pub async fn socket_connect(
     host: String,
     network_options: NetworkOptions,
 ) -> io::Result<TcpStream> {
@@ -355,7 +355,7 @@ pub(crate) async fn socket_connect(
             Err(e) => {
                 last_err = Some(e);
             }
-        };
+        }
     }
 
     Err(last_err.unwrap_or_else(|| {
@@ -461,7 +461,7 @@ async fn network_connect(
                 request = request_modifier(request).await;
             }
 
-            let connector = tls::rustls_connector(&tls_config).await?;
+            let connector = tls::rustls_connector(&tls_config)?;
 
             let (socket, response) = async_tungstenite::tokio::client_async_tls_with_connector(
                 request,
@@ -487,7 +487,7 @@ async fn mqtt_connect(
     network: &mut Network,
 ) -> Result<ConnAck, ConnectionError> {
     let mut connect = Connect::new(options.client_id());
-    connect.keep_alive = options.keep_alive().as_secs() as u16;
+    connect.keep_alive = u16::try_from(options.keep_alive().as_secs()).unwrap_or(u16::MAX);
     connect.clean_session = options.clean_session();
     connect.last_will = options.last_will();
     connect.login = options.credentials();

@@ -378,7 +378,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 request = request_modifier(request).await;
             }
 
-            let connector = tls::rustls_connector(&tls_config).await?;
+            let connector = tls::rustls_connector(&tls_config)?;
 
             let (socket, response) = async_tungstenite::tokio::client_async_tls_with_connector(
                 request,
@@ -403,7 +403,7 @@ async fn mqtt_connect(
     let packet = Packet::Connect(
         Connect {
             client_id: options.client_id(),
-            keep_alive: options.keep_alive().as_secs() as u16,
+            keep_alive: u16::try_from(options.keep_alive().as_secs()).unwrap_or(u16::MAX),
             clean_start: options.clean_start(),
             properties: options.connect_properties(),
         },
@@ -421,7 +421,7 @@ async fn mqtt_connect(
             Incoming::ConnAck(connack) if connack.code == ConnectReturnCode::Success => {
                 if let Some(props) = &connack.properties {
                     if let Some(keep_alive) = props.server_keep_alive {
-                        options.keep_alive = Duration::from_secs(keep_alive as u64);
+                        options.keep_alive = Duration::from_secs(u64::from(keep_alive));
                     }
                     network.set_max_outgoing_size(props.max_packet_size);
 

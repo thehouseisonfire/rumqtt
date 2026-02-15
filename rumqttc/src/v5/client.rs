@@ -29,7 +29,7 @@ pub struct InvalidTopic(String);
 ///
 /// Use this when publishing repeatedly to the same topic to avoid per-call
 /// validation overhead in publish APIs that accept [`Topic`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedTopic(String);
 
 impl ValidatedTopic {
@@ -62,7 +62,7 @@ mod private {
     pub trait Sealed {}
     impl Sealed for ValidatedTopic {}
     impl Sealed for String {}
-    impl<'a> Sealed for &'a str {}
+    impl Sealed for &str {}
 }
 
 /// Abstracts over topic types for publishing (as opposed to filters).
@@ -90,7 +90,7 @@ impl Topic for String {
     }
 }
 
-impl<'a> Topic for &'a str {
+impl Topic for &str {
     const NEEDS_VALIDATION: bool = true;
     fn into_string(self) -> String {
         self.to_owned()
@@ -101,20 +101,20 @@ impl<'a> Topic for &'a str {
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("Failed to send mqtt requests to eventloop")]
-    Request(Request),
+    Request(Box<Request>),
     #[error("Failed to send mqtt requests to eventloop")]
-    TryRequest(Request),
+    TryRequest(Box<Request>),
 }
 
 impl From<SendError<Request>> for ClientError {
     fn from(e: SendError<Request>) -> Self {
-        Self::Request(e.into_inner())
+        Self::Request(Box::new(e.into_inner()))
     }
 }
 
 impl From<TrySendError<Request>> for ClientError {
     fn from(e: TrySendError<Request>) -> Self {
-        Self::TryRequest(e.into_inner())
+        Self::TryRequest(Box::new(e.into_inner()))
     }
 }
 
@@ -146,6 +146,7 @@ impl AsyncClient {
     ///
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
+    #[must_use]
     pub fn from_senders(request_tx: Sender<Request>) -> AsyncClient {
         AsyncClient { request_tx }
     }
@@ -172,7 +173,7 @@ impl AsyncClient {
         // `S::NEEDS_VALIDATION` is false, and the entire conditional is
         // removed.
         if S::NEEDS_VALIDATION && !valid_topic(&topic) {
-            return Err(ClientError::Request(publish));
+            return Err(ClientError::Request(Box::new(publish)));
         }
 
         self.request_tx.send_async(publish).await?;
@@ -228,7 +229,7 @@ impl AsyncClient {
         let publish = Request::Publish(publish);
 
         if S::NEEDS_VALIDATION && !valid_topic(&topic) {
-            return Err(ClientError::TryRequest(publish));
+            return Err(ClientError::TryRequest(Box::new(publish)));
         }
 
         self.request_tx.try_send(publish)?;
@@ -317,7 +318,7 @@ impl AsyncClient {
         let publish = Request::Publish(publish);
 
         if S::NEEDS_VALIDATION && !valid_topic(&topic) {
-            return Err(ClientError::Request(publish));
+            return Err(ClientError::Request(Box::new(publish)));
         }
 
         self.request_tx.send_async(publish).await?;
@@ -363,7 +364,7 @@ impl AsyncClient {
         let filter = Filter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
         self.request_tx.send_async(subscribe.into()).await?;
@@ -393,7 +394,7 @@ impl AsyncClient {
         let filter = Filter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
-            return Err(ClientError::TryRequest(subscribe.into()));
+            return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
         self.request_tx.try_send(subscribe.into())?;
@@ -424,7 +425,7 @@ impl AsyncClient {
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
         self.request_tx.send_async(subscribe.into()).await?;
@@ -461,7 +462,7 @@ impl AsyncClient {
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
-            return Err(ClientError::TryRequest(subscribe.into()));
+            return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
         self.request_tx.try_send(subscribe.into())?;
@@ -594,6 +595,7 @@ impl Client {
     ///
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
+    #[must_use]
     pub fn from_sender(request_tx: Sender<Request>) -> Client {
         Client {
             client: AsyncClient::from_senders(request_tx),
@@ -619,7 +621,7 @@ impl Client {
         let request = Request::Publish(publish);
 
         if S::NEEDS_VALIDATION && !valid_topic(&topic) {
-            return Err(ClientError::Request(request));
+            return Err(ClientError::Request(Box::new(request)));
         }
 
         self.client.request_tx.send(request)?;
@@ -727,7 +729,7 @@ impl Client {
         let filter = Filter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
         self.client.request_tx.send(subscribe.into())?;
@@ -773,7 +775,7 @@ impl Client {
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
         self.client.request_tx.send(subscribe.into())?;
@@ -1120,7 +1122,7 @@ mod test {
         let err = client
             .publish("a/+/b", QoS::ExactlyOnce, false, "good bye")
             .expect_err("Invalid publish topic should fail");
-        assert!(matches!(err, ClientError::Request(Request::Publish(_))));
+        assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_))));
     }
 
     #[test]
@@ -1224,7 +1226,9 @@ mod test {
                 .publish("a/+/b", QoS::ExactlyOnce, false, "good bye")
                 .await
                 .expect_err("Invalid publish topic should fail");
-            assert!(matches!(err, ClientError::Request(Request::Publish(_))));
+            assert!(
+                matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_)))
+            );
 
             let err = client
                 .publish_bytes(
@@ -1235,7 +1239,9 @@ mod test {
                 )
                 .await
                 .expect_err("Invalid publish topic should fail");
-            assert!(matches!(err, ClientError::Request(Request::Publish(_))));
+            assert!(
+                matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_)))
+            );
         });
     }
 }

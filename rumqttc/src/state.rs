@@ -115,7 +115,8 @@ impl MqttState {
 
         // remove and collect pending releases
         for pkid in self.outgoing_rel.ones() {
-            let request = Request::PubRel(PubRel::new(pkid as u16));
+            let pkid = u16::try_from(pkid).expect("fixedbitset index always fits in u16");
+            let request = Request::PubRel(PubRel::new(pkid));
             pending.push(request);
         }
         self.outgoing_rel.clear();
@@ -161,15 +162,15 @@ impl MqttState {
     /// be forwarded to user and Pubck packet will be written to network
     pub fn handle_incoming_packet(
         &mut self,
-        packet: Incoming,
+        packet: &Incoming,
     ) -> Result<Option<Packet>, StateError> {
         self.events.push_back(Event::Incoming(packet.clone()));
 
-        let outgoing = match &packet {
+        let outgoing = match packet {
             Incoming::PingResp => self.handle_incoming_pingresp()?,
             Incoming::Publish(publish) => self.handle_incoming_publish(publish)?,
-            Incoming::SubAck(_suback) => self.handle_incoming_suback()?,
-            Incoming::UnsubAck(_unsuback) => self.handle_incoming_unsuback()?,
+            Incoming::SubAck(_suback) => Self::handle_incoming_suback()?,
+            Incoming::UnsubAck(_unsuback) => Self::handle_incoming_unsuback()?,
             Incoming::PubAck(puback) => self.handle_incoming_puback(puback)?,
             Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec)?,
             Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel)?,
@@ -184,11 +185,11 @@ impl MqttState {
         Ok(outgoing)
     }
 
-    fn handle_incoming_suback(&mut self) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_suback() -> Result<Option<Packet>, StateError> {
         Ok(None)
     }
 
-    fn handle_incoming_unsuback(&mut self) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_unsuback() -> Result<Option<Packet>, StateError> {
         Ok(None)
     }
 
@@ -260,11 +261,11 @@ impl MqttState {
 
         // NOTE: Inflight - 1 for qos2 in comp
         self.outgoing_rel.insert(pubrec.pkid as usize);
-        let pubrel = PubRel { pkid: pubrec.pkid };
+        let release = PubRel { pkid: pubrec.pkid };
         let event = Event::Outgoing(Outgoing::PubRel(pubrec.pkid));
         self.events.push_back(event);
 
-        Ok(Some(Packet::PubRel(pubrel)))
+        Ok(Some(Packet::PubRel(release)))
     }
 
     fn handle_incoming_pubrel(&mut self, pubrel: &PubRel) -> Result<Option<Packet>, StateError> {
@@ -332,7 +333,7 @@ impl MqttState {
             // packet yet. This error is possible only when broker isn't acking sequentially
             self.outgoing_pub[pkid as usize] = Some(publish.clone());
             self.inflight += 1;
-        };
+        }
 
         debug!(
             "Publish. Topic = {}, Pkid = {:?}, Payload Size = {:?}",
@@ -777,7 +778,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
         mqtt.handle_outgoing_packet(Request::Publish(publish))
             .unwrap();
-        mqtt.handle_incoming_packet(Incoming::PubAck(PubAck::new(1)))
+        mqtt.handle_incoming_packet(&Incoming::PubAck(PubAck::new(1)))
             .unwrap();
 
         // should throw error because we didn't get pingresp for previous ping
@@ -794,7 +795,7 @@ mod test {
 
         // should ping
         mqtt.outgoing_ping().unwrap();
-        mqtt.handle_incoming_packet(Incoming::PingResp).unwrap();
+        mqtt.handle_incoming_packet(&Incoming::PingResp).unwrap();
 
         // should ping
         mqtt.outgoing_ping().unwrap();

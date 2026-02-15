@@ -5,6 +5,7 @@ use bytes::{BufMut, BytesMut};
 pub struct PingReq;
 
 impl PingReq {
+    #[must_use]
     pub fn size(&self) -> usize {
         2
     }
@@ -19,6 +20,7 @@ impl PingReq {
 pub struct PingResp;
 
 impl PingResp {
+    #[must_use]
     pub fn size(&self) -> usize {
         2
     }

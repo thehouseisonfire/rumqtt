@@ -268,6 +268,7 @@ impl Login {
         connect_flags
     }
 
+    #[must_use]
     pub fn validate(&self, username: &str, password: &str) -> bool {
         (self.username == *username) && (self.password == *password)
     }

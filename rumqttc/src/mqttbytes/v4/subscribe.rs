@@ -42,6 +42,7 @@ impl Subscribe {
         2 + self.filters.iter().fold(0, |s, t| s + t.len())
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);
@@ -103,6 +104,7 @@ pub struct SubscribeFilter {
 }
 
 impl SubscribeFilter {
+    #[must_use]
     pub fn new(path: String, qos: QoS) -> SubscribeFilter {
         SubscribeFilter { path, qos }
     }
