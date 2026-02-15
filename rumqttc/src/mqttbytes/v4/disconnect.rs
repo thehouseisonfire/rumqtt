@@ -5,6 +5,7 @@ use bytes::{BufMut, BytesMut};
 pub struct Disconnect;
 
 impl Disconnect {
+    #[must_use]
     pub fn size(&self) -> usize {
         2
     }

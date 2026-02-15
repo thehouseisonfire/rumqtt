@@ -53,7 +53,7 @@ impl Connect {
         Ok((connect, will, login))
     }
 
-    fn len(&self, will: &Option<LastWill>, l: &Option<Login>) -> usize {
+    fn len(&self, will: Option<&LastWill>, login: Option<&Login>) -> usize {
         let mut len = 2 + "MQTT".len() // protocol name
                         + 1            // protocol version
                         + 1            // connect flags
@@ -76,8 +76,8 @@ impl Connect {
         }
 
         // username and password len
-        if let Some(l) = l {
-            len += l.len();
+        if let Some(login) = login {
+            len += login.len();
         }
 
         len
@@ -89,7 +89,7 @@ impl Connect {
         l: &Option<Login>,
         buffer: &mut BytesMut,
     ) -> Result<usize, Error> {
-        let len = self.len(will, l);
+        let len = self.len(will.as_ref(), l.as_ref());
 
         buffer.put_u8(0b0001_0000);
         let count = write_remaining_length(buffer, len)?;
@@ -111,7 +111,7 @@ impl Connect {
             None => {
                 write_remaining_length(buffer, 0)?;
             }
-        };
+        }
 
         write_mqtt_string(buffer, &self.client_id);
 
@@ -129,7 +129,7 @@ impl Connect {
     }
 
     pub fn size(&self, will: &Option<LastWill>, login: &Option<Login>) -> usize {
-        let len = self.len(will, login);
+        let len = self.len(will.as_ref(), login.as_ref());
         let remaining_len_size = len_len(len);
 
         1 + remaining_len_size + len
@@ -157,6 +157,7 @@ pub struct ConnectProperties {
 }
 
 impl ConnectProperties {
+    #[must_use]
     pub fn new() -> ConnectProperties {
         ConnectProperties {
             session_expiry_interval: None,
@@ -472,15 +473,15 @@ impl LastWillProperties {
         }
 
         if let Some(typ) = &self.content_type {
-            len += 1 + 2 + typ.len()
+            len += 1 + 2 + typ.len();
         }
 
         if let Some(topic) = &self.response_topic {
-            len += 1 + 2 + topic.len()
+            len += 1 + 2 + topic.len();
         }
 
         if let Some(data) = &self.correlation_data {
-            len += 1 + 2 + data.len()
+            len += 1 + 2 + data.len();
         }
 
         for (key, value) in self.user_properties.iter() {

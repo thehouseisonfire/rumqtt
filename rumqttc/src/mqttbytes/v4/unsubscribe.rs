@@ -21,6 +21,7 @@ impl Unsubscribe {
         2 + self.topics.iter().fold(0, |s, t| s + t.len() + 2)
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);

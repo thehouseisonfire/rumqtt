@@ -8,17 +8,19 @@ pub struct PubRec {
 }
 
 impl PubRec {
+    #[must_use]
     pub fn new(pkid: u16) -> PubRec {
         PubRec { pkid }
     }
 
-    fn len(&self) -> usize {
+    fn len() -> usize {
         // pkid
         2
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
-        let len = self.len();
+        let len = Self::len();
         let remaining_len_size = len_len(len);
 
         1 + remaining_len_size + len
@@ -42,7 +44,7 @@ impl PubRec {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
-        let len = self.len();
+        let len = Self::len();
         buffer.put_u8(0x50);
         let count = write_remaining_length(buffer, len)?;
         buffer.put_u16(self.pkid);

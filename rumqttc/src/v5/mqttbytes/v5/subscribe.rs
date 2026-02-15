@@ -10,6 +10,7 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
+    #[must_use]
     pub fn new(filter: Filter, properties: Option<SubscribeProperties>) -> Self {
         Self {
             filters: vec![filter],
@@ -29,6 +30,7 @@ impl Subscribe {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);
@@ -231,7 +233,7 @@ impl SubscribeProperties {
                     // TODO: Validate 1 +. Tests are working either way
                     cursor += 1 + id_len;
                     bytes.advance(id_len);
-                    id = Some(sub_id)
+                    id = Some(sub_id);
                 }
                 PropertyType::UserProperty => {
                     let key = read_mqtt_string(bytes)?;

@@ -9,10 +9,12 @@ pub struct UnsubAck {
 }
 
 impl UnsubAck {
+    #[must_use]
     pub fn new(pkid: u16) -> UnsubAck {
         UnsubAck { pkid }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         4
     }

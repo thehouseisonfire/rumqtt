@@ -94,6 +94,21 @@
 //! entry to wherever your DNS resolver looks (e.g. `/etc/hosts`) for the bare IP
 //! address and use that name in your code.
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::explicit_iter_loop)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::struct_field_names)]
+#![allow(clippy::too_long_first_doc_paragraph)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::use_self)]
+#![allow(clippy::wildcard_imports)]
 
 #[macro_use]
 extern crate log;
@@ -251,17 +266,20 @@ impl Default for Transport {
 
 impl Transport {
     /// Use regular tcp as transport (default)
+    #[must_use]
     pub fn tcp() -> Self {
         Self::Tcp
     }
 
     #[cfg(feature = "use-rustls-no-provider")]
+    #[must_use]
     pub fn tls_with_default_config() -> Self {
         Self::tls_with_config(Default::default())
     }
 
     /// Use secure tcp with tls as transport
     #[cfg(feature = "use-rustls-no-provider")]
+    #[must_use]
     pub fn tls(
         ca: Vec<u8>,
         client_auth: Option<(Vec<u8>, Vec<u8>)>,
@@ -277,11 +295,13 @@ impl Transport {
     }
 
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[must_use]
     pub fn tls_with_config(tls_config: TlsConfiguration) -> Self {
         Self::Tls(tls_config)
     }
 
     #[cfg(unix)]
+    #[must_use]
     pub fn unix() -> Self {
         Self::Unix
     }
@@ -405,6 +425,7 @@ pub struct NetworkOptions {
 }
 
 impl NetworkOptions {
+    #[must_use]
     pub fn new() -> Self {
         NetworkOptions {
             tcp_send_buffer_size: None,
@@ -435,6 +456,7 @@ impl NetworkOptions {
     }
 
     /// get timeout in secs
+    #[must_use]
     pub fn connection_timeout(&self) -> u64 {
         self.conn_timeout
     }
@@ -932,7 +954,7 @@ impl Debug for MqttOptions {
             .field("inflight", &self.inflight)
             .field("last_will", &self.last_will)
             .field("manual_acks", &self.manual_acks)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -10,6 +10,7 @@ impl PingReq {
         Ok(2)
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         2
     }
@@ -24,6 +25,7 @@ impl PingResp {
         Ok(2)
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         2
     }

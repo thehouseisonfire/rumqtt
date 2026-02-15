@@ -25,6 +25,7 @@ impl SubAck {
         len
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);
@@ -194,8 +195,7 @@ fn reason(code: u8) -> Result<SubscribeReasonCode, Error> {
 fn code(value: SubscribeReasonCode) -> u8 {
     match value {
         SubscribeReasonCode::Success(qos) => qos as u8,
-        SubscribeReasonCode::Failure => 0x80,
-        SubscribeReasonCode::Unspecified => 128,
+        SubscribeReasonCode::Failure | SubscribeReasonCode::Unspecified => 0x80,
         SubscribeReasonCode::ImplementationSpecific => 131,
         SubscribeReasonCode::NotAuthorized => 135,
         SubscribeReasonCode::TopicFilterInvalid => 143,

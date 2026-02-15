@@ -18,6 +18,7 @@ impl Unsubscribe {
         }
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);

@@ -13,10 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 * Make v5 publish APIs accept `v5::Topic` and support skipping repeated validation when using `v5::ValidatedTopic`.
 * Add `v5::MqttOptions::set_incoming_packet_size_limit` and `v5::MqttOptions::set_unlimited_incoming_packet_size` as the preferred v5 APIs for incoming packet size behavior (planned for `0.25.2`).
+* Apply broad Clippy `pedantic`/`nursery` cleanup across `rumqttc` internals with targeted refactors in v4/v5 packet encoding, eventloop setup, and state-machine handlers.
+* Make `v5::ClientError` store boxed requests to reduce `Result<_, ClientError>` footprint across publish/subscribe APIs.
 ### Deprecated
 ### Removed
 ### Fixed 
 * Derive `Eq` and `PartialEq` for `client::ClientError` to make downstream error assertions easier in tests.
+* Harden integer conversion paths used in keepalive and packet serialization to avoid silent truncation.
+* Fix v5 auth continuation lock-scrutinee lifetime pattern to avoid holding lock guard longer than necessary.
+* Tighten helper signatures/ownership in state handlers and packet helpers (fewer unnecessary mutable/value parameters).
+* Improve debug output behavior for `MqttOptions` manual `Debug` impls via non-exhaustive finishing.
 ### Security
 
 

@@ -21,6 +21,7 @@ pub struct ConnAck {
 }
 
 impl ConnAck {
+    #[must_use]
     pub fn new(code: ConnectReturnCode, session_present: bool) -> ConnAck {
         ConnAck {
             session_present,
@@ -28,7 +29,7 @@ impl ConnAck {
         }
     }
 
-    fn len(&self) -> usize {
+    fn len() -> usize {
         // sesssion present + code
 
         1 + 1
@@ -52,18 +53,19 @@ impl ConnAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
-        let len = self.len();
+        let len = Self::len();
         buffer.put_u8(0x20);
 
         let count = write_remaining_length(buffer, len)?;
-        buffer.put_u8(self.session_present as u8);
+        buffer.put_u8(u8::from(self.session_present));
         buffer.put_u8(self.code as u8);
 
         Ok(1 + count + len)
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
-        let len = self.len();
+        let len = Self::len();
         let remaining_len_size = len_len(len);
 
         1 + remaining_len_size + len

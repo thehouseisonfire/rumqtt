@@ -66,7 +66,7 @@ pub enum Error {
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
-pub async fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector, Error> {
+pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector, Error> {
     let config = match tls_config {
         TlsConfiguration::Simple {
             ca,
@@ -172,7 +172,7 @@ pub async fn tls_connect(
     let tls: Box<dyn AsyncReadWrite> = match tls_config {
         #[cfg(feature = "use-rustls-no-provider")]
         TlsConfiguration::Simple { .. } | TlsConfiguration::Rustls(_) => {
-            let connector = rustls_connector(tls_config).await?;
+            let connector = rustls_connector(tls_config)?;
             let domain = ServerName::try_from(addr)?.to_owned();
             Box::new(connector.connect(domain, tcp).await?)
         }

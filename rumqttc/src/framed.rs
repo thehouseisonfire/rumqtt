@@ -53,7 +53,7 @@ impl Network {
         loop {
             match res {
                 Some(Ok(packet)) => {
-                    if let Some(outgoing) = state.handle_incoming_packet(packet)? {
+                    if let Some(outgoing) = state.handle_incoming_packet(&packet)? {
                         self.write(outgoing).await?;
                     }
 
@@ -70,7 +70,7 @@ impl Network {
             match self.framed.next().now_or_never() {
                 Some(r) => res = r,
                 _ => break,
-            };
+            }
         }
 
         Ok(())
