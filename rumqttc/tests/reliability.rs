@@ -1,11 +1,17 @@
 use matches::assert_matches;
+use std::io::ErrorKind;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 use tokio::{task, time};
 
 mod broker;
 
 use broker::*;
 use rumqttc::*;
+
+const SETUP_TIMEOUT: Duration = Duration::from_secs(3);
+const PHASE_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn start_requests(count: u8, qos: QoS, delay: u64, client: AsyncClient) {
     for i in 1..=count {
@@ -43,6 +49,17 @@ async fn run(eventloop: &mut EventLoop, reconnect: bool) -> Result<(), Connectio
                 Err(_) if reconnect => continue 'reconnect,
                 Err(e) => return Err(e),
             }
+        }
+    }
+}
+
+async fn poll_ignoring_connect_races(eventloop: &mut EventLoop) -> Result<Event, ConnectionError> {
+    loop {
+        match eventloop.poll().await {
+            Err(ConnectionError::Io(error)) if error.kind() == ErrorKind::ConnectionRefused => {
+                continue;
+            }
+            value => return value,
         }
     }
 }
@@ -327,119 +344,168 @@ async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
     assert!(broker.read_publish().await.is_none());
 }
 
-#[ignore]
 #[tokio::test]
 async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
     let mut options = MqttOptions::new("dummy", "127.0.0.1", 1891);
     options.set_inflight(10);
 
     let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (release_acks_tx, release_acks_rx) = oneshot::channel::<()>();
+    let (stop_broker_tx, mut stop_broker_rx) = oneshot::channel::<()>();
 
-    task::spawn(async move {
+    let requests = task::spawn(async move {
         start_requests(15, QoS::AtLeastOnce, 0, client).await;
-        time::sleep(Duration::from_secs(60)).await;
     });
 
-    task::spawn(async move {
+    let broker = task::spawn(async move {
         let mut broker = Broker::new(1891, 0, false).await;
 
         // read all incoming packets first
-        for i in 1..=4 {
-            let packet = broker.read_publish().await;
-            assert_eq!(packet.unwrap().payload[0], i);
+        let packets = broker
+            .wait_for_n_publishes(4, SETUP_TIMEOUT)
+            .await
+            .expect("didn't receive initial publishes");
+        for (i, packet) in packets.iter().enumerate() {
+            assert_eq!(packet.payload[0], (i + 1) as u8);
         }
 
         // out of order ack
-        broker.ack(3).await;
-        broker.ack(4).await;
-        time::sleep(Duration::from_secs(5)).await;
-        broker.ack(1).await;
-        broker.ack(2).await;
+        broker.ack_many(&[3, 4]).await;
+        release_acks_rx.await.expect("ack release signal dropped");
 
-        // read and ack remaining packets in order
-        for i in 5..=15 {
-            let packet = broker.read_publish().await;
-            let packet = packet.unwrap();
-            assert_eq!(packet.payload[0], i);
-            broker.ack(packet.pkid).await;
-        }
+        broker.ack_many(&[1, 2]).await;
 
-        time::sleep(Duration::from_secs(10)).await;
-    });
+        // Ensure broker receives at least one publish after releasing blocked acks.
+        let packet = broker
+            .read_publish_with_timeout(PHASE_TIMEOUT)
+            .await
+            .expect("missing publish after releasing ack blockage");
+        broker.ack(packet.pkid).await;
 
-    time::sleep(Duration::from_secs(1)).await;
-
-    // sends 4 requests. 5th request will trigger collision
-    // Poll until there is collision.
-    loop {
-        match eventloop.poll().await.unwrap() {
-            Event::Outgoing(Outgoing::AwaitAck(1)) => break,
-            v => {
-                println!("Poll = {v:?}");
-                continue;
+        loop {
+            tokio::select! {
+                _ = &mut stop_broker_rx => break,
+                packet = broker.read_packet() => {
+                    if let Some(packet) = packet {
+                        match packet {
+                            Packet::Publish(publish) => broker.ack(publish.pkid).await,
+                            Packet::PingReq => {}
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
-    }
+    });
 
-    loop {
-        let start = Instant::now();
-        let event = eventloop.poll().await.unwrap();
-        println!("Poll = {event:?}");
+    // Sends 4 requests. 5th request triggers collision and wait for ack(1).
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            let event = poll_ignoring_connect_races(&mut eventloop)
+                .await
+                .expect("poll should not fail");
+            println!("Poll = {event:?}");
+            if event == Event::Outgoing(Outgoing::AwaitAck(1)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for collision await-ack signal");
+    release_acks_tx
+        .send(())
+        .expect("broker task already exited");
 
-        match event {
-            Event::Outgoing(Outgoing::Publish(ack)) => {
-                if ack == 1 {
-                    let elapsed = start.elapsed().as_millis() as i64;
-                    let deviation_millis: i64 = (5000 - elapsed).abs();
-                    assert!(deviation_millis < 100);
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            let event = poll_ignoring_connect_races(&mut eventloop)
+                .await
+                .expect("poll should not fail");
+            println!("Poll = {event:?}");
+            if event == Event::Outgoing(Outgoing::Publish(1)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for republish of blocked packet id");
+
+    stop_broker_tx.send(()).expect("broker task already exited");
+    broker.await.unwrap();
+    requests.abort();
+}
+
+#[tokio::test]
+async fn packet_id_collisions_are_timed_out_on_second_ping() {
+    let mut options = MqttOptions::new("dummy", "127.0.0.1", 1892);
+    options
+        .set_inflight(4)
+        .set_keep_alive(Duration::from_secs(1));
+
+    let (client, mut eventloop) = AsyncClient::new(options, 10);
+    let (stop_broker_tx, stop_broker_rx) = oneshot::channel::<()>();
+    let requests = task::spawn(async move {
+        start_requests(6, QoS::AtLeastOnce, 0, client).await;
+    });
+
+    let broker = task::spawn(async move {
+        let mut broker = Broker::new(1892, 0, false).await;
+        let packets = broker
+            .wait_for_n_publishes(4, SETUP_TIMEOUT)
+            .await
+            .expect("didn't receive initial inflight publishes");
+
+        for (i, packet) in packets.iter().enumerate() {
+            assert_eq!(packet.payload[0], (i + 1) as u8);
+        }
+
+        // Force collision on packet id 1 by acking later packet ids first.
+        broker.ack_many(&[3, 4]).await;
+
+        // Keep the TCP session alive but don't ack packet ids 1 and 2.
+        time::timeout(PHASE_TIMEOUT, async {
+            loop {
+                if matches!(broker.read_packet().await, Some(Packet::PingReq)) {
                     break;
                 }
             }
-            _ => continue,
-        }
-    }
-}
+        })
+        .await
+        .expect("didn't observe first keepalive ping");
 
-// #[tokio::test]
-// async fn packet_id_collisions_are_timedout_on_second_ping() {
-//     let mut options = MqttOptions::new("dummy", "127.0.0.1", 1892);
-//     options.set_inflight(4).set_keep_alive(5);
-//
-//     let mut eventloop = EventLoop::new(options, 5);
-//     let requests_tx = eventloop.handle();
-//
-//     task::spawn(async move {
-//         start_requests(10, QoS::AtLeastOnce, 0, requests_tx).await;
-//         time::sleep(Duration::from_secs(60)).await;
-//     });
-//
-//     task::spawn(async move {
-//         let mut broker = Broker::new(1892, 0).await;
-//         // read all incoming packets first
-//         for i in 1..=4 {
-//             let packet = broker.read_publish().await;
-//             assert_eq!(packet.unwrap().payload[0], i);
-//         }
-//
-//         // out of order ack
-//         broker.ack(3).await;
-//         broker.ack(4).await;
-//         time::sleep(Duration::from_secs(15)).await;
-//     });
-//
-//     time::sleep(Duration::from_secs(1)).await;
-//
-//     // Collision error but no network disconneciton
-//     match run(&mut eventloop, false).await.unwrap() {
-//         Event::Outgoing(Outgoing::AwaitAck(1)) => (),
-//         o => panic!("Expecting collision error. Found = {:?}", o),
-//     }
-//
-//     match run(&mut eventloop, false).await {
-//         Err(ConnectionError::MqttState(StateError::CollisionTimeout)) => (),
-//         o => panic!("Expecting collision error. Found = {:?}", o),
-//     }
-// }
+        stop_broker_rx.await.expect("stop signal dropped");
+    });
+
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            let event = poll_ignoring_connect_races(&mut eventloop)
+                .await
+                .expect("poll should not fail");
+            println!("Poll = {event:?}");
+            if event == Event::Outgoing(Outgoing::AwaitAck(1)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for collision await-ack signal");
+
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            match poll_ignoring_connect_races(&mut eventloop).await {
+                Err(ConnectionError::MqttState(StateError::CollisionTimeout)) => break,
+                Ok(event) => println!("Poll = {event:?}"),
+                Err(e) => panic!("Expected CollisionTimeout, got {e:?}"),
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for collision timeout error");
+
+    stop_broker_tx.send(()).expect("broker task already exited");
+    broker.await.unwrap();
+    requests.abort();
+}
 
 //
 // All reconnection tests here
