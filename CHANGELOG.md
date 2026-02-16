@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Add AsyncReadWrite trait with conditional compilation for websocket feature to allow proper trait bounds depending on websocket feature usage.
 ### Changed
 * Make v5 publish APIs accept `v5::Topic` and support skipping repeated validation when using `v5::ValidatedTopic`.
+* Reduce intermediate topic conversions/copies in v4/v5 publish client paths by passing owned topic strings directly into publish packet constructors.
 * Add `v5::MqttOptions::set_incoming_packet_size_limit` and `v5::MqttOptions::set_unlimited_incoming_packet_size` as the preferred v5 APIs for incoming packet size behavior (planned for `0.25.2`).
 * Apply broad Clippy `pedantic`/`nursery` cleanup across `rumqttc` internals with targeted refactors in v4/v5 packet encoding, eventloop setup, and state-machine handlers.
 * Make `v5::ClientError` store boxed requests to reduce `Result<_, ClientError>` footprint across publish/subscribe APIs.

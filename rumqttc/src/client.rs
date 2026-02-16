@@ -78,10 +78,11 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload);
+        let invalid_topic = !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::Request(publish));
         }
         self.request_tx.send_async(publish).await?;
@@ -101,10 +102,11 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload);
+        let invalid_topic = !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::TryRequest(publish));
         }
         self.request_tx.try_send(publish)?;
@@ -292,10 +294,11 @@ impl Client {
         V: Into<Vec<u8>>,
     {
         let topic = topic.into();
-        let mut publish = Publish::new(&topic, qos, payload);
+        let invalid_topic = !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
-        if !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::Request(publish));
         }
         self.client.request_tx.send(publish)?;
