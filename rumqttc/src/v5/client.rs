@@ -138,7 +138,7 @@ impl AsyncClient {
     ///
     /// `cap` specifies the capacity of the bounded async channel.
     pub fn new(options: MqttOptions, cap: usize) -> (AsyncClient, EventLoop) {
-        let (eventloop, request_tx) = EventLoop::new(options, cap);
+        let (eventloop, request_tx) = EventLoop::new_for_async_client(options, cap);
         let client = AsyncClient { request_tx };
 
         (client, eventloop)

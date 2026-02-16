@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Improve debug output behavior for `MqttOptions` manual `Debug` impls via non-exhaustive finishing.
 * Clear collision state on reconnection with clean session.
 * Preserve MQTT v5 DISCONNECT properties on the wire for `disconnect_with_properties` and `try_disconnect_with_properties`.
+* Restore `EventLoop::new` API compatibility while allowing `AsyncClient::new` event loops to terminate with `ConnectionError::RequestsDone` when all client handles are dropped.
+* Clarify shutdown semantics: `disconnect()`/`try_disconnect()` performs MQTT graceful shutdown (sends DISCONNECT), while dropping all clients ends polling with `ConnectionError::RequestsDone` without implicit DISCONNECT.
 ### Security
 
 
