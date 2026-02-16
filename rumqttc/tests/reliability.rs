@@ -606,7 +606,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
     let mut options = MqttOptions::new("dummy", "127.0.0.1", 3003);
     options
         .set_inflight(2)
-        .set_keep_alive(Duration::from_secs(2))
+        .set_keep_alive(2)
         .set_clean_session(true);
 
     // A broker which does not ack the first publish to trigger collision
