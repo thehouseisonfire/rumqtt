@@ -7,7 +7,7 @@ use tokio::{task, time};
 mod broker;
 
 use broker::*;
-use rumqttc::*;
+use rumqttc_next::*;
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(3);
 const PHASE_TIMEOUT: Duration = Duration::from_secs(5);
