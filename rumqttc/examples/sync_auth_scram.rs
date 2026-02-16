@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use flume::bounded;
-use rumqttc::v5::mqttbytes::{v5::AuthProperties, QoS};
-use rumqttc::v5::{AuthManager, Client, MqttOptions};
+use rumqttc_next::v5::mqttbytes::{v5::AuthProperties, QoS};
+use rumqttc_next::v5::{AuthManager, Client, MqttOptions};
 #[cfg(feature = "auth-scram")]
 use scram::client::ServerFirst;
 #[cfg(feature = "auth-scram")]
@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(event) => {
                 println!("Event = {:?}", event);
                 match event {
-                    rumqttc::v5::Event::Incoming(rumqttc::v5::Incoming::ConnAck(_)) => {
+                    rumqttc_next::v5::Event::Incoming(rumqttc_next::v5::Incoming::ConnAck(_)) => {
                         tx.send("Connected").unwrap();
                     }
                     _ => {}
