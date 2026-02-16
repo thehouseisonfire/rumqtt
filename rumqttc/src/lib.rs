@@ -85,6 +85,10 @@
 //! - Blocking inside the `connection.iter()`/`eventloop.poll()` loop will block
 //!   connection progress.
 //!
+//! - Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown
+//!   (sends DISCONNECT). Dropping all client handles ends polling with
+//!   `ConnectionError::RequestsDone` and closes locally without sending DISCONNECT.
+//!
 //! ## FAQ
 //! **Connecting to a broker using raw ip doesn't work**
 //!

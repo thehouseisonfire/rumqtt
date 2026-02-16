@@ -168,10 +168,11 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     // start sending qos0 publishes. this makes sure that there is
     // outgoing activity but no incoming activity
     let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let publisher = client.clone();
 
     // Start sending publishes
     task::spawn(async move {
-        start_requests(10, QoS::AtMostOnce, 1, client).await;
+        start_requests(10, QoS::AtMostOnce, 1, publisher).await;
     });
 
     // start the eventloop

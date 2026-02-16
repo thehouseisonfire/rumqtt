@@ -53,6 +53,8 @@ pub enum ConnectionError {
     ConnectionRefused(ConnectReturnCode),
     #[error("Expected ConnAck packet, received: {0:?}")]
     NotConnAck(Box<Packet>),
+    /// All request senders have been dropped. Use `AsyncClient::disconnect` for MQTT-level
+    /// graceful shutdown with a DISCONNECT packet.
     #[error("Requests done")]
     RequestsDone,
     #[error("Auth processing error")]
@@ -76,8 +78,9 @@ pub struct EventLoop {
     pub state: MqttState,
     /// Request stream
     requests_rx: Receiver<Request>,
-    /// Requests handle to send requests
-    pub(crate) requests_tx: Sender<Request>,
+    /// Internal request sender retained for compatibility in `EventLoop::new`.
+    /// This is intentionally dropped in the `AsyncClient::new` constructor path.
+    _requests_tx: Option<Sender<Request>>,
     /// Pending packets from last session
     pub pending: VecDeque<Request>,
     /// Network connection to the broker
@@ -101,6 +104,28 @@ impl EventLoop {
     /// access and update `options`, `state` and `requests`.
     pub fn new(options: MqttOptions, cap: usize) -> EventLoop {
         let (requests_tx, requests_rx) = bounded(cap);
+        Self::with_channel(options, requests_rx, Some(requests_tx))
+    }
+
+    /// Internal constructor used by `AsyncClient::new`.
+    ///
+    /// Unlike `EventLoop::new`, this does not keep an internal sender handle, so dropping all
+    /// `AsyncClient` handles can terminate polling with `ConnectionError::RequestsDone`.
+    pub(crate) fn new_for_async_client(
+        options: MqttOptions,
+        cap: usize,
+    ) -> (EventLoop, Sender<Request>) {
+        let (requests_tx, requests_rx) = bounded(cap);
+        let eventloop = Self::with_channel(options, requests_rx, None);
+
+        (eventloop, requests_tx)
+    }
+
+    fn with_channel(
+        options: MqttOptions,
+        requests_rx: Receiver<Request>,
+        requests_tx: Option<Sender<Request>>,
+    ) -> EventLoop {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let manual_acks = options.manual_acks;
@@ -110,8 +135,8 @@ impl EventLoop {
         EventLoop {
             options,
             state: MqttState::new(inflight_limit, manual_acks, auth_manager),
-            requests_tx,
             requests_rx,
+            _requests_tx: requests_tx,
             pending,
             network: None,
             keepalive_timeout: None,
@@ -448,5 +473,57 @@ async fn mqtt_connect(
             }
             packet => return Err(ConnectionError::NotConnAck(Box::new(packet))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flume::TryRecvError;
+
+    #[test]
+    fn eventloop_new_keeps_internal_sender_alive() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let eventloop = EventLoop::new(options, 1);
+
+        assert!(matches!(eventloop.requests_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn async_client_constructor_path_allows_channel_shutdown() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        drop(request_tx);
+
+        assert!(matches!(
+            eventloop.requests_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn async_client_path_reports_requests_done_after_pending_drain() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.pending.push_back(Request::PingReq);
+        drop(request_tx);
+
+        let request = EventLoop::next_request(
+            &mut eventloop.pending,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(request, Request::PingReq));
+
+        let err = EventLoop::next_request(
+            &mut eventloop.pending,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ConnectionError::RequestsDone));
     }
 }
