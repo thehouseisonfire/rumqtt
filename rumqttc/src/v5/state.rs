@@ -197,9 +197,7 @@ impl MqttState {
             Request::Subscribe(subscribe) => self.outgoing_subscribe(subscribe)?,
             Request::Unsubscribe(unsubscribe) => self.outgoing_unsubscribe(unsubscribe)?,
             Request::PingReq => self.outgoing_ping()?,
-            Request::Disconnect => {
-                self.outgoing_disconnect(DisconnectReasonCode::NormalDisconnection)?
-            }
+            Request::Disconnect(disconnect) => self.outgoing_disconnect(disconnect)?,
             Request::PubAck(puback) => self.outgoing_puback(puback)?,
             Request::PubRec(pubrec) => self.outgoing_pubrec(pubrec)?,
             Request::Auth(auth) => self.outgoing_auth(auth)?,
@@ -244,7 +242,8 @@ impl MqttState {
 
     pub fn handle_protocol_error(&mut self) -> Result<Option<Packet>, StateError> {
         // send DISCONNECT packet with REASON_CODE 0x82
-        self.outgoing_disconnect(DisconnectReasonCode::ProtocolError)
+        let disconnect = Disconnect::new(DisconnectReasonCode::ProtocolError);
+        self.outgoing_disconnect(disconnect)
     }
 
     pub fn clear_collision(&mut self) {
@@ -667,13 +666,14 @@ impl MqttState {
 
     fn outgoing_disconnect(
         &mut self,
-        reason: DisconnectReasonCode,
+        disconnect: Disconnect,
     ) -> Result<Option<Packet>, StateError> {
+        let reason = disconnect.reason_code;
         debug!("Disconnect with {:?}", reason);
         let event = Event::Outgoing(Outgoing::Disconnect);
         self.events.push_back(event);
 
-        Ok(Some(Packet::Disconnect(Disconnect::new(reason))))
+        Ok(Some(Packet::Disconnect(disconnect)))
     }
 
     fn outgoing_auth(&mut self, auth: Auth) -> Result<Option<Packet>, StateError> {
@@ -1029,6 +1029,31 @@ mod test {
         mqtt.handle_incoming_pubcomp(&PubComp::new(1, None))
             .unwrap();
         assert_eq!(mqtt.inflight, 0);
+    }
+
+    #[test]
+    fn outgoing_disconnect_should_preserve_reason_and_properties() {
+        let mut mqtt = build_mqttstate();
+        let properties = DisconnectProperties {
+            session_expiry_interval: Some(60),
+            reason_string: Some("disconnect test".to_string()),
+            user_properties: vec![("key".to_string(), "value".to_string())],
+            server_reference: Some("broker-2".to_string()),
+        };
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::ImplementationSpecificError,
+            properties.clone(),
+        );
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::Disconnect(disconnect.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet, Packet::Disconnect(disconnect));
+        assert!(matches!(
+            mqtt.events.back(),
+            Some(Event::Outgoing(Outgoing::Disconnect))
+        ));
     }
 
     #[test]
