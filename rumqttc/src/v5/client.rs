@@ -7,7 +7,10 @@ use super::mqttbytes::v5::{
     Subscribe, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
 };
 use super::mqttbytes::QoS;
-use super::{ConnectionError, Event, EventLoop, MqttOptions, Request};
+use super::{
+    ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
+    MqttOptions, Request,
+};
 use crate::{valid_filter, valid_topic};
 
 use bytes::Bytes;
@@ -535,18 +538,67 @@ impl AsyncClient {
         self.handle_try_unsubscribe(topic, None)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop`
+    /// Sends a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
     pub async fn disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect;
+        self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
+            .await
+    }
+
+    /// Sends a MQTT disconnect to the `EventLoop` with properties.
+    pub async fn disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect(reason, Some(properties)).await
+    }
+
+    // Handle disconnect interface which can have properties or not
+    async fn handle_disconnect(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Result<(), ClientError> {
+        let request = self.build_disconnect_request(reason, properties);
         self.request_tx.send_async(request).await?;
         Ok(())
     }
 
-    /// Attempts to send a MQTT disconnect to the `EventLoop`
+    /// Attempts to send a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect;
+        self.handle_try_disconnect(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    /// Attempts to send a MQTT disconnect to the `EventLoop` with properties.
+    pub fn try_disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_try_disconnect(reason, Some(properties))
+    }
+
+    // Handle disconnect interface which can have properties or not
+    fn handle_try_disconnect(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Result<(), ClientError> {
+        let request = self.build_disconnect_request(reason, properties);
         self.request_tx.try_send(request)?;
         Ok(())
+    }
+
+    // Helper function to build disconnect request
+    fn build_disconnect_request(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Request {
+        match properties {
+            Some(p) => Request::Disconnect(Disconnect::new_with_properties(reason, p)),
+            None => Request::Disconnect(Disconnect::new(reason)),
+        }
     }
 }
 
@@ -857,17 +909,42 @@ impl Client {
         self.client.try_unsubscribe(topic)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop`
+    /// Sends a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
     pub fn disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect;
+        self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    /// Sends a MQTT disconnect to the `EventLoop` with properties.
+    pub fn disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect(reason, Some(properties))
+    }
+
+    fn handle_disconnect(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Result<(), ClientError> {
+        let request = self.client.build_disconnect_request(reason, properties);
         self.client.request_tx.send(request)?;
         Ok(())
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop`
+    /// Try to send a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
-        self.client.try_disconnect()?;
-        Ok(())
+        self.client.try_disconnect()
+    }
+
+    /// Attempts to send a MQTT disconnect to the `EventLoop` with properties.
+    pub fn try_disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.client.handle_try_disconnect(reason, Some(properties))
     }
 }
 
@@ -1239,5 +1316,136 @@ mod test {
                 matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_)))
             );
         });
+    }
+
+    #[test]
+    fn disconnect_with_properties_builds_disconnect_request() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let properties = DisconnectProperties {
+            session_expiry_interval: Some(120),
+            reason_string: Some("closing".to_string()),
+            user_properties: vec![("source".to_string(), "test".to_string())],
+            server_reference: Some("backup-broker".to_string()),
+        };
+
+        client
+            .disconnect_with_properties(
+                DisconnectReasonCode::ImplementationSpecificError,
+                properties.clone(),
+            )
+            .expect("disconnect_with_properties should enqueue request");
+
+        let request = rx.try_recv().expect("Should have disconnect request");
+        match request {
+            Request::Disconnect(disconnect) => {
+                assert_eq!(
+                    disconnect.reason_code,
+                    DisconnectReasonCode::ImplementationSpecificError
+                );
+                assert_eq!(disconnect.properties, Some(properties));
+            }
+            request => panic!("Expected disconnect request, got {:?}", request),
+        }
+    }
+
+    #[test]
+    fn try_disconnect_with_properties_builds_disconnect_request() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let properties = DisconnectProperties {
+            session_expiry_interval: Some(360),
+            reason_string: Some("maintenance".to_string()),
+            user_properties: vec![("env".to_string(), "test".to_string())],
+            server_reference: None,
+        };
+
+        client
+            .try_disconnect_with_properties(
+                DisconnectReasonCode::ServerShuttingDown,
+                properties.clone(),
+            )
+            .expect("try_disconnect_with_properties should enqueue request");
+
+        let request = rx.try_recv().expect("Should have disconnect request");
+        match request {
+            Request::Disconnect(disconnect) => {
+                assert_eq!(
+                    disconnect.reason_code,
+                    DisconnectReasonCode::ServerShuttingDown
+                );
+                assert_eq!(disconnect.properties, Some(properties));
+            }
+            request => panic!("Expected disconnect request, got {:?}", request),
+        }
+    }
+
+    #[test]
+    fn async_disconnect_with_properties_builds_disconnect_request() {
+        let (tx, rx) = flume::bounded(1);
+        let client = AsyncClient::from_senders(tx);
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let properties = DisconnectProperties {
+            session_expiry_interval: Some(42),
+            reason_string: Some("done".to_string()),
+            user_properties: vec![("k".to_string(), "v".to_string())],
+            server_reference: Some("fallback".to_string()),
+        };
+
+        runtime.block_on(async {
+            client
+                .disconnect_with_properties(
+                    DisconnectReasonCode::UseAnotherServer,
+                    properties.clone(),
+                )
+                .await
+                .expect("disconnect_with_properties should enqueue request");
+        });
+
+        let request = rx.try_recv().expect("Should have disconnect request");
+        match request {
+            Request::Disconnect(disconnect) => {
+                assert_eq!(
+                    disconnect.reason_code,
+                    DisconnectReasonCode::UseAnotherServer
+                );
+                assert_eq!(disconnect.properties, Some(properties));
+            }
+            request => panic!("Expected disconnect request, got {:?}", request),
+        }
+    }
+
+    #[test]
+    fn async_try_disconnect_with_properties_builds_disconnect_request() {
+        let (tx, rx) = flume::bounded(1);
+        let client = AsyncClient::from_senders(tx);
+        let properties = DisconnectProperties {
+            session_expiry_interval: Some(7),
+            reason_string: Some("bye".to_string()),
+            user_properties: vec![("actor".to_string(), "test".to_string())],
+            server_reference: None,
+        };
+
+        client
+            .try_disconnect_with_properties(
+                DisconnectReasonCode::AdministrativeAction,
+                properties.clone(),
+            )
+            .expect("try_disconnect_with_properties should enqueue request");
+
+        let request = rx.try_recv().expect("Should have disconnect request");
+        match request {
+            Request::Disconnect(disconnect) => {
+                assert_eq!(
+                    disconnect.reason_code,
+                    DisconnectReasonCode::AdministrativeAction
+                );
+                assert_eq!(disconnect.properties, Some(properties));
+            }
+            request => panic!("Expected disconnect request, got {:?}", request),
+        }
     }
 }
