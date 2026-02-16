@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     color_backtrace::install();
 
     let mut mqttoptions = MqttOptions::new("test-1", "test.mosquitto.org", 8883);
-    mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
+    mqttoptions.set_keep_alive(5);
 
     // Use native-tls to load root certificates from the operating system.
     let mut builder = native_tls::TlsConnector::builder();

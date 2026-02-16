@@ -271,10 +271,9 @@ impl MqttOptions {
 
     /// Set number of seconds after which client should ping the broker
     /// if there is no other data exchange
-    pub fn set_keep_alive(&mut self, duration: Duration) -> &mut Self {
-        assert!(duration.as_secs() >= 5, "Keep alives should be >= 5 secs");
-
-        self.keep_alive = duration;
+    /// Set to `0` to disable automatic keep-alive pings.
+    pub fn set_keep_alive(&mut self, seconds: u16) -> &mut Self {
+        self.keep_alive = Duration::from_secs(u64::from(seconds));
         self
     }
 
@@ -745,10 +744,10 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
 
         if let Some(keep_alive) = queries
             .remove("keep_alive_secs")
-            .map(|v| v.parse::<u64>().map_err(|_| OptionError::KeepAlive))
+            .map(|v| v.parse::<u16>().map_err(|_| OptionError::KeepAlive))
             .transpose()?
         {
-            options.set_keep_alive(Duration::from_secs(keep_alive));
+            options.set_keep_alive(keep_alive);
         }
 
         if let Some(clean_start) = queries
@@ -948,6 +947,8 @@ mod test {
 
         let v = ok("mqtt://host:42?client_id=foo&keep_alive_secs=5");
         assert_eq!(v.keep_alive, Duration::from_secs(5));
+        let v = ok("mqtt://host:42?client_id=foo&keep_alive_secs=0");
+        assert_eq!(v.keep_alive, Duration::from_secs(0));
 
         assert_eq!(err("mqtt://host:42"), OptionError::ClientId);
         assert_eq!(
@@ -957,6 +958,10 @@ mod test {
         assert_eq!(err("mqt://host:42?client_id=foo"), OptionError::Scheme);
         assert_eq!(
             err("mqtt://host:42?client_id=foo&keep_alive_secs=foo"),
+            OptionError::KeepAlive
+        );
+        assert_eq!(
+            err("mqtt://host:42?client_id=foo&keep_alive_secs=65536"),
             OptionError::KeepAlive
         );
         assert_eq!(
