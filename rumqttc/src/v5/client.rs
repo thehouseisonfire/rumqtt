@@ -167,14 +167,15 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         let topic = topic.into_string();
-        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
+        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
 
         // This is zero-cost for `ValidatedTopic`,
         // `S::NEEDS_VALIDATION` is false, and the entire conditional is
         // removed.
-        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::Request(Box::new(publish)));
         }
 
@@ -226,11 +227,12 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         let topic = topic.into_string();
-        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
+        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
 
-        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::TryRequest(Box::new(publish)));
         }
 
@@ -315,11 +317,12 @@ impl AsyncClient {
         S: Topic,
     {
         let topic = topic.into_string();
-        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
+        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
 
-        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::Request(Box::new(publish)));
         }
 
@@ -667,11 +670,12 @@ impl Client {
         P: Into<Bytes>,
     {
         let topic = topic.into_string();
-        let mut publish = Publish::new(topic.as_str(), qos, payload, properties);
+        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let request = Request::Publish(publish);
 
-        if S::NEEDS_VALIDATION && !valid_topic(&topic) {
+        if invalid_topic {
             return Err(ClientError::Request(Box::new(request)));
         }
 
