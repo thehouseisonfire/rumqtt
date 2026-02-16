@@ -2,11 +2,11 @@
   <img alt="rumqtt Logo" src="docs/rumqtt.png" width="60%" />
 </div>
 <div align="center">
-  <a href="https://github.com/bytebeamio/rumqtt/actions/workflows/ci.yml">
-    <img alt="build status" src="https://github.com/bytebeamio/rumqtt/actions/workflows/ci.yml/badge.svg">
+  <a href="https://github.com/thehouseisonfire/rumqtt/actions/workflows/ci.yml">
+    <img alt="build status" src="https://github.com/thehouseisonfire/rumqtt/actions/workflows/ci.yml/badge.svg">
   </a>
-  <a href="https://coveralls.io/github/bytebeamio/rumqtt?branch=main">
-    <img src="https://coveralls.io/repos/github/bytebeamio/rumqtt/badge.svg?branch=main" alt="Coverage Status" />
+  <a href="https://coveralls.io/github/thehouseisonfire/rumqtt?branch=main">
+    <img src="https://coveralls.io/repos/github/thehouseisonfire/rumqtt/badge.svg?branch=main" alt="Coverage Status" />
   </a>
   <a href="https://discord.gg/mpkSqDg">
     <img alt="Discord chat" src="https://img.shields.io/discord/633193308033646605?style=flat">
@@ -20,23 +20,23 @@ rumqtt is an opensource set of libraries written in rust-lang to implement the M
 
 | Crate | Description | Version |
 | -- | -- | -- |
-| [rumqttc](./rumqttc/) | A high level, easy to use MQTT client | [![crates.io page](https://img.shields.io/crates/v/rumqttc.svg)](https://crates.io/crates/rumqttc) |
+| [rumqttc-next](./rumqttc/) | A high level, easy to use MQTT client | [![crates.io page](https://img.shields.io/crates/v/rumqttc-next.svg)](https://crates.io/crates/rumqttc-next) |
 
 ## Installation and Usage
 
-### rumqttc
+### rumqttc-next
 
-Add rumqttc to your project:
+Add rumqttc-next to your project:
 
 ```bash
-cargo add rumqttc
+cargo add rumqttc-next
 ```
 
-For more details, see [rumqttc/README.md](https://github.com/bytebeamio/rumqtt/blob/main/rumqttc/README.md).
+For more details, see [rumqttc/README.md](https://github.com/thehouseisonfire/rumqtt/blob/main/rumqttc/README.md).
 
 ## Features
 
-### rumqttc
+### rumqttc-next
 
 - [x] MQTT 3.1.1
 - [x] MQTT 5

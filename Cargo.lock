@@ -162,7 +162,7 @@ dependencies = [
  "itoa",
  "pprof",
  "pretty_env_logger",
- "rumqttc",
+ "rumqttc-next",
  "serde",
  "serde_json",
  "tokio",
@@ -1460,7 +1460,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc"
+name = "rumqttc-next"
 version = "0.25.1"
 dependencies = [
  "async-http-proxy",

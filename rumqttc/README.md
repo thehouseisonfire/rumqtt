@@ -1,7 +1,7 @@
-# rumqttc
+# rumqttc-next
 
-[![crates.io page](https://img.shields.io/crates/v/rumqttc.svg)](https://crates.io/crates/rumqttc)
-[![docs.rs page](https://docs.rs/rumqttc/badge.svg)](https://docs.rs/rumqttc)
+[![crates.io page](https://img.shields.io/crates/v/rumqttc-next.svg)](https://crates.io/crates/rumqttc-next)
+[![docs.rs page](https://docs.rs/rumqttc-next/badge.svg)](https://docs.rs/rumqttc-next)
 
 A pure rust MQTT client which strives to be robust, efficient and easy to use. This library is backed by an async(using tokio) eventloop which enables users to send and receive MQTT messages in correspondence with a broker.
 
@@ -11,7 +11,7 @@ A simple synchronous publish and subscribe
 ----------------------------
 
 ```rust
-use rumqttc::{MqttOptions, Client, QoS};
+use rumqttc_next::{MqttOptions, Client, QoS};
 use std::time::Duration;
 use std::thread;
 
@@ -35,7 +35,7 @@ A simple asynchronous publish and subscribe
 ------------------------------
 
 ```rust
-use rumqttc::{MqttOptions, AsyncClient, QoS};
+use rumqttc_next::{MqttOptions, AsyncClient, QoS};
 use tokio::{task, time};
 use std::time::Duration;
 use std::error::Error;
