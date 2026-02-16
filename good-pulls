@@ -10,3 +10,11 @@ https://github.com/bytebeamio/rumqtt/issues/1000 (check flume version bump)
 
 
 https://github.com/bytebeamio/rumqtt/pull/1019 (review)
+
+
+
+WILL NOT IMPLEMENT:
+
+Pull #940 (we are on a static network for the test).
+
+Review (check if it is all true): ```https://chatgpt.com/c/699289db-50ec-8331-939c-5d36415558ed```

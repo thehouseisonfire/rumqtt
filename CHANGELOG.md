@@ -1,339 +1,209 @@
 # CHANGELOG
 
-New CHANGELOG entries can be found in individual crate root.
+All notable changes to this project will be documented in this file.
 
-rumqttc: [rumqttc/CHANGELOG.md](./rumqttc/CHANGELOG.md)
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+* Add `v5::ValidatedTopic` and `v5::InvalidTopic` for one-time topic validation and reuse across publish APIs.
+* Add AsyncReadWrite trait with conditional compilation for websocket feature to allow proper trait bounds depending on websocket feature usage.
+### Changed
+* Make v5 publish APIs accept `v5::Topic` and support skipping repeated validation when using `v5::ValidatedTopic`.
+* Add `v5::MqttOptions::set_incoming_packet_size_limit` and `v5::MqttOptions::set_unlimited_incoming_packet_size` as the preferred v5 APIs for incoming packet size behavior (planned for `0.25.2`).
+* Apply broad Clippy `pedantic`/`nursery` cleanup across `rumqttc` internals with targeted refactors in v4/v5 packet encoding, eventloop setup, and state-machine handlers.
+* Make `v5::ClientError` store boxed requests to reduce `Result<_, ClientError>` footprint across publish/subscribe APIs.
+* Change v4/v5 `MqttOptions::set_keep_alive` to accept `u16` seconds (MQTT wire-level keepalive units), including `0` to disable automatic keep-alive pings.
+### Deprecated
+### Removed
+### Fixed 
+* Derive `Eq` and `PartialEq` for `client::ClientError` to make downstream error assertions easier in tests.
+* Harden integer conversion paths used in keepalive and packet serialization to avoid silent truncation.
+* Fix v5 auth continuation lock-scrutinee lifetime pattern to avoid holding lock guard longer than necessary.
+* Tighten helper signatures/ownership in state handlers and packet helpers (fewer unnecessary mutable/value parameters).
+* Improve debug output behavior for `MqttOptions` manual `Debug` impls via non-exhaustive finishing.
+* Clear collision state on reconnection with clean session.
+### Security
 
 
-### R19
----
-rumqttc v0.19.0
--------
-- MQTTv5: Add processing of missing Mqtt subscribe options (#536)
-- Fix examples to stop printing error in loop (#540)
-- MQTTv5!: Remove `Connect` from `ConnectionError::StateError` (#541)
-- MQTTv5: Send last_will and login info with connect (#478)
-
--------
-- Remove build.rs as it is not required now (#544)
-- Stress test router to against 10k connections (#511)
-- Make router::Meter public (#521)
-- Expose prometheus scraping endpoints for router metricss (#522)
-- Make configuration file optional for running the broker and add subcommand to generate default configuration file (#523)
-- Use CA path in correct argument position (#529)
-- Support retransmission after reconnect (#534)
-
-misc
----
-- Optimize Github CI workflow (#526)
----
-
-### R18
----
-rumqttc v0.18.0
--------
-- Add support for native-tls within rumqttc (#501)
-- Fixed panicking in `recv_timeout` and `try_recv` by entering tokio runtime context (#492, #497)
-- Removed unused dependencies and updated version of some of used libraries to fix dependabots warning (#475)
-
--------
-- Add meters related to router, subscriptions, and connections (#508)
-- Allow multi-tenancy validation for mtls clients with `Org` set in certificates (#505)
-- Add `tracing` for structured, context-aware logging (#499, #503)
-- Add the ablity to change log levels and filters dynamically at runtime (#499)
-- Added properties field to `Unsubscribe`, `UnsubAck`, and `Disconnect` packets so its consistent with other packets. (#480)
-- Changed default segment size in demo config to 100MB (#484)
-- Allow subscription on topic's starting with `test` (#494)
------------
-
-### R17
----
-rumqttc v0.17.0
--------
-- Reimplement v5 with old `EvenLoop` design (#464)
-- Implement `recv`, `try_recv`, `recv_timeout` for `Connection` (#458)
-- Improve filter validation (#453) 
-- Validate topic before sending a `Publish` (#449)
-- Don't create a new runtime in `Iter::drop` (#405)
-- Unpin exact version dependency on `tokio-rustls` (#448)
-
--------
-- MQTT5 support, StructOpt/Clap based CLI, change in config format (next generation broker) (#442)
-- Make dependency on `rustls-pemfile` optional (#439)
------------
-
-### R16
 ---
 
-rumqttc v0.16.0
+## [rumqttc 0.25.1] - 21-11-2025
+
+### Added
+* `use-rustls-no-provider` feature flag to allow choosing crypto backend without being forced to compile `aws_lc_rs`
+
+### Changed
+### Deprecated
+### Removed
+### Fixed 
+* Fixed broken websocket feature in rumqttc-0.25.0
+
+### Security
+
+
 ---
-- Remove `Eventloop::handle`, and stop re-exporting `flume` constructs (#441)
-- Unchain features `url` and `url-rustls` (#440)
-- Make dependency on `rustls-native-certs` optional (#438)
------------
 
-### R15
+## [rumqttc 0.25.0] - 09-10-2025
+
+### Added
+
+* `size()` method on `Packet` calculates size once serialized.
+* `read()` and `write()` methods on `Packet`.
+* `ConnectionAborted` variant on `StateError` type to denote abrupt end to a connection
+* `set_session_expiry_interval` and `session_expiry_interval` methods on `MqttOptions`.
+* `Auth` packet as per MQTT5 standards
+* Allow configuring  the `nodelay` property of underlying TCP client with the `tcp_nodelay` field in `NetworkOptions`
+* `set_client_id` method on `MqttOptions`
+
+### Changed
+
+* rename `N` as `AsyncReadWrite` to describe usage.
+* use `Framed` to encode/decode MQTT packets.
+* use `Login` to store credentials
+* Made `DisconnectProperties` struct public.
+* Replace `Vec<Option<u16>>` with `FixedBitSet` for managing packet ids of released QoS 2 publishes and incoming QoS 2 publishes in `MqttState`.
+* Accept `native_tls::TlsConnector` as input for `Transport::tls_with_config`.
+* Update `thiserror` to `2.0.8`, `tokio-rustls` to `0.26.0`, `rustls-webpki` to `0.102.8`, `rustls-pemfile` to `2.2.0`, `rustls-native-certs` to `0.8.1`, `async-tungstenite` to `0.28.0`, `ws_stream_tungstenite` to `0.14.0`, `native-tls` to `0.2.12` and `tokio-stream` to `0.1.16`.
+* Make error types returned by `rumqttc::v5::Connection` public
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+* Validate filters while creating subscription requests.
+* Make v4::Connect::write return correct value
+* Ordering of `State.events` related to `QoS > 0` publishes
+* Filter PUBACK in pending save requests to fix unexpected PUBACK sent to reconnected broker.
+* Resume session only if broker sends `CONNACK` with `session_present == 1`.
+* Remove v5 PubAck/PubRec/PubRel/PubComp/Sub/Unsub failures from `StateError` and log warnings on these failures.
+* MQTTv5: Allow keep alive values in `0..=65535` seconds (including `0`)
+
+### Security
+
 ---
-rumqttc v0.15.0
+
+## [rumqttc 0.24.0] - 27-02-2024
+
+### Added
+- Expose `EventLoop::clean` to allow triggering shutdown and subsequent storage of pending requests
+- Support for all variants of TLS key formats currently supported by Rustls: `PKCS#1`, `PKCS#8`, `RFC5915`. In practice we should now support all RSA keys and ECC keys in `DER` and `SEC1` encoding. Previously only `PKCS#1` and `PKCS#8` where supported.
+- TLS Error variants: `NoValidClientCertInChain`, `NoValidKeyInChain`.
+- Drain `Request`s, which weren't received by eventloop, from channel and put them in pending while doing cleanup to prevent data loss.
+- websocket request modifier for v4 client
+- Surfaced `AsyncClient`'s `from_senders` method to the `Client` as `from_sender`
+
+### Changed
+- `MqttOptions::new` now accepts empty client id.
+- `MqttOptions::set_clean_session` now panics if client ID is empty and `clean_session` flag is set to false.
+- Synchronous client methods take `&self` instead of `&mut self` (#646)
+- Removed the `Key` enum: users do not need to specify the TLS key variant in the `TlsConfiguration` anymore, this is inferred automatically.
+To update your code simply remove `Key::ECC()` or `Key::RSA()` from the initialization.
+- certificate for client authentication is now optional while using native-tls. `der` & `password` fields are replaced by `client_auth`.
+- Make v5 `RetainForwardRule` public, in order to allow setting it when constructing `Filter` values.
+- Use `VecDeque` instead of `IntoIter` to fix unintentional drop of pending requests on `EventLoop::clean` (#780)
+- `StateError::IncommingPacketTooLarge` is now `StateError::IncomingPacketTooLarge`.
+- Update `tokio-rustls` to `0.25.0`, `rustls-native-certs` to `0.7.0`, `rustls-webpki` to `0.102.1`,
+  `rusttls-pemfile` to `2.0.0`, `async-tungstenite` to `0.24.0`, `ws_stream_tungstenite` to `0.12.0`
+  and `http` to `1.0.0`. This is a breaking change as types from some of these crates are part of
+  the public API.
+
+### Deprecated
+
+### Removed
+
+### Fixed
+- Lowered the MSRV to 1.64.0
+- Request modifier function should be Send and Sync and removed unnecessary Box
+
+### Security
+
 ---
-- Ensure re-export of `ClientConfig` is clearly from the `tokio_rustls` crate (#428)
-- Derive standard like `Eq` and `Clone` traits on some types where required (#429)
-- Create non-blocking interface for `Notifier` (#431)
-- Use native certificates for encrypted transports in `MqttOptions::parse_url` (#436)
 
-### R14
-----------------
-rumqttc v0.14.0
------------
-- Timeouts moved up to `connect()` call (#408)
-- Tokio dependency `version = "1"` (#412)
-- Fix empty property serialization (#413)
-- Change variants in `ClientError` to not expose dependence on flume/`SendError` (#420)
-- Revert erroring out when Subscription filter list is empty (#422)
-- Remove the ability to cancel `EventLoop.poll()` mid execution (#421)
-- Improve documentation and fix examples (#380, #401, #416, #417)
+## [rumqttc 0.23.0] - 10-10-2023
 
------------
+### Added
+- Added `bind_device` to `NetworkOptions` to enable `TCPSocket.bind_device()`
+- Added `MqttOptions::set_request_modifier` for setting a handler for modifying a websocket request before sending it.
 
-### R13
-----------------
-rumqttc v0.13.0
------------
-- Add code in `rumqttc::v5`, moving towards support for operating the client with MQTT 5 (#351, #393, #398)
-- Add missing `self.inflight += 1` in `MqttState.save_pubrel()` (#389)
-- Error out when Subscription filter list is empty (#392)
-- Make public `rumqttc::client::Iter` (#402)
+### Changed
 
------------
+### Deprecated
 
-### R12
-----------------
-rumqttc v0.12.0
------------
-- Enable compilation without `rustls` as a dependency using `--no-default-features` (#365)
-- Rework variants of `ConnectionError` (#370)
-- New constructor `MqttOptions::parse()` using [`url`](https://docs.rs/url) (#379)
-- Use `get_mut()` instead of index based access to ensure no panic (#384)
-- Better error messages (#385) 
+### Removed
 
------------
-- Enable compilation without rustls as a dependency using `--no-default-features` (#365)
-- Better error messages (#385)
------------
+### Fixed
+- Allow keep alive values <= 5 seconds (#643)
+- Verify "mqtt" is present in websocket subprotocol header.
 
-### R11
-----------------
-rumqttc v0.11.0
------------
-- `tls::Error` is now public
-- `rustls` upgraded to 0.20
-- Manual acknowledgment of Publishes received by setting `MqttOptions.manual_acks = true` and passing received publish packet to `Client.ack()`
+### Security
+- Remove dependency on webpki. [CVE](https://rustsec.org/advisories/RUSTSEC-2023-0052)
+- Removed dependency vulnerability, see [rustsec](https://rustsec.org/advisories/RUSTSEC-2023-0065). Update of `tungstenite` dependency.
 
------------
-- `tokio_rustls` upgraded to 0.23.2
+---
 
-NOTE: mqttbytes moved into separate repo, dependency on the same from rumqtt client and broker crates are hence forth removed.
+## [rumqttc 0.22.0] - 07-06-2023
 
-### R10
-----------------
+### Added
+- Added `outgoing_inflight_upper_limit` to MQTT5 `MqttOptions`. This sets the upper bound for the number of outgoing publish messages (#615)
+- Added support for HTTP(s) proxy (#608)
+    - Added `proxy` feature gate
+    - Refactored `eventloop::network_connect` to allow setting proxy
+    - Added proxy options to `MqttOptions`
+- Update `rustls` to `0.21` and `tokio-rustls` to `0.24` (#606)
+    - Adds support for TLS certificates containing IP addresses
+    - Adds support for RFC8446 C.4 client tracking prevention
 
-mqttbytes v0.6.0
------------
-* More public fields in v5
+### Changed
+- `MqttState::new` takes `max_outgoing_packet_size` which was set in `MqttOptions` but not used (#622)
 
-rumqttc v0.10.0
------------
-- Feature flag unix sockets
-- From<Url> for MqttOptions
-- Change keepalive api from u16 to Duration
+### Deprecated
 
------------
-- Use updated mqttbytes
+### Removed
+
+### Fixed
+- Enforce `max_outgoing_packet_size` on v4 client (#622)
+
+### Security
+
+## [rumqttc 0.21.0] - 01-05-2023
+
+### Added
+- Added support for MQTT5 features to v5 client
+    - Refactored v5::mqttbytes to use associated functions & include properties
+    - Added new API's on v5 client for properties, eg `publish_with_props` etc
+    - Refactored `MqttOptions` to use `ConnectProperties` for some fields
+    - Other minor changes for MQTT5
+
+### Changed
+- Remove `Box` on `Event::Incoming`
+
+### Deprecated
+
+### Removed
+- Removed dependency on pollster
+
+### Fixed
+- Fixed v5::mqttbytes `Connect` packet returning wrong size on `write()`
+    - Added tests for packet length for all v5 packets
+
+### Security
 
 
+## [rumqttc 0.20.0] - 17-01-2023
 
+### Added
+- `NetworkOptions` added to provide a way to configure low level network configurations (#545)
 
-### R9
-----------------
+### Changed
+- `options` in `Eventloop` now is called `mqtt_options` (#545)
+- `ConnectionError` now has specific variant for type of `Timeout`, `FlushTimeout` and `NetworkTimeout` instead of generic `Timeout` for both (#545)
+- `conn_timeout` is moved into `NetworkOptions` (#545)
 
-mqttbytes v0.5.0
------------
-* Make username and password public in connect packet
-* Make protocol field in v5 public
+---
 
-rumqttc v0.9.0
------------
-- Add unix sockets support
-
------------
-- Add server side password check
-
-
-### R8
-----------------
-
-mqttbytes v0.4.0
------------
-* Make publish `len` public
-
-rumqttc v0.6.0
------------
-- **changed** Update to mqttbytes 0.4
-- **fix** Fix packet collisions and always enable collision protection [**breaking**] 
-- **fix** Fix wrong error name
-
------------
-- **changed** Update to mqttbytes 0.4
-- **changed** Native tls support
-
-### R7
-----------------
-
-mqttbytes v0.3.0
------------
-- **fix** Connack and suback packet mixup during mqtt 5 implementation [**breaking**] 
-
-rumqttc v0.5.0
------------
-- **changed** Update to mqttbytes 0.3 [**breaking**]
-
------------
-- **changed** Update to mqttbytes 0.2 [**breaking**]
--**changed** Make profiler a feature, not target.cfg (#243)
-- **changed** Handling error cases if the key is parsed but is not valid. (#241)
--**changed** Replace hard coded 0.0.0.0 bind with configuration option (#262)
-
-misc
-----------
-- update CI
-
-
-### R6
-----------------
-mqttbytes v0.2.1
------------
-- **changed** Update README
-
------------
-- **changed** Improve error reporting
-- **changed** Update to warp 0.3 and remove tokio compat
-- **changed** Disable async link for this release due to compilaiton error [**breaking**]
-- **fix** Fix windows compilation due to pprof
-- **fix** Fix collision retransmission logic
-
-benchmarks
------------
-- **feature** Adds NATS to compare parser throughput benchmarks
-
-
-### R5
-----------------
-mqttbytes v0.2.0
------------
-- **feature** Complete mqtt 5 implementation
-- **fix** Split mqtt 4 and 5 into modules [**breaking**] 
-
-rumqttc v0.5.0
------------
-- **changed** Update to mqttbytes 0.2 [**breaking**]
-
------------
-- **changed** Update to mqttbytes 0.2 [**breaking**]
-
-misc
-----------
-- Add mqtt 4 and 5 parsers to benchmarking suite for comparsion
-
-
-
-### R4
-----------------
-mqttbytes v0.1.0
------------
-- **changed** Deprecate mqtt4/5bytes to combine them in mqttbytes
-
-rumqttc v0.4.0
------------
-- **changed** Update to tokio 1.0 [**breaking**]
-
------------
-- **changed** Update to tokio 1.0 and `bytes` 1.0 [**breaking**]
-
-misc
-----------
-- Improve benchmarking suite with plots
-
-Thanks to all the contributors who made this release possible
-
-Andrew Walbran
-Jonas Platte
-Daniel Egger
-Mihail Malo
-Alex Mikhalev
-
-
-### R3
-----------------
-mqtt4bytes v0.4.0
------------
-- **changed** Update to `bytes` 0.6 [**breaking**]
-
-rumqttc v0.3.0
------------
-- **feature** Refactor transport with websockets support
-- **changed** Update to tokio 0.3 [**breaking**]
-
------------
-- **feature** Metrics server
-- **feature** Improve configuration schema
-- **feature** Support multiple servers on different ports
-- **changed** Update to tokio 0.3 and `bytes` 0.6 [**breaking**]
-- **fixed** Fix collisions due to publish batches
-
-misc
-----------
-- Add license file
-- Improve benchmarking suite with plots
-
-### R2 
-----------------
-mqtt4bytes v0.3.0
------------
-- **changed** LastWill API now looks similar to publish API [**breaking**]
-
-rumqttc v0.2.0
------------
-- **changed** Don't cancel the eventloop when `Client` is dropped. 
-- **changed** Remove network from public interface [**breaking**]
-- **internal** Fuse io into state
-- **internal** Improve packet framing
-- **fixed** Simplify collisions and fix collision event notification
-
------------
-- **fixed** 0 keepalive handling
-- **fixed** Disconnect and qos 2 handling
-- **feature** Offline storage, retained messages, will, unsubscribe
-- **misc** Paho interoperability test suite conformance
-- **internal** Performance improvements
-
-
-### R1
-----------------
-
-rumqttc v0.1.2
------------
-- Move integration tests outside eventloop
-- Improve integration tests
-- Fix panics by properly handling connection failure
-
-rumqttlog v0.2.0
------------
-- Redesign by embedding tracker inside router's connection
-- Redesign with a hybrid of push and pull model
-
------------
-- Manually setup 1 router thread and 1 io thread
-- Add names to threads
-- Compatibility with rumqttlog
-
-
+Old changelog entries can be found at [CHANGELOG.md](../CHANGELOG.md)
