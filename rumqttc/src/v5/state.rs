@@ -673,7 +673,7 @@ impl MqttState {
         let event = Event::Outgoing(Outgoing::Disconnect);
         self.events.push_back(event);
 
-        Ok(Some(Packet::Disconnect(Disconnect::new(reason))))
+        Ok(Some(Packet::Disconnect(disconnect)))
     }
 
     fn outgoing_auth(&mut self, auth: Auth) -> Result<Option<Packet>, StateError> {
@@ -1029,6 +1029,31 @@ mod test {
         mqtt.handle_incoming_pubcomp(&PubComp::new(1, None))
             .unwrap();
         assert_eq!(mqtt.inflight, 0);
+    }
+
+    #[test]
+    fn outgoing_disconnect_should_preserve_reason_and_properties() {
+        let mut mqtt = build_mqttstate();
+        let properties = DisconnectProperties {
+            session_expiry_interval: Some(60),
+            reason_string: Some("disconnect test".to_string()),
+            user_properties: vec![("key".to_string(), "value".to_string())],
+            server_reference: Some("broker-2".to_string()),
+        };
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::ImplementationSpecificError,
+            properties.clone(),
+        );
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::Disconnect(disconnect.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet, Packet::Disconnect(disconnect));
+        assert!(matches!(
+            mqtt.events.back(),
+            Some(Event::Outgoing(Outgoing::Disconnect))
+        ));
     }
 
     #[test]

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Apply broad Clippy `pedantic`/`nursery` cleanup across `rumqttc` internals with targeted refactors in v4/v5 packet encoding, eventloop setup, and state-machine handlers.
 * Make `v5::ClientError` store boxed requests to reduce `Result<_, ClientError>` footprint across publish/subscribe APIs.
 * Change v4/v5 `MqttOptions::set_keep_alive` to accept `u16` seconds (MQTT wire-level keepalive units), including `0` to disable automatic keep-alive pings.
+* Update v5 disconnect request plumbing to use `Request::Disconnect(Disconnect)` so disconnect reason code/properties are propagated end-to-end.
 ### Deprecated
 ### Removed
 ### Fixed 
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Tighten helper signatures/ownership in state handlers and packet helpers (fewer unnecessary mutable/value parameters).
 * Improve debug output behavior for `MqttOptions` manual `Debug` impls via non-exhaustive finishing.
 * Clear collision state on reconnection with clean session.
+* Preserve MQTT v5 DISCONNECT properties on the wire for `disconnect_with_properties` and `try_disconnect_with_properties`.
 ### Security
 
 
