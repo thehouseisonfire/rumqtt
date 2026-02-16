@@ -431,9 +431,7 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
 #[tokio::test]
 async fn packet_id_collisions_are_timed_out_on_second_ping() {
     let mut options = MqttOptions::new("dummy", "127.0.0.1", 1892);
-    options
-        .set_inflight(4)
-        .set_keep_alive(Duration::from_secs(1));
+    options.set_inflight(4).set_keep_alive(1);
 
     let (client, mut eventloop) = AsyncClient::new(options, 10);
     let (stop_broker_tx, stop_broker_rx) = oneshot::channel::<()>();
