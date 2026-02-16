@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         8000,
     );
     mqttoptions.set_transport(Transport::Ws);
-    mqttoptions.set_keep_alive(Duration::from_secs(60));
+    mqttoptions.set_keep_alive(60);
     // Presumes that there is a proxy server already set up listening on 127.0.0.1:8100
     mqttoptions.set_proxy(Proxy {
         ty: ProxyType::Http,
