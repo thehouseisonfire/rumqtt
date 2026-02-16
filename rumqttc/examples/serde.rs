@@ -1,4 +1,4 @@
-use rumqttc::{Client, Event, Incoming, MqttOptions, QoS};
+use rumqttc_next::{Client, Event, Incoming, MqttOptions, QoS};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use wincode::{SchemaRead, SchemaWrite};
