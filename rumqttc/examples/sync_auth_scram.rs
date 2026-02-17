@@ -134,15 +134,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         client.reauth(Some(properties)).unwrap();
     });
 
-    for (_, notification) in connection.iter().enumerate() {
+    for notification in connection.iter() {
         match notification {
             Ok(event) => {
                 println!("Event = {:?}", event);
-                match event {
-                    rumqttc_next::v5::Event::Incoming(rumqttc_next::v5::Incoming::ConnAck(_)) => {
-                        tx.send("Connected").unwrap();
-                    }
-                    _ => {}
+                if let rumqttc_next::v5::Event::Incoming(
+                    rumqttc_next::v5::Incoming::ConnAck(_),
+                ) = event
+                {
+                    tx.send("Connected").unwrap();
                 }
             }
             Err(e) => {

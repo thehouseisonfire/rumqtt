@@ -125,8 +125,7 @@ impl Write for Buffer {
             // Fill the buffer to prevent subsequent smaller writes.
             self.written = self.bytes.len();
 
-            Err(Error::new(
-                ErrorKind::Other,
+            Err(Error::other(
                 "the disconnect buffer is full",
             ))
         } else {

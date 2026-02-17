@@ -1108,12 +1108,12 @@ mod test {
             reason: None,
             user_properties: vec![],
         };
-        let _ = client
+        client
             .reauth(Some(props.clone()))
             .expect("Should be able to reauth");
         let _ = connection.iter().next().expect("Should have event");
 
-        let _ = client
+        client
             .try_reauth(Some(props.clone()))
             .expect("Should be able to reauth");
         let _ = connection.iter().next().expect("Should have event");
