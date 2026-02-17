@@ -143,11 +143,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match notification {
             Ok(event) => {
                 println!("Event = {:?}", event);
-                match event {
-                    rumqttc_next::v5::Event::Incoming(rumqttc_next::v5::Incoming::ConnAck(_)) => {
-                        tx.send_async("Connected").await.unwrap();
-                    }
-                    _ => {}
+                if let rumqttc_next::v5::Event::Incoming(
+                    rumqttc_next::v5::Incoming::ConnAck(_),
+                ) = event
+                {
+                    tx.send_async("Connected").await.unwrap();
                 }
             }
             Err(e) => {

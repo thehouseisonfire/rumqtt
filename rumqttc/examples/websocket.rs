@@ -1,4 +1,4 @@
-use rumqttc::{AsyncClient, MqttOptions, QoS, Transport};
+use rumqttc_next::{AsyncClient, MqttOptions, QoS, Transport};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
 
