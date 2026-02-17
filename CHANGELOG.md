@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Changed
+- Migrated from deprecated `rustls-pemfile` to `rustls-pki-types` PEM parsing API
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+
+---
+
+## [rumqttc 0.26.0] - 16-02-2026
+
+### Added
 * Add `v5::ValidatedTopic` and `v5::InvalidTopic` for one-time topic validation and reuse across publish APIs.
 * Add AsyncReadWrite trait with conditional compilation for websocket feature to allow proper trait bounds depending on websocket feature usage.
 ### Changed
