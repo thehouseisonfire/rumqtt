@@ -1,9 +1,7 @@
 #[cfg(feature = "use-rustls-no-provider")]
-use rustls_pemfile::Item;
-#[cfg(feature = "use-rustls-no-provider")]
 use tokio_rustls::rustls::{
     self,
-    pki_types::{InvalidDnsNameError, ServerName},
+    pki_types::{pem::PemObject, CertificateDer, InvalidDnsNameError, PrivateKeyDer, ServerName},
     ClientConfig, RootCertStore,
 };
 #[cfg(feature = "use-rustls-no-provider")]
@@ -11,8 +9,6 @@ use tokio_rustls::TlsConnector as RustlsConnector;
 
 #[cfg(feature = "use-rustls-no-provider")]
 use std::convert::TryFrom;
-#[cfg(feature = "use-rustls-no-provider")]
-use std::io::{BufReader, Cursor};
 #[cfg(feature = "use-rustls-no-provider")]
 use std::sync::Arc;
 
@@ -49,6 +45,9 @@ pub enum Error {
     #[error("TLS error: {0}")]
     TLS(#[from] rustls::Error),
     #[cfg(feature = "use-rustls-no-provider")]
+    #[error("PEM parsing error: {0}")]
+    Pem(#[from] rustls::pki_types::pem::Error),
+    #[cfg(feature = "use-rustls-no-provider")]
     /// No valid CA cert found
     #[error("No valid CA certificate provided")]
     NoValidCertInChain,
@@ -75,8 +74,7 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
         } => {
             // Add ca to root store if the connection is TLS
             let mut root_cert_store = RootCertStore::empty();
-            let certs = rustls_pemfile::certs(&mut BufReader::new(Cursor::new(ca)))
-                .collect::<Result<Vec<_>, _>>()?;
+            let certs = CertificateDer::pem_slice_iter(ca).collect::<Result<Vec<_>, _>>()?;
 
             root_cert_store.add_parsable_certificates(certs);
 
@@ -89,31 +87,17 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
             // Add der encoded client cert and key
             let mut config = if let Some(client) = client_auth.as_ref() {
                 let certs =
-                    rustls_pemfile::certs(&mut BufReader::new(Cursor::new(client.0.clone())))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    CertificateDer::pem_slice_iter(&client.0).collect::<Result<Vec<_>, _>>()?;
                 if certs.is_empty() {
                     return Err(Error::NoValidClientCertInChain);
                 }
 
-                // Create buffer for key file
-                let mut key_buffer = BufReader::new(Cursor::new(client.1.clone()));
-
-                // Read PEM items until we find a valid key.
-                let key = loop {
-                    let item = rustls_pemfile::read_one(&mut key_buffer)?;
-                    match item {
-                        Some(Item::Sec1Key(key)) => {
-                            break key.into();
-                        }
-                        Some(Item::Pkcs1Key(key)) => {
-                            break key.into();
-                        }
-                        Some(Item::Pkcs8Key(key)) => {
-                            break key.into();
-                        }
-                        None => return Err(Error::NoValidKeyInChain),
-                        _ => {}
+                let key = match PrivateKeyDer::from_pem_slice(&client.1) {
+                    Ok(key) => key,
+                    Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+                        return Err(Error::NoValidKeyInChain);
                     }
+                    Err(err) => return Err(Error::Pem(err)),
                 };
 
                 config.with_client_auth_cert(certs, key)?
