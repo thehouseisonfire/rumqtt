@@ -1,6 +1,6 @@
 [package]
 name = "rumqttc-next"
-version = "0.26.0"
+version = "0.26.1"
 publish = true
 description = "An efficient and robust mqtt client for your connected devices"
 keywords = ["mqtt", "iot", "coap", "http"]
