@@ -577,8 +577,8 @@ pub(crate) mod subscribe {
         }
 
         pub fn len(&self) -> usize {
-            let len = 2 + self.filters.iter().fold(0, |s, t| s + t.len()); // len of pkid + vec![subscribe filter len]
-            len
+             // len of pkid + vec![subscribe filter len]
+            2 + self.filters.iter().fold(0, |s, t| s + t.len())
         }
 
         pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {

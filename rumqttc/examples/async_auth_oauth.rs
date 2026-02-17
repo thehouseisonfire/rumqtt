@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_root_certificates(root_cert_store)
         .with_no_client_auth();
 
-    let transport = Transport::Tls(TlsConfiguration::Rustls(Arc::new(client_config.into())));
+    let transport = Transport::Tls(TlsConfiguration::Rustls(Arc::new(client_config)));
 
     mqttoptions.set_transport(transport);
 
