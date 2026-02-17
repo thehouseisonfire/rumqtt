@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+
+---
+
+## [rumqttc 0.26.1] - 16-02-2026
+
+### Added
+### Changed
 - Migrated from deprecated `rustls-pemfile` to `rustls-pki-types` PEM parsing API
 ### Deprecated
 ### Removed
