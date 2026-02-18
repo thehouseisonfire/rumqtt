@@ -46,8 +46,8 @@ mod tests {
 
     use super::Codec;
     use crate::v5::{
-        mqttbytes::{Error, QoS},
         Packet, Publish,
+        mqttbytes::{Error, QoS},
     };
 
     #[test]

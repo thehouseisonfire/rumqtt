@@ -2,11 +2,11 @@
 //! async eventloop.
 use std::time::Duration;
 
+use super::mqttbytes::QoS;
 use super::mqttbytes::v5::{
     Auth, AuthProperties, AuthReasonCode, Filter, PubAck, PubRec, Publish, PublishProperties,
     Subscribe, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
 };
-use super::mqttbytes::QoS;
 use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
     MqttOptions, Request,

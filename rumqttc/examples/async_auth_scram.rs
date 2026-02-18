@@ -1,11 +1,11 @@
 use bytes::Bytes;
 use flume::bounded;
-use rumqttc_next::v5::mqttbytes::{v5::AuthProperties, QoS};
+use rumqttc_next::v5::mqttbytes::{QoS, v5::AuthProperties};
 use rumqttc_next::v5::{AsyncClient, AuthManager, MqttOptions};
 #[cfg(feature = "auth-scram")]
-use scram::client::ServerFirst;
-#[cfg(feature = "auth-scram")]
 use scram::ScramClient;
+#[cfg(feature = "auth-scram")]
+use scram::client::ServerFirst;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tokio::task;
@@ -143,9 +143,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match notification {
             Ok(event) => {
                 println!("Event = {:?}", event);
-                if let rumqttc_next::v5::Event::Incoming(
-                    rumqttc_next::v5::Incoming::ConnAck(_),
-                ) = event
+                if let rumqttc_next::v5::Event::Incoming(rumqttc_next::v5::Incoming::ConnAck(_)) =
+                    event
                 {
                     tx.send_async("Connected").await.unwrap();
                 }

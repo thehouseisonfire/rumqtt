@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use super::*;
 
-use super::{property, PropertyType};
+use super::{PropertyType, property};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

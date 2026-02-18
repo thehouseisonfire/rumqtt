@@ -577,7 +577,7 @@ pub(crate) mod subscribe {
         }
 
         pub fn len(&self) -> usize {
-             // len of pkid + vec![subscribe filter len]
+            // len of pkid + vec![subscribe filter len]
             2 + self.filters.iter().fold(0, |s, t| s + t.len())
         }
 
@@ -614,7 +614,7 @@ pub(crate) mod subscribe {
         buffer: &mut BytesMut,
     ) -> Result<usize, Error> {
         let len = 2 + filters.iter().fold(0, |s, t| s + t.len()); // len of pkid + vec![subscribe filter len]
-                                                                  // write packet type
+        // write packet type
         buffer.put_u8(0x82);
 
         // write remaining length

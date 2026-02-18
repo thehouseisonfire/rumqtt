@@ -1,19 +1,18 @@
 #[cfg(feature = "use-rustls-no-provider")]
-use tokio_rustls::rustls::{
-    self,
-    pki_types::{pem::PemObject, CertificateDer, InvalidDnsNameError, PrivateKeyDer, ServerName},
-    ClientConfig, RootCertStore,
-};
-#[cfg(feature = "use-rustls-no-provider")]
 use tokio_rustls::TlsConnector as RustlsConnector;
+#[cfg(feature = "use-rustls-no-provider")]
+use tokio_rustls::rustls::{
+    self, ClientConfig, RootCertStore,
+    pki_types::{CertificateDer, InvalidDnsNameError, PrivateKeyDer, ServerName, pem::PemObject},
+};
 
 #[cfg(feature = "use-rustls-no-provider")]
 use std::convert::TryFrom;
 #[cfg(feature = "use-rustls-no-provider")]
 use std::sync::Arc;
 
-use crate::framed::AsyncReadWrite;
 use crate::TlsConfiguration;
+use crate::framed::AsyncReadWrite;
 
 #[cfg(feature = "use-native-tls")]
 use tokio_native_tls::TlsConnector as NativeTlsConnector;

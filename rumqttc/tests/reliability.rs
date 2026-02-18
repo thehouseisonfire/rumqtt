@@ -697,7 +697,9 @@ async fn state_is_being_cleaned_properly_and_pending_request_calculated_properly
                     println!("State is being clean properly");
                 }
                 _ => {
-                    println!("Couldn't fill the TCP send buffer to run this test properly. Try reducing the size of buffer.");
+                    println!(
+                        "Couldn't fill the TCP send buffer to run this test properly. Try reducing the size of buffer."
+                    );
                 }
             }
         }
