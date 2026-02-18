@@ -504,11 +504,11 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
 //
 #[tokio::test]
 async fn next_poll_after_connect_failure_reconnects() {
-    let options = MqttOptions::new("dummy", "127.0.0.1", 3000);
+    let options = MqttOptions::new("dummy", "127.0.0.1", 3005);
 
     task::spawn(async move {
-        let _broker = Broker::new(3000, 1, false).await;
-        let _broker = Broker::new(3000, 0, false).await;
+        let _broker = Broker::new(3005, 1, false).await;
+        let _broker = Broker::new(3005, 0, false).await;
         time::sleep(Duration::from_secs(15)).await;
     });
 
