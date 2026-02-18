@@ -45,7 +45,7 @@ mod tests {
     use tokio_util::codec::Encoder;
 
     use super::Codec;
-    use crate::{mqttbytes::Error, Packet, Publish, QoS};
+    use crate::{Packet, Publish, QoS, mqttbytes::Error};
 
     #[test]
     fn outgoing_max_packet_size_check() {

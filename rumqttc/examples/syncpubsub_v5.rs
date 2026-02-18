@@ -1,4 +1,4 @@
-use rumqttc_next::v5::mqttbytes::{v5::LastWill, QoS};
+use rumqttc_next::v5::mqttbytes::{QoS, v5::LastWill};
 use rumqttc_next::v5::{Client, ConnectionError, MqttOptions};
 use std::thread;
 use std::time::Duration;
@@ -18,7 +18,9 @@ fn main() {
             Err(ConnectionError::Io(error))
                 if error.kind() == std::io::ErrorKind::ConnectionRefused =>
             {
-                println!("Failed to connect to the server. Make sure correct client is configured properly!\nError: {error:?}");
+                println!(
+                    "Failed to connect to the server. Make sure correct client is configured properly!\nError: {error:?}"
+                );
                 return;
             }
             _ => {}

@@ -2,8 +2,8 @@
 //! async eventloop.
 use std::time::Duration;
 
-use crate::mqttbytes::{v4::*, QoS};
-use crate::{valid_filter, valid_topic, ConnectionError, Event, EventLoop, MqttOptions, Request};
+use crate::mqttbytes::{QoS, v4::*};
+use crate::{ConnectionError, Event, EventLoop, MqttOptions, Request, valid_filter, valid_topic};
 
 use bytes::Bytes;
 use flume::{SendError, Sender, TrySendError};

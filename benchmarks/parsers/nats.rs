@@ -125,9 +125,7 @@ impl Write for Buffer {
             // Fill the buffer to prevent subsequent smaller writes.
             self.written = self.bytes.len();
 
-            Err(Error::other(
-                "the disconnect buffer is full",
-            ))
+            Err(Error::other("the disconnect buffer is full"))
         } else {
             // Append `buf` into the buffer.
             let range = self.written..self.written + n;
@@ -229,7 +227,7 @@ pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     "invalid number of arguments after MSG",
-                ))
+                ));
             }
         };
 
@@ -290,7 +288,7 @@ pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     "invalid number of arguments after HMSG",
-                ))
+                ));
             }
         };
 

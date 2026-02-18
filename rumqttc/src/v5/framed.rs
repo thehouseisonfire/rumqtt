@@ -5,7 +5,7 @@ use tokio_util::codec::Framed;
 use crate::framed::AsyncReadWrite;
 
 use super::mqttbytes::v5::Packet;
-use super::{mqttbytes, Codec, Incoming, MqttState, StateError};
+use super::{Codec, Incoming, MqttState, StateError, mqttbytes};
 
 /// Network transforms packets <-> frames efficiently. It takes
 /// advantage of pre-allocation, buffering and vectorization when

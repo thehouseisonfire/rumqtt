@@ -181,6 +181,8 @@ pub enum Error {
     InsufficientBytes(usize),
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Cannot send packet of size '{pkt_size:?}'. It's greater than the broker's maximum packet size of: '{max:?}'")]
+    #[error(
+        "Cannot send packet of size '{pkt_size:?}'. It's greater than the broker's maximum packet size of: '{max:?}'"
+    )]
     OutgoingPacketTooLarge { pkt_size: u32, max: u32 },
 }
