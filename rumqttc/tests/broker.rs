@@ -8,7 +8,7 @@ use tokio::select;
 use tokio::{task, time};
 
 use bytes::BytesMut;
-use flume::{bounded, Receiver, Sender};
+use flume::{Receiver, Sender, bounded};
 use rumqttc_next::{Event, Incoming, Outgoing, Packet};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -45,7 +45,7 @@ impl Broker {
                             incoming,
                             outgoing_tx,
                             outgoing_rx,
-                        }
+                        };
                     }
                 };
 

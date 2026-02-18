@@ -4,9 +4,9 @@ use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Tra
 use crate::eventloop::socket_connect;
 use crate::framed::AsyncReadWrite;
 
-use flume::{bounded, Receiver, Sender};
+use flume::{Receiver, Sender, bounded};
 use tokio::select;
-use tokio::time::{self, error::Elapsed, Instant, Sleep};
+use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
 use std::collections::VecDeque;
 use std::io;
@@ -23,7 +23,7 @@ use {std::path::Path, tokio::net::UnixStream};
 
 #[cfg(feature = "websocket")]
 use {
-    crate::websockets::{split_url, validate_response_headers, UrlError},
+    crate::websockets::{UrlError, split_url, validate_response_headers},
     async_tungstenite::tungstenite::client::IntoClientRequest,
     ws_stream_tungstenite::WsStream,
 };
@@ -461,7 +461,7 @@ async fn mqtt_connect(
                 return Ok(connack);
             }
             Incoming::ConnAck(connack) => {
-                return Err(ConnectionError::ConnectionRefused(connack.code))
+                return Err(ConnectionError::ConnectionRefused(connack.code));
             }
             Incoming::Auth(auth) => {
                 if let Some(outgoing) = state.handle_incoming_packet(Incoming::Auth(auth))? {
@@ -486,7 +486,10 @@ mod tests {
         let options = MqttOptions::new("test-client", "localhost", 1883);
         let eventloop = EventLoop::new(options, 1);
 
-        assert!(matches!(eventloop.requests_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(
+            eventloop.requests_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
     }
 
     #[test]

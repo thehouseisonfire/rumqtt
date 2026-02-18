@@ -1,7 +1,7 @@
 use bytes::{Buf, BytesMut};
-use rumqttc::mqttbytes::v4;
-use rumqttc::mqttbytes::QoS;
 use rumqttc::Packet;
+use rumqttc::mqttbytes::QoS;
+use rumqttc::mqttbytes::v4;
 use std::time::Instant;
 
 mod common;

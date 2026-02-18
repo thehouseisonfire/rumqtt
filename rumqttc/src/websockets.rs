@@ -1,4 +1,4 @@
-use http::{header::ToStrError, Response};
+use http::{Response, header::ToStrError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UrlError {

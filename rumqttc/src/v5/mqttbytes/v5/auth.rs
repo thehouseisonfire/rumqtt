@@ -1,8 +1,8 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::{
-    len_len, length, property, read_mqtt_bytes, read_mqtt_string, read_u8, write_mqtt_bytes,
-    write_mqtt_string, write_remaining_length, Error, FixedHeader, PropertyType,
+    Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_mqtt_string,
+    read_u8, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 
 /// Auth packet reason code

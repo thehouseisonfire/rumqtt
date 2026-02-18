@@ -1,4 +1,4 @@
-use pprof::{protos::Message, ProfilerGuard};
+use pprof::{ProfilerGuard, protos::Message};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;

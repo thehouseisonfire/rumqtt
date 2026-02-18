@@ -1,11 +1,11 @@
+use crate::NetworkOptions;
 use crate::eventloop::socket_connect;
 use crate::framed::AsyncReadWrite;
-use crate::NetworkOptions;
 
 use std::io;
 
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-use crate::{tls, TlsConfiguration};
+use crate::{TlsConfiguration, tls};
 
 #[derive(Clone, Debug)]
 pub struct Proxy {

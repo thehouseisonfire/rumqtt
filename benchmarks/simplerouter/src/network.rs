@@ -8,8 +8,8 @@ use tokio::{
 };
 
 use crate::{
-    protocol::{self, v4, v5, Connect, Packet},
     Error,
+    protocol::{self, Connect, Packet, v4, v5},
 };
 
 pub(crate) struct Network {

@@ -1,11 +1,11 @@
-use crate::{framed::Network, Transport};
 use crate::{Incoming, MqttState, NetworkOptions, Packet, Request, StateError};
 use crate::{MqttOptions, Outgoing};
+use crate::{Transport, framed::Network};
 
 use crate::framed::AsyncReadWrite;
 use crate::mqttbytes::v4::*;
-use flume::{bounded, Receiver, Sender};
-use tokio::net::{lookup_host, TcpSocket, TcpStream};
+use flume::{Receiver, Sender, bounded};
+use tokio::net::{TcpSocket, TcpStream, lookup_host};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep};
 
@@ -23,7 +23,7 @@ use crate::tls;
 
 #[cfg(feature = "websocket")]
 use {
-    crate::websockets::{split_url, validate_response_headers, UrlError},
+    crate::websockets::{UrlError, split_url, validate_response_headers},
     async_tungstenite::tungstenite::client::IntoClientRequest,
     ws_stream_tungstenite::WsStream,
 };
@@ -540,7 +540,10 @@ mod tests {
         let options = MqttOptions::new("test-client", "localhost", 1883);
         let eventloop = EventLoop::new(options, 1);
 
-        assert!(matches!(eventloop.requests_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(
+            eventloop.requests_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
     }
 
     #[test]
