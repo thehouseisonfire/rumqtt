@@ -63,18 +63,27 @@ jobs:
       #     args: --verbose --all-targets -p benchmarks
 
       - name: Check rumqttc and rumqttd
-        run: cargo hack clippy --verbose --each-feature --no-dev-deps --optional-deps url -p rumqttc -p rumqttd
+        run: cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc -p rumqttd
 
       - name: Check docs
         if: ${{ matrix.os != 'windows-latest' }}
-        run: cargo hack doc --verbose --no-deps --each-feature --no-dev-deps --optional-deps url -p rumqttc -p rumqttd
+        run: cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc -p rumqttd
 
       - name: Doctests
-        run: cargo hack --each-feature --optional-deps url test --doc -p rumqttc -p rumqttd
+        run: cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc -p rumqttd
 
       - name: Test rumqttc and rumqttd
         run: |
-            cargo hack --each-feature --optional-deps url llvm-cov -p rumqttc -p rumqttd --no-report nextest
+            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc -p rumqttd --no-report nextest
+
+      - name: Verify rustls provider conflict guard
+        run: |
+            if cargo check -p rumqttc-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring"; then
+              echo "Expected mutually-exclusive rustls provider feature check to fail, but it succeeded."
+              exit 1
+            else
+              echo "Mutually-exclusive rustls provider feature guard failed as expected."
+            fi
 
       - name: Combine coverage
         run: cargo llvm-cov report --lcov --output-path coverage.lcov

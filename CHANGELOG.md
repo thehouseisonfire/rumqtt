@@ -8,10 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `rumqttc`: Add `use-rustls-aws-lc` and `use-rustls-ring` feature flags for explicit rustls crypto provider selection.
 ### Changed
+- `rumqttc`: Make `use-rustls` default to the `aws-lc` rustls provider.
+- `rumqttc`: Replace docs.rs `all-features` configuration with an explicit non-conflicting feature list.
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc`: Add a compile-time guard that rejects enabling both `use-rustls-aws-lc` and `use-rustls-ring`.
 ### Security
 
 

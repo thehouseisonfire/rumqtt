@@ -413,7 +413,10 @@ async fn network_connect(
     let (domain, port) = match options.transport() {
         #[cfg(feature = "websocket")]
         Transport::Ws => split_url(&options.broker_addr)?,
-        #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+        #[cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        ))]
         Transport::Wss(_) => split_url(&options.broker_addr)?,
         _ => options.broker_address(),
     };
@@ -476,7 +479,10 @@ async fn network_connect(
                 options.max_outgoing_packet_size,
             )
         }
-        #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+        #[cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        ))]
         Transport::Wss(tls_config) => {
             let mut request = options.broker_addr.as_str().into_client_request()?;
             request
@@ -487,7 +493,7 @@ async fn network_connect(
                 request = request_modifier(request).await;
             }
 
-            let connector = tls::rustls_connector(&tls_config)?;
+            let connector = tls::websocket_tls_connector(&tls_config)?;
 
             let (socket, response) = async_tungstenite::tokio::client_async_tls_with_connector(
                 request,

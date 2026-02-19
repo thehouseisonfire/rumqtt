@@ -38,7 +38,7 @@ pub type Incoming = Packet;
 /// Controls how incoming packet size limits are enforced locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum IncomingPacketSizeLimit {
-    /// Enforce [`MqttOptions::default_max_incoming_size`].
+    /// Enforce the default incoming packet size limit.
     #[default]
     Default,
     /// Disable incoming packet size checks.
@@ -719,12 +719,15 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             // Encrypted connections are supported, but require explicit TLS configuration. We fall
             // back to the unencrypted transport layer, so that `set_transport` can be used to
             // configure the encrypted transport layer with the provided TLS configuration.
-            #[cfg(feature = "use-rustls-no-provider")]
+            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
             "mqtts" | "ssl" => (Transport::tls_with_default_config(), 8883),
             "mqtt" | "tcp" => (Transport::Tcp, 1883),
             #[cfg(feature = "websocket")]
             "ws" => (Transport::Ws, 8000),
-            #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+            #[cfg(all(
+                any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+                feature = "websocket"
+            ))]
             "wss" => (Transport::wss_with_default_config(), 8000),
             _ => return Err(OptionError::Scheme),
         };
