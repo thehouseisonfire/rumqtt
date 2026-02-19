@@ -1,10 +1,10 @@
-use rumqttc_next::{AsyncClient, Proxy, ProxyAuth, ProxyType, QoS, Transport};
+use rumqttc::{AsyncClient, Proxy, ProxyAuth, ProxyType, QoS, Transport};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    use rumqttc_next::MqttOptions;
+    use rumqttc::MqttOptions;
 
     pretty_env_logger::init();
 

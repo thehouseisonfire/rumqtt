@@ -1,8 +1,8 @@
-use rumqttc_next::v5::mqttbytes::QoS;
-use rumqttc_next::v5::mqttbytes::v5::SubscribeProperties;
+use rumqttc::v5::mqttbytes::QoS;
+use rumqttc::v5::mqttbytes::v5::SubscribeProperties;
 use tokio::{task, time};
 
-use rumqttc_next::v5::{AsyncClient, MqttOptions};
+use rumqttc::v5::{AsyncClient, MqttOptions};
 use std::error::Error;
 use std::time::Duration;
 
