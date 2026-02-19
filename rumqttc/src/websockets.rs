@@ -1,4 +1,86 @@
+//! WebSocket URL/handshake helpers and the `WsAdapter` transport bridge.
+
 use http::{Response, header::ToStrError};
+
+#[cfg(feature = "websocket")]
+use async_tungstenite::{
+    WebSocketReceiver, WebSocketSender, WebSocketStream,
+    bytes::{ByteReader, ByteWriter},
+    tungstenite::Message,
+};
+#[cfg(feature = "websocket")]
+use futures_io::{AsyncRead as FuturesAsyncRead, AsyncWrite as FuturesAsyncWrite};
+#[cfg(feature = "websocket")]
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+#[cfg(feature = "websocket")]
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+/// Bridges `async-tungstenite`'s split WebSocket halves (`ByteReader` + `ByteWriter`)
+/// into a unified `AsyncRead + AsyncWrite` object compatible with `rumqttc`'s `Network`
+/// abstraction.
+///
+/// This replaces the former `ws_stream_tungstenite::WsStream` wrapper and eliminates
+/// the `ws_stream_tungstenite` dependency from the `websocket` feature.
+#[cfg(feature = "websocket")]
+pub(crate) struct WsAdapter<S> {
+    reader: ByteReader<WebSocketReceiver<S>>,
+    writer: ByteWriter<WebSocketSender<S>>,
+}
+
+#[cfg(feature = "websocket")]
+impl<S> WsAdapter<S>
+where
+    S: FuturesAsyncRead + FuturesAsyncWrite + Unpin,
+{
+    pub(crate) fn new(ws: WebSocketStream<S>) -> Self {
+        let (sender, receiver) = ws.split();
+        Self {
+            reader: ByteReader::new(receiver),
+            writer: ByteWriter::new(sender),
+        }
+    }
+}
+
+#[cfg(feature = "websocket")]
+impl<S: Unpin> AsyncRead for WsAdapter<S>
+where
+    WebSocketReceiver<S>:
+        futures_util::Stream<Item = Result<Message, async_tungstenite::tungstenite::Error>> + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        tokio::io::AsyncRead::poll_read(Pin::new(&mut self.reader), cx, buf)
+    }
+}
+
+#[cfg(feature = "websocket")]
+impl<S: Unpin> AsyncWrite for WsAdapter<S>
+where
+    WebSocketSender<S>: async_tungstenite::bytes::Sender + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        tokio::io::AsyncWrite::poll_write(Pin::new(&mut self.writer), cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        tokio::io::AsyncWrite::poll_flush(Pin::new(&mut self.writer), cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut self.writer), cx)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum UrlError {

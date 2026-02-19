@@ -23,9 +23,9 @@ use crate::tls;
 
 #[cfg(feature = "websocket")]
 use {
+    crate::websockets::WsAdapter,
     crate::websockets::{UrlError, split_url, validate_response_headers},
     async_tungstenite::tungstenite::client::IntoClientRequest,
-    ws_stream_tungstenite::WsStream,
 };
 
 #[cfg(feature = "proxy")]
@@ -474,7 +474,7 @@ async fn network_connect(
             validate_response_headers(response)?;
 
             Network::new(
-                WsStream::new(socket),
+                WsAdapter::new(socket),
                 options.max_incoming_packet_size,
                 options.max_outgoing_packet_size,
             )
@@ -504,7 +504,7 @@ async fn network_connect(
             validate_response_headers(response)?;
 
             Network::new(
-                WsStream::new(socket),
+                WsAdapter::new(socket),
                 options.max_incoming_packet_size,
                 options.max_outgoing_packet_size,
             )
