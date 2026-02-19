@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `rumqttc`: Make `use-rustls` default to the `aws-lc` rustls provider.
 - `rumqttc`: Replace docs.rs `all-features` configuration with an explicit non-conflicting feature list.
+- `rumqttc` WebSocket transport: Replaced `ws_stream_tungstenite` with `async-tungstenite` native `ByteReader`/`ByteWriter` via `WsAdapter`; `ws_stream_tungstenite` is no longer a dependency and public websocket APIs remain unchanged.
 ### Deprecated
 ### Removed
 ### Fixed

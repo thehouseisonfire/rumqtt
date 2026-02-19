@@ -23,9 +23,9 @@ use {std::path::Path, tokio::net::UnixStream};
 
 #[cfg(feature = "websocket")]
 use {
+    crate::websockets::WsAdapter,
     crate::websockets::{UrlError, split_url, validate_response_headers},
     async_tungstenite::tungstenite::client::IntoClientRequest,
-    ws_stream_tungstenite::WsStream,
 };
 
 #[cfg(feature = "proxy")]
@@ -396,7 +396,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 async_tungstenite::tokio::client_async(request, tcp_stream).await?;
             validate_response_headers(response)?;
 
-            Network::new(WsStream::new(socket), max_incoming_pkt_size)
+            Network::new(WsAdapter::new(socket), max_incoming_pkt_size)
         }
         #[cfg(all(
             any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
@@ -422,7 +422,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
             .await?;
             validate_response_headers(response)?;
 
-            Network::new(WsStream::new(socket), max_incoming_pkt_size)
+            Network::new(WsAdapter::new(socket), max_incoming_pkt_size)
         }
     };
 
