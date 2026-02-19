@@ -1,5 +1,5 @@
-use rumqttc_next::mqttbytes::v4::*;
-use rumqttc_next::mqttbytes::*;
+use rumqttc::mqttbytes::v4::*;
+use rumqttc::mqttbytes::*;
 use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use tokio::{task, time};
 
 use bytes::BytesMut;
 use flume::{Receiver, Sender, bounded};
-use rumqttc_next::{Event, Incoming, Outgoing, Packet};
+use rumqttc::{Event, Incoming, Outgoing, Packet};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub struct Broker {

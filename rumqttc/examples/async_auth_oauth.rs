@@ -1,6 +1,6 @@
-use rumqttc_next::v5::mqttbytes::v5::AuthProperties;
-use rumqttc_next::v5::{AsyncClient, MqttOptions, mqttbytes::QoS};
-use rumqttc_next::{TlsConfiguration, Transport};
+use rumqttc::v5::mqttbytes::v5::AuthProperties;
+use rumqttc::v5::{AsyncClient, MqttOptions, mqttbytes::QoS};
+use rumqttc::{TlsConfiguration, Transport};
 use std::error::Error;
 use std::sync::Arc;
 use tokio::task;

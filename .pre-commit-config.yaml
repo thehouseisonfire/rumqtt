@@ -1,0 +1,37 @@
+repos:
+  - repo: local
+    hooks:
+      - id: clippy
+        name: clippy
+        entry: bash -c 'export RUSTFLAGS="-D warnings" && cargo hack clippy --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-next'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: docs
+        name: docs
+        entry: bash -c 'cargo hack doc --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-next'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: doctests
+        name: doctests
+        entry: bash -c 'cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-next'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: tests
+        name: tests
+        entry: bash -c 'cargo hack --each-feature --exclude-all-features --optional-deps url test -p rumqttc-next'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: rustls-conflict-guard
+        name: rustls conflict guard
+        entry: bash -c 'if cargo check -p rumqttc-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then echo "ERROR - rustls provider conflict guard failed"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true

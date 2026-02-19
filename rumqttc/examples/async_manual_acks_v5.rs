@@ -1,8 +1,8 @@
-use rumqttc_next::v5::mqttbytes::QoS;
-use rumqttc_next::v5::mqttbytes::v5::Packet;
+use rumqttc::v5::mqttbytes::QoS;
+use rumqttc::v5::mqttbytes::v5::Packet;
 use tokio::{task, time};
 
-use rumqttc_next::v5::{AsyncClient, Event, EventLoop, MqttOptions};
+use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions};
 use std::error::Error;
 use std::time::Duration;
 
