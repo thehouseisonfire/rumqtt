@@ -114,6 +114,11 @@
 #![allow(clippy::use_self)]
 #![allow(clippy::wildcard_imports)]
 
+#[cfg(all(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
+compile_error!(
+    "Features `use-rustls-ring` and `use-rustls-aws-lc` are mutually exclusive. Enable only one rustls provider feature."
+);
+
 #[macro_use]
 extern crate log;
 
@@ -254,10 +259,16 @@ pub enum Transport {
     #[cfg(feature = "websocket")]
     #[cfg_attr(docsrs, doc(cfg(feature = "websocket")))]
     Ws,
-    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(all(feature = "use-rustls-no-provider", feature = "websocket")))
+        doc(cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        )))
     )]
     Wss(TlsConfiguration),
 }
@@ -275,7 +286,7 @@ impl Transport {
         Self::Tcp
     }
 
-    #[cfg(feature = "use-rustls-no-provider")]
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     #[must_use]
     pub fn tls_with_default_config() -> Self {
         Self::tls_with_config(Default::default())
@@ -337,19 +348,31 @@ impl Transport {
         Self::wss_with_config(config)
     }
 
-    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(all(feature = "use-rustls-no-provider", feature = "websocket")))
+        doc(cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        )))
     )]
     pub fn wss_with_config(tls_config: TlsConfiguration) -> Self {
         Self::Wss(tls_config)
     }
 
-    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(all(feature = "use-rustls-no-provider", feature = "websocket")))
+        doc(cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        )))
     )]
     pub fn wss_with_default_config() -> Self {
         Self::Wss(Default::default())
@@ -388,9 +411,35 @@ pub enum TlsConfiguration {
     NativeConnector(TlsConnector),
 }
 
-#[cfg(feature = "use-rustls-no-provider")]
+#[cfg(all(feature = "use-rustls-no-provider", not(feature = "use-native-tls")))]
+#[allow(clippy::derivable_impls)]
 impl Default for TlsConfiguration {
     fn default() -> Self {
+        let mut root_cert_store = RootCertStore::empty();
+        for cert in load_native_certs().expect("could not load platform certs") {
+            root_cert_store.add(cert).unwrap();
+        }
+        let tls_config = ClientConfig::builder()
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth();
+
+        Self::Rustls(Arc::new(tls_config))
+    }
+}
+
+#[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
+#[allow(clippy::derivable_impls)]
+impl Default for TlsConfiguration {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+#[cfg(all(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+#[allow(clippy::derivable_impls)]
+impl Default for TlsConfiguration {
+    fn default() -> Self {
+        // When both are enabled, prefer rustls
         let mut root_cert_store = RootCertStore::empty();
         for cert in load_native_certs().expect("could not load platform certs") {
             root_cert_store.add(cert).unwrap();
@@ -822,12 +871,15 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             // Encrypted connections are supported, but require explicit TLS configuration. We fall
             // back to the unencrypted transport layer, so that `set_transport` can be used to
             // configure the encrypted transport layer with the provided TLS configuration.
-            #[cfg(feature = "use-rustls-no-provider")]
+            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
             "mqtts" | "ssl" => (Transport::tls_with_default_config(), 8883),
             "mqtt" | "tcp" => (Transport::Tcp, 1883),
             #[cfg(feature = "websocket")]
             "ws" => (Transport::Ws, 8000),
-            #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+            #[cfg(all(
+                any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+                feature = "websocket"
+            ))]
             "wss" => (Transport::wss_with_default_config(), 8000),
             _ => return Err(OptionError::Scheme),
         };

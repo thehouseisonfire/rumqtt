@@ -61,6 +61,11 @@ pub enum Error {
     #[cfg(feature = "use-native-tls")]
     #[error("Native TLS error {0}")]
     NativeTls(#[from] NativeTlsError),
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[error(
+        "rustls TLS configuration is not supported for websockets when both `use-rustls-no-provider` and `use-native-tls` features are enabled. async-tungstenite uses native-tls for WSS in this configuration. Use a native-tls TlsConfiguration variant or disable `use-native-tls`."
+    )]
+    TlsBackendConflict,
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
@@ -146,6 +151,111 @@ pub async fn native_tls_connector(
     Ok(connector.into())
 }
 
+/// Returns the appropriate TLS connector for websocket connections based on the
+/// TLS configuration. When both rustls and native-tls features are enabled,
+/// rustls is preferred.
+#[cfg(all(
+    feature = "websocket",
+    feature = "use-native-tls",
+    not(feature = "use-rustls-no-provider")
+))]
+pub fn websocket_tls_connector(
+    tls_config: &TlsConfiguration,
+) -> Result<tokio_native_tls::TlsConnector, Error> {
+    match tls_config {
+        TlsConfiguration::Native
+        | TlsConfiguration::NativeConnector(_)
+        | TlsConfiguration::SimpleNative { .. } => {
+            // For native-tls, we need to use the sync connector for websockets
+            let connector = match tls_config {
+                TlsConfiguration::SimpleNative { ca, client_auth } => {
+                    let cert = native_tls::Certificate::from_pem(ca)?;
+                    let mut connector_builder = native_tls::TlsConnector::builder();
+                    connector_builder.add_root_certificate(cert);
+
+                    if let Some((der, password)) = client_auth {
+                        let identity = Identity::from_pkcs12(der, password)?;
+                        connector_builder.identity(identity);
+                    }
+
+                    connector_builder.build()?
+                }
+                TlsConfiguration::Native => native_tls::TlsConnector::new()?,
+                TlsConfiguration::NativeConnector(connector) => connector.to_owned(),
+                // No need for catch-all: we're inside a match arm that only matches native-tls variants
+            };
+            Ok(connector.into())
+        }
+        #[allow(unreachable_patterns)]
+        _ => panic!("Unknown or not enabled TLS backend configuration"),
+    }
+}
+
+/// Returns the appropriate TLS connector for websocket connections based on the
+/// TLS configuration. When both rustls and native-tls features are enabled,
+/// rustls is preferred.
+#[cfg(all(
+    feature = "websocket",
+    feature = "use-rustls-no-provider",
+    not(feature = "use-native-tls")
+))]
+pub fn websocket_tls_connector(
+    tls_config: &TlsConfiguration,
+) -> Result<tokio_rustls::TlsConnector, Error> {
+    match tls_config {
+        TlsConfiguration::Simple { .. } | TlsConfiguration::Rustls(_) => {
+            let connector = rustls_connector(tls_config)?;
+            Ok(connector)
+        }
+        #[allow(unreachable_patterns)]
+        _ => panic!("Unknown or not enabled TLS backend configuration"),
+    }
+}
+
+/// Returns the appropriate TLS connector for websocket connections based on the
+/// TLS configuration. When both rustls and native-tls features are enabled,
+/// async-tungstenite uses native-tls as the connector type.
+/// NOTE: When both features are enabled, only native-tls TlsConfiguration variants
+/// are supported for websockets. Using rustls variants will return TlsBackendConflict error.
+#[cfg(all(
+    feature = "websocket",
+    feature = "use-rustls-no-provider",
+    feature = "use-native-tls"
+))]
+pub fn websocket_tls_connector(
+    tls_config: &TlsConfiguration,
+) -> Result<tokio_native_tls::TlsConnector, Error> {
+    match tls_config {
+        TlsConfiguration::Simple { .. } | TlsConfiguration::Rustls(_) => {
+            Err(Error::TlsBackendConflict)
+        }
+        TlsConfiguration::Native
+        | TlsConfiguration::NativeConnector(_)
+        | TlsConfiguration::SimpleNative { .. } => {
+            let connector = match tls_config {
+                TlsConfiguration::SimpleNative { ca, client_auth } => {
+                    let cert = native_tls::Certificate::from_pem(ca)?;
+                    let mut connector_builder = native_tls::TlsConnector::builder();
+                    connector_builder.add_root_certificate(cert);
+
+                    if let Some((der, password)) = client_auth {
+                        let identity = Identity::from_pkcs12(der, password)?;
+                        connector_builder.identity(identity);
+                    }
+
+                    connector_builder.build()?
+                }
+                TlsConfiguration::Native => native_tls::TlsConnector::new()?,
+                TlsConfiguration::NativeConnector(connector) => connector.to_owned(),
+                _ => unreachable!(),
+            };
+            Ok(connector.into())
+        }
+        #[allow(unreachable_patterns)]
+        _ => panic!("Unknown or not enabled TLS backend configuration"),
+    }
+}
+
 pub async fn tls_connect(
     addr: &str,
     _port: u16,
@@ -170,4 +280,41 @@ pub async fn tls_connect(
         _ => panic!("Unknown or not enabled TLS backend configuration"),
     };
     Ok(tls)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(
+        feature = "use-rustls-no-provider",
+        feature = "use-native-tls",
+        feature = "websocket"
+    ))]
+    #[test]
+    fn websocket_rustls_config_returns_error_when_both_features_enabled() {
+        // When both TLS features are enabled, using rustls config for websockets
+        // should return TlsBackendConflict error
+        let result = websocket_tls_connector(&TlsConfiguration::Native);
+        assert!(result.is_ok(), "Native config should work");
+
+        // SimpleNative should also work (will fail due to empty CA, but not with TlsBackendConflict)
+        let simple_native = TlsConfiguration::SimpleNative {
+            ca: vec![],
+            client_auth: None,
+        };
+        let result = websocket_tls_connector(&simple_native);
+        assert!(result.is_err());
+        assert!(!matches!(result, Err(Error::TlsBackendConflict)));
+
+        // TlsConfiguration::Simple uses rustls and should return TlsBackendConflict
+        let simple_rustls = TlsConfiguration::Simple {
+            ca: vec![],
+            alpn: None,
+            client_auth: None,
+        };
+        let result = websocket_tls_connector(&simple_rustls);
+        assert!(
+            matches!(result, Err(Error::TlsBackendConflict)),
+            "TlsConfiguration::Simple should return TlsBackendConflict"
+        );
+    }
 }
