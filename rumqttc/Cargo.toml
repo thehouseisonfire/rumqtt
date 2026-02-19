@@ -11,6 +11,9 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "rumqttc"
+
 [package.metadata.docs.rs]
 features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "auth-scram", "url"]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -11,7 +11,7 @@ A simple synchronous publish and subscribe
 ----------------------------
 
 ```rust
-use rumqttc_next::{MqttOptions, Client, QoS};
+use rumqttc::{MqttOptions, Client, QoS};
 use std::time::Duration;
 use std::thread;
 
@@ -35,7 +35,7 @@ A simple asynchronous publish and subscribe
 ------------------------------
 
 ```rust
-use rumqttc_next::{MqttOptions, AsyncClient, QoS};
+use rumqttc::{MqttOptions, AsyncClient, QoS};
 use tokio::{task, time};
 use std::time::Duration;
 use std::error::Error;

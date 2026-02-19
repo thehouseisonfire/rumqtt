@@ -157,7 +157,7 @@ impl MqttOptions {
     /// - port: The port number on which broker must be listening for incoming connections
     ///
     /// ```
-    /// # use rumqttc_next::v5::MqttOptions;
+    /// # use rumqttc::v5::MqttOptions;
     /// let options = MqttOptions::new("123", "localhost", 1883);
     /// ```
     pub fn new<S: Into<String>, T: Into<String>>(id: S, host: T, port: u16) -> MqttOptions {
@@ -193,7 +193,7 @@ impl MqttOptions {
     /// [`Url::parse(url)`](url::Url::parse) method and is only enabled when run using the "url" feature.
     ///
     /// ```
-    /// # use rumqttc_next::MqttOptions;
+    /// # use rumqttc::MqttOptions;
     /// let options = MqttOptions::parse_url("mqtt://example.com:1883?client_id=123").unwrap();
     /// ```
     ///
@@ -205,7 +205,7 @@ impl MqttOptions {
     /// [`set_transport`](MqttOptions::set_transport) method.
     ///
     /// ```ignore
-    /// # use rumqttc_next::{MqttOptions, Transport};
+    /// # use rumqttc::{MqttOptions, Transport};
     /// # use tokio_rustls::rustls::ClientConfig;
     /// # let root_cert_store = rustls::RootCertStore::empty();
     /// # let client_config = ClientConfig::builder()
