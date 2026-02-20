@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rumqttc` WebSocket transport: Replaced `ws_stream_tungstenite` with `async-tungstenite` native `ByteReader`/`ByteWriter` via `WsAdapter`; `ws_stream_tungstenite` is no longer a dependency and public websocket APIs remain unchanged.
 - `rumqttc`: Migrated workspace and member crates to Rust Edition 2024
 - `rumqttc`: Bumped MSRV to 1.85 (2024 Edition)
-- `rumqttc (dev)`: WebSocket Secure (WSS) integration tests with TLS support
+- `rumqttc (dev)`: WSS integration tests
 - `rumqttc (dev)`: Added `rcgen` development dependency
 - `rumqttc (dev)`: bumped `rand` to 0.10
 ### Deprecated
