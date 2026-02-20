@@ -215,7 +215,7 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
 fn make_wss_acceptor_and_ca() -> (TlsAcceptor, Vec<u8>) {
     let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
     let cert_pem = certified_key.cert.pem();
-    let key_pem = certified_key.key_pair.serialize_pem();
+    let key_pem = certified_key.signing_key.serialize_pem();
 
     let cert_chain = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
