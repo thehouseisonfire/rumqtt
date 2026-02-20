@@ -8,16 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `rumqttc`: Add `use-rustls-aws-lc` and `use-rustls-ring` feature flags for explicit rustls crypto provider selection.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+
+---
+
+## [rumqttc 0.27.0] - 19-02-2026
+
+### Added
+- `rumqttc`: Add `use-rustls-aws-lc` and `use-rustls-ring` feature flags for explicit rustls crypto provider selection
+(see security note)
 ### Changed
 - `rumqttc`: Make `use-rustls` default to the `aws-lc` rustls provider.
 - `rumqttc`: Replace docs.rs `all-features` configuration with an explicit non-conflicting feature list.
 - `rumqttc` WebSocket transport: Replaced `ws_stream_tungstenite` with `async-tungstenite` native `ByteReader`/`ByteWriter` via `WsAdapter`; `ws_stream_tungstenite` is no longer a dependency and public websocket APIs remain unchanged.
+- `rumqttc`: Migrated workspace and member crates to Rust Edition 2024
+- `rumqttc`: Bumped MSRV to 1.85 (2024 Edition)
+- `rumqttc (dev)`: WebSocket Secure (WSS) integration tests with TLS support
+- `rumqttc (dev)`: Added `rcgen` development dependency
+- `rumqttc (dev)`: bumped `rand` to 0.10
 ### Deprecated
 ### Removed
 ### Fixed
 - `rumqttc`: Add a compile-time guard that rejects enabling both `use-rustls-aws-lc` and `use-rustls-ring`.
+- `rumqttc`: Renamed crate from `rumqttc_next` back to `rumqttc`.
 ### Security
+- In `0.26.1`, the crate user would have to specify `ring` or `aws-lc-rs` explicitly as a dependency for `rustls` to use them.
 
 
 ---
