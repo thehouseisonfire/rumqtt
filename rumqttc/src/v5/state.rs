@@ -220,26 +220,32 @@ impl MqttState {
         &mut self,
         mut packet: Incoming,
     ) -> Result<Option<Packet>, StateError> {
-        self.events.push_back(Event::Incoming(packet.clone()));
-
+        let events_len_before = self.events.len();
         let outgoing = match &mut packet {
-            Incoming::PingResp(_) => self.handle_incoming_pingresp()?,
-            Incoming::Publish(publish) => self.handle_incoming_publish(publish)?,
-            Incoming::SubAck(suback) => Self::handle_incoming_suback(suback)?,
-            Incoming::UnsubAck(unsuback) => Self::handle_incoming_unsuback(unsuback)?,
-            Incoming::PubAck(puback) => self.handle_incoming_puback(puback)?,
-            Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec)?,
-            Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel)?,
-            Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp)?,
-            Incoming::ConnAck(connack) => self.handle_incoming_connack(connack)?,
-            Incoming::Disconnect(disconn) => Self::handle_incoming_disconn(disconn)?,
-            Incoming::Auth(auth) => self.handle_incoming_auth(auth)?,
+            Incoming::PingResp(_) => self.handle_incoming_pingresp(),
+            Incoming::Publish(publish) => self.handle_incoming_publish(publish),
+            Incoming::SubAck(suback) => Self::handle_incoming_suback(suback),
+            Incoming::UnsubAck(unsuback) => Self::handle_incoming_unsuback(unsuback),
+            Incoming::PubAck(puback) => self.handle_incoming_puback(puback),
+            Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec),
+            Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel),
+            Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp),
+            Incoming::ConnAck(connack) => self.handle_incoming_connack(connack),
+            Incoming::Disconnect(disconn) => Self::handle_incoming_disconn(disconn),
+            Incoming::Auth(auth) => self.handle_incoming_auth(auth),
             _ => {
                 error!("Invalid incoming packet = {:?}", packet);
-                return Err(StateError::WrongPacket);
+                Err(StateError::WrongPacket)
             }
         };
 
+        // Preserve original event ordering (Incoming first, derived Outgoing next)
+        // without cloning the incoming packet.
+        let mut trailing_events = self.events.split_off(events_len_before);
+        self.events.push_back(Event::Incoming(packet));
+        self.events.append(&mut trailing_events);
+
+        let outgoing = outgoing?;
         self.last_incoming = Instant::now();
         Ok(outgoing)
     }
@@ -541,7 +547,7 @@ impl MqttState {
 
         debug!(
             "Publish. Topic = {}, Pkid = {:?}, Payload Size = {:?}",
-            String::from_utf8(publish.topic.to_vec()).unwrap(),
+            String::from_utf8_lossy(&publish.topic),
             publish.pkid,
             publish.payload.len()
         );
