@@ -162,24 +162,30 @@ impl MqttState {
     /// be forwarded to user and Pubck packet will be written to network
     pub fn handle_incoming_packet(
         &mut self,
-        packet: &Incoming,
+        packet: Incoming,
     ) -> Result<Option<Packet>, StateError> {
-        self.events.push_back(Event::Incoming(packet.clone()));
-
-        let outgoing = match packet {
-            Incoming::PingResp => self.handle_incoming_pingresp()?,
-            Incoming::Publish(publish) => self.handle_incoming_publish(publish)?,
-            Incoming::SubAck(_suback) => Self::handle_incoming_suback()?,
-            Incoming::UnsubAck(_unsuback) => Self::handle_incoming_unsuback()?,
-            Incoming::PubAck(puback) => self.handle_incoming_puback(puback)?,
-            Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec)?,
-            Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel)?,
-            Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp)?,
+        let events_len_before = self.events.len();
+        let outgoing = match &packet {
+            Incoming::PingResp => self.handle_incoming_pingresp(),
+            Incoming::Publish(publish) => self.handle_incoming_publish(publish),
+            Incoming::SubAck(_suback) => Self::handle_incoming_suback(),
+            Incoming::UnsubAck(_unsuback) => Self::handle_incoming_unsuback(),
+            Incoming::PubAck(puback) => self.handle_incoming_puback(puback),
+            Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec),
+            Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel),
+            Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp),
             _ => {
                 error!("Invalid incoming packet = {:?}", packet);
-                return Err(StateError::WrongPacket);
+                Err(StateError::WrongPacket)
             }
         };
+
+        // Preserve original event ordering (Incoming first, derived Outgoing next)
+        // without cloning the incoming packet.
+        let mut trailing_events = self.events.split_off(events_len_before);
+        self.events.push_back(Event::Incoming(packet));
+        self.events.append(&mut trailing_events);
+        let outgoing = outgoing?;
         self.last_incoming = Instant::now();
 
         Ok(outgoing)
@@ -342,7 +348,7 @@ impl MqttState {
 
         debug!(
             "Publish. Topic = {}, Pkid = {:?}, Payload Size = {:?}",
-            publish.topic,
+            String::from_utf8_lossy(&publish.topic),
             publish.pkid,
             publish.payload.len()
         );
@@ -512,6 +518,7 @@ mod test {
     use crate::mqttbytes::v4::*;
     use crate::mqttbytes::*;
     use crate::{Event, Incoming, Outgoing, Request};
+    use bytes::Bytes;
 
     fn build_outgoing_publish(qos: QoS) -> Publish {
         let topic = "hello/world".to_owned();
@@ -783,7 +790,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
         mqtt.handle_outgoing_packet(Request::Publish(publish))
             .unwrap();
-        mqtt.handle_incoming_packet(&Incoming::PubAck(PubAck::new(1)))
+        mqtt.handle_incoming_packet(Incoming::PubAck(PubAck::new(1)))
             .unwrap();
 
         // should throw error because we didn't get pingresp for previous ping
@@ -800,7 +807,7 @@ mod test {
 
         // should ping
         mqtt.outgoing_ping().unwrap();
-        mqtt.handle_incoming_packet(&Incoming::PingResp).unwrap();
+        mqtt.handle_incoming_packet(Incoming::PingResp).unwrap();
 
         // should ping
         mqtt.outgoing_ping().unwrap();
@@ -817,7 +824,7 @@ mod test {
                     dup: false,
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    topic: "test".to_string(),
+                    topic: Bytes::from_static(b"test"),
                     pkid: 1,
                     payload: "".into(),
                 }),
@@ -825,7 +832,7 @@ mod test {
                     dup: false,
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    topic: "test".to_string(),
+                    topic: Bytes::from_static(b"test"),
                     pkid: 2,
                     payload: "".into(),
                 }),
@@ -833,7 +840,7 @@ mod test {
                     dup: false,
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    topic: "test".to_string(),
+                    topic: Bytes::from_static(b"test"),
                     pkid: 3,
                     payload: "".into(),
                 }),
@@ -843,7 +850,7 @@ mod test {
                     dup: false,
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    topic: "test".to_string(),
+                    topic: Bytes::from_static(b"test"),
                     pkid: 6,
                     payload: "".into(),
                 }),

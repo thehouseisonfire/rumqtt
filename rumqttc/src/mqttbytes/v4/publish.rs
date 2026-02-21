@@ -7,30 +7,32 @@ pub struct Publish {
     pub dup: bool,
     pub qos: QoS,
     pub retain: bool,
-    pub topic: String,
+    pub topic: Bytes,
     pub pkid: u16,
     pub payload: Bytes,
 }
 
 impl Publish {
     pub fn new<S: Into<String>, P: Into<Vec<u8>>>(topic: S, qos: QoS, payload: P) -> Publish {
+        let topic = topic.into();
         Publish {
             dup: false,
             qos,
             retain: false,
             pkid: 0,
-            topic: topic.into(),
+            topic: Bytes::from(topic.into_bytes()),
             payload: Bytes::from(payload.into()),
         }
     }
 
     pub fn from_bytes<S: Into<String>>(topic: S, qos: QoS, payload: Bytes) -> Publish {
+        let topic = topic.into();
         Publish {
             dup: false,
             qos,
             retain: false,
             pkid: 0,
-            topic: topic.into(),
+            topic: Bytes::from(topic.into_bytes()),
             payload,
         }
     }
@@ -58,7 +60,10 @@ impl Publish {
 
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
-        let topic = read_mqtt_string(&mut bytes)?;
+        let topic = read_mqtt_bytes(&mut bytes)?;
+        if std::str::from_utf8(&topic).is_err() {
+            return Err(Error::TopicNotUtf8);
+        }
 
         // Packet identifier exists where QoS > 0
         let pkid = match qos {
@@ -90,8 +95,12 @@ impl Publish {
         let retain = u8::from(self.retain);
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
+        if std::str::from_utf8(&self.topic).is_err() {
+            return Err(Error::TopicNotUtf8);
+        }
+
         let count = write_remaining_length(buffer, len)?;
-        write_mqtt_string(buffer, self.topic.as_str());
+        write_mqtt_bytes(buffer, &self.topic);
 
         if self.qos != QoS::AtMostOnce {
             let pkid = self.pkid;
@@ -110,10 +119,11 @@ impl Publish {
 
 impl fmt::Debug for Publish {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let topic = std::str::from_utf8(&self.topic).unwrap_or("<invalid utf-8>");
         write!(
             f,
             "Topic = {}, Qos = {:?}, Retain = {}, Pkid = {:?}, Payload Size = {}",
-            self.topic,
+            topic,
             self.qos,
             self.retain,
             self.pkid,
@@ -162,7 +172,7 @@ mod test {
                 dup: false,
                 qos: QoS::AtLeastOnce,
                 retain: false,
-                topic: "a/b".to_owned(),
+                topic: Bytes::from_static(b"a/b"),
                 pkid: 10,
                 payload: Bytes::from(&payload[..]),
             }
@@ -198,7 +208,7 @@ mod test {
                 dup: false,
                 qos: QoS::AtMostOnce,
                 retain: false,
-                topic: "a/b".to_owned(),
+                topic: Bytes::from_static(b"a/b"),
                 pkid: 0,
                 payload: Bytes::from(&[0x01, 0x02][..]),
             }
@@ -211,7 +221,7 @@ mod test {
             dup: false,
             qos: QoS::AtLeastOnce,
             retain: false,
-            topic: "a/b".to_owned(),
+            topic: Bytes::from_static(b"a/b"),
             pkid: 10,
             payload: Bytes::from(vec![0xF1, 0xF2, 0xF3, 0xF4]),
         };
@@ -245,7 +255,7 @@ mod test {
             dup: false,
             qos: QoS::AtMostOnce,
             retain: false,
-            topic: "a/b".to_owned(),
+            topic: Bytes::from_static(b"a/b"),
             pkid: 0,
             payload: Bytes::from(vec![0xE1, 0xE2, 0xE3, 0xE4]),
         };
