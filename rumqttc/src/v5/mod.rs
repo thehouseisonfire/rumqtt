@@ -329,6 +329,19 @@ impl MqttOptions {
         self.request_channel_capacity
     }
 
+    /// Set maximum number of requests processed in one eventloop iteration.
+    ///
+    /// `0` preserves legacy behavior (effectively processes one request).
+    pub fn set_max_request_batch(&mut self, max: usize) -> &mut Self {
+        self.max_request_batch = max;
+        self
+    }
+
+    /// Maximum number of requests processed in one eventloop iteration.
+    pub fn max_request_batch(&self) -> usize {
+        self.max_request_batch
+    }
+
     /// Enables throttling and sets outoing message rate to the specified 'rate'
     pub fn set_pending_throttle(&mut self, duration: Duration) -> &mut Self {
         self.pending_throttle = duration;
