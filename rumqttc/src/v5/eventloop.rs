@@ -4,7 +4,7 @@ use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Tra
 use crate::eventloop::socket_connect;
 use crate::framed::AsyncReadWrite;
 
-use flume::{Receiver, Sender, bounded};
+use flume::{Receiver, Sender, TryRecvError, bounded};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
@@ -256,10 +256,43 @@ impl EventLoop {
                 self.options.pending_throttle
             ), if !self.pending.is_empty() || (!inflight_full && !collision) => match o {
                 Ok(request) => {
+                    let max_request_batch = self.options.max_request_batch.max(1);
+                    let mut should_flush = false;
+
                     if let Some(outgoing) = self.state.handle_outgoing_packet(request)? {
                         network.write(outgoing).await?;
+                        should_flush = true;
                     }
-                    network.flush().await?;
+
+                    for _ in 1..max_request_batch {
+                        let inflight_full = self.state.inflight >= self.state.max_outgoing_inflight;
+                        let collision = self.state.collision.is_some();
+
+                        if self.pending.is_empty() && (inflight_full || collision) {
+                            break;
+                        }
+
+                        let next_request = if let Some(request) = self.pending.pop_front() {
+                            if !self.options.pending_throttle.is_zero() {
+                                time::sleep(self.options.pending_throttle).await;
+                            }
+                            request
+                        } else {
+                            match self.requests_rx.try_recv() {
+                                Ok(request) => request,
+                                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                            }
+                        };
+
+                        if let Some(outgoing) = self.state.handle_outgoing_packet(next_request)? {
+                            network.write(outgoing).await?;
+                            should_flush = true;
+                        }
+                    }
+
+                    if should_flush {
+                        network.flush().await?;
+                    }
                     Ok(self.state.events.pop_front().unwrap())
                 }
                 Err(_) => Err(ConnectionError::RequestsDone),
