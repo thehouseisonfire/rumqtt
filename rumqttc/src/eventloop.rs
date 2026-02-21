@@ -155,16 +155,12 @@ impl EventLoop {
         self.pending.extend(self.state.clean());
 
         // drain requests from channel which weren't yet received
-        let mut requests_in_channel: Vec<_> = self.requests_rx.drain().collect();
-
-        requests_in_channel.retain(|request| {
-            match request {
-                Request::PubAck(_) => false, // Wait for publish retransmission, else the broker could be confused by an unexpected ack
-                _ => true,
+        for request in self.requests_rx.drain() {
+            // Wait for publish retransmission, else the broker could be confused by an unexpected ack
+            if !matches!(request, Request::PubAck(_)) {
+                self.pending.push_back(request);
             }
-        });
-
-        self.pending.extend(requests_in_channel);
+        }
     }
 
     /// Yields Next notification or outgoing request and periodically pings
@@ -346,7 +342,9 @@ impl EventLoop {
         pending_throttle: Duration,
     ) -> Result<Request, ConnectionError> {
         if !pending.is_empty() {
-            time::sleep(pending_throttle).await;
+            if !pending_throttle.is_zero() {
+                time::sleep(pending_throttle).await;
+            }
             // We must call .pop_front() AFTER sleep() otherwise we would have
             // advanced the iterator but the future might be canceled before return
             Ok(pending.pop_front().unwrap())
@@ -393,10 +391,10 @@ pub async fn socket_connect(
         socket.set_nodelay(network_options.tcp_nodelay)?;
 
         if let Some(send_buff_size) = network_options.tcp_send_buffer_size {
-            socket.set_send_buffer_size(send_buff_size).unwrap();
+            socket.set_send_buffer_size(send_buff_size)?;
         }
         if let Some(recv_buffer_size) = network_options.tcp_recv_buffer_size {
-            socket.set_recv_buffer_size(recv_buffer_size).unwrap();
+            socket.set_recv_buffer_size(recv_buffer_size)?;
         }
 
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]

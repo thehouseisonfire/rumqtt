@@ -270,10 +270,8 @@ fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
 /// Reads a string from bytes stream
 fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
     let s = read_mqtt_bytes(stream)?;
-    match String::from_utf8(s.to_vec()) {
-        Ok(v) => Ok(v),
-        Err(_e) => Err(Error::TopicNotUtf8),
-    }
+    let s = std::str::from_utf8(&s).map_err(|_| Error::TopicNotUtf8)?;
+    Ok(s.to_owned())
 }
 
 /// Serializes bytes to stream (including length)

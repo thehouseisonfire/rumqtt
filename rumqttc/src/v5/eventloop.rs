@@ -156,16 +156,12 @@ impl EventLoop {
         self.pending.extend(self.state.clean());
 
         // drain requests from channel which weren't yet received
-        let mut requests_in_channel: Vec<_> = self.requests_rx.drain().collect();
-
-        requests_in_channel.retain(|request| {
-            match request {
-                Request::PubAck(_) => false, // Wait for publish retransmission, else the broker could be confused by an unexpected ack
-                _ => true,
+        for request in self.requests_rx.drain() {
+            // Wait for publish retransmission, else the broker could be confused by an unexpected ack
+            if !matches!(request, Request::PubAck(_)) {
+                self.pending.push_back(request);
             }
-        });
-
-        self.pending.extend(requests_in_channel);
+        }
     }
 
     /// Yields Next notification or outgoing request and periodically pings
@@ -326,7 +322,9 @@ impl EventLoop {
         pending_throttle: Duration,
     ) -> Result<Request, ConnectionError> {
         if !pending.is_empty() {
-            time::sleep(pending_throttle).await;
+            if !pending_throttle.is_zero() {
+                time::sleep(pending_throttle).await;
+            }
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
             Ok(pending.pop_front().unwrap())

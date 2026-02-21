@@ -27,7 +27,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         match eventloop.poll().await {
             Ok(Event::Incoming(Incoming::Publish(p))) => {
-                println!("Topic: {}, Payload: {:?}", p.topic, p.payload);
+                println!(
+                    "Topic: {}, Payload: {:?}",
+                    String::from_utf8_lossy(&p.topic),
+                    p.payload
+                );
             }
             Ok(Event::Incoming(i)) => {
                 println!("Incoming = {i:?}");
