@@ -126,7 +126,7 @@ pub struct MqttOptions {
     /// Last will that will be issued on unexpected disconnect
     last_will: Option<LastWill>,
     /// Connection timeout
-    conn_timeout: u64,
+    connect_timeout: Duration,
     /// Default value of for maximum incoming packet size.
     /// Used when `max_incomming_size` in `connect_properties` is NOT available.
     default_max_incoming_size: u32,
@@ -173,7 +173,7 @@ impl MqttOptions {
             max_request_batch: 0,
             pending_throttle: Duration::from_micros(0),
             last_will: None,
-            conn_timeout: 5,
+            connect_timeout: Duration::from_secs(5),
             default_max_incoming_size: 10 * 1024,
             incoming_packet_size_limit: IncomingPacketSizeLimit::Default,
             connect_properties: None,
@@ -353,15 +353,15 @@ impl MqttOptions {
         self.pending_throttle
     }
 
-    /// set connection timeout in secs
-    pub fn set_connection_timeout(&mut self, timeout: u64) -> &mut Self {
-        self.conn_timeout = timeout;
+    /// set connect timeout
+    pub fn set_connect_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.connect_timeout = timeout;
         self
     }
 
-    /// get timeout in secs
-    pub fn connection_timeout(&self) -> u64 {
-        self.conn_timeout
+    /// get connect timeout
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
     }
 
     /// set connection properties
@@ -831,7 +831,7 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             .map(|v| v.parse::<u64>().map_err(|_| OptionError::ConnTimeout))
             .transpose()?
         {
-            options.set_connection_timeout(conn_timeout);
+            options.set_connect_timeout(Duration::from_secs(conn_timeout));
         }
 
         if let Some((opt, _)) = queries.into_iter().next() {
@@ -858,7 +858,7 @@ impl Debug for MqttOptions {
             .field("max_request_batch", &self.max_request_batch)
             .field("pending_throttle", &self.pending_throttle)
             .field("last_will", &self.last_will)
-            .field("conn_timeout", &self.conn_timeout)
+            .field("connect_timeout", &self.connect_timeout)
             .field("manual_acks", &self.manual_acks)
             .field("connect properties", &self.connect_properties)
             .finish_non_exhaustive()
@@ -972,6 +972,8 @@ mod test {
         assert_eq!(v.keep_alive, Duration::from_secs(5));
         let v = ok("mqtt://host:42?client_id=foo&keep_alive_secs=0");
         assert_eq!(v.keep_alive, Duration::from_secs(0));
+        let v = ok("mqtt://host:42?client_id=foo&conn_timeout_secs=7");
+        assert_eq!(v.connect_timeout(), Duration::from_secs(7));
 
         assert_eq!(err("mqtt://host:42"), OptionError::ClientId);
         assert_eq!(
