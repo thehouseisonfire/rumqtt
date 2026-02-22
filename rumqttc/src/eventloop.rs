@@ -342,7 +342,9 @@ impl EventLoop {
         pending_throttle: Duration,
     ) -> Result<Request, ConnectionError> {
         if !pending.is_empty() {
-            if !pending_throttle.is_zero() {
+            if pending_throttle.is_zero() {
+                tokio::task::yield_now().await;
+            } else {
                 time::sleep(pending_throttle).await;
             }
             // We must call .pop_front() AFTER sleep() otherwise we would have
@@ -619,5 +621,52 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ConnectionError::RequestsDone));
+    }
+
+    #[tokio::test]
+    async fn next_request_is_cancellation_safe_for_pending_queue() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.pending.push_back(Request::PingReq(PingReq));
+
+        let delayed = EventLoop::next_request(
+            &mut eventloop.pending,
+            &eventloop.requests_rx,
+            Duration::from_millis(50),
+        );
+        let timed_out = time::timeout(Duration::from_millis(5), delayed).await;
+
+        assert!(timed_out.is_err());
+        assert!(matches!(
+            eventloop.pending.front(),
+            Some(Request::PingReq(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn next_request_prioritizes_pending_over_channel_messages() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
+        eventloop.pending.push_back(Request::PingReq(PingReq));
+        request_tx.send_async(Request::PingReq(PingReq)).await.unwrap();
+
+        let first = EventLoop::next_request(
+            &mut eventloop.pending,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(first, Request::PingReq(_)));
+        assert!(eventloop.pending.is_empty());
+
+        let second = EventLoop::next_request(
+            &mut eventloop.pending,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(second, Request::PingReq(_)));
     }
 }
