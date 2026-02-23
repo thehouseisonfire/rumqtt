@@ -203,6 +203,7 @@ impl EventLoop {
 
     /// Select on network and requests and generate keepalive pings when necessary
     async fn select(&mut self) -> Result<Event, ConnectionError> {
+        let read_batch_size = self.effective_read_batch_size();
         let network = self.network.as_mut().unwrap();
         // let await_acks = self.state.await_acks;
 
@@ -294,7 +295,7 @@ impl EventLoop {
                 Err(_) => Err(ConnectionError::RequestsDone),
             },
             // Pull a bunch of packets from network, reply in bunch and yield the first item
-            o = network.readb(&mut self.state) => {
+            o = network.readb(&mut self.state, read_batch_size) => {
                 o?;
                 // flush all the acks and return first incoming packet
                 network.flush().await?;
@@ -336,6 +337,26 @@ impl EventLoop {
                 Err(_) => Err(ConnectionError::RequestsDone),
             }
         }
+    }
+
+    fn effective_read_batch_size(&self) -> usize {
+        const MAX_READ_BATCH_SIZE: usize = 128;
+        const PENDING_FAIRNESS_CAP: usize = 16;
+
+        let configured = self.options.read_batch_size();
+        if configured > 0 {
+            return configured.clamp(1, MAX_READ_BATCH_SIZE);
+        }
+
+        let request_batch = self.options.max_request_batch().max(1);
+        let inflight = usize::from(self.state.max_outgoing_inflight);
+        let mut adaptive = request_batch.max(inflight / 2).max(8);
+
+        if !self.pending.is_empty() || !self.requests_rx.is_empty() {
+            adaptive = adaptive.min(PENDING_FAIRNESS_CAP);
+        }
+
+        adaptive.clamp(1, MAX_READ_BATCH_SIZE)
     }
 }
 

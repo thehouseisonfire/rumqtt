@@ -11,8 +11,6 @@ use crate::{Incoming, MqttState, StateError};
 pub struct Network {
     /// Frame MQTT packets from network connection
     framed: Framed<Box<dyn AsyncReadWrite>, Codec>,
-    /// Maximum readv count
-    max_readb_count: usize,
 }
 
 impl Network {
@@ -28,10 +26,7 @@ impl Network {
         };
         let framed = Framed::new(socket, codec);
 
-        Network {
-            framed,
-            max_readb_count: 10,
-        }
+        Network { framed }
     }
 
     /// Reads and returns a single packet from network
@@ -46,9 +41,14 @@ impl Network {
 
     /// Read packets in bulk. This allow replies to be in bulk. This method is used
     /// after the connection is established to read a bunch of incoming packets
-    pub async fn readb(&mut self, state: &mut MqttState) -> Result<(), StateError> {
+    pub async fn readb(
+        &mut self,
+        state: &mut MqttState,
+        read_batch_limit: usize,
+    ) -> Result<(), StateError> {
         // wait for the first read
         let mut res = self.framed.next().await;
+        let read_batch_limit = read_batch_limit.max(1);
         let mut count = 1;
         loop {
             match res {
@@ -58,7 +58,7 @@ impl Network {
                     }
 
                     count += 1;
-                    if count >= self.max_readb_count {
+                    if count >= read_batch_limit {
                         break;
                     }
                 }
