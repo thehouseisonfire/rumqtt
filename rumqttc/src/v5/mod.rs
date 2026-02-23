@@ -120,6 +120,9 @@ pub struct MqttOptions {
     request_channel_capacity: usize,
     /// Max internal request batching
     max_request_batch: usize,
+    /// Maximum number of packets processed in a single network read batch.
+    /// `0` enables adaptive batching.
+    read_batch_size: usize,
     /// Minimum delay time between consecutive outgoing packets
     /// while retransmitting pending packets
     pending_throttle: Duration,
@@ -171,6 +174,7 @@ impl MqttOptions {
             credentials: None,
             request_channel_capacity: 10,
             max_request_batch: 0,
+            read_batch_size: 0,
             pending_throttle: Duration::from_micros(0),
             last_will: None,
             connect_timeout: Duration::from_secs(5),
@@ -340,6 +344,21 @@ impl MqttOptions {
     /// Maximum number of requests processed in one eventloop iteration.
     pub fn max_request_batch(&self) -> usize {
         self.max_request_batch
+    }
+
+    /// Set maximum number of packets processed in one network read batch.
+    ///
+    /// `0` enables adaptive batching.
+    pub fn set_read_batch_size(&mut self, size: usize) -> &mut Self {
+        self.read_batch_size = size;
+        self
+    }
+
+    /// Maximum number of packets processed in one network read batch.
+    ///
+    /// `0` means adaptive batching.
+    pub fn read_batch_size(&self) -> usize {
+        self.read_batch_size
     }
 
     /// Enables throttling and sets outoing message rate to the specified 'rate'
@@ -703,6 +722,9 @@ pub enum OptionError {
     #[error("Invalid max-request-batch value.")]
     MaxRequestBatch,
 
+    #[error("Invalid read-batch-size value.")]
+    ReadBatchSize,
+
     #[error("Invalid pending-throttle value.")]
     PendingThrottle,
 
@@ -813,6 +835,14 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             options.max_request_batch = max_request_batch;
         }
 
+        if let Some(read_batch_size) = queries
+            .remove("read_batch_size_num")
+            .map(|v| v.parse::<usize>().map_err(|_| OptionError::ReadBatchSize))
+            .transpose()?
+        {
+            options.read_batch_size = read_batch_size;
+        }
+
         if let Some(pending_throttle) = queries
             .remove("pending_throttle_usecs")
             .map(|v| v.parse::<u64>().map_err(|_| OptionError::PendingThrottle))
@@ -856,6 +886,7 @@ impl Debug for MqttOptions {
             .field("credentials", &self.credentials)
             .field("request_channel_capacity", &self.request_channel_capacity)
             .field("max_request_batch", &self.max_request_batch)
+            .field("read_batch_size", &self.read_batch_size)
             .field("pending_throttle", &self.pending_throttle)
             .field("last_will", &self.last_will)
             .field("connect_timeout", &self.connect_timeout)
@@ -972,6 +1003,8 @@ mod test {
         assert_eq!(v.keep_alive, Duration::from_secs(5));
         let v = ok("mqtt://host:42?client_id=foo&keep_alive_secs=0");
         assert_eq!(v.keep_alive, Duration::from_secs(0));
+        let v = ok("mqtt://host:42?client_id=foo&read_batch_size_num=32");
+        assert_eq!(v.read_batch_size(), 32);
         let v = ok("mqtt://host:42?client_id=foo&conn_timeout_secs=7");
         assert_eq!(v.connect_timeout(), Duration::from_secs(7));
 
@@ -1006,6 +1039,10 @@ mod test {
             OptionError::MaxRequestBatch
         );
         assert_eq!(
+            err("mqtt://host:42?client_id=foo&read_batch_size_num=foo"),
+            OptionError::ReadBatchSize
+        );
+        assert_eq!(
             err("mqtt://host:42?client_id=foo&pending_throttle_usecs=foo"),
             OptionError::PendingThrottle
         );
@@ -1022,6 +1059,19 @@ mod test {
     #[test]
     fn allow_empty_client_id() {
         let _mqtt_opts = MqttOptions::new("", "127.0.0.1", 1883).set_clean_start(true);
+    }
+
+    #[test]
+    fn read_batch_size_defaults_to_adaptive() {
+        let options = MqttOptions::new("client", "127.0.0.1", 1883);
+        assert_eq!(options.read_batch_size(), 0);
+    }
+
+    #[test]
+    fn set_read_batch_size() {
+        let mut options = MqttOptions::new("client", "127.0.0.1", 1883);
+        options.set_read_batch_size(48);
+        assert_eq!(options.read_batch_size(), 48);
     }
 
     #[test]
