@@ -50,7 +50,7 @@ impl Network {
         // wait for the first read
         let mut res = self.framed.next().await;
         let read_batch_limit = read_batch_limit.max(1);
-        let mut count = 1;
+        let mut count = 0;
         loop {
             match res {
                 Some(Ok(packet)) => {
@@ -90,5 +90,37 @@ impl Network {
             .flush()
             .await
             .map_err(StateError::Deserialization)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    #[tokio::test]
+    async fn readb_processes_exactly_two_packets_when_limit_is_two() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new(10, false, None);
+
+        peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
+
+        network.readb(&mut state, 2).await.unwrap();
+
+        assert_eq!(state.events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn readb_processes_one_packet_when_limit_is_one() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new(10, false, None);
+
+        peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
+
+        network.readb(&mut state, 1).await.unwrap();
+
+        assert_eq!(state.events.len(), 1);
     }
 }
