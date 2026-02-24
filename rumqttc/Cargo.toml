@@ -69,7 +69,7 @@ pretty_env_logger = "0.5"
 serde = { version = "1", features = ["derive"] }
 tokio-tungstenite = "0.28"
 rcgen = "0.14"
-criterion = "0.5"
+criterion = "0.7.0"
 
 [[example]]
 name = "async_auth_oauth"
