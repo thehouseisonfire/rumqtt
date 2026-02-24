@@ -21,8 +21,8 @@ use crate::{NetworkOptions, Transport};
 use mqttbytes::v5::*;
 
 pub use client::{
-    AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, RecvError, RecvTimeoutError,
-    Topic, TryRecvError, ValidatedTopic,
+    AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, PublishTopic, RecvError,
+    RecvTimeoutError, TryRecvError, ValidatedTopic,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use state::{MqttState, StateError};

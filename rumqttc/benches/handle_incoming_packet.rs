@@ -1,5 +1,5 @@
-use std::time::Duration;
 use std::hint::black_box;
+use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rumqttc::mqttbytes::QoS as V4QoS;

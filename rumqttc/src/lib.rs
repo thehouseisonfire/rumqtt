@@ -159,7 +159,8 @@ type RequestModifierFn = Arc<
 mod proxy;
 
 pub use client::{
-    AsyncClient, Client, ClientError, Connection, Iter, RecvError, RecvTimeoutError, TryRecvError,
+    AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, PublishTopic, RecvError,
+    RecvTimeoutError, TryRecvError, ValidatedTopic,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v4::*;
