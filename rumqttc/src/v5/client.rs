@@ -1,5 +1,6 @@
 //! This module offers a high level synchronous and asynchronous abstraction to
 //! async eventloop.
+use std::borrow::Cow;
 use std::time::Duration;
 
 use super::mqttbytes::QoS;
@@ -31,7 +32,7 @@ pub struct InvalidTopic(String);
 /// performs a one-time validation check.
 ///
 /// Use this when publishing repeatedly to the same topic to avoid per-call
-/// validation overhead in publish APIs that accept [`Topic`].
+/// validation overhead in publish APIs that accept [`PublishTopic`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedTopic(String);
 
@@ -57,46 +58,53 @@ impl From<ValidatedTopic> for String {
     }
 }
 
-/// A private module to seal the [`Topic`] trait.
-/// Sealing the trait prevents users from implementing [`Topic`]
-/// for their own type, which would circumvent validation
-mod private {
-    use super::ValidatedTopic;
-    pub trait Sealed {}
-    impl Sealed for ValidatedTopic {}
-    impl Sealed for String {}
-    impl Sealed for &str {}
-}
-
-/// Abstracts over topic types for publishing (as opposed to filters).
+/// Topic argument accepted by publish APIs.
 ///
-/// This sealed trait is implemented for string types (`String`, `&str`) and
-/// for [`ValidatedTopic`]. It allows client methods to efficiently handle
-/// both pre-validated and unvalidated topic inputs.
-pub trait Topic: private::Sealed {
-    /// Indicates whether the topic requires validation.
-    const NEEDS_VALIDATION: bool;
-    fn into_string(self) -> String;
+/// `ValidatedTopic` variants skip per-call validation while string variants are
+/// validated for MQTT topic correctness.
+pub enum PublishTopic {
+    /// Raw topic input that must be validated before publishing.
+    Unvalidated(String),
+    /// Topic that has already been validated once.
+    Validated(ValidatedTopic),
 }
 
-impl Topic for ValidatedTopic {
-    const NEEDS_VALIDATION: bool = false;
-    fn into_string(self) -> String {
-        self.0
+impl PublishTopic {
+    fn into_string_and_validation(self) -> (String, bool) {
+        match self {
+            Self::Unvalidated(topic) => (topic, true),
+            Self::Validated(topic) => (topic.0, false),
+        }
     }
 }
 
-impl Topic for String {
-    const NEEDS_VALIDATION: bool = true;
-    fn into_string(self) -> String {
-        self
+impl From<ValidatedTopic> for PublishTopic {
+    fn from(topic: ValidatedTopic) -> Self {
+        Self::Validated(topic)
     }
 }
 
-impl Topic for &str {
-    const NEEDS_VALIDATION: bool = true;
-    fn into_string(self) -> String {
-        self.to_owned()
+impl From<String> for PublishTopic {
+    fn from(topic: String) -> Self {
+        Self::Unvalidated(topic)
+    }
+}
+
+impl From<&str> for PublishTopic {
+    fn from(topic: &str) -> Self {
+        Self::Unvalidated(topic.to_owned())
+    }
+}
+
+impl From<&String> for PublishTopic {
+    fn from(topic: &String) -> Self {
+        Self::Unvalidated(topic.clone())
+    }
+}
+
+impl From<Cow<'_, str>> for PublishTopic {
+    fn from(topic: Cow<'_, str>) -> Self {
+        Self::Unvalidated(topic.into_owned())
     }
 }
 
@@ -154,27 +162,24 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Publish to the `EventLoop`.
-    async fn handle_publish<S, P>(
+    async fn handle_publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
-        let topic = topic.into_string();
-        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
 
-        // This is zero-cost for `ValidatedTopic`,
-        // `S::NEEDS_VALIDATION` is false, and the entire conditional is
-        // removed.
         if invalid_topic {
             return Err(ClientError::Request(Box::new(publish)));
         }
@@ -183,51 +188,51 @@ impl AsyncClient {
         Ok(())
     }
 
-    pub async fn publish_with_properties<S, P>(
+    pub async fn publish_with_properties<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, Some(properties))
             .await
     }
 
-    pub async fn publish<S, P>(
+    pub async fn publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, None).await
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop`.
-    fn handle_try_publish<S, P>(
+    fn handle_try_publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
-        let topic = topic.into_string();
-        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -240,30 +245,30 @@ impl AsyncClient {
         Ok(())
     }
 
-    pub fn try_publish_with_properties<S, P>(
+    pub fn try_publish_with_properties<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.handle_try_publish(topic, qos, retain, payload, Some(properties))
     }
 
-    pub fn try_publish<S, P>(
+    pub fn try_publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.handle_try_publish(topic, qos, retain, payload, None)
@@ -305,19 +310,19 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Publish to the `EventLoop`
-    async fn handle_publish_bytes<S>(
+    async fn handle_publish_bytes<T>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: Bytes,
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
     {
-        let topic = topic.into_string();
-        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -330,30 +335,30 @@ impl AsyncClient {
         Ok(())
     }
 
-    pub async fn publish_bytes_with_properties<S>(
+    pub async fn publish_bytes_with_properties<T>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: Bytes,
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
     {
         self.handle_publish_bytes(topic, qos, retain, payload, Some(properties))
             .await
     }
 
-    pub async fn publish_bytes<S>(
+    pub async fn publish_bytes<T>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: Bytes,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
     {
         self.handle_publish_bytes(topic, qos, retain, payload, None)
             .await
@@ -657,20 +662,20 @@ impl Client {
     }
 
     /// Sends a MQTT Publish to the `EventLoop`
-    fn handle_publish<S, P>(
+    fn handle_publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: Option<PublishProperties>,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
-        let topic = topic.into_string();
-        let invalid_topic = S::NEEDS_VALIDATION && !valid_topic(&topic);
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let request = Request::Publish(publish);
@@ -683,60 +688,60 @@ impl Client {
         Ok(())
     }
 
-    pub fn publish_with_properties<S, P>(
+    pub fn publish_with_properties<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, Some(properties))
     }
 
-    pub fn publish<S, P>(
+    pub fn publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, None)
     }
 
-    pub fn try_publish_with_properties<S, P>(
+    pub fn try_publish_with_properties<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
         properties: PublishProperties,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.client
             .try_publish_with_properties(topic, qos, retain, payload, properties)
     }
 
-    pub fn try_publish<S, P>(
+    pub fn try_publish<T, P>(
         &self,
-        topic: S,
+        topic: T,
         qos: QoS,
         retain: bool,
         payload: P,
     ) -> Result<(), ClientError>
     where
-        S: Topic,
+        T: Into<PublishTopic>,
         P: Into<Bytes>,
     {
         self.client.try_publish(topic, qos, retain, payload)
@@ -1128,6 +1133,60 @@ mod test {
             .publish(valid_topic, QoS::ExactlyOnce, false, "good bye")
             .expect("Should be able to publish");
         let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn publish_accepts_borrowed_string_topic() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+        let topic = "hello/world".to_string();
+        client
+            .publish(&topic, QoS::ExactlyOnce, false, "good bye")
+            .expect("Should be able to publish");
+        client
+            .try_publish(&topic, QoS::ExactlyOnce, false, "good bye")
+            .expect("Should be able to publish");
+        let _ = rx.try_recv().expect("Should have message");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn publish_accepts_cow_topic_variants() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+        client
+            .publish(
+                std::borrow::Cow::Borrowed("hello/world"),
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+            )
+            .expect("Should be able to publish");
+        client
+            .try_publish(
+                std::borrow::Cow::Owned("hello/world".to_owned()),
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+            )
+            .expect("Should be able to publish");
+        let _ = rx.try_recv().expect("Should have message");
+        let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn publishing_invalid_cow_topic_fails() {
+        let (tx, _) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+        let err = client
+            .publish(
+                std::borrow::Cow::Borrowed("a/+/b"),
+                QoS::ExactlyOnce,
+                false,
+                "good bye",
+            )
+            .expect_err("Invalid publish topic should fail");
+        assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_))));
     }
 
     #[test]
