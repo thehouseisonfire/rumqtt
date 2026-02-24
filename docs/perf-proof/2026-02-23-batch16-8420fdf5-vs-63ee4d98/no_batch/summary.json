@@ -1,0 +1,1583 @@
+{
+  "alternate_order": true,
+  "bootstrap_samples": 2000,
+  "branches": {
+    "baseline": "8420fdf5",
+    "target": "63ee4d98"
+  },
+  "command": "cargo run -p benchmarks --bin rumqttasync --release",
+  "comparison": [
+    {
+      "baseline": 209000.0,
+      "delta_abs": 0.0,
+      "delta_pct": 0.0,
+      "metric": "throughput",
+      "percentile": "p50",
+      "target": 209000.0
+    },
+    {
+      "baseline": 218000.0,
+      "delta_abs": -2000.0,
+      "delta_pct": -0.9174311926605505,
+      "metric": "throughput",
+      "percentile": "p90",
+      "target": 216000.0
+    },
+    {
+      "baseline": 223000.0,
+      "delta_abs": -2000.0,
+      "delta_pct": -0.8968609865470852,
+      "metric": "throughput",
+      "percentile": "p99",
+      "target": 221000.0
+    }
+  ],
+  "confidence": 0.95,
+  "interleaved": true,
+  "mode": "branch_interleaved",
+  "paired_analysis_enabled": true,
+  "paired_comparison": {
+    "throughput": {
+      "baseline": {
+        "count": 40,
+        "cv": 0.032873023490394074,
+        "mad": 4000.0,
+        "max": 223000.0,
+        "mean": 208925.0,
+        "median": 210000.0,
+        "min": 195000.0,
+        "p50": 209000.0,
+        "p90": 218000.0,
+        "p99": 223000.0
+      },
+      "classification": "inconclusive",
+      "delta_abs": {
+        "count": 40,
+        "cv": 13.75940990953468,
+        "mad": 6000.0,
+        "max": 17000.0,
+        "mean": 575.0,
+        "median": 0.0,
+        "min": -15000.0,
+        "p50": -1000.0,
+        "p90": 13000.0,
+        "p99": 17000.0
+      },
+      "delta_pct": {
+        "count": 40,
+        "cv": 10.416828511907624,
+        "mad": 2.775988291923335,
+        "max": 8.629441624365482,
+        "mean": 0.3674989602100972,
+        "median": 0.004492665723206862,
+        "min": -6.726457399103139,
+        "p50": -0.4694835680751174,
+        "p90": 6.25,
+        "p99": 8.629441624365482
+      },
+      "paired_runs": 40,
+      "pairs_with_nonzero_baseline": 40,
+      "relative_delta_ci_high_pct": 1.428603823215946,
+      "relative_delta_ci_low_pct": -0.9686649779529036,
+      "relative_delta_ci_width_pct": 2.3972688011688494,
+      "relative_delta_median_pct": 0.004492665723206862,
+      "target": {
+        "count": 40,
+        "cv": 0.026296340851244524,
+        "mad": 4000.0,
+        "max": 221000.0,
+        "mean": 209500.0,
+        "median": 209000.0,
+        "min": 198000.0,
+        "p50": 209000.0,
+        "p90": 216000.0,
+        "p99": 221000.0
+      }
+    }
+  },
+  "results": {
+    "baseline": {
+      "branch": "8420fdf5",
+      "commit": "8420fdf5b8cba44730419314b5f7797da4c6d932",
+      "failed_runs": 0,
+      "label": "baseline",
+      "metrics": {
+        "throughput": {
+          "count": 40,
+          "cv": 0.032873023490394074,
+          "mad": 4000.0,
+          "max": 223000.0,
+          "mean": 208925.0,
+          "median": 210000.0,
+          "min": 195000.0,
+          "p50": 209000.0,
+          "p90": 218000.0,
+          "p99": 223000.0
+        }
+      },
+      "name": "8420fdf5",
+      "runs": [
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 49.67522554699826,
+          "error": null,
+          "is_warmup": true,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_001",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.909560745996714,
+          "error": null,
+          "is_warmup": true,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_002",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.928948367996782,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_003",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.908233963000384,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_004",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.922984726999857,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 213000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_005",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.886555409997527,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_006",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.19685326799663,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 201000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_007",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.132336277001741,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 203000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_008",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.123669379998319,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 202000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_009",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.906886062999547,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_010",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.9278555840028275,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_011",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.8686833970023145,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 214000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_012",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.087775829000748,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 205000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_013",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.04838036000001,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 207000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_014",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.993884640000033,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_015",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.091357498000434,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 206000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_016",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.140796752999449,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 202000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_017",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.963338017998467,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_018",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.020384127998113,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 208000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_019",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.022118929999124,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 213000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_020",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.025035909999133,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 208000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_021",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.934281147001457,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_022",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.99656413699995,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_023",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.692268677001266,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 223000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_024",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.117805411999143,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 204000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_025",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.274369131999265,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 196000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_026",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.854405861002306,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 215000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_027",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.043122552000568,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 207000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_028",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.929887820999284,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_029",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.7056561460012745,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 222000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_030",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.756158354997751,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 219000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_031",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.973010117999365,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_032",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.265468417001102,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 197000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_033",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.90687246699963,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_034",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.104539949999889,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 204000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_035",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.3387125529989135,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 195000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_036",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.157032609000453,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 201000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_037",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.896355374003178,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 214000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_038",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 5.319033843999932,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 196000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_039",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.873646845997428,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 213000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_040",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.802021853996848,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 218000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_041",
+          "timed_out": false
+        },
+        {
+          "branch_label": "baseline",
+          "elapsed_sec": 4.758138166002027,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 220000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_042",
+          "timed_out": false
+        }
+      ],
+      "success_runs": 40
+    },
+    "target": {
+      "branch": "63ee4d98",
+      "commit": "63ee4d983a1ff861316ce6c983a70a5551f2ff46",
+      "failed_runs": 0,
+      "label": "target",
+      "metrics": {
+        "throughput": {
+          "count": 40,
+          "cv": 0.026296340851244524,
+          "mad": 4000.0,
+          "max": 221000.0,
+          "mean": 209500.0,
+          "median": 209000.0,
+          "min": 198000.0,
+          "p50": 209000.0,
+          "p90": 216000.0,
+          "p99": 221000.0
+        }
+      },
+      "name": "63ee4d98",
+      "runs": [
+        {
+          "branch_label": "target",
+          "elapsed_sec": 49.4086408309995,
+          "error": null,
+          "is_warmup": true,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_001",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.234024656001566,
+          "error": null,
+          "is_warmup": true,
+          "metrics": {
+            "throughput": 198000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_002",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.86879424700237,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 214000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_003",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.117094578999968,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 205000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_004",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.903079103998607,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_005",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.153713366002194,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 202000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_006",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.967335435001587,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_007",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.025279998000769,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 208000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_008",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.199997315001383,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 199000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_009",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.170107860001735,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 199000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_010",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.8313244769997254,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 214000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_011",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.155260135001299,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 202000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_012",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.87968902600187,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 214000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_013",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.269305334000819,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 198000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_014",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.019485724998958,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 207000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_015",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.058406153002579,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 207000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_016",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.821460700000898,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 216000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_017",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.0133601800007455,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_018",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.750501964997966,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 221000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_019",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.943746346998523,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_020",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.828900934000558,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 216000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_021",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.982944463001331,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_022",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.924919417997444,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_023",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.03387238799769,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 208000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_024",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.0350668510000105,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 206000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_025",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.994396599999163,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_026",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.992988754001999,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_027",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.897785487999499,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 213000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_028",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.890884320997429,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 216000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_029",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.761971372001426,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 219000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_030",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.998862201999145,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 209000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_031",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.958061804998579,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 210000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_032",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.851730944999872,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 214000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_033",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.841432412002177,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 215000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_034",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.144677005999256,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 202000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_035",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.150996546002716,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 202000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_036",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.018035075001535,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 207000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_037",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.910760132999712,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_038",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.9326194019995455,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 211000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_039",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 5.128692056998261,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 205000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_040",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.977247103997797,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 212000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_041",
+          "timed_out": false
+        },
+        {
+          "branch_label": "target",
+          "elapsed_sec": 4.813965549001296,
+          "error": null,
+          "is_warmup": false,
+          "metrics": {
+            "throughput": 217000.0
+          },
+          "ok": true,
+          "returncode": 0,
+          "run_id": "run_042",
+          "timed_out": false
+        }
+      ],
+      "success_runs": 40
+    }
+  },
+  "run_order": [
+    {
+      "is_warmup": true,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_001"
+    },
+    {
+      "is_warmup": true,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_002"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_003"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_004"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_005"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_006"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_007"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_008"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_009"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_010"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_011"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_012"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_013"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_014"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_015"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_016"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_017"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_018"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_019"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_020"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_021"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_022"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_023"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_024"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_025"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_026"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_027"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_028"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_029"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_030"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_031"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_032"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_033"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_034"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_035"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_036"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_037"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_038"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_039"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_040"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "baseline",
+        "target"
+      ],
+      "run_id": "run_041"
+    },
+    {
+      "is_warmup": false,
+      "order": [
+        "target",
+        "baseline"
+      ],
+      "run_id": "run_042"
+    }
+  ],
+  "runs": 40,
+  "seed_prefix": "interleaved-strict40-pair1-8420fdf5-vs-63ee4d98",
+  "timeout_sec": 300,
+  "timestamp": "20260223-183123Z",
+  "warmup": 2
+}
