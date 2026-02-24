@@ -272,6 +272,33 @@ def bootstrap_relative_delta_ci(
     return point, low, high, width
 
 
+def bootstrap_paired_relative_delta_ci(
+    relative_deltas_pct: list[float],
+    *,
+    samples: int,
+    confidence: float,
+    rng: random.Random,
+) -> tuple[float, float, float, float] | None:
+    if not relative_deltas_pct:
+        return None
+
+    point = median(relative_deltas_pct)
+    deltas: list[float] = []
+    count = len(relative_deltas_pct)
+    for _ in range(samples):
+        sample = [relative_deltas_pct[rng.randrange(count)] for _ in range(count)]
+        deltas.append(median(sample))
+
+    deltas.sort()
+    alpha = 1.0 - confidence
+    lo_idx = max(0, int(math.floor((alpha / 2.0) * (len(deltas) - 1))))
+    hi_idx = min(len(deltas) - 1, int(math.ceil((1.0 - (alpha / 2.0)) * (len(deltas) - 1))))
+    low = deltas[lo_idx]
+    high = deltas[hi_idx]
+    width = high - low
+    return point, low, high, width
+
+
 def metric_summary(values: list[float]) -> dict[str, Any]:
     sorted_values = sorted(values)
     summary: dict[str, Any] = {
@@ -341,12 +368,107 @@ def quality_thresholds(args: argparse.Namespace) -> tuple[int, float, float, flo
     return min_runs, min_success_rate, max_cv, max_ci_width_pct, bootstrap_samples, confidence
 
 
+def stable_text_seed(text: str) -> int:
+    seed = 0
+    for idx, ch in enumerate(text, start=1):
+        seed = (seed * 131 + (ord(ch) * idx)) % (2**31 - 1)
+    return seed
+
+
+def compute_paired_metric_comparisons(
+    *,
+    per_branch: dict[str, dict[str, Any]],
+    bootstrap_samples: int,
+    confidence: float,
+    rng_seed: int,
+) -> dict[str, dict[str, Any]]:
+    baseline_runs = per_branch["baseline"]["runs"]
+    target_runs = per_branch["target"]["runs"]
+
+    baseline_by_run = {
+        run["run_id"]: run["metrics"]
+        for run in baseline_runs
+        if (not run["is_warmup"]) and run["ok"] and isinstance(run.get("metrics"), dict)
+    }
+    target_by_run = {
+        run["run_id"]: run["metrics"]
+        for run in target_runs
+        if (not run["is_warmup"]) and run["ok"] and isinstance(run.get("metrics"), dict)
+    }
+
+    paired_run_ids = sorted(set(baseline_by_run.keys()) & set(target_by_run.keys()))
+    metrics: set[str] = set()
+    for run_id in paired_run_ids:
+        metrics.update(k for k in baseline_by_run[run_id].keys() if isinstance(k, str))
+        metrics.update(k for k in target_by_run[run_id].keys() if isinstance(k, str))
+
+    results: dict[str, dict[str, Any]] = {}
+    for metric in sorted(metrics):
+        paired_values: list[tuple[float, float]] = []
+        for run_id in paired_run_ids:
+            b_metrics = baseline_by_run[run_id]
+            t_metrics = target_by_run[run_id]
+            if metric in b_metrics and metric in t_metrics:
+                paired_values.append((float(b_metrics[metric]), float(t_metrics[metric])))
+
+        if not paired_values:
+            results[metric] = {"paired_runs": 0, "error": "no successful paired runs had this metric"}
+            continue
+
+        baseline_values = [b for b, _ in paired_values]
+        target_values = [t for _, t in paired_values]
+        abs_deltas = [t - b for b, t in paired_values]
+        rel_deltas = [((t - b) / b) * 100.0 for b, t in paired_values if b != 0]
+
+        entry: dict[str, Any] = {
+            "paired_runs": len(paired_values),
+            "baseline": metric_summary(baseline_values),
+            "target": metric_summary(target_values),
+            "delta_abs": metric_summary(abs_deltas),
+            "pairs_with_nonzero_baseline": len(rel_deltas),
+        }
+
+        if not rel_deltas:
+            entry["error"] = "all paired baseline values were zero; relative deltas are undefined"
+            results[metric] = entry
+            continue
+
+        entry["delta_pct"] = metric_summary(rel_deltas)
+        rng = random.Random(rng_seed + stable_text_seed(metric))
+        ci = bootstrap_paired_relative_delta_ci(
+            rel_deltas,
+            samples=bootstrap_samples,
+            confidence=confidence,
+            rng=rng,
+        )
+        if ci is None:
+            entry["error"] = "insufficient data for paired bootstrap CI"
+            results[metric] = entry
+            continue
+
+        point, low, high, width = ci
+        classification = "inconclusive"
+        if low > 0:
+            classification = "uplift"
+        elif high < 0:
+            classification = "regression"
+        entry["relative_delta_median_pct"] = point
+        entry["relative_delta_ci_low_pct"] = low
+        entry["relative_delta_ci_high_pct"] = high
+        entry["relative_delta_ci_width_pct"] = width
+        entry["classification"] = classification
+        results[metric] = entry
+
+    return results
+
+
 def build_html_report(
     output_path: Path,
     *,
     metadata: dict[str, Any],
     per_branch: dict[str, dict[str, Any]],
     comparisons: list[dict[str, Any]],
+    paired_comparisons: dict[str, dict[str, Any]] | None = None,
     quality: dict[str, Any] | None = None,
 ) -> None:
     metrics = sorted(
@@ -475,6 +597,35 @@ def build_html_report(
         html_parts.append(f'<td class="{cls}">{fmt(delta_pct, 2) if delta_pct is not None else "-"}</td>')
         html_parts.append("</tr>")
     html_parts.append("</tbody></table>")
+
+    if paired_comparisons:
+        html_parts.append("<h2>Paired Run Comparison</h2>")
+        html_parts.append(
+            "<table><thead><tr>"
+            "<th>Metric</th><th>Paired Runs</th><th>Median % Delta</th><th>95% CI [%]</th><th>Class</th>"
+            "</tr></thead><tbody>"
+        )
+        for metric in sorted(paired_comparisons.keys()):
+            row = paired_comparisons[metric]
+            delta = row.get("relative_delta_median_pct")
+            low = row.get("relative_delta_ci_low_pct")
+            high = row.get("relative_delta_ci_high_pct")
+            cls_val = str(row.get("classification", row.get("error", "-")))
+            cls = ""
+            if isinstance(delta, (int, float)):
+                cls = "delta-pos" if float(delta) >= 0 else "delta-neg"
+            ci_text = "-"
+            if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+                ci_text = f"[{fmt(float(low), 2)}, {fmt(float(high), 2)}]"
+            html_parts.append("<tr>")
+            html_parts.append(f"<td>{html.escape(metric)}</td>")
+            html_parts.append(f"<td>{row.get('paired_runs', 0)}</td>")
+            delta_text = fmt(float(delta), 2) if isinstance(delta, (int, float)) else "-"
+            html_parts.append(f'<td class="{cls}">{delta_text}</td>')
+            html_parts.append(f"<td>{html.escape(ci_text)}</td>")
+            html_parts.append(f"<td>{html.escape(cls_val)}</td>")
+            html_parts.append("</tr>")
+        html_parts.append("</tbody></table>")
 
     html_parts.append("</body></html>")
     output_path.write_text("\n".join(html_parts), encoding="utf-8")
@@ -678,8 +829,16 @@ def evaluate_scenario_quality(
     metric_names = sorted(set(per_branch["baseline"]["metrics"].keys()) | set(per_branch["target"]["metrics"].keys()))
 
     for metric in metric_names:
-        b_vals = [float(r["metrics"][metric]) for r in baseline_runs if (not r["is_warmup"]) and r["ok"] and metric in r["metrics"]]
-        t_vals = [float(r["metrics"][metric]) for r in target_runs if (not r["is_warmup"]) and r["ok"] and metric in r["metrics"]]
+        b_vals = [
+            float(r["metrics"][metric])
+            for r in baseline_runs
+            if (not r["is_warmup"]) and r["ok"] and metric in r["metrics"]
+        ]
+        t_vals = [
+            float(r["metrics"][metric])
+            for r in target_runs
+            if (not r["is_warmup"]) and r["ok"] and metric in r["metrics"]
+        ]
         if b_vals:
             stats["per_metric"].setdefault(metric, {})["baseline"] = metric_summary(b_vals)
         if t_vals:
@@ -706,7 +865,10 @@ def evaluate_scenario_quality(
                 if width > max_ci_width_pct:
                     passed = False
                     reasons.append(
-                        f"primary metric '{primary_metric}' CI width {width:.2f}% above threshold {max_ci_width_pct:.2f}%"
+                        (
+                            f"primary metric '{primary_metric}' CI width {width:.2f}% "
+                            f"above threshold {max_ci_width_pct:.2f}%"
+                        )
                     )
         else:
             stats["comparisons"][metric] = {"error": "insufficient data for bootstrap CI"}
@@ -848,7 +1010,11 @@ def run_cross_library(args: argparse.Namespace) -> int:
                     runs_dir.mkdir(parents=True, exist_ok=True)
                     parsed_dir.mkdir(parents=True, exist_ok=True)
 
-                    returncode, timed_out, stdout, stderr, elapsed_sec = run_benchmark_once(repo_root, command, args.timeout_sec)
+                    returncode, timed_out, stdout, stderr, elapsed_sec = run_benchmark_once(
+                        repo_root,
+                        command,
+                        args.timeout_sec,
+                    )
                     write_text(runs_dir / f"{run_id}.stdout.txt", stdout)
                     write_text(runs_dir / f"{run_id}.stderr.txt", stderr)
 
@@ -981,7 +1147,13 @@ def run_cross_library(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run benchmark regression comparison across two branches.")
-    parser.add_argument("--target-branch", required=False, help="Branch/ref to compare against current branch.")
+    parser.add_argument("--target-branch", required=False, help="Branch/ref to compare against baseline branch.")
+    parser.add_argument(
+        "--baseline-branch",
+        required=False,
+        default=None,
+        help="Baseline branch/ref (default: current branch/ref).",
+    )
     parser.add_argument(
         "--cross-library",
         action="store_true",
@@ -1032,7 +1204,19 @@ def main() -> int:
         "--alternate-order",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Alternate baseline/target execution order each run.",
+        help="Alternate baseline/target execution order each run (used by interleaved modes).",
+    )
+    parser.add_argument(
+        "--interleaved",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Interleave baseline/target runs in branch comparison mode (A/B then B/A alternating).",
+    )
+    parser.add_argument(
+        "--paired-analysis",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable paired per-run delta analysis (defaults to enabled when --interleaved).",
     )
     parser.add_argument(
         "--inner-warmup",
@@ -1066,7 +1250,7 @@ def main() -> int:
         return run_cross_library(args)
 
     repo_root = get_repo_root()
-    baseline_branch = get_current_branch(repo_root)
+    baseline_branch = args.baseline_branch if args.baseline_branch else get_current_branch(repo_root)
     target_branch = args.target_branch
 
     baseline_ref = resolve_ref(repo_root, baseline_branch)
@@ -1103,7 +1287,16 @@ def main() -> int:
                 )
             worktrees[branch_label] = wt_path
 
+        _, _, _, _, bootstrap_samples, confidence = quality_thresholds(args)
+        paired_analysis_enabled = args.interleaved if args.paired_analysis is None else args.paired_analysis
+        seed_prefix = args.seed_prefix or f"branch-{timestamp}"
+        total_runs = args.warmup + args.runs
+
         per_branch: dict[str, dict[str, Any]] = {}
+        branch_dirs: dict[str, dict[str, Path]] = {}
+        measured_values: dict[str, dict[str, list[float]]] = {"baseline": {}, "target": {}}
+        run_order: list[dict[str, Any]] = []
+
         for spec in branch_specs:
             branch_label = spec["label"]
             branch_name = spec["name"]
@@ -1113,97 +1306,128 @@ def main() -> int:
             parsed_dir = branch_dir / "parsed"
             runs_dir.mkdir(parents=True, exist_ok=True)
             parsed_dir.mkdir(parents=True, exist_ok=True)
+            branch_dirs[branch_label] = {
+                "wt_path": wt_path,
+                "branch_dir": branch_dir,
+                "runs_dir": runs_dir,
+                "parsed_dir": parsed_dir,
+            }
 
             commit_proc = run_process(["git", "rev-parse", "HEAD"], cwd=wt_path, check=True)
             commit = commit_proc.stdout.strip()
-
-            measured_values: dict[str, list[float]] = {}
-            run_records: list[dict[str, Any]] = []
-            total_runs = args.warmup + args.runs
-            success_runs = 0
-            failed_runs = 0
-
-            for i in range(1, total_runs + 1):
-                run_id = f"run_{i:03d}"
-                is_warmup = i <= args.warmup
-                returncode, timed_out, stdout, stderr, elapsed_sec = run_benchmark_once(
-                    wt_path, args.cmd, args.timeout_sec
-                )
-
-                write_text(runs_dir / f"{run_id}.stdout.txt", stdout)
-                write_text(runs_dir / f"{run_id}.stderr.txt", stderr)
-
-                json_objects = extract_json_objects(stdout)
-                metric_obj, metrics, parse_error = choose_metric_object(json_objects)
-
-                ok = (not timed_out) and (returncode == 0) and bool(metrics)
-                if not is_warmup:
-                    if ok:
-                        success_runs += 1
-                    else:
-                        failed_runs += 1
-
-                run_record: dict[str, Any] = {
-                    "run_id": run_id,
-                    "branch_label": branch_label,
-                    "is_warmup": is_warmup,
-                    "ok": ok,
-                    "timed_out": timed_out,
-                    "returncode": returncode,
-                    "elapsed_sec": elapsed_sec,
-                    "metrics": metrics,
-                    "error": None,
-                }
-
-                if timed_out:
-                    run_record["error"] = f"timeout after {args.timeout_sec}s"
-                elif returncode != 0:
-                    run_record["error"] = f"non-zero exit code: {returncode}"
-                elif not metrics:
-                    run_record["error"] = parse_error or "no throughput metrics parsed from stdout"
-
-                parsed_payload = {
-                    "run_id": run_id,
-                    "branch_label": branch_label,
-                    "branch": branch_name,
-                    "is_warmup": is_warmup,
-                    "raw_json_objects": json_objects,
-                    "selected_metric_object": metric_obj,
-                    "metrics": metrics,
-                    "timed_out": timed_out,
-                    "returncode": returncode,
-                    "elapsed_sec": elapsed_sec,
-                }
-                write_text(parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True))
-
-                run_records.append(run_record)
-                if ok and not is_warmup:
-                    for key, value in metrics.items():
-                        measured_values.setdefault(key, []).append(value)
-
-            metric_stats: dict[str, Any] = {}
-            for metric_name, values in measured_values.items():
-                if values:
-                    metric_stats[metric_name] = metric_summary(values)
-
-            if success_runs == 0:
-                raise RuntimeError(
-                    f"{branch_label} branch '{branch_name}' had zero successful measured runs. "
-                    f"See {branch_dir / 'runs'} for logs."
-                )
-
             per_branch[branch_label] = {
                 "label": branch_label,
                 "name": branch_name,
                 "branch": branch_name,
                 "commit": commit,
-                "success_runs": success_runs,
-                "failed_runs": failed_runs,
-                "metrics": metric_stats,
-                "runs": run_records,
+                "success_runs": 0,
+                "failed_runs": 0,
+                "metrics": {},
+                "runs": [],
             }
 
+        def execute_single_run(branch_label: str, run_id: str, is_warmup: bool) -> None:
+            branch_name = per_branch[branch_label]["name"]
+            wt_path = branch_dirs[branch_label]["wt_path"]
+            runs_dir = branch_dirs[branch_label]["runs_dir"]
+            parsed_dir = branch_dirs[branch_label]["parsed_dir"]
+
+            returncode, timed_out, stdout, stderr, elapsed_sec = run_benchmark_once(
+                wt_path, args.cmd, args.timeout_sec
+            )
+            write_text(runs_dir / f"{run_id}.stdout.txt", stdout)
+            write_text(runs_dir / f"{run_id}.stderr.txt", stderr)
+
+            json_objects = extract_json_objects(stdout)
+            metric_obj, metrics, parse_error = choose_metric_object(json_objects)
+            ok = (not timed_out) and (returncode == 0) and bool(metrics)
+            if not is_warmup:
+                if ok:
+                    per_branch[branch_label]["success_runs"] += 1
+                else:
+                    per_branch[branch_label]["failed_runs"] += 1
+
+            run_record: dict[str, Any] = {
+                "run_id": run_id,
+                "branch_label": branch_label,
+                "is_warmup": is_warmup,
+                "ok": ok,
+                "timed_out": timed_out,
+                "returncode": returncode,
+                "elapsed_sec": elapsed_sec,
+                "metrics": metrics,
+                "error": None,
+            }
+            if timed_out:
+                run_record["error"] = f"timeout after {args.timeout_sec}s"
+            elif returncode != 0:
+                run_record["error"] = f"non-zero exit code: {returncode}"
+            elif not metrics:
+                run_record["error"] = parse_error or "no throughput metrics parsed from stdout"
+
+            parsed_payload = {
+                "run_id": run_id,
+                "branch_label": branch_label,
+                "branch": branch_name,
+                "is_warmup": is_warmup,
+                "raw_json_objects": json_objects,
+                "selected_metric_object": metric_obj,
+                "metrics": metrics,
+                "timed_out": timed_out,
+                "returncode": returncode,
+                "elapsed_sec": elapsed_sec,
+            }
+            write_text(parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True))
+
+            per_branch[branch_label]["runs"].append(run_record)
+            if ok and not is_warmup:
+                for key, value in metrics.items():
+                    measured_values[branch_label].setdefault(key, []).append(value)
+
+        if args.interleaved:
+            for i in range(1, total_runs + 1):
+                run_id = f"run_{i:03d}"
+                is_warmup = i <= args.warmup
+                order = ["baseline", "target"]
+                if args.alternate_order and i % 2 == 0:
+                    order = ["target", "baseline"]
+                run_order.append({"run_id": run_id, "is_warmup": is_warmup, "order": order})
+
+                for branch_label in order:
+                    execute_single_run(branch_label, run_id, is_warmup)
+        else:
+            for spec in branch_specs:
+                branch_label = spec["label"]
+                for i in range(1, total_runs + 1):
+                    run_id = f"run_{i:03d}"
+                    is_warmup = i <= args.warmup
+                    execute_single_run(branch_label, run_id, is_warmup)
+
+        for branch_label in ("baseline", "target"):
+            metric_stats: dict[str, Any] = {}
+            for metric_name, values in measured_values[branch_label].items():
+                if values:
+                    metric_stats[metric_name] = metric_summary(values)
+            per_branch[branch_label]["metrics"] = metric_stats
+
+        for branch_label in ("baseline", "target"):
+            if per_branch[branch_label]["success_runs"] == 0:
+                branch_name = per_branch[branch_label]["name"]
+                branch_dir = branch_dirs[branch_label]["branch_dir"]
+                raise RuntimeError(
+                    f"{branch_label} branch '{branch_name}' had zero successful measured runs. "
+                    f"See {branch_dir / 'runs'} for logs."
+                )
+
         comparisons = compare_metric_sets(per_branch["baseline"]["metrics"], per_branch["target"]["metrics"])
+        paired_comparisons: dict[str, dict[str, Any]] | None = None
+        if paired_analysis_enabled:
+            paired_comparisons = compute_paired_metric_comparisons(
+                per_branch=per_branch,
+                bootstrap_samples=bootstrap_samples,
+                confidence=confidence,
+                rng_seed=stable_text_seed(seed_prefix),
+            )
 
         summary = {
             "timestamp": timestamp,
@@ -1211,12 +1435,21 @@ def main() -> int:
             "runs": args.runs,
             "warmup": args.warmup,
             "timeout_sec": args.timeout_sec,
+            "mode": "branch_interleaved" if args.interleaved else "branch_grouped",
+            "interleaved": args.interleaved,
+            "alternate_order": args.alternate_order if args.interleaved else False,
+            "seed_prefix": seed_prefix,
+            "paired_analysis_enabled": paired_analysis_enabled,
+            "bootstrap_samples": bootstrap_samples,
+            "confidence": confidence,
+            "run_order": run_order,
             "branches": {
                 "baseline": baseline_branch,
                 "target": target_branch,
             },
             "results": per_branch,
             "comparison": comparisons,
+            "paired_comparison": paired_comparisons,
         }
         write_text(output_dir / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
 
@@ -1239,7 +1472,9 @@ def main() -> int:
             for branch_label in ("baseline", "target"):
                 branch_data = per_branch[branch_label]
                 branch_title = f"{branch_data['name']} ({branch_label})"
-                writer.writerow(["branch", branch_title, "_runs", "success", branch_data["success_runs"], "", "", "", ""])
+                writer.writerow(
+                    ["branch", branch_title, "_runs", "success", branch_data["success_runs"], "", "", "", ""]
+                )
                 writer.writerow(["branch", branch_title, "_runs", "failed", branch_data["failed_runs"], "", "", "", ""])
                 for metric_name, stats in branch_data["metrics"].items():
                     for stat_name in ("min", "max", "mean", "median", "mad", "cv", "p50", "p90", "p99"):
@@ -1261,17 +1496,101 @@ def main() -> int:
                     ]
                 )
 
+            if paired_comparisons:
+                for metric_name in sorted(paired_comparisons.keys()):
+                    row = paired_comparisons[metric_name]
+                    writer.writerow(
+                        [
+                            "paired",
+                            "",
+                            metric_name,
+                            "paired_runs",
+                            row.get("paired_runs"),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "paired",
+                            "",
+                            metric_name,
+                            "relative_delta_median_pct",
+                            row.get("relative_delta_median_pct"),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "paired",
+                            "",
+                            metric_name,
+                            "relative_delta_ci_low_pct",
+                            row.get("relative_delta_ci_low_pct"),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "paired",
+                            "",
+                            metric_name,
+                            "relative_delta_ci_high_pct",
+                            row.get("relative_delta_ci_high_pct"),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "paired",
+                            "",
+                            metric_name,
+                            "relative_delta_ci_width_pct",
+                            row.get("relative_delta_ci_width_pct"),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "paired",
+                            "",
+                            metric_name,
+                            "classification",
+                            row.get("classification", row.get("error")),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
+
         report_meta = {
             "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
             "command": args.cmd,
             "runs": args.runs,
             "warmup": args.warmup,
+            "mode": summary["mode"],
         }
         build_html_report(
             output_dir / "compare.html",
             metadata=report_meta,
             per_branch=per_branch,
             comparisons=comparisons,
+            paired_comparisons=paired_comparisons,
         )
 
         print(f"Regression complete. Output directory: {output_dir}")
