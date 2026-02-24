@@ -69,6 +69,7 @@ pretty_env_logger = "0.5"
 serde = { version = "1", features = ["derive"] }
 tokio-tungstenite = "0.28"
 rcgen = "0.14"
+criterion = "0.5"
 
 [[example]]
 name = "async_auth_oauth"
@@ -99,3 +100,7 @@ required-features = ["websocket"]
 name = "websocket_proxy"
 path = "examples/websocket_proxy.rs"
 required-features = ["websocket", "proxy"]
+
+[[bench]]
+name = "handle_incoming_packet"
+harness = false

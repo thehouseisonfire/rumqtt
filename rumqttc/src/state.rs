@@ -182,9 +182,8 @@ impl MqttState {
 
         // Preserve original event ordering (Incoming first, derived Outgoing next)
         // without cloning the incoming packet.
-        let mut trailing_events = self.events.split_off(events_len_before);
-        self.events.push_back(Event::Incoming(packet));
-        self.events.append(&mut trailing_events);
+        self.events
+            .insert(events_len_before, Event::Incoming(packet));
         let outgoing = outgoing?;
         self.last_incoming = Instant::now();
 
@@ -659,6 +658,32 @@ mod test {
         assert!(mqtt.incoming_pub.contains(3));
 
         assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn handle_incoming_packet_should_emit_incoming_before_derived_qos1_ack() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_incoming_publish(QoS::AtLeastOnce, 42);
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+
+        assert_eq!(mqtt.events.len(), 2);
+        assert_eq!(mqtt.events[0], Event::Incoming(Incoming::Publish(publish)));
+        assert_eq!(mqtt.events[1], Event::Outgoing(Outgoing::PubAck(42)));
+    }
+
+    #[test]
+    fn handle_incoming_packet_should_emit_incoming_before_derived_qos2_ack() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 43);
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+
+        assert_eq!(mqtt.events.len(), 2);
+        assert_eq!(mqtt.events[0], Event::Incoming(Incoming::Publish(publish)));
+        assert_eq!(mqtt.events[1], Event::Outgoing(Outgoing::PubRec(43)));
     }
 
     #[test]
