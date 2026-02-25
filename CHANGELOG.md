@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `rumqttc` v4/v5: Add `set_read_batch_size(usize)` and `read_batch_size()` on `MqttOptions` to configure network read batching; default of `0` enables adaptive batching based on inflight/pending load.
 - `rumqttc` v4/v5: Add `set_max_request_batch(usize)` and `max_request_batch()` on `MqttOptions` to control how many queued requests are processed per eventloop iteration (higher values can improve throughput by batching writes/flushes).
+- `rumqttc` v4/v5 websocket transport: Add `set_fallible_request_modifier(...)` on `MqttOptions` to support request modifiers that return `Result<http::Request<()>, E>`; errors now surface as `ConnectionError::RequestModifier`.
 ### Changed
 - `rumqttc` v5: Change connect timeout API from seconds-based `connection_timeout()`/`set_connection_timeout(u64)` to `Duration`-based `connect_timeout()`/`set_connect_timeout(Duration)`, and update internal connect timeout handling accordingly.
 - `rumqttc` v4: Change `mqttbytes::v4::Publish.topic` from `String` to `bytes::Bytes`, reducing topic allocation/copy overhead in packet decode/encode paths (topic UTF-8 validation is still enforced).
