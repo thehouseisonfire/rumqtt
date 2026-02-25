@@ -15,8 +15,7 @@ mod framed;
 pub mod mqttbytes;
 mod state;
 
-use crate::Outgoing;
-use crate::{NetworkOptions, Transport};
+use crate::{NetworkOptions, Outgoing, SocketConnector, Transport, default_socket_connect};
 
 use mqttbytes::v5::*;
 
@@ -149,6 +148,7 @@ pub struct MqttOptions {
     outgoing_inflight_upper_limit: Option<u16>,
     #[cfg(feature = "websocket")]
     request_modifier: Option<RequestModifierFn>,
+    socket_connector: Option<SocketConnector>,
 
     auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
 }
@@ -188,6 +188,7 @@ impl MqttOptions {
             outgoing_inflight_upper_limit: None,
             #[cfg(feature = "websocket")]
             request_modifier: None,
+            socket_connector: None,
             auth_manager: None,
         }
     }
@@ -257,6 +258,79 @@ impl MqttOptions {
     #[cfg(feature = "websocket")]
     pub fn request_modifier(&self) -> Option<RequestModifierFn> {
         self.request_modifier.clone()
+    }
+
+    /// Sets a custom socket connector, overriding the default TCP socket creation logic.
+    ///
+    /// The connector is used to create the base stream before optional proxy/TLS/WebSocket layers
+    /// managed by `MqttOptions` are applied.
+    ///
+    /// If the connector already performs TLS/proxy work, configure `MqttOptions` transport/proxy
+    /// to avoid layering those concerns twice.
+    ///
+    /// # Example
+    /// ```
+    /// # use rumqttc::v5::MqttOptions;
+    /// # let mut options = MqttOptions::new("test", "localhost", 1883);
+    /// options.set_socket_connector(|host, network_options| async move {
+    ///     rumqttc::default_socket_connect(host, network_options).await
+    /// });
+    /// ```
+    #[cfg(not(feature = "websocket"))]
+    pub fn set_socket_connector<F, Fut, S>(&mut self, f: F) -> &mut Self
+    where
+        F: Fn(String, NetworkOptions) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<S, std::io::Error>> + Send + 'static,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
+    {
+        self.socket_connector = Some(Arc::new(move |host, network_options| {
+            let stream_future = f(host, network_options);
+            let future = async move {
+                let stream = stream_future.await?;
+                Ok(Box::new(stream) as Box<dyn crate::framed::AsyncReadWrite>)
+            };
+            Box::pin(future)
+        }));
+        self
+    }
+
+    /// Sets a custom socket connector, overriding the default TCP socket creation logic.
+    ///
+    /// The connector is used to create the base stream before optional proxy/TLS/WebSocket layers
+    /// managed by `MqttOptions` are applied.
+    ///
+    /// If the connector already performs TLS/proxy work, configure `MqttOptions` transport/proxy
+    /// to avoid layering those concerns twice.
+    ///
+    /// # Example
+    /// ```
+    /// # use rumqttc::v5::MqttOptions;
+    /// # let mut options = MqttOptions::new("test", "localhost", 1883);
+    /// options.set_socket_connector(|host, network_options| async move {
+    ///     rumqttc::default_socket_connect(host, network_options).await
+    /// });
+    /// ```
+    #[cfg(feature = "websocket")]
+    pub fn set_socket_connector<F, Fut, S>(&mut self, f: F) -> &mut Self
+    where
+        F: Fn(String, NetworkOptions) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<S, std::io::Error>> + Send + 'static,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        self.socket_connector = Some(Arc::new(move |host, network_options| {
+            let stream_future = f(host, network_options);
+            let future = async move {
+                let stream = stream_future.await?;
+                Ok(Box::new(stream) as Box<dyn crate::framed::AsyncReadWrite>)
+            };
+            Box::pin(future)
+        }));
+        self
+    }
+
+    /// Returns whether a custom socket connector has been set.
+    pub fn has_socket_connector(&self) -> bool {
+        self.socket_connector.is_some()
     }
 
     pub fn set_client_id(&mut self, client_id: String) -> &mut Self {
@@ -668,6 +742,24 @@ impl MqttOptions {
     #[cfg(feature = "proxy")]
     pub fn proxy(&self) -> Option<Proxy> {
         self.proxy.clone()
+    }
+
+    #[cfg(feature = "proxy")]
+    pub(crate) fn socket_connector(&self) -> Option<SocketConnector> {
+        self.socket_connector.clone()
+    }
+
+    pub(crate) async fn socket_connect(
+        &self,
+        host: String,
+        network_options: NetworkOptions,
+    ) -> std::io::Result<Box<dyn crate::framed::AsyncReadWrite>> {
+        if let Some(connector) = &self.socket_connector {
+            connector(host, network_options).await
+        } else {
+            let tcp = default_socket_connect(host, network_options).await?;
+            Ok(Box::new(tcp))
+        }
     }
 
     /// Get the upper limit on maximum number of inflight outgoing publishes.
