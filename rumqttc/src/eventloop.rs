@@ -398,6 +398,10 @@ async fn connect(
     Ok((network, connack))
 }
 
+/// Default TCP socket connection logic used by the MQTT event loop.
+///
+/// This resolves the host, applies [`NetworkOptions`] on each candidate socket,
+/// and returns the first successful connection.
 pub async fn socket_connect(
     host: String,
     network_options: NetworkOptions,
@@ -478,18 +482,20 @@ async fn network_connect(
     let tcp_stream: Box<dyn AsyncReadWrite> = {
         #[cfg(feature = "proxy")]
         match options.proxy() {
-            Some(proxy) => proxy.connect(&domain, port, network_options).await?,
+            Some(proxy) => {
+                proxy
+                    .connect(&domain, port, network_options, options.socket_connector())
+                    .await?
+            }
             None => {
                 let addr = format!("{domain}:{port}");
-                let tcp = socket_connect(addr, network_options).await?;
-                Box::new(tcp)
+                options.socket_connect(addr, network_options).await?
             }
         }
         #[cfg(not(feature = "proxy"))]
         {
             let addr = format!("{domain}:{port}");
-            let tcp = socket_connect(addr, network_options).await?;
-            Box::new(tcp)
+            options.socket_connect(addr, network_options).await?
         }
     };
 
