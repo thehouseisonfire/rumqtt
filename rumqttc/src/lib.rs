@@ -146,8 +146,21 @@ use std::{
 };
 
 #[cfg(feature = "websocket")]
+type RequestModifierError = Box<dyn std::error::Error + Send + Sync>;
+
+#[cfg(feature = "websocket")]
 type RequestModifierFn = Arc<
     dyn Fn(http::Request<()>) -> Pin<Box<dyn Future<Output = http::Request<()>> + Send>>
+        + Send
+        + Sync,
+>;
+
+#[cfg(feature = "websocket")]
+type FallibleRequestModifierFn = Arc<
+    dyn Fn(
+            http::Request<()>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<http::Request<()>, RequestModifierError>> + Send>>
         + Send
         + Sync,
 >;
@@ -585,6 +598,8 @@ pub struct MqttOptions {
     proxy: Option<Proxy>,
     #[cfg(feature = "websocket")]
     request_modifier: Option<RequestModifierFn>,
+    #[cfg(feature = "websocket")]
+    fallible_request_modifier: Option<FallibleRequestModifierFn>,
     socket_connector: Option<SocketConnector>,
 }
 
@@ -620,6 +635,8 @@ impl MqttOptions {
             proxy: None,
             #[cfg(feature = "websocket")]
             request_modifier: None,
+            #[cfg(feature = "websocket")]
+            fallible_request_modifier: None,
             socket_connector: None,
         }
     }
@@ -844,6 +861,9 @@ impl MqttOptions {
         self.proxy.clone()
     }
 
+    /// Sets an infallible handler for modifying the websocket HTTP request before it is sent.
+    ///
+    /// Calling this method replaces any previously configured fallible request modifier.
     #[cfg(feature = "websocket")]
     pub fn set_request_modifier<F, O>(&mut self, request_modifier: F) -> &mut Self
     where
@@ -855,13 +875,43 @@ impl MqttOptions {
             let request_modifier = request_modifier(request).into_future();
             Box::pin(request_modifier)
         }));
+        self.fallible_request_modifier = None;
+        self
+    }
 
+    /// Sets a fallible handler for modifying the websocket HTTP request before it is sent.
+    ///
+    /// Calling this method replaces any previously configured infallible request modifier.
+    /// If the modifier returns an error, the connection fails with
+    /// [`ConnectionError::RequestModifier`].
+    #[cfg(feature = "websocket")]
+    pub fn set_fallible_request_modifier<F, O, E>(&mut self, request_modifier: F) -> &mut Self
+    where
+        F: Fn(http::Request<()>) -> O + Send + Sync + 'static,
+        O: IntoFuture<Output = Result<http::Request<()>, E>> + 'static,
+        O::IntoFuture: Send,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        self.fallible_request_modifier = Some(Arc::new(move |request| {
+            let request_modifier = request_modifier(request).into_future();
+            Box::pin(async move {
+                request_modifier
+                    .await
+                    .map_err(|error| Box::new(error) as RequestModifierError)
+            })
+        }));
+        self.request_modifier = None;
         self
     }
 
     #[cfg(feature = "websocket")]
     pub fn request_modifier(&self) -> Option<RequestModifierFn> {
         self.request_modifier.clone()
+    }
+
+    #[cfg(feature = "websocket")]
+    pub(crate) fn fallible_request_modifier(&self) -> Option<FallibleRequestModifierFn> {
+        self.fallible_request_modifier.clone()
     }
 
     /// Sets a custom socket connector, overriding the default TCP socket creation logic.
@@ -1161,6 +1211,55 @@ impl Debug for MqttOptions {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    mod request_modifier_tests {
+        use super::MqttOptions;
+
+        #[derive(Debug)]
+        struct TestError;
+
+        impl std::fmt::Display for TestError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "test error")
+            }
+        }
+
+        impl std::error::Error for TestError {}
+
+        #[test]
+        fn infallible_modifier_is_set() {
+            let mut options = MqttOptions::new("test", "ws://localhost", 8080);
+            options.set_request_modifier(|req| async move { req });
+            assert!(options.request_modifier().is_some());
+            assert!(options.fallible_request_modifier().is_none());
+        }
+
+        #[test]
+        fn fallible_modifier_is_set() {
+            let mut options = MqttOptions::new("test", "ws://localhost", 8080);
+            options.set_fallible_request_modifier(|req| async move { Ok::<_, TestError>(req) });
+            assert!(options.request_modifier().is_none());
+            assert!(options.fallible_request_modifier().is_some());
+        }
+
+        #[test]
+        fn last_setter_call_wins() {
+            let mut options = MqttOptions::new("test", "ws://localhost", 8080);
+
+            options
+                .set_fallible_request_modifier(|req| async move { Ok::<_, TestError>(req) })
+                .set_request_modifier(|req| async move { req });
+            assert!(options.request_modifier().is_some());
+            assert!(options.fallible_request_modifier().is_none());
+
+            options
+                .set_request_modifier(|req| async move { req })
+                .set_fallible_request_modifier(|req| async move { Ok::<_, TestError>(req) });
+            assert!(options.request_modifier().is_none());
+            assert!(options.fallible_request_modifier().is_some());
+        }
+    }
 
     #[test]
     #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
