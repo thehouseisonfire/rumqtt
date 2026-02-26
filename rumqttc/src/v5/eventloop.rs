@@ -1,7 +1,9 @@
 use super::framed::Network;
 use super::mqttbytes::v5::*;
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
+use crate::PublishNoticeError;
 use crate::framed::AsyncReadWrite;
+use crate::notice::PublishNoticeTx;
 
 use flume::{Receiver, Sender, TryRecvError, bounded};
 use tokio::select;
@@ -29,6 +31,32 @@ use {
 
 #[cfg(feature = "proxy")]
 use crate::proxy::ProxyError;
+
+#[derive(Debug)]
+pub(crate) struct RequestEnvelope {
+    request: Request,
+    notice: Option<PublishNoticeTx>,
+}
+
+impl RequestEnvelope {
+    pub(crate) fn plain(request: Request) -> Self {
+        Self {
+            request,
+            notice: None,
+        }
+    }
+
+    pub(crate) fn tracked_publish(publish: Publish, notice: PublishNoticeTx) -> Self {
+        Self {
+            request: Request::Publish(publish),
+            notice: Some(notice),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Request, Option<PublishNoticeTx>) {
+        (self.request, self.notice)
+    }
+}
 
 /// Critical errors during eventloop polling
 #[derive(Debug, thiserror::Error)]
@@ -79,12 +107,14 @@ pub struct EventLoop {
     /// Current state of the connection
     pub state: MqttState,
     /// Request stream
-    requests_rx: Receiver<Request>,
+    requests_rx: Receiver<RequestEnvelope>,
     /// Internal request sender retained for compatibility in `EventLoop::new`.
     /// This is intentionally dropped in the `AsyncClient::new` constructor path.
-    _requests_tx: Option<Sender<Request>>,
+    _requests_tx: Option<Sender<RequestEnvelope>>,
     /// Pending packets from last session
-    pub pending: VecDeque<Request>,
+    pending: VecDeque<Request>,
+    /// Notice handles aligned with pending requests.
+    pending_notices: VecDeque<Option<PublishNoticeTx>>,
     /// Network connection to the broker
     network: Option<Network>,
     /// Keep alive time
@@ -116,19 +146,19 @@ impl EventLoop {
     pub(crate) fn new_for_async_client(
         options: MqttOptions,
         cap: usize,
-    ) -> (EventLoop, Sender<Request>) {
+    ) -> (EventLoop, Sender<RequestEnvelope>) {
         let (requests_tx, requests_rx) = bounded(cap);
         let eventloop = Self::with_channel(options, requests_rx, None);
-
         (eventloop, requests_tx)
     }
 
     fn with_channel(
         options: MqttOptions,
-        requests_rx: Receiver<Request>,
-        requests_tx: Option<Sender<Request>>,
+        requests_rx: Receiver<RequestEnvelope>,
+        requests_tx: Option<Sender<RequestEnvelope>>,
     ) -> EventLoop {
         let pending = VecDeque::new();
+        let pending_notices = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let manual_acks = options.manual_acks;
 
@@ -140,6 +170,7 @@ impl EventLoop {
             requests_rx,
             _requests_tx: requests_tx,
             pending,
+            pending_notices,
             network: None,
             keepalive_timeout: None,
         }
@@ -150,19 +181,41 @@ impl EventLoop {
     /// underlying network connection and clears the keepalive timeout if any.
     ///
     /// > NOTE: Use only when EventLoop is blocked on network and unable to immediately handle disconnect.
-    /// > Also, while this helps prevent data loss, the pending list length should be managed properly.
-    /// > For this reason we recommend setting [`AsycClient`](super::AsyncClient)'s channel capacity to `0`.
+    /// > Pending requests are managed internally by the event loop.
+    /// > Use [`pending_len`](Self::pending_len) or [`pending_is_empty`](Self::pending_is_empty)
+    /// > for observation-only checks.
     pub fn clean(&mut self) {
         self.network = None;
         self.keepalive_timeout = None;
-        self.pending.extend(self.state.clean());
+        for (request, notice) in self.state.clean_with_notices() {
+            self.pending.push_back(request);
+            self.pending_notices.push_back(notice);
+        }
 
         // drain requests from channel which weren't yet received
-        for request in self.requests_rx.drain() {
+        for envelope in self.requests_rx.drain() {
+            let (request, notice) = envelope.into_parts();
             // Wait for publish retransmission, else the broker could be confused by an unexpected ack
             if !matches!(request, Request::PubAck(_)) {
                 self.pending.push_back(request);
+                self.pending_notices.push_back(notice);
             }
+        }
+    }
+
+    /// Number of pending requests queued for retransmission.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Returns true when there are no pending requests queued for retransmission.
+    pub fn pending_is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn fail_pending_notices(&mut self, error: PublishNoticeError) {
+        for notice in self.pending_notices.drain(..).flatten() {
+            notice.error(error.clone());
         }
     }
 
@@ -180,7 +233,9 @@ impl EventLoop {
             // Last session might contain packets which aren't acked. If it's a new session, clear the pending packets and any existing collision state.
             if !connack.session_present {
                 self.pending.clear();
-                self.state.clear_collision();
+                self.fail_pending_notices(PublishNoticeError::SessionReset);
+                self.state
+                    .fail_pending_notices(PublishNoticeError::SessionReset);
             }
             self.network = Some(network);
 
@@ -251,15 +306,27 @@ impl EventLoop {
             // outgoing requests (along with 1b).
             o = Self::next_request(
                 &mut self.pending,
+                &mut self.pending_notices,
                 &self.requests_rx,
                 self.options.pending_throttle
             ), if !self.pending.is_empty() || (!inflight_full && !collision) => match o {
-                Ok(request) => {
+                Ok((request, notice)) => {
                     let max_request_batch = self.options.max_request_batch.max(1);
                     let mut should_flush = false;
+                    let mut qos0_notices = Vec::new();
 
-                    if let Some(outgoing) = self.state.handle_outgoing_packet(request)? {
-                        network.write(outgoing).await?;
+                    let (outgoing, flush_notice) =
+                        self.state.handle_outgoing_packet_with_notice(request, notice)?;
+                    if let Some(notice) = flush_notice {
+                        qos0_notices.push(notice);
+                    }
+                    if let Some(outgoing) = outgoing {
+                        if let Err(err) = network.write(outgoing).await {
+                            for notice in qos0_notices {
+                                notice.error(PublishNoticeError::Qos0NotFlushed);
+                            }
+                            return Err(ConnectionError::MqttState(err));
+                        }
                         should_flush = true;
                     }
 
@@ -271,26 +338,46 @@ impl EventLoop {
                             break;
                         }
 
-                        let next_request = if let Some(request) = self.pending.pop_front() {
-                            if !self.options.pending_throttle.is_zero() {
-                                time::sleep(self.options.pending_throttle).await;
-                            }
-                            request
-                        } else {
-                            match self.requests_rx.try_recv() {
-                                Ok(request) => request,
-                                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-                            }
+                        let Some((next_request, next_notice)) = Self::try_next_request(
+                            &mut self.pending,
+                            &mut self.pending_notices,
+                            &self.requests_rx,
+                            self.options.pending_throttle,
+                        ).await else {
+                            break;
                         };
 
-                        if let Some(outgoing) = self.state.handle_outgoing_packet(next_request)? {
-                            network.write(outgoing).await?;
+                        let (outgoing, flush_notice) = self
+                            .state
+                            .handle_outgoing_packet_with_notice(next_request, next_notice)?;
+                        if let Some(notice) = flush_notice {
+                            qos0_notices.push(notice);
+                        }
+                        if let Some(outgoing) = outgoing {
+                            if let Err(err) = network.write(outgoing).await {
+                                for notice in qos0_notices {
+                                    notice.error(PublishNoticeError::Qos0NotFlushed);
+                                }
+                                return Err(ConnectionError::MqttState(err));
+                            }
                             should_flush = true;
                         }
                     }
 
                     if should_flush {
-                        network.flush().await?;
+                        match network.flush().await {
+                            Ok(()) => {
+                                for notice in qos0_notices {
+                                    notice.success();
+                                }
+                            }
+                            Err(err) => {
+                                for notice in qos0_notices {
+                                    notice.error(PublishNoticeError::Qos0NotFlushed);
+                                }
+                                return Err(ConnectionError::MqttState(err));
+                            }
+                        }
                     }
                     Ok(self.state.events.pop_front().unwrap())
                 }
@@ -310,7 +397,10 @@ impl EventLoop {
                     let timeout = self.keepalive_timeout.as_mut().unwrap();
                     timeout.as_mut().reset(Instant::now() + self.options.keep_alive);
 
-                    if let Some(outgoing) = self.state.handle_outgoing_packet(Request::PingReq)? {
+                    let (outgoing, _flush_notice) = self
+                        .state
+                        .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
+                    if let Some(outgoing) = outgoing {
                         network.write(outgoing).await?;
                     }
                     network.flush().await?;
@@ -319,11 +409,12 @@ impl EventLoop {
         }
     }
 
-    async fn next_request(
+    async fn try_next_request(
         pending: &mut VecDeque<Request>,
-        rx: &Receiver<Request>,
+        pending_notices: &mut VecDeque<Option<PublishNoticeTx>>,
+        rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Result<Request, ConnectionError> {
+    ) -> Option<(Request, Option<PublishNoticeTx>)> {
         if !pending.is_empty() {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
@@ -332,12 +423,46 @@ impl EventLoop {
             }
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
-            Ok(pending.pop_front().unwrap())
-        } else {
-            match rx.recv_async().await {
-                Ok(r) => Ok(r),
-                Err(_) => Err(ConnectionError::RequestsDone),
+            let request = pending.pop_front().unwrap();
+            let notice = pending_notices
+                .pop_front()
+                .expect("pending_notices must stay aligned with pending");
+            return Some((request, notice));
+        }
+
+        match rx.try_recv() {
+            Ok(envelope) => return Some(envelope.into_parts()),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {}
+        }
+
+        None
+    }
+
+    async fn next_request(
+        pending: &mut VecDeque<Request>,
+        pending_notices: &mut VecDeque<Option<PublishNoticeTx>>,
+        rx: &Receiver<RequestEnvelope>,
+        pending_throttle: Duration,
+    ) -> Result<(Request, Option<PublishNoticeTx>), ConnectionError> {
+        if !pending.is_empty() {
+            if pending_throttle.is_zero() {
+                tokio::task::yield_now().await;
+            } else {
+                time::sleep(pending_throttle).await;
             }
+            // We must call .next() AFTER sleep() otherwise .next() would
+            // advance the iterator but the future might be canceled before return
+            let request = pending.pop_front().unwrap();
+            let notice = pending_notices
+                .pop_front()
+                .expect("pending_notices must stay aligned with pending");
+            Ok((request, notice))
+        } else {
+            rx.recv_async()
+                .await
+                .map(RequestEnvelope::into_parts)
+                .map_err(|_| ConnectionError::RequestsDone)
         }
     }
 
@@ -558,6 +683,11 @@ mod tests {
     use super::*;
     use flume::TryRecvError;
 
+    fn push_pending(eventloop: &mut EventLoop, request: Request) {
+        eventloop.pending.push_back(request);
+        eventloop.pending_notices.push_back(None);
+    }
+
     #[test]
     fn eventloop_new_keeps_internal_sender_alive() {
         let options = MqttOptions::new("test-client", "localhost", 1883);
@@ -585,20 +715,22 @@ mod tests {
     async fn async_client_path_reports_requests_done_after_pending_drain() {
         let options = MqttOptions::new("test-client", "localhost", 1883);
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
-        eventloop.pending.push_back(Request::PingReq);
+        push_pending(&mut eventloop, Request::PingReq);
         drop(request_tx);
 
         let request = EventLoop::next_request(
             &mut eventloop.pending,
+            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
         .await
         .unwrap();
-        assert!(matches!(request, Request::PingReq));
+        assert!(matches!(request, (Request::PingReq, None)));
 
         let err = EventLoop::next_request(
             &mut eventloop.pending,
+            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -611,10 +743,11 @@ mod tests {
     async fn next_request_is_cancellation_safe_for_pending_queue() {
         let options = MqttOptions::new("test-client", "localhost", 1883);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
-        eventloop.pending.push_back(Request::PingReq);
+        push_pending(&mut eventloop, Request::PingReq);
 
         let delayed = EventLoop::next_request(
             &mut eventloop.pending,
+            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::from_millis(50),
         );
@@ -625,29 +758,225 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn next_request_prioritizes_pending_over_channel_messages() {
+    async fn try_next_request_applies_pending_throttle_for_followup_pending_item() {
         let options = MqttOptions::new("test-client", "localhost", 1883);
-        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
-        eventloop.pending.push_back(Request::PingReq);
-        request_tx.send_async(Request::PingReq).await.unwrap();
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 2);
+        push_pending(&mut eventloop, Request::PingReq);
+        push_pending(&mut eventloop, Request::PingResp);
 
         let first = EventLoop::next_request(
             &mut eventloop.pending,
+            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
         .await
         .unwrap();
-        assert!(matches!(first, Request::PingReq));
+        assert!(matches!(first, (Request::PingReq, None)));
+
+        let delayed = EventLoop::try_next_request(
+            &mut eventloop.pending,
+            &mut eventloop.pending_notices,
+            &eventloop.requests_rx,
+            Duration::from_millis(50),
+        );
+        let timed_out = time::timeout(Duration::from_millis(5), delayed).await;
+
+        assert!(timed_out.is_err());
+        assert!(matches!(eventloop.pending.front(), Some(Request::PingResp)));
+    }
+
+    #[tokio::test]
+    async fn try_next_request_does_not_throttle_when_pending_queue_is_empty() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::PingReq))
+            .await
+            .unwrap();
+
+        let received = time::timeout(
+            Duration::from_millis(20),
+            EventLoop::try_next_request(
+                &mut eventloop.pending,
+                &mut eventloop.pending_notices,
+                &eventloop.requests_rx,
+                Duration::from_secs(1),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(received, Some((Request::PingReq, None))));
+    }
+
+    #[tokio::test]
+    async fn next_request_prioritizes_pending_over_channel_messages() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
+        push_pending(&mut eventloop, Request::PingReq);
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::PingReq))
+            .await
+            .unwrap();
+
+        let first = EventLoop::next_request(
+            &mut eventloop.pending,
+            &mut eventloop.pending_notices,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(first, (Request::PingReq, None)));
         assert!(eventloop.pending.is_empty());
 
         let second = EventLoop::next_request(
             &mut eventloop.pending,
+            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
         .await
         .unwrap();
-        assert!(matches!(second, Request::PingReq));
+        assert!(matches!(second, (Request::PingReq, None)));
+    }
+
+    #[tokio::test]
+    async fn next_request_preserves_fifo_order_for_plain_and_tracked_requests() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+        let (notice_tx, _notice) = PublishNoticeTx::new();
+        let tracked_publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtLeastOnce,
+            "payload",
+            None,
+        );
+
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::PingReq))
+            .await
+            .unwrap();
+        request_tx
+            .send_async(RequestEnvelope::tracked_publish(
+                tracked_publish.clone(),
+                notice_tx,
+            ))
+            .await
+            .unwrap();
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::PingResp))
+            .await
+            .unwrap();
+
+        let first = EventLoop::next_request(
+            &mut eventloop.pending,
+            &mut eventloop.pending_notices,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(first, (Request::PingReq, None)));
+
+        let second = EventLoop::next_request(
+            &mut eventloop.pending,
+            &mut eventloop.pending_notices,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            second,
+            (Request::Publish(publish), Some(_)) if publish == tracked_publish
+        ));
+
+        let third = EventLoop::next_request(
+            &mut eventloop.pending,
+            &mut eventloop.pending_notices,
+            &eventloop.requests_rx,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(third, (Request::PingResp, None)));
+    }
+
+    #[tokio::test]
+    async fn tracked_qos0_notice_reports_not_flushed_on_first_write_failure() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+        let (client, _peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        network.set_max_outgoing_size(Some(16));
+        eventloop.network = Some(network);
+
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtMostOnce,
+            vec![1; 128],
+            None,
+        );
+        request_tx
+            .send_async(RequestEnvelope::tracked_publish(publish, notice_tx))
+            .await
+            .unwrap();
+
+        let err = eventloop.select().await.unwrap_err();
+        assert!(matches!(err, ConnectionError::MqttState(_)));
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::Qos0NotFlushed
+        );
+    }
+
+    #[tokio::test]
+    async fn tracked_qos0_notices_report_not_flushed_on_batched_write_failure() {
+        let mut options = MqttOptions::new("test-client", "localhost", 1883);
+        options.set_max_request_batch(2);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+        let (client, _peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        network.set_max_outgoing_size(Some(80));
+        eventloop.network = Some(network);
+
+        let small_publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtMostOnce,
+            vec![1],
+            None,
+        );
+        let large_publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtMostOnce,
+            vec![2; 256],
+            None,
+        );
+
+        let (first_notice_tx, first_notice) = PublishNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_publish(small_publish, first_notice_tx))
+            .await
+            .unwrap();
+
+        let (second_notice_tx, second_notice) = PublishNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_publish(large_publish, second_notice_tx))
+            .await
+            .unwrap();
+
+        let err = eventloop.select().await.unwrap_err();
+        assert!(matches!(err, ConnectionError::MqttState(_)));
+        assert_eq!(
+            first_notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::Qos0NotFlushed
+        );
+        assert_eq!(
+            second_notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::Qos0NotFlushed
+        );
     }
 }
