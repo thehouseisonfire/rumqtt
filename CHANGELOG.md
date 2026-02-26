@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `rumqttc` v4/v5: Avoid panicking when applying TCP socket send/recv buffer sizes; these configuration failures now return an error from connect setup.
 ### Security
+- `rumqttc` `auth-scram`: switch SCRAM backend dependency from `scram` to `scram-2`, removing `ring` `<0.17` from that feature path.
+- `cargo-audit`: add temporary ignore for `RUSTSEC-2026-0009` in `.cargo/audit.toml`; advisory is currently reachable via `rcgen` dev-dependency path and fixed `time` requires Rust `1.88+` (above current MSRV `1.85`).
 
 
 ---
