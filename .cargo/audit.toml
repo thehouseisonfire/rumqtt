@@ -1,0 +1,4 @@
+[advisories]
+# TODO: Remove once `time` can be upgraded to >=0.3.47 without raising MSRV (currently Rust 1.88+).
+# Current path is via `rcgen` dev-dependency in rumqttc tests/examples.
+ignore = ["RUSTSEC-2026-0009"]
