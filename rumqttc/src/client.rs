@@ -3,8 +3,13 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
+use crate::eventloop::RequestEnvelope;
 use crate::mqttbytes::{QoS, v4::*};
-use crate::{ConnectionError, Event, EventLoop, MqttOptions, Request, valid_filter, valid_topic};
+use crate::notice::PublishNoticeTx;
+use crate::{
+    ConnectionError, Event, EventLoop, MqttOptions, PublishNotice, Request, valid_filter,
+    valid_topic,
+};
 
 use bytes::Bytes;
 use flume::{SendError, Sender, TrySendError};
@@ -104,6 +109,8 @@ pub enum ClientError {
     Request(Request),
     #[error("Failed to send mqtt requests to eventloop")]
     TryRequest(Request),
+    #[error("Tracked publish API is unavailable for this client instance")]
+    TrackingUnavailable,
 }
 
 impl From<SendError<Request>> for ClientError {
@@ -118,6 +125,29 @@ impl From<TrySendError<Request>> for ClientError {
     }
 }
 
+#[derive(Clone, Debug)]
+enum RequestSender {
+    Plain(Sender<Request>),
+    WithNotice(Sender<RequestEnvelope>),
+}
+
+fn into_request(envelope: RequestEnvelope) -> Request {
+    let (request, _notice) = envelope.into_parts();
+    request
+}
+
+fn map_send_envelope_error(err: SendError<RequestEnvelope>) -> ClientError {
+    ClientError::Request(into_request(err.into_inner()))
+}
+
+fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientError {
+    match err {
+        TrySendError::Full(envelope) | TrySendError::Disconnected(envelope) => {
+            ClientError::TryRequest(into_request(envelope))
+        }
+    }
+}
+
 /// An asynchronous client, communicates with MQTT `EventLoop`.
 ///
 /// This is cloneable and can be used to asynchronously [`publish`](`AsyncClient::publish`),
@@ -127,7 +157,7 @@ impl From<TrySendError<Request>> for ClientError {
 /// from the broker, i.e. move ahead.
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
-    request_tx: Sender<Request>,
+    request_tx: RequestSender,
 }
 
 impl AsyncClient {
@@ -137,7 +167,9 @@ impl AsyncClient {
     pub fn new(options: MqttOptions, cap: usize) -> (AsyncClient, EventLoop) {
         let (eventloop, request_tx) = EventLoop::new_for_async_client(options, cap);
 
-        let client = AsyncClient { request_tx };
+        let client = AsyncClient {
+            request_tx: RequestSender::WithNotice(request_tx),
+        };
 
         (client, eventloop)
     }
@@ -148,7 +180,65 @@ impl AsyncClient {
     /// listen on the corresponding receiver.
     #[must_use]
     pub fn from_senders(request_tx: Sender<Request>) -> AsyncClient {
-        AsyncClient { request_tx }
+        AsyncClient {
+            request_tx: RequestSender::Plain(request_tx),
+        }
+    }
+
+    async fn send_request_async(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(ClientError::from),
+            RequestSender::WithNotice(tx) => tx
+                .send_async(RequestEnvelope::plain(request))
+                .await
+                .map_err(map_send_envelope_error),
+        }
+    }
+
+    fn try_send_request(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.try_send(request).map_err(ClientError::from),
+            RequestSender::WithNotice(tx) => tx
+                .try_send(RequestEnvelope::plain(request))
+                .map_err(map_try_send_envelope_error),
+        }
+    }
+
+    fn send_request(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.send(request).map_err(ClientError::from),
+            RequestSender::WithNotice(tx) => tx
+                .send(RequestEnvelope::plain(request))
+                .map_err(map_send_envelope_error),
+        }
+    }
+
+    async fn send_tracked_publish_async(
+        &self,
+        publish: Publish,
+    ) -> Result<PublishNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_publish(publish, notice_tx))
+            .await
+            .map_err(map_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    fn try_send_tracked_publish(&self, publish: Publish) -> Result<PublishNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        request_tx
+            .try_send(RequestEnvelope::tracked_publish(publish, notice_tx))
+            .map_err(map_try_send_envelope_error)?;
+        Ok(notice)
     }
 
     /// Sends a MQTT Publish to the `EventLoop`.
@@ -173,8 +263,32 @@ impl AsyncClient {
             return Err(ClientError::Request(publish));
         }
 
-        self.request_tx.send_async(publish).await?;
+        self.send_request_async(publish).await?;
         Ok(())
+    }
+
+    async fn handle_publish_tracked<T, V>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: V,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        V: Into<Vec<u8>>,
+    {
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload);
+        publish.retain = retain;
+        let request = Request::Publish(publish.clone());
+
+        if invalid_topic {
+            return Err(ClientError::Request(request));
+        }
+
+        self.send_tracked_publish_async(publish).await
     }
 
     /// Sends a MQTT Publish to the `EventLoop`.
@@ -190,6 +304,22 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         self.handle_publish(topic, qos, retain, payload).await
+    }
+
+    /// Sends a MQTT Publish to the `EventLoop` and returns a notice which resolves on MQTT ack milestone.
+    pub async fn publish_tracked<T, V>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: V,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        V: Into<Vec<u8>>,
+    {
+        self.handle_publish_tracked(topic, qos, retain, payload)
+            .await
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop`.
@@ -214,8 +344,32 @@ impl AsyncClient {
             return Err(ClientError::TryRequest(publish));
         }
 
-        self.request_tx.try_send(publish)?;
+        self.try_send_request(publish)?;
         Ok(())
+    }
+
+    fn handle_try_publish_tracked<T, V>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: V,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        V: Into<Vec<u8>>,
+    {
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload);
+        publish.retain = retain;
+        let request = Request::Publish(publish.clone());
+
+        if invalid_topic {
+            return Err(ClientError::TryRequest(request));
+        }
+
+        self.try_send_tracked_publish(publish)
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop`.
@@ -233,12 +387,27 @@ impl AsyncClient {
         self.handle_try_publish(topic, qos, retain, payload)
     }
 
+    /// Attempts to send a MQTT Publish to the `EventLoop` and returns a notice.
+    pub fn try_publish_tracked<T, V>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: V,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        V: Into<Vec<u8>>,
+    {
+        self.handle_try_publish_tracked(topic, qos, retain, payload)
+    }
+
     /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         let ack = get_ack_req(publish);
 
         if let Some(ack) = ack {
-            self.request_tx.send_async(ack).await?;
+            self.send_request_async(ack).await?;
         }
         Ok(())
     }
@@ -247,7 +416,7 @@ impl AsyncClient {
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         let ack = get_ack_req(publish);
         if let Some(ack) = ack {
-            self.request_tx.try_send(ack)?;
+            self.try_send_request(ack)?;
         }
         Ok(())
     }
@@ -273,8 +442,31 @@ impl AsyncClient {
             return Err(ClientError::Request(publish));
         }
 
-        self.request_tx.send_async(publish).await?;
+        self.send_request_async(publish).await?;
         Ok(())
+    }
+
+    async fn handle_publish_bytes_tracked<T>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: Bytes,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+    {
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let mut publish = Publish::from_bytes(topic, qos, payload);
+        publish.retain = retain;
+        let request = Request::Publish(publish.clone());
+
+        if invalid_topic {
+            return Err(ClientError::Request(request));
+        }
+
+        self.send_tracked_publish_async(publish).await
     }
 
     /// Sends a MQTT Publish to the `EventLoop`
@@ -291,6 +483,21 @@ impl AsyncClient {
         self.handle_publish_bytes(topic, qos, retain, payload).await
     }
 
+    /// Sends a MQTT Publish with `Bytes` payload and returns a tracked notice.
+    pub async fn publish_bytes_tracked<T>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: Bytes,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+    {
+        self.handle_publish_bytes_tracked(topic, qos, retain, payload)
+            .await
+    }
+
     /// Sends a MQTT Subscribe to the `EventLoop`
     pub async fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         let subscribe = Subscribe::new(topic, qos);
@@ -298,7 +505,7 @@ impl AsyncClient {
             return Err(ClientError::Request(subscribe.into()));
         }
 
-        self.request_tx.send_async(subscribe.into()).await?;
+        self.send_request_async(subscribe.into()).await?;
         Ok(())
     }
 
@@ -309,7 +516,7 @@ impl AsyncClient {
             return Err(ClientError::TryRequest(subscribe.into()));
         }
 
-        self.request_tx.try_send(subscribe.into())?;
+        self.try_send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -323,7 +530,7 @@ impl AsyncClient {
             return Err(ClientError::Request(subscribe.into()));
         }
 
-        self.request_tx.send_async(subscribe.into()).await?;
+        self.send_request_async(subscribe.into()).await?;
         Ok(())
     }
 
@@ -336,7 +543,7 @@ impl AsyncClient {
         if !subscribe_has_valid_filters(&subscribe) {
             return Err(ClientError::TryRequest(subscribe.into()));
         }
-        self.request_tx.try_send(subscribe.into())?;
+        self.try_send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -344,7 +551,7 @@ impl AsyncClient {
     pub async fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic.into());
         let request = Request::Unsubscribe(unsubscribe);
-        self.request_tx.send_async(request).await?;
+        self.send_request_async(request).await?;
         Ok(())
     }
 
@@ -352,21 +559,21 @@ impl AsyncClient {
     pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic.into());
         let request = Request::Unsubscribe(unsubscribe);
-        self.request_tx.try_send(request)?;
+        self.try_send_request(request)?;
         Ok(())
     }
 
     /// Sends a MQTT disconnect to the `EventLoop`
     pub async fn disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
-        self.request_tx.send_async(request).await?;
+        self.send_request_async(request).await?;
         Ok(())
     }
 
     /// Attempts to send a MQTT disconnect to the `EventLoop`
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
-        self.request_tx.try_send(request)?;
+        self.try_send_request(request)?;
         Ok(())
     }
 }
@@ -442,7 +649,7 @@ impl Client {
         if invalid_topic {
             return Err(ClientError::Request(publish));
         }
-        self.client.request_tx.send(publish)?;
+        self.client.send_request(publish)?;
         Ok(())
     }
 
@@ -466,7 +673,7 @@ impl Client {
         let ack = get_ack_req(publish);
 
         if let Some(ack) = ack {
-            self.client.request_tx.send(ack)?;
+            self.client.send_request(ack)?;
         }
         Ok(())
     }
@@ -484,7 +691,7 @@ impl Client {
             return Err(ClientError::Request(subscribe.into()));
         }
 
-        self.client.request_tx.send(subscribe.into())?;
+        self.client.send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -504,7 +711,7 @@ impl Client {
             return Err(ClientError::Request(subscribe.into()));
         }
 
-        self.client.request_tx.send(subscribe.into())?;
+        self.client.send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -519,7 +726,7 @@ impl Client {
     pub fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic.into());
         let request = Request::Unsubscribe(unsubscribe);
-        self.client.request_tx.send(request)?;
+        self.client.send_request(request)?;
         Ok(())
     }
 
@@ -532,7 +739,7 @@ impl Client {
     /// Sends a MQTT disconnect to the `EventLoop`
     pub fn disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
-        self.client.request_tx.send(request)?;
+        self.client.send_request(request)?;
         Ok(())
     }
 
@@ -839,6 +1046,35 @@ mod test {
                 .await
                 .expect_err("Invalid publish topic should fail");
             assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+        });
+    }
+
+    #[test]
+    fn tracked_publish_requires_tracking_channel() {
+        let (tx, _) = flume::bounded(2);
+        let client = AsyncClient::from_senders(tx);
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let err = client
+                .publish_tracked("hello/world", QoS::AtLeastOnce, false, "good bye")
+                .await
+                .expect_err("tracked publish should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
+
+            let err = client
+                .publish_bytes_tracked(
+                    "hello/world",
+                    QoS::AtLeastOnce,
+                    false,
+                    Bytes::from_static(b"good bye"),
+                )
+                .await
+                .expect_err("tracked publish bytes should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
         });
     }
 }

@@ -19,6 +19,7 @@ use crate::{NetworkOptions, Outgoing, SocketConnector, Transport, default_socket
 
 use mqttbytes::v5::*;
 
+pub use crate::{PublishNotice, PublishNoticeError};
 pub use client::{
     AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, PublishTopic, RecvError,
     RecvTimeoutError, TryRecvError, ValidatedTopic,
