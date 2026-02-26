@@ -39,6 +39,10 @@ pub(crate) struct RequestEnvelope {
 }
 
 impl RequestEnvelope {
+    pub(crate) fn from_parts(request: Request, notice: Option<PublishNoticeTx>) -> Self {
+        Self { request, notice }
+    }
+
     pub(crate) fn plain(request: Request) -> Self {
         Self {
             request,
@@ -112,9 +116,7 @@ pub struct EventLoop {
     /// This is intentionally dropped in the `AsyncClient::new` constructor path.
     _requests_tx: Option<Sender<RequestEnvelope>>,
     /// Pending packets from last session
-    pending: VecDeque<Request>,
-    /// Notice handles aligned with pending requests.
-    pending_notices: VecDeque<Option<PublishNoticeTx>>,
+    pending: VecDeque<RequestEnvelope>,
     /// Network connection to the broker
     pub network: Option<Network>,
     /// Keep alive time
@@ -158,7 +160,6 @@ impl EventLoop {
         requests_tx: Option<Sender<RequestEnvelope>>,
     ) -> EventLoop {
         let pending = VecDeque::new();
-        let pending_notices = VecDeque::new();
         let max_inflight = mqtt_options.inflight;
         let manual_acks = mqtt_options.manual_acks;
 
@@ -168,7 +169,6 @@ impl EventLoop {
             requests_rx,
             _requests_tx: requests_tx,
             pending,
-            pending_notices,
             network: None,
             keepalive_timeout: None,
             network_options: NetworkOptions::new(),
@@ -187,17 +187,15 @@ impl EventLoop {
         self.network = None;
         self.keepalive_timeout = None;
         for (request, notice) in self.state.clean_with_notices() {
-            self.pending.push_back(request);
-            self.pending_notices.push_back(notice);
+            self.pending
+                .push_back(RequestEnvelope::from_parts(request, notice));
         }
 
         // drain requests from channel which weren't yet received
         for envelope in self.requests_rx.drain() {
-            let (request, notice) = envelope.into_parts();
             // Wait for publish retransmission, else the broker could be confused by an unexpected ack
-            if !matches!(request, Request::PubAck(_)) {
-                self.pending.push_back(request);
-                self.pending_notices.push_back(notice);
+            if !matches!(&envelope.request, Request::PubAck(_)) {
+                self.pending.push_back(envelope);
             }
         }
     }
@@ -213,9 +211,17 @@ impl EventLoop {
     }
 
     fn fail_pending_notices(&mut self, error: PublishNoticeError) {
-        for notice in self.pending_notices.drain(..).flatten() {
-            notice.error(error.clone());
+        for envelope in self.pending.drain(..) {
+            if let Some(notice) = envelope.notice {
+                notice.error(error.clone());
+            }
         }
+    }
+
+    fn reset_session_state(&mut self) {
+        self.fail_pending_notices(PublishNoticeError::SessionReset);
+        self.state
+            .fail_pending_notices(PublishNoticeError::SessionReset);
     }
 
     /// Yields Next notification or outgoing request and periodically pings
@@ -235,10 +241,7 @@ impl EventLoop {
             };
             // Last session might contain packets which aren't acked. If it's a new session, clear the pending packets and any existing collision state.
             if !connack.session_present {
-                self.pending.clear();
-                self.fail_pending_notices(PublishNoticeError::SessionReset);
-                self.state
-                    .fail_pending_notices(PublishNoticeError::SessionReset);
+                self.reset_session_state();
             }
             self.network = Some(network);
 
@@ -318,7 +321,6 @@ impl EventLoop {
             // outgoing requests (along with 1b).
             o = Self::next_request(
                 &mut self.pending,
-                &mut self.pending_notices,
                 &self.requests_rx,
                 self.mqtt_options.pending_throttle
             ), if !self.pending.is_empty() || (!inflight_full && !collision) => match o {
@@ -352,7 +354,6 @@ impl EventLoop {
 
                         let Some((next_request, next_notice)) = Self::try_next_request(
                             &mut self.pending,
-                            &mut self.pending_notices,
                             &self.requests_rx,
                             self.mqtt_options.pending_throttle,
                         ).await else {
@@ -452,8 +453,7 @@ impl EventLoop {
     }
 
     async fn try_next_request(
-        pending: &mut VecDeque<Request>,
-        pending_notices: &mut VecDeque<Option<PublishNoticeTx>>,
+        pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
     ) -> Option<(Request, Option<PublishNoticeTx>)> {
@@ -465,11 +465,7 @@ impl EventLoop {
             }
             // We must call .pop_front() AFTER sleep() otherwise we would have
             // advanced the iterator but the future might be canceled before return
-            let request = pending.pop_front().unwrap();
-            let notice = pending_notices
-                .pop_front()
-                .expect("pending_notices must stay aligned with pending");
-            return Some((request, notice));
+            return pending.pop_front().map(RequestEnvelope::into_parts);
         }
 
         match rx.try_recv() {
@@ -482,8 +478,7 @@ impl EventLoop {
     }
 
     async fn next_request(
-        pending: &mut VecDeque<Request>,
-        pending_notices: &mut VecDeque<Option<PublishNoticeTx>>,
+        pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
     ) -> Result<(Request, Option<PublishNoticeTx>), ConnectionError> {
@@ -495,11 +490,7 @@ impl EventLoop {
             }
             // We must call .pop_front() AFTER sleep() otherwise we would have
             // advanced the iterator but the future might be canceled before return
-            let request = pending.pop_front().unwrap();
-            let notice = pending_notices
-                .pop_front()
-                .expect("pending_notices must stay aligned with pending");
-            Ok((request, notice))
+            Ok(pending.pop_front().unwrap().into_parts())
         } else {
             rx.recv_async()
                 .await
@@ -739,8 +730,11 @@ mod tests {
     use flume::TryRecvError;
 
     fn push_pending(eventloop: &mut EventLoop, request: Request) {
-        eventloop.pending.push_back(request);
-        eventloop.pending_notices.push_back(None);
+        eventloop.pending.push_back(RequestEnvelope::plain(request));
+    }
+
+    fn pending_front_request(eventloop: &EventLoop) -> Option<&Request> {
+        eventloop.pending.front().map(|envelope| &envelope.request)
     }
 
     #[test]
@@ -775,7 +769,6 @@ mod tests {
 
         let request = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -785,7 +778,6 @@ mod tests {
 
         let err = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -802,7 +794,6 @@ mod tests {
 
         let delayed = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::from_millis(50),
         );
@@ -810,7 +801,7 @@ mod tests {
 
         assert!(timed_out.is_err());
         assert!(matches!(
-            eventloop.pending.front(),
+            pending_front_request(&eventloop),
             Some(Request::PingReq(_))
         ));
     }
@@ -824,7 +815,6 @@ mod tests {
 
         let first = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -834,7 +824,6 @@ mod tests {
 
         let delayed = EventLoop::try_next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::from_millis(50),
         );
@@ -842,7 +831,7 @@ mod tests {
 
         assert!(timed_out.is_err());
         assert!(matches!(
-            eventloop.pending.front(),
+            pending_front_request(&eventloop),
             Some(Request::Disconnect(_))
         ));
     }
@@ -860,7 +849,6 @@ mod tests {
             Duration::from_millis(20),
             EventLoop::try_next_request(
                 &mut eventloop.pending,
-                &mut eventloop.pending_notices,
                 &eventloop.requests_rx,
                 Duration::from_secs(1),
             ),
@@ -883,7 +871,6 @@ mod tests {
 
         let first = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -894,7 +881,6 @@ mod tests {
 
         let second = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -929,7 +915,6 @@ mod tests {
 
         let first = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -939,7 +924,6 @@ mod tests {
 
         let second = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -952,7 +936,6 @@ mod tests {
 
         let third = EventLoop::next_request(
             &mut eventloop.pending,
-            &mut eventloop.pending_notices,
             &eventloop.requests_rx,
             Duration::ZERO,
         )
@@ -969,7 +952,11 @@ mod tests {
         eventloop.network = Some(Network::new(client, 1024, 16));
 
         let (notice_tx, notice) = PublishNoticeTx::new();
-        let publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtMostOnce, vec![1; 128]);
+        let publish = Publish::new(
+            "hello/world",
+            crate::mqttbytes::QoS::AtMostOnce,
+            vec![1; 128],
+        );
         request_tx
             .send_async(RequestEnvelope::tracked_publish(publish, notice_tx))
             .await
@@ -992,17 +979,27 @@ mod tests {
         eventloop.network = Some(Network::new(client, 1024, 80));
 
         let small_publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtMostOnce, vec![1]);
-        let large_publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtMostOnce, vec![2; 256]);
+        let large_publish = Publish::new(
+            "hello/world",
+            crate::mqttbytes::QoS::AtMostOnce,
+            vec![2; 256],
+        );
 
         let (first_notice_tx, first_notice) = PublishNoticeTx::new();
         request_tx
-            .send_async(RequestEnvelope::tracked_publish(small_publish, first_notice_tx))
+            .send_async(RequestEnvelope::tracked_publish(
+                small_publish,
+                first_notice_tx,
+            ))
             .await
             .unwrap();
 
         let (second_notice_tx, second_notice) = PublishNoticeTx::new();
         request_tx
-            .send_async(RequestEnvelope::tracked_publish(large_publish, second_notice_tx))
+            .send_async(RequestEnvelope::tracked_publish(
+                large_publish,
+                second_notice_tx,
+            ))
             .await
             .unwrap();
 
@@ -1015,6 +1012,25 @@ mod tests {
         assert_eq!(
             second_notice.wait_async().await.unwrap_err(),
             PublishNoticeError::Qos0NotFlushed
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_session_state_reports_session_reset_for_pending_tracked_notice() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtLeastOnce, "payload");
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_publish(publish, notice_tx));
+
+        eventloop.reset_session_state();
+
+        assert!(eventloop.pending.is_empty());
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::SessionReset
         );
     }
 }

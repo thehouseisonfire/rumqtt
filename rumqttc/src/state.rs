@@ -952,7 +952,10 @@ mod test {
         assert!(mqtt.collision.is_some());
 
         mqtt.handle_incoming_pubrec(&PubRec::new(1)).unwrap();
-        let packet = mqtt.handle_incoming_pubcomp(&PubComp::new(1)).unwrap().unwrap();
+        let packet = mqtt
+            .handle_incoming_pubcomp(&PubComp::new(1))
+            .unwrap()
+            .unwrap();
         match packet {
             Packet::Publish(publish) => assert_eq!(publish.pkid, 1),
             packet => panic!("Invalid network request: {:?}", packet),
@@ -961,7 +964,10 @@ mod test {
         assert!(mqtt.outgoing_pub[1].is_some());
         assert_eq!(mqtt.inflight, 1);
 
-        let packet = mqtt.handle_incoming_pubrec(&PubRec::new(1)).unwrap().unwrap();
+        let packet = mqtt
+            .handle_incoming_pubrec(&PubRec::new(1))
+            .unwrap()
+            .unwrap();
         match packet {
             Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, 1),
             packet => panic!("Invalid network request: {:?}", packet),
