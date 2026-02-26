@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
+use super::eventloop::RequestEnvelope;
 use super::mqttbytes::QoS;
 use super::mqttbytes::v5::{
     Auth, AuthProperties, AuthReasonCode, Filter, PubAck, PubRec, Publish, PublishProperties,
@@ -12,7 +13,8 @@ use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
     MqttOptions, Request,
 };
-use crate::{valid_filter, valid_topic};
+use crate::notice::PublishNoticeTx;
+use crate::{PublishNotice, valid_filter, valid_topic};
 
 use bytes::Bytes;
 use flume::{SendError, Sender, TrySendError};
@@ -115,6 +117,8 @@ pub enum ClientError {
     Request(Box<Request>),
     #[error("Failed to send mqtt requests to eventloop")]
     TryRequest(Box<Request>),
+    #[error("Tracked publish API is unavailable for this client instance")]
+    TrackingUnavailable,
 }
 
 impl From<SendError<Request>> for ClientError {
@@ -129,6 +133,29 @@ impl From<TrySendError<Request>> for ClientError {
     }
 }
 
+#[derive(Clone, Debug)]
+enum RequestSender {
+    Plain(Sender<Request>),
+    WithNotice(Sender<RequestEnvelope>),
+}
+
+fn into_request(envelope: RequestEnvelope) -> Request {
+    let (request, _notice) = envelope.into_parts();
+    request
+}
+
+fn map_send_envelope_error(err: SendError<RequestEnvelope>) -> ClientError {
+    ClientError::Request(Box::new(into_request(err.into_inner())))
+}
+
+fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientError {
+    match err {
+        TrySendError::Full(envelope) | TrySendError::Disconnected(envelope) => {
+            ClientError::TryRequest(Box::new(into_request(envelope)))
+        }
+    }
+}
+
 /// An asynchronous client, communicates with MQTT `EventLoop`.
 ///
 /// This is cloneable and can be used to asynchronously [`publish`](`AsyncClient::publish`),
@@ -138,7 +165,7 @@ impl From<TrySendError<Request>> for ClientError {
 /// from the broker, i.e. move ahead.
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
-    request_tx: Sender<Request>,
+    request_tx: RequestSender,
 }
 
 impl AsyncClient {
@@ -147,7 +174,9 @@ impl AsyncClient {
     /// `cap` specifies the capacity of the bounded async channel.
     pub fn new(options: MqttOptions, cap: usize) -> (AsyncClient, EventLoop) {
         let (eventloop, request_tx) = EventLoop::new_for_async_client(options, cap);
-        let client = AsyncClient { request_tx };
+        let client = AsyncClient {
+            request_tx: RequestSender::WithNotice(request_tx),
+        };
 
         (client, eventloop)
     }
@@ -158,7 +187,65 @@ impl AsyncClient {
     /// listen on the corresponding receiver.
     #[must_use]
     pub fn from_senders(request_tx: Sender<Request>) -> AsyncClient {
-        AsyncClient { request_tx }
+        AsyncClient {
+            request_tx: RequestSender::Plain(request_tx),
+        }
+    }
+
+    async fn send_request_async(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(ClientError::from),
+            RequestSender::WithNotice(tx) => tx
+                .send_async(RequestEnvelope::plain(request))
+                .await
+                .map_err(map_send_envelope_error),
+        }
+    }
+
+    fn try_send_request(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.try_send(request).map_err(ClientError::from),
+            RequestSender::WithNotice(tx) => tx
+                .try_send(RequestEnvelope::plain(request))
+                .map_err(map_try_send_envelope_error),
+        }
+    }
+
+    fn send_request(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.send(request).map_err(ClientError::from),
+            RequestSender::WithNotice(tx) => tx
+                .send(RequestEnvelope::plain(request))
+                .map_err(map_send_envelope_error),
+        }
+    }
+
+    async fn send_tracked_publish_async(
+        &self,
+        publish: Publish,
+    ) -> Result<PublishNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_publish(publish, notice_tx))
+            .await
+            .map_err(map_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    fn try_send_tracked_publish(&self, publish: Publish) -> Result<PublishNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        request_tx
+            .try_send(RequestEnvelope::tracked_publish(publish, notice_tx))
+            .map_err(map_try_send_envelope_error)?;
+        Ok(notice)
     }
 
     /// Sends a MQTT Publish to the `EventLoop`.
@@ -184,8 +271,33 @@ impl AsyncClient {
             return Err(ClientError::Request(Box::new(publish)));
         }
 
-        self.request_tx.send_async(publish).await?;
+        self.send_request_async(publish).await?;
         Ok(())
+    }
+
+    async fn handle_publish_tracked<T, P>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: P,
+        properties: Option<PublishProperties>,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        P: Into<Bytes>,
+    {
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
+        publish.retain = retain;
+        let request = Request::Publish(publish.clone());
+
+        if invalid_topic {
+            return Err(ClientError::Request(Box::new(request)));
+        }
+
+        self.send_tracked_publish_async(publish).await
     }
 
     pub async fn publish_with_properties<T, P>(
@@ -204,6 +316,22 @@ impl AsyncClient {
             .await
     }
 
+    pub async fn publish_with_properties_tracked<T, P>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: P,
+        properties: PublishProperties,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        P: Into<Bytes>,
+    {
+        self.handle_publish_tracked(topic, qos, retain, payload, Some(properties))
+            .await
+    }
+
     pub async fn publish<T, P>(
         &self,
         topic: T,
@@ -216,6 +344,21 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         self.handle_publish(topic, qos, retain, payload, None).await
+    }
+
+    pub async fn publish_tracked<T, P>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: P,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        P: Into<Bytes>,
+    {
+        self.handle_publish_tracked(topic, qos, retain, payload, None)
+            .await
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop`.
@@ -241,8 +384,33 @@ impl AsyncClient {
             return Err(ClientError::TryRequest(Box::new(publish)));
         }
 
-        self.request_tx.try_send(publish)?;
+        self.try_send_request(publish)?;
         Ok(())
+    }
+
+    fn handle_try_publish_tracked<T, P>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: P,
+        properties: Option<PublishProperties>,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        P: Into<Bytes>,
+    {
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
+        publish.retain = retain;
+        let request = Request::Publish(publish.clone());
+
+        if invalid_topic {
+            return Err(ClientError::TryRequest(Box::new(request)));
+        }
+
+        self.try_send_tracked_publish(publish)
     }
 
     pub fn try_publish_with_properties<T, P>(
@@ -260,6 +428,21 @@ impl AsyncClient {
         self.handle_try_publish(topic, qos, retain, payload, Some(properties))
     }
 
+    pub fn try_publish_with_properties_tracked<T, P>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: P,
+        properties: PublishProperties,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        P: Into<Bytes>,
+    {
+        self.handle_try_publish_tracked(topic, qos, retain, payload, Some(properties))
+    }
+
     pub fn try_publish<T, P>(
         &self,
         topic: T,
@@ -274,12 +457,26 @@ impl AsyncClient {
         self.handle_try_publish(topic, qos, retain, payload, None)
     }
 
+    pub fn try_publish_tracked<T, P>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: P,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+        P: Into<Bytes>,
+    {
+        self.handle_try_publish_tracked(topic, qos, retain, payload, None)
+    }
+
     /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         let ack = get_ack_req(publish);
 
         if let Some(ack) = ack {
-            self.request_tx.send_async(ack).await?;
+            self.send_request_async(ack).await?;
         }
         Ok(())
     }
@@ -288,7 +485,7 @@ impl AsyncClient {
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         let ack = get_ack_req(publish);
         if let Some(ack) = ack {
-            self.request_tx.try_send(ack)?;
+            self.try_send_request(ack)?;
         }
         Ok(())
     }
@@ -297,7 +494,7 @@ impl AsyncClient {
     pub async fn reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
-        self.request_tx.send_async(auth).await?;
+        self.send_request_async(auth).await?;
         Ok(())
     }
 
@@ -305,7 +502,7 @@ impl AsyncClient {
     pub fn try_reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
-        self.request_tx.try_send(auth)?;
+        self.try_send_request(auth)?;
         Ok(())
     }
 
@@ -331,8 +528,32 @@ impl AsyncClient {
             return Err(ClientError::Request(Box::new(publish)));
         }
 
-        self.request_tx.send_async(publish).await?;
+        self.send_request_async(publish).await?;
         Ok(())
+    }
+
+    async fn handle_publish_bytes_tracked<T>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: Bytes,
+        properties: Option<PublishProperties>,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+    {
+        let (topic, needs_validation) = topic.into().into_string_and_validation();
+        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let mut publish = Publish::new(topic, qos, payload, properties);
+        publish.retain = retain;
+        let request = Request::Publish(publish.clone());
+
+        if invalid_topic {
+            return Err(ClientError::Request(Box::new(request)));
+        }
+
+        self.send_tracked_publish_async(publish).await
     }
 
     pub async fn publish_bytes_with_properties<T>(
@@ -350,6 +571,21 @@ impl AsyncClient {
             .await
     }
 
+    pub async fn publish_bytes_with_properties_tracked<T>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: Bytes,
+        properties: PublishProperties,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+    {
+        self.handle_publish_bytes_tracked(topic, qos, retain, payload, Some(properties))
+            .await
+    }
+
     pub async fn publish_bytes<T>(
         &self,
         topic: T,
@@ -361,6 +597,20 @@ impl AsyncClient {
         T: Into<PublishTopic>,
     {
         self.handle_publish_bytes(topic, qos, retain, payload, None)
+            .await
+    }
+
+    pub async fn publish_bytes_tracked<T>(
+        &self,
+        topic: T,
+        qos: QoS,
+        retain: bool,
+        payload: Bytes,
+    ) -> Result<PublishNotice, ClientError>
+    where
+        T: Into<PublishTopic>,
+    {
+        self.handle_publish_bytes_tracked(topic, qos, retain, payload, None)
             .await
     }
 
@@ -377,7 +627,7 @@ impl AsyncClient {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
-        self.request_tx.send_async(subscribe.into()).await?;
+        self.send_request_async(subscribe.into()).await?;
         Ok(())
     }
 
@@ -407,7 +657,7 @@ impl AsyncClient {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
-        self.request_tx.try_send(subscribe.into())?;
+        self.try_send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -438,7 +688,7 @@ impl AsyncClient {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
-        self.request_tx.send_async(subscribe.into()).await?;
+        self.send_request_async(subscribe.into()).await?;
 
         Ok(())
     }
@@ -475,7 +725,7 @@ impl AsyncClient {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
-        self.request_tx.try_send(subscribe.into())?;
+        self.try_send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -505,7 +755,7 @@ impl AsyncClient {
     ) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic, properties);
         let request = Request::Unsubscribe(unsubscribe);
-        self.request_tx.send_async(request).await?;
+        self.send_request_async(request).await?;
         Ok(())
     }
 
@@ -529,7 +779,7 @@ impl AsyncClient {
     ) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic, properties);
         let request = Request::Unsubscribe(unsubscribe);
-        self.request_tx.try_send(request)?;
+        self.try_send_request(request)?;
         Ok(())
     }
 
@@ -567,7 +817,7 @@ impl AsyncClient {
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
         let request = self.build_disconnect_request(reason, properties);
-        self.request_tx.send_async(request).await?;
+        self.send_request_async(request).await?;
         Ok(())
     }
 
@@ -592,7 +842,7 @@ impl AsyncClient {
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
         let request = self.build_disconnect_request(reason, properties);
-        self.request_tx.try_send(request)?;
+        self.try_send_request(request)?;
         Ok(())
     }
 
@@ -684,7 +934,7 @@ impl Client {
             return Err(ClientError::Request(Box::new(request)));
         }
 
-        self.client.request_tx.send(request)?;
+        self.client.send_request(request)?;
         Ok(())
     }
 
@@ -752,7 +1002,7 @@ impl Client {
         let ack = get_ack_req(publish);
 
         if let Some(ack) = ack {
-            self.client.request_tx.send(ack)?;
+            self.client.send_request(ack)?;
         }
         Ok(())
     }
@@ -767,7 +1017,7 @@ impl Client {
     pub fn reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
-        self.client.request_tx.send(auth)?;
+        self.client.send_request(auth)?;
         Ok(())
     }
 
@@ -775,7 +1025,7 @@ impl Client {
     pub fn try_reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
-        self.client.request_tx.try_send(auth)?;
+        self.client.try_send_request(auth)?;
         Ok(())
     }
 
@@ -792,7 +1042,7 @@ impl Client {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
-        self.client.request_tx.send(subscribe.into())?;
+        self.client.send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -838,7 +1088,7 @@ impl Client {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
-        self.client.request_tx.send(subscribe.into())?;
+        self.client.send_request(subscribe.into())?;
         Ok(())
     }
 
@@ -887,7 +1137,7 @@ impl Client {
     ) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic, properties);
         let request = Request::Unsubscribe(unsubscribe);
-        self.client.request_tx.send(request)?;
+        self.client.send_request(request)?;
         Ok(())
     }
 
@@ -937,7 +1187,7 @@ impl Client {
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
         let request = self.client.build_disconnect_request(reason, properties);
-        self.client.request_tx.send(request)?;
+        self.client.send_request(request)?;
         Ok(())
     }
 
@@ -1509,5 +1759,34 @@ mod test {
             }
             request => panic!("Expected disconnect request, got {:?}", request),
         }
+    }
+
+    #[test]
+    fn tracked_publish_requires_tracking_channel() {
+        let (tx, _) = flume::bounded(2);
+        let client = AsyncClient::from_senders(tx);
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let err = client
+                .publish_tracked("hello/world", QoS::AtLeastOnce, false, "good bye")
+                .await
+                .expect_err("tracked publish should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
+
+            let err = client
+                .publish_bytes_tracked(
+                    "hello/world",
+                    QoS::AtLeastOnce,
+                    false,
+                    Bytes::from_static(b"good bye"),
+                )
+                .await
+                .expect_err("tracked publish bytes should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
+        });
     }
 }

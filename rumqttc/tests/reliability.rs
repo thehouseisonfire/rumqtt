@@ -660,7 +660,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
             code: ConnectReturnCode::Success,
             session_present: false, // this validates the "clean session" behavior
         }))) => {
-            assert!(eventloop.pending.is_empty());
+            assert!(eventloop.pending_is_empty());
             assert!(eventloop.state.collision.is_none());
         }
         v => panic!("Expected ConnAck Success. Found = {:?}", v),
