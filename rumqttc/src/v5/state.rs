@@ -100,12 +100,16 @@ pub struct MqttState {
     last_outgoing: Instant,
     /// Packet id of the last outgoing packet
     pub(crate) last_pkid: u16,
+    /// Packet id of the last acked publish
+    pub(crate) last_puback: u16,
     /// Number of outgoing inflight publishes
     pub(crate) inflight: u16,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
     pub(crate) outgoing_pub: Vec<Option<Publish>>,
     /// Notice handles for outgoing QoS 1, 2 publishes
     pub(crate) outgoing_pub_notice: Vec<Option<PublishNoticeTx>>,
+    /// Packet ids acked by broker while waiting to advance last contiguous ack boundary
+    pub(crate) outgoing_pub_ack: FixedBitSet,
     /// Packet ids of released QoS 2 publishes
     pub(crate) outgoing_rel: FixedBitSet,
     /// Notice handles for outgoing QoS 2 pubrels
@@ -152,10 +156,12 @@ impl MqttState {
             last_incoming: Instant::now(),
             last_outgoing: Instant::now(),
             last_pkid: 0,
+            last_puback: 0,
             inflight: 0,
             // index 0 is wasted as 0 is not a valid packet id
             outgoing_pub: vec![None; max_inflight as usize + 1],
             outgoing_pub_notice: Self::new_notice_slots(max_inflight),
+            outgoing_pub_ack: FixedBitSet::with_capacity(max_inflight as usize + 1),
             outgoing_rel: FixedBitSet::with_capacity(max_inflight as usize + 1),
             outgoing_rel_notice: Self::new_notice_slots(max_inflight),
             incoming_pub: FixedBitSet::with_capacity(u16::MAX as usize + 1),
@@ -175,11 +181,17 @@ impl MqttState {
 
     pub(crate) fn clean_with_notices(&mut self) -> Vec<(Request, Option<PublishNoticeTx>)> {
         let mut pending = Vec::with_capacity(100);
-        // remove and collect pending publishes
-        for (publish, notice) in self
+        let (first_half, second_half) = self
             .outgoing_pub
+            .split_at_mut(self.last_puback as usize + 1);
+        let (notice_first_half, notice_second_half) = self
+            .outgoing_pub_notice
+            .split_at_mut(self.last_puback as usize + 1);
+
+        for (publish, notice) in second_half
             .iter_mut()
-            .zip(self.outgoing_pub_notice.iter_mut())
+            .zip(notice_second_half.iter_mut())
+            .chain(first_half.iter_mut().zip(notice_first_half.iter_mut()))
         {
             if let Some(publish) = publish.take() {
                 let request = Request::Publish(publish);
@@ -196,6 +208,7 @@ impl MqttState {
             pending.push((request, self.outgoing_rel_notice[pkid as usize].take()));
         }
         self.outgoing_rel.clear();
+        self.outgoing_pub_ack.clear();
 
         // remove packed ids of incoming qos2 publishes
         self.incoming_pub.clear();
@@ -436,6 +449,8 @@ impl MqttState {
             error!("Unsolicited puback packet: {:?}", puback.pkid);
             return Err(StateError::Unsolicited(puback.pkid));
         }
+        self.outgoing_pub_ack.set(puback.pkid as usize, true);
+        self.advance_last_puback_frontier();
 
         let notice = self.outgoing_pub_notice[puback.pkid as usize].take();
         self.inflight -= 1;
@@ -642,6 +657,7 @@ impl MqttState {
             // packet yet. This error is possible only when broker isn't acking sequentially
             self.outgoing_pub[pkid as usize] = Some(publish.clone());
             self.outgoing_pub_notice[pkid as usize] = notice.take();
+            self.outgoing_pub_ack.set(pkid as usize, false);
             self.inflight += 1;
         }
 
@@ -838,6 +854,27 @@ impl MqttState {
         Ok(pubrel)
     }
 
+    fn advance_last_puback_frontier(&mut self) {
+        let mut next = self.next_puback_boundary_pkid(self.last_puback);
+        while next != 0 && self.outgoing_pub_ack.contains(next as usize) {
+            self.outgoing_pub_ack.set(next as usize, false);
+            self.last_puback = next;
+            next = self.next_puback_boundary_pkid(self.last_puback);
+        }
+    }
+
+    fn next_puback_boundary_pkid(&self, pkid: u16) -> u16 {
+        if self.max_outgoing_inflight == 0 {
+            return 0;
+        }
+
+        if pkid >= self.max_outgoing_inflight {
+            1
+        } else {
+            pkid + 1
+        }
+    }
+
     /// http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation
     /// Packet ids are incremented till maximum set inflight messages and reset to 1 after that.
     ///
@@ -866,9 +903,11 @@ impl Clone for MqttState {
             last_incoming: self.last_incoming,
             last_outgoing: self.last_outgoing,
             last_pkid: self.last_pkid,
+            last_puback: self.last_puback,
             inflight: self.inflight,
             outgoing_pub: self.outgoing_pub.clone(),
             outgoing_pub_notice: Self::new_notice_slots(self.max_outgoing_inflight_upper_limit),
+            outgoing_pub_ack: self.outgoing_pub_ack.clone(),
             outgoing_rel: self.outgoing_rel.clone(),
             outgoing_rel_notice: Self::new_notice_slots(self.max_outgoing_inflight_upper_limit),
             incoming_pub: self.incoming_pub.clone(),
@@ -1004,6 +1043,65 @@ mod test {
     }
 
     #[test]
+    fn clean_is_calculating_pending_correctly() {
+        let mut mqtt = build_mqttstate();
+
+        fn build_publish_with_pkid(pkid: u16) -> Publish {
+            let mut publish = Publish::new("test".to_owned(), QoS::AtLeastOnce, vec![], None);
+            publish.pkid = pkid;
+            publish
+        }
+
+        fn build_outgoing_pub() -> Vec<Option<Publish>> {
+            vec![
+                None,
+                Some(build_publish_with_pkid(1)),
+                Some(build_publish_with_pkid(2)),
+                Some(build_publish_with_pkid(3)),
+                None,
+                None,
+                Some(build_publish_with_pkid(6)),
+            ]
+        }
+
+        mqtt.outgoing_pub = build_outgoing_pub();
+        mqtt.last_puback = 3;
+        let requests = mqtt.clean();
+        let expected = vec![6, 1, 2, 3];
+        for (req, pkid) in requests.iter().zip(expected) {
+            if let Request::Publish(publish) = req {
+                assert_eq!(publish.pkid, pkid);
+            } else {
+                unreachable!();
+            }
+        }
+
+        mqtt.outgoing_pub = build_outgoing_pub();
+        mqtt.last_puback = 0;
+        let requests = mqtt.clean();
+        let expected = vec![1, 2, 3, 6];
+        for (req, pkid) in requests.iter().zip(expected) {
+            if let Request::Publish(publish) = req {
+                assert_eq!(publish.pkid, pkid);
+            } else {
+                unreachable!();
+            }
+        }
+
+        mqtt.outgoing_pub = build_outgoing_pub();
+        mqtt.last_puback = 6;
+        let requests = mqtt.clean();
+        let expected = vec![1, 2, 3, 6];
+        for (req, pkid) in requests.iter().zip(expected) {
+            if let Request::Publish(publish) = req {
+                assert_eq!(publish.pkid, pkid);
+            } else {
+                unreachable!();
+            }
+        }
+    }
+
+    #[test]
     fn incoming_publish_should_be_added_to_queue_correctly() {
         let mut mqtt = build_mqttstate();
 
@@ -1120,6 +1218,70 @@ mod test {
 
         assert!(mqtt.outgoing_pub[1].is_none());
         assert!(mqtt.outgoing_pub[2].is_none());
+    }
+
+    #[test]
+    fn incoming_puback_updates_last_puback() {
+        let mut mqtt = build_mqttstate();
+
+        let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
+        let publish2 = build_outgoing_publish(QoS::AtLeastOnce);
+        mqtt.outgoing_publish(publish1).unwrap();
+        mqtt.outgoing_publish(publish2).unwrap();
+        assert_eq!(mqtt.last_puback, 0);
+
+        mqtt.handle_incoming_puback(&PubAck::new(1, None)).unwrap();
+        assert_eq!(mqtt.last_puback, 1);
+
+        mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
+        assert_eq!(mqtt.last_puback, 2);
+    }
+
+    #[test]
+    fn incoming_puback_advances_last_puback_only_on_contiguous_boundary() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        assert_eq!(mqtt.last_puback, 0);
+
+        mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
+        assert_eq!(mqtt.last_puback, 0);
+
+        mqtt.handle_incoming_puback(&PubAck::new(1, None)).unwrap();
+        assert_eq!(mqtt.last_puback, 2);
+
+        mqtt.handle_incoming_puback(&PubAck::new(3, None)).unwrap();
+        assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
+    fn clean_keeps_oldest_unacked_publish_first_after_out_of_order_puback() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+
+        mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
+        let requests = mqtt.clean();
+
+        let pending_pkids: Vec<u16> = requests
+            .iter()
+            .map(|req| match req {
+                Request::Publish(publish) => publish.pkid,
+                req => panic!("Unexpected request while cleaning: {req:?}"),
+            })
+            .collect();
+
+        assert_eq!(pending_pkids, vec![1, 3]);
     }
 
     #[test]

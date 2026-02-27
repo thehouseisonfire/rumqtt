@@ -603,6 +603,47 @@ async fn reconnection_resends_unacked_packets_from_the_previous_connection_first
 }
 
 #[tokio::test]
+async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first() {
+    let mut options = MqttOptions::new("dummy", "127.0.0.1", 3006);
+    options
+        .set_keep_alive(5)
+        .set_clean_session(false)
+        .set_inflight(4);
+
+    let (client, mut eventloop) = AsyncClient::new(options, 10);
+    task::spawn(async move {
+        start_requests(8, QoS::AtLeastOnce, 0, client).await;
+        time::sleep(Duration::from_secs(10)).await;
+    });
+
+    task::spawn(async move {
+        run(&mut eventloop, true).await.unwrap();
+    });
+
+    {
+        let mut broker = Broker::new(3006, 0, false).await;
+        let publishes = broker
+            .wait_for_n_publishes(4, SETUP_TIMEOUT)
+            .await
+            .expect("didn't receive initial inflight publishes");
+        for (i, publish) in publishes.iter().enumerate() {
+            assert_eq!(publish.payload[0], (i + 1) as u8);
+        }
+
+        // Ack packet 2 while packet 1 is still unacked to force out-of-order ack boundary tracking.
+        broker.ack(publishes[1].pkid).await;
+    }
+
+    let mut broker = Broker::new(3006, 0, true).await;
+    let first_replayed = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("missing first replayed publish after reconnect");
+    assert_eq!(first_replayed.payload[0], 1);
+    broker.ack(first_replayed.pkid).await;
+}
+
+#[tokio::test]
 async fn reconnection_clean_both_pending_packets_and_collision_when_clean_session_is_true() {
     let mut options = MqttOptions::new("dummy", "127.0.0.1", 3003);
     options
