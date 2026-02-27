@@ -13,8 +13,8 @@ use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
     MqttOptions, Request,
 };
-use crate::notice::PublishNoticeTx;
-use crate::{PublishNotice, valid_filter, valid_topic};
+use crate::notice::{PublishNoticeTx, RequestNoticeTx};
+use crate::{PublishNotice, RequestNotice, valid_filter, valid_topic};
 
 use bytes::Bytes;
 use flume::{SendError, Sender, TrySendError};
@@ -117,7 +117,7 @@ pub enum ClientError {
     Request(Box<Request>),
     #[error("Failed to send mqtt requests to eventloop")]
     TryRequest(Box<Request>),
-    #[error("Tracked publish API is unavailable for this client instance")]
+    #[error("Tracked request API is unavailable for this client instance")]
     TrackingUnavailable,
 }
 
@@ -244,6 +244,68 @@ impl AsyncClient {
         let (notice_tx, notice) = PublishNoticeTx::new();
         request_tx
             .try_send(RequestEnvelope::tracked_publish(publish, notice_tx))
+            .map_err(map_try_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    async fn send_tracked_subscribe_async(
+        &self,
+        subscribe: Subscribe,
+    ) -> Result<RequestNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = RequestNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_subscribe(subscribe, notice_tx))
+            .await
+            .map_err(map_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    fn try_send_tracked_subscribe(
+        &self,
+        subscribe: Subscribe,
+    ) -> Result<RequestNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = RequestNoticeTx::new();
+        request_tx
+            .try_send(RequestEnvelope::tracked_subscribe(subscribe, notice_tx))
+            .map_err(map_try_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    async fn send_tracked_unsubscribe_async(
+        &self,
+        unsubscribe: Unsubscribe,
+    ) -> Result<RequestNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = RequestNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_unsubscribe(unsubscribe, notice_tx))
+            .await
+            .map_err(map_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    fn try_send_tracked_unsubscribe(
+        &self,
+        unsubscribe: Unsubscribe,
+    ) -> Result<RequestNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = RequestNoticeTx::new();
+        request_tx
+            .try_send(RequestEnvelope::tracked_unsubscribe(unsubscribe, notice_tx))
             .map_err(map_try_send_envelope_error)?;
         Ok(notice)
     }
@@ -631,6 +693,21 @@ impl AsyncClient {
         Ok(())
     }
 
+    async fn handle_subscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        qos: QoS,
+        properties: Option<SubscribeProperties>,
+    ) -> Result<RequestNotice, ClientError> {
+        let filter = Filter::new(topic, qos);
+        let subscribe = Subscribe::new(filter, properties);
+        if !subscribe_has_valid_filters(&subscribe) {
+            return Err(ClientError::Request(Box::new(subscribe.into())));
+        }
+
+        self.send_tracked_subscribe_async(subscribe).await
+    }
+
     pub async fn subscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -640,8 +717,26 @@ impl AsyncClient {
         self.handle_subscribe(topic, qos, Some(properties)).await
     }
 
+    pub async fn subscribe_with_properties_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        qos: QoS,
+        properties: SubscribeProperties,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_subscribe_tracked(topic, qos, Some(properties))
+            .await
+    }
+
     pub async fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.handle_subscribe(topic, qos, None).await
+    }
+
+    pub async fn subscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        qos: QoS,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_subscribe_tracked(topic, qos, None).await
     }
 
     /// Attempts to send a MQTT Subscribe to the `EventLoop`
@@ -661,6 +756,21 @@ impl AsyncClient {
         Ok(())
     }
 
+    fn handle_try_subscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        qos: QoS,
+        properties: Option<SubscribeProperties>,
+    ) -> Result<RequestNotice, ClientError> {
+        let filter = Filter::new(topic, qos);
+        let subscribe = Subscribe::new(filter, properties);
+        if !subscribe_has_valid_filters(&subscribe) {
+            return Err(ClientError::TryRequest(Box::new(subscribe.into())));
+        }
+
+        self.try_send_tracked_subscribe(subscribe)
+    }
+
     pub fn try_subscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -670,8 +780,25 @@ impl AsyncClient {
         self.handle_try_subscribe(topic, qos, Some(properties))
     }
 
+    pub fn try_subscribe_with_properties_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        qos: QoS,
+        properties: SubscribeProperties,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_try_subscribe_tracked(topic, qos, Some(properties))
+    }
+
     pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.handle_try_subscribe(topic, qos, None)
+    }
+
+    pub fn try_subscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        qos: QoS,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_try_subscribe_tracked(topic, qos, None)
     }
 
     /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
@@ -693,6 +820,22 @@ impl AsyncClient {
         Ok(())
     }
 
+    async fn handle_subscribe_many_tracked<T>(
+        &self,
+        topics: T,
+        properties: Option<SubscribeProperties>,
+    ) -> Result<RequestNotice, ClientError>
+    where
+        T: IntoIterator<Item = Filter>,
+    {
+        let subscribe = Subscribe::new_many(topics, properties);
+        if !subscribe_has_valid_filters(&subscribe) {
+            return Err(ClientError::Request(Box::new(subscribe.into())));
+        }
+
+        self.send_tracked_subscribe_async(subscribe).await
+    }
+
     pub async fn subscribe_many_with_properties<T>(
         &self,
         topics: T,
@@ -704,11 +847,30 @@ impl AsyncClient {
         self.handle_subscribe_many(topics, Some(properties)).await
     }
 
+    pub async fn subscribe_many_with_properties_tracked<T>(
+        &self,
+        topics: T,
+        properties: SubscribeProperties,
+    ) -> Result<RequestNotice, ClientError>
+    where
+        T: IntoIterator<Item = Filter>,
+    {
+        self.handle_subscribe_many_tracked(topics, Some(properties))
+            .await
+    }
+
     pub async fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = Filter>,
     {
         self.handle_subscribe_many(topics, None).await
+    }
+
+    pub async fn subscribe_many_tracked<T>(&self, topics: T) -> Result<RequestNotice, ClientError>
+    where
+        T: IntoIterator<Item = Filter>,
+    {
+        self.handle_subscribe_many_tracked(topics, None).await
     }
 
     /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`
@@ -729,6 +891,22 @@ impl AsyncClient {
         Ok(())
     }
 
+    fn handle_try_subscribe_many_tracked<T>(
+        &self,
+        topics: T,
+        properties: Option<SubscribeProperties>,
+    ) -> Result<RequestNotice, ClientError>
+    where
+        T: IntoIterator<Item = Filter>,
+    {
+        let subscribe = Subscribe::new_many(topics, properties);
+        if !subscribe_has_valid_filters(&subscribe) {
+            return Err(ClientError::TryRequest(Box::new(subscribe.into())));
+        }
+
+        self.try_send_tracked_subscribe(subscribe)
+    }
+
     pub fn try_subscribe_many_with_properties<T>(
         &self,
         topics: T,
@@ -740,11 +918,29 @@ impl AsyncClient {
         self.handle_try_subscribe_many(topics, Some(properties))
     }
 
+    pub fn try_subscribe_many_with_properties_tracked<T>(
+        &self,
+        topics: T,
+        properties: SubscribeProperties,
+    ) -> Result<RequestNotice, ClientError>
+    where
+        T: IntoIterator<Item = Filter>,
+    {
+        self.handle_try_subscribe_many_tracked(topics, Some(properties))
+    }
+
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = Filter>,
     {
         self.handle_try_subscribe_many(topics, None)
+    }
+
+    pub fn try_subscribe_many_tracked<T>(&self, topics: T) -> Result<RequestNotice, ClientError>
+    where
+        T: IntoIterator<Item = Filter>,
+    {
+        self.handle_try_subscribe_many_tracked(topics, None)
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`
@@ -759,6 +955,15 @@ impl AsyncClient {
         Ok(())
     }
 
+    async fn handle_unsubscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<RequestNotice, ClientError> {
+        let unsubscribe = Unsubscribe::new(topic, properties);
+        self.send_tracked_unsubscribe_async(unsubscribe).await
+    }
+
     pub async fn unsubscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -767,8 +972,24 @@ impl AsyncClient {
         self.handle_unsubscribe(topic, Some(properties)).await
     }
 
+    pub async fn unsubscribe_with_properties_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        properties: UnsubscribeProperties,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_unsubscribe_tracked(topic, Some(properties))
+            .await
+    }
+
     pub async fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, None).await
+    }
+
+    pub async fn unsubscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_unsubscribe_tracked(topic, None).await
     }
 
     /// Attempts to send a MQTT Unsubscribe to the `EventLoop`
@@ -783,6 +1004,15 @@ impl AsyncClient {
         Ok(())
     }
 
+    fn handle_try_unsubscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<RequestNotice, ClientError> {
+        let unsubscribe = Unsubscribe::new(topic, properties);
+        self.try_send_tracked_unsubscribe(unsubscribe)
+    }
+
     pub fn try_unsubscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -791,8 +1021,23 @@ impl AsyncClient {
         self.handle_try_unsubscribe(topic, Some(properties))
     }
 
+    pub fn try_unsubscribe_with_properties_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+        properties: UnsubscribeProperties,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_try_unsubscribe_tracked(topic, Some(properties))
+    }
+
     pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.handle_try_unsubscribe(topic, None)
+    }
+
+    pub fn try_unsubscribe_tracked<S: Into<String>>(
+        &self,
+        topic: S,
+    ) -> Result<RequestNotice, ClientError> {
+        self.handle_try_unsubscribe_tracked(topic, None)
     }
 
     /// Sends a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
@@ -1787,6 +2032,39 @@ mod test {
                 .await
                 .expect_err("tracked publish bytes should fail without tracked channel");
             assert!(matches!(err, ClientError::TrackingUnavailable));
+
+            let err = client
+                .subscribe_tracked("hello/world", QoS::AtLeastOnce)
+                .await
+                .expect_err("tracked subscribe should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
+
+            let err = client
+                .subscribe_many_tracked(vec![Filter::new("hello/world", QoS::AtLeastOnce)])
+                .await
+                .expect_err("tracked subscribe many should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
+
+            let err = client
+                .unsubscribe_tracked("hello/world")
+                .await
+                .expect_err("tracked unsubscribe should fail without tracked channel");
+            assert!(matches!(err, ClientError::TrackingUnavailable));
         });
+
+        let err = client
+            .try_subscribe_tracked("hello/world", QoS::AtLeastOnce)
+            .expect_err("tracked try_subscribe should fail without tracked channel");
+        assert!(matches!(err, ClientError::TrackingUnavailable));
+
+        let err = client
+            .try_subscribe_many_tracked(vec![Filter::new("hello/world", QoS::AtLeastOnce)])
+            .expect_err("tracked try_subscribe_many should fail without tracked channel");
+        assert!(matches!(err, ClientError::TrackingUnavailable));
+
+        let err = client
+            .try_unsubscribe_tracked("hello/world")
+            .expect_err("tracked try_unsubscribe should fail without tracked channel");
+        assert!(matches!(err, ClientError::TrackingUnavailable));
     }
 }

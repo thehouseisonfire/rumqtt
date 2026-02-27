@@ -1,9 +1,9 @@
 use super::framed::Network;
 use super::mqttbytes::v5::*;
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
-use crate::PublishNoticeError;
 use crate::framed::AsyncReadWrite;
-use crate::notice::PublishNoticeTx;
+use crate::notice::{PublishNoticeTx, RequestNoticeTx, TrackedNoticeTx};
+use crate::{PublishNoticeError, RequestNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded};
 use tokio::select;
@@ -35,11 +35,11 @@ use crate::proxy::ProxyError;
 #[derive(Debug)]
 pub(crate) struct RequestEnvelope {
     request: Request,
-    notice: Option<PublishNoticeTx>,
+    notice: Option<TrackedNoticeTx>,
 }
 
 impl RequestEnvelope {
-    pub(crate) fn from_parts(request: Request, notice: Option<PublishNoticeTx>) -> Self {
+    pub(crate) fn from_parts(request: Request, notice: Option<TrackedNoticeTx>) -> Self {
         Self { request, notice }
     }
 
@@ -53,11 +53,25 @@ impl RequestEnvelope {
     pub(crate) fn tracked_publish(publish: Publish, notice: PublishNoticeTx) -> Self {
         Self {
             request: Request::Publish(publish),
-            notice: Some(notice),
+            notice: Some(TrackedNoticeTx::Publish(notice)),
         }
     }
 
-    pub(crate) fn into_parts(self) -> (Request, Option<PublishNoticeTx>) {
+    pub(crate) fn tracked_subscribe(subscribe: Subscribe, notice: RequestNoticeTx) -> Self {
+        Self {
+            request: Request::Subscribe(subscribe),
+            notice: Some(TrackedNoticeTx::Request(notice)),
+        }
+    }
+
+    pub(crate) fn tracked_unsubscribe(unsubscribe: Unsubscribe, notice: RequestNoticeTx) -> Self {
+        Self {
+            request: Request::Unsubscribe(unsubscribe),
+            notice: Some(TrackedNoticeTx::Request(notice)),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Request, Option<TrackedNoticeTx>) {
         (self.request, self.notice)
     }
 }
@@ -211,18 +225,24 @@ impl EventLoop {
         self.pending.is_empty()
     }
 
-    fn fail_pending_notices(&mut self, error: PublishNoticeError) {
+    fn fail_pending_notices(&mut self) {
         for envelope in self.pending.drain(..) {
             if let Some(notice) = envelope.notice {
-                notice.error(error.clone());
+                match notice {
+                    TrackedNoticeTx::Publish(notice) => {
+                        notice.error(PublishNoticeError::SessionReset);
+                    }
+                    TrackedNoticeTx::Request(notice) => {
+                        notice.error(RequestNoticeError::SessionReset);
+                    }
+                }
             }
         }
     }
 
     fn reset_session_state(&mut self) {
-        self.fail_pending_notices(PublishNoticeError::SessionReset);
-        self.state
-            .fail_pending_notices(PublishNoticeError::SessionReset);
+        self.fail_pending_notices();
+        self.state.fail_pending_notices();
     }
 
     /// Yields Next notification or outgoing request and periodically pings
@@ -414,7 +434,7 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Option<(Request, Option<PublishNoticeTx>)> {
+    ) -> Option<(Request, Option<TrackedNoticeTx>)> {
         if !pending.is_empty() {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
@@ -439,7 +459,7 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Result<(Request, Option<PublishNoticeTx>), ConnectionError> {
+    ) -> Result<(Request, Option<TrackedNoticeTx>), ConnectionError> {
         if !pending.is_empty() {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
