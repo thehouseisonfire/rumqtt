@@ -65,6 +65,8 @@ pub struct MqttState {
     pub(crate) outgoing_pub: Vec<Option<Publish>>,
     /// Notice handles for outgoing QoS 1, 2 publishes
     pub(crate) outgoing_pub_notice: Vec<Option<PublishNoticeTx>>,
+    /// Packet ids acked by broker while waiting to advance last contiguous ack boundary
+    pub(crate) outgoing_pub_ack: FixedBitSet,
     /// Packet ids of released QoS 2 publishes
     pub(crate) outgoing_rel: FixedBitSet,
     /// Notice handles for outgoing QoS 2 pubrels
@@ -103,6 +105,7 @@ impl MqttState {
             // index 0 is wasted as 0 is not a valid packet id
             outgoing_pub: vec![None; max_inflight as usize + 1],
             outgoing_pub_notice: Self::new_notice_slots(max_inflight),
+            outgoing_pub_ack: FixedBitSet::with_capacity(max_inflight as usize + 1),
             outgoing_rel: FixedBitSet::with_capacity(max_inflight as usize + 1),
             outgoing_rel_notice: Self::new_notice_slots(max_inflight),
             incoming_pub: FixedBitSet::with_capacity(u16::MAX as usize + 1),
@@ -143,6 +146,7 @@ impl MqttState {
             pending.push((request, self.outgoing_rel_notice[pkid as usize].take()));
         }
         self.outgoing_rel.clear();
+        self.outgoing_pub_ack.clear();
 
         // remove packet ids of incoming qos2 publishes
         self.incoming_pub.clear();
@@ -301,12 +305,12 @@ impl MqttState {
             .get_mut(puback.pkid as usize)
             .ok_or(StateError::Unsolicited(puback.pkid))?;
 
-        self.last_puback = puback.pkid;
-
         if publish.take().is_none() {
             error!("Unsolicited puback packet: {:?}", puback.pkid);
             return Err(StateError::Unsolicited(puback.pkid));
         }
+        self.outgoing_pub_ack.set(puback.pkid as usize, true);
+        self.advance_last_puback_frontier();
 
         if let Some(tx) = self.outgoing_pub_notice[puback.pkid as usize].take() {
             tx.success();
@@ -436,6 +440,7 @@ impl MqttState {
             // packet yet. This error is possible only when broker isn't acking sequentially
             self.outgoing_pub[pkid as usize] = Some(publish.clone());
             self.outgoing_pub_notice[pkid as usize] = notice.take();
+            self.outgoing_pub_ack.set(pkid as usize, false);
             self.inflight += 1;
         }
 
@@ -601,6 +606,27 @@ impl MqttState {
         Ok(pubrel)
     }
 
+    fn advance_last_puback_frontier(&mut self) {
+        let mut next = self.next_puback_boundary_pkid(self.last_puback);
+        while next != 0 && self.outgoing_pub_ack.contains(next as usize) {
+            self.outgoing_pub_ack.set(next as usize, false);
+            self.last_puback = next;
+            next = self.next_puback_boundary_pkid(self.last_puback);
+        }
+    }
+
+    fn next_puback_boundary_pkid(&self, pkid: u16) -> u16 {
+        if self.max_inflight == 0 {
+            return 0;
+        }
+
+        if pkid >= self.max_inflight {
+            1
+        } else {
+            pkid + 1
+        }
+    }
+
     /// http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation
     /// Packet ids are incremented till maximum set inflight messages and reset to 1 after that.
     ///
@@ -634,6 +660,7 @@ impl Clone for MqttState {
             max_inflight: self.max_inflight,
             outgoing_pub: self.outgoing_pub.clone(),
             outgoing_pub_notice: Self::new_notice_slots(self.max_inflight),
+            outgoing_pub_ack: self.outgoing_pub_ack.clone(),
             outgoing_rel: self.outgoing_rel.clone(),
             outgoing_rel_notice: Self::new_notice_slots(self.max_inflight),
             incoming_pub: self.incoming_pub.clone(),
@@ -854,6 +881,28 @@ mod test {
     }
 
     #[test]
+    fn incoming_puback_advances_last_puback_only_on_contiguous_boundary() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        assert_eq!(mqtt.last_puback, 0);
+
+        mqtt.handle_incoming_puback(&PubAck::new(2)).unwrap();
+        assert_eq!(mqtt.last_puback, 0);
+
+        mqtt.handle_incoming_puback(&PubAck::new(1)).unwrap();
+        assert_eq!(mqtt.last_puback, 2);
+
+        mqtt.handle_incoming_puback(&PubAck::new(3)).unwrap();
+        assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
     fn incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully() {
         let mut mqtt = build_mqttstate();
 
@@ -863,6 +912,31 @@ mod test {
             StateError::Unsolicited(pkid) => assert_eq!(pkid, 101),
             e => panic!("Unexpected error: {}", e),
         }
+    }
+
+    #[test]
+    fn clean_keeps_oldest_unacked_publish_first_after_out_of_order_puback() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+
+        mqtt.handle_incoming_puback(&PubAck::new(2)).unwrap();
+        let requests = mqtt.clean();
+
+        let pending_pkids: Vec<u16> = requests
+            .iter()
+            .map(|req| match req {
+                Request::Publish(publish) => publish.pkid,
+                req => panic!("Unexpected request while cleaning: {req:?}"),
+            })
+            .collect();
+
+        assert_eq!(pending_pkids, vec![1, 3]);
     }
 
     #[test]
