@@ -21,10 +21,15 @@ pub struct Broker {
 
 impl Broker {
     /// Create a new broker which accepts 1 mqtt connection
+    #[allow(dead_code)]
     pub async fn new(port: u16, connack: u8, session_saved: bool) -> Broker {
         let addr = format!("127.0.0.1:{port}");
         let listener = TcpListener::bind(&addr).await.unwrap();
+        Self::from_listener(listener, connack, session_saved).await
+    }
 
+    /// Create a new broker from an existing listener.
+    pub async fn from_listener(listener: TcpListener, connack: u8, session_saved: bool) -> Broker {
         let (stream, _) = listener.accept().await.unwrap();
         let mut framed = Network::new(stream, 10 * 1024);
         let mut incoming = VecDeque::new();
