@@ -390,17 +390,19 @@ pub(crate) mod publish {
             let dup = (self.fixed_header.byte1 & 0b1000) != 0;
             let retain = (self.fixed_header.byte1 & 0b0001) != 0;
 
-            // FIXME: Remove indexes and use get method
-            let stream = &self.raw[self.fixed_header.fixed_header_len..];
+            let stream = self
+                .raw
+                .get(self.fixed_header.fixed_header_len..)
+                .ok_or(Error::MalformedPacket)?;
             let topic_len = view_u16(stream)? as usize;
 
-            let stream = &stream[2..];
+            let stream = stream.get(2..).ok_or(Error::MalformedPacket)?;
             let topic = view_str(stream, topic_len)?;
 
             let pkid = match qos {
                 0 => 0,
                 1 => {
-                    let stream = &stream[topic_len..];
+                    let stream = stream.get(topic_len..).ok_or(Error::MalformedPacket)?;
                     view_u16(stream)?
                 }
                 v => return Err(Error::InvalidQoS(v)),
@@ -414,11 +416,13 @@ pub(crate) mod publish {
         }
 
         pub fn view_topic(&self) -> Result<&str, Error> {
-            // FIXME: Remove indexes
-            let stream = &self.raw[self.fixed_header.fixed_header_len..];
+            let stream = self
+                .raw
+                .get(self.fixed_header.fixed_header_len..)
+                .ok_or(Error::MalformedPacket)?;
             let topic_len = view_u16(stream)? as usize;
 
-            let stream = &stream[2..];
+            let stream = stream.get(2..).ok_or(Error::MalformedPacket)?;
             let topic = view_str(stream, topic_len)?;
             Ok(topic)
         }
