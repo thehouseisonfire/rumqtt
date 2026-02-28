@@ -141,9 +141,16 @@ pub struct MqttState {
 }
 
 impl MqttState {
-    fn new_notice_slots(max_inflight: u16) -> Vec<Option<PublishNoticeTx>> {
-        let size = max_inflight as usize + 1;
+    fn outgoing_tracking_len(max_inflight: u16) -> usize {
+        usize::from(max_inflight) + 1
+    }
+
+    fn new_notice_slots_with_len(size: usize) -> Vec<Option<PublishNoticeTx>> {
         std::iter::repeat_with(|| None).take(size).collect()
+    }
+
+    fn new_notice_slots(max_inflight: u16) -> Vec<Option<PublishNoticeTx>> {
+        Self::new_notice_slots_with_len(Self::outgoing_tracking_len(max_inflight))
     }
 
     /// Creates new mqtt state. Same state should be used during a
@@ -183,6 +190,65 @@ impl MqttState {
             max_outgoing_inflight_upper_limit: max_inflight,
             auth_manager,
         }
+    }
+
+    fn ensure_outgoing_tracking_capacity(&mut self, target_len: usize) {
+        if self.outgoing_pub.len() < target_len {
+            self.outgoing_pub.resize_with(target_len, || None);
+        }
+
+        if self.outgoing_pub_notice.len() < target_len {
+            self.outgoing_pub_notice.resize_with(target_len, || None);
+        }
+
+        if self.outgoing_rel_notice.len() < target_len {
+            self.outgoing_rel_notice.resize_with(target_len, || None);
+        }
+
+        if self.outgoing_pub_ack.len() < target_len {
+            self.outgoing_pub_ack.grow(target_len);
+        }
+
+        if self.outgoing_rel.len() < target_len {
+            self.outgoing_rel.grow(target_len);
+        }
+    }
+
+    fn can_shrink_outgoing_tracking(&self) -> bool {
+        self.inflight == 0
+            && self.collision.is_none()
+            && self.collision_notice.is_none()
+            && self.tracked_subscribe.is_empty()
+            && self.tracked_unsubscribe.is_empty()
+            && self.outgoing_pub.iter().all(Option::is_none)
+            && self.outgoing_pub_notice.iter().all(Option::is_none)
+            && self.outgoing_rel_notice.iter().all(Option::is_none)
+            && self.outgoing_pub_ack.ones().next().is_none()
+            && self.outgoing_rel.ones().next().is_none()
+    }
+
+    fn maybe_shrink_outgoing_tracking_capacity(&mut self, target_len: usize, pending_empty: bool) {
+        if !pending_empty
+            || self.outgoing_pub.len() <= target_len
+            || !self.can_shrink_outgoing_tracking()
+        {
+            return;
+        }
+
+        self.outgoing_pub.truncate(target_len);
+        self.outgoing_pub_notice.truncate(target_len);
+        self.outgoing_rel_notice.truncate(target_len);
+        self.outgoing_pub_ack = FixedBitSet::with_capacity(target_len);
+        self.outgoing_rel = FixedBitSet::with_capacity(target_len);
+        // Ensure future packet id reuse starts from the beginning of the new range.
+        self.last_pkid = 0;
+        self.last_puback = 0;
+    }
+
+    pub(crate) fn reconcile_outgoing_tracking_capacity(&mut self, pending_empty: bool) {
+        let target_len = Self::outgoing_tracking_len(self.max_outgoing_inflight);
+        self.ensure_outgoing_tracking_capacity(target_len);
+        self.maybe_shrink_outgoing_tracking_capacity(target_len, pending_empty);
     }
 
     pub(crate) fn clean_with_notices(&mut self) -> Vec<(Request, Option<TrackedNoticeTx>)> {
@@ -467,8 +533,9 @@ impl MqttState {
             if let Some(max_inflight) = props.receive_max {
                 self.max_outgoing_inflight =
                     max_inflight.min(self.max_outgoing_inflight_upper_limit);
-                // FIXME: Maybe resize the pubrec and pubrel queues here
-                // to save some space.
+                // Shrinking depends on pending retransmission state in eventloop.
+                // Grow immediately so incoming/outgoing packet-id indexed tracking stays valid.
+                self.reconcile_outgoing_tracking_capacity(false);
             }
         }
         Ok(None)
@@ -1011,10 +1078,10 @@ impl Clone for MqttState {
             last_puback: self.last_puback,
             inflight: self.inflight,
             outgoing_pub: self.outgoing_pub.clone(),
-            outgoing_pub_notice: Self::new_notice_slots(self.max_outgoing_inflight_upper_limit),
+            outgoing_pub_notice: Self::new_notice_slots_with_len(self.outgoing_pub.len()),
             outgoing_pub_ack: self.outgoing_pub_ack.clone(),
             outgoing_rel: self.outgoing_rel.clone(),
-            outgoing_rel_notice: Self::new_notice_slots(self.max_outgoing_inflight_upper_limit),
+            outgoing_rel_notice: Self::new_notice_slots_with_len(self.outgoing_rel_notice.len()),
             incoming_pub: self.incoming_pub.clone(),
             collision: self.collision.clone(),
             collision_notice: None,
@@ -1059,6 +1126,98 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::new(u16::MAX, false, None)
+    }
+
+    fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
+        ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: Some(ConnAckProperties {
+                session_expiry_interval: None,
+                receive_max: Some(receive_max),
+                max_qos: None,
+                retain_available: None,
+                max_packet_size: None,
+                assigned_client_identifier: None,
+                topic_alias_max: None,
+                reason_string: None,
+                user_properties: vec![],
+                wildcard_subscription_available: None,
+                subscription_identifiers_available: None,
+                shared_subscription_available: None,
+                server_keep_alive: None,
+                response_information: None,
+                server_reference: None,
+                authentication_method: None,
+                authentication_data: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn connack_receive_max_can_grow_tracking_capacity_after_previous_shrink() {
+        let mut mqtt = MqttState::new(10, false, None);
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(4)))
+            .unwrap();
+        mqtt.reconcile_outgoing_tracking_capacity(true);
+        assert_eq!(mqtt.outgoing_pub.len(), 5);
+
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(9)))
+            .unwrap();
+        assert_eq!(mqtt.outgoing_pub.len(), 10);
+        assert_eq!(mqtt.outgoing_pub_notice.len(), 10);
+        assert_eq!(mqtt.outgoing_rel_notice.len(), 10);
+        assert_eq!(mqtt.outgoing_pub_ack.len(), 10);
+        assert_eq!(mqtt.outgoing_rel.len(), 10);
+    }
+
+    #[test]
+    fn connack_receive_max_shrinks_when_tracking_is_empty_and_pending_is_empty() {
+        let mut mqtt = MqttState::new(10, false, None);
+        mqtt.last_pkid = 9;
+        mqtt.last_puback = 8;
+
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
+            .unwrap();
+        assert_eq!(mqtt.outgoing_pub.len(), 11);
+
+        mqtt.reconcile_outgoing_tracking_capacity(true);
+        assert_eq!(mqtt.outgoing_pub.len(), 4);
+        assert_eq!(mqtt.outgoing_pub_notice.len(), 4);
+        assert_eq!(mqtt.outgoing_rel_notice.len(), 4);
+        assert_eq!(mqtt.outgoing_pub_ack.len(), 4);
+        assert_eq!(mqtt.outgoing_rel.len(), 4);
+        assert_eq!(mqtt.last_pkid, 0);
+        assert_eq!(mqtt.last_puback, 0);
+    }
+
+    #[test]
+    fn connack_receive_max_does_not_shrink_when_tracking_is_non_empty() {
+        let mut mqtt = MqttState::new(10, false, None);
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 8;
+        mqtt.outgoing_pub[8] = Some(publish);
+        mqtt.inflight = 1;
+
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
+            .unwrap();
+        mqtt.reconcile_outgoing_tracking_capacity(true);
+
+        assert_eq!(mqtt.outgoing_pub.len(), 11);
+        assert_eq!(mqtt.outgoing_rel_notice.len(), 11);
+    }
+
+    #[test]
+    fn clone_preserves_current_tracking_queue_lengths() {
+        let mut mqtt = MqttState::new(10, false, None);
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
+            .unwrap();
+        mqtt.reconcile_outgoing_tracking_capacity(true);
+
+        let cloned = mqtt.clone();
+        assert_eq!(cloned.outgoing_pub.len(), 4);
+        assert_eq!(cloned.outgoing_pub_notice.len(), 4);
+        assert_eq!(cloned.outgoing_rel_notice.len(), 4);
     }
 
     #[test]
