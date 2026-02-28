@@ -120,3 +120,37 @@ pub enum Error {
     #[error("i/O : {0}")]
     IO(#[from] io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use crate::protocol::{self, FixedHeader};
+
+    #[test]
+    fn v4_publish_view_topic_returns_malformed_packet_for_out_of_bounds_fixed_header() {
+        let publish = protocol::v4::publish::Publish {
+            fixed_header: FixedHeader::new(0x30, 0, 0),
+            raw: Bytes::from_static(b""),
+        };
+        assert_eq!(publish.view_topic(), Err(protocol::Error::MalformedPacket));
+    }
+
+    #[test]
+    fn v5_publish_view_meta_returns_malformed_packet_for_missing_pkid() {
+        let publish = protocol::v5::publish::Publish {
+            fixed_header: FixedHeader::new(0x32, 0, 0),
+            raw: Bytes::from_static(b"\x32\x00\x01a"),
+        };
+        assert_eq!(publish.view_meta(), Err(protocol::Error::MalformedPacket));
+    }
+
+    #[test]
+    fn v4_publish_view_meta_parses_valid_minimal_qos1_publish() {
+        let publish = protocol::v4::publish::Publish {
+            fixed_header: FixedHeader::new(0x32, 0, 0),
+            raw: Bytes::from_static(b"\x32\x00\x01a\x00\x07"),
+        };
+        assert_eq!(publish.view_meta(), Ok(("a", 1, 7, false, false)));
+    }
+}
