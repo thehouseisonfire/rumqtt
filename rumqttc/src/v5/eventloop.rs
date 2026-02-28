@@ -208,8 +208,9 @@ impl EventLoop {
 
         // drain requests from channel which weren't yet received
         for envelope in self.requests_rx.drain() {
-            // Wait for publish retransmission, else the broker could be confused by an unexpected ack
-            if !matches!(&envelope.request, Request::PubAck(_)) {
+            // Wait for publish retransmission, else the broker could be confused by an unexpected
+            // inbound acknowledgment replayed from a previous connection.
+            if !matches!(&envelope.request, Request::PubAck(_) | Request::PubRec(_)) {
                 self.pending.push_back(envelope);
             }
         }
@@ -722,6 +723,33 @@ mod tests {
         assert!(matches!(
             eventloop.requests_rx.try_recv(),
             Err(TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn clean_drops_ack_requests_drained_from_channel() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 3);
+        request_tx
+            .send(RequestEnvelope::plain(Request::PubAck(PubAck::new(
+                7, None,
+            ))))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::PubRec(PubRec::new(
+                8, None,
+            ))))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+
+        eventloop.clean();
+
+        assert_eq!(eventloop.pending_len(), 1);
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::PingReq)
         ));
     }
 
