@@ -1118,8 +1118,15 @@ pub(crate) mod puback {
             None => {
                 // Unlike other packets, property length can be ignored if there are
                 // no properties in acks
-                //
-                // TODO: maybe we should set len = 2 for PubAckReason == Success
+
+                if reason == PubAckReason::Success {
+                    let len = 2;
+                    let count = write_remaining_length(buffer, len)?;
+                    buffer.put_u16(pkid);
+
+                    return Ok(len + count + 1);
+                }
+
                 let len = 2 + 1;
                 let count = write_remaining_length(buffer, len)?;
                 buffer.put_u16(pkid);
@@ -1482,8 +1489,7 @@ pub(crate) mod subscribe {
                 match property(prop)? {
                     PropertyType::SubscriptionIdentifier => {
                         let (id_len, sub_id) = length(bytes.iter())?;
-                        // TODO: Validate 1 +. Tests are working either way
-                        cursor += 1 + id_len;
+                        cursor += id_len;
                         bytes.advance(id_len);
                         id = Some(sub_id)
                     }
@@ -1950,4 +1956,42 @@ fn property(num: u8) -> Result<PropertyType, Error> {
     };
 
     Ok(property)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{Bytes, BytesMut};
+
+    #[test]
+    fn puback_success_without_properties_is_minimal() {
+        let mut buffer = BytesMut::new();
+        let written = puback::write(0x1234, puback::PubAckReason::Success, None, &mut buffer).unwrap();
+
+        assert_eq!(written, 4);
+        assert_eq!(&buffer[..], &[0x40, 0x02, 0x12, 0x34]);
+    }
+
+    #[test]
+    fn puback_non_success_without_properties_includes_reason_code() {
+        let mut buffer = BytesMut::new();
+        let written =
+            puback::write(0x1234, puback::PubAckReason::NotAuthorized, None, &mut buffer).unwrap();
+
+        assert_eq!(written, 5);
+        assert_eq!(&buffer[..], &[0x40, 0x03, 0x12, 0x34, 0x87]);
+    }
+
+    #[test]
+    fn subscribe_properties_extract_fails_on_declared_trailing_bytes() {
+        // Declares 6 property bytes:
+        // - SubscriptionIdentifier(128) => 0x0B 0x80 0x01 (3 bytes)
+        // - SubscriptionIdentifier(1)   => 0x0B 0x01       (2 bytes)
+        // - 0xFF                         => invalid trailing property byte
+        //
+        // A correct cursor must continue to parse the final trailing byte and fail.
+        let mut bytes = Bytes::from_static(&[0x06, 0x0B, 0x80, 0x01, 0x0B, 0x01, 0xFF]);
+
+        assert!(subscribe::SubscribeProperties::extract(&mut bytes).is_err());
+    }
 }
