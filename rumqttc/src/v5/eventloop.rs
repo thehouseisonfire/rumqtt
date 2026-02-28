@@ -246,6 +246,11 @@ impl EventLoop {
         self.state.fail_pending_notices();
     }
 
+    fn reconcile_outgoing_tracking_after_connack(&mut self) {
+        self.state
+            .reconcile_outgoing_tracking_capacity(self.pending.is_empty());
+    }
+
     /// Yields Next notification or outgoing request and periodically pings
     /// the broker. Continuing to poll will reconnect to the broker if there is
     /// a disconnection.
@@ -269,6 +274,7 @@ impl EventLoop {
 
             self.state
                 .handle_incoming_packet(Incoming::ConnAck(connack))?;
+            self.reconcile_outgoing_tracking_after_connack();
         }
 
         match self.select().await {
@@ -695,6 +701,32 @@ mod tests {
     use super::*;
     use flume::TryRecvError;
 
+    fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
+        ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: Some(ConnAckProperties {
+                session_expiry_interval: None,
+                receive_max: Some(receive_max),
+                max_qos: None,
+                retain_available: None,
+                max_packet_size: None,
+                assigned_client_identifier: None,
+                topic_alias_max: None,
+                reason_string: None,
+                user_properties: vec![],
+                wildcard_subscription_available: None,
+                subscription_identifiers_available: None,
+                shared_subscription_available: None,
+                server_keep_alive: None,
+                response_information: None,
+                server_reference: None,
+                authentication_method: None,
+                authentication_data: None,
+            }),
+        }
+    }
+
     fn push_pending(eventloop: &mut EventLoop, request: Request) {
         eventloop.pending.push_back(RequestEnvelope::plain(request));
     }
@@ -751,6 +783,35 @@ mod tests {
             pending_front_request(&eventloop),
             Some(Request::PingReq)
         ));
+    }
+
+    #[test]
+    fn connack_resize_skips_shrink_until_pending_retransmit_queue_is_empty() {
+        let mut options = MqttOptions::new("test-client", "localhost", 1883);
+        options.set_outgoing_inflight_upper_limit(10);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let mut publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtLeastOnce,
+            "payload",
+            None,
+        );
+        publish.pkid = 8;
+        push_pending(&mut eventloop, Request::Publish(publish));
+
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
+            .unwrap();
+
+        eventloop.reconcile_outgoing_tracking_after_connack();
+        assert_eq!(eventloop.state.outgoing_pub.len(), 11);
+
+        eventloop.pending.clear();
+        eventloop.reconcile_outgoing_tracking_after_connack();
+        assert_eq!(eventloop.state.outgoing_pub.len(), 4);
+        assert_eq!(eventloop.state.outgoing_pub_notice.len(), 4);
+        assert_eq!(eventloop.state.outgoing_rel_notice.len(), 4);
     }
 
     #[tokio::test]
