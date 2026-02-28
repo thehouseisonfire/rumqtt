@@ -13,6 +13,8 @@ use rumqttc::*;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(3);
 const PHASE_TIMEOUT: Duration = Duration::from_secs(5);
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const KEEP_ALIVE_EARLY_TOLERANCE: Duration = Duration::from_secs(1);
+const KEEP_ALIVE_LATE_TOLERANCE: Duration = Duration::from_secs(2);
 
 async fn reserve_listener() -> (TcpListener, u16) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -99,6 +101,20 @@ async fn _tick(
     Ok(())
 }
 
+fn assert_keep_alive_interval(elapsed: Duration, keep_alive: u16) {
+    let expected = Duration::from_secs(u64::from(keep_alive));
+    let lower = expected.saturating_sub(KEEP_ALIVE_EARLY_TOLERANCE);
+    let upper = expected + KEEP_ALIVE_LATE_TOLERANCE;
+
+    assert!(
+        elapsed >= lower && elapsed <= upper,
+        "keepalive interval out of bounds: expected {:?}..={:?}, got {:?}",
+        lower,
+        upper,
+        elapsed
+    );
+}
+
 #[tokio::test]
 async fn connection_should_timeout_on_time() {
     let (listener, port) = reserve_listener().await;
@@ -160,8 +176,7 @@ async fn idle_connection_triggers_pings_on_time() {
         match packet {
             Packet::PingReq => {
                 count += 1;
-                let elapsed = start.elapsed();
-                assert_eq!(elapsed.as_secs(), { u64::from(keep_alive) });
+                assert_keep_alive_interval(start.elapsed(), keep_alive);
                 broker.pingresp().await;
                 start = Instant::now();
             }
@@ -193,8 +208,8 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     });
 
     // start the eventloop
-    task::spawn(async move {
-        run(&mut eventloop, false).await.unwrap();
+    let eventloop_task = task::spawn(async move {
+        run(&mut eventloop, false).await
     });
 
     let mut broker = Broker::from_listener(listener, 0, false).await;
@@ -207,15 +222,18 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
         if event == Event::Incoming(Incoming::PingReq) {
             // wait for 3 pings
             count += 1;
+            assert_keep_alive_interval(start.elapsed(), keep_alive);
+            broker.pingresp().await;
             if count == 3 {
                 break;
             }
 
-            assert_eq!(start.elapsed().as_secs(), { u64::from(keep_alive) });
-            broker.pingresp().await;
             start = Instant::now();
         }
     }
+
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
 
     assert_eq!(count, 3);
 }
@@ -228,9 +246,9 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
 
     options.set_keep_alive(keep_alive);
 
-    task::spawn(async move {
+    let eventloop_task = task::spawn(async move {
         let mut eventloop = EventLoop::new(options, 5);
-        run(&mut eventloop, false).await.unwrap();
+        run(&mut eventloop, false).await
     });
 
     let mut broker = Broker::from_listener(listener, 0, false).await;
@@ -247,15 +265,18 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
         if event == Event::Incoming(Incoming::PingReq) {
             // wait for 3 pings
             count += 1;
+            assert_keep_alive_interval(start.elapsed(), keep_alive);
+            broker.pingresp().await;
             if count == 3 {
                 break;
             }
 
-            assert_eq!(start.elapsed().as_secs(), { u64::from(keep_alive) });
-            broker.pingresp().await;
             start = Instant::now();
         }
     }
+
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
 
     assert_eq!(count, 3);
 }

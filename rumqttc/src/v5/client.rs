@@ -156,6 +156,22 @@ fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientErro
     }
 }
 
+/// Prepared acknowledgement packet for manual acknowledgement mode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManualAck {
+    PubAck(PubAck),
+    PubRec(PubRec),
+}
+
+impl ManualAck {
+    fn into_request(self) -> Request {
+        match self {
+            Self::PubAck(ack) => Request::PubAck(ack),
+            Self::PubRec(rec) => Request::PubRec(rec),
+        }
+    }
+}
+
 /// An asynchronous client, communicates with MQTT `EventLoop`.
 ///
 /// This is cloneable and can be used to asynchronously [`publish`](`AsyncClient::publish`),
@@ -533,21 +549,39 @@ impl AsyncClient {
         self.handle_try_publish_tracked(topic, qos, retain, payload, None)
     }
 
+    /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
+    ///
+    /// Returns `None` for QoS0 publishes, which do not require acknowledgement.
+    pub fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
+        prepare_ack(publish)
+    }
+
+    /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// This is useful when `manual_acks` is enabled and acknowledgement must be deferred.
+    pub async fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
+        self.send_request_async(ack.into_request()).await?;
+        Ok(())
+    }
+
+    /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
+        self.try_send_request(ack.into_request())?;
+        Ok(())
+    }
+
     /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
-        let ack = get_ack_req(publish);
-
-        if let Some(ack) = ack {
-            self.send_request_async(ack).await?;
+        if let Some(ack) = self.prepare_ack(publish) {
+            self.manual_ack(ack).await?;
         }
         Ok(())
     }
 
     /// Attempts to send a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
-        let ack = get_ack_req(publish);
-        if let Some(ack) = ack {
-            self.try_send_request(ack)?;
+        if let Some(ack) = self.prepare_ack(publish) {
+            self.try_manual_ack(ack)?;
         }
         Ok(())
     }
@@ -1104,11 +1138,11 @@ impl AsyncClient {
     }
 }
 
-fn get_ack_req(publish: &Publish) -> Option<Request> {
+fn prepare_ack(publish: &Publish) -> Option<ManualAck> {
     let ack = match publish.qos {
         QoS::AtMostOnce => return None,
-        QoS::AtLeastOnce => Request::PubAck(PubAck::new(publish.pkid, None)),
-        QoS::ExactlyOnce => Request::PubRec(PubRec::new(publish.pkid, None)),
+        QoS::AtLeastOnce => ManualAck::PubAck(PubAck::new(publish.pkid, None)),
+        QoS::ExactlyOnce => ManualAck::PubRec(PubRec::new(publish.pkid, None)),
     };
     Some(ack)
 }
@@ -1242,19 +1276,38 @@ impl Client {
         self.client.try_publish(topic, qos, retain, payload)
     }
 
+    /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
+    ///
+    /// Returns `None` for QoS0 publishes, which do not require acknowledgement.
+    pub fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
+        self.client.prepare_ack(publish)
+    }
+
+    /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    pub fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
+        self.client.send_request(ack.into_request())?;
+        Ok(())
+    }
+
+    /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
+        self.client.try_manual_ack(ack)?;
+        Ok(())
+    }
+
     /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
     pub fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
-        let ack = get_ack_req(publish);
-
-        if let Some(ack) = ack {
-            self.client.send_request(ack)?;
+        if let Some(ack) = self.prepare_ack(publish) {
+            self.manual_ack(ack)?;
         }
         Ok(())
     }
 
     /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
-        self.client.try_ack(publish)?;
+        if let Some(ack) = self.prepare_ack(publish) {
+            self.try_manual_ack(ack)?;
+        }
         Ok(())
     }
 
@@ -1573,7 +1626,9 @@ impl Iterator for Iter<'_> {
 
 #[cfg(test)]
 mod test {
-    use crate::v5::mqttbytes::v5::LastWill;
+    use crate::v5::mqttbytes::v5::{
+        LastWill, PubAckProperties, PubAckReason, PubRecProperties, PubRecReason,
+    };
 
     use super::*;
 
@@ -1596,6 +1651,121 @@ mod test {
             .publish("hello/world", QoS::ExactlyOnce, false, "good bye")
             .expect("Should be able to publish");
         let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn prepare_ack_maps_qos_to_manual_ack_packets_v5() {
+        let (tx, _) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+
+        let qos0 = Publish::new("hello/world", QoS::AtMostOnce, vec![1], None);
+        assert!(client.prepare_ack(&qos0).is_none());
+
+        let mut qos1 = Publish::new("hello/world", QoS::AtLeastOnce, vec![1], None);
+        qos1.pkid = 7;
+        match client.prepare_ack(&qos1) {
+            Some(ManualAck::PubAck(ack)) => assert_eq!(ack.pkid, 7),
+            ack => panic!("expected QoS1 PubAck, got {ack:?}"),
+        }
+
+        let mut qos2 = Publish::new("hello/world", QoS::ExactlyOnce, vec![1], None);
+        qos2.pkid = 9;
+        match client.prepare_ack(&qos2) {
+            Some(ManualAck::PubRec(ack)) => assert_eq!(ack.pkid, 9),
+            ack => panic!("expected QoS2 PubRec, got {ack:?}"),
+        }
+    }
+
+    #[test]
+    fn manual_ack_sends_custom_puback_reason_and_properties() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+
+        let expected_properties = PubAckProperties {
+            reason_string: Some("no downstream subscribers".to_owned()),
+            user_properties: vec![("source".to_owned(), "unit-test".to_owned())],
+        };
+        let mut ack = PubAck::new(41, None);
+        ack.reason = PubAckReason::NoMatchingSubscribers;
+        ack.properties = Some(expected_properties.clone());
+
+        client
+            .manual_ack(ManualAck::PubAck(ack))
+            .expect("manual_ack should send request");
+
+        let request = rx.try_recv().expect("Should have ack request");
+        match request {
+            Request::PubAck(ack) => {
+                assert_eq!(ack.pkid, 41);
+                assert_eq!(ack.reason, PubAckReason::NoMatchingSubscribers);
+                assert_eq!(ack.properties, Some(expected_properties));
+            }
+            request => panic!("Expected PubAck request, got {:?}", request),
+        }
+    }
+
+    #[test]
+    fn try_manual_ack_sends_custom_pubrec_reason_and_properties() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+
+        let expected_properties = PubRecProperties {
+            reason_string: Some("queued for qos2 flow".to_owned()),
+            user_properties: vec![("source".to_owned(), "unit-test".to_owned())],
+        };
+        let mut ack = PubRec::new(52, None);
+        ack.reason = PubRecReason::ImplementationSpecificError;
+        ack.properties = Some(expected_properties.clone());
+
+        client
+            .try_manual_ack(ManualAck::PubRec(ack))
+            .expect("try_manual_ack should send request");
+
+        let request = rx.try_recv().expect("Should have ack request");
+        match request {
+            Request::PubRec(ack) => {
+                assert_eq!(ack.pkid, 52);
+                assert_eq!(ack.reason, PubRecReason::ImplementationSpecificError);
+                assert_eq!(ack.properties, Some(expected_properties));
+            }
+            request => panic!("Expected PubRec request, got {:?}", request),
+        }
+    }
+
+    #[test]
+    fn ack_and_try_ack_send_default_success_packets_v5() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+
+        let mut qos1 = Publish::new("hello/world", QoS::AtLeastOnce, vec![1], None);
+        qos1.pkid = 11;
+        client.ack(&qos1).expect("ack should send PubAck");
+
+        let mut qos2 = Publish::new("hello/world", QoS::ExactlyOnce, vec![1], None);
+        qos2.pkid = 13;
+        client
+            .try_ack(&qos2)
+            .expect("try_ack should send PubRec request");
+
+        let first = rx.try_recv().expect("Should receive first ack request");
+        match first {
+            Request::PubAck(ack) => {
+                assert_eq!(ack.pkid, 11);
+                assert_eq!(ack.reason, PubAckReason::Success);
+                assert_eq!(ack.properties, None);
+            }
+            request => panic!("Expected PubAck request, got {:?}", request),
+        }
+
+        let second = rx.try_recv().expect("Should receive second ack request");
+        match second {
+            Request::PubRec(ack) => {
+                assert_eq!(ack.pkid, 13);
+                assert_eq!(ack.reason, PubRecReason::Success);
+                assert_eq!(ack.properties, None);
+            }
+            request => panic!("Expected PubRec request, got {:?}", request),
+        }
     }
 
     #[test]

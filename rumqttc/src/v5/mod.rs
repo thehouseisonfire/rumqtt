@@ -21,8 +21,8 @@ use mqttbytes::v5::*;
 
 pub use crate::{PublishNotice, PublishNoticeError, RequestNotice, RequestNoticeError};
 pub use client::{
-    AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, PublishTopic, RecvError,
-    RecvTimeoutError, TryRecvError, ValidatedTopic,
+    AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, ManualAck, PublishTopic,
+    RecvError, RecvTimeoutError, TryRecvError, ValidatedTopic,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use state::{MqttState, StateError};
@@ -151,7 +151,8 @@ pub struct MqttOptions {
     /// Connect Properties
     connect_properties: Option<ConnectProperties>,
     /// If set to `true` MQTT acknowledgements are not sent automatically.
-    /// Every incoming publish packet must be manually acknowledged with `client.ack(...)` method.
+    /// Every incoming publish packet must be acknowledged manually with either
+    /// `client.ack(...)` or the `prepare_ack(...)` + `manual_ack(...)` flow.
     manual_acks: bool,
     network_options: NetworkOptions,
     #[cfg(feature = "proxy")]

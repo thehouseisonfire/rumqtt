@@ -1,8 +1,10 @@
 use rumqttc::v5::mqttbytes::QoS;
-use rumqttc::v5::mqttbytes::v5::Packet;
+use rumqttc::v5::mqttbytes::v5::{
+    Packet, PubAckProperties, PubAckReason, PubRecProperties, PubRecReason,
+};
 use tokio::{task, time};
 
-use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions};
+use rumqttc::v5::{AsyncClient, Event, EventLoop, ManualAck, MqttOptions};
 use std::error::Error;
 use std::time::Duration;
 
@@ -62,11 +64,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Packet::Publish(publish) => publish,
                 _ => continue,
             };
-            // this time we will ack incoming publishes.
+            // this time we will ack incoming publishes using prepared ACK packets.
             // Its important not to block notifier as this can cause deadlock.
             let c = client.clone();
             tokio::spawn(async move {
-                c.ack(&publish).await.unwrap();
+                let mut ack = match c.prepare_ack(&publish) {
+                    Some(ack) => ack,
+                    None => return,
+                };
+
+                if (publish.pkid & 1) != 0 {
+                    match &mut ack {
+                        ManualAck::PubAck(puback) => {
+                            puback.reason = PubAckReason::NoMatchingSubscribers;
+                            puback.properties = Some(PubAckProperties {
+                                reason_string: Some("No active subscribers now".to_owned()),
+                                user_properties: vec![("source".to_owned(), "example".to_owned())],
+                            });
+                        }
+                        ManualAck::PubRec(pubrec) => {
+                            pubrec.reason = PubRecReason::Success;
+                            pubrec.properties = Some(PubRecProperties {
+                                reason_string: Some("Accepted for QoS2 handshake".to_owned()),
+                                user_properties: vec![("source".to_owned(), "example".to_owned())],
+                            });
+                        }
+                    }
+                }
+
+                c.manual_ack(ack).await.unwrap();
             });
         }
     }
