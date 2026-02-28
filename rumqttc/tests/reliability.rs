@@ -208,9 +208,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     });
 
     // start the eventloop
-    let eventloop_task = task::spawn(async move {
-        run(&mut eventloop, false).await
-    });
+    let eventloop_task = task::spawn(async move { run(&mut eventloop, false).await });
 
     let mut broker = Broker::from_listener(listener, 0, false).await;
     let mut count = 0;

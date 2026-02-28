@@ -501,7 +501,8 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
+    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Only needed if the `manual_acks` flag is set.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack).await?;
@@ -509,7 +510,8 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
+    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Only needed if the `manual_acks` flag is set.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -855,7 +857,8 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
+    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Only needed if the `manual_acks` flag is set.
     pub fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack)?;
@@ -863,7 +866,8 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck to the `EventLoop`. Only needed in if `manual_acks` flag is set.
+    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Only needed if the `manual_acks` flag is set.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
