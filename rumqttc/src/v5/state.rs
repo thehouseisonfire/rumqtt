@@ -158,7 +158,10 @@ impl MqttState {
     }
 
     fn clean_pending_capacity(&self) -> usize {
-        self.outgoing_pub.iter().filter(|publish| publish.is_some()).count()
+        self.outgoing_pub
+            .iter()
+            .filter(|publish| publish.is_some())
+            .count()
             + self.outgoing_rel.ones().count()
             + self.tracked_subscribe.len()
             + self.tracked_unsubscribe.len()
@@ -637,26 +640,11 @@ impl MqttState {
             if let Some(tx) = notice {
                 tx.error(PublishNoticeError::V5PubAck(puback.reason));
             }
-            return Ok(None);
-        }
-        if let Some(tx) = notice {
+        } else if let Some(tx) = notice {
             tx.success();
         }
 
-        if let Some((publish, notice)) = self.check_collision(puback.pkid) {
-            self.outgoing_pub[publish.pkid as usize] = Some(publish.clone());
-            self.outgoing_pub_notice[publish.pkid as usize] = notice;
-            self.inflight += 1;
-
-            let pkid = publish.pkid;
-            let event = Event::Outgoing(Outgoing::Publish(pkid));
-            self.events.push_back(event);
-            self.collision_ping_count = 0;
-
-            return Ok(Some(Packet::Publish(publish)));
-        }
-
-        Ok(None)
+        Ok(self.replay_collision_publish(puback.pkid))
     }
 
     fn handle_incoming_pubrec(&mut self, pubrec: &PubRec) -> Result<Option<Packet>, StateError> {
@@ -681,7 +669,8 @@ impl MqttState {
             if let Some(tx) = notice {
                 tx.error(PublishNoticeError::V5PubRec(pubrec.reason));
             }
-            return Ok(None);
+            self.inflight -= 1;
+            return Ok(self.replay_collision_publish(pubrec.pkid));
         }
 
         // NOTE: Inflight - 1 for qos2 in comp
@@ -721,6 +710,7 @@ impl MqttState {
         }
         self.outgoing_rel.set(pubcomp.pkid as usize, false);
         let notice = self.outgoing_rel_notice[pubcomp.pkid as usize].take();
+        self.inflight -= 1;
 
         if pubcomp.reason != PubCompReason::Success {
             warn!(
@@ -730,14 +720,15 @@ impl MqttState {
             if let Some(tx) = notice {
                 tx.error(PublishNoticeError::V5PubComp(pubcomp.reason));
             }
-            return Ok(None);
-        }
-        if let Some(tx) = notice {
+        } else if let Some(tx) = notice {
             tx.success();
         }
 
-        self.inflight -= 1;
-        if let Some((publish, notice)) = self.check_collision(pubcomp.pkid) {
+        Ok(self.replay_collision_publish(pubcomp.pkid))
+    }
+
+    fn replay_collision_publish(&mut self, pkid: u16) -> Option<Packet> {
+        self.check_collision(pkid).map(|(publish, notice)| {
             let pkid = publish.pkid;
             self.outgoing_pub[pkid as usize] = Some(publish.clone());
             self.outgoing_pub_notice[pkid as usize] = notice;
@@ -747,10 +738,8 @@ impl MqttState {
             self.events.push_back(event);
             self.collision_ping_count = 0;
 
-            return Ok(Some(Packet::Publish(publish)));
-        }
-
-        Ok(None)
+            Packet::Publish(publish)
+        })
     }
 
     fn handle_incoming_pingresp(&mut self) -> Result<Option<Packet>, StateError> {
@@ -1114,7 +1103,7 @@ mod test {
     use super::mqttbytes::*;
     use super::{Event, Incoming, Outgoing, Request};
     use super::{MqttState, StateError};
-    use crate::notice::RequestNoticeTx;
+    use crate::notice::{PublishNotice, PublishNoticeError, PublishNoticeTx, RequestNoticeTx};
 
     fn build_outgoing_publish(qos: QoS) -> Publish {
         let topic = "hello/world".to_owned();
@@ -1137,6 +1126,16 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::new(u16::MAX, false, None)
+    }
+
+    fn queue_publish_with_notice(mqtt: &mut MqttState, publish: Publish) -> PublishNotice {
+        let (tx, notice) = PublishNoticeTx::new();
+        let (packet, flush_notice) = mqtt
+            .outgoing_publish_with_notice(publish, Some(tx))
+            .unwrap();
+        assert!(packet.is_some());
+        assert!(flush_notice.is_none());
+        notice
     }
 
     #[test]
@@ -1602,6 +1601,41 @@ mod test {
     }
 
     #[test]
+    fn incoming_puback_failure_collision_replays_blocked_publish() {
+        let mut mqtt = build_mqttstate();
+        let first_notice =
+            queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::AtLeastOnce));
+
+        let (collided_tx, _collided_notice) = PublishNoticeTx::new();
+        let mut collided = build_outgoing_publish(QoS::AtLeastOnce);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt
+            .outgoing_publish_with_notice(collided, Some(collided_tx))
+            .unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+        assert!(mqtt.collision.is_some());
+
+        let mut puback = PubAck::new(1, None);
+        puback.reason = PubAckReason::ImplementationSpecificError;
+
+        let packet = mqtt.handle_incoming_puback(&puback).unwrap().unwrap();
+        match packet {
+            Packet::Publish(publish) => assert_eq!(publish.pkid, 1),
+            packet => panic!("Invalid network request: {:?}", packet),
+        }
+
+        assert_eq!(
+            first_notice.wait(),
+            Err(PublishNoticeError::V5PubAck(
+                PubAckReason::ImplementationSpecificError
+            ))
+        );
+        assert_eq!(mqtt.inflight, 1);
+        assert!(mqtt.collision.is_none());
+    }
+
+    #[test]
     fn incoming_pubrec_should_release_publish_from_queue_and_add_relid_to_rel_queue() {
         let mut mqtt = build_mqttstate();
 
@@ -1643,6 +1677,72 @@ mod test {
     }
 
     #[test]
+    fn incoming_pubrec_failure_without_collision_decrements_inflight() {
+        let mut mqtt = build_mqttstate();
+        let first_notice =
+            queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::ExactlyOnce));
+
+        let mut pubrec = PubRec::new(1, None);
+        pubrec.reason = PubRecReason::ImplementationSpecificError;
+
+        assert!(mqtt.handle_incoming_pubrec(&pubrec).unwrap().is_none());
+        assert_eq!(
+            first_notice.wait(),
+            Err(PublishNoticeError::V5PubRec(
+                PubRecReason::ImplementationSpecificError
+            ))
+        );
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outgoing_pub[1].is_none());
+        assert!(!mqtt.outgoing_rel.contains(1));
+    }
+
+    #[test]
+    fn incoming_pubrec_failure_releases_inflight_and_replays_collision() {
+        let mut mqtt = build_mqttstate();
+        let first_notice =
+            queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::ExactlyOnce));
+
+        let (collided_tx, _collided_notice) = PublishNoticeTx::new();
+        let mut collided = build_outgoing_publish(QoS::ExactlyOnce);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt
+            .outgoing_publish_with_notice(collided, Some(collided_tx))
+            .unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+        assert!(mqtt.collision.is_some());
+
+        let mut pubrec = PubRec::new(1, None);
+        pubrec.reason = PubRecReason::ImplementationSpecificError;
+
+        let packet = mqtt.handle_incoming_pubrec(&pubrec).unwrap().unwrap();
+        match packet {
+            Packet::Publish(publish) => assert_eq!(publish.pkid, 1),
+            packet => panic!("Invalid network request: {:?}", packet),
+        }
+
+        assert_eq!(
+            first_notice.wait(),
+            Err(PublishNoticeError::V5PubRec(
+                PubRecReason::ImplementationSpecificError
+            ))
+        );
+        assert_eq!(mqtt.inflight, 1);
+        assert!(mqtt.collision.is_none());
+        assert!(!mqtt.outgoing_rel.contains(1));
+
+        let packet = mqtt
+            .handle_incoming_pubrec(&PubRec::new(1, None))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, 1),
+            packet => panic!("Invalid network request: {:?}", packet),
+        }
+    }
+
+    #[test]
     fn incoming_pubrel_should_send_comp_to_network_and_nothing_to_user() {
         let mut mqtt = build_mqttstate();
         let mut publish = build_incoming_publish(QoS::ExactlyOnce, 1);
@@ -1676,6 +1776,27 @@ mod test {
     }
 
     #[test]
+    fn incoming_pubcomp_failure_without_collision_decrements_inflight() {
+        let mut mqtt = build_mqttstate();
+        let first_notice =
+            queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::ExactlyOnce));
+        mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
+
+        let mut pubcomp = PubComp::new(1, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+
+        assert!(mqtt.handle_incoming_pubcomp(&pubcomp).unwrap().is_none());
+        assert_eq!(
+            first_notice.wait(),
+            Err(PublishNoticeError::V5PubComp(
+                PubCompReason::PacketIdentifierNotFound
+            ))
+        );
+        assert_eq!(mqtt.inflight, 0);
+        assert!(!mqtt.outgoing_rel.contains(1));
+    }
+
+    #[test]
     fn incoming_pubcomp_collision_replay_should_restore_qos2_tracking() {
         let mut mqtt = build_mqttstate();
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
@@ -1698,6 +1819,54 @@ mod test {
 
         assert!(mqtt.outgoing_pub[1].is_some());
         assert_eq!(mqtt.inflight, 1);
+
+        let packet = mqtt
+            .handle_incoming_pubrec(&PubRec::new(1, None))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, 1),
+            packet => panic!("Invalid network request: {:?}", packet),
+        }
+    }
+
+    #[test]
+    fn incoming_pubcomp_failure_replays_collision_and_preserves_qos2_tracking() {
+        let mut mqtt = build_mqttstate();
+        let first_notice =
+            queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::ExactlyOnce));
+
+        let (collided_tx, _collided_notice) = PublishNoticeTx::new();
+        let mut collided = build_outgoing_publish(QoS::ExactlyOnce);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt
+            .outgoing_publish_with_notice(collided, Some(collided_tx))
+            .unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+        assert!(mqtt.collision.is_some());
+
+        mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
+
+        let mut pubcomp = PubComp::new(1, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+
+        let packet = mqtt.handle_incoming_pubcomp(&pubcomp).unwrap().unwrap();
+        match packet {
+            Packet::Publish(publish) => assert_eq!(publish.pkid, 1),
+            packet => panic!("Invalid network request: {:?}", packet),
+        }
+
+        assert_eq!(
+            first_notice.wait(),
+            Err(PublishNoticeError::V5PubComp(
+                PubCompReason::PacketIdentifierNotFound
+            ))
+        );
+        assert_eq!(mqtt.inflight, 1);
+        assert!(mqtt.collision.is_none());
+        assert!(!mqtt.outgoing_rel.contains(1));
+        assert!(mqtt.outgoing_pub[1].is_some());
 
         let packet = mqtt
             .handle_incoming_pubrec(&PubRec::new(1, None))
