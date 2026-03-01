@@ -72,9 +72,9 @@ impl SubAck {
             write_remaining_length(buffer, 0)?;
         }
 
-        let p: Vec<u8> = self.return_codes.iter().map(|&c| code(c)).collect();
-
-        buffer.extend_from_slice(&p);
+        for &return_code in &self.return_codes {
+            buffer.put_u8(code(return_code));
+        }
         Ok(1 + remaining_len_bytes + remaining_len)
     }
 }
@@ -173,23 +173,7 @@ impl SubAckProperties {
 }
 
 fn reason(code: u8) -> Result<SubscribeReasonCode, Error> {
-    let v = match code {
-        0 => SubscribeReasonCode::Success(QoS::AtMostOnce),
-        1 => SubscribeReasonCode::Success(QoS::AtLeastOnce),
-        2 => SubscribeReasonCode::Success(QoS::ExactlyOnce),
-        128 => SubscribeReasonCode::Unspecified,
-        131 => SubscribeReasonCode::ImplementationSpecific,
-        135 => SubscribeReasonCode::NotAuthorized,
-        143 => SubscribeReasonCode::TopicFilterInvalid,
-        145 => SubscribeReasonCode::PkidInUse,
-        151 => SubscribeReasonCode::QuotaExceeded,
-        158 => SubscribeReasonCode::SharedSubscriptionsNotSupported,
-        161 => SubscribeReasonCode::SubscriptionIdNotSupported,
-        162 => SubscribeReasonCode::WildcardSubscriptionsNotSupported,
-        v => return Err(Error::InvalidSubscribeReasonCode(v)),
-    };
-
-    Ok(v)
+    code.try_into()
 }
 
 fn code(value: SubscribeReasonCode) -> u8 {
@@ -207,11 +191,33 @@ fn code(value: SubscribeReasonCode) -> u8 {
     }
 }
 
+impl TryFrom<u8> for SubscribeReasonCode {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Success(QoS::AtMostOnce)),
+            1 => Ok(Self::Success(QoS::AtLeastOnce)),
+            2 => Ok(Self::Success(QoS::ExactlyOnce)),
+            128 => Ok(Self::Unspecified),
+            131 => Ok(Self::ImplementationSpecific),
+            135 => Ok(Self::NotAuthorized),
+            143 => Ok(Self::TopicFilterInvalid),
+            145 => Ok(Self::PkidInUse),
+            151 => Ok(Self::QuotaExceeded),
+            158 => Ok(Self::SharedSubscriptionsNotSupported),
+            161 => Ok(Self::SubscriptionIdNotSupported),
+            162 => Ok(Self::WildcardSubscriptionsNotSupported),
+            _ => Err(Error::InvalidSubscribeReasonCode(value)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -236,5 +242,86 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn reason_and_code_round_trip() {
+        let values = [
+            (0, SubscribeReasonCode::Success(QoS::AtMostOnce)),
+            (1, SubscribeReasonCode::Success(QoS::AtLeastOnce)),
+            (2, SubscribeReasonCode::Success(QoS::ExactlyOnce)),
+            (128, SubscribeReasonCode::Unspecified),
+            (131, SubscribeReasonCode::ImplementationSpecific),
+            (135, SubscribeReasonCode::NotAuthorized),
+            (143, SubscribeReasonCode::TopicFilterInvalid),
+            (145, SubscribeReasonCode::PkidInUse),
+            (151, SubscribeReasonCode::QuotaExceeded),
+            (158, SubscribeReasonCode::SharedSubscriptionsNotSupported),
+            (161, SubscribeReasonCode::SubscriptionIdNotSupported),
+            (162, SubscribeReasonCode::WildcardSubscriptionsNotSupported),
+        ];
+
+        for (raw, parsed) in values {
+            assert_eq!(reason(raw).unwrap(), parsed);
+            assert_eq!(code(parsed), raw);
+        }
+    }
+
+    #[test]
+    fn reason_invalid_code_errors() {
+        assert!(matches!(
+            reason(42),
+            Err(Error::InvalidSubscribeReasonCode(42))
+        ));
+    }
+
+    #[test]
+    fn failure_encodes_like_unspecified() {
+        assert_eq!(code(SubscribeReasonCode::Failure), 0x80);
+        assert_eq!(code(SubscribeReasonCode::Unspecified), 0x80);
+    }
+
+    #[test]
+    fn write_multiple_reasons_bytes() {
+        let mut buffer = BytesMut::new();
+        let suback = SubAck {
+            pkid: 10,
+            return_codes: vec![
+                SubscribeReasonCode::Success(QoS::AtMostOnce),
+                SubscribeReasonCode::ImplementationSpecific,
+                SubscribeReasonCode::WildcardSubscriptionsNotSupported,
+            ],
+            properties: None,
+        };
+
+        suback.write(&mut buffer).unwrap();
+
+        let expected = [
+            0x90, // Packet type
+            0x06, // Remaining length
+            0x00, 0x0A, // pkid
+            0x00, // properties length
+            0x00, // Success QoS0
+            0x83, // ImplementationSpecific
+            0xA2, // WildcardSubscriptionsNotSupported
+        ];
+        assert_eq!(&buffer[..], &expected);
+    }
+
+    #[test]
+    fn read_errors_on_invalid_first_reason_code() {
+        let packet = Bytes::from_static(&[
+            0x90, 0x0C, // packet type + remaining length
+            0x00, 0x0A, // pkid
+            0x00, // properties length
+            0xFF, // invalid first reason code
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // trailing reason bytes
+        ]);
+
+        let fixed_header = FixedHeader::new(0x90, 1, 0x0C);
+        assert!(matches!(
+            SubAck::read(fixed_header, packet),
+            Err(Error::InvalidSubscribeReasonCode(0xFF))
+        ));
     }
 }

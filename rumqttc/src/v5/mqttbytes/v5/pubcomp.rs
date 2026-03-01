@@ -5,8 +5,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PubCompReason {
-    Success,
-    PacketIdentifierNotFound,
+    Success = 0,
+    PacketIdentifierNotFound = 146,
 }
 
 /// QoS2 Assured publish complete, in response to PUBREL packet
@@ -194,19 +194,22 @@ impl PubCompProperties {
 
 /// Connection return code type
 fn reason(num: u8) -> Result<PubCompReason, Error> {
-    let code = match num {
-        0 => PubCompReason::Success,
-        146 => PubCompReason::PacketIdentifierNotFound,
-        num => return Err(Error::InvalidConnectReturnCode(num)),
-    };
-
-    Ok(code)
+    num.try_into()
 }
 
 fn code(reason: PubCompReason) -> u8 {
-    match reason {
-        PubCompReason::Success => 0,
-        PubCompReason::PacketIdentifierNotFound => 146,
+    reason as u8
+}
+
+impl TryFrom<u8> for PubCompReason {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Success),
+            146 => Ok(Self::PacketIdentifierNotFound),
+            _ => Err(Error::InvalidConnectReturnCode(value)),
+        }
     }
 }
 
@@ -235,5 +238,32 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn reason_code_cast_matches_spec() {
+        assert_eq!(PubCompReason::Success as u8, 0);
+        assert_eq!(PubCompReason::PacketIdentifierNotFound as u8, 146);
+    }
+
+    #[test]
+    fn reason_and_code_round_trip() {
+        let values = [
+            (0, PubCompReason::Success),
+            (146, PubCompReason::PacketIdentifierNotFound),
+        ];
+
+        for (raw, parsed) in values {
+            assert_eq!(reason(raw).unwrap(), parsed);
+            assert_eq!(code(parsed), raw);
+        }
+    }
+
+    #[test]
+    fn reason_invalid_code_errors() {
+        assert!(matches!(
+            reason(42),
+            Err(Error::InvalidConnectReturnCode(42))
+        ));
     }
 }
