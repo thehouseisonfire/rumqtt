@@ -88,9 +88,20 @@ pub struct MqttState {
 }
 
 impl MqttState {
+    fn initial_events_capacity() -> usize {
+        128
+    }
+
     fn new_notice_slots(max_inflight: u16) -> Vec<Option<PublishNoticeTx>> {
         let size = max_inflight as usize + 1;
         std::iter::repeat_with(|| None).take(size).collect()
+    }
+
+    fn clean_pending_capacity(&self) -> usize {
+        self.outgoing_pub.iter().filter(|publish| publish.is_some()).count()
+            + self.outgoing_rel.ones().count()
+            + self.tracked_subscribe.len()
+            + self.tracked_unsubscribe.len()
     }
 
     /// Creates new mqtt state. Same state should be used during a
@@ -117,14 +128,13 @@ impl MqttState {
             collision_notice: None,
             tracked_subscribe: BTreeMap::new(),
             tracked_unsubscribe: BTreeMap::new(),
-            // TODO: Optimize these sizes later
-            events: VecDeque::with_capacity(100),
+            events: VecDeque::with_capacity(Self::initial_events_capacity()),
             manual_acks,
         }
     }
 
     pub(crate) fn clean_with_notices(&mut self) -> Vec<(Request, Option<TrackedNoticeTx>)> {
-        let mut pending = Vec::with_capacity(100);
+        let mut pending = Vec::with_capacity(self.clean_pending_capacity());
         let (first_half, second_half) = self
             .outgoing_pub
             .split_at_mut(self.last_puback as usize + 1);
@@ -773,6 +783,7 @@ mod test {
     use super::{MqttState, StateError};
     use crate::mqttbytes::v4::*;
     use crate::mqttbytes::*;
+    use crate::notice::RequestNoticeTx;
     use crate::{Event, Incoming, Outgoing, Request};
     use bytes::Bytes;
 
@@ -797,6 +808,31 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::new(100, false)
+    }
+
+    #[test]
+    fn new_state_preallocates_event_queue_for_read_batch_bursts() {
+        let mqtt = MqttState::new(10, false);
+        assert!(mqtt.events.capacity() >= MqttState::initial_events_capacity());
+    }
+
+    #[test]
+    fn clean_pending_capacity_counts_publish_rel_and_tracked_requests() {
+        let mut mqtt = MqttState::new(10, false);
+        mqtt.outgoing_pub[1] = Some(build_outgoing_publish(QoS::AtLeastOnce));
+        mqtt.outgoing_pub[2] = Some(build_outgoing_publish(QoS::ExactlyOnce));
+        mqtt.outgoing_rel.insert(3);
+        mqtt.outgoing_rel.insert(4);
+
+        let (sub_notice, _) = RequestNoticeTx::new();
+        mqtt.tracked_subscribe
+            .insert(5, (Subscribe::new("a/b", QoS::AtMostOnce), sub_notice));
+
+        let (unsub_notice, _) = RequestNoticeTx::new();
+        mqtt.tracked_unsubscribe
+            .insert(6, (Unsubscribe::new("a/b"), unsub_notice));
+
+        assert_eq!(mqtt.clean_pending_capacity(), 6);
     }
 
     #[test]

@@ -394,7 +394,6 @@ mod test {
 
     fn sample2() -> Disconnect {
         let properties = DisconnectProperties {
-            // TODO: change to 2137 xD
             session_expiry_interval: Some(1234),
             reason_string: Some("test".to_owned()),
             user_properties: vec![("test".to_owned(), "test".to_owned())],

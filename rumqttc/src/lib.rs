@@ -554,9 +554,6 @@ impl NetworkOptions {
     }
 }
 
-// TODO: Should all the options be exposed as public? Drawback
-// would be loosing the ability to panic when the user options
-// are wrong (e.g empty client id) or aggressive (keep alive time)
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
 pub struct MqttOptions {
