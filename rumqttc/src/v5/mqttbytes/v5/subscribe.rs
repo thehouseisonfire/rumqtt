@@ -230,8 +230,10 @@ impl SubscribeProperties {
             match property(prop)? {
                 PropertyType::SubscriptionIdentifier => {
                     let (id_len, sub_id) = length(bytes.iter())?;
-                    // TODO: Validate 1 +. Tests are working either way
-                    cursor += 1 + id_len;
+                    if sub_id == 0 {
+                        return Err(Error::SubscriptionIdZero);
+                    }
+                    cursor += id_len;
                     bytes.advance(id_len);
                     id = Some(sub_id);
                 }
@@ -256,6 +258,9 @@ impl SubscribeProperties {
         write_remaining_length(buffer, len)?;
 
         if let Some(id) = &self.id {
+            if *id == 0 {
+                return Err(Error::SubscriptionIdZero);
+            }
             buffer.put_u8(PropertyType::SubscriptionIdentifier as u8);
             write_remaining_length(buffer, *id)?;
         }
@@ -274,7 +279,7 @@ impl SubscribeProperties {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -298,5 +303,48 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn read_rejects_subscription_identifier_zero() {
+        let mut bytes = Bytes::from_static(&[0x02, 0x0B, 0x00]);
+        let result = SubscribeProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::SubscriptionIdZero)));
+    }
+
+    #[test]
+    fn write_rejects_subscription_identifier_zero() {
+        let props = SubscribeProperties {
+            id: Some(0),
+            user_properties: vec![],
+        };
+
+        let mut bytes = BytesMut::new();
+        let result = props.write(&mut bytes);
+
+        assert!(matches!(result, Err(Error::SubscriptionIdZero)));
+    }
+
+    #[test]
+    fn read_subscription_identifier_and_user_property_parses_both() {
+        let mut bytes = Bytes::from_static(&[
+            0x09, // properties length
+            0x0B, // SubscriptionIdentifier property
+            0x01, // varint value = 1
+            0x26, // UserProperty property
+            0x00, 0x01, b'k', // key
+            0x00, 0x01, b'v', // value
+        ]);
+
+        let properties = SubscribeProperties::read(&mut bytes)
+            .unwrap()
+            .expect("properties should be present");
+
+        assert_eq!(properties.id, Some(1));
+        assert_eq!(
+            properties.user_properties,
+            vec![("k".to_owned(), "v".to_owned())]
+        );
     }
 }

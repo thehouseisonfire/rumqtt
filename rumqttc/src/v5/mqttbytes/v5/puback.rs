@@ -217,7 +217,6 @@ fn reason(num: u8) -> Result<PubAckReason, Error> {
     Ok(code)
 }
 
-// TODO: Is typecasting significantly faster than functions?
 fn code(reason: PubAckReason) -> u8 {
     match reason {
         PubAckReason::Success => 0,
