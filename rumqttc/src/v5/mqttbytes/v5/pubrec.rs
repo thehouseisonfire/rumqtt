@@ -5,15 +5,15 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PubRecReason {
-    Success,
-    NoMatchingSubscribers,
-    UnspecifiedError,
-    ImplementationSpecificError,
-    NotAuthorized,
-    TopicNameInvalid,
-    PacketIdentifierInUse,
-    QuotaExceeded,
-    PayloadFormatInvalid,
+    Success = 0,
+    NoMatchingSubscribers = 16,
+    UnspecifiedError = 128,
+    ImplementationSpecificError = 131,
+    NotAuthorized = 135,
+    TopicNameInvalid = 144,
+    PacketIdentifierInUse = 145,
+    QuotaExceeded = 151,
+    PayloadFormatInvalid = 153,
 }
 
 /// Acknowledgement to QoS1 publish
@@ -196,33 +196,29 @@ impl PubRecProperties {
 
 /// Connection return code type
 fn reason(num: u8) -> Result<PubRecReason, Error> {
-    let code = match num {
-        0 => PubRecReason::Success,
-        16 => PubRecReason::NoMatchingSubscribers,
-        128 => PubRecReason::UnspecifiedError,
-        131 => PubRecReason::ImplementationSpecificError,
-        135 => PubRecReason::NotAuthorized,
-        144 => PubRecReason::TopicNameInvalid,
-        145 => PubRecReason::PacketIdentifierInUse,
-        151 => PubRecReason::QuotaExceeded,
-        153 => PubRecReason::PayloadFormatInvalid,
-        num => return Err(Error::InvalidConnectReturnCode(num)),
-    };
-
-    Ok(code)
+    num.try_into()
 }
 
 fn code(reason: PubRecReason) -> u8 {
-    match reason {
-        PubRecReason::Success => 0,
-        PubRecReason::NoMatchingSubscribers => 16,
-        PubRecReason::UnspecifiedError => 128,
-        PubRecReason::ImplementationSpecificError => 131,
-        PubRecReason::NotAuthorized => 135,
-        PubRecReason::TopicNameInvalid => 144,
-        PubRecReason::PacketIdentifierInUse => 145,
-        PubRecReason::QuotaExceeded => 151,
-        PubRecReason::PayloadFormatInvalid => 153,
+    reason as u8
+}
+
+impl TryFrom<u8> for PubRecReason {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Success),
+            16 => Ok(Self::NoMatchingSubscribers),
+            128 => Ok(Self::UnspecifiedError),
+            131 => Ok(Self::ImplementationSpecificError),
+            135 => Ok(Self::NotAuthorized),
+            144 => Ok(Self::TopicNameInvalid),
+            145 => Ok(Self::PacketIdentifierInUse),
+            151 => Ok(Self::QuotaExceeded),
+            153 => Ok(Self::PayloadFormatInvalid),
+            _ => Err(Error::InvalidConnectReturnCode(value)),
+        }
     }
 }
 
@@ -251,5 +247,46 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn reason_code_cast_matches_spec() {
+        assert_eq!(PubRecReason::Success as u8, 0);
+        assert_eq!(PubRecReason::NoMatchingSubscribers as u8, 16);
+        assert_eq!(PubRecReason::UnspecifiedError as u8, 128);
+        assert_eq!(PubRecReason::ImplementationSpecificError as u8, 131);
+        assert_eq!(PubRecReason::NotAuthorized as u8, 135);
+        assert_eq!(PubRecReason::TopicNameInvalid as u8, 144);
+        assert_eq!(PubRecReason::PacketIdentifierInUse as u8, 145);
+        assert_eq!(PubRecReason::QuotaExceeded as u8, 151);
+        assert_eq!(PubRecReason::PayloadFormatInvalid as u8, 153);
+    }
+
+    #[test]
+    fn reason_and_code_round_trip() {
+        let values = [
+            (0, PubRecReason::Success),
+            (16, PubRecReason::NoMatchingSubscribers),
+            (128, PubRecReason::UnspecifiedError),
+            (131, PubRecReason::ImplementationSpecificError),
+            (135, PubRecReason::NotAuthorized),
+            (144, PubRecReason::TopicNameInvalid),
+            (145, PubRecReason::PacketIdentifierInUse),
+            (151, PubRecReason::QuotaExceeded),
+            (153, PubRecReason::PayloadFormatInvalid),
+        ];
+
+        for (raw, parsed) in values {
+            assert_eq!(reason(raw).unwrap(), parsed);
+            assert_eq!(code(parsed), raw);
+        }
+    }
+
+    #[test]
+    fn reason_invalid_code_errors() {
+        assert!(matches!(
+            reason(42),
+            Err(Error::InvalidConnectReturnCode(42))
+        ));
     }
 }

@@ -72,8 +72,9 @@ impl UnsubAck {
             write_remaining_length(buffer, 0)?;
         }
 
-        let p: Vec<u8> = self.reasons.iter().map(|&c| code(c)).collect();
-        buffer.extend_from_slice(&p);
+        for &reason in &self.reasons {
+            buffer.put_u8(code(reason));
+        }
         Ok(1 + remaining_len_bytes + remaining_len)
     }
 }
@@ -81,13 +82,13 @@ impl UnsubAck {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UnsubAckReason {
-    Success,
-    NoSubscriptionExisted,
-    UnspecifiedError,
-    ImplementationSpecificError,
-    NotAuthorized,
-    TopicFilterInvalid,
-    PacketIdentifierInUse,
+    Success = 0x00,
+    NoSubscriptionExisted = 0x11,
+    UnspecifiedError = 0x80,
+    ImplementationSpecificError = 0x83,
+    NotAuthorized = 0x87,
+    TopicFilterInvalid = 0x8F,
+    PacketIdentifierInUse = 0x91,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,29 +171,27 @@ impl UnsubAckProperties {
 
 /// Connection return code type
 fn reason(num: u8) -> Result<UnsubAckReason, Error> {
-    let code = match num {
-        0x00 => UnsubAckReason::Success,
-        0x11 => UnsubAckReason::NoSubscriptionExisted,
-        0x80 => UnsubAckReason::UnspecifiedError,
-        0x83 => UnsubAckReason::ImplementationSpecificError,
-        0x87 => UnsubAckReason::NotAuthorized,
-        0x8F => UnsubAckReason::TopicFilterInvalid,
-        0x91 => UnsubAckReason::PacketIdentifierInUse,
-        num => return Err(Error::InvalidSubscribeReasonCode(num)),
-    };
-
-    Ok(code)
+    num.try_into()
 }
 
 fn code(reason: UnsubAckReason) -> u8 {
-    match reason {
-        UnsubAckReason::Success => 0x00,
-        UnsubAckReason::NoSubscriptionExisted => 0x11,
-        UnsubAckReason::UnspecifiedError => 0x80,
-        UnsubAckReason::ImplementationSpecificError => 0x83,
-        UnsubAckReason::NotAuthorized => 0x87,
-        UnsubAckReason::TopicFilterInvalid => 0x8F,
-        UnsubAckReason::PacketIdentifierInUse => 0x91,
+    reason as u8
+}
+
+impl TryFrom<u8> for UnsubAckReason {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(Self::Success),
+            0x11 => Ok(Self::NoSubscriptionExisted),
+            0x80 => Ok(Self::UnspecifiedError),
+            0x83 => Ok(Self::ImplementationSpecificError),
+            0x87 => Ok(Self::NotAuthorized),
+            0x8F => Ok(Self::TopicFilterInvalid),
+            0x91 => Ok(Self::PacketIdentifierInUse),
+            _ => Err(Error::InvalidSubscribeReasonCode(value)),
+        }
     }
 }
 
@@ -200,7 +199,7 @@ fn code(reason: UnsubAckReason) -> u8 {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -225,5 +224,75 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn reason_and_code_round_trip() {
+        let values = [
+            (0x00, UnsubAckReason::Success),
+            (0x11, UnsubAckReason::NoSubscriptionExisted),
+            (0x80, UnsubAckReason::UnspecifiedError),
+            (0x83, UnsubAckReason::ImplementationSpecificError),
+            (0x87, UnsubAckReason::NotAuthorized),
+            (0x8F, UnsubAckReason::TopicFilterInvalid),
+            (0x91, UnsubAckReason::PacketIdentifierInUse),
+        ];
+
+        for (raw, parsed) in values {
+            assert_eq!(reason(raw).unwrap(), parsed);
+            assert_eq!(code(parsed), raw);
+        }
+    }
+
+    #[test]
+    fn reason_invalid_code_errors() {
+        assert!(matches!(
+            reason(42),
+            Err(Error::InvalidSubscribeReasonCode(42))
+        ));
+    }
+
+    #[test]
+    fn write_multiple_reasons_bytes() {
+        let mut buffer = BytesMut::new();
+        let unsuback = UnsubAck {
+            pkid: 10,
+            reasons: vec![
+                UnsubAckReason::Success,
+                UnsubAckReason::NoSubscriptionExisted,
+                UnsubAckReason::PacketIdentifierInUse,
+            ],
+            properties: None,
+        };
+
+        unsuback.write(&mut buffer).unwrap();
+
+        let expected = [
+            0xB0, // Packet type
+            0x06, // Remaining length
+            0x00, 0x0A, // pkid
+            0x00, // properties length
+            0x00, // Success
+            0x11, // NoSubscriptionExisted
+            0x91, // PacketIdentifierInUse
+        ];
+        assert_eq!(&buffer[..], &expected);
+    }
+
+    #[test]
+    fn read_errors_on_invalid_first_reason_code() {
+        let packet = Bytes::from_static(&[
+            0xB0, 0x0C, // packet type + remaining length
+            0x00, 0x0A, // pkid
+            0x00, // properties length
+            0xFF, // invalid first reason code
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // trailing reason bytes
+        ]);
+
+        let fixed_header = FixedHeader::new(0xB0, 1, 0x0C);
+        assert!(matches!(
+            UnsubAck::read(fixed_header, packet),
+            Err(Error::InvalidSubscribeReasonCode(0xFF))
+        ));
     }
 }
