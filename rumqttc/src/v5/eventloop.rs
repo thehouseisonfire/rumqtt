@@ -3,7 +3,7 @@ use super::mqttbytes::v5::*;
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
 use crate::framed::AsyncReadWrite;
 use crate::notice::{PublishNoticeTx, RequestNoticeTx, TrackedNoticeTx};
-use crate::{PublishNoticeError, RequestNoticeError};
+use crate::{NoticeFailureReason, PublishNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded};
 use tokio::select;
@@ -226,23 +226,31 @@ impl EventLoop {
         self.pending.is_empty()
     }
 
-    fn fail_pending_notices(&mut self) {
+    /// Drains pending retransmission queue and fails tracked notices with the given reason.
+    ///
+    /// Returns the number of pending requests removed from the queue.
+    pub fn drain_pending_as_failed(&mut self, reason: NoticeFailureReason) -> usize {
+        let mut drained = 0;
         for envelope in self.pending.drain(..) {
+            drained += 1;
             if let Some(notice) = envelope.notice {
                 match notice {
                     TrackedNoticeTx::Publish(notice) => {
-                        notice.error(PublishNoticeError::SessionReset);
+                        notice.error(reason.publish_error());
                     }
                     TrackedNoticeTx::Request(notice) => {
-                        notice.error(RequestNoticeError::SessionReset);
+                        notice.error(reason.request_error());
                     }
                 }
             }
         }
+
+        drained
     }
 
-    fn reset_session_state(&mut self) {
-        self.fail_pending_notices();
+    /// Clears eventloop and state tracking bound to a previous session.
+    pub fn reset_session_state(&mut self) {
+        self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.fail_pending_notices();
     }
 
@@ -1081,6 +1089,73 @@ mod tests {
         assert_eq!(
             second_notice.wait_async().await.unwrap_err(),
             PublishNoticeError::Qos0NotFlushed
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pending_as_failed_drains_all_and_returns_count() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtLeastOnce,
+            "payload",
+            None,
+        );
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_publish(publish, notice_tx));
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain(Request::PingReq));
+
+        let drained = eventloop.drain_pending_as_failed(NoticeFailureReason::SessionReset);
+
+        assert_eq!(drained, 2);
+        assert!(eventloop.pending.is_empty());
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::SessionReset
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pending_as_failed_reports_session_reset_for_tracked_notices() {
+        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (publish_notice_tx, publish_notice) = PublishNoticeTx::new();
+        let publish = Publish::new(
+            "hello/world",
+            crate::v5::mqttbytes::QoS::AtLeastOnce,
+            "payload",
+            None,
+        );
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_publish(publish, publish_notice_tx));
+
+        let (request_notice_tx, request_notice) = RequestNoticeTx::new();
+        let subscribe = Subscribe::new(
+            Filter::new("hello/world", crate::v5::mqttbytes::QoS::AtMostOnce),
+            None,
+        );
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_subscribe(
+                subscribe,
+                request_notice_tx,
+            ));
+
+        eventloop.drain_pending_as_failed(NoticeFailureReason::SessionReset);
+
+        assert_eq!(
+            publish_notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::SessionReset
+        );
+        assert_eq!(
+            request_notice.wait_async().await.unwrap_err(),
+            crate::RequestNoticeError::SessionReset
         );
     }
 

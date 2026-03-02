@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use rumqttc::mqttbytes::v4::*;
 use rumqttc::mqttbytes::*;
 use std::collections::VecDeque;
