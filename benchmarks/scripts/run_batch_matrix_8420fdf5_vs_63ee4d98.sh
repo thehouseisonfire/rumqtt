@@ -39,7 +39,7 @@ git worktree add --detach "$TARGET_WT" "$TARGET_REF" >/dev/null
 # 2) Apply identical benchmark patches in both worktrees
 # - env override for max_request_batch in rumqttasync
 # - force local broker port for that override path
-# - enable rumqttc url feature in benchmarks/Cargo.toml
+# - enable URL parsing feature in benchmarks/Cargo.toml (old and split layouts)
 
 apply_patch_to_wt() {
   local wt="$1"
@@ -48,6 +48,8 @@ apply_patch_to_wt() {
   perl -0pi -e "s@mqtt://localhost:1883\\?client_id=@mqtt://localhost:${BROKER_PORT}?client_id=@g" "$wt/benchmarks/clients/rumqttasync.rs"
 
   perl -0pi -e 's@rumqttc = \{ package = "rumqttc-next", path = "\.\./rumqttc" \}@rumqttc = { package = "rumqttc-next", path = "../rumqttc", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
+  perl -0pi -e 's@rumqttc_v4 = \{ package = "rumqttc-v4", path = "\.\./rumqttc-v4" \}@rumqttc_v4 = { package = "rumqttc-v4", path = "../rumqttc-v4", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
+  perl -0pi -e 's@rumqttc_v5 = \{ package = "rumqttc-v5", path = "\.\./rumqttc-v5" \}@rumqttc_v5 = { package = "rumqttc-v5", path = "../rumqttc-v5", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
 
   git -C "$wt" add -f benchmarks/clients/rumqttasync.rs benchmarks/Cargo.toml
   git -C "$wt" commit --no-gpg-sign -m "bench: batch matrix env override patch" >/dev/null
