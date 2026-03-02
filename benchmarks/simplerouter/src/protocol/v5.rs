@@ -1966,7 +1966,8 @@ mod tests {
     #[test]
     fn puback_success_without_properties_is_minimal() {
         let mut buffer = BytesMut::new();
-        let written = puback::write(0x1234, puback::PubAckReason::Success, None, &mut buffer).unwrap();
+        let written =
+            puback::write(0x1234, puback::PubAckReason::Success, None, &mut buffer).unwrap();
 
         assert_eq!(written, 4);
         assert_eq!(&buffer[..], &[0x40, 0x02, 0x12, 0x34]);
@@ -1975,8 +1976,13 @@ mod tests {
     #[test]
     fn puback_non_success_without_properties_includes_reason_code() {
         let mut buffer = BytesMut::new();
-        let written =
-            puback::write(0x1234, puback::PubAckReason::NotAuthorized, None, &mut buffer).unwrap();
+        let written = puback::write(
+            0x1234,
+            puback::PubAckReason::NotAuthorized,
+            None,
+            &mut buffer,
+        )
+        .unwrap();
 
         assert_eq!(written, 5);
         assert_eq!(&buffer[..], &[0x40, 0x03, 0x12, 0x34, 0x87]);

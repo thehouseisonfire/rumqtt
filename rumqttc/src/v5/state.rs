@@ -6,7 +6,7 @@ use super::mqttbytes::v5::{
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::notice::{PublishNoticeTx, RequestNoticeTx, TrackedNoticeTx};
-use crate::{PublishNoticeError, RequestNoticeError};
+use crate::{NoticeFailureReason, PublishNoticeError, RequestNoticeError};
 
 use super::{AuthManager, Event, Incoming, Outgoing, Request};
 
@@ -336,6 +336,32 @@ impl MqttState {
         self.inflight
     }
 
+    pub fn tracked_subscribe_len(&self) -> usize {
+        self.tracked_subscribe.len()
+    }
+
+    pub fn tracked_unsubscribe_len(&self) -> usize {
+        self.tracked_unsubscribe.len()
+    }
+
+    pub fn tracked_requests_is_empty(&self) -> bool {
+        self.tracked_subscribe.is_empty() && self.tracked_unsubscribe.is_empty()
+    }
+
+    pub fn drain_tracked_requests_as_failed(&mut self, reason: NoticeFailureReason) -> usize {
+        let mut drained = 0;
+        for (_, (_, notice)) in std::mem::take(&mut self.tracked_subscribe) {
+            drained += 1;
+            notice.error(reason.request_error());
+        }
+        for (_, (_, notice)) in std::mem::take(&mut self.tracked_unsubscribe) {
+            drained += 1;
+            notice.error(reason.request_error());
+        }
+
+        drained
+    }
+
     pub(crate) fn fail_pending_notices(&mut self) {
         for notice in &mut self.outgoing_pub_notice {
             if let Some(tx) = notice.take() {
@@ -352,12 +378,7 @@ impl MqttState {
         if let Some(tx) = self.collision_notice.take() {
             tx.error(PublishNoticeError::SessionReset);
         }
-        for (_, (_, notice)) in std::mem::take(&mut self.tracked_subscribe) {
-            notice.error(RequestNoticeError::SessionReset);
-        }
-        for (_, (_, notice)) in std::mem::take(&mut self.tracked_unsubscribe) {
-            notice.error(RequestNoticeError::SessionReset);
-        }
+        self.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
         self.clear_collision();
     }
 
@@ -1104,6 +1125,7 @@ mod test {
     use super::{Event, Incoming, Outgoing, Request};
     use super::{MqttState, StateError};
     use crate::notice::{PublishNotice, PublishNoticeError, PublishNoticeTx, RequestNoticeTx};
+    use crate::{NoticeFailureReason, RequestNoticeError};
 
     fn build_outgoing_publish(qos: QoS) -> Publish {
         let topic = "hello/world".to_owned();
@@ -1162,6 +1184,59 @@ mod test {
             .insert(6, (Unsubscribe::new("a/b", None), unsub_notice));
 
         assert_eq!(mqtt.clean_pending_capacity(), 6);
+    }
+
+    #[test]
+    fn tracked_request_len_helpers_report_counts() {
+        let mut mqtt = MqttState::new(10, false, None);
+        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let (sub_notice, _) = RequestNoticeTx::new();
+        mqtt.tracked_subscribe
+            .insert(5, (Subscribe::new(filter, None), sub_notice));
+        let (unsub_notice, _) = RequestNoticeTx::new();
+        mqtt.tracked_unsubscribe
+            .insert(6, (Unsubscribe::new("a/b", None), unsub_notice));
+
+        assert_eq!(mqtt.tracked_subscribe_len(), 1);
+        assert_eq!(mqtt.tracked_unsubscribe_len(), 1);
+        assert!(!mqtt.tracked_requests_is_empty());
+
+        mqtt.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
+        assert!(mqtt.tracked_requests_is_empty());
+    }
+
+    #[test]
+    fn drain_tracked_requests_as_failed_reports_session_reset_and_returns_count() {
+        let mut mqtt = MqttState::new(10, false, None);
+        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let (sub_notice_tx, sub_notice) = RequestNoticeTx::new();
+        mqtt.tracked_subscribe
+            .insert(5, (Subscribe::new(filter, None), sub_notice_tx));
+        let (unsub_notice_tx, unsub_notice) = RequestNoticeTx::new();
+        mqtt.tracked_unsubscribe
+            .insert(6, (Unsubscribe::new("a/b", None), unsub_notice_tx));
+
+        let drained = mqtt.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
+
+        assert_eq!(drained, 2);
+        assert!(mqtt.tracked_requests_is_empty());
+        assert_eq!(
+            sub_notice.wait().unwrap_err(),
+            RequestNoticeError::SessionReset
+        );
+        assert_eq!(
+            unsub_notice.wait().unwrap_err(),
+            RequestNoticeError::SessionReset
+        );
+    }
+
+    #[test]
+    fn drain_tracked_requests_as_failed_is_noop_when_empty() {
+        let mut mqtt = MqttState::new(10, false, None);
+        let drained = mqtt.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
+
+        assert_eq!(drained, 0);
+        assert!(mqtt.tracked_requests_is_empty());
     }
 
     fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {

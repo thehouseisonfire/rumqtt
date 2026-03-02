@@ -6,6 +6,26 @@ use crate::v5::mqttbytes::v5::{
     SubscribeReasonCode as V5SubscribeReasonCode, UnsubAckReason as V5UnsubAckReason,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeFailureReason {
+    /// Message dropped due to session reset.
+    SessionReset,
+}
+
+impl NoticeFailureReason {
+    pub(crate) fn publish_error(self) -> PublishNoticeError {
+        match self {
+            Self::SessionReset => PublishNoticeError::SessionReset,
+        }
+    }
+
+    pub(crate) fn request_error(self) -> RequestNoticeError {
+        match self {
+            Self::SessionReset => RequestNoticeError::SessionReset,
+        }
+    }
+}
+
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PublishNoticeError {
     #[error("event loop dropped notice sender")]
