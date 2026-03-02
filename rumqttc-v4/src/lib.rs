@@ -931,46 +931,11 @@ impl MqttOptions {
     ///     rumqttc::default_socket_connect(host, network_options).await
     /// });
     /// ```
-    #[cfg(not(feature = "websocket"))]
     pub fn set_socket_connector<F, Fut, S>(&mut self, f: F) -> &mut Self
     where
         F: Fn(String, NetworkOptions) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<S, std::io::Error>> + Send + 'static,
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
-    {
-        self.socket_connector = Some(Arc::new(move |host, network_options| {
-            let stream_future = f(host, network_options);
-            let future = async move {
-                let stream = stream_future.await?;
-                Ok(Box::new(stream) as Box<dyn crate::framed::AsyncReadWrite>)
-            };
-            Box::pin(future)
-        }));
-        self
-    }
-
-    /// Sets a custom socket connector, overriding the default TCP socket creation logic.
-    ///
-    /// The connector is used to create the base stream before optional proxy/TLS/WebSocket layers
-    /// managed by `MqttOptions` are applied.
-    ///
-    /// If the connector already performs TLS/proxy work, configure `MqttOptions` transport/proxy
-    /// to avoid layering those concerns twice.
-    ///
-    /// # Example
-    /// ```
-    /// # use rumqttc::MqttOptions;
-    /// # let mut options = MqttOptions::new("test", "localhost", 1883);
-    /// options.set_socket_connector(|host, network_options| async move {
-    ///     rumqttc::default_socket_connect(host, network_options).await
-    /// });
-    /// ```
-    #[cfg(feature = "websocket")]
-    pub fn set_socket_connector<F, Fut, S>(&mut self, f: F) -> &mut Self
-    where
-        F: Fn(String, NetworkOptions) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<S, std::io::Error>> + Send + 'static,
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+        S: crate::framed::AsyncReadWrite + 'static,
     {
         self.socket_connector = Some(Arc::new(move |host, network_options| {
             let stream_future = f(host, network_options);
