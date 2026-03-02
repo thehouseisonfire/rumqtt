@@ -1,6 +1,6 @@
 ## Library Design
 
-This document discusses the high-level design for the client library, `rumqttc-next`, as described in the diagram below.
+This document discusses the high-level design for the client libraries, `rumqttc-v4` and `rumqttc-v5`, as described in the diagram below.
 
 ```text
       ┌──────┐

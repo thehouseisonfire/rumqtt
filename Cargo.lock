@@ -262,7 +262,8 @@ dependencies = [
  "pprof",
  "pretty_env_logger",
  "rand 0.10.0",
- "rumqttc-next",
+ "rumqttc-v4",
+ "rumqttc-v5",
  "serde",
  "serde_json",
  "tokio",
@@ -1908,7 +1909,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc-next"
+name = "rumqttc-v4"
+version = "0.27.0"
+dependencies = [
+ "async-http-proxy",
+ "async-tungstenite",
+ "bytes",
+ "color-backtrace",
+ "criterion",
+ "fixedbitset 0.5.7",
+ "flume",
+ "futures-io",
+ "futures-util",
+ "http",
+ "log",
+ "matches",
+ "native-tls",
+ "pretty_assertions",
+ "pretty_env_logger",
+ "rcgen",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tokio-util",
+ "url",
+ "wincode",
+]
+
+[[package]]
+name = "rumqttc-v5"
 version = "0.27.0"
 dependencies = [
  "async-http-proxy",

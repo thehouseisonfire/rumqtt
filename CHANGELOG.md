@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rumqttc` v4/v5 eventloops: Add public `EventLoop::reset_session_state()` and `EventLoop::drain_pending_as_failed(reason) -> usize` plus new `NoticeFailureReason` for controlled pending/session failure handling.
 - `rumqttc` v4/v5 state: Add tracked request queue helpers `tracked_subscribe_len`, `tracked_unsubscribe_len`, `tracked_requests_is_empty`, and `drain_tracked_requests_as_failed(reason) -> usize`.
 ### Changed
+- Split the client package into protocol-specific crates: `rumqttc-v4` (MQTT 3.1.1) and `rumqttc-v5` (MQTT 5), and removed the combined `rumqttc-next` package.
+- Updated workspace tooling, CI, and benchmark dependencies to target the new protocol crates directly.
 - `rumqttc` v5: Change connect timeout API from seconds-based `connection_timeout()`/`set_connection_timeout(u64)` to `Duration`-based `connect_timeout()`/`set_connect_timeout(Duration)`, and update internal connect timeout handling accordingly.
 - `rumqttc` v4: Change `mqttbytes::v4::Publish.topic` from `String` to `bytes::Bytes`, reducing topic allocation/copy overhead in packet decode/encode paths (topic UTF-8 validation is still enforced).
 - `rumqttc` v4/v5: Replace publish API bound `Topic` with `Into<PublishTopic>`, restoring support for common string inputs like `&String` and `Cow<'_, str>` while preserving `ValidatedTopic` fast-path behavior.

@@ -20,25 +20,35 @@ rumqtt is an opensource set of libraries written in rust-lang to implement the M
 
 | Crate | Description | Version |
 | -- | -- | -- |
-| [rumqttc-next](./rumqttc/) | A high level, easy to use MQTT client | [![crates.io page](https://img.shields.io/crates/v/rumqttc-next.svg)](https://crates.io/crates/rumqttc-next) |
+| [rumqttc-v4](./rumqttc-v4/) | MQTT 3.1.1 client | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v4.svg)](https://crates.io/crates/rumqttc-v4) |
+| [rumqttc-v5](./rumqttc-v5/) | MQTT 5 client | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v5.svg)](https://crates.io/crates/rumqttc-v5) |
 
 ## Installation and Usage
 
-### rumqttc-next
+### rumqttc-v4
 
-Add rumqttc-next to your project:
+Add the v4 client crate:
 
 ```bash
-cargo add rumqttc-next
+cargo add rumqttc-v4
 ```
 
-For more details, see [rumqttc/README.md](https://github.com/thehouseisonfire/rumqtt/blob/main/rumqttc/README.md).
+### rumqttc-v5
+
+Add the v5 client crate:
+
+```bash
+cargo add rumqttc-v5
+```
+
+For more details, see [rumqttc-v4/README.md](https://github.com/thehouseisonfire/rumqtt/blob/main/rumqttc-v4/README.md) and [rumqttc-v5/README.md](https://github.com/thehouseisonfire/rumqtt/blob/main/rumqttc-v5/README.md).
 
 ## Features
 
-### rumqttc-next
-
+### rumqttc-v4
 - [x] MQTT 3.1.1
+
+### rumqttc-v5
 - [x] MQTT 5
 
 ## Community
