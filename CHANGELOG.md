@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rumqttc` v4/v5: Replace publish API bound `Topic` with `Into<PublishTopic>`, restoring support for common string inputs like `&String` and `Cow<'_, str>` while preserving `ValidatedTopic` fast-path behavior.
 ### Deprecated
 ### Removed
+- `rumqttc` v4: Remove `Outgoing::Auth` from MQTT 3.1.1 outgoing events.
 ### Fixed
 - `rumqttc` v4/v5: Avoid panicking when applying TCP socket send/recv buffer sizes; these configuration failures now return an error from connect setup.
 ### Security
