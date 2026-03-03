@@ -1,5 +1,5 @@
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
+pub use rumqttc_core::AsyncReadWrite;
 use tokio_util::codec::Framed;
 
 use super::mqttbytes::v5::Packet;
@@ -13,14 +13,6 @@ pub struct Network {
     framed: Framed<Box<dyn AsyncReadWrite>, Codec>,
 }
 
-#[cfg(not(feature = "websocket"))]
-pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-#[cfg(not(feature = "websocket"))]
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-#[cfg(feature = "websocket")]
-pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
-#[cfg(feature = "websocket")]
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 impl Network {
     pub fn new(socket: impl AsyncReadWrite + 'static, max_incoming_size: Option<u32>) -> Network {
         let socket = Box::new(socket) as Box<dyn AsyncReadWrite>;

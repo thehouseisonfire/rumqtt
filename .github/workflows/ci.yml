@@ -95,6 +95,13 @@ jobs:
             fi
             echo "Mutually-exclusive rustls provider feature guards failed as expected."
 
+      - name: Verify cross-crate transport feature isolation
+        run: |
+            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features -F rumqttc-v5/websocket
+            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features -F rumqttc-v4/websocket
+            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features --features "rumqttc-v4/use-rustls-ring rumqttc-v5/use-rustls-aws-lc"
+            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features --features "rumqttc-v4/use-rustls-aws-lc rumqttc-v5/use-rustls-ring"
+
       - name: Combine coverage
         run: cargo llvm-cov report --lcov --output-path coverage.lcov
 

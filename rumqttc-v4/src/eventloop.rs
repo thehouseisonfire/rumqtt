@@ -7,13 +7,11 @@ use crate::{Transport, framed::Network};
 use crate::framed::AsyncReadWrite;
 use crate::mqttbytes::v4::*;
 use flume::{Receiver, Sender, TryRecvError, bounded};
-use tokio::net::{TcpSocket, TcpStream, lookup_host};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep};
 
 use std::collections::VecDeque;
 use std::io;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -548,58 +546,6 @@ async fn connect(
     Ok((network, connack))
 }
 
-/// Default TCP socket connection logic used by the MQTT event loop.
-///
-/// This resolves the host, applies [`NetworkOptions`] on each candidate socket,
-/// and returns the first successful connection.
-pub async fn socket_connect(
-    host: String,
-    network_options: NetworkOptions,
-) -> io::Result<TcpStream> {
-    let addrs = lookup_host(host).await?;
-    let mut last_err = None;
-
-    for addr in addrs {
-        let socket = match addr {
-            SocketAddr::V4(_) => TcpSocket::new_v4()?,
-            SocketAddr::V6(_) => TcpSocket::new_v6()?,
-        };
-
-        socket.set_nodelay(network_options.tcp_nodelay)?;
-
-        if let Some(send_buff_size) = network_options.tcp_send_buffer_size {
-            socket.set_send_buffer_size(send_buff_size)?;
-        }
-        if let Some(recv_buffer_size) = network_options.tcp_recv_buffer_size {
-            socket.set_recv_buffer_size(recv_buffer_size)?;
-        }
-
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        {
-            if let Some(bind_device) = &network_options.bind_device {
-                // call the bind_device function only if the bind_device network option is defined
-                // If binding device is None or an empty string it removes the binding,
-                // which is causing PermissionDenied errors in AWS environment (lambda function).
-                socket.bind_device(Some(bind_device.as_bytes()))?;
-            }
-        }
-
-        match socket.connect(addr).await {
-            Ok(s) => return Ok(s),
-            Err(e) => {
-                last_err = Some(e);
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        )
-    }))
-}
-
 async fn network_connect(
     options: &MqttOptions,
     network_options: NetworkOptions,
@@ -711,14 +657,9 @@ async fn network_connect(
                 request = request_modifier(request).await;
             }
 
-            let connector = tls::websocket_tls_connector(&tls_config)?;
-
-            let (socket, response) = async_tungstenite::tokio::client_async_tls_with_connector(
-                request,
-                tcp_stream,
-                Some(connector),
-            )
-            .await?;
+            let tls_stream = tls::tls_connect(&domain, port, &tls_config, tcp_stream).await?;
+            let (socket, response) =
+                async_tungstenite::tokio::client_async(request, tls_stream).await?;
             validate_response_headers(response)?;
 
             Network::new(

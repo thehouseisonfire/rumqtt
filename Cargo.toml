@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "rumqttc-core",
   "rumqttc-v4",
   "rumqttc-v5",
   "benchmarks",
