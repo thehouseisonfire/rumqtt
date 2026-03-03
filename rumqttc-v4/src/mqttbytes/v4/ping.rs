@@ -1,5 +1,5 @@
 use super::*;
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PingReq;
@@ -11,8 +11,7 @@ impl PingReq {
     }
 
     pub fn write(&self, payload: &mut BytesMut) -> Result<usize, Error> {
-        payload.put_slice(&[0xC0, 0x00]);
-        Ok(2)
+        Ok(mqttbytes_core::ping::write_pingreq(payload))
     }
 }
 
@@ -26,7 +25,6 @@ impl PingResp {
     }
 
     pub fn write(&self, payload: &mut BytesMut) -> Result<usize, Error> {
-        payload.put_slice(&[0xD0, 0x00]);
-        Ok(2)
+        Ok(mqttbytes_core::ping::write_pingresp(payload))
     }
 }

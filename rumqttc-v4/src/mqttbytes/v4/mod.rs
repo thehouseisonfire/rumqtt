@@ -140,13 +140,5 @@ impl Packet {
 
 /// Return number of remaining length bytes required for encoding length
 fn len_len(len: usize) -> usize {
-    if len >= 2_097_152 {
-        4
-    } else if len >= 16_384 {
-        3
-    } else if len >= 128 {
-        2
-    } else {
-        1
-    }
+    mqttbytes_core::primitives::len_len(len)
 }

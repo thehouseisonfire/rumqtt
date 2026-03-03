@@ -42,7 +42,7 @@ impl Encoder<Packet> for Codec {
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
-    use tokio_util::codec::Encoder;
+    use tokio_util::codec::{Decoder, Encoder};
 
     use super::Codec;
     use crate::{
@@ -69,6 +69,23 @@ mod tests {
             Err(Error::OutgoingPacketTooLarge {
                 pkt_size: 282,
                 max: 200,
+            }) => {}
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn incoming_max_packet_size_check_happens_on_partial_frame() {
+        let mut buf = BytesMut::from(&[0x30, 0x14][..]);
+        let mut codec = Codec {
+            max_incoming_size: Some(10),
+            max_outgoing_size: Some(200),
+        };
+
+        match codec.decode(&mut buf) {
+            Err(Error::PayloadSizeLimitExceeded {
+                pkt_size: 20,
+                max: 10,
             }) => {}
             _ => unreachable!(),
         }

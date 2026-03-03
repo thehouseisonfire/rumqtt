@@ -1309,6 +1309,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mqttbytes-core"
+version = "0.27.0"
+dependencies = [
+ "bytes",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1943,6 +1951,7 @@ dependencies = [
  "http",
  "log",
  "matches",
+ "mqttbytes-core",
  "native-tls",
  "pretty_assertions",
  "pretty_env_logger",
@@ -1978,6 +1987,7 @@ dependencies = [
  "http",
  "log",
  "matches",
+ "mqttbytes-core",
  "native-tls",
  "pretty_assertions",
  "pretty_env_logger",

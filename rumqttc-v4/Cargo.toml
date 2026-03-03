@@ -39,6 +39,7 @@ log = "0.4"
 flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
 rumqttc-core = { path = "../rumqttc-core", version = "0.27.0", default-features = false }
+mqttbytes-core = { path = "../mqttbytes-core", version = "0.27.0" }
 
 # Optional
 # rustls
