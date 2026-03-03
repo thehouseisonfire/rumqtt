@@ -1,5 +1,5 @@
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
+pub use rumqttc_core::AsyncReadWrite;
 use tokio_util::codec::Framed;
 
 use crate::mqttbytes::{self, v4::*};
@@ -91,15 +91,6 @@ impl Network {
             .map_err(StateError::Deserialization)
     }
 }
-
-#[cfg(not(feature = "websocket"))]
-pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-#[cfg(not(feature = "websocket"))]
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-#[cfg(feature = "websocket")]
-pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
-#[cfg(feature = "websocket")]
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 #[cfg(test)]
 mod tests {

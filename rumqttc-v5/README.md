@@ -113,8 +113,10 @@ rumqttc supports two TLS backends:
 When both `use-rustls-no-provider` and `use-native-tls` features are enabled:
 
 - **Direct TLS connections** (`mqtts://`, `ssl://`): Work with both rustls and native-tls `TlsConfiguration` variants
-- **Secure WebSockets** (`wss://`): Only support native-tls `TlsConfiguration` variants (`Native`, `NativeConnector`, `SimpleNative`)
+- **Secure WebSockets** (`wss://`): Also work with both rustls and native-tls `TlsConfiguration` variants
 
-This is because `async-tungstenite` uses native-tls for websockets when both TLS features are enabled. Attempting to use a rustls `TlsConfiguration` variant with secure websockets will return `tls::Error::TlsBackendConflict`.
+Secure websocket connections now upgrade the TCP stream using the selected `TlsConfiguration` before the websocket handshake, so backend selection follows the provided TLS configuration.
 
-**Recommendation**: If you need secure websockets with rustls, disable the `use-native-tls` feature. If you need both TLS backends, use native-tls `TlsConfiguration` variants for secure websocket connections.
+In dual-backend dependency graphs, avoid relying on `TlsConfiguration::default()`, because default backend selection must be explicit.
+Use `TlsConfiguration::default_rustls()` or `TlsConfiguration::default_native()` (when available) or pass an explicit configuration to
+`Transport::tls_with_config(...)` / `Transport::wss_with_config(...)`.

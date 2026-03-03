@@ -37,7 +37,6 @@ async fn v4_custom_socket_connector_is_invoked() {
     );
 }
 
-
 #[cfg(feature = "websocket")]
 #[derive(Debug)]
 struct RequestModifierTestError(&'static str);

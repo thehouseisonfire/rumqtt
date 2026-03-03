@@ -21,12 +21,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["use-rustls"]
 use-rustls = ["use-rustls-aws-lc"]
-use-rustls-no-provider = ["dep:tokio-rustls", "dep:rustls-webpki", "dep:rustls-pki-types", "dep:rustls-native-certs", "async-tungstenite?/tokio-rustls-native-certs"]
-use-rustls-ring = ["use-rustls-no-provider", "tokio-rustls/ring", "rustls-webpki/ring"]
-use-rustls-aws-lc = ["use-rustls-no-provider", "tokio-rustls/aws_lc_rs", "rustls-webpki/aws-lc-rs"]
-use-native-tls = ["dep:tokio-native-tls", "dep:native-tls", "async-tungstenite?/tokio-native-tls"]
-websocket = ["dep:async-tungstenite", "dep:futures-io", "dep:http"]
-proxy = ["dep:async-http-proxy"]
+use-rustls-no-provider = ["dep:tokio-rustls", "dep:rustls-webpki", "dep:rustls-pki-types", "dep:rustls-native-certs", "async-tungstenite?/tokio-rustls-native-certs", "rumqttc-core/use-rustls-no-provider"]
+use-rustls-ring = ["use-rustls-no-provider", "tokio-rustls/ring", "rustls-webpki/ring", "rumqttc-core/use-rustls-ring"]
+use-rustls-aws-lc = ["use-rustls-no-provider", "tokio-rustls/aws_lc_rs", "rustls-webpki/aws-lc-rs", "rumqttc-core/use-rustls-aws-lc"]
+use-native-tls = ["dep:tokio-native-tls", "dep:native-tls", "async-tungstenite?/tokio-native-tls", "rumqttc-core/use-native-tls"]
+websocket = ["dep:async-tungstenite", "dep:futures-io", "dep:http", "rumqttc-core/websocket"]
+proxy = ["dep:async-http-proxy", "rumqttc-core/proxy"]
 url = ["dep:url"]
 
 [dependencies]
@@ -38,6 +38,7 @@ bytes = "1.5"
 log = "0.4"
 flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
+rumqttc-core = { path = "../rumqttc-core", version = "0.27.0", default-features = false }
 
 # Optional
 # rustls

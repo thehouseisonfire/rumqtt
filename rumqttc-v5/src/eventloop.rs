@@ -634,14 +634,9 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 request = request_modifier(request).await;
             }
 
-            let connector = tls::websocket_tls_connector(&tls_config)?;
-
-            let (socket, response) = async_tungstenite::tokio::client_async_tls_with_connector(
-                request,
-                tcp_stream,
-                Some(connector),
-            )
-            .await?;
+            let tls_stream = tls::tls_connect(&domain, port, &tls_config, tcp_stream).await?;
+            let (socket, response) =
+                async_tungstenite::tokio::client_async(request, tls_stream).await?;
             validate_response_headers(response)?;
 
             Network::new(WsAdapter::new(socket), max_incoming_pkt_size)

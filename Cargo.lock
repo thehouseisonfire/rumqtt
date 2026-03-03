@@ -1909,6 +1909,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumqttc-core"
+version = "0.27.0"
+dependencies = [
+ "async-http-proxy",
+ "async-tungstenite",
+ "futures-io",
+ "futures-util",
+ "http",
+ "native-tls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "rumqttc-v4"
 version = "0.27.0"
 dependencies = [
@@ -1928,6 +1947,7 @@ dependencies = [
  "pretty_assertions",
  "pretty_env_logger",
  "rcgen",
+ "rumqttc-core",
  "rustls-native-certs",
  "rustls-pki-types",
  "rustls-webpki",
@@ -1962,6 +1982,7 @@ dependencies = [
  "pretty_assertions",
  "pretty_env_logger",
  "rcgen",
+ "rumqttc-core",
  "rustls-native-certs",
  "rustls-pki-types",
  "rustls-webpki",

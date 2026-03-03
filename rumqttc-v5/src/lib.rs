@@ -25,11 +25,8 @@ extern crate log;
 
 use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
-use std::io;
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::{TcpSocket, TcpStream, lookup_host};
 
 #[cfg(feature = "websocket")]
 use std::{
@@ -43,6 +40,7 @@ mod framed;
 pub mod mqttbytes;
 mod notice;
 mod state;
+mod transport;
 
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 mod tls;
@@ -64,7 +62,12 @@ pub use mqttbytes::*;
 pub use notice::{
     NoticeFailureReason, PublishNotice, PublishNoticeError, RequestNotice, RequestNoticeError,
 };
+pub use rumqttc_core::NetworkOptions;
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+pub use rumqttc_core::TlsConfiguration;
+pub use rumqttc_core::default_socket_connect;
 pub use state::{MqttState, StateError};
+pub use transport::Transport;
 
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use crate::tls::Error as TlsError;
@@ -72,16 +75,10 @@ pub use crate::tls::Error as TlsError;
 #[cfg(feature = "proxy")]
 pub use crate::proxy::{Proxy, ProxyAuth, ProxyType};
 
-#[cfg(feature = "use-rustls-no-provider")]
-use rustls_native_certs::load_native_certs;
 #[cfg(feature = "use-native-tls")]
 pub use tokio_native_tls;
-#[cfg(feature = "use-native-tls")]
-use tokio_native_tls::native_tls::TlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
 pub use tokio_rustls;
-#[cfg(feature = "use-rustls-no-provider")]
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 pub type Incoming = Packet;
 
@@ -115,19 +112,7 @@ pub enum Outgoing {
 }
 
 /// Custom socket connector used to establish the underlying stream before optional proxy/TLS layers.
-pub(crate) type SocketConnector = Arc<
-    dyn Fn(
-            String,
-            NetworkOptions,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<Box<dyn crate::framed::AsyncReadWrite>, std::io::Error>,
-                    > + Send,
-            >,
-        > + Send
-        + Sync,
->;
+pub(crate) type SocketConnector = rumqttc_core::SocketConnector;
 
 /// Controls how incoming packet size limits are enforced locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -202,284 +187,6 @@ type FallibleRequestModifierFn = Arc<
         + Send
         + Sync,
 >;
-
-/// Transport methods. Defaults to TCP.
-#[derive(Clone)]
-pub enum Transport {
-    Tcp,
-    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-    Tls(TlsConfiguration),
-    #[cfg(unix)]
-    Unix,
-    #[cfg(feature = "websocket")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "websocket")))]
-    Ws,
-    #[cfg(all(
-        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-        feature = "websocket"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(
-            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-            feature = "websocket"
-        )))
-    )]
-    Wss(TlsConfiguration),
-}
-
-impl Default for Transport {
-    fn default() -> Self {
-        Self::tcp()
-    }
-}
-
-impl Transport {
-    /// Use regular tcp as transport (default)
-    #[must_use]
-    pub fn tcp() -> Self {
-        Self::Tcp
-    }
-
-    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-    #[must_use]
-    pub fn tls_with_default_config() -> Self {
-        Self::tls_with_config(Default::default())
-    }
-
-    /// Use secure tcp with tls as transport
-    #[cfg(feature = "use-rustls-no-provider")]
-    #[must_use]
-    pub fn tls(
-        ca: Vec<u8>,
-        client_auth: Option<(Vec<u8>, Vec<u8>)>,
-        alpn: Option<Vec<Vec<u8>>>,
-    ) -> Self {
-        let config = TlsConfiguration::Simple {
-            ca,
-            alpn,
-            client_auth,
-        };
-
-        Self::tls_with_config(config)
-    }
-
-    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-    #[must_use]
-    pub fn tls_with_config(tls_config: TlsConfiguration) -> Self {
-        Self::Tls(tls_config)
-    }
-
-    #[cfg(unix)]
-    #[must_use]
-    pub fn unix() -> Self {
-        Self::Unix
-    }
-
-    /// Use websockets as transport
-    #[cfg(feature = "websocket")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "websocket")))]
-    pub fn ws() -> Self {
-        Self::Ws
-    }
-
-    /// Use secure websockets with tls as transport
-    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(feature = "use-rustls-no-provider", feature = "websocket")))
-    )]
-    pub fn wss(
-        ca: Vec<u8>,
-        client_auth: Option<(Vec<u8>, Vec<u8>)>,
-        alpn: Option<Vec<Vec<u8>>>,
-    ) -> Self {
-        let config = TlsConfiguration::Simple {
-            ca,
-            client_auth,
-            alpn,
-        };
-
-        Self::wss_with_config(config)
-    }
-
-    #[cfg(all(
-        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-        feature = "websocket"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(
-            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-            feature = "websocket"
-        )))
-    )]
-    pub fn wss_with_config(tls_config: TlsConfiguration) -> Self {
-        Self::Wss(tls_config)
-    }
-
-    #[cfg(all(
-        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-        feature = "websocket"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(
-            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-            feature = "websocket"
-        )))
-    )]
-    pub fn wss_with_default_config() -> Self {
-        Self::Wss(Default::default())
-    }
-}
-
-/// TLS configuration method
-#[derive(Clone, Debug)]
-#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-pub enum TlsConfiguration {
-    #[cfg(feature = "use-rustls-no-provider")]
-    Simple {
-        /// ca certificate
-        ca: Vec<u8>,
-        /// alpn settings
-        alpn: Option<Vec<Vec<u8>>>,
-        /// tls client_authentication
-        client_auth: Option<(Vec<u8>, Vec<u8>)>,
-    },
-    #[cfg(feature = "use-native-tls")]
-    SimpleNative {
-        /// ca certificate
-        ca: Vec<u8>,
-        /// pkcs12 binary der and
-        /// password for use with der
-        client_auth: Option<(Vec<u8>, String)>,
-    },
-    #[cfg(feature = "use-rustls-no-provider")]
-    /// Injected rustls ClientConfig for TLS, to allow more customisation.
-    Rustls(Arc<ClientConfig>),
-    #[cfg(feature = "use-native-tls")]
-    /// Use default native-tls configuration
-    Native,
-    #[cfg(feature = "use-native-tls")]
-    /// Injected native-tls TlsConnector for TLS, to allow more customisation.
-    NativeConnector(TlsConnector),
-}
-
-#[cfg(all(feature = "use-rustls-no-provider", not(feature = "use-native-tls")))]
-#[allow(clippy::derivable_impls)]
-impl Default for TlsConfiguration {
-    fn default() -> Self {
-        let mut root_cert_store = RootCertStore::empty();
-        for cert in load_native_certs().expect("could not load platform certs") {
-            root_cert_store.add(cert).unwrap();
-        }
-        let tls_config = ClientConfig::builder()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
-
-        Self::Rustls(Arc::new(tls_config))
-    }
-}
-
-#[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
-#[allow(clippy::derivable_impls)]
-impl Default for TlsConfiguration {
-    fn default() -> Self {
-        Self::Native
-    }
-}
-
-#[cfg(all(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-#[allow(clippy::derivable_impls)]
-impl Default for TlsConfiguration {
-    fn default() -> Self {
-        // When both are enabled, prefer rustls
-        let mut root_cert_store = RootCertStore::empty();
-        for cert in load_native_certs().expect("could not load platform certs") {
-            root_cert_store.add(cert).unwrap();
-        }
-        let tls_config = ClientConfig::builder()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
-
-        Self::Rustls(Arc::new(tls_config))
-    }
-}
-
-#[cfg(feature = "use-rustls-no-provider")]
-impl From<ClientConfig> for TlsConfiguration {
-    fn from(config: ClientConfig) -> Self {
-        TlsConfiguration::Rustls(Arc::new(config))
-    }
-}
-
-#[cfg(feature = "use-native-tls")]
-impl From<TlsConnector> for TlsConfiguration {
-    fn from(connector: TlsConnector) -> Self {
-        TlsConfiguration::NativeConnector(connector)
-    }
-}
-
-/// Provides a way to configure low level network connection configurations
-#[derive(Clone, Debug, Default)]
-pub struct NetworkOptions {
-    tcp_send_buffer_size: Option<u32>,
-    tcp_recv_buffer_size: Option<u32>,
-    tcp_nodelay: bool,
-    conn_timeout: u64,
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    bind_device: Option<String>,
-}
-
-impl NetworkOptions {
-    #[must_use]
-    pub fn new() -> Self {
-        NetworkOptions {
-            tcp_send_buffer_size: None,
-            tcp_recv_buffer_size: None,
-            tcp_nodelay: false,
-            conn_timeout: 5,
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            bind_device: None,
-        }
-    }
-
-    pub fn set_tcp_nodelay(&mut self, nodelay: bool) {
-        self.tcp_nodelay = nodelay;
-    }
-
-    pub fn set_tcp_send_buffer_size(&mut self, size: u32) {
-        self.tcp_send_buffer_size = Some(size);
-    }
-
-    pub fn set_tcp_recv_buffer_size(&mut self, size: u32) {
-        self.tcp_recv_buffer_size = Some(size);
-    }
-
-    /// set connection timeout in secs
-    pub fn set_connection_timeout(&mut self, timeout: u64) -> &mut Self {
-        self.conn_timeout = timeout;
-        self
-    }
-
-    /// get timeout in secs
-    #[must_use]
-    pub fn connection_timeout(&self) -> u64 {
-        self.conn_timeout
-    }
-
-    /// bind connection to a specific network device by name
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
-    )]
-    pub fn set_bind_device(&mut self, bind_device: &str) -> &mut Self {
-        self.bind_device = Some(bind_device.to_string());
-        self
-    }
-}
 
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
@@ -1206,55 +913,6 @@ impl MqttOptions {
 
         self.auth_manager.clone()
     }
-}
-
-/// Default TCP socket connection logic used by the MQTT event loop.
-///
-/// This resolves the host, applies [`NetworkOptions`] on each candidate socket,
-/// and returns the first successful connection.
-pub async fn default_socket_connect(
-    host: String,
-    network_options: NetworkOptions,
-) -> io::Result<TcpStream> {
-    let addrs = lookup_host(host).await?;
-    let mut last_err = None;
-
-    for addr in addrs {
-        let socket = match addr {
-            SocketAddr::V4(_) => TcpSocket::new_v4()?,
-            SocketAddr::V6(_) => TcpSocket::new_v6()?,
-        };
-
-        socket.set_nodelay(network_options.tcp_nodelay)?;
-
-        if let Some(send_buff_size) = network_options.tcp_send_buffer_size {
-            socket.set_send_buffer_size(send_buff_size)?;
-        }
-        if let Some(recv_buffer_size) = network_options.tcp_recv_buffer_size {
-            socket.set_recv_buffer_size(recv_buffer_size)?;
-        }
-
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        {
-            if let Some(bind_device) = &network_options.bind_device {
-                socket.bind_device(Some(bind_device.as_bytes()))?;
-            }
-        }
-
-        match socket.connect(addr).await {
-            Ok(s) => return Ok(s),
-            Err(e) => {
-                last_err = Some(e);
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        )
-    }))
 }
 
 #[cfg(feature = "url")]
