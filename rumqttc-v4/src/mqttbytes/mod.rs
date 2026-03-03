@@ -3,14 +3,14 @@
 //! This module contains the low level struct definitions required to assemble and disassemble MQTT 3.1.1 packets in rumqttc.
 //! The [`bytes`](https://docs.rs/bytes) crate is used internally.
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use core::fmt;
+use mqttbytes_core::primitives::{self as core_primitives, Error as PrimitiveError};
 use std::slice::Iter;
 
-mod topic;
 pub mod v4;
 
-pub use topic::*;
+pub use mqttbytes_core::{QoS, has_wildcards, matches, valid_filter, valid_topic};
 
 /// Error during serialization and deserialization
 #[derive(Debug, thiserror::Error)]
@@ -95,15 +95,6 @@ pub enum Protocol {
     V5,
 }
 
-/// Quality of service
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-pub enum QoS {
-    AtMostOnce = 0,
-    AtLeastOnce = 1,
-    ExactlyOnce = 2,
-}
-
 /// Packet type from a byte
 ///
 /// ```text
@@ -175,8 +166,6 @@ impl FixedHeader {
 /// returned an error, next `check` on the same parent stream is forced start
 /// with cursor at 0 again (Iter is owned. Only Iter's cursor is changed internally)
 pub fn check(stream: Iter<u8>, max_packet_size: usize) -> Result<FixedHeader, Error> {
-    // Create fixed header if there are enough bytes in the stream
-    // to frame full packet
     let stream_len = stream.len();
     let fixed_header = parse_fixed_header(stream)?;
 
@@ -186,8 +175,6 @@ pub fn check(stream: Iter<u8>, max_packet_size: usize) -> Result<FixedHeader, Er
         return Err(Error::PayloadSizeLimitExceeded(fixed_header.remaining_len));
     }
 
-    // If the current call fails due to insufficient bytes in the stream,
-    // after calculating remaining length, we extend the stream
     let frame_length = fixed_header.frame_length();
     if stream_len < frame_length {
         return Err(Error::InsufficientBytes(frame_length - stream_len));
@@ -196,129 +183,43 @@ pub fn check(stream: Iter<u8>, max_packet_size: usize) -> Result<FixedHeader, Er
     Ok(fixed_header)
 }
 
-/// Parses fixed header
-fn parse_fixed_header(mut stream: Iter<u8>) -> Result<FixedHeader, Error> {
-    // At least 2 bytes are necessary to frame a packet
-    let stream_len = stream.len();
-    if stream_len < 2 {
-        return Err(Error::InsufficientBytes(2 - stream_len));
-    }
-
-    let byte1 = stream.next().unwrap();
-    let (len_len, len) = length(stream)?;
-
-    Ok(FixedHeader::new(*byte1, len_len, len))
-}
-
-/// Parses variable byte integer in the stream and returns the length
-/// and number of bytes that make it. Used for remaining length calculation
-/// as well as for calculating property lengths
-fn length(stream: Iter<u8>) -> Result<(usize, usize), Error> {
-    let mut len: usize = 0;
-    let mut len_len = 0;
-    let mut done = false;
-    let mut shift = 0;
-
-    // Use continuation bit at position 7 to continue reading next
-    // byte to frame 'length'.
-    // Stream 0b1xxx_xxxx 0b1yyy_yyyy 0b1zzz_zzzz 0b0www_wwww will
-    // be framed as number 0bwww_wwww_zzz_zzzz_yyy_yyyy_xxx_xxxx
-    for byte in stream {
-        len_len += 1;
-        let byte = *byte as usize;
-        len += (byte & 0x7F) << shift;
-
-        // stop when continue bit is 0
-        done = (byte & 0x80) == 0;
-        if done {
-            break;
-        }
-
-        shift += 7;
-
-        // Only a max of 4 bytes allowed for remaining length
-        // more than 4 shifts (0, 7, 14, 21) implies bad length
-        if shift > 21 {
-            return Err(Error::MalformedRemainingLength);
-        }
-    }
-
-    // Not enough bytes to frame remaining length. wait for
-    // one more byte
-    if !done {
-        return Err(Error::InsufficientBytes(1));
-    }
-
-    Ok((len_len, len))
+fn parse_fixed_header(stream: Iter<u8>) -> Result<FixedHeader, Error> {
+    let fixed_header = core_primitives::parse_fixed_header(stream).map_err(map_primitive_error)?;
+    Ok(FixedHeader::new(
+        fixed_header.byte1,
+        fixed_header.remaining_len_len,
+        fixed_header.remaining_len,
+    ))
 }
 
 /// Reads a series of bytes with a length from a byte stream
 fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
-    let len = read_u16(stream)? as usize;
-
-    // Prevent attacks with wrong remaining length. This method is used in
-    // `packet.assembly()` with (enough) bytes to frame packet. Ensures that
-    // reading variable len string or bytes doesn't cross promised boundary
-    // with `read_fixed_header()`
-    if len > stream.len() {
-        return Err(Error::BoundaryCrossed(len));
-    }
-
-    Ok(stream.split_to(len))
+    core_primitives::read_mqtt_bytes(stream).map_err(map_primitive_error)
 }
 
 /// Reads a string from bytes stream
 fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
-    let s = read_mqtt_bytes(stream)?;
-    let s = std::str::from_utf8(&s).map_err(|_| Error::TopicNotUtf8)?;
-    Ok(s.to_owned())
+    core_primitives::read_mqtt_string(stream).map_err(map_primitive_error)
 }
 
 /// Serializes bytes to stream (including length)
 fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
-    let len = u16::try_from(bytes.len()).expect("MQTT string/bytes length must fit in u16");
-    stream.put_u16(len);
-    stream.extend_from_slice(bytes);
+    core_primitives::write_mqtt_bytes(stream, bytes);
 }
 
 /// Serializes a string to stream
 fn write_mqtt_string(stream: &mut BytesMut, string: &str) {
-    write_mqtt_bytes(stream, string.as_bytes());
+    core_primitives::write_mqtt_string(stream, string);
 }
 
 /// Writes remaining length to stream and returns number of bytes for remaining length
 fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize, Error> {
-    if len > 268_435_455 {
-        return Err(Error::PayloadTooLong);
-    }
-
-    let mut done = false;
-    let mut x = len;
-    let mut count = 0;
-
-    while !done {
-        let mut byte = u8::try_from(x % 128).expect("remainder in 0..=127 always fits in u8");
-        x /= 128;
-        if x > 0 {
-            byte |= 128;
-        }
-
-        stream.put_u8(byte);
-        count += 1;
-        done = x == 0;
-    }
-
-    Ok(count)
+    core_primitives::write_remaining_length(stream, len).map_err(map_primitive_error)
 }
 
 /// Maps a number to QoS
 pub fn qos(num: u8) -> Result<QoS, Error> {
-    match num {
-        0 => Ok(QoS::AtMostOnce),
-        1 => Ok(QoS::AtLeastOnce),
-        2 => Ok(QoS::ExactlyOnce),
-        qos => Err(Error::InvalidQoS(qos)),
-    }
+    mqttbytes_core::qos(num).ok_or(Error::InvalidQoS(num))
 }
 
 /// After collecting enough bytes to frame a packet (packet's frame())
@@ -327,17 +228,33 @@ pub fn qos(num: u8) -> Result<QoS, Error> {
 /// `read_mqtt_bytes` exhausted remaining length but packet framing expects to
 /// parse qos next, these pre checks will prevent `bytes` crashes
 fn read_u16(stream: &mut Bytes) -> Result<u16, Error> {
-    if stream.len() < 2 {
-        return Err(Error::MalformedPacket);
-    }
-
-    Ok(stream.get_u16())
+    core_primitives::read_u16(stream).map_err(map_primitive_error)
 }
 
 fn read_u8(stream: &mut Bytes) -> Result<u8, Error> {
-    if stream.is_empty() {
-        return Err(Error::MalformedPacket);
-    }
+    core_primitives::read_u8(stream).map_err(map_primitive_error)
+}
 
-    Ok(stream.get_u8())
+fn map_primitive_error(error: PrimitiveError) -> Error {
+    match error {
+        PrimitiveError::PayloadTooLong => Error::PayloadTooLong,
+        PrimitiveError::BoundaryCrossed(len) => Error::BoundaryCrossed(len),
+        PrimitiveError::MalformedPacket => Error::MalformedPacket,
+        PrimitiveError::MalformedRemainingLength => Error::MalformedRemainingLength,
+        PrimitiveError::TopicNotUtf8 => Error::TopicNotUtf8,
+        PrimitiveError::InsufficientBytes(required) => Error::InsufficientBytes(required),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, check};
+
+    #[test]
+    fn check_rejects_oversized_packet_on_partial_frame() {
+        let stream = [0x30, 0x14];
+        let result = check(stream.iter(), 10);
+
+        assert!(matches!(result, Err(Error::PayloadSizeLimitExceeded(20))));
+    }
 }

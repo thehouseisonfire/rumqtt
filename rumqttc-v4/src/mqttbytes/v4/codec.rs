@@ -42,7 +42,7 @@ impl Encoder<Packet> for Codec {
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
-    use tokio_util::codec::Encoder;
+    use tokio_util::codec::{Decoder, Encoder};
 
     use super::Codec;
     use crate::{Packet, Publish, QoS, mqttbytes::Error};
@@ -67,6 +67,20 @@ mod tests {
                 pkt_size: 281,
                 max: 200,
             }) => {}
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn incoming_max_packet_size_check_happens_on_partial_frame() {
+        let mut buf = BytesMut::from(&[0x30, 0x14][..]);
+        let mut codec = Codec {
+            max_incoming_size: 10,
+            max_outgoing_size: 200,
+        };
+
+        match codec.decode(&mut buf) {
+            Err(Error::PayloadSizeLimitExceeded(20)) => {}
             _ => unreachable!(),
         }
     }
