@@ -340,7 +340,8 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -366,7 +367,8 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let request = Request::Publish(publish.clone());
@@ -453,7 +455,8 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -479,7 +482,8 @@ impl AsyncClient {
         P: Into<Bytes>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let request = Request::Publish(publish.clone());
@@ -617,7 +621,8 @@ impl AsyncClient {
         T: Into<PublishTopic>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -642,7 +647,8 @@ impl AsyncClient {
         T: Into<PublishTopic>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let request = Request::Publish(publish.clone());
@@ -1206,7 +1212,8 @@ impl Client {
         P: Into<Bytes>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = (needs_validation && !valid_topic(&topic))
+            || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload, properties);
         publish.retain = retain;
         let request = Request::Publish(publish);
@@ -1506,6 +1513,15 @@ impl Client {
     ) -> Result<(), ClientError> {
         self.client.handle_try_disconnect(reason, Some(properties))
     }
+}
+
+#[must_use]
+fn empty_topic_without_valid_alias(topic: &str, properties: Option<&PublishProperties>) -> bool {
+    topic.is_empty()
+        && properties
+            .and_then(|props| props.topic_alias)
+            .unwrap_or_default()
+            == 0
 }
 
 #[must_use]
@@ -1892,6 +1908,71 @@ mod test {
     }
 
     #[test]
+    fn publish_with_properties_empty_topic_requires_nonzero_alias() {
+        let (tx, _) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+
+        let err = client
+            .publish_with_properties(
+                "",
+                QoS::AtMostOnce,
+                false,
+                "good bye",
+                PublishProperties::default(),
+            )
+            .expect_err("Empty topic without topic alias should fail");
+        assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_))));
+
+        let err = client
+            .publish_with_properties(
+                "",
+                QoS::AtMostOnce,
+                false,
+                "good bye",
+                PublishProperties {
+                    topic_alias: Some(0),
+                    ..Default::default()
+                },
+            )
+            .expect_err("Empty topic with topic alias 0 should fail");
+        assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_))));
+    }
+
+    #[test]
+    fn publish_with_properties_empty_topic_accepts_nonzero_alias() {
+        let (tx, rx) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+
+        client
+            .publish_with_properties(
+                "",
+                QoS::AtMostOnce,
+                false,
+                "good bye",
+                PublishProperties {
+                    topic_alias: Some(1),
+                    ..Default::default()
+                },
+            )
+            .expect("Empty topic with non-zero topic alias should be accepted");
+
+        let request = rx.try_recv().expect("Should have message");
+        match request {
+            Request::Publish(publish) => {
+                assert!(publish.topic.is_empty());
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|properties| properties.topic_alias),
+                    Some(1)
+                );
+            }
+            request => panic!("Expected Publish request, got {:?}", request),
+        }
+    }
+
+    #[test]
     fn try_publish_accepts_validated_topic() {
         let (tx, rx) = flume::bounded(1);
         let client = Client::from_sender(tx);
@@ -1917,6 +1998,23 @@ mod test {
             )
             .expect("Should be able to publish");
         let _ = rx.try_recv().expect("Should have message");
+    }
+
+    #[test]
+    fn try_publish_with_properties_empty_topic_requires_nonzero_alias() {
+        let (tx, _) = flume::bounded(1);
+        let client = Client::from_sender(tx);
+
+        let err = client
+            .try_publish_with_properties(
+                "",
+                QoS::AtMostOnce,
+                false,
+                "good bye",
+                PublishProperties::default(),
+            )
+            .expect_err("Empty topic without topic alias should fail");
+        assert!(matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Publish(_))));
     }
 
     #[test]
@@ -2043,6 +2141,20 @@ mod test {
                 )
                 .await
                 .expect_err("Invalid publish topic should fail");
+            assert!(
+                matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_)))
+            );
+
+            let err = client
+                .publish_with_properties(
+                    "",
+                    QoS::AtMostOnce,
+                    false,
+                    "good bye",
+                    PublishProperties::default(),
+                )
+                .await
+                .expect_err("Empty topic without topic alias should fail");
             assert!(
                 matches!(err, ClientError::Request(req) if matches!(*req, Request::Publish(_)))
             );

@@ -38,7 +38,7 @@ impl ValidatedTopic {
     /// Returns [`InvalidTopic`] if the topic string does not conform to the MQTT specification.
     pub fn new<S: Into<String>>(topic: S) -> Result<Self, InvalidTopic> {
         let topic_string = topic.into();
-        if valid_topic(&topic_string) {
+        if valid_publish_topic(&topic_string) {
             Ok(Self(topic_string))
         } else {
             Err(InvalidTopic(topic_string))
@@ -332,7 +332,7 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -357,7 +357,7 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let request = Request::Publish(publish.clone());
@@ -413,7 +413,7 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -438,7 +438,7 @@ impl AsyncClient {
         V: Into<Vec<u8>>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let request = Request::Publish(publish.clone());
@@ -531,7 +531,7 @@ impl AsyncClient {
         T: Into<PublishTopic>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -555,7 +555,7 @@ impl AsyncClient {
         T: Into<PublishTopic>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, qos, payload);
         publish.retain = retain;
         let request = Request::Publish(publish.clone());
@@ -812,7 +812,7 @@ impl Client {
         V: Into<Vec<u8>>,
     {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = needs_validation && !valid_topic(&topic);
+        let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::new(topic, qos, payload);
         publish.retain = retain;
         let publish = Request::Publish(publish);
@@ -939,6 +939,11 @@ impl Client {
         self.client.try_disconnect()?;
         Ok(())
     }
+}
+
+#[must_use]
+fn valid_publish_topic(topic: &str) -> bool {
+    !topic.is_empty() && valid_topic(topic)
 }
 
 #[must_use]
@@ -1245,6 +1250,7 @@ mod test {
             ValidatedTopic::new("a/+/b"),
             Err(InvalidTopic("a/+/b".to_string()))
         );
+        assert_eq!(ValidatedTopic::new(""), Err(InvalidTopic("".to_string())));
     }
 
     #[test]
@@ -1254,6 +1260,11 @@ mod test {
         let err = client
             .publish("a/+/b", QoS::ExactlyOnce, false, "good bye")
             .expect_err("Invalid publish topic should fail");
+        assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+
+        let err = client
+            .publish("", QoS::ExactlyOnce, false, "good bye")
+            .expect_err("Empty publish topic should fail");
         assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
     }
 
@@ -1317,6 +1328,18 @@ mod test {
                 )
                 .await
                 .expect_err("Invalid publish topic should fail");
+            assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+
+            let err = client
+                .publish("", QoS::ExactlyOnce, false, "good bye")
+                .await
+                .expect_err("Empty publish topic should fail");
+            assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+
+            let err = client
+                .publish_bytes("", QoS::ExactlyOnce, false, Bytes::from_static(b"good bye"))
+                .await
+                .expect_err("Empty publish topic should fail");
             assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
         });
     }
