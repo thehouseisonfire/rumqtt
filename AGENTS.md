@@ -10,6 +10,12 @@ This repo is a Rust workspace. Main members are:
 
 Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.
 
+## Spec Compliance References
+- For MQTT spec-compliance tasks, agents should consult `docs/spec/` first.
+- Primary documents are `docs/spec/mqtt-v3.1.1.md` and `docs/spec/mqtt-v5.0.md`.
+- Machine-readable requirement indexes are `docs/spec/mqtt-v3.1.1.requirements.json` and `docs/spec/mqtt-v5.0.requirements.json`.
+- Regeneration workflow is documented in `docs/spec/README.md` and implemented in `docs/spec/generate_mqtt_specs.py`.
+
 ## Build, Test, and Development Commands
 - `cargo check --workspace`: fast compile check across all workspace crates.
 - `cargo test -p rumqttc-v4`: run MQTT 3.1.1 crate tests.
