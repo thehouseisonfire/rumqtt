@@ -27,27 +27,67 @@ impl PubRel {
     }
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        if fixed_header.remaining_len != Self::len() {
+            return Err(Error::PayloadSizeIncorrect);
+        }
+
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
-        if fixed_header.remaining_len == 2 {
-            return Ok(PubRel { pkid });
+
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
         }
 
-        if fixed_header.remaining_len < 4 {
-            return Ok(PubRel { pkid });
-        }
-
-        let puback = PubRel { pkid };
-
-        Ok(puback)
+        Ok(PubRel { pkid })
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let len = Self::len();
         buffer.put_u8(0x62);
         let count = write_remaining_length(buffer, len)?;
         buffer.put_u16(self.pkid);
         Ok(1 + count + len)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use bytes::BytesMut;
+
+    #[test]
+    fn pubrel_parsing_rejects_invalid_remaining_length() {
+        let stream = &[0b0110_0010, 0x03, 0x00, 0x0A, 0x00];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let ack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = PubRel::read(fixed_header, ack_bytes);
+
+        assert!(matches!(packet, Err(Error::PayloadSizeIncorrect)));
+    }
+
+    #[test]
+    fn pubrel_parsing_rejects_zero_packet_identifier() {
+        let stream = &[0b0110_0010, 0x02, 0x00, 0x00];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let ack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = PubRel::read(fixed_header, ack_bytes);
+
+        assert!(matches!(packet, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn pubrel_encoding_rejects_zero_packet_identifier() {
+        let packet = PubRel { pkid: 0 };
+        let mut buf = BytesMut::new();
+        let result = packet.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
     }
 }

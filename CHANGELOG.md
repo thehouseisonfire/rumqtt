@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rumqttc` v4/v5: Make `Transport::{tls_with_default_config,wss_with_default_config}` choose defaults from each crate's enabled TLS features instead of leaking shared-core defaults across crates.
 - `rumqttc` transport core: Remove ambiguous dual-backend `TlsConfiguration::default()` behavior; mixed-backend callers now select backend explicitly via `default_rustls`/`default_native` or explicit `TlsConfiguration` variants.
 - `rumqttc` v4: Reject client-side publish requests with empty topic names (MQTT 3.1.1 Topic Name must be at least one character).
+- `rumqttc` v4 codec: Enforce strict MQTT 3.1.1 fixed-header flag validation while decoding packets (invalid reserved/required flag patterns are now rejected).
+- `rumqttc` v4 CONNECT/CONNACK: Enforce stricter 3.1.1 packet validation (CONNECT reserved/password-username flag rules and CONNACK remaining-length/session-present flag rules).
+- `rumqttc` v4 PUBLISH: Reject packets with empty Topic Name or wildcard characters in Topic Name during decode/encode.
+- `rumqttc` v4 ACK codecs: Enforce strict decode/encode validation for PUBACK/PUBREC/PUBREL/PUBCOMP (`remaining_len == 2`, non-zero packet identifier).
+- `rumqttc` v4 SUBSCRIBE: Reject payload entries with non-zero reserved subscription option bits during decode.
+- `rumqttc` v4 PUBLISH: Reject QoS0 packets with DUP set during decode/encode.
 - `rumqttc` v5: Reject client-side publish requests with an empty topic unless `PublishProperties.topic_alias` is present and non-zero.
 ### Security
 - `rumqttc` `auth-scram`: switch SCRAM backend dependency from `scram` to `scram-2`, removing `ring` `<0.17` from that feature path.

@@ -76,6 +76,7 @@ impl Packet {
         // Test with a stream with exactly the size to check border panics
         let packet = stream.split_to(fixed_header.frame_length());
         let packet_type = fixed_header.packet_type()?;
+        validate_fixed_header_flags(packet_type, fixed_header.byte1)?;
 
         if fixed_header.remaining_len == 0 {
             // no payload packets
@@ -138,7 +139,59 @@ impl Packet {
     }
 }
 
+fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Result<(), Error> {
+    let flags = byte1 & 0x0F;
+    let valid = match packet_type {
+        PacketType::Publish => true,
+        PacketType::PubRel | PacketType::Subscribe | PacketType::Unsubscribe => flags == 0b0010,
+        PacketType::Connect
+        | PacketType::ConnAck
+        | PacketType::PubAck
+        | PacketType::PubRec
+        | PacketType::PubComp
+        | PacketType::SubAck
+        | PacketType::UnsubAck
+        | PacketType::PingReq
+        | PacketType::PingResp
+        | PacketType::Disconnect => flags == 0,
+    };
+
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::IncorrectPacketFormat)
+    }
+}
+
 /// Return number of remaining length bytes required for encoding length
 fn len_len(len: usize) -> usize {
     mqttbytes_core::primitives::len_len(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    use super::{Error, Packet};
+
+    #[test]
+    fn read_rejects_malformed_pubrel_flags() {
+        let mut stream = BytesMut::from(&[0x60, 0x02, 0x00, 0x01][..]);
+        let packet = Packet::read(&mut stream, 10);
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_malformed_subscribe_flags() {
+        let mut stream = BytesMut::from(&[0x80, 0x05, 0x00, 0x01, b'a', 0x00, 0x00][..]);
+        let packet = Packet::read(&mut stream, 10);
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_malformed_disconnect_flags() {
+        let mut stream = BytesMut::from(&[0xE1, 0x00][..]);
+        let packet = Packet::read(&mut stream, 10);
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
 }

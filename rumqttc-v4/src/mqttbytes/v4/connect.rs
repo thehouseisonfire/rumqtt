@@ -79,6 +79,7 @@ impl Connect {
         };
 
         let connect_flags = read_u8(&mut bytes)?;
+        validate_connect_flags(connect_flags)?;
         let clean_session = (connect_flags & 0b10) != 0;
         let keep_alive = read_u16(&mut bytes)?;
 
@@ -242,7 +243,7 @@ impl Login {
     fn len(&self) -> usize {
         let mut len = 0;
 
-        if !self.username.is_empty() {
+        if !self.username.is_empty() || !self.password.is_empty() {
             len += 2 + self.username.len();
         }
 
@@ -255,7 +256,7 @@ impl Login {
 
     fn write(&self, buffer: &mut BytesMut) -> u8 {
         let mut connect_flags = 0;
-        if !self.username.is_empty() {
+        if !self.username.is_empty() || !self.password.is_empty() {
             connect_flags |= 0x80;
             write_mqtt_string(buffer, &self.username);
         }
@@ -272,6 +273,22 @@ impl Login {
     pub fn validate(&self, username: &str, password: &str) -> bool {
         (self.username == *username) && (self.password == *password)
     }
+}
+
+fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
+    // CONNECT reserved bit must be zero.
+    if (connect_flags & 0x01) != 0 {
+        return Err(Error::IncorrectPacketFormat);
+    }
+
+    let username_flag = (connect_flags & 0x80) != 0;
+    let password_flag = (connect_flags & 0x40) != 0;
+    // Password flag implies username flag.
+    if password_flag && !username_flag {
+        return Err(Error::IncorrectPacketFormat);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -413,5 +430,58 @@ mod test {
         // println!("{:?}", sample_bytes());
 
         assert_eq!(buf, sample_bytes());
+    }
+
+    #[test]
+    fn connect_parsing_rejects_reserved_connect_flag() {
+        let mut stream = bytes::BytesMut::new();
+        let packetstream = &[
+            0x10, 0x10, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x03, 0x00, 0x0a, 0x00, 0x04,
+            b't', b'e', b's', b't',
+        ];
+        stream.extend_from_slice(packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn connect_parsing_rejects_password_flag_without_username_flag() {
+        let mut stream = bytes::BytesMut::new();
+        let packetstream = &[
+            0x10, 0x14, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x42, 0x00, 0x0a, 0x00, 0x04,
+            b't', b'e', b's', b't', 0x00, 0x02, b'p', b'w',
+        ];
+        stream.extend_from_slice(packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn connect_encoding_with_password_and_empty_username_writes_zero_len_username() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            login: Some(Login::new("", "pw")),
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet.
+        assert_eq!(buf[9], 0b1100_0010);
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
+        assert_eq!(decoded.login, Some(Login::new("", "pw")));
     }
 }
