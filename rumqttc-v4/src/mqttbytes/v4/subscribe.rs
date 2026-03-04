@@ -62,6 +62,9 @@ impl Subscribe {
         while bytes.has_remaining() {
             let path = read_mqtt_string(&mut bytes)?;
             let options = read_u8(&mut bytes)?;
+            if options & 0b1111_1100 != 0 {
+                return Err(Error::IncorrectPacketFormat);
+            }
             let requested_qos = options & 0b0000_0011;
 
             filters.push(SubscribeFilter {
@@ -240,5 +243,25 @@ mod test {
                 0x02  // qos = 2
             ]
         );
+    }
+
+    #[test]
+    fn subscribe_parsing_rejects_reserved_option_bits() {
+        let stream = &[
+            0b1000_0010,
+            6, // packet type, flags and remaining len
+            0x00,
+            0x01, // variable header. pkid = 1
+            0x00,
+            0x01,
+            b'a', // payload. topic filter = 'a'
+            0x04, // payload. reserved bit set
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let subscribe_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Subscribe::read(fixed_header, subscribe_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 }

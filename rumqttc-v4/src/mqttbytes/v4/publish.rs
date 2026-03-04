@@ -57,13 +57,14 @@ impl Publish {
         let qos = qos((fixed_header.byte1 & 0b0110) >> 1)?;
         let dup = (fixed_header.byte1 & 0b1000) != 0;
         let retain = (fixed_header.byte1 & 0b0001) != 0;
+        if qos == QoS::AtMostOnce && dup {
+            return Err(Error::IncorrectPacketFormat);
+        }
 
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
         let topic = read_mqtt_bytes(&mut bytes)?;
-        if std::str::from_utf8(&topic).is_err() {
-            return Err(Error::TopicNotUtf8);
-        }
+        validate_publish_topic_name(&topic)?;
 
         // Packet identifier exists where QoS > 0
         let pkid = match qos {
@@ -88,6 +89,10 @@ impl Publish {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.qos == QoS::AtMostOnce && self.dup {
+            return Err(Error::IncorrectPacketFormat);
+        }
+
         let len = self.len();
 
         let dup = u8::from(self.dup);
@@ -95,9 +100,7 @@ impl Publish {
         let retain = u8::from(self.retain);
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
-        if std::str::from_utf8(&self.topic).is_err() {
-            return Err(Error::TopicNotUtf8);
-        }
+        validate_publish_topic_name(&self.topic)?;
 
         let count = write_remaining_length(buffer, len)?;
         write_mqtt_bytes(buffer, &self.topic);
@@ -115,6 +118,22 @@ impl Publish {
 
         Ok(1 + count + len)
     }
+}
+
+fn validate_publish_topic_name(topic: &[u8]) -> Result<(), Error> {
+    if topic.is_empty() {
+        return Err(Error::IncorrectPacketFormat);
+    }
+
+    if topic.iter().any(|&b| b == b'+' || b == b'#') {
+        return Err(Error::IncorrectPacketFormat);
+    }
+
+    if std::str::from_utf8(topic).is_err() {
+        return Err(Error::TopicNotUtf8);
+    }
+
+    Ok(())
 }
 
 impl fmt::Debug for Publish {
@@ -279,5 +298,77 @@ mod test {
                 0xE4
             ]
         );
+    }
+
+    #[test]
+    fn publish_parsing_rejects_empty_topic() {
+        let stream = &[0b0011_0000, 2, 0x00, 0x00];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn publish_parsing_rejects_wildcards_in_topic_name() {
+        let stream = &[0b0011_0000, 5, 0x00, 0x03, b'a', b'/', b'#'];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn publish_encoding_rejects_empty_topic() {
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: Bytes::from_static(b""),
+            pkid: 0,
+            payload: Bytes::from(vec![0xE1, 0xE2]),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn publish_parsing_rejects_dup_set_for_qos0() {
+        let stream = &[
+            0b0011_1000,
+            7, // packet type, flags and remaining len
+            0x00,
+            0x03,
+            b'a',
+            b'/',
+            b'b', // variable header. topic name = 'a/b'
+            0x01,
+            0x02, // payload
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn publish_encoding_rejects_dup_set_for_qos0() {
+        let publish = Publish {
+            dup: true,
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: Bytes::from_static(b"a/b"),
+            pkid: 0,
+            payload: Bytes::from(vec![0xE1, 0xE2]),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
     }
 }
