@@ -23,12 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 ### Removed
 - `rumqttc` v4: Remove `Outgoing::Auth` from MQTT 3.1.1 outgoing events.
+- `rumqttc-core`: Remove `Transport`; use `rumqttc-v4::Transport` for MQTT 3.1.1 and
+  `rumqttc-v5::Transport` for MQTT 5.
 ### Fixed
 - `rumqttc` v4/v5: Avoid panicking when applying TCP socket send/recv buffer sizes; these configuration failures now return an error from connect setup.
 - `rumqttc` v4/v5: Restore cross-crate rustls provider isolation so mixed builds (`rumqttc-v4/use-rustls-ring` with `rumqttc-v5/use-rustls-aws-lc`, and vice versa) compile successfully.
 - `rumqttc` v4/v5: Fix mixed-backend builds so WSS honors the selected `TlsConfiguration` backend and no longer fails when one crate uses rustls while the other enables native-tls.
 - `rumqttc` v4/v5: Make `Transport::{tls_with_default_config,wss_with_default_config}` choose defaults from each crate's enabled TLS features instead of leaking shared-core defaults across crates.
 - `rumqttc` transport core: Remove ambiguous dual-backend `TlsConfiguration::default()` behavior; mixed-backend callers now select backend explicitly via `default_rustls`/`default_native` or explicit `TlsConfiguration` variants.
+- `rumqttc` v4: Reject client-side publish requests with empty topic names (MQTT 3.1.1 Topic Name must be at least one character).
+- `rumqttc` v5: Reject client-side publish requests with an empty topic unless `PublishProperties.topic_alias` is present and non-zero.
 ### Security
 - `rumqttc` `auth-scram`: switch SCRAM backend dependency from `scram` to `scram-2`, removing `ring` `<0.17` from that feature path.
 - `cargo-audit`: add temporary ignore for `RUSTSEC-2026-0009` in `.cargo/audit.toml`; advisory is currently reachable via `rcgen` dev-dependency path and fixed `time` requires Rust `1.88+` (above current MSRV `1.85`).
