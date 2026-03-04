@@ -51,6 +51,12 @@ For more details, see [rumqttc-v4/README.md](https://github.com/thehouseisonfire
 ### rumqttc-v5
 - [x] MQTT 5
 
+## Spec Compliance Docs
+
+- [MQTT 3.1.1 compliance digest](docs/spec/mqtt-v3.1.1.md)
+- [MQTT 5.0 compliance digest](docs/spec/mqtt-v5.0.md)
+- [Generator usage and schema details](docs/spec/README.md)
+
 ## Community
 
 - Follow us on [Twitter](https://twitter.com/bytebeamhq)

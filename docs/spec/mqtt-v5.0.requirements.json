@@ -1,0 +1,3742 @@
+{
+  "spec_version": "5.0",
+  "source_url": "https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html",
+  "source_last_modified": "Thu, 07 Mar 2019 17:00:00 GMT",
+  "generated_at_utc": "2026-03-04T03:30:32+00:00",
+  "requirements": [
+    {
+      "id": "MQTT-1.5.4-1",
+      "section_number": "1.5.4",
+      "section_title": "UTF-8 Encoded String",
+      "obligation": "MUST",
+      "summary": "The character data in a UTF-8 Encoded String MUST be well-formed UTF-8 as defined by the Unicode specification and restated in RFC 3629 . In particular, the character data MUST NOT include encodings of code points between U+D800 and U+DFFF .",
+      "source_anchor": "_Hlk511139803",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-1.5.4-2",
+      "section_number": "1.5.4",
+      "section_title": "UTF-8 Encoded String",
+      "obligation": "MUST NOT",
+      "summary": "A UTF-8 Encoded String MUST NOT include an encoding of the null character U+0000. . If a receiver (Server or Client) receives an MQTT Control Packet containing U+0000 it is a Malformed Packet. Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_Hlk511139803",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-1.5.4-3",
+      "section_number": "1.5.4",
+      "section_title": "UTF-8 Encoded String",
+      "obligation": "MUST NOT",
+      "summary": "A UTF-8 encoded sequence 0xEF 0xBB 0xBF is always interpreted as U+FEFF (\"ZERO WIDTH NO-BREAK SPACE\") wherever it appears in a string and MUST NOT be skipped over or stripped off by a packet receiver .",
+      "source_anchor": "_Hlk511139803",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-1.5.5-1",
+      "section_number": "1.5.5",
+      "section_title": "Variable Byte Integer",
+      "obligation": "MUST",
+      "summary": "The Variable Byte Integer is encoded using an encoding scheme which uses a single byte for values up to 127. Larger values are handled as follows. The least significant seven bits of each byte encode the data, and the most significant bit is used to indicate whether there are...",
+      "source_anchor": "_Toc473619950",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-1.5.7-1",
+      "section_number": "1.5.7",
+      "section_title": "UTF-8 String Pair",
+      "obligation": "MUST",
+      "summary": "Both strings MUST comply with the requirements for UTF-8 Encoded Strings . If a receiver (Client or Server) receives a string pair which does not meet these requirements it is a Malformed Packet. Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_Toc464547791",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.1.3-1",
+      "section_number": "2.1.3",
+      "section_title": "Flags",
+      "obligation": "MUST",
+      "summary": "The remaining bits of byte 1 in the Fixed Header contain flags specific to each MQTT Control Packet type as shown below. Where a flag bit is marked as \u201cReserved\u201d, it is reserved for future use and MUST be set to the value listed .",
+      "source_anchor": "_Toc353481062",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.2.1-2",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST NOT",
+      "summary": "A PUBLISH packet MUST NOT contain a Packet Identifier if its QoS value is set to 0 .",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.2.1-3",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "Each time a Client sends a new SUBSCRIBE, UNSUBSCRIBE,or PUBLISH (where QoS > 0) MQTT Control Packet it MUST assign it a non-zero Packet Identifier that is currently unused .",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.2.1-4",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "Each time a Server sends a new PUBLISH (with QoS > 0) MQTT Control Packet it MUST assign it a non zero Packet Identifier that is currently unused .",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.2.1-5",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "A PUBACK, PUBREC , PUBREL, or PUBCOMP packet MUST contain the same Packet Identifier as the PUBLISH packet that was originally sent . A SUBACK and UNSUBACK MUST contain the Packet Identifier that was used in the corresponding SUBSCRIBE and UNSUBSCRIBE packet respectively .",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.2.1-6",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "A PUBACK, PUBREC , PUBREL, or PUBCOMP packet MUST contain the same Packet Identifier as the PUBLISH packet that was originally sent . A SUBACK and UNSUBACK MUST contain the Packet Identifier that was used in the corresponding SUBSCRIBE and UNSUBSCRIBE packet respectively .",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-2.2.2-1",
+      "section_number": "2.2.2.1",
+      "section_title": "Property Length",
+      "obligation": "MUST",
+      "summary": "The Property Length is encoded as a Variable Byte Integer. The Property Length does not include the bytes used to encode itself, but includes the length of the Properties. If there are no properties, this MUST be indicated by including a Property Length of zero .",
+      "source_anchor": "_Toc471282714",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+    },
+    {
+      "id": "MQTT-3.1.0-1",
+      "section_number": "3.1",
+      "section_title": "CONNECT \u2013 Connection Request",
+      "obligation": "MUST",
+      "summary": "After a Network Connection is established by a Client to a Server, the first packet sent from the Client to the Server MUST be a CONNECT packet .",
+      "source_anchor": "_CONNECT_\u2013_Connection",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.0-2",
+      "section_number": "3.1",
+      "section_title": "CONNECT \u2013 Connection Request",
+      "obligation": "MUST",
+      "summary": "A Client can only send the CONNECT packet once over a Network Connection. The Server MUST process a second CONNECT packet sent from a Client as a Protocol Error and close the Network Connection . Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_CONNECT_\u2013_Connection",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-1",
+      "section_number": "3.1.2.1",
+      "section_title": "Protocol Name",
+      "obligation": "MUST",
+      "summary": "A Server which support multiple protocols uses the Protocol Name to determine whether the data is MQTT. The protocol name MUST be the UTF-8 String \"MQTT\". If the Server does not want to accept the CONNECT, and wishes to reveal that it is an MQTT Server it MAY send a CONNACK pa...",
+      "source_anchor": "_Figure_3.2_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-2",
+      "section_number": "3.1.2.2",
+      "section_title": "Protocol Version",
+      "obligation": "MAY",
+      "summary": "A Server which supports multiple versions of the MQTT protocol uses the Protocol Version to determine which version of MQTT the Client is using. If the Protocol Version is not 5 and the Server does not want to accept the CONNECT packet, the Server MAY send a CONNACK packet wit...",
+      "source_anchor": "_Figure_3.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-3",
+      "section_number": "3.1.2.3",
+      "section_title": "Connect Flags",
+      "obligation": "MUST",
+      "summary": "The Server MUST validate that the reserved flag in the CONNECT packet is set to 0 . If the reserved flag is not 0 it is a Malformed Packet. Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_Figure_3.4_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-4",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Start",
+      "obligation": "MUST",
+      "summary": "If a CONNECT packet is received with Clean Start is set to 1, the Client and Server MUST discard any existing Session and start a new Session . Consequently, the Session Present flag in CONNACK is always set to 0 if Clean Start is set to 1.",
+      "source_anchor": "_Clean_Start",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-5",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Start",
+      "obligation": "MUST",
+      "summary": "If a CONNECT packet is received with Clean Start set to 0 and there is a Session associated with the Client Identifier, the Server MUST resume communications with the Client based on state from the existing Session . If a CONNECT packet is received with Clean Start set to 0 an...",
+      "source_anchor": "_Clean_Start",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-6",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Start",
+      "obligation": "MUST",
+      "summary": "If a CONNECT packet is received with Clean Start set to 0 and there is a Session associated with the Client Identifier, the Server MUST resume communications with the Client based on state from the existing Session . If a CONNECT packet is received with Clean Start set to 0 an...",
+      "source_anchor": "_Clean_Start",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-7",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1 this indicates that a Will Message MUST be stored on the Server and associated with the Session . The Will Message consists of the Will Properties, Will Topic, and Will Payload fields in the CONNECT Payload.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-8",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1 this indicates that a Will Message MUST be stored on the Server and associated with the Session . The Will Message consists of the Will Properties, Will Topic, and Will Payload fields in the CONNECT Payload.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-9",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1, the Will Properties, Will Topic, and Will Payload fields MUST be present in the Payload . The Will Message MUST be removed from the stored Session State in the Server once it has been published or the Server has received a DISCONNECT packet with a...",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-10",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1, the Will Properties, Will Topic, and Will Payload fields MUST be present in the Payload . The Will Message MUST be removed from the stored Session State in the Server once it has been published or the Server has received a DISCONNECT packet with a...",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-11",
+      "section_number": "3.1.2.6",
+      "section_title": "Will QoS",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00) .",
+      "source_anchor": "_Toc385349233",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-12",
+      "section_number": "3.1.2.6",
+      "section_title": "Will QoS",
+      "obligation": "UNSPECIFIED",
+      "summary": "If the Will Flag is set to 1, the value of Will QoS can be 0 (0x00), 1 (0x01), or 2 (0x02) . A value of 3 (0x03) is a Malformed Packet. Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_Toc385349233",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-13",
+      "section_number": "3.1.2.7",
+      "section_title": "Will Retain",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 0, then Will Retain MUST be set to 0 . If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message . If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish th...",
+      "source_anchor": "_Toc385349234",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-14",
+      "section_number": "3.1.2.7",
+      "section_title": "Will Retain",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 0, then Will Retain MUST be set to 0 . If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message . If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish th...",
+      "source_anchor": "_Toc385349234",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-15",
+      "section_number": "3.1.2.7",
+      "section_title": "Will Retain",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 0, then Will Retain MUST be set to 0 . If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message . If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish th...",
+      "source_anchor": "_Toc385349234",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-16",
+      "section_number": "3.1.2.8",
+      "section_title": "User Name Flag",
+      "obligation": "MUST NOT",
+      "summary": "If the User Name Flag is set to 0, a User Name MUST NOT be present in the Payload . If the User Name Flag is set to 1, a User Name MUST be present in the Payload .",
+      "source_anchor": "_Toc385349235",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-17",
+      "section_number": "3.1.2.8",
+      "section_title": "User Name Flag",
+      "obligation": "MUST NOT",
+      "summary": "If the User Name Flag is set to 0, a User Name MUST NOT be present in the Payload . If the User Name Flag is set to 1, a User Name MUST be present in the Payload .",
+      "source_anchor": "_Toc385349235",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-18",
+      "section_number": "3.1.2.9",
+      "section_title": "Password Flag",
+      "obligation": "MUST NOT",
+      "summary": "If the Password Flag is set to 0, a Password MUST NOT be present in the Payload . If the Password Flag is set to 1, a Password MUST be present in the Payload .",
+      "source_anchor": "_Toc462729098",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-19",
+      "section_number": "3.1.2.9",
+      "section_title": "Password Flag",
+      "obligation": "MUST NOT",
+      "summary": "If the Password Flag is set to 0, a Password MUST NOT be present in the Payload . If the Password Flag is set to 1, a Password MUST be present in the Payload .",
+      "source_anchor": "_Toc462729098",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-20",
+      "section_number": "3.1.2.10",
+      "section_title": "Keep Alive",
+      "obligation": "MUST",
+      "summary": "The Keep Alive is a Two Byte Integer which is a time interval measured in seconds. It is the maximum time interval that is permitted to elapse between the point at which the Client finishes transmitting one MQTT Control Packet and the point it starts sending the next.",
+      "source_anchor": "_Figure_3.5_Keep",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-21",
+      "section_number": "3.1.2.10",
+      "section_title": "Keep Alive",
+      "obligation": "MUST",
+      "summary": "If the Server returns a Server Keep Alive on the CONNACK packet, the Client MUST use that value instead of the value it sent as the Keep Alive .",
+      "source_anchor": "_Figure_3.5_Keep",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-22",
+      "section_number": "3.1.2.10",
+      "section_title": "Keep Alive",
+      "obligation": "MUST",
+      "summary": "If the Keep Alive value is non-zero and the Server does not receive an MQTT Control Packet from the Client within one and a half times the Keep Alive time period, it MUST close the Network Connection to the Client as if the network had failed .",
+      "source_anchor": "_Figure_3.5_Keep",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-23",
+      "section_number": "3.1.2.11.2",
+      "section_title": "Session Expiry Interval",
+      "obligation": "MUST",
+      "summary": "The Client and Server MUST store the Session State after the Network Connection is closed if the Session Expiry Interval is greater than 0 .",
+      "source_anchor": "_Toc471483565",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-24",
+      "section_number": "3.1.2.11.4",
+      "section_title": "Maximum Packet Size",
+      "obligation": "MUST NOT",
+      "summary": "The Server MUST NOT send packets exceeding Maximum Packet Size to the Client . If a Client receives a packet whose size exceeds this limit, this is a Protocol Error, the Client uses DISCONNECT with Reason Code 0x95 (Packet too large), as described in section 4.13.",
+      "source_anchor": "_Toc471483569",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-25",
+      "section_number": "3.1.2.11.4",
+      "section_title": "Maximum Packet Size",
+      "obligation": "MUST",
+      "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message .",
+      "source_anchor": "_Toc471483569",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-26",
+      "section_number": "3.1.2.11.5",
+      "section_title": "Topic Alias Maximum",
+      "obligation": "MUST NOT",
+      "summary": "This value indicates the highest value that the Client will accept as a Topic Alias sent by the Server. The Client uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection. The Server MUST NOT send a Topic Alias in a PUBLISH packet to...",
+      "source_anchor": "_Toc464547825",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-27",
+      "section_number": "3.1.2.11.5",
+      "section_title": "Topic Alias Maximum",
+      "obligation": "MUST NOT",
+      "summary": "This value indicates the highest value that the Client will accept as a Topic Alias sent by the Server. The Client uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection. The Server MUST NOT send a Topic Alias in a PUBLISH packet to...",
+      "source_anchor": "_Toc464547825",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-28",
+      "section_number": "3.1.2.11.6",
+      "section_title": "Request Response Information",
+      "obligation": "MUST NOT",
+      "summary": "The Client uses this value to request the Server to return Response Information in the CONNACK. A value of 0 indicates that the Server MUST NOT return Response Information . If the value is 1 the Server MAY return Response Information in the CONNACK packet.",
+      "source_anchor": "_Request_Response_Information",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-29",
+      "section_number": "3.1.2.11.7",
+      "section_title": "Request Problem Information",
+      "obligation": "MAY",
+      "summary": "If the value of Request Problem Information is 0, the Server MAY return a Reason String or User Properties on a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT .",
+      "source_anchor": "_Toc464547827",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.2-30",
+      "section_number": "3.1.2.11.9",
+      "section_title": "Authentication Method",
+      "obligation": "MUST NOT",
+      "summary": "If a Client sets an Authentication Method in the CONNECT, the Client MUST NOT send any packets other than AUTH or DISCONNECT packets until it has received a CONNACK packet .",
+      "source_anchor": "_Toc511988532",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-1",
+      "section_number": "3.1.3",
+      "section_title": "CONNECT Payload",
+      "obligation": "MUST",
+      "summary": "The Payload of the CONNECT packet contains one or more length-prefixed fields, whose presence is determined by the flags in the Variable Header. These fields, if present, MUST appear in the order Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password .",
+      "source_anchor": "_Toc384800404",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-2",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MUST",
+      "summary": "The Client Identifier (ClientID) identifies the Client to the Server. Each Client connecting to the Server has a unique ClientID. The ClientID MUST be used by Clients and by Servers to identify state that they hold relating to this MQTT Session between the Client and the Server .",
+      "source_anchor": "_Toc385349242",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-3",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MUST",
+      "summary": "The ClientID MUST be present and is the first field in the CONNECT packet Payload .",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-4",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MUST",
+      "summary": "The ClientID MUST be a UTF-8 Encoded String as defined in section 1.5.4 .",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-5",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "UNSPECIFIED",
+      "summary": "\"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\" .",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-6",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MAY",
+      "summary": "A Server MAY allow a Client to supply a ClientID that has a length of zero bytes, however if it does so the Server MUST treat this as a special case and assign a unique ClientID to that Client . It MUST then process the CONNECT packet as if the Client had provided that unique...",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-7",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MAY",
+      "summary": "A Server MAY allow a Client to supply a ClientID that has a length of zero bytes, however if it does so the Server MUST treat this as a special case and assign a unique ClientID to that Client . It MUST then process the CONNECT packet as if the Client had provided that unique...",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-8",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MAY",
+      "summary": "If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection .",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-9",
+      "section_number": "3.1.3.2.2",
+      "section_title": "Will Delay Interval",
+      "obligation": "MUST NOT",
+      "summary": "The Server delays publishing the Client\u2019s Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message .",
+      "source_anchor": "_Will_Delay_Interval_1",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-10",
+      "section_number": "3.1.3.2.8",
+      "section_title": "User Property",
+      "obligation": "MUST",
+      "summary": "The Server MUST maintain the order of User Properties when publishing the Will Message .",
+      "source_anchor": "_Toc493772021",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-11",
+      "section_number": "3.1.3.3",
+      "section_title": "Will Topic",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1, the Will Topic is the next field in the Payload. The Will Topic MUST be a UTF-8 Encoded String as defined in section 1.5.4 .",
+      "source_anchor": "_Toc511988546",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.3-12",
+      "section_number": "3.1.3.5",
+      "section_title": "User Name",
+      "obligation": "MUST",
+      "summary": "If the User Name Flag is set to 1, the User Name is the next field in the Payload. The User Name MUST be a UTF-8 Encoded String as defined in section 1.5.4 . It can be used by the Server for authentication and authorization.",
+      "source_anchor": "_Toc385349245",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.4-1",
+      "section_number": "3.1.4",
+      "section_title": "CONNECT Actions",
+      "obligation": "MUST",
+      "summary": "2. The Server MUST validate that the CONNECT packet matches the format described in section 3.1 and close the Network Connection if it does not match . The Server MAY send a CONNACK with a Reason Code of 0x80 or greater as described in section 4.13 before closing the Network C...",
+      "source_anchor": "_CONNECT_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.4-2",
+      "section_number": "3.1.4",
+      "section_title": "CONNECT Actions",
+      "obligation": "MAY",
+      "summary": "The Server MAY check that the contents of the CONNECT packet meet any further restrictions and SHOULD perform authentication and authorization checks. If any of these checks fail, it MUST close the Network Connection . Before closing the Network Connection, it MAY send an appr...",
+      "source_anchor": "_CONNECT_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.4-3",
+      "section_number": "3.1.4",
+      "section_title": "CONNECT Actions",
+      "obligation": "MUST",
+      "summary": "1. If the ClientID represents a Client already connected to the Server, the Server sends a DISCONNECT packet to the existing Client with Reason Code of 0x8E (Session taken over) as described in section 4.13 and MUST close the Network Connection of the existing Client .",
+      "source_anchor": "_Toc473620039",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.4-4",
+      "section_number": "3.1.4",
+      "section_title": "CONNECT Actions",
+      "obligation": "MUST",
+      "summary": "2. The Server MUST perform the processing of Clean Start that is described in section 3.1.2.4 .",
+      "source_anchor": "_Toc473620039",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.4-5",
+      "section_number": "3.1.4",
+      "section_title": "CONNECT Actions",
+      "obligation": "MUST",
+      "summary": "3. The Server MUST acknowledge the CONNECT packet with a CONNACK packet containing a 0x00 (Success) Reason Code .",
+      "source_anchor": "_Toc473620039",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.1.4-6",
+      "section_number": "3.1.4",
+      "section_title": "CONNECT Actions",
+      "obligation": "MUST NOT",
+      "summary": "Clients are allowed to send further MQTT Control Packets immediately after sending a CONNECT packet; Clients need not wait for a CONNACK packet to arrive from the Server. If the Server rejects the CONNECT, it MUST NOT process any data sent by the Client after the CONNECT packe...",
+      "source_anchor": "_Toc473620039",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.0-1",
+      "section_number": "3.2",
+      "section_title": "CONNACK \u2013 Connect acknowledgement",
+      "obligation": "MUST",
+      "summary": "The CONNACK packet is the packet sent by the Server in response to a CONNECT packet received from a Client. The Server MUST send a CONNACK with a 0x00 (Success) Reason Code before sending any Packet other than AUTH . The Server MUST NOT send more than one CONNACK in a Network...",
+      "source_anchor": "_CONNACK_\u2013_Connect",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.0-2",
+      "section_number": "3.2",
+      "section_title": "CONNACK \u2013 Connect acknowledgement",
+      "obligation": "MUST",
+      "summary": "The CONNACK packet is the packet sent by the Server in response to a CONNECT packet received from a Client. The Server MUST send a CONNACK with a 0x00 (Success) Reason Code before sending any Packet other than AUTH . The Server MUST NOT send more than one CONNACK in a Network...",
+      "source_anchor": "_CONNACK_\u2013_Connect",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-1",
+      "section_number": "3.2.2.1",
+      "section_title": "Connect Acknowledge Flags",
+      "obligation": "MUST",
+      "summary": "Byte 1 is the \"Connect Acknowledge Flags\". Bits 7-1 are reserved and MUST be set to 0 .",
+      "source_anchor": "_Figure_3.9_\u2013",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-2",
+      "section_number": "3.2.2.1.1",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "If the Server accepts a connection with Clean Start set to 1, the Server MUST set Session Present to 0 in the CONNACK packet in addition to setting a 0x00 (Success) Reason Code in the CONNACK packet .",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-3",
+      "section_number": "3.2.2.1.1",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "If the Server accepts a connection with Clean Start set to 0 and the Server has Session State for the ClientID, it MUST set Session Present to 1 in the CONNACK packet, otherwise it MUST set Session Present to 0 in the CONNACK packet.",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-4",
+      "section_number": "3.2.2.1.1",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "\u00b7 If the Client does not have Session State and receives Session Present set to 1 it MUST close the Network Connection . If it wishes to restart with a new Session the Client can reconnect using Clean Start set to 1.",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-5",
+      "section_number": "3.2.2.1.1",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "\u00b7 If the Client does have Session State and receives Session Present set to 0 it MUST discard its Session State if it continues with the Network Connection .",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-6",
+      "section_number": "3.2.2.1.1",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "If a Server sends a CONNACK packet containing a non-zero Reason Code it MUST set Session Present to 0 .",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-7",
+      "section_number": "3.2.2.2",
+      "section_title": "Connect Reason Code",
+      "obligation": "MAY",
+      "summary": "The values the Connect Reason Code are shown below. If a well formed CONNECT packet is received by the Server, but the Server is unable to complete the Connection the Server MAY send a CONNACK packet containing the appropriate Connect Reason code from this table.",
+      "source_anchor": "_Connect_Reason_Code",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-8",
+      "section_number": "7.1.2",
+      "section_title": "MQTT Client conformance clause",
+      "obligation": "UNSPECIFIED",
+      "summary": "",
+      "source_anchor": "AppendixB",
+      "occurrences": 2,
+      "candidate_paths": [
+        "rumqttc-v5/tests",
+        "rumqttc-v5/src/mqttbytes/v5"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to tests and protocol modules for conformance coverage."
+    },
+    {
+      "id": "MQTT-3.2.2-9",
+      "section_number": "3.2.2.3.4",
+      "section_title": "Maximum QoS",
+      "obligation": "MUST",
+      "summary": "If a Server does not support QoS 1 or QoS 2 PUBLISH packets it MUST send a Maximum QoS in the CONNACK packet specifying the highest QoS it supports . A Server that does not support QoS 1 or QoS 2 PUBLISH packets MUST still accept SUBSCRIBE packets containing a Requested QoS of...",
+      "source_anchor": "_Toc471282758",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-10",
+      "section_number": "3.2.2.3.4",
+      "section_title": "Maximum QoS",
+      "obligation": "MUST",
+      "summary": "If a Server does not support QoS 1 or QoS 2 PUBLISH packets it MUST send a Maximum QoS in the CONNACK packet specifying the highest QoS it supports . A Server that does not support QoS 1 or QoS 2 PUBLISH packets MUST still accept SUBSCRIBE packets containing a Requested QoS of...",
+      "source_anchor": "_Toc471282758",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-11",
+      "section_number": "3.2.2.3.4",
+      "section_title": "Maximum QoS",
+      "obligation": "MUST NOT",
+      "summary": "If a Client receives a Maximum QoS from a Server, it MUST NOT send PUBLISH packets at a QoS level exceeding the Maximum QoS level specified . It is a Protocol Error if the Server receives a PUBLISH packet with a QoS greater than the Maximum QoS it specified.",
+      "source_anchor": "_Toc471282758",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-12",
+      "section_number": "3.2.2.3.4",
+      "section_title": "Maximum QoS",
+      "obligation": "MUST",
+      "summary": "If a Server receives a CONNECT packet containing a Will QoS that exceeds its capabilities, it MUST reject the connection. It SHOULD use a CONNACK packet with Reason Code 0x9B (QoS not supported) as described in section 4.13 Handling errors, and MUST close the Network Connection .",
+      "source_anchor": "_Toc471282758",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-13",
+      "section_number": "3.2.2.3.5",
+      "section_title": "Retain Available",
+      "obligation": "MUST",
+      "summary": "If a Server receives a CONNECT packet containing a Will Message with the Will Retain set to 1, and it does not support retained messages, the Server MUST reject the connection request. It SHOULD send CONNACK with Reason Code 0x9A (Retain not supported) and then it MUST close t...",
+      "source_anchor": "_Toc471282759",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-14",
+      "section_number": "3.2.2.3.5",
+      "section_title": "Retain Available",
+      "obligation": "MUST NOT",
+      "summary": "A Client receiving Retain Available set to 0 from the Server MUST NOT send a PUBLISH packet with the RETAIN flag set to 1 . If the Server receives such a packet, this is a Protocol Error. The Server SHOULD send a DISCONNECT with Reason Code of 0x9A (Retain not supported) as de...",
+      "source_anchor": "_Toc471282759",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-15",
+      "section_number": "3.2.2.3.6",
+      "section_title": "Maximum Packet Size",
+      "obligation": "MUST NOT",
+      "summary": "The Client MUST NOT send packets exceeding Maximum Packet Size to the Server . If a Server receives a packet whose size exceeds this limit, this is a Protocol Error, the Server uses DISCONNECT with Reason Code 0x95 (Packet too large), as described in section 4.13.",
+      "source_anchor": "_Toc470189649",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-16",
+      "section_number": "3.2.2.3.7",
+      "section_title": "Assigned Client Identifier",
+      "obligation": "MUST",
+      "summary": "If the Client connects using a zero length Client Identifier, the Server MUST respond with a CONNACK containing an Assigned Client Identifier. The Assigned Client Identifier MUST be a new Client Identifier not used by any other Session currently in the Server .",
+      "source_anchor": "_Toc511988564",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-17",
+      "section_number": "3.2.2.3.8",
+      "section_title": "Topic Alias Maximum",
+      "obligation": "MUST NOT",
+      "summary": "This value indicates the highest value that the Server will accept as a Topic Alias sent by the Client. The Server uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection. The Client MUST NOT send a Topic Alias in a PUBLISH packet to...",
+      "source_anchor": "_Toc464547849",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-18",
+      "section_number": "3.2.2.3.8",
+      "section_title": "Topic Alias Maximum",
+      "obligation": "MUST NOT",
+      "summary": "This value indicates the highest value that the Server will accept as a Topic Alias sent by the Client. The Server uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection. The Client MUST NOT send a Topic Alias in a PUBLISH packet to...",
+      "source_anchor": "_Toc464547849",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-19",
+      "section_number": "3.2.2.3.9",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The Server uses this value to give additional information to the Client. The Server MUST NOT send this property if it would increase the size of the CONNACK packet beyond the Maximum Packet Size specified by the Client .",
+      "source_anchor": "_Toc464547850",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-20",
+      "section_number": "3.2.2.3.10",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by a UTF-8 String Pair. This property can be used to provide additional information to the Client including diagnostic information. The Server MUST NOT send this property if it would increase the size of the CONNACK packet beyond the Maximum Packet Size specified by t...",
+      "source_anchor": "_Toc471483598",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-21",
+      "section_number": "3.2.2.3.14",
+      "section_title": "Server Keep Alive",
+      "obligation": "MUST",
+      "summary": "Followed by a Two Byte Integer with the Keep Alive time assigned by the Server. If the Server sends a Server Keep Alive on the CONNACK packet, the Client MUST use this value instead of the Keep Alive value the Client sent on CONNECT .",
+      "source_anchor": "_Toc471483602",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.2.2-22",
+      "section_number": "3.2.2.3.14",
+      "section_title": "Server Keep Alive",
+      "obligation": "MUST",
+      "summary": "Followed by a Two Byte Integer with the Keep Alive time assigned by the Server. If the Server sends a Server Keep Alive on the CONNACK packet, the Client MUST use this value instead of the Keep Alive value the Client sent on CONNECT .",
+      "source_anchor": "_Toc471483602",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-1",
+      "section_number": "3.3.1.1",
+      "section_title": "DUP",
+      "obligation": "MUST",
+      "summary": "The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH packet . The DUP flag MUST be set to 0 for all QoS 0 messages .",
+      "source_anchor": "_Toc385349262",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-2",
+      "section_number": "3.3.1.1",
+      "section_title": "DUP",
+      "obligation": "MUST",
+      "summary": "The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH packet . The DUP flag MUST be set to 0 for all QoS 0 messages .",
+      "source_anchor": "_Toc385349262",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-3",
+      "section_number": "3.3.1.1",
+      "section_title": "DUP",
+      "obligation": "MUST",
+      "summary": "The value of the DUP flag from an incoming PUBLISH packet is not propagated when the PUBLISH packet is sent to subscribers by the Server. The DUP flag in the outgoing PUBLISH packet is set independently to the incoming PUBLISH packet, its value MUST be determined solely by whe...",
+      "source_anchor": "_Toc385349262",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-4",
+      "section_number": "3.3.1.2",
+      "section_title": "QoS",
+      "obligation": "MUST NOT",
+      "summary": "A PUBLISH Packet MUST NOT have both QoS bits set to 1 . If a Server or Client receives a PUBLISH packet which has both QoS bits set to 1 it is a Malformed Packet. Use DISCONNECT with Reason Code 0x81 (Malformed Packet) as described in section 4.13.",
+      "source_anchor": "_Table_3.11_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-5",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "If the RETAIN flag is set to 1 in a PUBLISH packet sent by a Client to a Server, the Server MUST replace any existing retained message for this topic and store the Application Message , so that it can be delivered to future subscribers whose subscriptions match its Topic Name.",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-6",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "If the RETAIN flag is set to 1 in a PUBLISH packet sent by a Client to a Server, the Server MUST replace any existing retained message for this topic and store the Application Message , so that it can be delivered to future subscribers whose subscriptions match its Topic Name.",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-7",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "If the RETAIN flag is set to 1 in a PUBLISH packet sent by a Client to a Server, the Server MUST replace any existing retained message for this topic and store the Application Message , so that it can be delivered to future subscribers whose subscriptions match its Topic Name.",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-8",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST NOT",
+      "summary": "If the RETAIN flag is 0 in a PUBLISH packet sent by a Client to a Server, the Server MUST NOT store the message as a retained message and MUST NOT remove or replace any existing retained message .",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-9",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "\u00b7 If Retain Handling is set to 0 the Server MUST send the retained messages matching the Topic Filter of the subscription to the Client .",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-10",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "\u00b7 If Retain Handling is set to 1 then if the subscription did not already exist, the Server MUST send all retained message matching the Topic Filter of the subscription to the Client, and if the subscription did exist the Server MUST NOT send the retained messages.",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-11",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST NOT",
+      "summary": "\u00b7 If Retain Handling is set to 2, the Server MUST NOT send the retained messages .",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-12",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "\u00b7 If the value of Retain As Published subscription option is set to 0, the Server MUST set the RETAIN flag to 0 when forwarding an Application Message regardless of how the RETAIN flag was set in the received PUBLISH packet .",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.1-13",
+      "section_number": "3.3.1.3",
+      "section_title": "RETAIN",
+      "obligation": "MUST",
+      "summary": "\u00b7 If the value of Retain As Published subscription option is set to 1, the Server MUST set the RETAIN flag equal to the RETAIN flag in the received PUBLISH packet .",
+      "source_anchor": "_Toc385349265",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-1",
+      "section_number": "3.3.2.1",
+      "section_title": "Topic Name",
+      "obligation": "MUST",
+      "summary": "The Topic Name MUST be present as the first field in the PUBLISH packet Variable Header. It MUST be a UTF-8 Encoded String as defined in section 1.5.4 .",
+      "source_anchor": "_Toc385349267",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-2",
+      "section_number": "3.3.2.1",
+      "section_title": "Topic Name",
+      "obligation": "MUST NOT",
+      "summary": "The Topic Name in the PUBLISH packet MUST NOT contain wildcard characters .",
+      "source_anchor": "_Toc473620093",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-3",
+      "section_number": "3.3.2.1",
+      "section_title": "Topic Name",
+      "obligation": "MUST",
+      "summary": "The Topic Name in a PUBLISH packet sent by a Server to a subscribing Client MUST match the Subscription\u2019s Topic Filter according to the matching process defined in section 4.7 . However, as the Server is permitted to map the Topic Name to another name, it might not be the same...",
+      "source_anchor": "_Toc473620093",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-4",
+      "section_number": "3.3.2.3.2",
+      "section_title": "Payload Format Indicator",
+      "obligation": "MUST",
+      "summary": "A Server MUST send the Payload Format Indicator unaltered to all subscribers receiving the Application Message . The receiver MAY validate that the Payload is of the format indicated, and if it is not send a PUBACK, PUBREC, or DISCONNECT with Reason Code of 0x99 (Payload forma...",
+      "source_anchor": "_Toc471483618",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-5",
+      "section_number": "3.3.2.3.3",
+      "section_title": "Message Expiry Interval`",
+      "obligation": "MUST",
+      "summary": "If present, the Four Byte value is the lifetime of the Application Message in seconds. If the Message Expiry Interval has passed and the Server has not managed to start onward delivery to a matching subscriber, then it MUST delete the copy of the message for that subscriber .",
+      "source_anchor": "_Toc471483619",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-6",
+      "section_number": "3.3.2.3.3",
+      "section_title": "Message Expiry Interval`",
+      "obligation": "MUST",
+      "summary": "The PUBLISH packet sent to a Client by the Server MUST contain a Message Expiry Interval set to the received value minus the time that the Application Message has been waiting in the Server . Refer to section 4.1 for details and limitations of stored state.",
+      "source_anchor": "_Toc473620099",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-7",
+      "section_number": "3.3.2.3.4",
+      "section_title": "Topic Alias",
+      "obligation": "MUST NOT",
+      "summary": "Topic Alias mappings exist only within a Network Connection and last only for the lifetime of that Network Connection. A receiver MUST NOT carry forward any Topic Alias mappings from one Network Connection to another .",
+      "source_anchor": "_Topic_Alias",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-8",
+      "section_number": "3.3.2.3.4",
+      "section_title": "Topic Alias",
+      "obligation": "MUST NOT",
+      "summary": "A Topic Alias of 0 is not permitted. A sender MUST NOT send a PUBLISH packet containing a Topic Alias which has the value 0 .",
+      "source_anchor": "_Topic_Alias",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-9",
+      "section_number": "3.3.2.3.4",
+      "section_title": "Topic Alias",
+      "obligation": "MUST NOT",
+      "summary": "A Client MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic Alias Maximum value returned by the Server in the CONNACK packet . A Client MUST accept all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum value that it sent...",
+      "source_anchor": "_Topic_Alias",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-10",
+      "section_number": "3.3.2.3.4",
+      "section_title": "Topic Alias",
+      "obligation": "MUST NOT",
+      "summary": "A Client MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic Alias Maximum value returned by the Server in the CONNACK packet . A Client MUST accept all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum value that it sent...",
+      "source_anchor": "_Topic_Alias",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-11",
+      "section_number": "3.3.2.3.4",
+      "section_title": "Topic Alias",
+      "obligation": "MUST NOT",
+      "summary": "A Server MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic Alias Maximum value sent by the Client in the CONNECT packet . A Server MUST accept all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum value that it returned...",
+      "source_anchor": "_Topic_Alias",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-12",
+      "section_number": "3.3.2.3.4",
+      "section_title": "Topic Alias",
+      "obligation": "MUST NOT",
+      "summary": "A Server MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic Alias Maximum value sent by the Client in the CONNECT packet . A Server MUST accept all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum value that it returned...",
+      "source_anchor": "_Topic_Alias",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-13",
+      "section_number": "3.3.2.3.5",
+      "section_title": "Response Topic",
+      "obligation": "MUST",
+      "summary": "Followed by a UTF-8 Encoded String which is used as the Topic Name for a response message. The Response Topic MUST be a UTF-8 Encoded String as defined in section 1.5.4 . The Response Topic MUST NOT contain wildcard characters .",
+      "source_anchor": "_Response_Topic",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-14",
+      "section_number": "3.3.2.3.5",
+      "section_title": "Response Topic",
+      "obligation": "MUST",
+      "summary": "Followed by a UTF-8 Encoded String which is used as the Topic Name for a response message. The Response Topic MUST be a UTF-8 Encoded String as defined in section 1.5.4 . The Response Topic MUST NOT contain wildcard characters .",
+      "source_anchor": "_Response_Topic",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-15",
+      "section_number": "3.3.2.3.5",
+      "section_title": "Response Topic",
+      "obligation": "MUST",
+      "summary": "The Server MUST send the Response Topic unaltered to all subscribers receiving the Application Message .",
+      "source_anchor": "_Toc473620102",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-16",
+      "section_number": "3.3.2.3.6",
+      "section_title": "Correlation Data",
+      "obligation": "MUST",
+      "summary": "The Server MUST send the Correlation Data unaltered to all subscribers receiving the Application Message . The value of the Correlation Data only has meaning to the sender of the Request Message and receiver of the Response Message.",
+      "source_anchor": "_Toc473620105",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-17",
+      "section_number": "3.3.2.3.7",
+      "section_title": "User Property",
+      "obligation": "MUST",
+      "summary": "The Server MUST send all User Properties unaltered in a PUBLISH packet when forwarding the Application Message to a Client . The Server MUST maintain the order of User Properties when forwarding the Application Message .",
+      "source_anchor": "_Toc464547991",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-18",
+      "section_number": "3.3.2.3.7",
+      "section_title": "User Property",
+      "obligation": "MUST",
+      "summary": "The Server MUST send all User Properties unaltered in a PUBLISH packet when forwarding the Application Message to a Client . The Server MUST maintain the order of User Properties when forwarding the Application Message .",
+      "source_anchor": "_Toc464547991",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-19",
+      "section_number": "3.3.2.3.9",
+      "section_title": "Content Type",
+      "obligation": "MUST",
+      "summary": "Followed by a UTF-8 Encoded String describing the content of the Application Message. The Content Type MUST be a UTF-8 Encoded String as defined in section 1.5.4 .",
+      "source_anchor": "_Toc471282787",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.2-20",
+      "section_number": "3.3.2.3.9",
+      "section_title": "Content Type",
+      "obligation": "MUST",
+      "summary": "A Server MUST send the Content Type unaltered to all subscribers receiving the Application Message .",
+      "source_anchor": "_Toc473620114",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-1",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST",
+      "summary": "The receiver of a PUBLISH Packet MUST respond with the packet as determined by the QoS in the PUBLISH Packet .",
+      "source_anchor": "_PUBLISH_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-2",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST",
+      "summary": "When Clients make subscriptions with Topic Filters that include wildcards, it is possible for a Client\u2019s subscriptions to overlap so that a published message might match multiple filters. In this case the Server MUST deliver the message to the Client respecting the maximum QoS...",
+      "source_anchor": "_PUBLISH_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-3",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST",
+      "summary": "If the Client specified a Subscription Identifier for any of the overlapping subscriptions the Server MUST send those Subscription Identifiers in the message which is published as the result of the subscriptions . If the Server sends a single copy of the message it MUST includ...",
+      "source_anchor": "_PUBLISH_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-4",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST",
+      "summary": "If the Client specified a Subscription Identifier for any of the overlapping subscriptions the Server MUST send those Subscription Identifiers in the message which is published as the result of the subscriptions . If the Server sends a single copy of the message it MUST includ...",
+      "source_anchor": "_PUBLISH_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-5",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST",
+      "summary": "If the Client specified a Subscription Identifier for any of the overlapping subscriptions the Server MUST send those Subscription Identifiers in the message which is published as the result of the subscriptions . If the Server sends a single copy of the message it MUST includ...",
+      "source_anchor": "_PUBLISH_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-6",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST NOT",
+      "summary": "It is a Protocol Error for a PUBLISH packet to contain any Subscription Identifier other than those received in SUBSCRIBE packet which caused it to flow. A PUBLISH packet sent from a Client to a Server MUST NOT contain a Subscription Identifier .",
+      "source_anchor": "_PUBLISH_Actions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-7",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST NOT",
+      "summary": "The Client MUST NOT send more than Receive Maximum QoS 1 and QoS 2 PUBLISH packets for which it has not received PUBACK, PUBCOMP, or PUBREC with a Reason Code of 128 or greater from the Server . If it receives more than Receive Maximum QoS 1 and QoS 2 PUBLISH packets where it...",
+      "source_anchor": "_Toc462729133",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-8",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST NOT",
+      "summary": "The Client MUST NOT delay the sending of any packets other than PUBLISH packets due to having sent Receive Maximum PUBLISH packets without receiving acknowledgements for them . The value of Receive Maximum applies only to the current Network Connection.",
+      "source_anchor": "_Toc462729133",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-9",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST NOT",
+      "summary": "The Server MUST NOT send more than Receive Maximum QoS 1 and QoS 2 PUBLISH packets for which it has not received PUBACK, PUBCOMP, or PUBREC with a Reason Code of 128 or greater from the Client . If it receives more than Receive Maximum QoS 1 and QoS 2 PUBLISH packets where it...",
+      "source_anchor": "_Toc462729133",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.3.4-10",
+      "section_number": "3.3.4",
+      "section_title": "PUBLISH Actions",
+      "obligation": "MUST NOT",
+      "summary": "The Server MUST NOT delay the sending of any packets other than PUBLISH packets due to having sent Receive Maximum PUBLISH packets without receiving acknowledgements for them .",
+      "source_anchor": "_Toc462729133",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+    },
+    {
+      "id": "MQTT-3.4.2-1",
+      "section_number": "3.4.2.1",
+      "section_title": "PUBACK Reason Code",
+      "obligation": "MUST",
+      "summary": "The Client or Server sending the PUBACK packet MUST use one of the PUBACK Reason Codes . The Reason Code and Property Length can be omitted if the Reason Code is 0x00 (Success) and there are no Properties. In this case the PUBACK has a Remaining Length of 2.",
+      "source_anchor": "_Toc384800419",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/puback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.4 to packet module."
+    },
+    {
+      "id": "MQTT-3.4.2-2",
+      "section_number": "3.4.2.2.2",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The sender uses this value to give additional information to the receiver. The sender MUST NOT send this property if it would increase the size of the PUBACK packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc464548000",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/puback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.4 to packet module."
+    },
+    {
+      "id": "MQTT-3.4.2-3",
+      "section_number": "3.4.2.2.3",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property can be used to provide additional diagnostic or other information. The sender MUST NOT send this property if it would increase the size of the PUBACK packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc471483635",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/puback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.4 to packet module."
+    },
+    {
+      "id": "MQTT-3.5.2-1",
+      "section_number": "3.5.2.1",
+      "section_title": "PUBREC Reason Code",
+      "obligation": "MUST",
+      "summary": "The Client or Server sending the PUBREC packet MUST use one of the PUBREC Reason Code values. . The Reason Code and Property Length can be omitted if the Reason Code is 0x00 (Success) and there are no Properties. In this case the PUBREC has a Remaining Length of 2.",
+      "source_anchor": "_Ref459302849",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.5 to packet module."
+    },
+    {
+      "id": "MQTT-3.5.2-2",
+      "section_number": "3.5.2.2.2",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The sender uses this value to give additional information to the receiver. The sender MUST NOT send this property if it would increase the size of the PUBREC packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc464548009",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.5 to packet module."
+    },
+    {
+      "id": "MQTT-3.5.2-3",
+      "section_number": "3.5.2.2.3",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property can be used to provide additional diagnostic or other information. The sender MUST NOT send this property if it would increase the size of the PUBREC packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc471483644",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrec.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.5 to packet module."
+    },
+    {
+      "id": "MQTT-3.6.1-1",
+      "section_number": "3.6.1",
+      "section_title": "PUBREL Fixed Header",
+      "obligation": "MUST",
+      "summary": "Bits 3,2,1 and 0 of the Fixed Header in the PUBREL packet are reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat any other value as malformed and close the Network Connection .",
+      "source_anchor": "_Figure_3.16_\u2013",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrel.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.6 to packet module."
+    },
+    {
+      "id": "MQTT-3.6.2-1",
+      "section_number": "3.6.2.1",
+      "section_title": "PUBREL Reason Code",
+      "obligation": "MUST",
+      "summary": "The Client or Server sending the PUBREL packet MUST use one of the PUBREL Reason Code values . The Reason Code and Property Length can be omitted if the Reason Code is 0x00 (Success) and there are no Properties. In this case the PUBREL has a Remaining Length of 2.",
+      "source_anchor": "_Ref459708654",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrel.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.6 to packet module."
+    },
+    {
+      "id": "MQTT-3.6.2-2",
+      "section_number": "3.6.2.2.2",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The sender uses this value to give additional information to the receiver. The sender MUST NOT send this Property if it would increase the size of the PUBREL packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc464548017",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrel.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.6 to packet module."
+    },
+    {
+      "id": "MQTT-3.6.2-3",
+      "section_number": "3.6.2.2.3",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property can be used to provide additional diagnostic or other information for the PUBREL. The sender MUST NOT send this property if it would increase the size of the PUBREL packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc471483653",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubrel.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.6 to packet module."
+    },
+    {
+      "id": "MQTT-3.7.2-1",
+      "section_number": "3.7.2.1",
+      "section_title": "PUBCOMP Reason Code",
+      "obligation": "MUST",
+      "summary": "The Client or Server sending the PUBCOMP packet MUST use one of the PUBCOMP Reason Code values . The Reason Code and Property Length can be omitted if the Reason Code is 0x00 (Success) and there are no Properties. In this case the PUBCOMP has a Remaining Length of 2.",
+      "source_anchor": "_Ref459303322",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.7 to packet module."
+    },
+    {
+      "id": "MQTT-3.7.2-2",
+      "section_number": "3.7.2.2.2",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The sender uses this value to give additional information to the receiver. The sender MUST NOT send this Property if it would increase the size of the PUBCOMP packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc464548025",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.7 to packet module."
+    },
+    {
+      "id": "MQTT-3.7.2-3",
+      "section_number": "3.7.2.2.3",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property can be used to provide additional diagnostic or other information. The sender MUST NOT send this property if it would increase the size of the PUBCOMP packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc471483662",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.7 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.1-1",
+      "section_number": "3.8.1",
+      "section_title": "SUBSCRIBE Fixed Header",
+      "obligation": "MUST",
+      "summary": "Bits 3,2,1 and 0 of the Fixed Header of the SUBSCRIBE packet are reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat any other value as malformed and close the Network Connection .",
+      "source_anchor": "_Figure_3.20_\u2013",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.3-1",
+      "section_number": "3.8.3",
+      "section_title": "SUBSCRIBE Payload",
+      "obligation": "MUST",
+      "summary": "The Payload of a SUBSCRIBE packet contains a list of Topic Filters indicating the Topics to which the Client wants to subscribe. The Topic Filters MUST be a UTF-8 Encoded String . Each Topic Filter is followed by a Subscription Options byte.",
+      "source_anchor": "_Toc471282828",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.3-2",
+      "section_number": "3.8.3",
+      "section_title": "SUBSCRIBE Payload",
+      "obligation": "MUST",
+      "summary": "The Payload MUST contain at least one Topic Filter and Subscription Options pair . A SUBSCRIBE packet with no Payload is a Protocol Error. Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_Toc471282828",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.3-3",
+      "section_number": "3.8.3.1",
+      "section_title": "Subscription Options",
+      "obligation": "MUST NOT",
+      "summary": "Bit 2 of the Subscription Options represents the No Local option. If the value is 1, Application Messages MUST NOT be forwarded to a connection with a ClientID equal to the ClientID of the publishing connection . It is a Protocol Error to set the No Local bit to 1 on a Shared...",
+      "source_anchor": "_Subscription_Options",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.3-4",
+      "section_number": "3.8.3.1",
+      "section_title": "Subscription Options",
+      "obligation": "MUST NOT",
+      "summary": "Bit 2 of the Subscription Options represents the No Local option. If the value is 1, Application Messages MUST NOT be forwarded to a connection with a ClientID equal to the ClientID of the publishing connection . It is a Protocol Error to set the No Local bit to 1 on a Shared...",
+      "source_anchor": "_Subscription_Options",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.3-5",
+      "section_number": "3.8.3.1",
+      "section_title": "Subscription Options",
+      "obligation": "MUST",
+      "summary": "Bits 6 and 7 of the Subscription Options byte are reserved for future use. The Server MUST treat a SUBSCRIBE packet as malformed if any of Reserved bits in the Payload are non-zero .",
+      "source_anchor": "_Subscription_Options",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-1",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "When the Server receives a SUBSCRIBE packet from a Client, the Server MUST respond with a SUBACK packet . The SUBACK packet MUST have the same Packet Identifier as the SUBSCRIBE packet that it is acknowledging .",
+      "source_anchor": "_Toc384800440",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-2",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "When the Server receives a SUBSCRIBE packet from a Client, the Server MUST respond with a SUBACK packet . The SUBACK packet MUST have the same Packet Identifier as the SUBSCRIBE packet that it is acknowledging .",
+      "source_anchor": "_Toc384800440",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-3",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "If a Server receives a SUBSCRIBE packet containing a Topic Filter that is identical to a Non\u2011shared Subscription\u2019s Topic Filter for the current Session, then it MUST replace that existing Subscription with a new Subscription .",
+      "source_anchor": "_Toc384800440",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-4",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "If a Server receives a SUBSCRIBE packet containing a Topic Filter that is identical to a Non\u2011shared Subscription\u2019s Topic Filter for the current Session, then it MUST replace that existing Subscription with a new Subscription .",
+      "source_anchor": "_Toc384800440",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-5",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "If a Server receives a SUBSCRIBE packet that contains multiple Topic Filters it MUST handle that packet as if it had received a sequence of multiple SUBSCRIBE packets, except that it combines their responses into a single SUBACK response .",
+      "source_anchor": "_Toc473620190",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-6",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "The SUBACK packet sent by the Server to the Client MUST contain a Reason Code for each Topic Filter/Subscription Option pair . This Reason Code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
+      "source_anchor": "_Toc473620190",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-7",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "The SUBACK packet sent by the Server to the Client MUST contain a Reason Code for each Topic Filter/Subscription Option pair . This Reason Code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
+      "source_anchor": "_Toc473620190",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.8.4-8",
+      "section_number": "3.8.4",
+      "section_title": "SUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "The SUBACK packet sent by the Server to the Client MUST contain a Reason Code for each Topic Filter/Subscription Option pair . This Reason Code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
+      "source_anchor": "_Toc473620190",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+    },
+    {
+      "id": "MQTT-3.9.2-1",
+      "section_number": "3.9.2.1.2",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The Server uses this value to give additional information to the Client. The Server MUST NOT send this Property if it would increase the size of the SUBACK packet beyond the Maximum Packet Size specified by the Client . It is a Protocol Error to include the Reason String more...",
+      "source_anchor": "_Toc464548040",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/suback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+    },
+    {
+      "id": "MQTT-3.9.2-2",
+      "section_number": "3.9.2.1.3",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property can be used to provide additional diagnostic or other information. The Server MUST NOT send this property if it would increase the size of the SUBACK packet beyond the Maximum Packet Size specified by Client .",
+      "source_anchor": "_Toc471483679",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/suback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+    },
+    {
+      "id": "MQTT-3.9.3-1",
+      "section_number": "3.9.3",
+      "section_title": "SUBACK Payload",
+      "obligation": "MUST",
+      "summary": "The Payload contains a list of Reason Codes. Each Reason Code corresponds to a Topic Filter in the SUBSCRIBE packet being acknowledged. The order of Reason Codes in the SUBACK packet MUST match the order of Topic Filters in the SUBSCRIBE packet .",
+      "source_anchor": "_Toc471483680",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/suback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+    },
+    {
+      "id": "MQTT-3.9.3-2",
+      "section_number": "3.9.3",
+      "section_title": "SUBACK Payload",
+      "obligation": "MUST",
+      "summary": "The Server sending a SUBACK packet MUST use one of the Subscribe Reason Codes for each Topic Filter received .",
+      "source_anchor": "_Toc473620203",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/suback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.1-1",
+      "section_number": "3.10.1",
+      "section_title": "UNSUBSCRIBE Fixed Header",
+      "obligation": "MUST",
+      "summary": "Bits 3,2,1 and 0 of the Fixed Header of the UNSUBSCRIBE packet are reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat any other value as malformed and close the Network Connection .",
+      "source_anchor": "_Figure_3.28_\u2013",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.3-1",
+      "section_number": "3.10.3",
+      "section_title": "UNSUBSCRIBE Payload",
+      "obligation": "MUST",
+      "summary": "The Payload for the UNSUBSCRIBE packet contains the list of Topic Filters that the Client wishes to unsubscribe from. The Topic Filters in an UNSUBSCRIBE packet MUST be UTF-8 Encoded Strings as defined in section 1.5.4, packed contiguously.",
+      "source_anchor": "_Toc384800448",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.3-2",
+      "section_number": "3.10.3",
+      "section_title": "UNSUBSCRIBE Payload",
+      "obligation": "MUST",
+      "summary": "The Payload of an UNSUBSCRIBE packet MUST contain at least one Topic Filter . An UNSUBSCRIBE packet with no Payload is a Protocol Error. Refer to section 4.13 for information about handling errors.",
+      "source_anchor": "_Toc384800448",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.4-1",
+      "section_number": "3.10.4",
+      "section_title": "UNSUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "The Topic Filters (whether they contain wildcards or not) supplied in an UNSUBSCRIBE packet MUST be compared character-by-character with the current set of Topic Filters held by the Server for the Client. If any filter matches exactly then its owning Subscription MUST be delet...",
+      "source_anchor": "_Toc473620212",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.4-2",
+      "section_number": "3.10.4",
+      "section_title": "UNSUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "It MUST stop adding any new messages which match the Topic Filters, for delivery to the Client .",
+      "source_anchor": "_Toc473620212",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.4-3",
+      "section_number": "3.10.4",
+      "section_title": "UNSUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "It MUST complete the delivery of any QoS 1 or QoS 2 messages which match the Topic Filters and it has started to send to the Client .",
+      "source_anchor": "_Toc473620212",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.4-4",
+      "section_number": "3.10.4",
+      "section_title": "UNSUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "The Server MUST respond to an UNSUBSCRIBE request by sending an UNSUBACK packet . The UNSUBACK packet MUST have the same Packet Identifier as the UNSUBSCRIBE packet. Even where no Topic Subscriptions are deleted, the Server MUST respond with an UNSUBACK .",
+      "source_anchor": "_Toc473620212",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.4-5",
+      "section_number": "3.10.4",
+      "section_title": "UNSUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "The Server MUST respond to an UNSUBSCRIBE request by sending an UNSUBACK packet . The UNSUBACK packet MUST have the same Packet Identifier as the UNSUBSCRIBE packet. Even where no Topic Subscriptions are deleted, the Server MUST respond with an UNSUBACK .",
+      "source_anchor": "_Toc473620212",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.10.4-6",
+      "section_number": "3.10.4",
+      "section_title": "UNSUBSCRIBE Actions",
+      "obligation": "MUST",
+      "summary": "If a Server receives an UNSUBSCRIBE packet that contains multiple Topic Filters, it MUST process that packet as if it had received a sequence of multiple UNSUBSCRIBE packets, except that it sends just one UNSUBACK response .",
+      "source_anchor": "_Toc473620212",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.10 to packet module."
+    },
+    {
+      "id": "MQTT-3.11.2-1",
+      "section_number": "3.11.2.1.2",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The Server uses this value to give additional information to the Client. The Server MUST NOT send this Property if it would increase the size of the UNSUBACK packet beyond the Maximum Packet Size specified by the Client .",
+      "source_anchor": "_Toc471282848",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+    },
+    {
+      "id": "MQTT-3.11.2-2",
+      "section_number": "3.11.2.1.3",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property can be used to provide additional diagnostic or other information. The Server MUST NOT send this property if it would increase the size of the UNSUBACK packet beyond the Maximum Packet Size specified by the Client .",
+      "source_anchor": "_Toc471483692",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+    },
+    {
+      "id": "MQTT-3.11.3-1",
+      "section_number": "3.11.3",
+      "section_title": "UNSUBACK Payload",
+      "obligation": "MUST",
+      "summary": "The Payload contains a list of Reason Codes. Each Reason Code corresponds to a Topic Filter in the UNSUBSCRIBE packet being acknowledged. The order of Reason Codes in the UNSUBACK packet MUST match the order of Topic Filters in the UNSUBSCRIBE packet .",
+      "source_anchor": "_Toc471483693",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+    },
+    {
+      "id": "MQTT-3.11.3-2",
+      "section_number": "3.11.3",
+      "section_title": "UNSUBACK Payload",
+      "obligation": "MUST",
+      "summary": "The values for the one byte unsigned Unsubscribe Reason Codes are shown below. The Server sending an UNSUBACK packet MUST use one of the Unsubscribe Reason Code values for each Topic Filter received .",
+      "source_anchor": "_Toc471483693",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+    },
+    {
+      "id": "MQTT-3.12.4-1",
+      "section_number": "3.12.4",
+      "section_title": "PINGREQ Actions",
+      "obligation": "MUST",
+      "summary": "The Server MUST send a PINGRESP packet in response to a PINGREQ packet .",
+      "source_anchor": "_Toc384800458",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/ping.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.12 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.0-1",
+      "section_number": "3.14",
+      "section_title": "DISCONNECT \u2013 Disconnect notification",
+      "obligation": "MUST NOT",
+      "summary": "A Server MUST NOT send a DISCONNECT until after it has sent a CONNACK with Reason Code of less than 0x80 .",
+      "source_anchor": "_Toc384800463",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.1-1",
+      "section_number": "3.14.1",
+      "section_title": "DISCONNECT Fixed Header",
+      "obligation": "MUST",
+      "summary": "The Client or Server MUST validate that reserved bits are set to 0. If they are not zero it sends a DISCONNECT packet with a Reason code of 0x81 (Malformed Packet) as described in section 4.13 .",
+      "source_anchor": "_Figure_3.35_\u2013",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.2-1",
+      "section_number": "3.14.2.1",
+      "section_title": "Disconnect Reason Code",
+      "obligation": "MUST",
+      "summary": "The Client or Server sending the DISCONNECT packet MUST use one of the DISCONNECT Reason Code values . The Reason Code and Property Length can be omitted if the Reason Code is 0x00 (Normal disconnecton) and there are no Properties.",
+      "source_anchor": "DisconnectReasonCode",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.2-2",
+      "section_number": "3.14.2.2.2",
+      "section_title": "Session Expiry Interval",
+      "obligation": "MUST NOT",
+      "summary": "The Session Expiry Interval MUST NOT be sent on a DISCONNECT by the Server .",
+      "source_anchor": "_Toc462729193",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.2-3",
+      "section_number": "3.14.2.2.3",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver . It is a Protocol Error to include the Reason String more than once.",
+      "source_anchor": "_Toc464548071",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.2-4",
+      "section_number": "3.14.2.2.4",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property may be used to provide additional diagnostic or other information. The sender MUST NOT send this property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc471483711",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.4-1",
+      "section_number": "3.14.4",
+      "section_title": "DISCONNECT Actions",
+      "obligation": "MUST NOT",
+      "summary": "MUST NOT send any more MQTT Control Packets on that Network Connection .",
+      "source_anchor": "_Toc473906327",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.4-2",
+      "section_number": "3.14.4",
+      "section_title": "DISCONNECT Actions",
+      "obligation": "MUST",
+      "summary": "MUST close the Network Connection .",
+      "source_anchor": "_Toc473906327",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.14.4-3",
+      "section_number": "3.14.4",
+      "section_title": "DISCONNECT Actions",
+      "obligation": "MUST",
+      "summary": "MUST discard any Will Message associated with the current Connection without publishing it , as described in section 3.1.2.5.",
+      "source_anchor": "_Toc473906327",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.14 to packet module."
+    },
+    {
+      "id": "MQTT-3.15.1-1",
+      "section_number": "3.15.1",
+      "section_title": "AUTH Fixed Header",
+      "obligation": "MUST",
+      "summary": "Bits 3,2,1 and 0 of the Fixed Header of the AUTH packet are reserved and MUST all be set to 0. The Client or Server MUST treat any other value as malformed and close the Network Connection .",
+      "source_anchor": "_Toc473620250",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/auth.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.15 to packet module."
+    },
+    {
+      "id": "MQTT-3.15.2-1",
+      "section_number": "3.15.2.1",
+      "section_title": "Authenticate Reason Code",
+      "obligation": "MUST",
+      "summary": "Byte 0 in the Variable Header is the Authenticate Reason Code. The values for the one byte unsigned Authenticate Reason Code field are shown below. The sender of the AUTH Packet MUST use one of the Authenticate Reason Codes .",
+      "source_anchor": "_Toc511988697",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/auth.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.15 to packet module."
+    },
+    {
+      "id": "MQTT-3.15.2-2",
+      "section_number": "3.15.2.2.4",
+      "section_title": "Reason String",
+      "obligation": "MUST NOT",
+      "summary": "The sender MUST NOT send this property if it would increase the size of the AUTH packet beyond the Maximum Packet Size specified by the receiver . It is a Protocol Error to include the Reason String more than once.",
+      "source_anchor": "_Toc511988702",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/auth.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.15 to packet module."
+    },
+    {
+      "id": "MQTT-3.15.2-3",
+      "section_number": "3.15.2.2.5",
+      "section_title": "User Property",
+      "obligation": "MUST NOT",
+      "summary": "Followed by UTF-8 String Pair. This property may be used to provide additional diagnostic or other information. The sender MUST NOT send this property if it would increase the size of the AUTH packet beyond the Maximum Packet Size specified by the receiver .",
+      "source_anchor": "_Toc471483722",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/auth.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping from section prefix 3.15 to packet module."
+    },
+    {
+      "id": "MQTT-4.1.0-1",
+      "section_number": "4.1.1",
+      "section_title": "Storing Session State",
+      "obligation": "MUST NOT",
+      "summary": "The Client and Server MUST NOT discard the Session State while the Network Connection is open . The Server MUST discard the Session State when the Network Connection is closed and the Session Expiry Interval has passed .",
+      "source_anchor": "_Storing_Session_State",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.1.0-2",
+      "section_number": "4.1.1",
+      "section_title": "Storing Session State",
+      "obligation": "MUST NOT",
+      "summary": "The Client and Server MUST NOT discard the Session State while the Network Connection is open . The Server MUST discard the Session State when the Network Connection is closed and the Session Expiry Interval has passed .",
+      "source_anchor": "_Storing_Session_State",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.2.0-1",
+      "section_number": "7.1.2",
+      "section_title": "MQTT Client conformance clause",
+      "obligation": "UNSPECIFIED",
+      "summary": "",
+      "source_anchor": "AppendixB",
+      "occurrences": 2,
+      "candidate_paths": [
+        "rumqttc-v5/tests",
+        "rumqttc-v5/src/mqttbytes/v5"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to tests and protocol modules for conformance coverage."
+    },
+    {
+      "id": "MQTT-4.2-1",
+      "section_number": "4.2",
+      "section_title": "Network Connections",
+      "obligation": "MUST",
+      "summary": "A Client or Server MUST support the use of one or more underlying transport protocols that provide an ordered, lossless, stream of bytes from the Client to Server and Server to Client .",
+      "source_anchor": "_Network_Connections",
+      "occurrences": 1,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.1-1",
+      "section_number": "4.3.1",
+      "section_title": "QoS 0: At most once delivery",
+      "obligation": "MUST",
+      "summary": "\u00b7 MUST send a PUBLISH packet with QoS 0 and DUP flag set to 0 .",
+      "source_anchor": "_Toc473620274",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.2-1",
+      "section_number": "4.3.2",
+      "section_title": "QoS 1: At least once delivery",
+      "obligation": "MUST",
+      "summary": "\u00b7 MUST assign an unused Packet Identifier each time it has a new Application Message to publish .",
+      "source_anchor": "_Toc473620277",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.2-2",
+      "section_number": "4.3.2",
+      "section_title": "QoS 1: At least once delivery",
+      "obligation": "MUST",
+      "summary": "\u00b7 MUST send a PUBLISH packet containing this Packet Identifier with QoS 1 and DUP flag set to 0 .",
+      "source_anchor": "_Toc473620277",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.2-3",
+      "section_number": "4.3.2",
+      "section_title": "QoS 1: At least once delivery",
+      "obligation": "MUST",
+      "summary": "\u00b7 MUST treat the PUBLISH packet as \u201cunacknowledged\u201d until it has received the corresponding PUBACK packet from the receiver. Refer to section 4.4 for a discussion of unacknowledged messages .",
+      "source_anchor": "_Toc473620277",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.2-4",
+      "section_number": "4.3.2",
+      "section_title": "QoS 1: At least once delivery",
+      "obligation": "MUST",
+      "summary": "MUST respond with a PUBACK packet containing the Packet Identifier from the incoming PUBLISH packet, having accepted ownership of the Application Message .",
+      "source_anchor": "_Toc473620279",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.2-5",
+      "section_number": "4.3.2",
+      "section_title": "QoS 1: At least once delivery",
+      "obligation": "MUST",
+      "summary": "After it has sent a PUBACK packet the receiver MUST treat any incoming PUBLISH packet that contains the same Packet Identifier as being a new Application Message, irrespective of the setting of its DUP flag .",
+      "source_anchor": "_Toc473620279",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-1",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST assign an unused Packet Identifier when it has a new Application Message to publish .",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-2",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST send a PUBLISH packet containing this Packet Identifier with QoS 2 and DUP flag set to 0 .",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-3",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST treat the PUBLISH packet as \u201cunacknowledged\u201d until it has received the corresponding PUBREC packet from the receiver . Refer to section 4.4 for a discussion of unacknowledged messages.",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-4",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST send a PUBREL packet when it receives a PUBREC packet from the receiver with a Reason Code value less than 0x80. This PUBREL packet MUST contain the same Packet Identifier as the original PUBLISH packet .",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-5",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST treat the PUBREL packet as \u201cunacknowledged\u201d until it has received the corresponding PUBCOMP packet from the receiver .",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-6",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST NOT",
+      "summary": "MUST NOT re-send the PUBLISH once it has sent the corresponding PUBREL packet .",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-7",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST NOT",
+      "summary": "MUST NOT apply Message expiry if a PUBLISH packet has been sent .",
+      "source_anchor": "_Toc473620281",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-8",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST respond with a PUBREC containing the Packet Identifier from the incoming PUBLISH packet, having accepted ownership of the Application Message .",
+      "source_anchor": "_Toc473620282",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-9",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "If it has sent a PUBREC with a Reason Code of 0x80 or greater, the receiver MUST treat any subsequent PUBLISH packet that contains that Packet Identifier as being a new Application Message .",
+      "source_anchor": "_Toc473620282",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-10",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "Until it has received the corresponding PUBREL packet, the receiver MUST acknowledge any subsequent PUBLISH packet with the same Packet Identifier by sending a PUBREC. It MUST NOT cause duplicate messages to be delivered to any onward recipients in this case .",
+      "source_anchor": "_Toc473620282",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-11",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST respond to a PUBREL packet by sending a PUBCOMP packet containing the same Packet Identifier as the PUBREL .",
+      "source_anchor": "_Toc473620282",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-12",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "After it has sent a PUBCOMP, the receiver MUST treat any subsequent PUBLISH packet that contains that Packet Identifier as being a new Application Message .",
+      "source_anchor": "_Toc473620282",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.3.3-13",
+      "section_number": "4.3.3",
+      "section_title": "QoS 2: Exactly once delivery",
+      "obligation": "MUST",
+      "summary": "MUST continue the QoS 2 acknowledgement sequence even if it has applied message expiry .",
+      "source_anchor": "_Toc473620282",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.4.0-1",
+      "section_number": "4.4",
+      "section_title": "Message delivery retry",
+      "obligation": "MUST",
+      "summary": "When a Client reconnects with Clean Start set to 0 and a session is present, both the Client and Server MUST resend any unacknowledged PUBLISH packets (where QoS > 0) and PUBREL packets using their original Packet Identifiers.",
+      "source_anchor": "_Message_delivery_retry",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.4.0-2",
+      "section_number": "4.4",
+      "section_title": "Message delivery retry",
+      "obligation": "MUST NOT",
+      "summary": "If PUBACK or PUBREC is received containing a Reason Code of 0x80 or greater the corresponding PUBLISH packet is treated as acknowledged, and MUST NOT be retransmitted .",
+      "source_anchor": "_Message_delivery_retry",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.5.0-1",
+      "section_number": "4.5",
+      "section_title": "Message receipt",
+      "obligation": "MUST",
+      "summary": "When a Server takes ownership of an incoming Application Message it MUST add it to the Session State for those Clients that have matching Subscriptions . Matching rules are defined in section 4.7.",
+      "source_anchor": "_Toc384800477",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.5.0-2",
+      "section_number": "4.5",
+      "section_title": "Message receipt",
+      "obligation": "MUST",
+      "summary": "Under normal circumstances Clients receive messages in response to Subscriptions they have created. A Client could also receive messages that do not match any of its explicit Subscriptions. This can happen if the Server automatically assigned a subscription to the Client.",
+      "source_anchor": "_Toc384800477",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.6.0-1",
+      "section_number": "4.6",
+      "section_title": "Message ordering",
+      "obligation": "MUST",
+      "summary": "When the Client re-sends any PUBLISH packets, it MUST re-send them in the order in which the original PUBLISH packets were sent (this applies to QoS 1 and QoS 2 messages)",
+      "source_anchor": "_Toc384800478",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.6.0-2",
+      "section_number": "4.6",
+      "section_title": "Message ordering",
+      "obligation": "MUST",
+      "summary": "The Client MUST send PUBACK packets in the order in which the corresponding PUBLISH packets were received (QoS 1 messages)",
+      "source_anchor": "_Toc384800478",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.6.0-3",
+      "section_number": "4.6",
+      "section_title": "Message ordering",
+      "obligation": "MUST",
+      "summary": "The Client MUST send PUBREC packets in the order in which the corresponding PUBLISH packets were received (QoS 2 messages)",
+      "source_anchor": "_Toc384800478",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.6.0-4",
+      "section_number": "4.6",
+      "section_title": "Message ordering",
+      "obligation": "MUST",
+      "summary": "The Client MUST send PUBREL packets in the order in which the corresponding PUBREC packets were received (QoS 2 messages)",
+      "source_anchor": "_Toc384800478",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.6.0-5",
+      "section_number": "4.6",
+      "section_title": "Message ordering",
+      "obligation": "MUST",
+      "summary": "An Ordered Topic is a Topic where the Client can be certain that the Application Messages in that Topic from the same Client and at the same QoS are received are in the order they were published. When a Server processes a message that has been published to an Ordered Topic, it...",
+      "source_anchor": "_Toc384800478",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.6.0-6",
+      "section_number": "4.6",
+      "section_title": "Message ordering",
+      "obligation": "MUST",
+      "summary": "By default, a Server MUST treat every Topic as an Ordered Topic when it is forwarding messages on Non\u2011shared Subscriptions. . A Server MAY provide an administrative or other mechanism to allow one or more Topics to not be treated as an Ordered Topic.",
+      "source_anchor": "_Toc384800478",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.0-1",
+      "section_number": "4.7.1",
+      "section_title": "Topic wildcards",
+      "obligation": "MUST NOT",
+      "summary": "The wildcard characters can be used in Topic Filters, but MUST NOT be used within a Topic Name .",
+      "source_anchor": "_Topic_wildcards",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.1-1",
+      "section_number": "4.7.1.2",
+      "section_title": "Multi-level wildcard",
+      "obligation": "MUST",
+      "summary": "The number sign (\u2018#\u2019 U+0023) is a wildcard character that matches any number of levels within a topic. The multi-level wildcard represents the parent and any number of child levels. The multi-level wildcard character MUST be specified either on its own or following a topic lev...",
+      "source_anchor": "_Toc385349376",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.1-2",
+      "section_number": "4.7.1.3",
+      "section_title": "Single-level wildcard",
+      "obligation": "MUST",
+      "summary": "The single-level wildcard can be used at any level in the Topic Filter, including first and last levels. Where it is used, it MUST occupy an entire level of the filter . It can be used at more than one level in the Topic Filter and can be used in conjunction with the multi-lev...",
+      "source_anchor": "_Toc385349377",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.2-1",
+      "section_number": "4.7.2",
+      "section_title": "Topics beginning with $",
+      "obligation": "MUST NOT",
+      "summary": "The Server MUST NOT match Topic Filters starting with a wildcard character (# or +) with Topic Names beginning with a $ character . The Server SHOULD prevent Clients from using such Topic Names to exchange messages with other Clients.",
+      "source_anchor": "_Toc384800481",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.3-1",
+      "section_number": "4.7.3",
+      "section_title": "Topic semantic and usage",
+      "obligation": "MUST",
+      "summary": "\u00b7 All Topic Names and Topic Filters MUST be at least one character long",
+      "source_anchor": "_Toc384800482",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.3-2",
+      "section_number": "4.7.3",
+      "section_title": "Topic semantic and usage",
+      "obligation": "MUST NOT",
+      "summary": "\u00b7 Topic Names and Topic Filters MUST NOT include the null character (Unicode U+0000)",
+      "source_anchor": "_Toc384800482",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.3-3",
+      "section_number": "4.7.3",
+      "section_title": "Topic semantic and usage",
+      "obligation": "MUST NOT",
+      "summary": "\u00b7 Topic Names and Topic Filters are UTF-8 Encoded Strings; they MUST NOT encode to more than 65,535 bytes . Refer to section 1.5.4.",
+      "source_anchor": "_Toc384800482",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.7.3-4",
+      "section_number": "4.7.3",
+      "section_title": "Topic semantic and usage",
+      "obligation": "MUST NOT",
+      "summary": "When it performs subscription matching the Server MUST NOT perform any normalization of Topic Names or Topic Filters, or any modification or substitution of unrecognized characters . Each non-wildcarded level in the Topic Filter has to match the corresponding level in the Topi...",
+      "source_anchor": "_Toc384800482",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.8.2-1",
+      "section_number": "4.8.2",
+      "section_title": "Shared Subscriptions",
+      "obligation": "MUST",
+      "summary": "A Shared Subscription's Topic Filter MUST start with $share/ and MUST contain a ShareName that is at least one character long . The ShareName MUST NOT contain the characters \"/\", \"+\" or \"#\", but MUST be followed by a \"/\" character.",
+      "source_anchor": "_Shared_Subscriptions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.8.2-2",
+      "section_number": "4.8.2",
+      "section_title": "Shared Subscriptions",
+      "obligation": "MUST",
+      "summary": "A Shared Subscription's Topic Filter MUST start with $share/ and MUST contain a ShareName that is at least one character long . The ShareName MUST NOT contain the characters \"/\", \"+\" or \"#\", but MUST be followed by a \"/\" character.",
+      "source_anchor": "_Shared_Subscriptions",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.8.2-3",
+      "section_number": "4.8.2",
+      "section_title": "Shared Subscriptions",
+      "obligation": "MUST",
+      "summary": "\u00b7 Different subscribing Clients are permitted to ask for different Requested QoS levels in their SUBSCRIBE packets. The Server decides which Maximum QoS to grant to each Client, and it is permitted to grant different Maximum QoS levels to different subscribers.",
+      "source_anchor": "_Toc473620306",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.8.2-4",
+      "section_number": "4.8.2",
+      "section_title": "Shared Subscriptions",
+      "obligation": "MUST",
+      "summary": "\u00b7 If the Server is in the process of sending a QoS 2 message to its chosen subscribing Client and the connection to the Client breaks before delivery is complete, the Server MUST complete the delivery of the message to that Client when it reconnects as described in section 4.3.3.",
+      "source_anchor": "_Toc473620306",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.8.2-5",
+      "section_number": "4.8.2",
+      "section_title": "Shared Subscriptions",
+      "obligation": "MUST",
+      "summary": "\u00b7 If the Server is in the process of sending a QoS 2 message to its chosen subscribing Client and the connection to the Client breaks before delivery is complete, the Server MUST complete the delivery of the message to that Client when it reconnects as described in section 4.3.3.",
+      "source_anchor": "_Toc473620306",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.8.2-6",
+      "section_number": "4.8.2",
+      "section_title": "Shared Subscriptions",
+      "obligation": "MUST",
+      "summary": "\u00b7 If a Client responds with a PUBACK or PUBREC containing a Reason Code of 0x80 or greater to a PUBLISH packet from the Server, the Server MUST discard the Application Message and not attempt to send it to any other Subscriber .",
+      "source_anchor": "_Toc473620306",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.9.0-1",
+      "section_number": "4.9",
+      "section_title": "Flow Control",
+      "obligation": "MUST",
+      "summary": "The Client or Server MUST set its initial send quota to a non-zero value not exceeding the Receive Maximum .",
+      "source_anchor": "_Hlk484158938",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.9.0-2",
+      "section_number": "4.9",
+      "section_title": "Flow Control",
+      "obligation": "MUST NOT",
+      "summary": "Each time the Client or Server sends a PUBLISH packet at QoS > 0, it decrements the send quota. If the send quota reaches zero, the Client or Server MUST NOT send any more PUBLISH packets with QoS > 0 . It MAY continue to send PUBLISH packets with QoS 0, or it MAY choose to su...",
+      "source_anchor": "_Hlk484158938",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.9.0-3",
+      "section_number": "4.9",
+      "section_title": "Flow Control",
+      "obligation": "MUST NOT",
+      "summary": "Each time the Client or Server sends a PUBLISH packet at QoS > 0, it decrements the send quota. If the send quota reaches zero, the Client or Server MUST NOT send any more PUBLISH packets with QoS > 0 . It MAY continue to send PUBLISH packets with QoS 0, or it MAY choose to su...",
+      "source_anchor": "_Hlk484158938",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-1",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MAY",
+      "summary": "To begin an enhanced authentication, the Client includes an Authentication Method in the CONNECT packet. This specifies the authentication method to use. If the Server does not support the Authentication Method supplied by the Client, it MAY send a CONNACK with a Reason Code o...",
+      "source_anchor": "_Enhanced_authentication",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-2",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MUST",
+      "summary": "If the Server requires additional information to complete the authentication, it can send an AUTH packet to the Client. This packet MUST contain a Reason Code of 0x18 (Continue authentication) . If the authentication method requires the Server to send authentication data to th...",
+      "source_anchor": "_Toc473620317",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-3",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MUST",
+      "summary": "The Client responds to an AUTH packet from the Server by sending a further AUTH packet. This packet MUST contain a Reason Code of 0x18 (Continue authentication) . If the authentication method requires the Client to send authentication data for the Server, it is sent in the Aut...",
+      "source_anchor": "_Toc473620317",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-4",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MAY",
+      "summary": "The Client can close the connection at any point in this process. It MAY send a DISCONNECT packet before doing so. The Server can reject the authentication at any point in this process. It MAY send a CONNACK with a Reason Code of 0x80 or above as described in section 4.13, and...",
+      "source_anchor": "_Toc473620317",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-5",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MUST",
+      "summary": "If the initial CONNECT packet included an Authentication Method property then all AUTH packets, and any successful CONNACK packet MUST include an Authentication Method Property with the same value as in the CONNECT packet .",
+      "source_anchor": "_Toc473620317",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-6",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MUST NOT",
+      "summary": "The implementation of enhanced authentication is OPTIONAL for both Clients and Servers. If the Client does not include an Authentication Method in the CONNECT, the Server MUST NOT send an AUTH packet, and it MUST NOT send an Authentication Method in the CONNACK packet .",
+      "source_anchor": "_Toc473620317",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.0-7",
+      "section_number": "4.12",
+      "section_title": "Enhanced authentication",
+      "obligation": "MUST NOT",
+      "summary": "The implementation of enhanced authentication is OPTIONAL for both Clients and Servers. If the Client does not include an Authentication Method in the CONNECT, the Server MUST NOT send an AUTH packet, and it MUST NOT send an Authentication Method in the CONNACK packet .",
+      "source_anchor": "_Toc473620317",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.1-1",
+      "section_number": "4.12.1",
+      "section_title": "Re-authentication",
+      "obligation": "MUST",
+      "summary": "If the Client supplied an Authentication Method in the CONNECT packet it can initiate a re-authentication at any time after receiving a CONNACK. It does this by sending an AUTH packet with a Reason Code of 0x19 (Re-authentication).",
+      "source_anchor": "_Re-authentication",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.12.1-2",
+      "section_number": "4.12.1",
+      "section_title": "Re-authentication",
+      "obligation": "SHOULD",
+      "summary": "If the re-authentication fails, the Client or Server SHOULD send DISCONNECT with an appropriate Reason Code as described in section 4.13, and MUST close the Network Connection .",
+      "source_anchor": "_Re-authentication",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.13.1-1",
+      "section_number": "4.13.1",
+      "section_title": "Malformed Packet and Protocol Errors",
+      "obligation": "MUST",
+      "summary": "When a Server detects a Malformed Packet or Protocol Error, and a Reason Code is given in the specification, it MUST close the Network Connection . In the case of an error in a CONNECT packet it MAY send a CONNACK packet containing the Reason Code, before closing the Network C...",
+      "source_anchor": "_Ref477790493",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-4.13.2-1",
+      "section_number": "4.13.2",
+      "section_title": "Other errors",
+      "obligation": "MUST",
+      "summary": "The CONNACK and DISCONNECT packets allow a Reason Code of 0x80 or greater to indicate that the Network Connection will be closed. If a Reason Code of 0x80 or greater is specified, then the Network Connection MUST be closed whether or not the CONNACK or DISCONNECT is sent .",
+      "source_anchor": "_Toc511988737",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+    },
+    {
+      "id": "MQTT-6.0.0-1",
+      "section_number": "6",
+      "section_title": "Using WebSocket as a network transport",
+      "obligation": "MUST",
+      "summary": "\u00b7 MQTT Control Packets MUST be sent in WebSocket binary data frames. If any other type of data frame is received the recipient MUST close the Network Connection .",
+      "source_anchor": "_Using_WebSocket_as",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Fallback mapping for section 6 (Using WebSocket as a network transport)."
+    },
+    {
+      "id": "MQTT-6.0.0-2",
+      "section_number": "6",
+      "section_title": "Using WebSocket as a network transport",
+      "obligation": "MUST NOT",
+      "summary": "\u00b7 A single WebSocket data frame can contain multiple or partial MQTT Control Packets. The receiver MUST NOT assume that MQTT Control Packets are aligned on WebSocket frame boundaries .",
+      "source_anchor": "_Using_WebSocket_as",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Fallback mapping for section 6 (Using WebSocket as a network transport)."
+    },
+    {
+      "id": "MQTT-6.0.0-3",
+      "section_number": "6",
+      "section_title": "Using WebSocket as a network transport",
+      "obligation": "MUST",
+      "summary": "\u00b7 The Client MUST include \u201cmqtt\u201d in the list of WebSocket Sub Protocols it offers .",
+      "source_anchor": "_Using_WebSocket_as",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Fallback mapping for section 6 (Using WebSocket as a network transport)."
+    },
+    {
+      "id": "MQTT-6.0.0-4",
+      "section_number": "6",
+      "section_title": "Using WebSocket as a network transport",
+      "obligation": "MUST",
+      "summary": "\u00b7 The WebSocket Subprotocol name selected and returned by the Server MUST be \u201cmqtt\u201d .",
+      "source_anchor": "_Using_WebSocket_as",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src"
+      ],
+      "mapping_status": "unreviewed",
+      "mapping_reason": "Fallback mapping for section 6 (Using WebSocket as a network transport)."
+    }
+  ]
+}
