@@ -53,7 +53,16 @@ impl Publish {
         1 + remaining_len_size + len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+    pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Result<Self, Error> {
+        Self::read_with_mode(fixed_header, bytes, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn read_with_mode(
+        fixed_header: FixedHeader,
+        mut bytes: Bytes,
+        mode: Utf8ComplianceMode,
+    ) -> Result<Self, Error> {
+        let mut warned = false;
         let qos = qos((fixed_header.byte1 & 0b0110) >> 1)?;
         let dup = (fixed_header.byte1 & 0b1000) != 0;
         let retain = (fixed_header.byte1 & 0b0001) != 0;
@@ -64,7 +73,7 @@ impl Publish {
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
         let topic = read_mqtt_bytes(&mut bytes)?;
-        validate_publish_topic_name(&topic)?;
+        validate_publish_topic_name_with_mode(&topic, mode, &mut warned, "decode")?;
 
         // Packet identifier exists where QoS > 0
         let pkid = match qos {
@@ -89,6 +98,15 @@ impl Publish {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        self.write_with_mode(buffer, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn write_with_mode(
+        &self,
+        buffer: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+    ) -> Result<usize, Error> {
+        let mut warned = false;
         if self.qos == QoS::AtMostOnce && self.dup {
             return Err(Error::IncorrectPacketFormat);
         }
@@ -100,7 +118,7 @@ impl Publish {
         let retain = u8::from(self.retain);
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
-        validate_publish_topic_name(&self.topic)?;
+        validate_publish_topic_name_with_mode(&self.topic, mode, &mut warned, "encode")?;
 
         let count = write_remaining_length(buffer, len)?;
         write_mqtt_bytes(buffer, &self.topic);
@@ -120,7 +138,12 @@ impl Publish {
     }
 }
 
-fn validate_publish_topic_name(topic: &[u8]) -> Result<(), Error> {
+fn validate_publish_topic_name_with_mode(
+    topic: &[u8],
+    mode: Utf8ComplianceMode,
+    warned: &mut bool,
+    phase: &'static str,
+) -> Result<(), Error> {
     if topic.is_empty() {
         return Err(Error::IncorrectPacketFormat);
     }
@@ -129,11 +152,7 @@ fn validate_publish_topic_name(topic: &[u8]) -> Result<(), Error> {
         return Err(Error::IncorrectPacketFormat);
     }
 
-    if std::str::from_utf8(topic).is_err() {
-        return Err(Error::TopicNotUtf8);
-    }
-
-    Ok(())
+    validate_utf8_slice_with_mode(topic, mode, warned, phase, "PUBLISH topic")
 }
 
 impl fmt::Debug for Publish {

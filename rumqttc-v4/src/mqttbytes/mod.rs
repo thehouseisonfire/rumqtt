@@ -12,6 +12,14 @@ pub mod v4;
 
 pub use mqttbytes_core::{QoS, has_wildcards, matches, valid_filter, valid_topic};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Utf8ComplianceMode {
+    #[default]
+    Permissive,
+    Warn,
+    Strict,
+}
+
 /// Error during serialization and deserialization
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -202,6 +210,17 @@ fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
     core_primitives::read_mqtt_string(stream).map_err(map_primitive_error)
 }
 
+pub(crate) fn read_mqtt_string_with_mode(
+    stream: &mut Bytes,
+    mode: Utf8ComplianceMode,
+    warned: &mut bool,
+    field: &'static str,
+) -> Result<String, Error> {
+    let value = read_mqtt_string(stream)?;
+    validate_utf8_string_with_mode(&value, mode, warned, "decode", field)?;
+    Ok(value)
+}
+
 /// Serializes bytes to stream (including length)
 fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
     core_primitives::write_mqtt_bytes(stream, bytes);
@@ -210,6 +229,18 @@ fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
 /// Serializes a string to stream
 fn write_mqtt_string(stream: &mut BytesMut, string: &str) {
     core_primitives::write_mqtt_string(stream, string);
+}
+
+pub(crate) fn write_mqtt_string_with_mode(
+    stream: &mut BytesMut,
+    string: &str,
+    mode: Utf8ComplianceMode,
+    warned: &mut bool,
+    field: &'static str,
+) -> Result<(), Error> {
+    validate_utf8_string_with_mode(string, mode, warned, "encode", field)?;
+    write_mqtt_string(stream, string);
+    Ok(())
 }
 
 /// Writes remaining length to stream and returns number of bytes for remaining length
@@ -233,6 +264,48 @@ fn read_u16(stream: &mut Bytes) -> Result<u16, Error> {
 
 fn read_u8(stream: &mut Bytes) -> Result<u8, Error> {
     core_primitives::read_u8(stream).map_err(map_primitive_error)
+}
+
+pub(crate) fn validate_utf8_slice_with_mode(
+    bytes: &[u8],
+    mode: Utf8ComplianceMode,
+    warned: &mut bool,
+    phase: &'static str,
+    field: &'static str,
+) -> Result<(), Error> {
+    let value = std::str::from_utf8(bytes).map_err(|_| Error::TopicNotUtf8)?;
+    validate_utf8_string_with_mode(value, mode, warned, phase, field)
+}
+
+fn validate_utf8_string_with_mode(
+    value: &str,
+    mode: Utf8ComplianceMode,
+    warned: &mut bool,
+    phase: &'static str,
+    field: &'static str,
+) -> Result<(), Error> {
+    if mode == Utf8ComplianceMode::Permissive {
+        return Ok(());
+    }
+
+    let Some(code_point) = core_primitives::first_mqtt_discouraged_code_point(value) else {
+        return Ok(());
+    };
+
+    match mode {
+        Utf8ComplianceMode::Permissive => Ok(()),
+        Utf8ComplianceMode::Warn => {
+            if !*warned {
+                warn!(
+                    "MQTT UTF-8 {} field '{}' contains discouraged code point U+{:04X}; accepting in Warn mode",
+                    phase, field, code_point
+                );
+                *warned = true;
+            }
+            Ok(())
+        }
+        Utf8ComplianceMode::Strict => Err(Error::IncorrectPacketFormat),
+    }
 }
 
 fn map_primitive_error(error: PrimitiveError) -> Error {

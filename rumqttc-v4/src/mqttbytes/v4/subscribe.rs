@@ -50,7 +50,16 @@ impl Subscribe {
         1 + remaining_len_size + len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+    pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Result<Self, Error> {
+        Self::read_with_mode(fixed_header, bytes, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn read_with_mode(
+        fixed_header: FixedHeader,
+        mut bytes: Bytes,
+        mode: Utf8ComplianceMode,
+    ) -> Result<Self, Error> {
+        let mut warned = false;
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
 
@@ -60,7 +69,8 @@ impl Subscribe {
         let mut filters = Vec::new();
 
         while bytes.has_remaining() {
-            let path = read_mqtt_string(&mut bytes)?;
+            let path =
+                read_mqtt_string_with_mode(&mut bytes, mode, &mut warned, "SUBSCRIBE filter")?;
             let options = read_u8(&mut bytes)?;
             if options & 0b1111_1100 != 0 {
                 return Err(Error::IncorrectPacketFormat);
@@ -80,6 +90,15 @@ impl Subscribe {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        self.write_with_mode(buffer, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn write_with_mode(
+        &self,
+        buffer: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+    ) -> Result<usize, Error> {
+        let mut warned = false;
         // write packet type
         buffer.put_u8(0x82);
 
@@ -92,7 +111,7 @@ impl Subscribe {
 
         // write filters
         for filter in self.filters.iter() {
-            filter.write(buffer);
+            filter.write_with_mode(buffer, mode, &mut warned)?;
         }
 
         Ok(1 + remaining_len_bytes + remaining_len)
@@ -117,12 +136,18 @@ impl SubscribeFilter {
         2 + self.path.len() + 1
     }
 
-    fn write(&self, buffer: &mut BytesMut) {
+    fn write_with_mode(
+        &self,
+        buffer: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+        warned: &mut bool,
+    ) -> Result<(), Error> {
         let mut options = 0;
         options |= self.qos as u8;
 
-        write_mqtt_string(buffer, self.path.as_str());
+        write_mqtt_string_with_mode(buffer, self.path.as_str(), mode, warned, "SUBSCRIBE filter")?;
         buffer.put_u8(options);
+        Ok(())
     }
 }
 

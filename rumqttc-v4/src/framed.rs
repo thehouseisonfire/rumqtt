@@ -18,11 +18,13 @@ impl Network {
         socket: impl AsyncReadWrite + 'static,
         max_incoming_size: usize,
         max_outgoing_size: usize,
+        utf8_compliance_mode: mqttbytes::Utf8ComplianceMode,
     ) -> Network {
         let socket = Box::new(socket) as Box<dyn AsyncReadWrite>;
         let codec = Codec {
             max_incoming_size,
             max_outgoing_size,
+            utf8_compliance_mode,
         };
         let framed = Framed::new(socket, codec);
 
@@ -100,7 +102,12 @@ mod tests {
     #[tokio::test]
     async fn readb_processes_exactly_two_packets_when_limit_is_two() {
         let (client, mut peer) = duplex(64);
-        let mut network = Network::new(client, 1024, 1024);
+        let mut network = Network::new(
+            client,
+            1024,
+            1024,
+            mqttbytes::Utf8ComplianceMode::Permissive,
+        );
         let mut state = MqttState::new(10, false);
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
@@ -113,7 +120,12 @@ mod tests {
     #[tokio::test]
     async fn readb_processes_one_packet_when_limit_is_one() {
         let (client, mut peer) = duplex(64);
-        let mut network = Network::new(client, 1024, 1024);
+        let mut network = Network::new(
+            client,
+            1024,
+            1024,
+            mqttbytes::Utf8ComplianceMode::Permissive,
+        );
         let mut state = MqttState::new(10, false);
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();

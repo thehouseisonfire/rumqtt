@@ -302,6 +302,8 @@ pub struct MqttOptions {
     /// Every incoming publish packet must be acknowledged manually with either
     /// `client.ack(...)` or the `prepare_ack(...)` + `manual_ack(...)` flow.
     manual_acks: bool,
+    /// Policy for handling MQTT UTF-8 discouraged code points.
+    utf8_compliance_mode: Utf8ComplianceMode,
     #[cfg(feature = "proxy")]
     /// Proxy configuration.
     proxy: Option<Proxy>,
@@ -340,6 +342,7 @@ impl MqttOptions {
             inflight: 100,
             last_will: None,
             manual_acks: false,
+            utf8_compliance_mode: Utf8ComplianceMode::Permissive,
             #[cfg(feature = "proxy")]
             proxy: None,
             #[cfg(feature = "websocket")]
@@ -557,6 +560,15 @@ impl MqttOptions {
     /// get manual acknowledgements
     pub fn manual_acks(&self) -> bool {
         self.manual_acks
+    }
+
+    pub fn set_utf8_compliance_mode(&mut self, mode: Utf8ComplianceMode) -> &mut Self {
+        self.utf8_compliance_mode = mode;
+        self
+    }
+
+    pub fn utf8_compliance_mode(&self) -> Utf8ComplianceMode {
+        self.utf8_compliance_mode
     }
 
     #[cfg(feature = "proxy")]
@@ -878,6 +890,7 @@ impl Debug for MqttOptions {
             .field("inflight", &self.inflight)
             .field("last_will", &self.last_will)
             .field("manual_acks", &self.manual_acks)
+            .field("utf8_compliance_mode", &self.utf8_compliance_mode)
             .finish_non_exhaustive()
     }
 }
@@ -1060,5 +1073,21 @@ mod test {
         let mut options = MqttOptions::new("client_id", "127.0.0.1", 1883);
         options.set_read_batch_size(48);
         assert_eq!(options.read_batch_size(), 48);
+    }
+
+    #[test]
+    fn utf8_compliance_mode_defaults_to_permissive() {
+        let options = MqttOptions::new("client_id", "127.0.0.1", 1883);
+        assert_eq!(
+            options.utf8_compliance_mode(),
+            Utf8ComplianceMode::Permissive
+        );
+    }
+
+    #[test]
+    fn set_utf8_compliance_mode() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1", 1883);
+        options.set_utf8_compliance_mode(Utf8ComplianceMode::Strict);
+        assert_eq!(options.utf8_compliance_mode(), Utf8ComplianceMode::Strict);
     }
 }

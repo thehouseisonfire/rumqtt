@@ -29,7 +29,16 @@ impl Unsubscribe {
         1 + remaining_len_size + len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+    pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Result<Self, Error> {
+        Self::read_with_mode(fixed_header, bytes, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn read_with_mode(
+        fixed_header: FixedHeader,
+        mut bytes: Bytes,
+        mode: Utf8ComplianceMode,
+    ) -> Result<Self, Error> {
+        let mut warned = false;
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
 
@@ -38,7 +47,8 @@ impl Unsubscribe {
         let mut topics = Vec::with_capacity(1);
 
         while payload_bytes > 0 {
-            let topic_filter = read_mqtt_string(&mut bytes)?;
+            let topic_filter =
+                read_mqtt_string_with_mode(&mut bytes, mode, &mut warned, "UNSUBSCRIBE filter")?;
             payload_bytes -= topic_filter.len() + 2;
             topics.push(topic_filter);
         }
@@ -48,6 +58,15 @@ impl Unsubscribe {
     }
 
     pub fn write(&self, payload: &mut BytesMut) -> Result<usize, Error> {
+        self.write_with_mode(payload, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn write_with_mode(
+        &self,
+        payload: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+    ) -> Result<usize, Error> {
+        let mut warned = false;
         let remaining_len = self.len();
 
         payload.put_u8(0xA2);
@@ -55,7 +74,13 @@ impl Unsubscribe {
         payload.put_u16(self.pkid);
 
         for topic in self.topics.iter() {
-            write_mqtt_string(payload, topic.as_str());
+            write_mqtt_string_with_mode(
+                payload,
+                topic.as_str(),
+                mode,
+                &mut warned,
+                "UNSUBSCRIBE filter",
+            )?;
         }
         Ok(1 + remaining_len_bytes + remaining_len)
     }

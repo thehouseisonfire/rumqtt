@@ -71,6 +71,14 @@ impl Packet {
 
     /// Reads a stream of bytes and extracts next MQTT packet out of it
     pub fn read(stream: &mut BytesMut, max_size: usize) -> Result<Self, Error> {
+        Self::read_with_mode(stream, max_size, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn read_with_mode(
+        stream: &mut BytesMut,
+        max_size: usize,
+        mode: Utf8ComplianceMode,
+    ) -> Result<Self, Error> {
         let fixed_header = check(stream.iter(), max_size)?;
 
         // Test with a stream with exactly the size to check border panics
@@ -90,17 +98,23 @@ impl Packet {
 
         let packet = packet.freeze();
         let packet = match packet_type {
-            PacketType::Connect => Packet::Connect(Connect::read(fixed_header, packet)?),
+            PacketType::Connect => {
+                Packet::Connect(Connect::read_with_mode(fixed_header, packet, mode)?)
+            }
             PacketType::ConnAck => Packet::ConnAck(ConnAck::read(fixed_header, packet)?),
-            PacketType::Publish => Packet::Publish(Publish::read(fixed_header, packet)?),
+            PacketType::Publish => {
+                Packet::Publish(Publish::read_with_mode(fixed_header, packet, mode)?)
+            }
             PacketType::PubAck => Packet::PubAck(PubAck::read(fixed_header, packet)?),
             PacketType::PubRec => Packet::PubRec(PubRec::read(fixed_header, packet)?),
             PacketType::PubRel => Packet::PubRel(PubRel::read(fixed_header, packet)?),
             PacketType::PubComp => Packet::PubComp(PubComp::read(fixed_header, packet)?),
-            PacketType::Subscribe => Packet::Subscribe(Subscribe::read(fixed_header, packet)?),
+            PacketType::Subscribe => {
+                Packet::Subscribe(Subscribe::read_with_mode(fixed_header, packet, mode)?)
+            }
             PacketType::SubAck => Packet::SubAck(SubAck::read(fixed_header, packet)?),
             PacketType::Unsubscribe => {
-                Packet::Unsubscribe(Unsubscribe::read(fixed_header, packet)?)
+                Packet::Unsubscribe(Unsubscribe::read_with_mode(fixed_header, packet, mode)?)
             }
             PacketType::UnsubAck => Packet::UnsubAck(UnsubAck::read(fixed_header, packet)?),
             PacketType::PingReq => Packet::PingReq,
@@ -113,6 +127,15 @@ impl Packet {
 
     /// Serializes the MQTT packet into a stream of bytes
     pub fn write(&self, stream: &mut BytesMut, max_size: usize) -> Result<usize, Error> {
+        self.write_with_mode(stream, max_size, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn write_with_mode(
+        &self,
+        stream: &mut BytesMut,
+        max_size: usize,
+        mode: Utf8ComplianceMode,
+    ) -> Result<usize, Error> {
         if self.size() > max_size {
             return Err(Error::OutgoingPacketTooLarge {
                 pkt_size: self.size(),
@@ -121,16 +144,16 @@ impl Packet {
         }
 
         match self {
-            Packet::Connect(c) => c.write(stream),
+            Packet::Connect(c) => c.write_with_mode(stream, mode),
             Packet::ConnAck(c) => c.write(stream),
-            Packet::Publish(p) => p.write(stream),
+            Packet::Publish(p) => p.write_with_mode(stream, mode),
             Packet::PubAck(p) => p.write(stream),
             Packet::PubRec(p) => p.write(stream),
             Packet::PubRel(p) => p.write(stream),
             Packet::PubComp(p) => p.write(stream),
-            Packet::Subscribe(s) => s.write(stream),
+            Packet::Subscribe(s) => s.write_with_mode(stream, mode),
             Packet::SubAck(s) => s.write(stream),
-            Packet::Unsubscribe(u) => u.write(stream),
+            Packet::Unsubscribe(u) => u.write_with_mode(stream, mode),
             Packet::UnsubAck(u) => u.write(stream),
             Packet::PingReq => PingReq.write(stream),
             Packet::PingResp => PingResp.write(stream),

@@ -123,6 +123,25 @@ pub fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
     Ok(s.to_owned())
 }
 
+#[must_use]
+pub fn is_mqtt_discouraged_code_point(ch: char) -> bool {
+    let code = ch as u32;
+
+    code == 0x0000
+        || (0x0001..=0x001F).contains(&code)
+        || (0x007F..=0x009F).contains(&code)
+        || (0xFDD0..=0xFDEF).contains(&code)
+        || (code & 0xFFFF) == 0xFFFE
+        || (code & 0xFFFF) == 0xFFFF
+}
+
+#[must_use]
+pub fn first_mqtt_discouraged_code_point(s: &str) -> Option<u32> {
+    s.chars()
+        .find(|ch| is_mqtt_discouraged_code_point(*ch))
+        .map(|ch| ch as u32)
+}
+
 /// Serializes bytes to stream (including length)
 pub fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
     let len = u16::try_from(bytes.len()).expect("MQTT string/bytes length must fit in u16");
@@ -236,5 +255,25 @@ mod tests {
         let b = [0x30u8, 0x05, 1, 2];
         let result = check(b.iter());
         assert_eq!(result, Err(Error::InsufficientBytes(3)));
+    }
+
+    #[test]
+    fn mqtt_discouraged_code_points_are_detected() {
+        assert_eq!(
+            first_mqtt_discouraged_code_point("a\u{0000}b"),
+            Some(0x0000)
+        );
+        assert_eq!(first_mqtt_discouraged_code_point("\u{009F}"), Some(0x009F));
+        assert_eq!(first_mqtt_discouraged_code_point("\u{FDEF}"), Some(0xFDEF));
+        assert_eq!(
+            first_mqtt_discouraged_code_point("\u{1FFFF}"),
+            Some(0x1FFFF)
+        );
+    }
+
+    #[test]
+    fn mqtt_non_discouraged_code_points_pass() {
+        assert_eq!(first_mqtt_discouraged_code_point("hello/world"), None);
+        assert_eq!(first_mqtt_discouraged_code_point("cafe\u{00E9}"), None);
     }
 }

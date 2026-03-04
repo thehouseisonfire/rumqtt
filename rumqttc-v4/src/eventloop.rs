@@ -559,6 +559,7 @@ async fn network_connect(
             socket,
             options.max_incoming_packet_size,
             options.max_outgoing_packet_size,
+            options.utf8_compliance_mode(),
         );
         return Ok(network);
     }
@@ -600,6 +601,7 @@ async fn network_connect(
             tcp_stream,
             options.max_incoming_packet_size,
             options.max_outgoing_packet_size,
+            options.utf8_compliance_mode(),
         ),
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         Transport::Tls(tls_config) => {
@@ -610,6 +612,7 @@ async fn network_connect(
                 socket,
                 options.max_incoming_packet_size,
                 options.max_outgoing_packet_size,
+                options.utf8_compliance_mode(),
             )
         }
         #[cfg(unix)]
@@ -637,6 +640,7 @@ async fn network_connect(
                 WsAdapter::new(socket),
                 options.max_incoming_packet_size,
                 options.max_outgoing_packet_size,
+                options.utf8_compliance_mode(),
             )
         }
         #[cfg(all(
@@ -666,6 +670,7 @@ async fn network_connect(
                 WsAdapter::new(socket),
                 options.max_incoming_packet_size,
                 options.max_outgoing_packet_size,
+                options.utf8_compliance_mode(),
             )
         }
     };
@@ -943,7 +948,12 @@ mod tests {
         let options = MqttOptions::new("test-client", "localhost", 1883);
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
         let (client, _peer) = tokio::io::duplex(1024);
-        eventloop.network = Some(Network::new(client, 1024, 16));
+        eventloop.network = Some(Network::new(
+            client,
+            1024,
+            16,
+            crate::Utf8ComplianceMode::Permissive,
+        ));
 
         let (notice_tx, notice) = PublishNoticeTx::new();
         let publish = Publish::new(
@@ -970,7 +980,12 @@ mod tests {
         options.set_max_request_batch(2);
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
         let (client, _peer) = tokio::io::duplex(1024);
-        eventloop.network = Some(Network::new(client, 1024, 80));
+        eventloop.network = Some(Network::new(
+            client,
+            1024,
+            80,
+            crate::Utf8ComplianceMode::Permissive,
+        ));
 
         let small_publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtMostOnce, vec![1]);
         let large_publish = Publish::new(

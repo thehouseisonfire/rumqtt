@@ -61,12 +61,22 @@ impl Connect {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Connect, Error> {
+    pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Result<Connect, Error> {
+        Self::read_with_mode(fixed_header, bytes, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn read_with_mode(
+        fixed_header: FixedHeader,
+        mut bytes: Bytes,
+        mode: Utf8ComplianceMode,
+    ) -> Result<Connect, Error> {
+        let mut warned = false;
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
 
         // Variable header
-        let protocol_name = read_mqtt_string(&mut bytes)?;
+        let protocol_name =
+            read_mqtt_string_with_mode(&mut bytes, mode, &mut warned, "CONNECT protocol name")?;
         let protocol_level = read_u8(&mut bytes)?;
         if protocol_name != "MQTT" {
             return Err(Error::InvalidProtocol);
@@ -83,9 +93,10 @@ impl Connect {
         let clean_session = (connect_flags & 0b10) != 0;
         let keep_alive = read_u16(&mut bytes)?;
 
-        let client_id = read_mqtt_string(&mut bytes)?;
-        let last_will = LastWill::read(connect_flags, &mut bytes)?;
-        let login = Login::read(connect_flags, &mut bytes)?;
+        let client_id =
+            read_mqtt_string_with_mode(&mut bytes, mode, &mut warned, "CONNECT client id")?;
+        let last_will = LastWill::read_with_mode(connect_flags, &mut bytes, mode, &mut warned)?;
+        let login = Login::read_with_mode(connect_flags, &mut bytes, mode, &mut warned)?;
 
         let connect = Connect {
             protocol,
@@ -100,10 +111,19 @@ impl Connect {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        self.write_with_mode(buffer, Utf8ComplianceMode::Permissive)
+    }
+
+    pub(crate) fn write_with_mode(
+        &self,
+        buffer: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+    ) -> Result<usize, Error> {
+        let mut warned = false;
         let len = self.len();
         buffer.put_u8(0b0001_0000);
         let count = write_remaining_length(buffer, len)?;
-        write_mqtt_string(buffer, "MQTT");
+        write_mqtt_string_with_mode(buffer, "MQTT", mode, &mut warned, "CONNECT protocol name")?;
 
         match self.protocol {
             Protocol::V4 => buffer.put_u8(0x04),
@@ -119,14 +139,20 @@ impl Connect {
 
         buffer.put_u8(connect_flags);
         buffer.put_u16(self.keep_alive);
-        write_mqtt_string(buffer, &self.client_id);
+        write_mqtt_string_with_mode(
+            buffer,
+            &self.client_id,
+            mode,
+            &mut warned,
+            "CONNECT client id",
+        )?;
 
         if let Some(last_will) = &self.last_will {
-            connect_flags |= last_will.write(buffer)?;
+            connect_flags |= last_will.write_with_mode(buffer, mode, &mut warned)?;
         }
 
         if let Some(login) = &self.login {
-            connect_flags |= login.write(buffer);
+            connect_flags |= login.write_with_mode(buffer, mode, &mut warned)?;
         }
 
         // update connect flags
@@ -172,14 +198,20 @@ impl LastWill {
         len
     }
 
-    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<LastWill>, Error> {
+    fn read_with_mode(
+        connect_flags: u8,
+        bytes: &mut Bytes,
+        mode: Utf8ComplianceMode,
+        warned: &mut bool,
+    ) -> Result<Option<LastWill>, Error> {
         let last_will = match connect_flags & 0b100 {
             0 if (connect_flags & 0b0011_1000) != 0 => {
                 return Err(Error::IncorrectPacketFormat);
             }
             0 => None,
             _ => {
-                let will_topic = read_mqtt_string(bytes)?;
+                let will_topic =
+                    read_mqtt_string_with_mode(bytes, mode, warned, "CONNECT will topic")?;
                 let will_message = read_mqtt_bytes(bytes)?;
                 let will_qos = qos((connect_flags & 0b11000) >> 3)?;
                 Some(LastWill {
@@ -194,7 +226,12 @@ impl LastWill {
         Ok(last_will)
     }
 
-    fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+    fn write_with_mode(
+        &self,
+        buffer: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+        warned: &mut bool,
+    ) -> Result<u8, Error> {
         let mut connect_flags = 0;
 
         connect_flags |= 0x04 | ((self.qos as u8) << 3);
@@ -202,7 +239,7 @@ impl LastWill {
             connect_flags |= 0x20;
         }
 
-        write_mqtt_string(buffer, &self.topic);
+        write_mqtt_string_with_mode(buffer, &self.topic, mode, warned, "CONNECT will topic")?;
         write_mqtt_bytes(buffer, &self.message);
         Ok(connect_flags)
     }
@@ -222,15 +259,20 @@ impl Login {
         }
     }
 
-    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
+    fn read_with_mode(
+        connect_flags: u8,
+        bytes: &mut Bytes,
+        mode: Utf8ComplianceMode,
+        warned: &mut bool,
+    ) -> Result<Option<Login>, Error> {
         let username = match connect_flags & 0b1000_0000 {
             0 => String::new(),
-            _ => read_mqtt_string(bytes)?,
+            _ => read_mqtt_string_with_mode(bytes, mode, warned, "CONNECT username")?,
         };
 
         let password = match connect_flags & 0b0100_0000 {
             0 => String::new(),
-            _ => read_mqtt_string(bytes)?,
+            _ => read_mqtt_string_with_mode(bytes, mode, warned, "CONNECT password")?,
         };
 
         if username.is_empty() && password.is_empty() {
@@ -254,19 +296,24 @@ impl Login {
         len
     }
 
-    fn write(&self, buffer: &mut BytesMut) -> u8 {
+    fn write_with_mode(
+        &self,
+        buffer: &mut BytesMut,
+        mode: Utf8ComplianceMode,
+        warned: &mut bool,
+    ) -> Result<u8, Error> {
         let mut connect_flags = 0;
         if !self.username.is_empty() || !self.password.is_empty() {
             connect_flags |= 0x80;
-            write_mqtt_string(buffer, &self.username);
+            write_mqtt_string_with_mode(buffer, &self.username, mode, warned, "CONNECT username")?;
         }
 
         if !self.password.is_empty() {
             connect_flags |= 0x40;
-            write_mqtt_string(buffer, &self.password);
+            write_mqtt_string_with_mode(buffer, &self.password, mode, warned, "CONNECT password")?;
         }
 
-        connect_flags
+        Ok(connect_flags)
     }
 
     #[must_use]
