@@ -71,6 +71,9 @@ next_version() {
   IFS=. read -r major minor patch <<<"$current"
 
   case "$release_type" in
+    current)
+      printf '%s\n' "$current"
+      ;;
     patch)
       printf '%s.%s.%s\n' "$major" "$minor" "$((patch + 1))"
       ;;
@@ -87,15 +90,15 @@ next_version() {
 prompt_release_type() {
   local reply
   while true; do
-    printf 'Release type: patch (0.0.x) or minor (0.x.0)? [patch/minor]: ' >&2
+    printf 'Release type: current (%s), patch (0.0.x), or minor (0.x.0)? [current/patch/minor]: ' "$(current_version)" >&2
     read -r reply
     case "$reply" in
-      patch|minor)
+      current|patch|minor)
         printf '%s\n' "$reply"
         return 0
         ;;
       *)
-        echo "Please answer 'patch' or 'minor'." >&2
+        echo "Please answer 'current', 'patch', or 'minor'." >&2
         ;;
     esac
   done
@@ -105,10 +108,15 @@ confirm_release() {
   local branch="$1"
   local current="$2"
   local next="$3"
+  local release_type="$4"
 
   echo
   echo "Current version : $current"
-  echo "Next version    : $next"
+  if [[ "$release_type" == "current" ]]; then
+    echo "Release version : $next (publish current version as-is)"
+  else
+    echo "Next version    : $next"
+  fi
   echo "Branch          : $branch"
   echo "Changelog title : rumqttc-next $next"
   echo "Publish order   : ${PUBLISH_ORDER[*]}"
@@ -227,7 +235,7 @@ commit_release() {
   local version="$1"
   git add CHANGELOG.md Cargo.lock "${MANIFESTS[@]}"
   git commit -m "release(packages): cut ${version}" \
-    -m "Bump the coordinated rumqttc-next release line to ${version}, cut the changelog, and prepare the publishable crates for release."
+    -m "Prepare the coordinated rumqttc-next crates for release ${version}, cut the changelog, and verify the publishable packages."
 }
 
 wait_for_crate_version() {
@@ -302,7 +310,7 @@ main() {
 
   assert_release_not_present "$next"
 
-  if ! confirm_release "$branch" "$current" "$next"; then
+  if ! confirm_release "$branch" "$current" "$next" "$release_type"; then
     echo "aborted"
     exit 1
   fi
