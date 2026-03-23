@@ -1,16 +1,33 @@
-# rumqttc-v5
+# rumqttc-v5-next
 
-[![crates.io page](https://img.shields.io/crates/v/rumqttc-v5.svg)](https://crates.io/crates/rumqttc-v5)
-[![docs.rs page](https://docs.rs/rumqttc-v5/badge.svg)](https://docs.rs/rumqttc-v5)
+[![crates.io page](https://img.shields.io/crates/v/rumqttc-v5-next.svg)](https://crates.io/crates/rumqttc-v5-next)
+[![docs.rs page](https://docs.rs/rumqttc-v5-next/badge.svg)](https://docs.rs/rumqttc-v5-next)
 
-A pure rust MQTT client which strives to be robust, efficient and easy to use. This library is backed by an async(using tokio) eventloop which enables users to send and receive MQTT messages in correspondence with a broker.
+`rumqttc-v5-next` is the explicit MQTT 5 client crate in the rumqtt family.
+The `rumqttc-next` package is a facade that re-exports this crate unchanged.
+
+This crate keeps the library target name as `rumqttc` so application code can stay familiar after migrating package names.
+
+## Installation
+
+Use the facade package when you want the default MQTT 5 client:
+
+```bash
+cargo add rumqttc-next
+```
+
+Use this package directly when you want the protocol-scoped crate name:
+
+```bash
+cargo add rumqttc-v5-next
+```
 
 ## Examples
 
 A simple synchronous publish and subscribe
 ----------------------------
 
-```rust
+```rust,no_run
 use rumqttc::{MqttOptions, Client, QoS};
 use std::time::Duration;
 use std::thread;
@@ -34,12 +51,13 @@ for (i, notification) in connection.iter().enumerate() {
 A simple asynchronous publish and subscribe
 ------------------------------
 
-```rust
+```rust,no_run
 use rumqttc::{MqttOptions, AsyncClient, QoS};
 use tokio::{task, time};
 use std::time::Duration;
-use std::error::Error;
 
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
 let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org", 1883);
 mqttoptions.set_keep_alive(5);
 
@@ -56,6 +74,7 @@ task::spawn(async move {
 while let Ok(notification) = eventloop.poll().await {
     println!("Received = {:?}", notification);
 }
+}
 ```
 
 Quick overview of features
@@ -67,6 +86,8 @@ Quick overview of features
 - Natural backpressure to client APIs during bad network
 - Support for WebSockets
 - Secure transport using TLS
+- MQTT 5 properties, reason codes, session controls, and topic aliases
+- Optional SCRAM-based enhanced authentication support via `auth-scram`
 
 In short, everything necessary to maintain a robust connection
 
@@ -88,6 +109,9 @@ out side the library and `Eventloop` is accessible, users can
 - Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown
   (sends DISCONNECT). Dropping all client handles ends polling with
   `ConnectionError::RequestsDone` and closes locally without sending DISCONNECT.
+
+- This crate is MQTT 5-specific. If you need MQTT 3.1.1 instead, use
+  `rumqttc-v4-next`.
 
 ## TLS Support
 

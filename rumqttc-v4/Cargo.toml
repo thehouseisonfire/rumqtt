@@ -1,8 +1,8 @@
 [package]
-name = "rumqttc-v4"
-version = "0.27.0"
+name = "rumqttc-v4-next"
+version = "0.28.0"
 publish = true
-description = "An efficient and robust mqtt client for your connected devices"
+description = "Explicit MQTT 3.1.1 client crate in the rumqttc-next family"
 keywords = ["mqtt", "iot", "coap", "http"]
 categories = ["network-programming"]
 rust-version = "1.85.0"
@@ -10,6 +10,7 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 authors.workspace = true
+readme = "README.md"
 
 [lib]
 name = "rumqttc"
@@ -38,8 +39,8 @@ bytes = "1.5"
 log = "0.4"
 flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
-rumqttc-core = { path = "../rumqttc-core", version = "0.27.0", default-features = false }
-mqttbytes-core = { path = "../mqttbytes-core", version = "0.27.0" }
+rumqttc-core = { package = "rumqttc-core-next", path = "../rumqttc-core", version = "0.28.0", default-features = false }
+mqttbytes-core = { package = "mqttbytes-core-next", path = "../mqttbytes-core", version = "0.28.0" }
 
 # Optional
 # rustls

@@ -20,36 +20,53 @@ rumqtt is an opensource set of libraries written in rust-lang to implement the M
 
 | Crate | Description | Version |
 | -- | -- | -- |
-| [rumqttc-v4](./rumqttc-v4/) | MQTT 3.1.1 client | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v4.svg)](https://crates.io/crates/rumqttc-v4) |
-| [rumqttc-v5](./rumqttc-v5/) | MQTT 5 client | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v5.svg)](https://crates.io/crates/rumqttc-v5) |
+| [rumqttc-next](./rumqttc-next/) | Facade crate that re-exports the MQTT 5 client API | [![crates.io page](https://img.shields.io/crates/v/rumqttc-next.svg)](https://crates.io/crates/rumqttc-next) |
+| [rumqttc-v5](./rumqttc-v5/) | Explicit MQTT 5 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v5-next.svg)](https://crates.io/crates/rumqttc-v5-next) |
+| [rumqttc-v4](./rumqttc-v4/) | Explicit MQTT 3.1.1 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v4-next.svg)](https://crates.io/crates/rumqttc-v4-next) |
+| [rumqttc-core](./rumqttc-core/) | Shared transport and connection plumbing for the client crates | [![crates.io page](https://img.shields.io/crates/v/rumqttc-core-next.svg)](https://crates.io/crates/rumqttc-core-next) |
+| [mqttbytes-core](./mqttbytes-core/) | Shared MQTT packet primitives for the client crates | [![crates.io page](https://img.shields.io/crates/v/mqttbytes-core-next.svg)](https://crates.io/crates/mqttbytes-core-next) |
 
 ## Installation and Usage
 
-### rumqttc-v4
+### MQTT 5, preferred package
 
-Add the v4 client crate:
-
-```bash
-cargo add rumqttc-v4
-```
-
-### rumqttc-v5
-
-Add the v5 client crate:
+Use the facade package when you want the default MQTT 5 client:
 
 ```bash
-cargo add rumqttc-v5
+cargo add rumqttc-next
 ```
 
-For more details, see [rumqttc-v4/README.md](https://github.com/thehouseisonfire/rumqtt/blob/main/rumqttc-v4/README.md) and [rumqttc-v5/README.md](https://github.com/thehouseisonfire/rumqtt/blob/main/rumqttc-v5/README.md).
+### MQTT 5, explicit protocol package
+
+Use the explicit MQTT 5 package when you want the protocol-scoped crate name:
+
+```bash
+cargo add rumqttc-v5-next
+```
+
+### MQTT 3.1.1
+
+Use the explicit MQTT 3.1.1 package when you need the older protocol:
+
+```bash
+cargo add rumqttc-v4-next
+```
+
+For more details, see [rumqttc-next/README.md](./rumqttc-next/README.md), [rumqttc-v5/README.md](./rumqttc-v5/README.md), and [rumqttc-v4/README.md](./rumqttc-v4/README.md).
 
 ## Features
 
-### rumqttc-v4
-- [x] MQTT 3.1.1
-
-### rumqttc-v5
+### rumqttc-next / rumqttc-v5-next
 - [x] MQTT 5
+- [x] WebSocket transport
+- [x] TLS via rustls or native-tls
+- [x] MQTT 5 properties, reason codes, topic aliases, and enhanced auth hooks
+
+### rumqttc-v4-next
+- [x] MQTT 3.1.1
+- [x] WebSocket transport
+- [x] TLS via rustls or native-tls
+- [x] Strict MQTT 3.1.1 codec validation
 
 ## Spec Compliance Docs
 

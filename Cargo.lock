@@ -262,8 +262,8 @@ dependencies = [
  "pprof",
  "pretty_env_logger",
  "rand 0.10.0",
- "rumqttc-v4",
- "rumqttc-v5",
+ "rumqttc-v4-next",
+ "rumqttc-v5-next",
  "serde",
  "serde_json",
  "tokio",
@@ -1309,8 +1309,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mqttbytes-core"
-version = "0.27.0"
+name = "mqttbytes-core-next"
+version = "0.28.0"
 dependencies = [
  "bytes",
  "thiserror 2.0.18",
@@ -1917,8 +1917,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc-core"
-version = "0.27.0"
+name = "rumqttc-core-next"
+version = "0.28.0"
 dependencies = [
  "async-http-proxy",
  "async-tungstenite",
@@ -1936,8 +1936,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc-v4"
-version = "0.27.0"
+name = "rumqttc-next"
+version = "0.28.0"
+dependencies = [
+ "rumqttc-v5-next",
+]
+
+[[package]]
+name = "rumqttc-v4-next"
+version = "0.28.0"
 dependencies = [
  "async-http-proxy",
  "async-tungstenite",
@@ -1951,12 +1958,12 @@ dependencies = [
  "http",
  "log",
  "matches",
- "mqttbytes-core",
+ "mqttbytes-core-next",
  "native-tls",
  "pretty_assertions",
  "pretty_env_logger",
  "rcgen",
- "rumqttc-core",
+ "rumqttc-core-next",
  "rustls-native-certs",
  "rustls-pki-types",
  "rustls-webpki",
@@ -1972,8 +1979,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc-v5"
-version = "0.27.0"
+name = "rumqttc-v5-next"
+version = "0.28.0"
 dependencies = [
  "async-http-proxy",
  "async-tungstenite",
@@ -1987,12 +1994,12 @@ dependencies = [
  "http",
  "log",
  "matches",
- "mqttbytes-core",
+ "mqttbytes-core-next",
  "native-tls",
  "pretty_assertions",
  "pretty_env_logger",
  "rcgen",
- "rumqttc-core",
+ "rumqttc-core-next",
  "rustls-native-certs",
  "rustls-pki-types",
  "rustls-webpki",

@@ -1,0 +1,35 @@
+[package]
+name = "rumqttc-next"
+version = "0.28.0"
+publish = true
+description = "MQTT 5 facade crate that re-exports rumqttc-v5-next"
+keywords = ["mqtt", "iot", "coap", "http"]
+categories = ["network-programming"]
+rust-version = "1.85.0"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lib]
+name = "rumqttc"
+
+[package.metadata.docs.rs]
+features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "auth-scram", "url"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["use-rustls"]
+use-rustls = ["rumqttc_v5/use-rustls"]
+use-rustls-no-provider = ["rumqttc_v5/use-rustls-no-provider"]
+use-rustls-ring = ["rumqttc_v5/use-rustls-ring"]
+use-rustls-aws-lc = ["rumqttc_v5/use-rustls-aws-lc"]
+use-native-tls = ["rumqttc_v5/use-native-tls"]
+websocket = ["rumqttc_v5/websocket"]
+proxy = ["rumqttc_v5/proxy"]
+auth-scram = ["rumqttc_v5/auth-scram"]
+url = ["rumqttc_v5/url"]
+
+[dependencies]
+rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5", version = "0.28.0", default-features = false }

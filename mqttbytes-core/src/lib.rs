@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub mod ping;
 pub mod primitives;
 pub mod qos;

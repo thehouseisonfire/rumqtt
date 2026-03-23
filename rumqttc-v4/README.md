@@ -1,16 +1,25 @@
-# rumqttc-v4
+# rumqttc-v4-next
 
-[![crates.io page](https://img.shields.io/crates/v/rumqttc-v4.svg)](https://crates.io/crates/rumqttc-v4)
-[![docs.rs page](https://docs.rs/rumqttc-v4/badge.svg)](https://docs.rs/rumqttc-v4)
+[![crates.io page](https://img.shields.io/crates/v/rumqttc-v4-next.svg)](https://crates.io/crates/rumqttc-v4-next)
+[![docs.rs page](https://docs.rs/rumqttc-v4-next/badge.svg)](https://docs.rs/rumqttc-v4-next)
 
-A pure rust MQTT client which strives to be robust, efficient and easy to use. This library is backed by an async(using tokio) eventloop which enables users to send and receive MQTT messages in correspondence with a broker.
+`rumqttc-v4-next` is the explicit MQTT 3.1.1 client crate in the rumqtt family.
+Use it when you need MQTT 3.1.1 specifically. If you want the default MQTT 5 client, use `rumqttc-next` or `rumqttc-v5-next` instead.
+
+This crate keeps the library target name as `rumqttc` so application code can stay familiar after migrating package names.
+
+## Installation
+
+```bash
+cargo add rumqttc-v4-next
+```
 
 ## Examples
 
 A simple synchronous publish and subscribe
 ----------------------------
 
-```rust
+```rust,no_run
 use rumqttc::{MqttOptions, Client, QoS};
 use std::time::Duration;
 use std::thread;
@@ -34,12 +43,13 @@ for (i, notification) in connection.iter().enumerate() {
 A simple asynchronous publish and subscribe
 ------------------------------
 
-```rust
+```rust,no_run
 use rumqttc::{MqttOptions, AsyncClient, QoS};
 use tokio::{task, time};
 use std::time::Duration;
-use std::error::Error;
 
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
 let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org", 1883);
 mqttoptions.set_keep_alive(5);
 
@@ -56,6 +66,7 @@ task::spawn(async move {
 while let Ok(notification) = eventloop.poll().await {
     println!("Received = {:?}", notification);
 }
+}
 ```
 
 Quick overview of features
@@ -67,6 +78,7 @@ Quick overview of features
 - Natural backpressure to client APIs during bad network
 - Support for WebSockets
 - Secure transport using TLS
+- Strict MQTT 3.1.1 packet validation on the codec path
 
 In short, everything necessary to maintain a robust connection
 
@@ -88,6 +100,9 @@ out side the library and `Eventloop` is accessible, users can
 - Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown
   (sends DISCONNECT). Dropping all client handles ends polling with
   `ConnectionError::RequestsDone` and closes locally without sending DISCONNECT.
+
+- This crate is intentionally protocol-specific. It does not expose MQTT 5
+  features such as AUTH packets, topic aliases, or MQTT 5 property handling.
 
 ## TLS Support
 

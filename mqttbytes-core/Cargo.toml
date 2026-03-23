@@ -1,8 +1,8 @@
 [package]
-name = "mqttbytes-core"
-version = "0.27.0"
+name = "mqttbytes-core-next"
+version = "0.28.0"
 publish = true
-description = "Shared MQTT bytes primitives for rumqttc crates"
+description = "Shared MQTT packet primitives for the rumqttc-next client crates"
 keywords = ["mqtt", "iot", "codec"]
 categories = ["network-programming"]
 rust-version = "1.85.0"
@@ -10,6 +10,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 authors.workspace = true
+readme = "README.md"
+
+[lib]
+name = "mqttbytes_core"
 
 [dependencies]
 bytes = "1.5"

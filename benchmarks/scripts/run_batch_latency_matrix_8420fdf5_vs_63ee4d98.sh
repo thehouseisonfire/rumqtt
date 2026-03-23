@@ -54,8 +54,8 @@ apply_patch_to_wt() {
 
   # Enable URL parsing for query-based max_request_batch override in old and split layouts.
   perl -0pi -e 's@rumqttc = \{ package = "rumqttc-next", path = "\.\./rumqttc" \}@rumqttc = { package = "rumqttc-next", path = "../rumqttc", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
-  perl -0pi -e 's@rumqttc_v4 = \{ package = "rumqttc-v4", path = "\.\./rumqttc-v4" \}@rumqttc_v4 = { package = "rumqttc-v4", path = "../rumqttc-v4", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
-  perl -0pi -e 's@rumqttc_v5 = \{ package = "rumqttc-v5", path = "\.\./rumqttc-v5" \}@rumqttc_v5 = { package = "rumqttc-v5", path = "../rumqttc-v5", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
+  perl -0pi -e 's@rumqttc_v4 = \{ package = "rumqttc-v4-next", path = "\.\./rumqttc-v4" \}@rumqttc_v4 = { package = "rumqttc-v4-next", path = "../rumqttc-v4", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
+  perl -0pi -e 's@rumqttc_v5 = \{ package = "rumqttc-v5-next", path = "\.\./rumqttc-v5" \}@rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
 
   # Add env-driven max_request_batch override in build_options, compatible with old refs.
   perl -0pi -e 's@let mut options = MqttOptions::new\(client_id, endpoint\.host\.clone\(\), endpoint\.port\);\n    options\.set_keep_alive\(30\);@let mut options = MqttOptions::new(client_id.clone(), endpoint.host.clone(), endpoint.port);\n\n    if let Ok(raw_batch) = std::env::var("RUMQTT_BENCH_MAX_REQUEST_BATCH") {\n        if let Ok(batch) = raw_batch.parse::<usize>() {\n            if batch > 0 {\n                let scheme = if endpoint.transport == "tls" { "mqtts" } else { "mqtt" };\n                if let Ok(parsed) = MqttOptions::parse_url(format!(\n                    "{scheme}://{}:{}?client_id={client_id}&max_request_batch_num={batch}",\n                    endpoint.host, endpoint.port\n                )) {\n                    options = parsed;\n                }\n            }\n        }\n    }\n\n    options.set_keep_alive(30);@s' "$wt/benchmarks/clients/rumqttv5bench.rs"
