@@ -1,8 +1,8 @@
 [package]
-name = "rumqttc-core"
-version = "0.27.0"
+name = "rumqttc-core-next"
+version = "0.28.0"
 publish = true
-description = "Shared transport internals and transport types for rumqttc crates"
+description = "Shared transport and connection plumbing for the rumqttc-next client crates"
 keywords = ["mqtt", "iot", "transport"]
 categories = ["network-programming"]
 rust-version = "1.85.0"
@@ -10,6 +10,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 authors.workspace = true
+readme = "README.md"
+
+[lib]
+name = "rumqttc_core"
 
 [package.metadata.docs.rs]
 features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy"]

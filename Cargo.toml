@@ -2,6 +2,7 @@
 members = [
   "mqttbytes-core",
   "rumqttc-core",
+  "rumqttc-next",
   "rumqttc-v4",
   "rumqttc-v5",
   "benchmarks",

@@ -14,8 +14,8 @@ futures = { version = "0.3", features = ["compat"] }
 itoa = "1.0"
 pprof = { version = "0.15", features = ["flamegraph", "prost-codec"] }
 pretty_env_logger = "0.5"
-rumqttc_v4 = { package = "rumqttc-v4", path = "../rumqttc-v4" }
-rumqttc_v5 = { package = "rumqttc-v5", path = "../rumqttc-v5" }
+rumqttc_v4 = { package = "rumqttc-v4-next", path = "../rumqttc-v4" }
+rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
