@@ -43,7 +43,7 @@ rustls-native-certs = { version = "0.8.1", optional = true }
 tokio-native-tls = { version = "0.3.1", optional = true }
 native-tls = { version = "0.2.12", optional = true }
 # websockets
-async-tungstenite = { version = "0.33.0", default-features = false, features = ["tokio-runtime", "futures-03-sink"], optional = true }
+async-tungstenite = { version = "0.34.0", default-features = false, features = ["tokio-runtime", "futures-03-sink"], optional = true }
 futures-io = { version = "0.3", optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
 http = { version = "1.0.0", optional = true }
