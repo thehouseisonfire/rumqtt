@@ -32,7 +32,7 @@ use rumqttc::{MqttOptions, Client, QoS};
 use std::time::Duration;
 use std::thread;
 
-let mut mqttoptions = MqttOptions::new("rumqtt-sync", "test.mosquitto.org", 1883);
+let mut mqttoptions = MqttOptions::new("rumqtt-sync", "test.mosquitto.org");
 mqttoptions.set_keep_alive(5);
 
 let (mut client, mut connection) = Client::new(mqttoptions, 10);
@@ -58,7 +58,7 @@ use std::time::Duration;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org", 1883);
+let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org");
 mqttoptions.set_keep_alive(5);
 
 let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
@@ -86,6 +86,7 @@ Quick overview of features
 - Natural backpressure to client APIs during bad network
 - Support for WebSockets
 - Secure transport using TLS
+- Unix domain sockets on Unix targets
 - MQTT 5 properties, reason codes, session controls, and topic aliases
 - Optional SCRAM-based enhanced authentication support via `auth-scram`
 
@@ -113,6 +114,11 @@ out side the library and `Eventloop` is accessible, users can
 - This crate is MQTT 5-specific. If you need MQTT 3.1.1 instead, use
   `rumqttc-v4-next`.
 
+- On Unix targets, local broker sockets are supported via
+  `MqttOptions::new(..., Broker::unix(...))`. When the `url` feature is enabled,
+  `MqttOptions::parse_url("unix:///tmp/mqtt.sock?client_id=...")` is also
+  supported.
+
 ## TLS Support
 
 rumqttc supports two TLS backends:
@@ -136,10 +142,10 @@ rumqttc supports two TLS backends:
 
 When both `use-rustls-no-provider` and `use-native-tls` features are enabled:
 
-- **Direct TLS connections** (`mqtts://`, `ssl://`): Work with both rustls and native-tls `TlsConfiguration` variants
-- **Secure WebSockets** (`wss://`): Also work with both rustls and native-tls `TlsConfiguration` variants
+- Configure TLS explicitly with `MqttOptions::set_transport(Transport::tls_with_config(...))`
+- Configure secure websockets explicitly with `Broker::websocket("ws://...")` plus `MqttOptions::set_transport(Transport::wss_with_config(...))`
 
-Secure websocket connections now upgrade the TCP stream using the selected `TlsConfiguration` before the websocket handshake, so backend selection follows the provided TLS configuration.
+Secure websocket connections upgrade the TCP stream using the selected `TlsConfiguration` before the websocket handshake, so backend selection follows the provided TLS configuration.
 
 In dual-backend dependency graphs, avoid relying on `TlsConfiguration::default()`, because default backend selection must be explicit.
 Use `TlsConfiguration::default_rustls()` or `TlsConfiguration::default_native()` (when available) or pass an explicit configuration to

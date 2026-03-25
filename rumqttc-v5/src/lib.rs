@@ -26,8 +26,15 @@ extern crate log;
 
 use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[cfg(all(feature = "url", unix))]
+use percent_encoding::percent_decode_str;
+
+#[cfg(all(feature = "url", unix))]
+use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
 #[cfg(feature = "websocket")]
 use std::{
@@ -115,6 +122,126 @@ pub enum Outgoing {
 /// Custom socket connector used to establish the underlying stream before optional proxy/TLS layers.
 pub(crate) type SocketConnector = rumqttc_core::SocketConnector;
 
+const DEFAULT_BROKER_PORT: u16 = 1883;
+
+/// Broker target used to construct [`MqttOptions`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Broker {
+    inner: BrokerInner,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BrokerInner {
+    Tcp {
+        host: String,
+        port: u16,
+    },
+    #[cfg(unix)]
+    Unix {
+        path: PathBuf,
+    },
+    #[cfg(feature = "websocket")]
+    Websocket {
+        url: String,
+    },
+}
+
+impl Broker {
+    #[must_use]
+    pub fn tcp<S: Into<String>>(host: S, port: u16) -> Self {
+        Self {
+            inner: BrokerInner::Tcp {
+                host: host.into(),
+                port,
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    #[must_use]
+    pub fn unix<P: Into<PathBuf>>(path: P) -> Self {
+        Self {
+            inner: BrokerInner::Unix { path: path.into() },
+        }
+    }
+
+    #[cfg(feature = "websocket")]
+    pub fn websocket<S: Into<String>>(url: S) -> Result<Self, OptionError> {
+        let url = url.into();
+        let uri = url
+            .parse::<http::Uri>()
+            .map_err(|_| OptionError::WebsocketUrl)?;
+
+        match uri.scheme_str() {
+            Some("ws") => {
+                rumqttc_core::split_url(&url).map_err(|_| OptionError::WebsocketUrl)?;
+                Ok(Self {
+                    inner: BrokerInner::Websocket { url },
+                })
+            }
+            Some("wss") => Err(OptionError::WssRequiresExplicitTransport),
+            _ => Err(OptionError::Scheme),
+        }
+    }
+
+    #[must_use]
+    pub fn tcp_address(&self) -> Option<(&str, u16)> {
+        match &self.inner {
+            BrokerInner::Tcp { host, port } => Some((host.as_str(), *port)),
+            #[cfg(unix)]
+            BrokerInner::Unix { .. } => None,
+            #[cfg(feature = "websocket")]
+            BrokerInner::Websocket { .. } => None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[must_use]
+    pub fn unix_path(&self) -> Option<&std::path::Path> {
+        match &self.inner {
+            BrokerInner::Unix { path } => Some(path.as_path()),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "websocket")]
+    #[must_use]
+    pub fn websocket_url(&self) -> Option<&str> {
+        match &self.inner {
+            BrokerInner::Websocket { url } => Some(url.as_str()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn default_transport(&self) -> Transport {
+        match &self.inner {
+            BrokerInner::Tcp { .. } => Transport::tcp(),
+            #[cfg(unix)]
+            BrokerInner::Unix { .. } => Transport::unix(),
+            #[cfg(feature = "websocket")]
+            BrokerInner::Websocket { .. } => Transport::Ws,
+        }
+    }
+}
+
+impl From<&str> for Broker {
+    fn from(host: &str) -> Self {
+        Self::tcp(host, DEFAULT_BROKER_PORT)
+    }
+}
+
+impl From<String> for Broker {
+    fn from(host: String) -> Self {
+        Self::tcp(host, DEFAULT_BROKER_PORT)
+    }
+}
+
+impl<S: Into<String>> From<(S, u16)> for Broker {
+    fn from((host, port): (S, u16)) -> Self {
+        Self::tcp(host, port)
+    }
+}
+
 /// Controls how incoming packet size limits are enforced locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum IncomingPacketSizeLimit {
@@ -192,11 +319,8 @@ type FallibleRequestModifierFn = Arc<
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
 pub struct MqttOptions {
-    /// broker address that you want to connect to
-    broker_addr: String,
-    /// broker port
-    port: u16,
-    // What transport protocol to use
+    /// broker target that you want to connect to
+    broker: Broker,
     transport: Transport,
     /// keep alive time to send pingreq to broker when the connection is idle
     keep_alive: Duration,
@@ -250,18 +374,17 @@ pub struct MqttOptions {
 impl MqttOptions {
     /// Create an [`MqttOptions`] object that contains default values for all settings other than
     /// - id: A string to identify the device connecting to a broker
-    /// - host: The broker's domain name or IP address
-    /// - port: The port number on which broker must be listening for incoming connections
+    /// - broker: The broker target to connect to
     ///
     /// ```
     /// # use rumqttc::MqttOptions;
-    /// let options = MqttOptions::new("123", "localhost", 1883);
+    /// let options = MqttOptions::new("123", "localhost");
     /// ```
-    pub fn new<S: Into<String>, T: Into<String>>(id: S, host: T, port: u16) -> MqttOptions {
+    pub fn new<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> MqttOptions {
+        let broker = broker.into();
         MqttOptions {
-            broker_addr: host.into(),
-            port,
-            transport: Transport::tcp(),
+            transport: broker.default_transport(),
+            broker,
             keep_alive: Duration::from_secs(60),
             clean_start: true,
             client_id: id.into(),
@@ -298,12 +421,13 @@ impl MqttOptions {
     /// let options = MqttOptions::parse_url("mqtt://example.com:1883?client_id=123").unwrap();
     /// ```
     ///
-    /// **NOTE:** A url must be prefixed with one of either `tcp://`, `mqtt://`, `ssl://`,`mqtts://`,
-    /// `ws://` or `wss://` to denote the protocol for establishing a connection with the broker.
+    /// **NOTE:** A url must be prefixed with one of either `tcp://`, `mqtt://` or `ws://` to
+    /// denote the protocol for establishing a connection with the broker. On Unix platforms,
+    /// `unix:///path/to/socket` is also supported.
     ///
-    /// **NOTE:** Encrypted connections(i.e. `mqtts://`, `ssl://`, `wss://`) by default use the
-    /// system's root certificates. To configure with custom certificates, one may use the
-    /// [`set_transport`](MqttOptions::set_transport) method.
+    /// **NOTE:** Secure transports are configured explicitly with
+    /// [`set_transport`](MqttOptions::set_transport). Secure URL schemes such as `mqtts://`,
+    /// `ssl://`, and `wss://` are rejected.
     ///
     /// ```ignore
     /// # use rumqttc::{MqttOptions, Transport};
@@ -312,9 +436,11 @@ impl MqttOptions {
     /// # let client_config = ClientConfig::builder()
     /// #    .with_root_certificates(root_cert_store)
     /// #    .with_no_client_auth();
-    /// let mut options = MqttOptions::parse_url("mqtts://example.com?client_id=123").unwrap();
+    /// let mut options = MqttOptions::parse_url("mqtt://example.com?client_id=123").unwrap();
     /// options.set_transport(Transport::tls_with_config(client_config.into()));
     /// ```
+    ///
+    /// On Unix platforms, `unix:///tmp/mqtt.sock?client_id=123` is also supported.
     pub fn parse_url<S: Into<String>>(url: S) -> Result<MqttOptions, OptionError> {
         let url = url::Url::parse(&url.into())?;
         let options = MqttOptions::try_from(url)?;
@@ -322,9 +448,9 @@ impl MqttOptions {
         Ok(options)
     }
 
-    /// Broker address
-    pub fn broker_address(&self) -> (String, u16) {
-        (self.broker_addr.clone(), self.port)
+    /// Broker target
+    pub fn broker(&self) -> &Broker {
+        &self.broker
     }
 
     pub fn set_last_will(&mut self, will: LastWill) -> &mut Self {
@@ -400,7 +526,7 @@ impl MqttOptions {
     /// # Example
     /// ```
     /// # use rumqttc::MqttOptions;
-    /// # let mut options = MqttOptions::new("test", "localhost", 1883);
+    /// # let mut options = MqttOptions::new("test", "localhost");
     /// options.set_socket_connector(|host, network_options| async move {
     ///     rumqttc::default_socket_connect(host, network_options).await
     /// });
@@ -434,7 +560,7 @@ impl MqttOptions {
     /// # Example
     /// ```
     /// # use rumqttc::MqttOptions;
-    /// # let mut options = MqttOptions::new("test", "localhost", 1883);
+    /// # let mut options = MqttOptions::new("test", "localhost");
     /// options.set_socket_connector(|host, network_options| async move {
     ///     rumqttc::default_socket_connect(host, network_options).await
     /// });
@@ -472,6 +598,7 @@ impl MqttOptions {
         self
     }
 
+    /// Returns the configured transport.
     pub fn transport(&self) -> Transport {
         self.transport.clone()
     }
@@ -916,14 +1043,31 @@ impl MqttOptions {
     }
 }
 
-#[cfg(feature = "url")]
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OptionError {
     #[error("Unsupported URL scheme.")]
     Scheme,
 
+    #[error(
+        "Secure MQTT URL schemes require explicit TLS transport configuration via MqttOptions::set_transport(...)."
+    )]
+    SecureUrlRequiresExplicitTransport,
+
     #[error("Missing client ID.")]
     ClientId,
+
+    #[error("Invalid Unix socket path.")]
+    UnixSocketPath,
+
+    #[cfg(feature = "websocket")]
+    #[error("Invalid websocket url.")]
+    WebsocketUrl,
+
+    #[cfg(feature = "websocket")]
+    #[error(
+        "Secure websocket URLs require Broker::websocket(\"ws://...\") plus MqttOptions::set_transport(Transport::wss(...))."
+    )]
+    WssRequiresExplicitTransport,
 
     #[error("Invalid keep-alive value.")]
     KeepAlive,
@@ -958,6 +1102,7 @@ pub enum OptionError {
     #[error("Unknown option: {0}")]
     Unknown(String),
 
+    #[cfg(feature = "url")]
     #[error("Couldn't parse option from url: {0}")]
     Parse(#[from] url::ParseError),
 }
@@ -969,26 +1114,20 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
     fn try_from(url: url::Url) -> Result<Self, Self::Error> {
         use std::collections::HashMap;
 
-        let host = url.host_str().unwrap_or_default().to_owned();
-
-        let (transport, default_port) = match url.scheme() {
-            // Encrypted connections are supported, but require explicit TLS configuration. We fall
-            // back to the unencrypted transport layer, so that `set_transport` can be used to
-            // configure the encrypted transport layer with the provided TLS configuration.
-            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-            "mqtts" | "ssl" => (Transport::tls_with_default_config(), 8883),
-            "mqtt" | "tcp" => (Transport::Tcp, 1883),
+        let broker = match url.scheme() {
+            "mqtts" | "ssl" => return Err(OptionError::SecureUrlRequiresExplicitTransport),
+            "mqtt" | "tcp" => Broker::tcp(
+                url.host_str().unwrap_or_default(),
+                url.port().unwrap_or(DEFAULT_BROKER_PORT),
+            ),
+            #[cfg(unix)]
+            "unix" => Broker::unix(parse_unix_socket_path(&url)?),
             #[cfg(feature = "websocket")]
-            "ws" => (Transport::Ws, 8000),
-            #[cfg(all(
-                any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-                feature = "websocket"
-            ))]
-            "wss" => (Transport::wss_with_default_config(), 8000),
+            "ws" => Broker::websocket(url.as_str().to_owned())?,
+            #[cfg(feature = "websocket")]
+            "wss" => return Err(OptionError::WssRequiresExplicitTransport),
             _ => return Err(OptionError::Scheme),
         };
-
-        let port = url.port().unwrap_or(default_port);
 
         let mut queries = url.query_pairs().collect::<HashMap<_, _>>();
 
@@ -997,9 +1136,8 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             .ok_or(OptionError::ClientId)?
             .into_owned();
 
-        let mut options = MqttOptions::new(id, host, port);
+        let mut options = MqttOptions::new(id, broker);
         let mut connect_props = ConnectProperties::new();
-        options.set_transport(transport);
 
         if let Some(keep_alive) = queries
             .remove("keep_alive_secs")
@@ -1094,13 +1232,26 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
     }
 }
 
+#[cfg(all(feature = "url", unix))]
+fn parse_unix_socket_path(url: &url::Url) -> Result<PathBuf, OptionError> {
+    if url.host_str().is_some() {
+        return Err(OptionError::UnixSocketPath);
+    }
+
+    let path = percent_decode_str(url.path()).collect::<Vec<u8>>();
+    if path.is_empty() || path == b"/" {
+        return Err(OptionError::UnixSocketPath);
+    }
+
+    Ok(PathBuf::from(OsString::from_vec(path)))
+}
+
 // Implement Debug manually because ClientConfig doesn't implement it, so derive(Debug) doesn't
 // work.
 impl Debug for MqttOptions {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("MqttOptions")
-            .field("broker_addr", &self.broker_addr)
-            .field("port", &self.port)
+            .field("broker", &self.broker)
             .field("keep_alive", &self.keep_alive)
             .field("clean_start", &self.clean_start)
             .field("client_id", &self.client_id)
@@ -1123,7 +1274,7 @@ mod test {
 
     #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
     mod request_modifier_tests {
-        use super::MqttOptions;
+        use super::{Broker, MqttOptions};
 
         #[derive(Debug)]
         struct TestError;
@@ -1138,7 +1289,10 @@ mod test {
 
         #[test]
         fn infallible_modifier_is_set() {
-            let mut options = MqttOptions::new("test", "ws://localhost", 8080);
+            let mut options = MqttOptions::new(
+                "test",
+                Broker::websocket("ws://localhost:8080").expect("valid websocket broker"),
+            );
             options.set_request_modifier(|req| async move { req });
             assert!(options.request_modifier().is_some());
             assert!(options.fallible_request_modifier().is_none());
@@ -1146,7 +1300,10 @@ mod test {
 
         #[test]
         fn fallible_modifier_is_set() {
-            let mut options = MqttOptions::new("test", "ws://localhost", 8080);
+            let mut options = MqttOptions::new(
+                "test",
+                Broker::websocket("ws://localhost:8080").expect("valid websocket broker"),
+            );
             options.set_fallible_request_modifier(|req| async move { Ok::<_, TestError>(req) });
             assert!(options.request_modifier().is_none());
             assert!(options.fallible_request_modifier().is_some());
@@ -1154,7 +1311,10 @@ mod test {
 
         #[test]
         fn last_setter_call_wins() {
-            let mut options = MqttOptions::new("test", "ws://localhost", 8080);
+            let mut options = MqttOptions::new(
+                "test",
+                Broker::websocket("ws://localhost:8080").expect("valid websocket broker"),
+            );
 
             options
                 .set_fallible_request_modifier(|req| async move { Ok::<_, TestError>(req) })
@@ -1172,7 +1332,7 @@ mod test {
 
     #[test]
     fn incoming_packet_size_limit_defaults_to_default_policy() {
-        let mqtt_opts = MqttOptions::new("client", "127.0.0.1", 1883);
+        let mqtt_opts = MqttOptions::new("client", "127.0.0.1");
         assert_eq!(
             mqtt_opts.incoming_packet_size_limit(),
             IncomingPacketSizeLimit::Default
@@ -1185,7 +1345,7 @@ mod test {
 
     #[test]
     fn set_max_packet_size_remains_backward_compatible() {
-        let mut mqtt_opts = MqttOptions::new("client", "127.0.0.1", 1883);
+        let mut mqtt_opts = MqttOptions::new("client", "127.0.0.1");
 
         mqtt_opts.set_max_packet_size(Some(2048));
         assert_eq!(
@@ -1209,7 +1369,7 @@ mod test {
 
     #[test]
     fn incoming_packet_size_limit_unlimited_disables_local_check() {
-        let mut mqtt_opts = MqttOptions::new("client", "127.0.0.1", 1883);
+        let mut mqtt_opts = MqttOptions::new("client", "127.0.0.1");
         mqtt_opts.set_unlimited_incoming_packet_size();
 
         assert_eq!(
@@ -1223,23 +1383,24 @@ mod test {
 
     #[test]
     #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
-    fn no_scheme() {
+    fn websocket_transport_can_be_explicitly_upgraded_to_wss() {
         use crate::{TlsConfiguration, Transport};
-        let mut mqttoptions = MqttOptions::new(
-            "client_a",
-            "a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host",
-            443,
-        );
+        let broker = Broker::websocket(
+            "ws://a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host",
+        )
+        .expect("valid websocket broker");
+        let mut mqttoptions = MqttOptions::new("client_a", broker);
 
+        assert!(matches!(mqttoptions.transport(), Transport::Ws));
         mqttoptions.set_transport(Transport::wss(Vec::from("Test CA"), None, None));
 
         if let Transport::Wss(TlsConfiguration::Simple {
             ca,
             client_auth,
             alpn,
-        }) = mqttoptions.transport
+        }) = mqttoptions.transport()
         {
-            assert_eq!(ca, Vec::from("Test CA"));
+            assert_eq!(ca.as_slice(), b"Test CA");
             assert_eq!(client_auth, None);
             assert_eq!(alpn, None);
         } else {
@@ -1247,9 +1408,92 @@ mod test {
         }
 
         assert_eq!(
-            mqttoptions.broker_addr,
-            "a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host"
+            mqttoptions.broker().websocket_url(),
+            Some(
+                "ws://a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host"
+            )
         );
+    }
+
+    #[test]
+    #[cfg(feature = "websocket")]
+    fn wss_websocket_urls_require_explicit_transport() {
+        assert_eq!(
+            Broker::websocket("wss://example.com/mqtt"),
+            Err(OptionError::WssRequiresExplicitTransport)
+        );
+    }
+
+    #[test]
+    #[cfg(all(
+        feature = "url",
+        feature = "use-rustls-no-provider",
+        feature = "websocket"
+    ))]
+    fn parse_url_ws_transport_can_be_explicitly_upgraded_to_wss() {
+        use crate::{TlsConfiguration, Transport};
+        let mut mqttoptions =
+            MqttOptions::parse_url("ws://example.com:443/mqtt?client_id=client_a")
+                .expect("valid websocket options");
+
+        assert!(matches!(mqttoptions.transport(), Transport::Ws));
+        mqttoptions.set_transport(Transport::wss(Vec::from("Test CA"), None, None));
+
+        if let Transport::Wss(TlsConfiguration::Simple {
+            ca,
+            client_auth,
+            alpn,
+        }) = mqttoptions.transport()
+        {
+            assert_eq!(ca.as_slice(), b"Test CA");
+            assert_eq!(client_auth, None);
+            assert_eq!(alpn, None);
+        } else {
+            panic!("Unexpected transport!");
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "url", feature = "use-rustls-no-provider"))]
+    fn parse_url_mqtt_transport_can_be_explicitly_upgraded_to_tls() {
+        use crate::{TlsConfiguration, Transport};
+        let mut mqttoptions = MqttOptions::parse_url("mqtt://example.com:8883?client_id=client_a")
+            .expect("valid tls options");
+
+        assert!(matches!(mqttoptions.transport(), Transport::Tcp));
+        mqttoptions.set_transport(Transport::tls(Vec::from("Test CA"), None, None));
+
+        if let Transport::Tls(TlsConfiguration::Simple {
+            ca,
+            client_auth,
+            alpn,
+        }) = mqttoptions.transport()
+        {
+            assert_eq!(ca.as_slice(), b"Test CA");
+            assert_eq!(client_auth, None);
+            assert_eq!(alpn, None);
+        } else {
+            panic!("Unexpected transport!");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "url")]
+    fn parse_url_rejects_secure_url_schemes() {
+        assert!(matches!(
+            MqttOptions::parse_url("mqtts://example.com:8883?client_id=client_a"),
+            Err(OptionError::SecureUrlRequiresExplicitTransport)
+        ));
+        assert!(matches!(
+            MqttOptions::parse_url("ssl://example.com:8883?client_id=client_a"),
+            Err(OptionError::SecureUrlRequiresExplicitTransport)
+        ));
+
+        #[cfg(feature = "websocket")]
+        assert!(matches!(
+            MqttOptions::parse_url("wss://example.com:443/mqtt?client_id=client_a"),
+            Err(OptionError::WssRequiresExplicitTransport)
+        ));
     }
 
     #[test]
@@ -1266,7 +1510,7 @@ mod test {
         }
 
         let v = ok("mqtt://host:42?client_id=foo");
-        assert_eq!(v.broker_address(), ("host".to_owned(), 42));
+        assert_eq!(v.broker().tcp_address(), Some(("host", 42)));
         assert_eq!(v.client_id(), "foo".to_owned());
 
         let v = ok("mqtt://host:42?client_id=foo&keep_alive_secs=5");
@@ -1327,19 +1571,115 @@ mod test {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn unix_broker_sets_unix_transport_and_preserves_defaults() {
+        let options = MqttOptions::new("client", Broker::unix("/tmp/mqtt.sock"));
+        let baseline = MqttOptions::new("client", "127.0.0.1");
+
+        assert!(matches!(options.transport(), Transport::Unix));
+        assert_eq!(
+            options.broker().unix_path(),
+            Some(std::path::Path::new("/tmp/mqtt.sock"))
+        );
+        assert_eq!(options.keep_alive, baseline.keep_alive);
+        assert_eq!(options.clean_start, baseline.clean_start);
+        assert_eq!(options.client_id, baseline.client_id);
+        assert_eq!(
+            options.request_channel_capacity,
+            baseline.request_channel_capacity
+        );
+        assert_eq!(options.max_request_batch, baseline.max_request_batch);
+        assert_eq!(options.read_batch_size, baseline.read_batch_size);
+        assert_eq!(options.pending_throttle, baseline.pending_throttle);
+        assert_eq!(options.connect_timeout, baseline.connect_timeout);
+        assert_eq!(
+            options.default_max_incoming_size,
+            baseline.default_max_incoming_size
+        );
+        assert_eq!(
+            options.incoming_packet_size_limit,
+            baseline.incoming_packet_size_limit
+        );
+        assert_eq!(options.manual_acks, baseline.manual_acks);
+        assert_eq!(
+            options.outgoing_inflight_upper_limit,
+            baseline.outgoing_inflight_upper_limit
+        );
+        assert!(options.auth_manager.is_none());
+    }
+
+    #[test]
+    #[cfg(all(feature = "url", unix))]
+    fn from_url_supports_unix_socket_paths() {
+        let options = MqttOptions::parse_url(
+            "unix:///tmp/mqtt.sock?client_id=foo&keep_alive_secs=5&read_batch_size_num=32",
+        )
+        .expect("valid unix socket options");
+
+        assert!(matches!(options.transport(), Transport::Unix));
+        assert_eq!(
+            options.broker().unix_path(),
+            Some(std::path::Path::new("/tmp/mqtt.sock"))
+        );
+        assert_eq!(options.client_id(), "foo");
+        assert_eq!(options.keep_alive, Duration::from_secs(5));
+        assert_eq!(options.read_batch_size(), 32);
+    }
+
+    #[test]
+    #[cfg(all(feature = "url", unix))]
+    fn from_url_decodes_percent_escaped_unix_socket_paths() {
+        let options =
+            MqttOptions::parse_url("unix:///tmp/mqtt%20broker.sock?client_id=foo").unwrap();
+
+        assert_eq!(
+            options.broker().unix_path(),
+            Some(std::path::Path::new("/tmp/mqtt broker.sock"))
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "url", unix))]
+    fn from_url_preserves_percent_decoded_unix_socket_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let options = MqttOptions::parse_url("unix:///tmp/mqtt%FF.sock?client_id=foo").unwrap();
+
+        assert_eq!(
+            options.broker().unix_path().unwrap().as_os_str().as_bytes(),
+            b"/tmp/mqtt\xff.sock"
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "url", unix))]
+    fn from_url_rejects_invalid_unix_socket_paths() {
+        fn err(s: &str) -> OptionError {
+            MqttOptions::parse_url(s).expect_err("invalid unix socket url")
+        }
+
+        assert_eq!(err("unix:///tmp/mqtt.sock"), OptionError::ClientId);
+        assert_eq!(
+            err("unix://localhost/tmp/mqtt.sock?client_id=foo"),
+            OptionError::UnixSocketPath
+        );
+        assert_eq!(err("unix:///?client_id=foo"), OptionError::UnixSocketPath);
+    }
+
+    #[test]
     fn allow_empty_client_id() {
-        let _mqtt_opts = MqttOptions::new("", "127.0.0.1", 1883).set_clean_start(true);
+        let _mqtt_opts = MqttOptions::new("", "127.0.0.1").set_clean_start(true);
     }
 
     #[test]
     fn read_batch_size_defaults_to_adaptive() {
-        let options = MqttOptions::new("client", "127.0.0.1", 1883);
+        let options = MqttOptions::new("client", "127.0.0.1");
         assert_eq!(options.read_batch_size(), 0);
     }
 
     #[test]
     fn set_read_batch_size() {
-        let mut options = MqttOptions::new("client", "127.0.0.1", 1883);
+        let mut options = MqttOptions::new("client", "127.0.0.1");
         options.set_read_batch_size(48);
         assert_eq!(options.read_batch_size(), 48);
     }

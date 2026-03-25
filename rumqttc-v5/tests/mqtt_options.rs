@@ -11,7 +11,7 @@ async fn v5_custom_socket_connector_is_invoked() {
     let called = Arc::new(AtomicBool::new(false));
     let called_flag = called.clone();
 
-    let mut options = rumqttc::MqttOptions::new("test-client-v5", "127.0.0.1", 1883);
+    let mut options = rumqttc::MqttOptions::new("test-client-v5", "127.0.0.1");
     options.set_socket_connector(move |_host, _network_options| {
         let called_flag = called_flag.clone();
         async move {
@@ -74,13 +74,15 @@ async fn spawn_listener() -> (u16, tokio::task::JoinHandle<()>) {
 #[cfg(feature = "websocket")]
 #[tokio::test]
 async fn v5_fallible_request_modifier_error_propagates() {
-    use rumqttc::{ConnectionError, EventLoop, MqttOptions, Transport};
+    use rumqttc::{Broker, ConnectionError, EventLoop, MqttOptions};
     use tokio::time::{Duration, timeout};
 
     let (port, listener_task) = spawn_listener().await;
 
-    let mut options = MqttOptions::new("test-v5", format!("ws://127.0.0.1:{port}/mqtt"), port);
-    options.set_transport(Transport::Ws);
+    let mut options = MqttOptions::new(
+        "test-v5",
+        Broker::websocket(format!("ws://127.0.0.1:{port}/mqtt")).expect("valid websocket broker"),
+    );
     options.set_fallible_request_modifier(|_req| async move {
         Err(RequestModifierTestError("modifier failed intentionally"))
     });

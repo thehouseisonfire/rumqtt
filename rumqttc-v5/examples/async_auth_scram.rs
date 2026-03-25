@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client_first = authmanager.auth_start().unwrap();
     let authmanager = Arc::new(Mutex::new(authmanager));
 
-    let mut mqttoptions = MqttOptions::new("auth_test", "127.0.0.1", 1883);
+    let mut mqttoptions = MqttOptions::new("auth_test", "127.0.0.1");
     mqttoptions.set_authentication_method(Some("SCRAM-SHA-256".to_string()));
     mqttoptions.set_authentication_data(client_first);
     mqttoptions.set_auth_manager(authmanager.clone());

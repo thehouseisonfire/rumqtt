@@ -7,7 +7,7 @@ use tokio::{task, time};
 
 mod broker;
 
-use broker::*;
+use broker::Broker as TestBroker;
 use rumqttc::*;
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -120,12 +120,12 @@ async fn connection_should_timeout_on_time() {
     let (listener, port) = reserve_listener().await;
 
     task::spawn(async move {
-        let _broker = Broker::from_listener(listener, 3, false).await;
+        let _broker = TestBroker::from_listener(listener, 3, false).await;
         time::sleep(Duration::from_secs(10)).await;
     });
 
     time::sleep(Duration::from_secs(1)).await;
-    let options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let options = MqttOptions::new("dummy", ("127.0.0.1", port));
     let mut eventloop = EventLoop::new(options, 5);
 
     let start = Instant::now();
@@ -143,13 +143,13 @@ async fn connection_should_timeout_on_time() {
 
 #[test]
 fn test_zero_keep_alive_values() {
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", 1885);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", 1885));
     options.set_keep_alive(0);
 }
 
 #[test]
 fn test_valid_keep_alive_values() {
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", 1885);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", 1885));
     options.set_keep_alive(1);
 }
 
@@ -158,7 +158,7 @@ async fn idle_connection_triggers_pings_on_time() {
     let keep_alive = 1;
     let (listener, port) = reserve_listener().await;
 
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(keep_alive);
 
     // Create client eventloop and poll
@@ -167,7 +167,7 @@ async fn idle_connection_triggers_pings_on_time() {
         run(&mut eventloop, false).await.unwrap();
     });
 
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
     let mut count = 0;
     let mut start = Instant::now();
 
@@ -193,7 +193,7 @@ async fn idle_connection_triggers_pings_on_time() {
 async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     let keep_alive = 5;
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
 
     options.set_keep_alive(keep_alive);
 
@@ -210,7 +210,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     // start the eventloop
     let eventloop_task = task::spawn(async move { run(&mut eventloop, false).await });
 
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
     let mut count = 0;
     let mut start = Instant::now();
 
@@ -240,7 +240,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
 async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     let keep_alive = 5;
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
 
     options.set_keep_alive(keep_alive);
 
@@ -249,7 +249,7 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
         run(&mut eventloop, false).await
     });
 
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
     let mut count = 0;
 
     // Start sending qos 0 publishes to the client. This triggers
@@ -282,12 +282,12 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
 #[tokio::test]
 async fn detects_halfopen_connections_in_the_second_ping_request() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(5);
 
     // A broker which consumes packets but doesn't reply
     task::spawn(async move {
-        let mut broker = Broker::from_listener(listener, 0, false).await;
+        let mut broker = TestBroker::from_listener(listener, 0, false).await;
         broker.blackhole().await;
     });
 
@@ -313,7 +313,7 @@ async fn detects_halfopen_connections_in_the_second_ping_request() {
 #[tokio::test]
 async fn requests_are_blocked_after_max_inflight_queue_size() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(5);
     let inflight = options.inflight();
 
@@ -329,7 +329,7 @@ async fn requests_are_blocked_after_max_inflight_queue_size() {
         run(&mut eventloop, false).await.unwrap();
     });
 
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
     for i in 1..=10 {
         let packet = broker.read_publish().await;
 
@@ -342,7 +342,7 @@ async fn requests_are_blocked_after_max_inflight_queue_size() {
 #[tokio::test]
 async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(3);
 
     let (client, mut eventloop) = AsyncClient::new(options, 5);
@@ -357,7 +357,7 @@ async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
         run(&mut eventloop, true).await.unwrap();
     });
 
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
 
     // packet 1, 2, and 3
     assert!(broker.read_publish().await.is_some());
@@ -381,7 +381,7 @@ async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
 #[tokio::test]
 async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(10);
 
     let (client, mut eventloop) = AsyncClient::new(options, 5);
@@ -393,7 +393,7 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
     });
 
     let broker = task::spawn(async move {
-        let mut broker = Broker::from_listener(listener, 0, false).await;
+        let mut broker = TestBroker::from_listener(listener, 0, false).await;
 
         // read all incoming packets first
         let packets = broker
@@ -473,7 +473,7 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
 #[tokio::test]
 async fn packet_id_collisions_are_timed_out_on_second_ping() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(4).set_keep_alive(1);
 
     let (client, mut eventloop) = AsyncClient::new(options, 10);
@@ -483,7 +483,7 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
     });
 
     let broker = task::spawn(async move {
-        let mut broker = Broker::from_listener(listener, 0, false).await;
+        let mut broker = TestBroker::from_listener(listener, 0, false).await;
         let packets = broker
             .wait_for_n_publishes(4, SETUP_TIMEOUT)
             .await
@@ -547,12 +547,12 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
 #[tokio::test]
 async fn next_poll_after_connect_failure_reconnects() {
     let (listener, port) = reserve_listener().await;
-    let options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let options = MqttOptions::new("dummy", ("127.0.0.1", port));
 
     task::spawn(async move {
-        let _broker = Broker::from_listener(listener, 1, false).await;
+        let _broker = TestBroker::from_listener(listener, 1, false).await;
         let listener = listener_on(port).await;
-        let _broker = Broker::from_listener(listener, 0, false).await;
+        let _broker = TestBroker::from_listener(listener, 0, false).await;
         time::sleep(Duration::from_secs(15)).await;
     });
 
@@ -576,7 +576,7 @@ async fn next_poll_after_connect_failure_reconnects() {
 #[tokio::test]
 async fn reconnection_resumes_from_the_previous_state() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(5).set_clean_session(false);
 
     // start sending qos0 publishes. Makes sure that there is out activity but no in activity
@@ -592,7 +592,7 @@ async fn reconnection_resumes_from_the_previous_state() {
     });
 
     // broker connection 1
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
     for i in 1..=2 {
         let packet = broker.read_publish().await.unwrap();
         assert_eq!(i, packet.payload[0]);
@@ -607,7 +607,7 @@ async fn reconnection_resumes_from_the_previous_state() {
 
     // broker connection 2
     let listener = listener_on(port).await;
-    let mut broker = Broker::from_listener(listener, 0, true).await;
+    let mut broker = TestBroker::from_listener(listener, 0, true).await;
     for i in 3..=4 {
         let packet = broker.read_publish().await.unwrap();
         assert_eq!(i, packet.payload[0]);
@@ -618,7 +618,7 @@ async fn reconnection_resumes_from_the_previous_state() {
 #[tokio::test]
 async fn reconnection_resends_unacked_packets_from_the_previous_connection_first() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(5).set_clean_session(false);
 
     // start sending qos0 publishes. this makes sure that there is
@@ -635,7 +635,7 @@ async fn reconnection_resends_unacked_packets_from_the_previous_connection_first
     });
 
     // broker connection 1. receive but don't ack
-    let mut broker = Broker::from_listener(listener, 0, false).await;
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
     for i in 1..=2 {
         let packet = broker.read_publish().await.unwrap();
         assert_eq!(i, packet.payload[0]);
@@ -643,7 +643,7 @@ async fn reconnection_resends_unacked_packets_from_the_previous_connection_first
 
     // broker connection 2 receives from scratch
     let listener = listener_on(port).await;
-    let mut broker = Broker::from_listener(listener, 0, true).await;
+    let mut broker = TestBroker::from_listener(listener, 0, true).await;
     for i in 1..=6 {
         let packet = broker.read_publish().await.unwrap();
         assert_eq!(i, packet.payload[0]);
@@ -653,7 +653,7 @@ async fn reconnection_resends_unacked_packets_from_the_previous_connection_first
 #[tokio::test]
 async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options
         .set_keep_alive(5)
         .set_clean_session(false)
@@ -670,7 +670,7 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
     });
 
     {
-        let mut broker = Broker::from_listener(listener, 0, false).await;
+        let mut broker = TestBroker::from_listener(listener, 0, false).await;
         let publishes = broker
             .wait_for_n_publishes(4, SETUP_TIMEOUT)
             .await
@@ -684,7 +684,7 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
     }
 
     let listener = listener_on(port).await;
-    let mut broker = Broker::from_listener(listener, 0, true).await;
+    let mut broker = TestBroker::from_listener(listener, 0, true).await;
     let first_replayed = broker
         .read_publish_with_timeout(PHASE_TIMEOUT)
         .await
@@ -696,7 +696,7 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
 #[tokio::test]
 async fn reconnection_clean_both_pending_packets_and_collision_when_clean_session_is_true() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options
         .set_inflight(2)
         .set_keep_alive(2)
@@ -711,7 +711,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
                 Some(listener) => listener,
                 None => listener_on(port).await,
             };
-            let mut broker = Broker::from_listener(listener, 0, false).await;
+            let mut broker = TestBroker::from_listener(listener, 0, false).await;
 
             let mut first_publish_unacked = false;
             while let Some(packet) = broker.read_packet().await {
@@ -767,7 +767,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
 #[tokio::test]
 async fn state_is_being_cleaned_properly_and_pending_request_calculated_properly() {
     let (listener, port) = reserve_listener().await;
-    let mut options = MqttOptions::new("dummy", "127.0.0.1", port);
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(5);
     let mut network_options = NetworkOptions::new();
     network_options.set_tcp_send_buffer_size(1024);
@@ -780,7 +780,7 @@ async fn state_is_being_cleaned_properly_and_pending_request_calculated_properly
     });
 
     task::spawn(async move {
-        let mut broker = Broker::from_listener(listener, 0, false).await;
+        let mut broker = TestBroker::from_listener(listener, 0, false).await;
         while (broker.read_packet().await).is_some() {
             time::sleep(Duration::from_secs_f64(0.5)).await;
         }

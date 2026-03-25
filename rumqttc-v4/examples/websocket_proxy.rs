@@ -1,4 +1,4 @@
-use rumqttc::{AsyncClient, Proxy, ProxyAuth, ProxyType, QoS, Transport};
+use rumqttc::{AsyncClient, Broker, Proxy, ProxyAuth, ProxyType, QoS};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
 
@@ -8,13 +8,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     pretty_env_logger::init();
 
-    // port parameter is ignored when scheme is websocket
     let mut mqttoptions = MqttOptions::new(
         "clientId-aSziq39Bp3",
-        "ws://broker.mqttdashboard.com:8000/mqtt",
-        8000,
+        Broker::websocket("ws://broker.mqttdashboard.com:8000/mqtt")
+            .expect("valid websocket broker"),
     );
-    mqttoptions.set_transport(Transport::Ws);
     mqttoptions.set_keep_alive(60);
     // Presumes that there is a proxy server already set up listening on 127.0.0.1:8100
     mqttoptions.set_proxy(Proxy {

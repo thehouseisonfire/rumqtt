@@ -44,7 +44,7 @@ git worktree add --detach "$TARGET_WT" "$TARGET_REF" >/dev/null
 apply_patch_to_wt() {
   local wt="$1"
 
-  perl -0pi -e 's@let mut mqttoptions = MqttOptions::new\(id, "localhost", 1883\);\n    mqttoptions.set_keep_alive\(20\);\n    mqttoptions.set_inflight\(100\);@let mut mqttoptions = if let Ok(raw_batch) = std::env::var("RUMQTT_BENCH_MAX_REQUEST_BATCH") {\n        let batch = raw_batch.parse::<usize>()?;\n        MqttOptions::parse_url(format!("mqtt://localhost:1883?client_id={id}&max_request_batch_num={batch}"))?\n    } else {\n        MqttOptions::new(id, "localhost", 1883)\n    };\n    mqttoptions.set_keep_alive(20);\n    mqttoptions.set_inflight(100);@s' "$wt/benchmarks/clients/rumqttasync.rs"
+  perl -0pi -e 's@let mut mqttoptions = MqttOptions::new\(id, "localhost", 1883\);\n    mqttoptions.set_keep_alive\(20\);\n    mqttoptions.set_inflight\(100\);@let mut mqttoptions = MqttOptions::new(id, "localhost", 1883);\n\n    if let Ok(raw_batch) = std::env::var("RUMQTT_BENCH_MAX_REQUEST_BATCH") {\n        let batch = raw_batch.parse::<usize>()?;\n        mqttoptions = MqttOptions::parse_url(format!("mqtt://localhost:1883?client_id={id}&max_request_batch_num={batch}"))?;\n    }\n\n    mqttoptions.set_keep_alive(20);\n    mqttoptions.set_inflight(100);@s' "$wt/benchmarks/clients/rumqttasync.rs"
   perl -0pi -e "s@mqtt://localhost:1883\\?client_id=@mqtt://localhost:${BROKER_PORT}?client_id=@g" "$wt/benchmarks/clients/rumqttasync.rs"
 
   perl -0pi -e 's@rumqttc = \{ package = "rumqttc-next", path = "\.\./rumqttc" \}@rumqttc = { package = "rumqttc-next", path = "../rumqttc", features = ["url"] }@' "$wt/benchmarks/Cargo.toml"
