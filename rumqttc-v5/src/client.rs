@@ -1654,7 +1654,7 @@ mod test {
 
     #[test]
     fn calling_iter_twice_on_connection_shouldnt_panic() {
-        let mut mqttoptions = MqttOptions::new("test-1", "localhost", 1883);
+        let mut mqttoptions = MqttOptions::new("test-1", "localhost");
         let will = LastWill::new("hello/world", "good bye", QoS::AtMostOnce, false, None);
         mqttoptions.set_keep_alive(5).set_last_will(will);
 
@@ -1790,8 +1790,7 @@ mod test {
 
     #[test]
     fn test_reauth() {
-        let (client, mut connection) =
-            Client::new(MqttOptions::new("test-1", "localhost", 1883), 10);
+        let (client, mut connection) = Client::new(MqttOptions::new("test-1", "localhost"), 10);
         let props = AuthProperties {
             method: Some("test".to_string()),
             data: Some(Bytes::from("test")),

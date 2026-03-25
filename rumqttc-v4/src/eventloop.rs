@@ -99,6 +99,8 @@ pub enum ConnectionError {
     ConnectionRefused(ConnectReturnCode),
     #[error("Expected ConnAck packet, received: {0:?}")]
     NotConnAck(Packet),
+    #[error("Broker target is incompatible with the selected transport")]
+    BrokerTransportMismatch,
     /// All request senders have been dropped. Use `AsyncClient::disconnect` for MQTT-level
     /// graceful shutdown with a DISCONNECT packet.
     #[error("Requests done")]
@@ -550,10 +552,15 @@ async fn network_connect(
     options: &MqttOptions,
     network_options: NetworkOptions,
 ) -> Result<Network, ConnectionError> {
+    let transport = options.transport();
+
     // Process Unix files early, as proxy is not supported for them.
     #[cfg(unix)]
-    if matches!(options.transport(), Transport::Unix) {
-        let file = options.broker_addr.as_str();
+    if matches!(&transport, Transport::Unix) {
+        let file = options
+            .broker()
+            .unix_path()
+            .ok_or(ConnectionError::BrokerTransportMismatch)?;
         let socket = UnixStream::connect(Path::new(file)).await?;
         let network = Network::new(
             socket,
@@ -563,16 +570,30 @@ async fn network_connect(
         return Ok(network);
     }
 
-    // For websockets domain and port are taken directly from `broker_addr` (which is a url).
-    let (domain, port) = match options.transport() {
+    // For websockets domain and port are taken directly from the broker URL.
+    let (domain, port) = match &transport {
         #[cfg(feature = "websocket")]
-        Transport::Ws => split_url(&options.broker_addr)?,
+        Transport::Ws => split_url(
+            options
+                .broker()
+                .websocket_url()
+                .ok_or(ConnectionError::BrokerTransportMismatch)?,
+        )?,
         #[cfg(all(
             any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
             feature = "websocket"
         ))]
-        Transport::Wss(_) => split_url(&options.broker_addr)?,
-        _ => options.broker_address(),
+        Transport::Wss(_) => split_url(
+            options
+                .broker()
+                .websocket_url()
+                .ok_or(ConnectionError::BrokerTransportMismatch)?,
+        )?,
+        _ => options
+            .broker()
+            .tcp_address()
+            .map(|(host, port)| (host.to_owned(), port))
+            .ok_or(ConnectionError::BrokerTransportMismatch)?,
     };
 
     let tcp_stream: Box<dyn AsyncReadWrite> = {
@@ -595,7 +616,7 @@ async fn network_connect(
         }
     };
 
-    let network = match options.transport() {
+    let network = match transport {
         Transport::Tcp => Network::new(
             tcp_stream,
             options.max_incoming_packet_size,
@@ -603,9 +624,11 @@ async fn network_connect(
         ),
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         Transport::Tls(tls_config) => {
-            let socket =
-                tls::tls_connect(&options.broker_addr, options.port, &tls_config, tcp_stream)
-                    .await?;
+            let (host, port) = options
+                .broker()
+                .tcp_address()
+                .expect("tls transport requires a tcp broker");
+            let socket = tls::tls_connect(host, port, &tls_config, tcp_stream).await?;
             Network::new(
                 socket,
                 options.max_incoming_packet_size,
@@ -616,7 +639,11 @@ async fn network_connect(
         Transport::Unix => unreachable!(),
         #[cfg(feature = "websocket")]
         Transport::Ws => {
-            let mut request = options.broker_addr.as_str().into_client_request()?;
+            let mut request = options
+                .broker()
+                .websocket_url()
+                .expect("ws transport requires a websocket broker")
+                .into_client_request()?;
             request
                 .headers_mut()
                 .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
@@ -644,7 +671,11 @@ async fn network_connect(
             feature = "websocket"
         ))]
         Transport::Wss(tls_config) => {
-            let mut request = options.broker_addr.as_str().into_client_request()?;
+            let mut request = options
+                .broker()
+                .websocket_url()
+                .expect("wss transport requires a websocket broker")
+                .into_client_request()?;
             request
                 .headers_mut()
                 .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
@@ -710,7 +741,7 @@ mod tests {
 
     #[test]
     fn eventloop_new_keeps_internal_sender_alive() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let eventloop = EventLoop::new(options, 1);
 
         assert!(matches!(
@@ -721,7 +752,7 @@ mod tests {
 
     #[test]
     fn async_client_constructor_path_allows_channel_shutdown() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
         drop(request_tx);
 
@@ -733,7 +764,7 @@ mod tests {
 
     #[test]
     fn clean_drops_ack_requests_drained_from_channel() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 3);
         request_tx
             .send(RequestEnvelope::plain(Request::PubAck(PubAck::new(7))))
@@ -755,8 +786,48 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn network_connect_rejects_unix_broker_with_tcp_transport() {
+        let mut options = MqttOptions::new("test-client", crate::Broker::unix("/tmp/mqtt.sock"));
+        options.set_transport(Transport::tcp());
+
+        match network_connect(&options, NetworkOptions::new()).await {
+            Err(ConnectionError::BrokerTransportMismatch) => {}
+            Err(err) => panic!("unexpected error: {err:?}"),
+            Ok(_) => panic!("mismatched broker and transport should fail"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "websocket")]
+    async fn network_connect_rejects_tcp_broker_with_websocket_transport() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_transport(Transport::Ws);
+
+        match network_connect(&options, NetworkOptions::new()).await {
+            Err(ConnectionError::BrokerTransportMismatch) => {}
+            Err(err) => panic!("unexpected error: {err:?}"),
+            Ok(_) => panic!("mismatched broker and transport should fail"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "websocket")]
+    async fn network_connect_rejects_websocket_broker_with_tcp_transport() {
+        let broker = crate::Broker::websocket("ws://localhost:9001/mqtt").unwrap();
+        let mut options = MqttOptions::new("test-client", broker);
+        options.set_transport(Transport::tcp());
+
+        match network_connect(&options, NetworkOptions::new()).await {
+            Err(ConnectionError::BrokerTransportMismatch) => {}
+            Err(err) => panic!("unexpected error: {err:?}"),
+            Ok(_) => panic!("mismatched broker and transport should fail"),
+        }
+    }
+
+    #[tokio::test]
     async fn async_client_path_reports_requests_done_after_pending_drain() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
         push_pending(&mut eventloop, Request::PingReq(PingReq));
         drop(request_tx);
@@ -782,7 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_request_is_cancellation_safe_for_pending_queue() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         push_pending(&mut eventloop, Request::PingReq(PingReq));
 
@@ -802,7 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_next_request_applies_pending_throttle_for_followup_pending_item() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 2);
         push_pending(&mut eventloop, Request::PingReq(PingReq));
         push_pending(&mut eventloop, Request::Disconnect(Disconnect));
@@ -832,7 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_next_request_does_not_throttle_when_pending_queue_is_empty() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
         request_tx
             .send_async(RequestEnvelope::plain(Request::PingReq(PingReq)))
@@ -855,7 +926,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_request_prioritizes_pending_over_channel_messages() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
         push_pending(&mut eventloop, Request::PingReq(PingReq));
         request_tx
@@ -885,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_request_preserves_fifo_order_for_plain_and_tracked_requests() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
         let (notice_tx, _notice) = PublishNoticeTx::new();
         let tracked_publish =
@@ -940,7 +1011,7 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_qos0_notice_reports_not_flushed_on_first_write_failure() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
         let (client, _peer) = tokio::io::duplex(1024);
         eventloop.network = Some(Network::new(client, 1024, 16));
@@ -966,7 +1037,7 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_qos0_notices_report_not_flushed_on_batched_write_failure() {
-        let mut options = MqttOptions::new("test-client", "localhost", 1883);
+        let mut options = MqttOptions::new("test-client", "localhost");
         options.set_max_request_batch(2);
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
         let (client, _peer) = tokio::io::duplex(1024);
@@ -1011,7 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn drain_pending_as_failed_drains_all_and_returns_count() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         let (notice_tx, notice) = PublishNoticeTx::new();
         let publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtLeastOnce, "payload");
@@ -1034,7 +1105,7 @@ mod tests {
 
     #[tokio::test]
     async fn drain_pending_as_failed_reports_session_reset_for_tracked_notices() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         let (publish_notice_tx, publish_notice) = PublishNoticeTx::new();
         let publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtLeastOnce, "payload");
@@ -1065,7 +1136,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_session_state_reports_session_reset_for_pending_tracked_notice() {
-        let options = MqttOptions::new("test-client", "localhost", 1883);
+        let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         let (notice_tx, notice) = PublishNoticeTx::new();
         let publish = Publish::new("hello/world", crate::mqttbytes::QoS::AtLeastOnce, "payload");

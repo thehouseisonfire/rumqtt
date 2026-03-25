@@ -10,7 +10,7 @@ use tokio_rustls::rustls::ClientConfig;
 async fn main() -> Result<(), Box<dyn Error>> {
     let pubsub_access_token = "";
 
-    let mut mqttoptions = MqttOptions::new("client1-session1", "MQTT hostname", 8883);
+    let mut mqttoptions = MqttOptions::new("client1-session1", ("MQTT hostname", 8883));
     mqttoptions.set_authentication_method(Some("OAUTH2-JWT".to_string()));
     mqttoptions.set_authentication_data(Some(pubsub_access_token.into()));
 

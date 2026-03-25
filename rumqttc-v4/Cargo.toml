@@ -28,7 +28,7 @@ use-rustls-aws-lc = ["use-rustls-no-provider", "tokio-rustls/aws_lc_rs", "rustls
 use-native-tls = ["dep:tokio-native-tls", "dep:native-tls", "async-tungstenite?/tokio-native-tls", "rumqttc-core/use-native-tls"]
 websocket = ["dep:async-tungstenite", "dep:futures-io", "dep:http", "rumqttc-core/websocket"]
 proxy = ["dep:async-http-proxy", "rumqttc-core/proxy"]
-url = ["dep:url"]
+url = ["dep:url", "dep:percent-encoding"]
 
 [dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
@@ -55,6 +55,7 @@ http = { version = "1.0.0", optional = true }
 tokio-native-tls = { version = "0.3.1", optional = true }
 native-tls = { version = "0.2.12", optional = true }
 # url
+percent-encoding = { version = "2", optional = true }
 url = { version = "2", default-features = false, optional = true }
 # proxy
 async-http-proxy = { version = "1.2.5", features = ["runtime-tokio", "basic-auth"], optional = true }

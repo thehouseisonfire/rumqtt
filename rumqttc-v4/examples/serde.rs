@@ -30,7 +30,7 @@ impl TryFrom<&[u8]> for Message {
 }
 
 fn main() {
-    let mqtt_opts = MqttOptions::new("test-1", "localhost", 1883);
+    let mqtt_opts = MqttOptions::new("test-1", "localhost");
 
     let (client, mut connection) = Client::new(mqtt_opts, 10);
     client.subscribe("hello/rumqtt", QoS::AtMostOnce).unwrap();

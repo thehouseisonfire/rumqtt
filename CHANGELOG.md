@@ -1,10 +1,13 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc`: Add `Broker`-based first-class Unix domain socket and websocket construction, plus `unix:///...` URL parsing on Unix targets.
 ### Changed
+- `rumqttc`: Secure endpoint schemes are no longer implicit transport selectors. Configure `mqtts://` / `ssl://` and secure websockets explicitly with `MqttOptions::set_transport(...)`; `Broker::websocket(...)` now accepts only `ws://...`.
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc`: Avoid eager default TLS/WSS initialization during option construction so manual-provider/custom-TLS setups under `use-rustls-no-provider` no longer fail before `set_transport(...)` can be applied.
 ### Security
 
 ---

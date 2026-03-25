@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
     color_backtrace::install();
 
-    let mut mqttoptions = MqttOptions::new("test-1", "test.mosquitto.org", 8883);
+    let mut mqttoptions = MqttOptions::new("test-1", ("test.mosquitto.org", 8883));
     mqttoptions.set_keep_alive(5);
 
     // Use native-tls to load root certificates from the operating system.
