@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
     any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
 ))]
 use rumqttc::Transport;
-use rumqttc::mqttbytes::v4::{ConnAck, ConnectReturnCode, Packet};
+use rumqttc::mqttbytes::v5::{ConnAck, ConnectReturnCode, Packet, PingResp};
 use rumqttc::{AsyncClient, Broker, MqttOptions, QoS};
 #[cfg(all(
     feature = "use-rustls-no-provider",
@@ -41,7 +41,7 @@ use tokio_tungstenite::{
     },
 };
 
-const MAX_PACKET_SIZE: usize = 1024 * 1024;
+const MAX_PACKET_SIZE: u32 = 1024 * 1024;
 const TOTAL_MESSAGES: usize = 100;
 const FIRST_CONNECTION_MESSAGES: usize = 20;
 
@@ -67,7 +67,7 @@ fn install_test_rustls_provider() {
 
 fn encode_packet(packet: Packet) -> Vec<u8> {
     let mut buffer = BytesMut::with_capacity(128);
-    packet.write(&mut buffer, MAX_PACKET_SIZE).unwrap();
+    packet.write(&mut buffer, Some(MAX_PACKET_SIZE)).unwrap();
     buffer.to_vec()
 }
 
@@ -112,11 +112,15 @@ async fn process_websocket_connection(
             Message::Binary(data) => {
                 let mut bytes = BytesMut::from(data.as_ref());
                 while !bytes.is_empty() {
-                    match Packet::read(&mut bytes, MAX_PACKET_SIZE).unwrap() {
-                        Packet::Connect(_) => {
+                    match Packet::read(&mut bytes, Some(MAX_PACKET_SIZE)).unwrap() {
+                        Packet::Connect(_, _, _) => {
                             send_packet(
                                 websocket,
-                                Packet::ConnAck(ConnAck::new(ConnectReturnCode::Success, false)),
+                                Packet::ConnAck(ConnAck {
+                                    session_present: false,
+                                    code: ConnectReturnCode::Success,
+                                    properties: None,
+                                }),
                             )
                             .await;
                         }
@@ -127,10 +131,10 @@ async fn process_websocket_connection(
                                 return;
                             }
                         }
-                        Packet::PingReq => {
-                            send_packet(websocket, Packet::PingResp).await;
+                        Packet::PingReq(_) => {
+                            send_packet(websocket, Packet::PingResp(PingResp)).await;
                         }
-                        Packet::Disconnect => return,
+                        Packet::Disconnect(_) => return,
                         _ => {}
                     }
                 }
@@ -202,7 +206,7 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     });
 
     let mut mqtt_options = MqttOptions::new(
-        "ws-adapter-test",
+        "ws-adapter-test-v5",
         Broker::websocket(format!("ws://127.0.0.1:{port}/mqtt")).expect("valid websocket broker"),
     );
     mqtt_options.set_keep_alive(2);
@@ -293,7 +297,7 @@ async fn wss_client_publishes_over_tls_websocket() {
     });
 
     let mut mqtt_options = MqttOptions::new(
-        "wss-adapter-test",
+        "wss-adapter-test-v5",
         Broker::websocket(format!("ws://localhost:{port}/mqtt")).expect("valid websocket broker"),
     );
     mqtt_options.set_transport(Transport::wss(cert_pem, None, None));
@@ -360,7 +364,7 @@ async fn wss_client_reconnects_and_delivers_all_messages() {
     });
 
     let mut mqtt_options = MqttOptions::new(
-        "wss-adapter-reconnect-test",
+        "wss-adapter-reconnect-test-v5",
         Broker::websocket(format!("ws://localhost:{port}/mqtt")).expect("valid websocket broker"),
     );
     mqtt_options.set_transport(Transport::wss(cert_pem, None, None));
