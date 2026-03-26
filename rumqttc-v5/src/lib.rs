@@ -59,13 +59,12 @@ mod websockets;
 #[cfg(feature = "proxy")]
 mod proxy;
 
-use mqttbytes::v5::*;
-
 pub use client::{
     AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, ManualAck, PublishTopic,
     RecvError, RecvTimeoutError, TryRecvError, ValidatedTopic,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
+pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
 pub use notice::{
     NoticeFailureReason, PublishNotice, PublishNoticeError, RequestNotice, RequestNoticeError,
@@ -638,6 +637,17 @@ impl MqttOptions {
     }
 
     /// Replace the current CONNECT authentication state.
+    ///
+    /// ```
+    /// use bytes::Bytes;
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_auth(ConnectAuth::UsernamePassword {
+    ///     username: "user".into(),
+    ///     password: Bytes::from_static(b"pw"),
+    /// });
+    /// ```
     pub fn set_auth(&mut self, auth: ConnectAuth) -> &mut Self {
         self.auth = auth;
         self
@@ -650,6 +660,20 @@ impl MqttOptions {
     }
 
     /// Set only the MQTT username field.
+    ///
+    /// ```
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_username("user");
+    ///
+    /// assert_eq!(
+    ///     options.auth(),
+    ///     &ConnectAuth::Username {
+    ///         username: "user".into(),
+    ///     }
+    /// );
+    /// ```
     pub fn set_username<U: Into<String>>(&mut self, username: U) -> &mut Self {
         self.auth = ConnectAuth::Username {
             username: username.into(),
@@ -658,6 +682,21 @@ impl MqttOptions {
     }
 
     /// Set only the MQTT password field.
+    ///
+    /// ```
+    /// use bytes::Bytes;
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_password(Bytes::from_static(b"\x00\xfftoken"));
+    ///
+    /// assert_eq!(
+    ///     options.auth(),
+    ///     &ConnectAuth::Password {
+    ///         password: Bytes::from_static(b"\x00\xfftoken"),
+    ///     }
+    /// );
+    /// ```
     pub fn set_password<P: Into<Bytes>>(&mut self, password: P) -> &mut Self {
         self.auth = ConnectAuth::Password {
             password: password.into(),
@@ -666,6 +705,22 @@ impl MqttOptions {
     }
 
     /// Set both MQTT username and binary password fields.
+    ///
+    /// ```
+    /// use bytes::Bytes;
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_credentials("user", Bytes::from_static(b"\x00\xfftoken"));
+    ///
+    /// assert_eq!(
+    ///     options.auth(),
+    ///     &ConnectAuth::UsernamePassword {
+    ///         username: "user".into(),
+    ///         password: Bytes::from_static(b"\x00\xfftoken"),
+    ///     }
+    /// );
+    /// ```
     pub fn set_credentials<U: Into<String>, P: Into<Bytes>>(
         &mut self,
         username: U,
@@ -679,6 +734,18 @@ impl MqttOptions {
     }
 
     /// CONNECT authentication fields.
+    ///
+    /// ```
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_password("pw");
+    ///
+    /// match options.auth() {
+    ///     ConnectAuth::Password { password } => assert_eq!(password.as_ref(), b"pw"),
+    ///     auth => panic!("unexpected auth state: {auth:?}"),
+    /// }
+    /// ```
     pub fn auth(&self) -> &ConnectAuth {
         &self.auth
     }
