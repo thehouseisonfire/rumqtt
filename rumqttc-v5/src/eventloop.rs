@@ -689,7 +689,7 @@ async fn mqtt_connect(
             properties: options.connect_properties(),
         },
         options.last_will(),
-        options.credentials(),
+        options.auth().clone(),
     );
 
     // send mqtt connect packet

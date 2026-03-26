@@ -14,8 +14,8 @@ pub struct Connect {
     pub clean_session: bool,
     /// Will that broker needs to publish when the client disconnects
     pub last_will: Option<LastWill>,
-    /// Login credentials
-    pub login: Option<Login>,
+    /// CONNECT authentication fields
+    pub auth: ConnectAuth,
 }
 
 impl Connect {
@@ -26,17 +26,36 @@ impl Connect {
             client_id: id.into(),
             clean_session: true,
             last_will: None,
-            login: None,
+            auth: ConnectAuth::None,
         }
     }
 
-    pub fn set_login<U: Into<String>, P: Into<Bytes>>(&mut self, u: U, p: P) -> &mut Connect {
-        let login = Login {
-            username: u.into(),
-            password: p.into(),
-        };
+    pub fn set_auth(&mut self, auth: ConnectAuth) -> &mut Connect {
+        self.auth = auth;
+        self
+    }
 
-        self.login = Some(login);
+    pub fn clear_auth(&mut self) -> &mut Connect {
+        self.auth = ConnectAuth::None;
+        self
+    }
+
+    pub fn set_username<U: Into<String>>(&mut self, username: U) -> &mut Connect {
+        self.auth = ConnectAuth::Username {
+            username: username.into(),
+        };
+        self
+    }
+
+    pub fn set_credentials<U: Into<String>, P: Into<Bytes>>(
+        &mut self,
+        username: U,
+        password: P,
+    ) -> &mut Connect {
+        self.auth = ConnectAuth::UsernamePassword {
+            username: username.into(),
+            password: password.into(),
+        };
         self
     }
 
@@ -54,9 +73,7 @@ impl Connect {
         }
 
         // username and password len
-        if let Some(login) = &self.login {
-            len += login.len();
-        }
+        len += self.auth.len();
 
         len
     }
@@ -85,7 +102,7 @@ impl Connect {
 
         let client_id = read_mqtt_string(&mut bytes)?;
         let last_will = LastWill::read(connect_flags, &mut bytes)?;
-        let login = Login::read(connect_flags, &mut bytes)?;
+        let auth = ConnectAuth::read(connect_flags, &mut bytes)?;
 
         let connect = Connect {
             protocol,
@@ -93,7 +110,7 @@ impl Connect {
             client_id,
             clean_session,
             last_will,
-            login,
+            auth,
         };
 
         Ok(connect)
@@ -125,9 +142,7 @@ impl Connect {
             connect_flags |= last_will.write(buffer)?;
         }
 
-        if let Some(login) = &self.login {
-            connect_flags |= login.write(buffer);
-        }
+        connect_flags |= self.auth.write(buffer);
 
         // update connect flags
         buffer[flags_index] = connect_flags;
@@ -208,70 +223,71 @@ impl LastWill {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Login {
-    pub username: String,
-    pub password: Bytes,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ConnectAuth {
+    #[default]
+    None,
+    Username {
+        username: String,
+    },
+    UsernamePassword {
+        username: String,
+        password: Bytes,
+    },
 }
 
-impl Login {
-    pub fn new<U: Into<String>, P: Into<Bytes>>(u: U, p: P) -> Login {
-        Login {
-            username: u.into(),
-            password: p.into(),
-        }
-    }
+impl ConnectAuth {
+    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<ConnectAuth, Error> {
+        let username_flag = (connect_flags & 0b1000_0000) != 0;
+        let password_flag = (connect_flags & 0b0100_0000) != 0;
 
-    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
-        let username = match connect_flags & 0b1000_0000 {
-            0 => String::new(),
-            _ => read_mqtt_string(bytes)?,
-        };
-
-        let password = match connect_flags & 0b0100_0000 {
-            0 => Bytes::new(),
-            _ => read_mqtt_bytes(bytes)?,
-        };
-
-        if username.is_empty() && password.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Login { username, password }))
+        match (username_flag, password_flag) {
+            (false, false) => Ok(ConnectAuth::None),
+            (true, false) => Ok(ConnectAuth::Username {
+                username: read_mqtt_string(bytes)?,
+            }),
+            (true, true) => Ok(ConnectAuth::UsernamePassword {
+                username: read_mqtt_string(bytes)?,
+                password: read_mqtt_bytes(bytes)?,
+            }),
+            (false, true) => Err(Error::IncorrectPacketFormat),
         }
     }
 
     fn len(&self) -> usize {
-        let mut len = 0;
-
-        if !self.username.is_empty() || !self.password.is_empty() {
-            len += 2 + self.username.len();
+        match self {
+            Self::None => 0,
+            Self::Username { username } => 2 + username.len(),
+            Self::UsernamePassword { username, password } => {
+                2 + username.len() + 2 + password.len()
+            }
         }
-
-        if !self.password.is_empty() {
-            len += 2 + self.password.len();
-        }
-
-        len
     }
 
     fn write(&self, buffer: &mut BytesMut) -> u8 {
-        let mut connect_flags = 0;
-        if !self.username.is_empty() || !self.password.is_empty() {
-            connect_flags |= 0x80;
-            write_mqtt_string(buffer, &self.username);
+        match self {
+            Self::None => 0,
+            Self::Username { username } => {
+                write_mqtt_string(buffer, username);
+                0x80
+            }
+            Self::UsernamePassword { username, password } => {
+                write_mqtt_string(buffer, username);
+                write_mqtt_bytes(buffer, password.as_ref());
+                0xC0
+            }
         }
-
-        if !self.password.is_empty() {
-            connect_flags |= 0x40;
-            write_mqtt_bytes(buffer, self.password.as_ref());
-        }
-
-        connect_flags
     }
 
     #[must_use]
     pub fn validate<P: AsRef<[u8]>>(&self, username: &str, password: P) -> bool {
-        (self.username == *username) && (self.password.as_ref() == password.as_ref())
+        matches!(
+            self,
+            Self::UsernamePassword {
+                username: actual_username,
+                password: actual_password,
+            } if actual_username == username && actual_password.as_ref() == password.as_ref()
+        )
     }
 }
 
@@ -361,7 +377,10 @@ mod test {
                 client_id: "test".to_owned(),
                 clean_session: true,
                 last_will: Some(LastWill::new("/a", "offline", QoS::AtLeastOnce, false)),
-                login: Some(Login::new("rumq", "mq")),
+                auth: ConnectAuth::UsernamePassword {
+                    username: "rumq".to_owned(),
+                    password: Bytes::from_static(b"mq"),
+                },
             }
         );
     }
@@ -420,7 +439,10 @@ mod test {
             client_id: "test".to_owned(),
             clean_session: true,
             last_will: Some(LastWill::new("/a", "offline", QoS::AtLeastOnce, false)),
-            login: Some(Login::new("rust", "mq")),
+            auth: ConnectAuth::UsernamePassword {
+                username: "rust".to_owned(),
+                password: Bytes::from_static(b"mq"),
+            },
         };
 
         let mut buf = BytesMut::new();
@@ -470,7 +492,10 @@ mod test {
             client_id: "test".to_owned(),
             clean_session: true,
             last_will: None,
-            login: Some(Login::new("", "pw")),
+            auth: ConnectAuth::UsernamePassword {
+                username: String::new(),
+                password: Bytes::from_static(b"pw"),
+            },
         };
 
         let mut buf = BytesMut::new();
@@ -482,7 +507,13 @@ mod test {
         let fixed_header = parse_fixed_header(buf.iter()).unwrap();
         let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
         let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
-        assert_eq!(decoded.login, Some(Login::new("", "pw")));
+        assert_eq!(
+            decoded.auth,
+            ConnectAuth::UsernamePassword {
+                username: String::new(),
+                password: Bytes::from_static(b"pw"),
+            }
+        );
     }
 
     #[test]
@@ -493,10 +524,10 @@ mod test {
             client_id: "test".to_owned(),
             clean_session: true,
             last_will: None,
-            login: Some(Login::new(
-                "binary",
-                Bytes::from_static(b"\x00\xffproto\0buf"),
-            )),
+            auth: ConnectAuth::UsernamePassword {
+                username: "binary".to_owned(),
+                password: Bytes::from_static(b"\x00\xffproto\0buf"),
+            },
         };
 
         let mut buf = BytesMut::new();
@@ -506,11 +537,69 @@ mod test {
         let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
         let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
         assert_eq!(
-            decoded.login,
-            Some(Login::new(
-                "binary",
-                Bytes::from_static(b"\x00\xffproto\0buf")
-            ))
+            decoded.auth,
+            ConnectAuth::UsernamePassword {
+                username: "binary".to_owned(),
+                password: Bytes::from_static(b"\x00\xffproto\0buf"),
+            }
+        );
+    }
+
+    #[test]
+    fn connect_roundtrips_username_only_auth() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::Username {
+                username: String::new(),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
+        assert_eq!(
+            decoded.auth,
+            ConnectAuth::Username {
+                username: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn connect_roundtrips_explicitly_empty_password() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::UsernamePassword {
+                username: "user".to_owned(),
+                password: Bytes::new(),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        assert_eq!(buf[9], 0b1100_0010);
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
+        assert_eq!(
+            decoded.auth,
+            ConnectAuth::UsernamePassword {
+                username: "user".to_owned(),
+                password: Bytes::new(),
+            }
         );
     }
 }

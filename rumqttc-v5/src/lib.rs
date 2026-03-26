@@ -328,8 +328,8 @@ pub struct MqttOptions {
     clean_start: bool,
     /// client identifier
     client_id: String,
-    /// username and password
-    credentials: Option<Login>,
+    /// CONNECT authentication fields
+    auth: ConnectAuth,
     /// request (publish, subscribe) channel capacity
     request_channel_capacity: usize,
     /// Max internal request batching
@@ -388,7 +388,7 @@ impl MqttOptions {
             keep_alive: Duration::from_secs(60),
             clean_start: true,
             client_id: id.into(),
-            credentials: None,
+            auth: ConnectAuth::None,
             request_channel_capacity: 10,
             max_request_batch: 0,
             read_batch_size: 0,
@@ -637,23 +637,50 @@ impl MqttOptions {
         self.clean_start
     }
 
-    /// Username and binary password
-    ///
-    /// The password is stored as MQTT binary data. String literals, [`String`], [`Vec<u8>`], and
-    /// [`Bytes`] are accepted. Borrowed non-static `&str` values should be converted to an owned
-    /// value before calling this method.
+    /// Replace the current CONNECT authentication state.
+    pub fn set_auth(&mut self, auth: ConnectAuth) -> &mut Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Clear CONNECT authentication fields.
+    pub fn clear_auth(&mut self) -> &mut Self {
+        self.auth = ConnectAuth::None;
+        self
+    }
+
+    /// Set only the MQTT username field.
+    pub fn set_username<U: Into<String>>(&mut self, username: U) -> &mut Self {
+        self.auth = ConnectAuth::Username {
+            username: username.into(),
+        };
+        self
+    }
+
+    /// Set only the MQTT password field.
+    pub fn set_password<P: Into<Bytes>>(&mut self, password: P) -> &mut Self {
+        self.auth = ConnectAuth::Password {
+            password: password.into(),
+        };
+        self
+    }
+
+    /// Set both MQTT username and binary password fields.
     pub fn set_credentials<U: Into<String>, P: Into<Bytes>>(
         &mut self,
         username: U,
         password: P,
     ) -> &mut Self {
-        self.credentials = Some(Login::new(username, password));
+        self.auth = ConnectAuth::UsernamePassword {
+            username: username.into(),
+            password: password.into(),
+        };
         self
     }
 
-    /// Security options
-    pub fn credentials(&self) -> Option<Login> {
-        self.credentials.clone()
+    /// CONNECT authentication fields.
+    pub fn auth(&self) -> &ConnectAuth {
+        &self.auth
     }
 
     /// Set request channel capacity
@@ -1161,8 +1188,10 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
 
         let username = url.username();
         let password = url.password();
-        if !username.is_empty() || password.is_some() {
+        if password.is_some() {
             options.set_credentials(username, password.unwrap_or_default().to_owned());
+        } else if !username.is_empty() {
+            options.set_username(username);
         }
 
         connect_props.max_packet_size = queries
@@ -1253,7 +1282,7 @@ impl Debug for MqttOptions {
             .field("keep_alive", &self.keep_alive)
             .field("clean_start", &self.clean_start)
             .field("client_id", &self.client_id)
-            .field("credentials", &self.credentials)
+            .field("auth", &self.auth)
             .field("request_channel_capacity", &self.request_channel_capacity)
             .field("max_request_batch", &self.max_request_batch)
             .field("read_batch_size", &self.read_batch_size)
@@ -1521,18 +1550,26 @@ mod test {
         assert_eq!(v.connect_timeout(), Duration::from_secs(7));
         let v = ok("mqtt://user@host:42?client_id=foo");
         assert_eq!(
-            v.credentials(),
-            Some(Login::new("user", Bytes::from_static(b"")))
+            v.auth(),
+            &ConnectAuth::Username {
+                username: "user".to_owned(),
+            }
         );
         let v = ok("mqtt://user:pw@host:42?client_id=foo");
         assert_eq!(
-            v.credentials(),
-            Some(Login::new("user", Bytes::from_static(b"pw")))
+            v.auth(),
+            &ConnectAuth::UsernamePassword {
+                username: "user".to_owned(),
+                password: Bytes::from_static(b"pw"),
+            }
         );
         let v = ok("mqtt://:pw@host:42?client_id=foo");
         assert_eq!(
-            v.credentials(),
-            Some(Login::new("", Bytes::from_static(b"pw")))
+            v.auth(),
+            &ConnectAuth::UsernamePassword {
+                username: String::new(),
+                password: Bytes::from_static(b"pw"),
+            }
         );
 
         assert_eq!(err("mqtt://host:42"), OptionError::ClientId);

@@ -712,7 +712,7 @@ async fn mqtt_connect(
     connect.keep_alive = u16::try_from(options.keep_alive().as_secs()).unwrap_or(u16::MAX);
     connect.clean_session = options.clean_session();
     connect.last_will = options.last_will();
-    connect.login = options.credentials();
+    connect.auth = options.auth().clone();
 
     // send mqtt connect packet
     network.write(Packet::Connect(connect)).await?;
