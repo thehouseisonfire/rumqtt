@@ -305,8 +305,8 @@ pub struct MqttOptions {
     clean_session: bool,
     /// client identifier
     client_id: String,
-    /// username and password
-    credentials: Option<Login>,
+    /// CONNECT authentication fields
+    auth: ConnectAuth,
     /// maximum incoming packet size (verifies remaining length of the packet)
     max_incoming_packet_size: usize,
     /// Maximum outgoing packet size (only verifies publish payload size)
@@ -356,7 +356,7 @@ impl MqttOptions {
             keep_alive: Duration::from_secs(60),
             clean_session: true,
             client_id: id.into(),
-            credentials: None,
+            auth: ConnectAuth::None,
             max_incoming_packet_size: 10 * 1024,
             max_outgoing_packet_size: 10 * 1024,
             request_channel_capacity: 10,
@@ -500,23 +500,93 @@ impl MqttOptions {
         self.clean_session
     }
 
-    /// Username and binary password
+    /// Replace the current CONNECT authentication state.
     ///
-    /// The password is stored as MQTT binary data. String literals, [`String`], [`Vec<u8>`], and
-    /// [`Bytes`] are accepted. Borrowed non-static `&str` values should be converted to an owned
-    /// value before calling this method.
+    /// ```
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_auth(ConnectAuth::Username {
+    ///     username: "user".into(),
+    /// });
+    /// ```
+    pub fn set_auth(&mut self, auth: ConnectAuth) -> &mut Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Clear CONNECT authentication fields.
+    pub fn clear_auth(&mut self) -> &mut Self {
+        self.auth = ConnectAuth::None;
+        self
+    }
+
+    /// Set only the MQTT username field.
+    ///
+    /// ```
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_username("user");
+    ///
+    /// assert_eq!(
+    ///     options.auth(),
+    ///     &ConnectAuth::Username {
+    ///         username: "user".into(),
+    ///     }
+    /// );
+    /// ```
+    pub fn set_username<U: Into<String>>(&mut self, username: U) -> &mut Self {
+        self.auth = ConnectAuth::Username {
+            username: username.into(),
+        };
+        self
+    }
+
+    /// Set both MQTT username and binary password fields.
+    ///
+    /// ```
+    /// use bytes::Bytes;
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_credentials("user", Bytes::from_static(b"\x00\xfftoken"));
+    ///
+    /// assert_eq!(
+    ///     options.auth(),
+    ///     &ConnectAuth::UsernamePassword {
+    ///         username: "user".into(),
+    ///         password: Bytes::from_static(b"\x00\xfftoken"),
+    ///     }
+    /// );
+    /// ```
     pub fn set_credentials<U: Into<String>, P: Into<Bytes>>(
         &mut self,
         username: U,
         password: P,
     ) -> &mut Self {
-        self.credentials = Some(Login::new(username, password));
+        self.auth = ConnectAuth::UsernamePassword {
+            username: username.into(),
+            password: password.into(),
+        };
         self
     }
 
-    /// Security options
-    pub fn credentials(&self) -> Option<Login> {
-        self.credentials.clone()
+    /// CONNECT authentication fields.
+    ///
+    /// ```
+    /// use rumqttc::{ConnectAuth, MqttOptions};
+    ///
+    /// let mut options = MqttOptions::new("client", "localhost");
+    /// options.set_credentials("user", "pw");
+    ///
+    /// match options.auth() {
+    ///     ConnectAuth::UsernamePassword { username, .. } => assert_eq!(username, "user"),
+    ///     auth => panic!("unexpected auth state: {auth:?}"),
+    /// }
+    /// ```
+    pub fn auth(&self) -> &ConnectAuth {
+        &self.auth
     }
 
     /// Set request channel capacity
@@ -824,8 +894,10 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
 
         let username = url.username();
         let password = url.password();
-        if !username.is_empty() || password.is_some() {
+        if password.is_some() {
             options.set_credentials(username, password.unwrap_or_default().to_owned());
+        } else if !username.is_empty() {
+            options.set_username(username);
         }
 
         if let (Some(incoming), Some(outgoing)) = (
@@ -921,7 +993,7 @@ impl Debug for MqttOptions {
             .field("keep_alive", &self.keep_alive)
             .field("clean_session", &self.clean_session)
             .field("client_id", &self.client_id)
-            .field("credentials", &self.credentials)
+            .field("auth", &self.auth)
             .field("max_packet_size", &self.max_incoming_packet_size)
             .field("request_channel_capacity", &self.request_channel_capacity)
             .field("max_request_batch", &self.max_request_batch)
@@ -1133,18 +1205,26 @@ mod test {
         assert_eq!(v.read_batch_size(), 32);
         let v = ok("mqtt://user@host:42?client_id=foo");
         assert_eq!(
-            v.credentials(),
-            Some(Login::new("user", Bytes::from_static(b"")))
+            v.auth(),
+            &ConnectAuth::Username {
+                username: "user".to_owned(),
+            }
         );
         let v = ok("mqtt://user:pw@host:42?client_id=foo");
         assert_eq!(
-            v.credentials(),
-            Some(Login::new("user", Bytes::from_static(b"pw")))
+            v.auth(),
+            &ConnectAuth::UsernamePassword {
+                username: "user".to_owned(),
+                password: Bytes::from_static(b"pw"),
+            }
         );
         let v = ok("mqtt://:pw@host:42?client_id=foo");
         assert_eq!(
-            v.credentials(),
-            Some(Login::new("", Bytes::from_static(b"pw")))
+            v.auth(),
+            &ConnectAuth::UsernamePassword {
+                username: String::new(),
+                password: Bytes::from_static(b"pw"),
+            }
         );
 
         assert_eq!(err("mqtt://host:42"), OptionError::ClientId);

@@ -4,7 +4,7 @@ pub use self::{
     auth::{Auth, AuthProperties, AuthReasonCode},
     codec::Codec,
     connack::{ConnAck, ConnAckProperties, ConnectReturnCode},
-    connect::{Connect, ConnectProperties, LastWill, LastWillProperties, Login},
+    connect::{Connect, ConnectAuth, ConnectProperties, LastWill, LastWillProperties},
     disconnect::{Disconnect, DisconnectProperties, DisconnectReasonCode},
     ping::{PingReq, PingResp},
     puback::{PubAck, PubAckProperties, PubAckReason},
@@ -41,7 +41,7 @@ mod unsubscribe;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Packet {
     Auth(Auth),
-    Connect(Connect, Option<LastWill>, Option<Login>),
+    Connect(Connect, Option<LastWill>, ConnectAuth),
     ConnAck(ConnAck),
     Publish(Publish),
     PubAck(PubAck),
@@ -78,8 +78,8 @@ impl Packet {
         let packet = packet.freeze();
         let packet = match packet_type {
             PacketType::Connect => {
-                let (connect, will, login) = Connect::read(fixed_header, packet)?;
-                Packet::Connect(connect, will, login)
+                let (connect, will, auth) = Connect::read(fixed_header, packet)?;
+                Packet::Connect(connect, will, auth)
             }
             PacketType::Publish => {
                 let publish = Publish::read(fixed_header, packet)?;
@@ -158,7 +158,7 @@ impl Packet {
             Self::PubRec(pubrec) => pubrec.write(write),
             Self::PubRel(pubrel) => pubrel.write(write),
             Self::PubComp(pubcomp) => pubcomp.write(write),
-            Self::Connect(connect, will, login) => connect.write(will, login, write),
+            Self::Connect(connect, will, auth) => connect.write(will, auth, write),
             Self::PingReq(_) => PingReq::write(write),
             Self::PingResp(_) => PingResp::write(write),
             Self::Disconnect(disconnect) => disconnect.write(write),
@@ -178,7 +178,7 @@ impl Packet {
             Self::PubRec(pubrec) => pubrec.size(),
             Self::PubRel(pubrel) => pubrel.size(),
             Self::PubComp(pubcomp) => pubcomp.size(),
-            Self::Connect(connect, will, login) => connect.size(will, login),
+            Self::Connect(connect, will, auth) => connect.size(will, auth),
             Self::PingReq(req) => req.size(),
             Self::PingResp(resp) => resp.size(),
             Self::Disconnect(disconnect) => disconnect.size(),
