@@ -24,6 +24,7 @@ compile_error!(
 #[macro_use]
 extern crate log;
 
+use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -499,8 +500,12 @@ impl MqttOptions {
         self.clean_session
     }
 
-    /// Username and password
-    pub fn set_credentials<U: Into<String>, P: Into<String>>(
+    /// Username and binary password
+    ///
+    /// The password is stored as MQTT binary data. String literals, [`String`], [`Vec<u8>`], and
+    /// [`Bytes`] are accepted. Borrowed non-static `&str` values should be converted to an owned
+    /// value before calling this method.
+    pub fn set_credentials<U: Into<String>, P: Into<Bytes>>(
         &mut self,
         username: U,
         password: P,
@@ -817,16 +822,10 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             options.set_clean_session(clean_session);
         }
 
-        if let Some((username, password)) = {
-            match url.username() {
-                "" => None,
-                username => Some((
-                    username.to_owned(),
-                    url.password().unwrap_or_default().to_owned(),
-                )),
-            }
-        } {
-            options.set_credentials(username, password);
+        let username = url.username();
+        let password = url.password();
+        if !username.is_empty() || password.is_some() {
+            options.set_credentials(username, password.unwrap_or_default().to_owned());
         }
 
         if let (Some(incoming), Some(outgoing)) = (
@@ -1132,6 +1131,21 @@ mod test {
         assert_eq!(v.keep_alive, Duration::from_secs(0));
         let v = ok("mqtt://host:42?client_id=foo&read_batch_size_num=32");
         assert_eq!(v.read_batch_size(), 32);
+        let v = ok("mqtt://user@host:42?client_id=foo");
+        assert_eq!(
+            v.credentials(),
+            Some(Login::new("user", Bytes::from_static(b"")))
+        );
+        let v = ok("mqtt://user:pw@host:42?client_id=foo");
+        assert_eq!(
+            v.credentials(),
+            Some(Login::new("user", Bytes::from_static(b"pw")))
+        );
+        let v = ok("mqtt://:pw@host:42?client_id=foo");
+        assert_eq!(
+            v.credentials(),
+            Some(Login::new("", Bytes::from_static(b"pw")))
+        );
 
         assert_eq!(err("mqtt://host:42"), OptionError::ClientId);
         assert_eq!(
