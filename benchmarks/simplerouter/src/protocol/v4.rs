@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use super::*;
+use super::{FixedHeader, Error, read_mqtt_bytes, read_u8, write_remaining_length, write_mqtt_string, read_u16, QoS, qos, write_mqtt_bytes, view_u16, view_str, check, PacketType};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub(crate) mod connect {
-    use super::*;
+    use super::{FixedHeader, Error, Buf, read_mqtt_bytes, read_u8, BytesMut, BufMut, write_remaining_length, write_mqtt_string, read_u16, QoS, qos, write_mqtt_bytes};
     use bytes::Bytes;
 
     /// Connection packet initiated by the client
@@ -127,7 +127,7 @@ pub(crate) mod connect {
         Ok(connect)
     }
 
-    /// LastWill that broker forwards on behalf of the client
+    /// `LastWill` that broker forwards on behalf of the client
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct LastWill {
         pub topic: String,
@@ -209,20 +209,14 @@ pub(crate) mod connect {
         }
 
         fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
-            let username = match connect_flags & 0b1000_0000 {
-                0 => String::new(),
-                _ => {
-                    let username = read_mqtt_bytes(bytes)?;
-                    std::str::from_utf8(&username)?.to_owned()
-                }
+            let username = if connect_flags & 0b1000_0000 == 0 { String::new() } else {
+                let username = read_mqtt_bytes(bytes)?;
+                std::str::from_utf8(&username)?.to_owned()
             };
 
-            let password = match connect_flags & 0b0100_0000 {
-                0 => String::new(),
-                _ => {
-                    let password = read_mqtt_bytes(bytes)?;
-                    std::str::from_utf8(&password)?.to_owned()
-                }
+            let password = if connect_flags & 0b0100_0000 == 0 { String::new() } else {
+                let password = read_mqtt_bytes(bytes)?;
+                std::str::from_utf8(&password)?.to_owned()
             };
 
             if username.is_empty() && password.is_empty() {
@@ -264,7 +258,7 @@ pub(crate) mod connect {
 }
 
 pub(crate) mod connack {
-    use super::*;
+    use super::{FixedHeader, Error, read_u8, write_remaining_length};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
     /// Return code in connack
@@ -289,8 +283,8 @@ pub(crate) mod connack {
     impl ConnAck {
         pub fn new(code: ConnectReturnCode, session_present: bool) -> ConnAck {
             ConnAck {
-                code,
                 session_present,
+                code,
             }
         }
 
@@ -322,7 +316,7 @@ pub(crate) mod connack {
         buffer.put_u8(0x20);
 
         let count = write_remaining_length(buffer, len)?;
-        buffer.put_u8(session_present as u8);
+        buffer.put_u8(u8::from(session_present));
         buffer.put_u8(code as u8);
 
         Ok(1 + count + len)
@@ -343,7 +337,7 @@ pub(crate) mod connack {
 }
 
 pub(crate) mod publish {
-    use super::*;
+    use super::{FixedHeader, Error, view_u16, view_str, Buf, read_mqtt_bytes, check, QoS, write_remaining_length, write_mqtt_string};
     use bytes::{BufMut, Bytes, BytesMut};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,7 +432,7 @@ pub(crate) mod publish {
                 0 => (),
                 1 => self.raw.advance(2),
                 v => return Err(Error::InvalidQoS(v)),
-            };
+            }
 
             let payload = self.raw;
             Ok((topic, payload))
@@ -482,9 +476,9 @@ pub(crate) mod publish {
 
         len += payload.len();
 
-        let dup = dup as u8;
+        let dup = u8::from(dup);
         let qos = qos as u8;
-        let retain = retain as u8;
+        let retain = u8::from(retain);
 
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
@@ -506,10 +500,10 @@ pub(crate) mod publish {
 }
 
 pub(crate) mod puback {
-    use super::*;
+    use super::{FixedHeader, Error, read_u16, write_remaining_length};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-    /// Acknowledgement to QoS1 publish
+    /// Acknowledgement to `QoS1` publish
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct PubAck {
         pub pkid: u16,
@@ -552,7 +546,7 @@ pub(crate) mod puback {
 }
 
 pub(crate) mod subscribe {
-    use super::*;
+    use super::{QoS, FixedHeader, Error, read_u16, read_mqtt_bytes, read_u8, qos, BytesMut, BufMut, write_remaining_length, write_mqtt_string};
     use bytes::{Buf, Bytes};
 
     /// Subscription packet
@@ -628,7 +622,7 @@ pub(crate) mod subscribe {
         buffer.put_u16(pkid);
 
         // write filters
-        for filter in filters.iter() {
+        for filter in &filters {
             filter.write(buffer);
         }
 
@@ -665,7 +659,7 @@ pub(crate) mod subscribe {
 pub(crate) mod suback {
     use std::convert::{TryFrom, TryInto};
 
-    use super::*;
+    use super::{FixedHeader, Error, read_u16, read_u8, BytesMut, BufMut, write_remaining_length, QoS, qos};
     use bytes::{Buf, Bytes};
 
     /// Acknowledgement to subscribe
@@ -759,7 +753,7 @@ pub(crate) mod suback {
 }
 
 pub(crate) mod pingresp {
-    use super::*;
+    use super::{BytesMut, Error, BufMut};
 
     pub fn write(payload: &mut BytesMut) -> Result<usize, Error> {
         payload.put_slice(&[0xD0, 0x00]);
@@ -768,7 +762,7 @@ pub(crate) mod pingresp {
 }
 
 pub(crate) mod pingreq {
-    use super::*;
+    use super::{BytesMut, Error, BufMut};
 
     pub fn write(payload: &mut BytesMut) -> Result<usize, Error> {
         payload.put_slice(&[0xC0, 0x00]);

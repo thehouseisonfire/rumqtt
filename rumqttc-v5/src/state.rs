@@ -513,7 +513,7 @@ impl MqttState {
                 .return_codes
                 .iter()
                 .filter(|reason| !matches!(reason, SubscribeReasonCode::Success(_)))
-                .cloned()
+                .copied()
                 .collect();
             if failures.is_empty() {
                 notice.success();
@@ -541,7 +541,7 @@ impl MqttState {
                     **reason != UnsubAckReason::Success
                         && **reason != UnsubAckReason::NoSubscriptionExisted
                 })
-                .cloned()
+                .copied()
                 .collect();
             if failures.is_empty() {
                 notice.success();

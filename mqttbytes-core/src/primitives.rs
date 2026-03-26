@@ -174,7 +174,7 @@ pub fn len_len(len: usize) -> usize {
     }
 }
 
-/// After collecting enough bytes to frame a packet (packet's frame())
+/// After collecting enough bytes to frame a packet (packet's `frame()`)
 /// , It's possible that content itself in the stream is wrong. Like expected
 /// packet id or qos not being present. In cases where `read_mqtt_string` or
 /// `read_mqtt_bytes` exhausted remaining length but packet framing expects to

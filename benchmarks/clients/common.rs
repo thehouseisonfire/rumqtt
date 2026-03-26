@@ -11,7 +11,7 @@ pub fn profile(name: &str, guard: ProfilerGuard) {
         let mut content = Vec::new();
         profile.encode(&mut content).unwrap();
         file.write_all(&content).unwrap();
-    };
+    }
 }
 
 #[derive(Serialize, Deserialize)]

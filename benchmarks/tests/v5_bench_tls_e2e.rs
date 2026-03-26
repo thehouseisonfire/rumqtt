@@ -4,19 +4,13 @@ use std::process::Command;
 #[test]
 #[ignore]
 fn v5_bench_tls_e2e() {
-    let broker_url = match std::env::var("RUMQTT_BENCH_TLS_URL") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("RUMQTT_BENCH_TLS_URL not set; skipping TLS e2e benchmark test");
-            return;
-        }
+    let broker_url = if let Ok(v) = std::env::var("RUMQTT_BENCH_TLS_URL") { v } else {
+        eprintln!("RUMQTT_BENCH_TLS_URL not set; skipping TLS e2e benchmark test");
+        return;
     };
-    let ca_cert = match std::env::var("RUMQTT_BENCH_CA_CERT") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("RUMQTT_BENCH_CA_CERT not set; skipping TLS e2e benchmark test");
-            return;
-        }
+    let ca_cert = if let Ok(v) = std::env::var("RUMQTT_BENCH_CA_CERT") { v } else {
+        eprintln!("RUMQTT_BENCH_CA_CERT not set; skipping TLS e2e benchmark test");
+        return;
     };
 
     let output = Command::new("cargo")

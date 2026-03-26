@@ -17,7 +17,7 @@ fn main() {
     let mut output = BytesMut::with_capacity(10 * 1024);
 
     let start = Instant::now();
-    for publish in data.into_iter() {
+    for publish in data {
         publish.write(&mut output).unwrap();
     }
 

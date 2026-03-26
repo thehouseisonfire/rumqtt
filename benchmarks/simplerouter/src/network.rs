@@ -1,7 +1,7 @@
 use std::io;
 
 use bytes::{Bytes, BytesMut};
-use log::*;
+use log::debug;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -30,7 +30,7 @@ impl Network {
         let connect_packet = loop {
             match protocol::read_first_connect(&mut network.buf, 4096) {
                 Err(protocol::Error::InsufficientBytes(count)) => {
-                    network.read_atleast(count).await?
+                    network.read_atleast(count).await?;
                 }
                 res => break res?,
             }
@@ -64,7 +64,7 @@ impl Network {
         while len < count {
             len += self.stream.read_buf(&mut self.buf).await?;
         }
-        debug!("network: read {} bytes", len);
+        debug!("network: read {len} bytes");
 
         Ok(())
     }

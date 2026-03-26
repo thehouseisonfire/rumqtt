@@ -52,9 +52,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let notification = eventloop.poll().await;
 
         match notification {
-            Ok(event) => println!("{:?}", event),
+            Ok(event) => println!("{event:?}"),
             Err(e) => {
-                println!("Error = {:?}", e);
+                println!("Error = {e:?}");
                 break;
             }
         }

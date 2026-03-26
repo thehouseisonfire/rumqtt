@@ -1250,7 +1250,7 @@ mod test {
             ValidatedTopic::new("a/+/b"),
             Err(InvalidTopic("a/+/b".to_string()))
         );
-        assert_eq!(ValidatedTopic::new(""), Err(InvalidTopic("".to_string())));
+        assert_eq!(ValidatedTopic::new(""), Err(InvalidTopic(String::new())));
     }
 
     #[test]

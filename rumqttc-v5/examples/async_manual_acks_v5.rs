@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     task::spawn(async move {
         // send some messages to example topic and disconnect
         requests(&client).await;
-        client.disconnect().await.unwrap()
+        client.disconnect().await.unwrap();
     });
 
     // get subscribed messages without acking

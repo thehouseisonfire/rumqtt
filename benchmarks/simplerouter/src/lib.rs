@@ -1,7 +1,7 @@
 use std::{io, net::SocketAddr};
 
 use bytes::BytesMut;
-use log::*;
+use log::{info, error};
 use tokio::net::TcpListener;
 
 mod network;
@@ -19,11 +19,11 @@ pub async fn run(config: Config) -> Result<(), Error> {
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        info!("router: accepted connection from {}", addr);
+        info!("router: accepted connection from {addr}");
         let (network, _) = match Network::read_connect(stream).await {
             Ok(v) => v,
             Err(e) => {
-                error!("router: unable to read connect : {}", e);
+                error!("router: unable to read connect : {e}");
                 continue;
             }
         };
@@ -41,7 +41,7 @@ async fn publisher_handle(mut network: Network) {
         let packet = match network.poll().await {
             Ok(packet) => packet,
             Err(e) => {
-                error!("connection: unable to read packet: {}", e);
+                error!("connection: unable to read packet: {e}");
                 return;
             }
         };
@@ -53,27 +53,27 @@ async fn publisher_handle(mut network: Network) {
                 }
                 v4::Packet::PingReq => {
                     if let Err(e) = network.send_data(&pingresp_bytes).await {
-                        error!("unable to send pingresp, exiting : {}", e);
+                        error!("unable to send pingresp, exiting : {e}");
                         return;
-                    };
+                    }
                 }
                 v4::Packet::Publish(publish) => {
                     let pkid = match publish.view_meta() {
                         Ok(v) => v.2,
                         Err(e) => {
-                            error!("connection: malformed publish packet : {}", e);
+                            error!("connection: malformed publish packet : {e}");
                             continue;
                         }
                     };
                     payload.reserve(2);
                     v4::puback::write(pkid, &mut payload).unwrap();
                     if let Err(e) = network.send_data(&payload.split().freeze()).await {
-                        error!("unable to send puback pkid = {}, exiting : {}", pkid, e);
+                        error!("unable to send puback pkid = {pkid}, exiting : {e}");
                         return;
-                    };
+                    }
                 }
                 p => {
-                    error!("connection: invalid packet {:?}", p);
+                    error!("connection: invalid packet {p:?}");
                     continue;
                 }
             },
@@ -84,15 +84,15 @@ async fn publisher_handle(mut network: Network) {
                 }
                 v5::Packet::PingReq => {
                     if let Err(e) = network.send_data(&pingresp_bytes).await {
-                        error!("unable to send pingresp, exiting : {}", e);
+                        error!("unable to send pingresp, exiting : {e}");
                         return;
-                    };
+                    }
                 }
                 v5::Packet::Publish(publish) => {
                     let pkid = match publish.view_meta() {
                         Ok(v) => v.2,
                         Err(e) => {
-                            error!("connection: malformed publish packet : {}", e);
+                            error!("connection: malformed publish packet : {e}");
                             continue;
                         }
                     };
@@ -100,12 +100,12 @@ async fn publisher_handle(mut network: Network) {
                     v5::puback::write(pkid, v5::puback::PubAckReason::Success, None, &mut payload)
                         .unwrap();
                     if let Err(e) = network.send_data(&payload.split().freeze()).await {
-                        error!("unable to send puback pkid = {}, exiting : {}", pkid, e);
+                        error!("unable to send puback pkid = {pkid}, exiting : {e}");
                         return;
-                    };
+                    }
                 }
                 p => {
-                    error!("connection: invalid packet {:?}", p);
+                    error!("connection: invalid packet {p:?}");
                     continue;
                 }
             },

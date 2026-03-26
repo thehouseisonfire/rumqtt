@@ -9,7 +9,7 @@ pub enum QoS {
     ExactlyOnce = 2,
 }
 
-/// Maps a number to QoS
+/// Maps a number to `QoS`
 #[must_use]
 pub fn qos(num: u8) -> Option<QoS> {
     match num {
