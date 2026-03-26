@@ -370,7 +370,7 @@ impl MqttState {
             let failures: Vec<_> = suback
                 .return_codes
                 .iter()
-                .cloned()
+                .copied()
                 .filter(|code| matches!(code, SubscribeReasonCode::Failure))
                 .collect();
             if failures.is_empty() {

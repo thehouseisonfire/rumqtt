@@ -72,10 +72,7 @@ fn assert_keep_alive_interval(elapsed: Duration, keep_alive: u16) {
 
     assert!(
         elapsed >= lower && elapsed <= upper,
-        "keepalive interval out of bounds: expected {:?}..={:?}, got {:?}",
-        lower,
-        upper,
-        elapsed
+        "keepalive interval out of bounds: expected {lower:?}..={upper:?}, got {elapsed:?}"
     );
 }
 

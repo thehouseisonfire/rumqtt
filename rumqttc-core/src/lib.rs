@@ -81,7 +81,7 @@ pub enum TlsConfiguration {
         ca: Vec<u8>,
         /// alpn settings
         alpn: Option<Vec<Vec<u8>>>,
-        /// tls client_authentication
+        /// tls `client_authentication`
         client_auth: Option<(Vec<u8>, Vec<u8>)>,
     },
     #[cfg(feature = "use-native-tls")]
@@ -93,7 +93,7 @@ pub enum TlsConfiguration {
         client_auth: Option<(Vec<u8>, String)>,
     },
     #[cfg(feature = "use-rustls-no-provider")]
-    /// Injected rustls ClientConfig for TLS, to allow more customisation.
+    /// Injected rustls `ClientConfig` for TLS, to allow more customisation.
     Rustls(Arc<ClientConfig>),
     #[cfg(feature = "use-native-tls")]
     /// Use default native-tls configuration

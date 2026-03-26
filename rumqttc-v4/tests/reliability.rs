@@ -108,10 +108,7 @@ fn assert_keep_alive_interval(elapsed: Duration, keep_alive: u16) {
 
     assert!(
         elapsed >= lower && elapsed <= upper,
-        "keepalive interval out of bounds: expected {:?}..={:?}, got {:?}",
-        lower,
-        upper,
-        elapsed
+        "keepalive interval out of bounds: expected {lower:?}..={upper:?}, got {elapsed:?}"
     );
 }
 
@@ -181,7 +178,7 @@ async fn idle_connection_triggers_pings_on_time() {
                 start = Instant::now();
             }
             _ => {
-                panic!("Expecting ping, Received: {:?}", packet);
+                panic!("Expecting ping, Received: {packet:?}");
             }
         }
     }
@@ -298,7 +295,7 @@ async fn detects_halfopen_connections_in_the_second_ping_request() {
         if let Err(e) = eventloop.poll().await {
             match e {
                 ConnectionError::MqttState(StateError::AwaitPingResp) => break,
-                v => panic!("Expecting pingresp error. Found = {:?}", v),
+                v => panic!("Expecting pingresp error. Found = {v:?}"),
             }
         }
     }
@@ -561,7 +558,7 @@ async fn next_poll_after_connect_failure_reconnects() {
 
     match eventloop.poll().await {
         Err(ConnectionError::ConnectionRefused(ConnectReturnCode::BadUserNamePassword)) => (),
-        v => panic!("Expected bad username password error. Found = {:?}", v),
+        v => panic!("Expected bad username password error. Found = {v:?}"),
     }
 
     match eventloop.poll().await {
@@ -569,7 +566,7 @@ async fn next_poll_after_connect_failure_reconnects() {
             code: ConnectReturnCode::Success,
             session_present: false,
         }))) => (),
-        v => panic!("Expected ConnAck Success. Found = {:?}", v),
+        v => panic!("Expected ConnAck Success. Found = {v:?}"),
     }
 }
 
@@ -745,7 +742,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
             eventloop.poll().await
         {
             break;
-        };
+        }
     }
 
     // Let's allow the broker to be created again
@@ -760,7 +757,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
             assert!(eventloop.pending_is_empty());
             assert!(eventloop.state.collision.is_none());
         }
-        v => panic!("Expected ConnAck Success. Found = {:?}", v),
+        v => panic!("Expected ConnAck Success. Found = {v:?}"),
     }
 }
 

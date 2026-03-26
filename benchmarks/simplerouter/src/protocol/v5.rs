@@ -4,10 +4,10 @@ use std::fmt;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::*;
+use super::{FixedHeader, Error, read_mqtt_bytes, read_u8, read_u16, QoS, qos, length, read_u32, len_len, write_remaining_length, write_mqtt_string, write_mqtt_bytes, view_u16, view_str, check, PacketType};
 
 pub(crate) mod connect {
-    use super::*;
+    use super::{FixedHeader, Error, Buf, read_mqtt_bytes, read_u8, read_u16, QoS, qos, length, property, PropertyType, read_u32};
     use bytes::Bytes;
 
     /// Connection packet initiated by the client
@@ -105,7 +105,7 @@ pub(crate) mod connect {
         Ok(connect)
     }
 
-    /// LastWill that broker forwards on behalf of the client
+    /// `LastWill` that broker forwards on behalf of the client
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct LastWill {
         pub topic: String,
@@ -174,20 +174,14 @@ pub(crate) mod connect {
         }
 
         fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
-            let username = match connect_flags & 0b1000_0000 {
-                0 => String::new(),
-                _ => {
-                    let username = read_mqtt_bytes(bytes)?;
-                    std::str::from_utf8(&username)?.to_owned()
-                }
+            let username = if connect_flags & 0b1000_0000 == 0 { String::new() } else {
+                let username = read_mqtt_bytes(bytes)?;
+                std::str::from_utf8(&username)?.to_owned()
             };
 
-            let password = match connect_flags & 0b0100_0000 {
-                0 => String::new(),
-                _ => {
-                    let password = read_mqtt_bytes(bytes)?;
-                    std::str::from_utf8(&password)?.to_owned()
-                }
+            let password = if connect_flags & 0b0100_0000 == 0 { String::new() } else {
+                let password = read_mqtt_bytes(bytes)?;
+                std::str::from_utf8(&password)?.to_owned()
             };
 
             if username.is_empty() && password.is_empty() {
@@ -357,7 +351,7 @@ pub(crate) mod connect {
                 len += 1 + 1;
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 len += 1 + 2 + key.len() + 2 + value.len();
             }
 
@@ -375,7 +369,7 @@ pub(crate) mod connect {
 }
 
 pub(crate) mod connack {
-    use super::*;
+    use super::{len_len, FixedHeader, Error, read_u8, write_remaining_length, length, property, PropertyType, read_u32, read_u16, read_mqtt_bytes, write_mqtt_string, write_mqtt_bytes};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
     /// Return code in connack
@@ -481,7 +475,7 @@ pub(crate) mod connack {
 
         let count = write_remaining_length(buffer, len)?;
 
-        buffer.put_u8(session_present as u8);
+        buffer.put_u8(u8::from(session_present));
         buffer.put_u8(code as u8);
 
         if let Some(properties) = properties {
@@ -573,7 +567,7 @@ pub(crate) mod connack {
                 len += 1 + 2 + reason.len();
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 len += 1 + 2 + key.len() + 2 + value.len();
             }
 
@@ -796,7 +790,7 @@ pub(crate) mod connack {
                 write_mqtt_string(buffer, reason);
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 buffer.put_u8(PropertyType::UserProperty as u8);
                 write_mqtt_string(buffer, key);
                 write_mqtt_string(buffer, value);
@@ -877,7 +871,7 @@ pub(crate) mod connack {
 }
 
 pub(crate) mod publish {
-    use super::*;
+    use super::{FixedHeader, Error, view_u16, view_str, Buf, read_mqtt_bytes, check, QoS, write_remaining_length, write_mqtt_string};
     use bytes::{BufMut, Bytes, BytesMut};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -972,7 +966,7 @@ pub(crate) mod publish {
                 0 => (),
                 1 => self.raw.advance(2),
                 v => return Err(Error::InvalidQoS(v)),
-            };
+            }
 
             let payload = self.raw;
             Ok((topic, payload))
@@ -1016,9 +1010,9 @@ pub(crate) mod publish {
 
         len += payload.len();
 
-        let dup = dup as u8;
+        let dup = u8::from(dup);
         let qos = qos as u8;
-        let retain = retain as u8;
+        let retain = u8::from(retain);
 
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
@@ -1040,10 +1034,10 @@ pub(crate) mod publish {
 }
 
 pub(crate) mod puback {
-    use super::*;
+    use super::{FixedHeader, Error, read_u16, read_u8, len_len, write_remaining_length, length, property, PropertyType, read_mqtt_bytes, write_mqtt_string};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-    /// Acknowledgement to QoS1 publish
+    /// Acknowledgement to `QoS1` publish
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct PubAck {
         pub pkid: u16,
@@ -1102,38 +1096,35 @@ pub(crate) mod puback {
     ) -> Result<usize, Error> {
         buffer.put_u8(0x40);
 
-        match &properties {
-            Some(properties) => {
-                let properties_len = properties.len();
-                let properties_len_len = len_len(properties_len);
-                let len = 2 + 1 + properties_len_len + properties_len;
+        if let Some(properties) = &properties {
+            let properties_len = properties.len();
+            let properties_len_len = len_len(properties_len);
+            let len = 2 + 1 + properties_len_len + properties_len;
 
+            let count = write_remaining_length(buffer, len)?;
+            buffer.put_u16(pkid);
+            buffer.put_u8(reason as u8);
+            properties.write(buffer)?;
+
+            Ok(len + count + 1)
+        } else {
+            // Unlike other packets, property length can be ignored if there are
+            // no properties in acks
+
+            if reason == PubAckReason::Success {
+                let len = 2;
                 let count = write_remaining_length(buffer, len)?;
                 buffer.put_u16(pkid);
-                buffer.put_u8(reason as u8);
-                properties.write(buffer)?;
 
-                Ok(len + count + 1)
+                return Ok(len + count + 1);
             }
-            None => {
-                // Unlike other packets, property length can be ignored if there are
-                // no properties in acks
 
-                if reason == PubAckReason::Success {
-                    let len = 2;
-                    let count = write_remaining_length(buffer, len)?;
-                    buffer.put_u16(pkid);
+            let len = 2 + 1;
+            let count = write_remaining_length(buffer, len)?;
+            buffer.put_u16(pkid);
+            buffer.put_u8(reason as u8);
 
-                    return Ok(len + count + 1);
-                }
-
-                let len = 2 + 1;
-                let count = write_remaining_length(buffer, len)?;
-                buffer.put_u16(pkid);
-                buffer.put_u8(reason as u8);
-
-                Ok(len + count + 1)
-            }
+            Ok(len + count + 1)
         }
     }
 
@@ -1166,7 +1157,7 @@ pub(crate) mod puback {
                 len += 1 + 2 + reason.len();
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 len += 1 + 2 + key.len() + 2 + value.len();
             }
 
@@ -1223,7 +1214,7 @@ pub(crate) mod puback {
                 write_mqtt_string(buffer, reason);
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 buffer.put_u8(PropertyType::UserProperty as u8);
                 write_mqtt_string(buffer, key);
                 write_mqtt_string(buffer, value);
@@ -1252,7 +1243,7 @@ pub(crate) mod puback {
 }
 
 pub(crate) mod subscribe {
-    use super::*;
+    use super::{QoS, len_len, FixedHeader, Error, read_u16, read_mqtt_bytes, read_u8, qos, BytesMut, BufMut, write_remaining_length, write_mqtt_string, length, property, PropertyType, fmt};
     use bytes::{Buf, Bytes};
 
     /// Subscription packet
@@ -1389,10 +1380,10 @@ pub(crate) mod subscribe {
             None => {
                 write_remaining_length(buffer, 0)?;
             }
-        };
+        }
 
         // write filters
-        for filter in filters.iter() {
+        for filter in &filters {
             filter.write(buffer);
         }
 
@@ -1462,7 +1453,7 @@ pub(crate) mod subscribe {
                 len += 1 + len_len(*id);
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 len += 1 + 2 + key.len() + 2 + value.len();
             }
 
@@ -1491,7 +1482,7 @@ pub(crate) mod subscribe {
                         let (id_len, sub_id) = length(bytes.iter())?;
                         cursor += id_len;
                         bytes.advance(id_len);
-                        id = Some(sub_id)
+                        id = Some(sub_id);
                     }
                     PropertyType::UserProperty => {
                         let key = read_mqtt_bytes(bytes)?;
@@ -1520,7 +1511,7 @@ pub(crate) mod subscribe {
                 write_remaining_length(buffer, *id)?;
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 buffer.put_u8(PropertyType::UserProperty as u8);
                 write_mqtt_string(buffer, key);
                 write_mqtt_string(buffer, value);
@@ -1561,7 +1552,7 @@ pub(crate) mod subscribe {
 pub(crate) mod suback {
     use std::convert::{TryFrom, TryInto};
 
-    use super::*;
+    use super::{len_len, FixedHeader, Error, read_u16, read_u8, BytesMut, BufMut, write_remaining_length, length, property, PropertyType, read_mqtt_bytes, write_mqtt_string, qos, QoS};
     use bytes::{Buf, Bytes};
 
     /// Acknowledgement to subscribe
@@ -1658,7 +1649,7 @@ pub(crate) mod suback {
             None => {
                 write_remaining_length(buffer, 0)?;
             }
-        };
+        }
 
         let p: Vec<u8> = return_codes.iter().map(|code| *code as u8).collect();
         buffer.extend_from_slice(&p);
@@ -1679,7 +1670,7 @@ pub(crate) mod suback {
                 len += 1 + 2 + reason.len();
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 len += 1 + 2 + key.len() + 2 + value.len();
             }
 
@@ -1736,7 +1727,7 @@ pub(crate) mod suback {
                 write_mqtt_string(buffer, reason);
             }
 
-            for (key, value) in self.user_properties.iter() {
+            for (key, value) in &self.user_properties {
                 buffer.put_u8(PropertyType::UserProperty as u8);
                 write_mqtt_string(buffer, key);
                 write_mqtt_string(buffer, value);
@@ -1797,7 +1788,7 @@ pub(crate) mod suback {
 }
 
 pub(crate) mod pingresp {
-    use super::*;
+    use super::{BytesMut, Error, BufMut};
 
     pub fn write(payload: &mut BytesMut) -> Result<usize, Error> {
         payload.put_slice(&[0xD0, 0x00]);

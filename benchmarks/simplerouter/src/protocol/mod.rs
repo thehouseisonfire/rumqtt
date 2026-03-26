@@ -16,7 +16,7 @@ pub fn valid_filter(filter: &str) -> bool {
 
     let hirerarchy = filter.split('/').collect::<Vec<&str>>();
     if let Some((last, remaining)) = hirerarchy.split_last() {
-        for entry in remaining.iter() {
+        for entry in remaining {
             // # is not allowed in filter except as a last entry
             // invalid: sport/tennis#/player
             // invalid: sport/tennis/#/ranking
@@ -125,7 +125,7 @@ pub enum QoS {
     AtLeastOnce = 1,
 }
 
-/// Maps a number to QoS
+/// Maps a number to `QoS`
 pub fn qos(num: u8) -> Result<QoS, Error> {
     match num {
         0 => Ok(QoS::AtMostOnce),
@@ -284,7 +284,7 @@ pub fn length(stream: Iter<u8>) -> Result<(usize, usize), Error> {
 pub fn view_u16(stream: &[u8]) -> Result<u16, Error> {
     let v = stream.get(0..2).ok_or(Error::MalformedPacket)?;
 
-    Ok(((v[0] as u16) << 8) | (v[1] as u16))
+    Ok((u16::from(v[0]) << 8) | u16::from(v[1]))
 }
 
 /// Returns big endian u16 view from next 2 bytes
@@ -298,7 +298,7 @@ pub fn view_str(stream: &[u8], end: usize) -> Result<&str, Error> {
     Ok(v)
 }
 
-/// After collecting enough bytes to frame a packet (packet's frame())
+/// After collecting enough bytes to frame a packet (packet's `frame()`)
 /// , It's possible that content itself in the stream is wrong. Like expected
 /// packet id or qos not being present. In cases where `read_mqtt_string` or
 /// `read_mqtt_bytes` exhausted remaining length but packet framing expects to

@@ -7,7 +7,7 @@
 
 ## Scope
 
-- Shared QoS, topic, ping, and primitive byte helpers.
+- Shared `QoS`, topic, ping, and primitive byte helpers.
 - Reused by both `rumqttc-v4-next` and `rumqttc-v5-next`.
 - Intended mainly for the rumqtt client family and advanced integrations that need low-level MQTT building blocks.
 

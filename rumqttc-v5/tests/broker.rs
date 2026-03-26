@@ -171,7 +171,7 @@ impl Broker {
                 let mut publish = Publish::new(topic, qos, payload, None);
 
                 if qos as u8 > 0 {
-                    publish.pkid = i as u16;
+                    publish.pkid = u16::from(i);
                 }
 
                 tx.send_async(Packet::Publish(publish)).await.unwrap();

@@ -78,9 +78,7 @@ impl Broker {
 
     pub async fn read_publish_with_timeout(&mut self, timeout: Duration) -> Option<Publish> {
         loop {
-            let packet = if !self.incoming.is_empty() {
-                self.incoming.pop_front().unwrap()
-            } else {
+            let packet = if self.incoming.is_empty() {
                 let packet = time::timeout(timeout, async {
                     self.framed.readb(&mut self.incoming).await.unwrap();
                     self.incoming.pop_front().unwrap()
@@ -91,6 +89,8 @@ impl Broker {
                     Ok(packet) => packet,
                     Err(_e) => return None,
                 }
+            } else {
+                self.incoming.pop_front().unwrap()
             };
 
             match packet {
@@ -99,7 +99,7 @@ impl Broker {
                     self.framed.write(Packet::PingResp).await.unwrap();
                     continue;
                 }
-                packet => panic!("Expecting a publish. Received = {:?}", packet),
+                packet => panic!("Expecting a publish. Received = {packet:?}"),
             }
         }
     }
@@ -169,7 +169,7 @@ impl Broker {
                 let mut publish = Publish::new(topic, qos, payload);
 
                 if qos as u8 > 0 {
-                    publish.pkid = i as u16;
+                    publish.pkid = u16::from(i);
                 }
 
                 let packet = Packet::Publish(publish);
@@ -285,7 +285,7 @@ impl Network {
                     self.read_bytes(required).await?;
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
-            };
+            }
         }
     }
 
@@ -336,7 +336,7 @@ fn outgoing(packet: &Packet) -> Outgoing {
         Packet::PingReq => Outgoing::PingReq,
         Packet::PingResp => Outgoing::PingResp,
         Packet::Disconnect => Outgoing::Disconnect,
-        packet => panic!("Invalid outgoing packet = {:?}", packet),
+        packet => panic!("Invalid outgoing packet = {packet:?}"),
     }
 }
 

@@ -260,6 +260,7 @@ impl Disconnect {
         }
     }
 
+    #[must_use] 
     pub fn new_with_properties(
         reason: DisconnectReasonCode,
         properties: DisconnectProperties,

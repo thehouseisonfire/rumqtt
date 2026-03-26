@@ -17,7 +17,7 @@ fn main() {
     let mut output = Buffer::new(2 * 1024 * 1024 * 1024);
 
     let start = Instant::now();
-    for publish in data.into_iter() {
+    for publish in data {
         encode(&mut output, publish).unwrap();
     }
 
@@ -153,7 +153,7 @@ use std::{
 
 /// A protocol operation sent by the server.
 ///
-/// TODO: remove dead_code once contents are used, added to silence clippy
+/// TODO: remove `dead_code` once contents are used, added to silence clippy
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum ServerOp {
@@ -435,8 +435,8 @@ impl<'a> FromIterator<(&'a String, &'a String)> for Headers {
     {
         let mut inner = HashMap::default();
         for (k, v) in iter {
-            let k = k.to_string();
-            let v = v.to_string();
+            let k = k.clone();
+            let v = v.clone();
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
@@ -451,8 +451,8 @@ impl<'a> FromIterator<&'a (&'a String, &'a String)> for Headers {
     {
         let mut inner = HashMap::default();
         for (k, v) in iter {
-            let k = k.to_string();
-            let v = v.to_string();
+            let k = (*k).clone();
+            let v = (*v).clone();
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
@@ -516,7 +516,7 @@ impl TryFrom<&[u8]> for Headers {
             }
         } else {
             return parse_error("expected header information not present");
-        };
+        }
 
         for line in lines {
             let splits = line.split(':').map(str::trim).collect::<Vec<_>>();
