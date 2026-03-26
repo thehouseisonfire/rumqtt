@@ -30,7 +30,7 @@ impl Connect {
         }
     }
 
-    pub fn set_login<U: Into<String>, P: Into<String>>(&mut self, u: U, p: P) -> &mut Connect {
+    pub fn set_login<U: Into<String>, P: Into<Bytes>>(&mut self, u: U, p: P) -> &mut Connect {
         let login = Login {
             username: u.into(),
             password: p.into(),
@@ -211,11 +211,11 @@ impl LastWill {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Login {
     pub username: String,
-    pub password: String,
+    pub password: Bytes,
 }
 
 impl Login {
-    pub fn new<U: Into<String>, P: Into<String>>(u: U, p: P) -> Login {
+    pub fn new<U: Into<String>, P: Into<Bytes>>(u: U, p: P) -> Login {
         Login {
             username: u.into(),
             password: p.into(),
@@ -229,8 +229,8 @@ impl Login {
         };
 
         let password = match connect_flags & 0b0100_0000 {
-            0 => String::new(),
-            _ => read_mqtt_string(bytes)?,
+            0 => Bytes::new(),
+            _ => read_mqtt_bytes(bytes)?,
         };
 
         if username.is_empty() && password.is_empty() {
@@ -263,15 +263,15 @@ impl Login {
 
         if !self.password.is_empty() {
             connect_flags |= 0x40;
-            write_mqtt_string(buffer, &self.password);
+            write_mqtt_bytes(buffer, self.password.as_ref());
         }
 
         connect_flags
     }
 
     #[must_use]
-    pub fn validate(&self, username: &str, password: &str) -> bool {
-        (self.username == *username) && (self.password == *password)
+    pub fn validate<P: AsRef<[u8]>>(&self, username: &str, password: P) -> bool {
+        (self.username == *username) && (self.password.as_ref() == password.as_ref())
     }
 }
 
@@ -483,5 +483,34 @@ mod test {
         let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
         let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
         assert_eq!(decoded.login, Some(Login::new("", "pw")));
+    }
+
+    #[test]
+    fn connect_roundtrips_binary_password() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            login: Some(Login::new(
+                "binary",
+                Bytes::from_static(b"\x00\xffproto\0buf"),
+            )),
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
+        assert_eq!(
+            decoded.login,
+            Some(Login::new(
+                "binary",
+                Bytes::from_static(b"\x00\xffproto\0buf")
+            ))
+        );
     }
 }

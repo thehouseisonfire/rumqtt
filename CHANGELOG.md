@@ -4,6 +4,13 @@
 - `rumqttc`: Add `Broker`-based first-class Unix domain socket and websocket construction, plus `unix:///...` URL parsing on Unix targets.
 ### Changed
 - `rumqttc`: Secure endpoint schemes are no longer implicit transport selectors. Configure `mqtts://` / `ssl://` and secure websockets explicitly with `MqttOptions::set_transport(...)`; `Broker::websocket(...)` now accepts only `ws://...`.
+- `rumqttc`: MQTT CONNECT passwords are now treated as binary data instead of UTF-8 strings, matching the MQTT spec.
+  `MqttOptions::set_credentials(...)`, `Login::new(...)`, and the public `Login.password` field now use `bytes::Bytes` / `Into<Bytes>` rather than `String`.
+  This allows arbitrary binary credentials, including passwords containing embedded `NUL` bytes or non-UTF-8 data, and updates CONNECT encoding/decoding to use MQTT binary data on the wire.
+  Existing call sites using string literals, `String`, `Vec<u8>`, or `Bytes` continue to work.
+  Borrowed non-static `&str` / `&[u8]` inputs now need an owned conversion before being passed to `set_credentials(...)`.
+  Known limitation: this change still treats an explicitly empty password the same as an omitted password when serializing CONNECT.
+  In other words, `Bytes::new()` does not currently force `Password Flag = 1` with a zero-length password field on the wire.
 ### Deprecated
 ### Removed
 ### Fixed
