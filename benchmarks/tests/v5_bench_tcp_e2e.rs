@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::process::Command;
 
 #[test]
-#[ignore]
+#[ignore = "requires an external MQTT benchmark broker"]
 fn v5_bench_tcp_e2e() {
     let broker_url = std::env::var("RUMQTT_BENCH_TCP_URL")
         .unwrap_or_else(|_| "mqtt://127.0.0.1:1883".to_string());

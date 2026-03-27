@@ -1,3 +1,6 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+
 use rumqttc_v4::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 
 use std::error::Error;
@@ -13,7 +16,7 @@ async fn main() {
     // pretty_env_logger::init();
     let guard = pprof::ProfilerGuard::new(100).unwrap();
     start("rumqtt-async", 100, 1_000_000).await.unwrap();
-    common::profile("bench.pb", guard);
+    common::profile("bench.pb", &guard);
 }
 
 pub async fn start(id: &str, payload_size: usize, count: usize) -> Result<(), Box<dyn Error>> {

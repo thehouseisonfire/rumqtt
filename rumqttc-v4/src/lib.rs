@@ -6,8 +6,6 @@
 #![allow(clippy::if_not_else)]
 #![allow(clippy::ignored_unit_patterns)]
 #![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_panics_doc)]
 #![allow(clippy::option_if_let_else)]
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::too_long_first_doc_paragraph)]
@@ -251,7 +249,9 @@ impl Broker {
     pub fn unix_path(&self) -> Option<&std::path::Path> {
         match &self.inner {
             BrokerInner::Unix { path } => Some(path.as_path()),
-            _ => None,
+            BrokerInner::Tcp { .. } => None,
+            #[cfg(feature = "websocket")]
+            BrokerInner::Websocket { .. } => None,
         }
     }
 
@@ -260,7 +260,9 @@ impl Broker {
     pub fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
             BrokerInner::Websocket { url } => Some(url.as_str()),
-            _ => None,
+            BrokerInner::Tcp { .. } => None,
+            #[cfg(unix)]
+            BrokerInner::Unix { .. } => None,
         }
     }
 
@@ -477,7 +479,7 @@ impl MqttOptions {
     /// operations on the client when reconnection with same `client_id`
     /// happens. Local queue state is also held to retransmit packets after reconnection.
     ///
-    /// # Panic
+    /// # Panics
     ///
     /// Panics if `clean_session` is false when `client_id` is empty.
     ///
@@ -640,6 +642,10 @@ impl MqttOptions {
     }
 
     /// Set number of concurrent in flight messages
+    ///
+    /// # Panics
+    ///
+    /// Panics if `inflight` is zero.
     pub fn set_inflight(&mut self, inflight: u16) -> &mut Self {
         assert!(inflight != 0, "zero in flight is not allowed");
 

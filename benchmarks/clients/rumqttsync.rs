@@ -1,3 +1,6 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+
 use rumqttc_v4::{Client, Event, Incoming, MqttOptions, QoS};
 use std::error::Error;
 use std::thread;
@@ -9,7 +12,7 @@ fn main() {
     pretty_env_logger::init();
     let guard = pprof::ProfilerGuard::new(100).unwrap();
     start("rumqtt-sync", 100, 1_000_000).unwrap();
-    common::profile("bench.pb", guard);
+    common::profile("bench.pb", &guard);
 }
 
 pub fn start(id: &str, payload_size: usize, count: usize) -> Result<(), Box<dyn Error>> {

@@ -1,3 +1,5 @@
+#![allow(clippy::cast_precision_loss)]
+
 use std::io::Cursor;
 use std::io::Write;
 use std::time::Instant;
@@ -54,7 +56,7 @@ fn main() {
     };
 
     println!("{}", serde_json::to_string_pretty(&print).unwrap());
-    common::profile("bench.pb", guard);
+    common::profile("bench.pb", &guard);
 }
 
 fn generate_data(count: usize, payload: &[u8]) -> Vec<ClientOp<'_>> {
@@ -191,6 +193,7 @@ pub(crate) enum ServerOp {
 /// Decodes a single operation from the server.
 ///
 /// If the connection is closed, `None` will be returned.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
     // Read a line, which should be human readable.
     let mut line = Vec::new();
@@ -525,7 +528,7 @@ impl TryFrom<&[u8]> for Headers {
                     let entry = inner.entry(k.to_string()).or_insert_with(HashSet::default);
                     entry.insert(v.to_string());
                 }
-                [""] => continue,
+                [""] => {}
                 _ => {
                     return parse_error("malformed header input");
                 }

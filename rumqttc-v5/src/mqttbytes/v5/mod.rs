@@ -22,20 +22,35 @@ use super::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use mqttbytes_core::primitives::{self as core_primitives, Error as PrimitiveError};
 
+#[allow(clippy::missing_errors_doc)]
 mod auth;
+#[allow(clippy::missing_errors_doc)]
 mod codec;
+#[allow(clippy::missing_errors_doc)]
 mod connack;
+#[allow(clippy::missing_errors_doc)]
 mod connect;
+#[allow(clippy::missing_errors_doc)]
 mod disconnect;
+#[allow(clippy::missing_errors_doc)]
 mod ping;
+#[allow(clippy::missing_errors_doc)]
 mod puback;
+#[allow(clippy::missing_errors_doc)]
 mod pubcomp;
+#[allow(clippy::missing_errors_doc)]
 mod publish;
+#[allow(clippy::missing_errors_doc)]
 mod pubrec;
+#[allow(clippy::missing_errors_doc)]
 mod pubrel;
+#[allow(clippy::missing_errors_doc)]
 mod suback;
+#[allow(clippy::missing_errors_doc)]
 mod subscribe;
+#[allow(clippy::missing_errors_doc)]
 mod unsuback;
+#[allow(clippy::missing_errors_doc)]
 mod unsubscribe;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,8 +72,26 @@ pub enum Packet {
     Disconnect(Disconnect),
 }
 
+impl From<PrimitiveError> for Error {
+    fn from(error: PrimitiveError) -> Self {
+        match error {
+            PrimitiveError::PayloadTooLong => Self::PayloadTooLong,
+            PrimitiveError::BoundaryCrossed(len) => Self::BoundaryCrossed(len),
+            PrimitiveError::MalformedPacket => Self::MalformedPacket,
+            PrimitiveError::MalformedRemainingLength => Self::MalformedRemainingLength,
+            PrimitiveError::TopicNotUtf8 => Self::TopicNotUtf8,
+            PrimitiveError::InsufficientBytes(required) => Self::InsufficientBytes(required),
+        }
+    }
+}
+
 impl Packet {
-    /// Reads a stream of bytes and extracts next MQTT packet out of it
+    /// Reads the next MQTT v5 packet from the buffered stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the packet is incomplete, malformed, or exceeds the
+    /// configured packet-size limit.
     pub fn read(stream: &mut BytesMut, max_size: Option<u32>) -> Result<Packet, Error> {
         let fixed_header = check(stream.iter(), max_size)?;
 
@@ -136,6 +169,12 @@ impl Packet {
         Ok(packet)
     }
 
+    /// Serializes this MQTT v5 packet into the output buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the packet cannot be encoded within the configured
+    /// packet-size limit or violates MQTT encoding rules.
     pub fn write(&self, write: &mut BytesMut, max_size: Option<u32>) -> Result<usize, Error> {
         if let Some(max_size) = max_size {
             if self.size() > max_size as usize {
@@ -275,6 +314,12 @@ impl FixedHeader {
         }
     }
 
+    /// Returns the MQTT packet type represented by this fixed header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the fixed-header flags are invalid for the decoded
+    /// packet type.
     pub fn packet_type(&self) -> Result<PacketType, Error> {
         let num = self.byte1 >> 4;
         match num {
@@ -345,6 +390,13 @@ fn property(num: u8) -> Result<PropertyType, Error> {
 /// The passed stream doesn't modify parent stream's cursor. If this function
 /// returned an error, next `check` on the same parent stream is forced start
 /// with cursor at 0 again (Iter is owned. Only Iter's cursor is changed internally)
+/// Checks whether the stream contains a complete MQTT v5 packet within the
+/// configured size limit.
+///
+/// # Errors
+///
+/// Returns an error if the frame is incomplete, malformed, or exceeds
+/// `max_packet_size`.
 pub fn check(stream: Iter<u8>, max_packet_size: Option<u32>) -> Result<FixedHeader, Error> {
     let stream_len = stream.len();
     let fixed_header = parse_fixed_header(stream)?;
@@ -369,7 +421,7 @@ pub fn check(stream: Iter<u8>, max_packet_size: Option<u32>) -> Result<FixedHead
 }
 
 fn parse_fixed_header(stream: Iter<u8>) -> Result<FixedHeader, Error> {
-    let fixed_header = core_primitives::parse_fixed_header(stream).map_err(map_primitive_error)?;
+    let fixed_header = core_primitives::parse_fixed_header(stream).map_err(Error::from)?;
     Ok(FixedHeader::new(
         fixed_header.byte1,
         fixed_header.remaining_len_len,
@@ -381,17 +433,17 @@ fn parse_fixed_header(stream: Iter<u8>) -> Result<FixedHeader, Error> {
 /// and number of bytes that make it. Used for remaining length calculation
 /// as well as for calculating property lengths
 fn length(stream: Iter<u8>) -> Result<(usize, usize), Error> {
-    core_primitives::length(stream).map_err(map_primitive_error)
+    core_primitives::length(stream).map_err(Error::from)
 }
 
 /// Reads a series of bytes with a length from a byte stream
 fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
-    core_primitives::read_mqtt_bytes(stream).map_err(map_primitive_error)
+    core_primitives::read_mqtt_bytes(stream).map_err(Error::from)
 }
 
 /// Reads a string from bytes stream
 fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
-    core_primitives::read_mqtt_string(stream).map_err(map_primitive_error)
+    core_primitives::read_mqtt_string(stream).map_err(Error::from)
 }
 
 /// Serializes bytes to stream (including length)
@@ -406,7 +458,7 @@ fn write_mqtt_string(stream: &mut BytesMut, string: &str) {
 
 /// Writes remaining length to stream and returns number of bytes for remaining length
 fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize, Error> {
-    core_primitives::write_remaining_length(stream, len).map_err(map_primitive_error)
+    core_primitives::write_remaining_length(stream, len).map_err(Error::from)
 }
 
 /// Return number of remaining length bytes required for encoding length
@@ -420,26 +472,15 @@ fn len_len(len: usize) -> usize {
 /// `read_mqtt_bytes` exhausted remaining length but packet framing expects to
 /// parse qos next, these pre checks will prevent `bytes` crashes
 fn read_u16(stream: &mut Bytes) -> Result<u16, Error> {
-    core_primitives::read_u16(stream).map_err(map_primitive_error)
+    core_primitives::read_u16(stream).map_err(Error::from)
 }
 
 fn read_u8(stream: &mut Bytes) -> Result<u8, Error> {
-    core_primitives::read_u8(stream).map_err(map_primitive_error)
+    core_primitives::read_u8(stream).map_err(Error::from)
 }
 
 fn read_u32(stream: &mut Bytes) -> Result<u32, Error> {
-    core_primitives::read_u32(stream).map_err(map_primitive_error)
-}
-
-fn map_primitive_error(error: PrimitiveError) -> Error {
-    match error {
-        PrimitiveError::PayloadTooLong => Error::PayloadTooLong,
-        PrimitiveError::BoundaryCrossed(len) => Error::BoundaryCrossed(len),
-        PrimitiveError::MalformedPacket => Error::MalformedPacket,
-        PrimitiveError::MalformedRemainingLength => Error::MalformedRemainingLength,
-        PrimitiveError::TopicNotUtf8 => Error::TopicNotUtf8,
-        PrimitiveError::InsufficientBytes(required) => Error::InsufficientBytes(required),
-    }
+    core_primitives::read_u32(stream).map_err(Error::from)
 }
 
 mod test {

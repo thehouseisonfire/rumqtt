@@ -384,6 +384,11 @@ impl MqttState {
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a packet which should
     /// be put on to the network by the eventloop
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outgoing request is invalid for the current
+    /// client state.
     pub fn handle_outgoing_packet(
         &mut self,
         request: Request,
@@ -404,32 +409,28 @@ impl MqttState {
             Request::Publish(publish) => {
                 let publish_notice = match notice {
                     Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Request(_)) => None,
-                    None => None,
+                    Some(TrackedNoticeTx::Request(_)) | None => None,
                 };
                 self.outgoing_publish_with_notice(publish, publish_notice)?
             }
             Request::PubRel(pubrel) => {
                 let publish_notice = match notice {
                     Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Request(_)) => None,
-                    None => None,
+                    Some(TrackedNoticeTx::Request(_)) | None => None,
                 };
                 self.outgoing_pubrel_with_notice(pubrel, publish_notice)?
             }
             Request::Subscribe(subscribe) => {
                 let request_notice = match notice {
                     Some(TrackedNoticeTx::Request(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Publish(_)) => None,
-                    None => None,
+                    Some(TrackedNoticeTx::Publish(_)) | None => None,
                 };
                 (self.outgoing_subscribe(subscribe, request_notice)?, None)
             }
             Request::Unsubscribe(unsubscribe) => {
                 let request_notice = match notice {
                     Some(TrackedNoticeTx::Request(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Publish(_)) => None,
-                    None => None,
+                    Some(TrackedNoticeTx::Publish(_)) | None => None,
                 };
                 (
                     self.outgoing_unsubscribe(unsubscribe, request_notice)?,
@@ -452,6 +453,11 @@ impl MqttState {
     /// user to consume and `Packet` which for the eventloop to put on the network
     /// E.g For incoming QoS1 publish packet, this method returns (Publish, Puback). Publish packet will
     /// be forwarded to user and Pubck packet will be written to network
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the incoming packet is invalid for the current
+    /// client state.
     pub fn handle_incoming_packet(
         &mut self,
         mut packet: Incoming,
@@ -485,6 +491,12 @@ impl MqttState {
         Ok(outgoing)
     }
 
+    /// Builds the protocol-error disconnect response for the current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect packet cannot be produced for the
+    /// current state.
     pub fn handle_protocol_error(&mut self) -> Result<Option<Packet>, StateError> {
         // send DISCONNECT packet with REASON_CODE 0x82
         let disconnect = Disconnect::new(DisconnectReasonCode::ProtocolError);
@@ -1421,8 +1433,6 @@ mod test {
 
     #[test]
     fn clean_is_calculating_pending_correctly() {
-        let mut mqtt = build_mqttstate();
-
         fn build_publish_with_pkid(pkid: u16) -> Publish {
             let mut publish = Publish::new("test".to_owned(), QoS::AtLeastOnce, vec![], None);
             publish.pkid = pkid;
@@ -1441,6 +1451,7 @@ mod test {
             ]
         }
 
+        let mut mqtt = build_mqttstate();
         mqtt.outgoing_pub = build_outgoing_pub();
         mqtt.last_puback = 3;
         let requests = mqtt.clean();
@@ -1812,7 +1823,7 @@ mod test {
             .unwrap()
             .unwrap();
         match packet {
-            Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, 1),
+            Packet::PubRel(release) => assert_eq!(release.pkid, 1),
             packet => panic!("Invalid network request: {:?}", packet),
         }
     }

@@ -10,7 +10,7 @@ fn main() {
     mqttoptions.set_keep_alive(5).set_last_will(will);
 
     let (client, mut connection) = Client::new(mqttoptions, 10);
-    thread::spawn(move || publish(client));
+    thread::spawn(move || publish(&client));
 
     if let Ok(notification) = connection.recv() {
         println!("Notification = {notification:?}");
@@ -25,7 +25,7 @@ fn main() {
     }
 }
 
-fn publish(client: Client) {
+fn publish(client: &Client) {
     client.subscribe("hello/+/world", QoS::AtMostOnce).unwrap();
     for i in 0..3 {
         let payload = vec![1; i];

@@ -370,6 +370,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued on the event loop.
     pub async fn publish<T, V>(
         &self,
         topic: T,
@@ -385,6 +390,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Publish to the `EventLoop` and returns a notice which resolves on MQTT ack milestone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued on the event loop.
     pub async fn publish_tracked<T, V>(
         &self,
         topic: T,
@@ -451,6 +461,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued immediately on the event loop.
     pub fn try_publish<T, V>(
         &self,
         topic: T,
@@ -466,6 +481,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop` and returns a notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued immediately on the event loop.
     pub fn try_publish_tracked<T, V>(
         &self,
         topic: T,
@@ -490,12 +510,22 @@ impl AsyncClient {
     /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
     ///
     /// This is useful when `manual_acks` is enabled and acknowledgement must be deferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued on the event
+    /// loop.
     pub async fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.send_request_async(ack.into_request()).await?;
         Ok(())
     }
 
     /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued immediately on
+    /// the event loop.
     pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.try_send_request(ack.into_request())?;
         Ok(())
@@ -503,6 +533,11 @@ impl AsyncClient {
 
     /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued on the
+    /// event loop.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack).await?;
@@ -512,6 +547,11 @@ impl AsyncClient {
 
     /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued
+    /// immediately on the event loop.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -568,6 +608,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Publish to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued on the event loop.
     pub async fn publish_bytes<T>(
         &self,
         topic: T,
@@ -582,6 +627,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Publish with `Bytes` payload and returns a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued on the event loop.
     pub async fn publish_bytes_tracked<T>(
         &self,
         topic: T,
@@ -597,6 +647,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Subscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub async fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         let subscribe = Subscribe::new(topic, qos);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -608,6 +663,11 @@ impl AsyncClient {
     }
 
     /// Sends a tracked MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub async fn subscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -622,6 +682,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Subscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         let subscribe = Subscribe::new(topic, qos);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -633,6 +698,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a tracked MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -647,6 +717,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub async fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = SubscribeFilter>,
@@ -661,6 +736,11 @@ impl AsyncClient {
     }
 
     /// Sends a tracked MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub async fn subscribe_many_tracked<T>(&self, topics: T) -> Result<RequestNotice, ClientError>
     where
         T: IntoIterator<Item = SubscribeFilter>,
@@ -674,6 +754,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = SubscribeFilter>,
@@ -687,6 +772,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a tracked MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many_tracked<T>(&self, topics: T) -> Result<RequestNotice, ClientError>
     where
         T: IntoIterator<Item = SubscribeFilter>,
@@ -700,6 +790,10 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub async fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic.into());
         let request = Request::Unsubscribe(unsubscribe);
@@ -708,6 +802,10 @@ impl AsyncClient {
     }
 
     /// Sends a tracked MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub async fn unsubscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -717,6 +815,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Unsubscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic.into());
         let request = Request::Unsubscribe(unsubscribe);
@@ -725,6 +828,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a tracked MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -734,6 +842,11 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT disconnect to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
     pub async fn disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
         self.send_request_async(request).await?;
@@ -741,6 +854,11 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT disconnect to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
         self.try_send_request(request)?;
@@ -776,6 +894,10 @@ impl Client {
     /// Create a new `Client`
     ///
     /// `cap` specifies the capacity of the bounded async channel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current-thread Tokio runtime cannot be created.
     pub fn new(options: MqttOptions, cap: usize) -> (Client, Connection) {
         let (client, eventloop) = AsyncClient::new(options, cap);
         let client = Client { client };
@@ -800,6 +922,11 @@ impl Client {
     }
 
     /// Sends a MQTT Publish to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued on the event loop.
     pub fn publish<T, V>(
         &self,
         topic: T,
@@ -823,6 +950,12 @@ impl Client {
         Ok(())
     }
 
+    /// Attempts to send a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is invalid or if the request cannot be
+    /// queued immediately on the event loop.
     pub fn try_publish<T, V>(
         &self,
         topic: T,
@@ -846,12 +979,22 @@ impl Client {
     }
 
     /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued on the event
+    /// loop.
     pub fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.client.send_request(ack.into_request())?;
         Ok(())
     }
 
     /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued immediately on
+    /// the event loop.
     pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.client.try_manual_ack(ack)?;
         Ok(())
@@ -859,6 +1002,11 @@ impl Client {
 
     /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued on the
+    /// event loop.
     pub fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack)?;
@@ -868,6 +1016,11 @@ impl Client {
 
     /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued
+    /// immediately on the event loop.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -876,6 +1029,11 @@ impl Client {
     }
 
     /// Sends a MQTT Subscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         let subscribe = Subscribe::new(topic, qos);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -887,12 +1045,22 @@ impl Client {
     }
 
     /// Sends a MQTT Subscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.client.try_subscribe(topic, qos)?;
         Ok(())
     }
 
     /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = SubscribeFilter>,
@@ -906,6 +1074,12 @@ impl Client {
         Ok(())
     }
 
+    /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = SubscribeFilter>,
@@ -914,6 +1088,10 @@ impl Client {
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         let unsubscribe = Unsubscribe::new(topic.into());
         let request = Request::Unsubscribe(unsubscribe);
@@ -922,12 +1100,22 @@ impl Client {
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.client.try_unsubscribe(topic)?;
         Ok(())
     }
 
     /// Sends a MQTT disconnect to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
     pub fn disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
         self.client.send_request(request)?;
@@ -935,6 +1123,11 @@ impl Client {
     }
 
     /// Sends a MQTT disconnect to the `EventLoop`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         self.client.try_disconnect()?;
         Ok(())
@@ -1002,6 +1195,10 @@ impl Connection {
     /// if all clients/users have closed requests channel.
     ///
     /// [`EventLoop`]: super::EventLoop
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError`] if all request senders have been dropped.
     pub fn recv(&mut self) -> Result<Result<Event, ConnectionError>, RecvError> {
         let f = self.eventloop.poll();
         let event = self.runtime.block_on(f);
@@ -1013,6 +1210,11 @@ impl Connection {
     /// if none immediately present or all clients/users have closed requests channel.
     ///
     /// [`EventLoop`]: super::EventLoop
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] if no event is immediately ready, or
+    /// [`TryRecvError::Disconnected`] if all request senders have been dropped.
     pub fn try_recv(&mut self) -> Result<Result<Event, ConnectionError>, TryRecvError> {
         let f = self.eventloop.poll();
         // Enters the runtime context so we can poll the future, as required by `now_or_never()`.
@@ -1027,6 +1229,12 @@ impl Connection {
     /// if all clients/users have closed requests channel or the timeout has expired.
     ///
     /// [`EventLoop`]: super::EventLoop
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvTimeoutError::Timeout`] if no event arrives before
+    /// `duration`, or [`RecvTimeoutError::Disconnected`] if all request
+    /// senders have been dropped.
     pub fn recv_timeout(
         &mut self,
         duration: Duration,

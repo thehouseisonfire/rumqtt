@@ -1,3 +1,5 @@
+#![allow(clippy::cast_precision_loss)]
+
 use bytes::{Buf, BytesMut};
 use rumqttc_v4::Packet;
 use rumqttc_v4::mqttbytes::QoS;
@@ -52,14 +54,14 @@ fn main() {
     };
 
     println!("{}", serde_json::to_string_pretty(&print).unwrap());
-    common::profile("bench.pb", guard);
+    common::profile("bench.pb", &guard);
 }
 
 fn generate_data(count: usize, payload_size: usize) -> Vec<v4::Publish> {
     let mut data = Vec::with_capacity(count);
     for i in 0..count {
         let mut publish = v4::Publish::new("hello/world", QoS::AtLeastOnce, vec![1; payload_size]);
-        publish.pkid = (i % 100 + 1) as u16;
+        publish.pkid = u16::try_from(i % 100 + 1).expect("packet id fits in u16");
         data.push(publish);
     }
 

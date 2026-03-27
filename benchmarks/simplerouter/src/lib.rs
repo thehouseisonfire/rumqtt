@@ -1,7 +1,7 @@
 use std::{io, net::SocketAddr};
 
 use bytes::BytesMut;
-use log::{info, error};
+use log::{error, info};
 use tokio::net::TcpListener;
 
 mod network;
@@ -13,6 +13,12 @@ pub struct Config {
     pub addr: SocketAddr,
 }
 
+/// Runs the simple benchmark router on the configured address.
+///
+/// # Errors
+///
+/// Returns any listener accept or socket I/O error encountered while serving
+/// clients.
 pub async fn run(config: Config) -> Result<(), Error> {
     let listener = TcpListener::bind(config.addr).await?;
     info!("router: listening on {}", config.addr);
@@ -34,7 +40,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
 
 async fn publisher_handle(mut network: Network) {
     let mut payload = BytesMut::with_capacity(2);
-    v4::pingresp::write(&mut payload).unwrap();
+    v4::pingresp::write(&mut payload);
     let pingresp_bytes = payload.split().freeze();
 
     loop {
@@ -74,7 +80,6 @@ async fn publisher_handle(mut network: Network) {
                 }
                 p => {
                     error!("connection: invalid packet {p:?}");
-                    continue;
                 }
             },
             protocol::Packet::V5(packet) => match packet {
@@ -106,7 +111,6 @@ async fn publisher_handle(mut network: Network) {
                 }
                 p => {
                     error!("connection: invalid packet {p:?}");
-                    continue;
                 }
             },
         }
