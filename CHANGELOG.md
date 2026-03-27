@@ -1,19 +1,17 @@
 ## [Unreleased]
 
 ### Added
-- `rumqttc`: Add `Broker`-based first-class Unix domain socket and websocket construction, plus `unix:///...` URL parsing on Unix targets.
 ### Changed
-- `rumqttc`: Secure endpoint schemes are no longer implicit transport selectors. Configure `mqtts://` / `ssl://` and secure websockets explicitly with `MqttOptions::set_transport(...)`; `Broker::websocket(...)` now accepts only `ws://...`.
-- `rumqttc`: Refactor CONNECT authentication to version-specific public `ConnectAuth` enums and make auth field presence explicit instead of inferring it from empty strings or bytes.
-  `MqttOptions` now stores/exposes auth via `set_auth(...)`, `auth()`, `clear_auth()`, `set_username(...)`, and `set_credentials(...)`.
-  MQTT 5 also adds `set_password(...)` because password-only CONNECT auth is spec-valid there, while MQTT 3.1.1 keeps the stricter username/password dependency.
-  CONNECT passwords continue to use `bytes::Bytes` / `Into<Bytes>` and now round-trip correctly as MQTT binary data, including embedded `NUL` bytes, non-UTF-8 bytes, and explicitly empty passwords.
-  This is a user-visible API break: the old `Option<Login>` / `credentials()` shape has been replaced by `ConnectAuth`.
 ### Deprecated
 ### Removed
 ### Fixed
-- `rumqttc`: Avoid eager default TLS/WSS initialization during option construction so manual-provider/custom-TLS setups under `use-rustls-no-provider` no longer fail before `set_transport(...)` can be applied.
 ### Security
+
+---
+
+## [rumqttc-next 0.29.0] - 27-03-2026
+
+
 
 ---
 
