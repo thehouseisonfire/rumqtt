@@ -12,13 +12,13 @@ pub enum NoticeFailureReason {
 }
 
 impl NoticeFailureReason {
-    pub(crate) fn publish_error(self) -> PublishNoticeError {
+    pub(crate) const fn publish_error(self) -> PublishNoticeError {
         match self {
             Self::SessionReset => PublishNoticeError::SessionReset,
         }
     }
 
-    pub(crate) fn request_error(self) -> RequestNoticeError {
+    pub(crate) const fn request_error(self) -> RequestNoticeError {
         match self {
             Self::SessionReset => RequestNoticeError::SessionReset,
         }

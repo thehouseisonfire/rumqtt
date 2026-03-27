@@ -17,25 +17,23 @@ impl AuthReasonCode {
     fn read(bytes: &mut Bytes) -> Result<Self, Error> {
         let reason_code = read_u8(bytes)?;
         let code = match reason_code {
-            0x00 => AuthReasonCode::Success,
-            0x18 => AuthReasonCode::Continue,
-            0x19 => AuthReasonCode::ReAuthenticate,
+            0x00 => Self::Success,
+            0x18 => Self::Continue,
+            0x19 => Self::ReAuthenticate,
             _ => return Err(Error::MalformedPacket),
         };
 
         Ok(code)
     }
 
-    fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+    fn write(&self, buffer: &mut BytesMut) {
         let reason_code = match self {
-            AuthReasonCode::Success => 0x00,
-            AuthReasonCode::Continue => 0x18,
-            AuthReasonCode::ReAuthenticate => 0x19,
+            Self::Success => 0x00,
+            Self::Continue => 0x18,
+            Self::ReAuthenticate => 0x19,
         };
 
         buffer.put_u8(reason_code);
-
-        Ok(())
     }
 }
 
@@ -47,7 +45,7 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(code: AuthReasonCode, properties: Option<AuthProperties>) -> Self {
+    pub const fn new(code: AuthReasonCode, properties: Option<AuthProperties>) -> Self {
         Self { code, properties }
     }
 
@@ -74,12 +72,12 @@ impl Auth {
     }
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let code = AuthReasonCode::read(&mut bytes)?;
         let properties = AuthProperties::read(&mut bytes)?;
-        let auth = Auth { code, properties };
+        let auth = Self { code, properties };
 
         Ok(auth)
     }
@@ -90,7 +88,7 @@ impl Auth {
         let len = self.len();
         let count = write_remaining_length(buffer, len)?;
 
-        self.code.write(buffer)?;
+        self.code.write(buffer);
         if let Some(p) = &self.properties {
             p.write(buffer)?;
         } else {
@@ -128,7 +126,7 @@ impl AuthProperties {
             len += 1 + 2 + r_len;
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             let p_len = key.len() + value.len();
             len += 1 + 4 + p_len;
         }
@@ -136,14 +134,14 @@ impl AuthProperties {
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<AuthProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let (properties_len_len, properties_len) = length(bytes.iter())?;
         bytes.advance(properties_len_len);
         if properties_len == 0 {
             return Ok(None);
         }
 
-        let mut props = AuthProperties::default();
+        let mut props = Self::default();
 
         let mut cursor = 0;
         // read until cursor reaches property length. properties_len = 0 will skip this loop
@@ -199,7 +197,7 @@ impl AuthProperties {
             write_mqtt_string(buffer, reason);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);

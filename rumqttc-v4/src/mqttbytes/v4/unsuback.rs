@@ -10,12 +10,12 @@ pub struct UnsubAck {
 
 impl UnsubAck {
     #[must_use]
-    pub fn new(pkid: u16) -> UnsubAck {
-        UnsubAck { pkid }
+    pub const fn new(pkid: u16) -> Self {
+        Self { pkid }
     }
 
     #[must_use]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         4
     }
 
@@ -24,10 +24,10 @@ impl UnsubAck {
             return Err(Error::PayloadSizeIncorrect);
         }
 
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
-        let unsuback = UnsubAck { pkid };
+        let unsuback = Self { pkid };
 
         Ok(unsuback)
     }

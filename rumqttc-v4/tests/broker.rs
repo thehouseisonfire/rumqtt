@@ -24,6 +24,11 @@ pub struct Broker {
 
 impl Broker {
     /// Create a new broker which accepts 1 mqtt connection
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test listener cannot be bound or if the initial CONNECT
+    /// handshake cannot be completed.
     #[allow(dead_code)]
     pub async fn new(port: u16, connack: u8, session_saved: bool) -> Broker {
         let addr = format!("127.0.0.1:{port}");
@@ -32,6 +37,11 @@ impl Broker {
     }
 
     /// Create a new broker from an existing listener.
+    ///
+    /// # Panics
+    ///
+    /// Panics if accepting the test connection, reading the initial packet, or
+    /// writing the `CONNACK` fails unexpectedly.
     pub async fn from_listener(listener: TcpListener, connack: u8, session_saved: bool) -> Broker {
         let (stream, _) = listener.accept().await.unwrap();
         let mut framed = Network::new(stream, 10 * 1024);
@@ -77,6 +87,12 @@ impl Broker {
         self.read_publish_with_timeout(Duration::from_secs(2)).await
     }
 
+    /// Reads a publish packet from the stream with a caller-provided timeout.
+    ///
+    /// # Panics
+    ///
+    /// Panics if reading from the test transport fails unexpectedly after the
+    /// timeout has started.
     pub async fn read_publish_with_timeout(&mut self, timeout: Duration) -> Option<Publish> {
         loop {
             let packet = if self.incoming.is_empty() {
@@ -135,6 +151,10 @@ impl Broker {
     }
 
     /// Reads next packet from the stream
+    ///
+    /// # Panics
+    ///
+    /// Panics if reading from the test transport fails unexpectedly.
     pub async fn blackhole(&mut self) -> Packet {
         loop {
             self.framed.readb(&mut self.incoming).await.unwrap();
@@ -142,6 +162,10 @@ impl Broker {
     }
 
     /// Sends an acknowledgement
+    ///
+    /// # Panics
+    ///
+    /// Panics if writing to the test transport fails unexpectedly.
     pub async fn ack(&mut self, pkid: u16) {
         let packet = Packet::PubAck(PubAck::new(pkid));
         self.framed.write(packet).await.unwrap();
@@ -154,11 +178,21 @@ impl Broker {
     }
 
     /// Sends an acknowledgement
+    ///
+    /// # Panics
+    ///
+    /// Panics if writing to the test transport fails unexpectedly.
     pub async fn pingresp(&mut self) {
         let packet = Packet::PingResp;
         self.framed.write(packet).await.unwrap();
     }
 
+    /// Spawns a task that emits a fixed number of test publishes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal test channel is closed while the spawned task is
+    /// sending publishes.
     pub fn spawn_publishes(&mut self, count: u8, qos: QoS, delay: u64) {
         let tx = self.outgoing_tx.clone();
 
@@ -180,6 +214,11 @@ impl Broker {
     }
 
     /// Selects between outgoing and incoming packets
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal test channel closes or if network I/O fails
+    /// unexpectedly.
     pub async fn tick(&mut self) -> Event {
         if let Some(incoming) = self.incoming.pop_front() {
             return Event::Incoming(incoming);

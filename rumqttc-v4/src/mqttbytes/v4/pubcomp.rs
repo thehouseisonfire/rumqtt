@@ -1,7 +1,7 @@
-use super::*;
+use super::{Error, FixedHeader, len_len, read_u16, write_remaining_length};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-/// QoS2 Assured publish complete, in response to PUBREL packet
+/// `QoS2` Assured publish complete, in response to PUBREL packet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PubComp {
     pub pkid: u16,
@@ -9,8 +9,8 @@ pub struct PubComp {
 
 impl PubComp {
     #[must_use]
-    pub fn new(pkid: u16) -> PubComp {
-        PubComp { pkid }
+    pub const fn new(pkid: u16) -> Self {
+        Self { pkid }
     }
 
     #[must_use]
@@ -20,7 +20,7 @@ impl PubComp {
         1 + remaining_len_size + len
     }
 
-    fn len() -> usize {
+    const fn len() -> usize {
         // pkid
         2
     }
@@ -30,7 +30,7 @@ impl PubComp {
             return Err(Error::PayloadSizeIncorrect);
         }
 
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
@@ -38,7 +38,7 @@ impl PubComp {
             return Err(Error::PacketIdZero);
         }
 
-        Ok(PubComp { pkid })
+        Ok(Self { pkid })
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
@@ -57,6 +57,7 @@ impl PubComp {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::BytesMut;
 
     #[test]

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, PacketType, Protocol, QoS, check, fmt, qos,
+    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, write_mqtt_bytes, write_mqtt_string,
+    write_remaining_length,
+};
 
 #[allow(clippy::missing_errors_doc)]
 mod codec;
@@ -100,31 +104,29 @@ impl Packet {
         if fixed_header.remaining_len == 0 {
             // no payload packets
             return match packet_type {
-                PacketType::PingReq => Ok(Packet::PingReq),
-                PacketType::PingResp => Ok(Packet::PingResp),
-                PacketType::Disconnect => Ok(Packet::Disconnect),
+                PacketType::PingReq => Ok(Self::PingReq),
+                PacketType::PingResp => Ok(Self::PingResp),
+                PacketType::Disconnect => Ok(Self::Disconnect),
                 _ => Err(Error::PayloadRequired),
             };
         }
 
         let packet = packet.freeze();
         let packet = match packet_type {
-            PacketType::Connect => Packet::Connect(Connect::read(fixed_header, packet)?),
-            PacketType::ConnAck => Packet::ConnAck(ConnAck::read(fixed_header, packet)?),
-            PacketType::Publish => Packet::Publish(Publish::read(fixed_header, packet)?),
-            PacketType::PubAck => Packet::PubAck(PubAck::read(fixed_header, packet)?),
-            PacketType::PubRec => Packet::PubRec(PubRec::read(fixed_header, packet)?),
-            PacketType::PubRel => Packet::PubRel(PubRel::read(fixed_header, packet)?),
-            PacketType::PubComp => Packet::PubComp(PubComp::read(fixed_header, packet)?),
-            PacketType::Subscribe => Packet::Subscribe(Subscribe::read(fixed_header, packet)?),
-            PacketType::SubAck => Packet::SubAck(SubAck::read(fixed_header, packet)?),
-            PacketType::Unsubscribe => {
-                Packet::Unsubscribe(Unsubscribe::read(fixed_header, packet)?)
-            }
-            PacketType::UnsubAck => Packet::UnsubAck(UnsubAck::read(fixed_header, packet)?),
-            PacketType::PingReq => Packet::PingReq,
-            PacketType::PingResp => Packet::PingResp,
-            PacketType::Disconnect => Packet::Disconnect,
+            PacketType::Connect => Self::Connect(Connect::read(fixed_header, packet)?),
+            PacketType::ConnAck => Self::ConnAck(ConnAck::read(fixed_header, packet)?),
+            PacketType::Publish => Self::Publish(Publish::read(fixed_header, packet)?),
+            PacketType::PubAck => Self::PubAck(PubAck::read(fixed_header, packet)?),
+            PacketType::PubRec => Self::PubRec(PubRec::read(fixed_header, packet)?),
+            PacketType::PubRel => Self::PubRel(PubRel::read(fixed_header, packet)?),
+            PacketType::PubComp => Self::PubComp(PubComp::read(fixed_header, packet)?),
+            PacketType::Subscribe => Self::Subscribe(Subscribe::read(fixed_header, packet)?),
+            PacketType::SubAck => Self::SubAck(SubAck::read(fixed_header, packet)?),
+            PacketType::Unsubscribe => Self::Unsubscribe(Unsubscribe::read(fixed_header, packet)?),
+            PacketType::UnsubAck => Self::UnsubAck(UnsubAck::read(fixed_header, packet)?),
+            PacketType::PingReq => Self::PingReq,
+            PacketType::PingResp => Self::PingResp,
+            PacketType::Disconnect => Self::Disconnect,
         };
 
         Ok(packet)
@@ -145,25 +147,25 @@ impl Packet {
         }
 
         match self {
-            Packet::Connect(c) => c.write(stream),
-            Packet::ConnAck(c) => c.write(stream),
-            Packet::Publish(p) => p.write(stream),
-            Packet::PubAck(p) => p.write(stream),
-            Packet::PubRec(p) => p.write(stream),
-            Packet::PubRel(p) => p.write(stream),
-            Packet::PubComp(p) => p.write(stream),
-            Packet::Subscribe(s) => s.write(stream),
-            Packet::SubAck(s) => s.write(stream),
-            Packet::Unsubscribe(u) => u.write(stream),
-            Packet::UnsubAck(u) => u.write(stream),
-            Packet::PingReq => PingReq.write(stream),
-            Packet::PingResp => PingResp.write(stream),
-            Packet::Disconnect => Disconnect.write(stream),
+            Self::Connect(c) => c.write(stream),
+            Self::ConnAck(c) => c.write(stream),
+            Self::Publish(p) => p.write(stream),
+            Self::PubAck(p) => p.write(stream),
+            Self::PubRec(p) => p.write(stream),
+            Self::PubRel(p) => p.write(stream),
+            Self::PubComp(p) => p.write(stream),
+            Self::Subscribe(s) => s.write(stream),
+            Self::SubAck(s) => s.write(stream),
+            Self::Unsubscribe(u) => u.write(stream),
+            Self::UnsubAck(u) => u.write(stream),
+            Self::PingReq => PingReq.write(stream),
+            Self::PingResp => PingResp.write(stream),
+            Self::Disconnect => Disconnect.write(stream),
         }
     }
 }
 
-fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Result<(), Error> {
+const fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Result<(), Error> {
     let flags = byte1 & 0x0F;
     let valid = match packet_type {
         PacketType::Publish => true,

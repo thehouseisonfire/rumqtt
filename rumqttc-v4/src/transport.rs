@@ -22,7 +22,7 @@ fn default_tls_configuration() -> TlsConfiguration {
 }
 
 #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
-fn default_tls_configuration() -> TlsConfiguration {
+const fn default_tls_configuration() -> TlsConfiguration {
     TlsConfiguration::Native
 }
 
@@ -60,11 +60,17 @@ impl Default for Transport {
 impl Transport {
     /// Use regular tcp as transport (default)
     #[must_use]
-    pub fn tcp() -> Self {
+    pub const fn tcp() -> Self {
         Self::Tcp
     }
 
-    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
+    #[must_use]
+    pub const fn tls_with_default_config() -> Self {
+        Self::tls_with_config(default_tls_configuration())
+    }
+
+    #[cfg(feature = "use-rustls-no-provider")]
     #[must_use]
     pub fn tls_with_default_config() -> Self {
         Self::tls_with_config(default_tls_configuration())
@@ -73,7 +79,7 @@ impl Transport {
     /// Use secure tcp with tls as transport
     #[cfg(feature = "use-rustls-no-provider")]
     #[must_use]
-    pub fn tls(
+    pub const fn tls(
         ca: Vec<u8>,
         client_auth: Option<(Vec<u8>, Vec<u8>)>,
         alpn: Option<Vec<Vec<u8>>>,
@@ -89,20 +95,20 @@ impl Transport {
 
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     #[must_use]
-    pub fn tls_with_config(tls_config: TlsConfiguration) -> Self {
+    pub const fn tls_with_config(tls_config: TlsConfiguration) -> Self {
         Self::Tls(tls_config)
     }
 
     #[cfg(unix)]
     #[must_use]
-    pub fn unix() -> Self {
+    pub const fn unix() -> Self {
         Self::Unix
     }
 
     /// Use websockets as transport
     #[cfg(feature = "websocket")]
     #[cfg_attr(docsrs, doc(cfg(feature = "websocket")))]
-    pub fn ws() -> Self {
+    pub const fn ws() -> Self {
         Self::Ws
     }
 

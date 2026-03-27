@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
+    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, write_mqtt_bytes,
+    write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 type ConnectReadParts = (Connect, Option<LastWill>, ConnectAuth);
@@ -17,7 +21,7 @@ pub struct Connect {
 
 impl Connect {
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<ConnectReadParts, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         // Variable header
@@ -42,7 +46,7 @@ impl Connect {
         let will = LastWill::read(connect_flags, &mut bytes)?;
         let auth = ConnectAuth::read(connect_flags, &mut bytes)?;
 
-        let connect = Connect {
+        let connect = Self {
             keep_alive,
             client_id,
             clean_start,
@@ -153,8 +157,8 @@ pub struct ConnectProperties {
 
 impl ConnectProperties {
     #[must_use]
-    pub fn new() -> ConnectProperties {
-        ConnectProperties {
+    pub const fn new() -> Self {
+        Self {
             session_expiry_interval: None,
             receive_maximum: None,
             max_packet_size: None,
@@ -167,7 +171,7 @@ impl ConnectProperties {
         }
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<ConnectProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut session_expiry_interval = None;
         let mut receive_maximum = None;
         let mut max_packet_size = None;
@@ -234,7 +238,7 @@ impl ConnectProperties {
             }
         }
 
-        Ok(Some(ConnectProperties {
+        Ok(Some(Self {
             session_expiry_interval,
             receive_maximum,
             max_packet_size,
@@ -274,7 +278,7 @@ impl ConnectProperties {
             len += 1 + 1;
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
@@ -323,7 +327,7 @@ impl ConnectProperties {
             buffer.put_u8(request_problem_info);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -349,7 +353,7 @@ impl Default for ConnectProperties {
     }
 }
 
-/// LastWill that broker forwards on behalf of the client
+/// `LastWill` that broker forwards on behalf of the client
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastWill {
     pub topic: Bytes,
@@ -366,9 +370,9 @@ impl LastWill {
         qos: QoS,
         retain: bool,
         properties: Option<LastWillProperties>,
-    ) -> LastWill {
+    ) -> Self {
         let topic = Bytes::copy_from_slice(topic.into().as_bytes());
-        LastWill {
+        Self {
             topic,
             message: Bytes::from(payload.into()),
             qos,
@@ -393,7 +397,7 @@ impl LastWill {
         len
     }
 
-    pub fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<LastWill>, Error> {
+    pub fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let o = match connect_flags & 0b100 {
             0 if (connect_flags & 0b0011_1000) != 0 => {
                 return Err(Error::IncorrectPacketFormat);
@@ -407,7 +411,7 @@ impl LastWill {
                 let will_message = read_mqtt_bytes(bytes)?;
                 let qos_num = (connect_flags & 0b11000) >> 3;
                 let will_qos = qos(qos_num).ok_or(Error::InvalidQoS(qos_num))?;
-                Some(LastWill {
+                Some(Self {
                     topic: will_topic,
                     message: will_message,
                     qos: will_qos,
@@ -479,14 +483,14 @@ impl LastWillProperties {
             len += 1 + 2 + data.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<LastWillProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut delay_interval = None;
         let mut payload_format_indicator = None;
         let mut message_expiry_interval = None;
@@ -545,7 +549,7 @@ impl LastWillProperties {
             }
         }
 
-        Ok(Some(LastWillProperties {
+        Ok(Some(Self {
             delay_interval,
             payload_format_indicator,
             message_expiry_interval,
@@ -590,7 +594,7 @@ impl LastWillProperties {
             write_mqtt_bytes(buffer, data);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -616,7 +620,7 @@ pub enum ConnectAuth {
 }
 
 impl ConnectAuth {
-    pub fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<ConnectAuth, Error> {
+    pub fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Self, Error> {
         let username_flag = (connect_flags & 0b1000_0000) != 0;
         let password_flag = (connect_flags & 0b0100_0000) != 0;
 
@@ -666,7 +670,7 @@ impl ConnectAuth {
     }
 }
 
-fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
+const fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
     if (connect_flags & 0x01) != 0 {
         return Err(Error::IncorrectPacketFormat);
     }
@@ -678,6 +682,7 @@ fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
+    use crate::mqttbytes::v5::parse_fixed_header;
     use bytes::Bytes;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;

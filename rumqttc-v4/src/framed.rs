@@ -2,7 +2,10 @@ use futures_util::{FutureExt, SinkExt, StreamExt};
 pub use rumqttc_core::AsyncReadWrite;
 use tokio_util::codec::Framed;
 
-use crate::mqttbytes::{self, v4::*};
+use crate::mqttbytes::{
+    self,
+    v4::{Codec, Packet},
+};
 use crate::{Incoming, MqttState, StateError};
 
 /// Network transforms packets <-> frames efficiently. It takes
@@ -18,7 +21,7 @@ impl Network {
         socket: impl AsyncReadWrite + 'static,
         max_incoming_size: usize,
         max_outgoing_size: usize,
-    ) -> Network {
+    ) -> Self {
         let socket = Box::new(socket) as Box<dyn AsyncReadWrite>;
         let codec = Codec {
             max_incoming_size,
@@ -26,7 +29,7 @@ impl Network {
         };
         let framed = Framed::new(socket, codec);
 
-        Network { framed }
+        Self { framed }
     }
 
     /// Reads and returns a single packet from network

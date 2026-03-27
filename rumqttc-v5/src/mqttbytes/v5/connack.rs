@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_mqtt_string,
+    read_u8, read_u16, read_u32, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Return code in connack
@@ -63,8 +66,8 @@ impl ConnAck {
         1 + remaining_len_size + len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<ConnAck, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let flags = read_u8(&mut bytes)?;
@@ -73,7 +76,7 @@ impl ConnAck {
 
         let session_present = (flags & 0x01) == 1;
         let code = connect_return(return_code)?;
-        let connack = ConnAck {
+        let connack = Self {
             session_present,
             code,
             properties,
@@ -157,7 +160,7 @@ impl ConnAckProperties {
             len += 1 + 2 + reason.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
@@ -196,8 +199,8 @@ impl ConnAckProperties {
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<ConnAckProperties>, Error> {
-        let mut properties = ConnAckProperties {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
+        let mut properties = Self {
             session_expiry_interval: None,
             receive_max: None,
             max_qos: None,
@@ -278,7 +281,7 @@ impl ConnAckProperties {
             write_mqtt_string(buffer, reason);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -418,7 +421,7 @@ fn read_connack_property(
 }
 
 /// Connection return code type
-fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
+const fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
     let code = match num {
         0 => ConnectReturnCode::Success,
         128 => ConnectReturnCode::UnspecifiedError,

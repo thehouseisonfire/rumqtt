@@ -14,7 +14,7 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn new(socket: impl AsyncReadWrite + 'static, max_incoming_size: Option<u32>) -> Network {
+    pub fn new(socket: impl AsyncReadWrite + 'static, max_incoming_size: Option<u32>) -> Self {
         let socket = Box::new(socket) as Box<dyn AsyncReadWrite>;
         let codec = Codec {
             max_incoming_size,
@@ -22,7 +22,7 @@ impl Network {
         };
         let framed = Framed::new(socket, codec);
 
-        Network { framed }
+        Self { framed }
     }
 
     pub fn set_max_outgoing_size(&mut self, max_outgoing_size: Option<u32>) {

@@ -1,5 +1,5 @@
 use super::framed::Network;
-use super::mqttbytes::v5::*;
+use super::mqttbytes::v5::{ConnAck, Connect, Packet, Publish, Subscribe, Unsubscribe};
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
 use crate::framed::AsyncReadWrite;
 use crate::notice::{PublishNoticeTx, RequestNoticeTx, TrackedNoticeTx};
@@ -39,32 +39,35 @@ pub(crate) struct RequestEnvelope {
 }
 
 impl RequestEnvelope {
-    pub(crate) fn from_parts(request: Request, notice: Option<TrackedNoticeTx>) -> Self {
+    pub(crate) const fn from_parts(request: Request, notice: Option<TrackedNoticeTx>) -> Self {
         Self { request, notice }
     }
 
-    pub(crate) fn plain(request: Request) -> Self {
+    pub(crate) const fn plain(request: Request) -> Self {
         Self {
             request,
             notice: None,
         }
     }
 
-    pub(crate) fn tracked_publish(publish: Publish, notice: PublishNoticeTx) -> Self {
+    pub(crate) const fn tracked_publish(publish: Publish, notice: PublishNoticeTx) -> Self {
         Self {
             request: Request::Publish(publish),
             notice: Some(TrackedNoticeTx::Publish(notice)),
         }
     }
 
-    pub(crate) fn tracked_subscribe(subscribe: Subscribe, notice: RequestNoticeTx) -> Self {
+    pub(crate) const fn tracked_subscribe(subscribe: Subscribe, notice: RequestNoticeTx) -> Self {
         Self {
             request: Request::Subscribe(subscribe),
             notice: Some(TrackedNoticeTx::Request(notice)),
         }
     }
 
-    pub(crate) fn tracked_unsubscribe(unsubscribe: Unsubscribe, notice: RequestNoticeTx) -> Self {
+    pub(crate) const fn tracked_unsubscribe(
+        unsubscribe: Unsubscribe,
+        notice: RequestNoticeTx,
+    ) -> Self {
         Self {
             request: Request::Unsubscribe(unsubscribe),
             notice: Some(TrackedNoticeTx::Request(notice)),
@@ -152,7 +155,7 @@ impl EventLoop {
     ///
     /// When connection encounters critical errors (like auth failure), user has a choice to
     /// access and update `options`, `state` and `requests`.
-    pub fn new(options: MqttOptions, cap: usize) -> EventLoop {
+    pub fn new(options: MqttOptions, cap: usize) -> Self {
         let (requests_tx, requests_rx) = bounded(cap);
         Self::with_channel(options, requests_rx, Some(requests_tx))
     }
@@ -164,7 +167,7 @@ impl EventLoop {
     pub(crate) fn new_for_async_client(
         options: MqttOptions,
         cap: usize,
-    ) -> (EventLoop, Sender<RequestEnvelope>) {
+    ) -> (Self, Sender<RequestEnvelope>) {
         let (requests_tx, requests_rx) = bounded(cap);
         let eventloop = Self::with_channel(options, requests_rx, None);
         (eventloop, requests_tx)
@@ -174,14 +177,14 @@ impl EventLoop {
         options: MqttOptions,
         requests_rx: Receiver<RequestEnvelope>,
         requests_tx: Option<Sender<RequestEnvelope>>,
-    ) -> EventLoop {
+    ) -> Self {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let manual_acks = options.manual_acks;
 
         let auth_manager = options.auth_manager();
 
-        EventLoop {
+        Self {
             options,
             state: MqttState::new(inflight_limit, manual_acks, auth_manager),
             requests_rx,
@@ -436,7 +439,7 @@ impl EventLoop {
             },
             // We generate pings irrespective of network activity. This keeps the ping logic
             // simple. We can change this behavior in future if necessary (to prevent extra pings)
-            _ = self.keepalive_timeout.as_mut().unwrap_or(&mut no_sleep),
+            () = self.keepalive_timeout.as_mut().unwrap_or(&mut no_sleep),
                 if self.keepalive_timeout.is_some() && !self.options.keep_alive.is_zero() => {
                     let timeout = self.keepalive_timeout.as_mut().unwrap();
                     timeout.as_mut().reset(Instant::now() + self.options.keep_alive);
@@ -483,7 +486,12 @@ impl EventLoop {
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
     ) -> Result<(Request, Option<TrackedNoticeTx>), ConnectionError> {
-        if !pending.is_empty() {
+        if pending.is_empty() {
+            rx.recv_async()
+                .await
+                .map(RequestEnvelope::into_parts)
+                .map_err(|_| ConnectionError::RequestsDone)
+        } else {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
             } else {
@@ -492,11 +500,6 @@ impl EventLoop {
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
             Ok(pending.pop_front().unwrap().into_parts())
-        } else {
-            rx.recv_async()
-                .await
-                .map(RequestEnvelope::into_parts)
-                .map_err(|_| ConnectionError::RequestsDone)
         }
     }
 
@@ -739,6 +742,7 @@ async fn mqtt_connect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ConnAckProperties, Filter, PubAck, PubRec};
     use flume::TryRecvError;
 
     fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
