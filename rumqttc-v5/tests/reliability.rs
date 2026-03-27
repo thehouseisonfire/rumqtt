@@ -740,9 +740,10 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_start_
     });
 
     loop {
-        if let Err(ConnectionError::MqttState(StateError::CollisionTimeout)) =
-            eventloop.poll().await
-        {
+        if matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::MqttState(StateError::CollisionTimeout))
+        ) {
             break;
         }
     }

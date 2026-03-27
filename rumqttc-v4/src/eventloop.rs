@@ -34,7 +34,7 @@ use {
 use crate::proxy::ProxyError;
 
 #[derive(Debug)]
-pub(crate) struct RequestEnvelope {
+pub struct RequestEnvelope {
     request: Request,
     notice: Option<TrackedNoticeTx>,
 }

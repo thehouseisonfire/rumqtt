@@ -118,7 +118,7 @@ impl RequestNotice {
 }
 
 #[derive(Debug)]
-pub(crate) struct PublishNoticeTx(pub(crate) oneshot::Sender<PublishNoticeResult>);
+pub struct PublishNoticeTx(pub(crate) oneshot::Sender<PublishNoticeResult>);
 
 impl PublishNoticeTx {
     pub(crate) fn new() -> (Self, PublishNotice) {
@@ -136,7 +136,7 @@ impl PublishNoticeTx {
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestNoticeTx(pub(crate) oneshot::Sender<RequestNoticeResult>);
+pub struct RequestNoticeTx(pub(crate) oneshot::Sender<RequestNoticeResult>);
 
 impl RequestNoticeTx {
     pub(crate) fn new() -> (Self, RequestNotice) {
@@ -154,7 +154,7 @@ impl RequestNoticeTx {
 }
 
 #[derive(Debug)]
-pub(crate) enum TrackedNoticeTx {
+pub enum TrackedNoticeTx {
     Publish(PublishNoticeTx),
     Request(RequestNoticeTx),
 }

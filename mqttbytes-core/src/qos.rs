@@ -11,7 +11,7 @@ pub enum QoS {
 
 /// Maps a number to `QoS`
 #[must_use]
-pub fn qos(num: u8) -> Option<QoS> {
+pub const fn qos(num: u8) -> Option<QoS> {
     match num {
         0 => Some(QoS::AtMostOnce),
         1 => Some(QoS::AtLeastOnce),

@@ -26,7 +26,7 @@ pub struct ParsedFixedHeader {
 
 impl ParsedFixedHeader {
     #[must_use]
-    pub fn frame_length(self) -> usize {
+    pub const fn frame_length(self) -> usize {
         1 + self.remaining_len_len + self.remaining_len
     }
 }
@@ -209,7 +209,7 @@ pub fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize
 
 /// Return number of remaining length bytes required for encoding length
 #[must_use]
-pub fn len_len(len: usize) -> usize {
+pub const fn len_len(len: usize) -> usize {
     if len >= 2_097_152 {
         4
     } else if len >= 16_384 {
@@ -221,11 +221,13 @@ pub fn len_len(len: usize) -> usize {
     }
 }
 
-/// After collecting enough bytes to frame a packet (packet's `frame()`)
-/// , It's possible that content itself in the stream is wrong. Like expected
-/// packet id or qos not being present. In cases where `read_mqtt_string` or
-/// `read_mqtt_bytes` exhausted remaining length but packet framing expects to
-/// parse qos next, these pre checks will prevent `bytes` crashes
+/// After collecting enough bytes to frame a packet, the packet payload itself
+/// can still be malformed.
+///
+/// For example, a packet may be missing an expected packet identifier or `QoS`
+/// field. These pre-checks prevent `bytes` panics when `read_mqtt_string` or
+/// `read_mqtt_bytes` exhaust the remaining length before the packet parser
+/// reaches the next expected field.
 ///
 /// # Errors
 ///

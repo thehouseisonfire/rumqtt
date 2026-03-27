@@ -19,7 +19,7 @@ impl PubAck {
     }
 
     #[must_use]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         let len = Self::len();
         let remaining_len_size = len_len(len);
 

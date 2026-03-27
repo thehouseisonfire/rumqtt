@@ -462,7 +462,7 @@ fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize, Er
 }
 
 /// Return number of remaining length bytes required for encoding length
-fn len_len(len: usize) -> usize {
+const fn len_len(len: usize) -> usize {
     core_primitives::len_len(len)
 }
 

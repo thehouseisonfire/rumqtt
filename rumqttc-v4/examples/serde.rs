@@ -9,16 +9,8 @@ struct Message {
     time: SystemTime,
 }
 
-impl From<&Message> for Vec<u8> {
-    fn from(value: &Message) -> Self {
-        wincode::serialize(value).unwrap()
-    }
-}
-
-impl From<Message> for Vec<u8> {
-    fn from(value: Message) -> Self {
-        Vec::from(&value)
-    }
+fn encode_message(value: &Message) -> Result<Vec<u8>, wincode::WriteError> {
+    wincode::serialize(value)
 }
 
 impl TryFrom<&[u8]> for Message {
@@ -42,7 +34,12 @@ fn main() {
             };
 
             client
-                .publish("hello/rumqtt", QoS::AtLeastOnce, false, message)
+                .publish(
+                    "hello/rumqtt",
+                    QoS::AtLeastOnce,
+                    false,
+                    encode_message(&message).unwrap(),
+                )
                 .unwrap();
             thread::sleep(Duration::from_millis(100));
         }

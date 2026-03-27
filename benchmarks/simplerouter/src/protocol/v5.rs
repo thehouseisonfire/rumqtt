@@ -10,7 +10,7 @@ use super::{
     write_remaining_length,
 };
 
-pub(crate) mod connect {
+pub mod connect {
     use super::{
         Buf, Error, FixedHeader, PropertyType, QoS, length, property, qos, read_mqtt_bytes,
         read_u8, read_u16, read_u32,
@@ -35,8 +35,8 @@ pub(crate) mod connect {
     }
 
     impl Connect {
-        pub fn new<S: Into<String>>(id: S) -> Connect {
-            Connect {
+        pub fn new<S: Into<String>>(id: S) -> Self {
+            Self {
                 keep_alive: 10,
                 client_id: id.into(),
                 clean_session: true,
@@ -67,7 +67,7 @@ pub(crate) mod connect {
             len
         }
 
-        pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Connect, Error> {
+        pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
             let variable_header_index = fixed_header.fixed_header_len;
             bytes.advance(variable_header_index);
 
@@ -87,7 +87,7 @@ pub(crate) mod connect {
         }
     }
 
-    pub(crate) fn connect_v5_part(mut bytes: Bytes) -> Result<Connect, Error> {
+    pub fn connect_v5_part(mut bytes: Bytes) -> Result<Connect, Error> {
         let connect_flags = read_u8(&mut bytes)?;
         let clean_session = (connect_flags & 0b10) != 0;
         let keep_alive = read_u16(&mut bytes)?;
@@ -127,8 +127,8 @@ pub(crate) mod connect {
             payload: impl Into<Vec<u8>>,
             qos: QoS,
             retain: bool,
-        ) -> LastWill {
-            LastWill {
+        ) -> Self {
+            Self {
                 topic: topic.into(),
                 message: Bytes::from(payload.into()),
                 qos,
@@ -142,7 +142,7 @@ pub(crate) mod connect {
             len
         }
 
-        fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<LastWill>, Error> {
+        fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let last_will = match connect_flags & 0b100 {
                 0 if (connect_flags & 0b0011_1000) != 0 => {
                     return Err(Error::IncorrectPacketFormat);
@@ -153,7 +153,7 @@ pub(crate) mod connect {
                     let will_topic = std::str::from_utf8(&will_topic)?.to_owned();
                     let will_message = read_mqtt_bytes(bytes)?;
                     let will_qos = qos((connect_flags & 0b11000) >> 3)?;
-                    Some(LastWill {
+                    Some(Self {
                         topic: will_topic,
                         message: will_message,
                         qos: will_qos,
@@ -173,14 +173,14 @@ pub(crate) mod connect {
     }
 
     impl Login {
-        pub fn new<S: Into<String>>(u: S, p: S) -> Login {
-            Login {
+        pub fn new<S: Into<String>>(u: S, p: S) -> Self {
+            Self {
                 username: u.into(),
                 password: p.into(),
             }
         }
 
-        fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
+        fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let username = if connect_flags & 0b1000_0000 == 0 {
                 String::new()
             } else {
@@ -198,7 +198,7 @@ pub(crate) mod connect {
             if username.is_empty() && password.is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(Login { username, password }))
+                Ok(Some(Self { username, password }))
             }
         }
 
@@ -238,8 +238,8 @@ pub(crate) mod connect {
     }
 
     impl ConnectProperties {
-        fn _new() -> ConnectProperties {
-            ConnectProperties {
+        const fn _new() -> Self {
+            Self {
                 session_expiry_interval: None,
                 receive_maximum: None,
                 max_packet_size: None,
@@ -252,7 +252,7 @@ pub(crate) mod connect {
             }
         }
 
-        fn read(bytes: &mut Bytes) -> Result<Option<ConnectProperties>, Error> {
+        fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let mut session_expiry_interval = None;
             let mut receive_maximum = None;
             let mut max_packet_size = None;
@@ -322,7 +322,7 @@ pub(crate) mod connect {
                 }
             }
 
-            Ok(Some(ConnectProperties {
+            Ok(Some(Self {
                 session_expiry_interval,
                 receive_maximum,
                 max_packet_size,
@@ -379,7 +379,7 @@ pub(crate) mod connect {
     }
 }
 
-pub(crate) mod connack {
+pub mod connack {
     use super::{
         Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_u8,
         read_u16, read_u32, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
@@ -423,8 +423,8 @@ pub(crate) mod connack {
     }
 
     impl ConnAck {
-        pub fn new(code: ConnectReturnCode, session_present: bool) -> ConnAck {
-            ConnAck {
+        pub const fn new(code: ConnectReturnCode, session_present: bool) -> Self {
+            Self {
                 code,
                 session_present,
                 properties: None,
@@ -456,7 +456,7 @@ pub(crate) mod connack {
 
             let session_present = (flags & 0x01) == 1;
             let code = connect_return(return_code)?;
-            let connack = ConnAck {
+            let connack = Self {
                 session_present,
                 code,
                 properties: ConnAckProperties::extract(&mut bytes)?,
@@ -524,8 +524,8 @@ pub(crate) mod connack {
     }
 
     impl ConnAckProperties {
-        pub fn new() -> ConnAckProperties {
-            ConnAckProperties {
+        pub const fn new() -> Self {
+            Self {
                 session_expiry_interval: None,
                 receive_max: None,
                 max_qos: None,
@@ -621,7 +621,7 @@ pub(crate) mod connack {
         }
 
         #[allow(clippy::too_many_lines)]
-        pub fn extract(bytes: &mut Bytes) -> Result<Option<ConnAckProperties>, Error> {
+        pub fn extract(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let mut session_expiry_interval = None;
             let mut receive_max = None;
             let mut max_qos = None;
@@ -740,7 +740,7 @@ pub(crate) mod connack {
                 }
             }
 
-            Ok(Some(ConnAckProperties {
+            Ok(Some(Self {
                 session_expiry_interval,
                 receive_max,
                 max_qos,
@@ -856,7 +856,7 @@ pub(crate) mod connack {
     }
 
     /// Connection return code type
-    fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
+    const fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
         match num {
             0x00 => Ok(ConnectReturnCode::Success),
             0x80 => Ok(ConnectReturnCode::UnspecifiedError),
@@ -885,7 +885,7 @@ pub(crate) mod connack {
     }
 }
 
-pub(crate) mod publish {
+pub mod publish {
     use super::{
         Buf, Error, FixedHeader, QoS, check, read_mqtt_bytes, view_str, view_u16,
         write_mqtt_string, write_remaining_length,
@@ -990,8 +990,8 @@ pub(crate) mod publish {
             Ok((topic, payload))
         }
 
-        pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Self {
-            Publish {
+        pub const fn read(fixed_header: FixedHeader, bytes: Bytes) -> Self {
+            Self {
                 fixed_header,
                 raw: bytes,
             }
@@ -1049,7 +1049,7 @@ pub(crate) mod publish {
     }
 }
 
-pub(crate) mod puback {
+pub mod puback {
     use super::{
         Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_u8,
         read_u16, write_mqtt_string, write_remaining_length,
@@ -1065,8 +1065,8 @@ pub(crate) mod puback {
     }
 
     impl PubAck {
-        pub fn new(pkid: u16) -> PubAck {
-            PubAck {
+        pub const fn new(pkid: u16) -> Self {
+            Self {
                 pkid,
                 reason: PubAckReason::Success,
                 properties: None,
@@ -1080,7 +1080,7 @@ pub(crate) mod puback {
 
             // No reason code or properties if remaining length == 2
             if fixed_header.remaining_len == 2 {
-                return Ok(PubAck {
+                return Ok(Self {
                     pkid,
                     reason: PubAckReason::Success,
                     properties: None,
@@ -1090,14 +1090,14 @@ pub(crate) mod puback {
             // No properties len or properties if remaining len > 2 but < 4
             let ack_reason = read_u8(&mut bytes)?;
             if fixed_header.remaining_len < 4 {
-                return Ok(PubAck {
+                return Ok(Self {
                     pkid,
                     reason: reason(ack_reason)?,
                     properties: None,
                 });
             }
 
-            let puback = PubAck {
+            let puback = Self {
                 pkid,
                 reason: reason(ack_reason)?,
                 properties: PubAckProperties::extract(&mut bytes)?,
@@ -1184,7 +1184,7 @@ pub(crate) mod puback {
             len
         }
 
-        pub fn extract(bytes: &mut Bytes) -> Result<Option<PubAckProperties>, Error> {
+        pub fn extract(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let mut reason_string = None;
             let mut user_properties = Vec::new();
 
@@ -1219,7 +1219,7 @@ pub(crate) mod puback {
                 }
             }
 
-            Ok(Some(PubAckProperties {
+            Ok(Some(Self {
                 reason_string,
                 user_properties,
             }))
@@ -1244,7 +1244,7 @@ pub(crate) mod puback {
         }
     }
     /// Connection return code type
-    fn reason(num: u8) -> Result<PubAckReason, Error> {
+    const fn reason(num: u8) -> Result<PubAckReason, Error> {
         let code = match num {
             0 => PubAckReason::Success,
             16 => PubAckReason::NoMatchingSubscribers,
@@ -1262,7 +1262,7 @@ pub(crate) mod puback {
     }
 }
 
-pub(crate) mod subscribe {
+pub mod subscribe {
     use super::{
         BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, fmt, len_len, length, property,
         qos, read_mqtt_bytes, read_u8, read_u16, write_mqtt_string, write_remaining_length,
@@ -1278,7 +1278,7 @@ pub(crate) mod subscribe {
     }
 
     impl Subscribe {
-        pub fn new<S: Into<String>>(path: S, qos: QoS) -> Subscribe {
+        pub fn new<S: Into<String>>(path: S, qos: QoS) -> Self {
             let filter = SubscribeFilter {
                 path: path.into(),
                 qos,
@@ -1288,7 +1288,7 @@ pub(crate) mod subscribe {
             };
 
             let filters = vec![filter];
-            Subscribe {
+            Self {
                 pkid: 0,
                 filters,
                 properties: None,
@@ -1362,7 +1362,7 @@ pub(crate) mod subscribe {
                 });
             }
 
-            let subscribe = Subscribe {
+            let subscribe = Self {
                 pkid,
                 filters,
                 properties,
@@ -1425,8 +1425,8 @@ pub(crate) mod subscribe {
     }
 
     impl SubscribeFilter {
-        pub fn new(path: String, qos: QoS) -> SubscribeFilter {
-            SubscribeFilter {
+        pub const fn new(path: String, qos: QoS) -> Self {
+            Self {
                 path,
                 qos,
                 nolocal: false,
@@ -1484,7 +1484,7 @@ pub(crate) mod subscribe {
             len
         }
 
-        pub fn extract(bytes: &mut Bytes) -> Result<Option<SubscribeProperties>, Error> {
+        pub fn extract(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let mut id = None;
             let mut user_properties = Vec::new();
 
@@ -1520,7 +1520,7 @@ pub(crate) mod subscribe {
                 }
             }
 
-            Ok(Some(SubscribeProperties {
+            Ok(Some(Self {
                 id,
                 user_properties,
             }))
@@ -1573,7 +1573,7 @@ pub(crate) mod subscribe {
     }
 }
 
-pub(crate) mod suback {
+pub mod suback {
     use std::convert::{TryFrom, TryInto};
 
     use super::{
@@ -1591,8 +1591,8 @@ pub(crate) mod suback {
     }
 
     impl SubAck {
-        pub fn new(pkid: u16, return_codes: Vec<SubscribeReasonCode>) -> SubAck {
-            SubAck {
+        pub const fn new(pkid: u16, return_codes: Vec<SubscribeReasonCode>) -> Self {
+            Self {
                 pkid,
                 return_codes,
                 properties: None,
@@ -1634,7 +1634,7 @@ pub(crate) mod suback {
                 return_codes.push(return_code.try_into()?);
             }
 
-            let suback = SubAck {
+            let suback = Self {
                 pkid,
                 return_codes,
                 properties,
@@ -1705,7 +1705,7 @@ pub(crate) mod suback {
             len
         }
 
-        pub fn extract(bytes: &mut Bytes) -> Result<Option<SubAckProperties>, Error> {
+        pub fn extract(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let mut reason_string = None;
             let mut user_properties = Vec::new();
 
@@ -1740,7 +1740,7 @@ pub(crate) mod suback {
                 }
             }
 
-            Ok(Some(SubAckProperties {
+            Ok(Some(Self {
                 reason_string,
                 user_properties,
             }))
@@ -1786,18 +1786,18 @@ pub(crate) mod suback {
 
         fn try_from(value: u8) -> Result<Self, Self::Error> {
             let v = match value {
-                0 => SubscribeReasonCode::QoS0,
-                1 => SubscribeReasonCode::QoS1,
-                2 => SubscribeReasonCode::QoS2,
-                128 => SubscribeReasonCode::Unspecified,
-                131 => SubscribeReasonCode::ImplementationSpecific,
-                135 => SubscribeReasonCode::NotAuthorized,
-                143 => SubscribeReasonCode::TopicFilterInvalid,
-                145 => SubscribeReasonCode::PkidInUse,
-                151 => SubscribeReasonCode::QuotaExceeded,
-                158 => SubscribeReasonCode::SharedSubscriptionsNotSupported,
-                161 => SubscribeReasonCode::SubscriptionIdNotSupported,
-                162 => SubscribeReasonCode::WildcardSubscriptionsNotSupported,
+                0 => Self::QoS0,
+                1 => Self::QoS1,
+                2 => Self::QoS2,
+                128 => Self::Unspecified,
+                131 => Self::ImplementationSpecific,
+                135 => Self::NotAuthorized,
+                143 => Self::TopicFilterInvalid,
+                145 => Self::PkidInUse,
+                151 => Self::QuotaExceeded,
+                158 => Self::SharedSubscriptionsNotSupported,
+                161 => Self::SubscriptionIdNotSupported,
+                162 => Self::WildcardSubscriptionsNotSupported,
                 v => return Err(Error::InvalidSubscribeReasonCode(v)),
             };
 
@@ -1815,7 +1815,7 @@ pub(crate) mod suback {
     }
 }
 
-pub(crate) mod pingresp {
+pub mod pingresp {
     use super::{BufMut, BytesMut};
 
     pub fn write(payload: &mut BytesMut) -> usize {
@@ -1942,7 +1942,7 @@ enum PropertyType {
     SharedSubscriptionAvailable = 42,
 }
 
-fn property(num: u8) -> Result<PropertyType, Error> {
+const fn property(num: u8) -> Result<PropertyType, Error> {
     let property = match num {
         1 => PropertyType::PayloadFormatIndicator,
         2 => PropertyType::MessageExpiryInterval,

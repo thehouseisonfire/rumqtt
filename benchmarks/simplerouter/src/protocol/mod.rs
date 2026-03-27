@@ -126,7 +126,7 @@ pub enum QoS {
 }
 
 /// Maps a number to `QoS`
-pub fn qos(num: u8) -> Result<QoS, Error> {
+pub const fn qos(num: u8) -> Result<QoS, Error> {
     match num {
         0 => Ok(QoS::AtMostOnce),
         1 => Ok(QoS::AtLeastOnce),
@@ -162,15 +162,15 @@ pub struct FixedHeader {
 }
 
 impl FixedHeader {
-    pub fn new(byte1: u8, remaining_len_len: usize, remaining_len: usize) -> FixedHeader {
-        FixedHeader {
+    pub const fn new(byte1: u8, remaining_len_len: usize, remaining_len: usize) -> Self {
+        Self {
             byte1,
             fixed_header_len: remaining_len_len + 1,
             remaining_len,
         }
     }
 
-    pub fn packet_type(&self) -> Result<PacketType, Error> {
+    pub const fn packet_type(&self) -> Result<PacketType, Error> {
         let num = self.byte1 >> 4;
         match num {
             1 => Ok(PacketType::Connect),
@@ -193,7 +193,7 @@ impl FixedHeader {
 
     /// Returns the size of full packet (fixed header + variable header + payload)
     /// Fixed header is enough to get the size of a frame in the stream
-    pub fn frame_length(&self) -> usize {
+    pub const fn frame_length(&self) -> usize {
         self.fixed_header_len + self.remaining_len
     }
 }
@@ -379,7 +379,7 @@ pub fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize
 }
 
 /// Return number of remaining length bytes required for encoding length
-fn len_len(len: usize) -> usize {
+const fn len_len(len: usize) -> usize {
     if len >= 2_097_152 {
         4
     } else if len >= 16_384 {
@@ -402,7 +402,7 @@ pub enum Packet {
     V5(v5::Packet),
 }
 
-pub(crate) fn read_first_connect(stream: &mut BytesMut, max_size: usize) -> Result<Connect, Error> {
+pub fn read_first_connect(stream: &mut BytesMut, max_size: usize) -> Result<Connect, Error> {
     let fixed_header = check(stream.iter(), max_size)?;
 
     // Test with a stream with exactly the size to check border panics
