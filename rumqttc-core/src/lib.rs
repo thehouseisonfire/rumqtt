@@ -134,7 +134,6 @@ impl TlsConfiguration {
 }
 
 #[cfg(all(feature = "use-rustls-no-provider", not(feature = "use-native-tls")))]
-#[allow(clippy::derivable_impls)]
 impl Default for TlsConfiguration {
     fn default() -> Self {
         Self::default_rustls()
@@ -142,7 +141,6 @@ impl Default for TlsConfiguration {
 }
 
 #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
-#[allow(clippy::derivable_impls)]
 impl Default for TlsConfiguration {
     fn default() -> Self {
         Self::default_native()
