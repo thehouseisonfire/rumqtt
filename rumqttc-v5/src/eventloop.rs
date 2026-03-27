@@ -265,6 +265,11 @@ impl EventLoop {
     /// the broker. Continuing to poll will reconnect to the broker if there is
     /// a disconnection.
     /// **NOTE** Don't block this while iterating
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConnectionError`] if connecting, reading, writing, or
+    /// protocol handling fails.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
         if self.network.is_none() {
             let (network, connack) = time::timeout(
@@ -299,6 +304,7 @@ impl EventLoop {
     }
 
     /// Select on network and requests and generate keepalive pings when necessary
+    #[allow(clippy::too_many_lines)]
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         let read_batch_size = self.effective_read_batch_size();
         let network = self.network.as_mut().unwrap();
@@ -533,6 +539,7 @@ async fn connect(
     Ok((network, connack))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionError> {
     let max_incoming_pkt_size = options.max_incoming_packet_size();
     let transport = options.transport();

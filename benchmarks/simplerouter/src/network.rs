@@ -75,14 +75,12 @@ impl Network {
                 4 => match v4::read_mut(&mut self.buf, 4096) {
                     Err(protocol::Error::InsufficientBytes(count)) => {
                         self.read_atleast(count).await?;
-                        continue;
                     }
                     res => return Ok(Packet::V4(res?)),
                 },
                 5 => match v5::read_mut(&mut self.buf, 4096) {
                     Err(protocol::Error::InsufficientBytes(count)) => {
                         self.read_atleast(count).await?;
-                        continue;
                     }
                     res => return Ok(Packet::V5(res?)),
                 },

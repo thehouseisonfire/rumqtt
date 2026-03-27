@@ -11,7 +11,7 @@ fn main() {
     mqttoptions.set_keep_alive(5).set_last_will(will);
 
     let (client, mut connection) = Client::new(mqttoptions, 10);
-    thread::spawn(move || publish(client));
+    thread::spawn(move || publish(&client));
 
     for (i, notification) in connection.iter().enumerate() {
         match notification {
@@ -31,7 +31,7 @@ fn main() {
     println!("Done with the stream!!");
 }
 
-fn publish(client: Client) {
+fn publish(client: &Client) {
     client.subscribe("hello/+/world", QoS::AtMostOnce).unwrap();
     for i in 0..10_usize {
         let payload = vec![1; i];

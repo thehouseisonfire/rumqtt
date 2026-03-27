@@ -2,13 +2,13 @@ use serde_json::Value;
 use std::process::Command;
 
 #[test]
-#[ignore]
+#[ignore = "requires an external MQTT benchmark broker and CA certificate"]
 fn v5_bench_tls_e2e() {
-    let broker_url = if let Ok(v) = std::env::var("RUMQTT_BENCH_TLS_URL") { v } else {
+    let Ok(broker_url) = std::env::var("RUMQTT_BENCH_TLS_URL") else {
         eprintln!("RUMQTT_BENCH_TLS_URL not set; skipping TLS e2e benchmark test");
         return;
     };
-    let ca_cert = if let Ok(v) = std::env::var("RUMQTT_BENCH_CA_CERT") { v } else {
+    let Ok(ca_cert) = std::env::var("RUMQTT_BENCH_CA_CERT") else {
         eprintln!("RUMQTT_BENCH_CA_CERT not set; skipping TLS e2e benchmark test");
         return;
     };

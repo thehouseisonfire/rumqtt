@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::missing_errors_doc)]
 
 use bytes::BytesMut;
 use flume::{Receiver, Sender, bounded};
@@ -161,7 +162,7 @@ impl Broker {
         self.framed.write(packet).await.unwrap();
     }
 
-    pub async fn spawn_publishes(&mut self, count: u8, qos: QoS, delay: u64) {
+    pub fn spawn_publishes(&mut self, count: u8, qos: QoS, delay: u64) {
         let tx = self.outgoing_tx.clone();
 
         task::spawn(async move {
@@ -170,7 +171,7 @@ impl Broker {
                 let payload = vec![1, 2, 3, i];
                 let mut publish = Publish::new(topic, qos, payload, None);
 
-                if qos as u8 > 0 {
+                if !matches!(qos, QoS::AtMostOnce) {
                     publish.pkid = u16::from(i);
                 }
 

@@ -60,17 +60,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{event:?}");
 
         if let Event::Incoming(packet) = event {
-            let publish = match packet {
-                Packet::Publish(publish) => publish,
-                _ => continue,
+            let Packet::Publish(publish) = packet else {
+                continue;
             };
             // this time we will ack incoming publishes using prepared ACK packets.
             // Its important not to block notifier as this can cause deadlock.
             let c = client.clone();
             tokio::spawn(async move {
-                let mut ack = match c.prepare_ack(&publish) {
-                    Some(ack) => ack,
-                    None => return,
+                let Some(mut ack) = c.prepare_ack(&publish) else {
+                    return;
                 };
 
                 if (publish.pkid & 1) != 0 {

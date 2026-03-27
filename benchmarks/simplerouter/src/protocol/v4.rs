@@ -1,11 +1,17 @@
 #![allow(dead_code)]
 
-use super::{FixedHeader, Error, read_mqtt_bytes, read_u8, write_remaining_length, write_mqtt_string, read_u16, QoS, qos, write_mqtt_bytes, view_u16, view_str, check, PacketType};
+use super::{
+    Error, FixedHeader, PacketType, QoS, check, qos, read_mqtt_bytes, read_u8, read_u16, view_str,
+    view_u16, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub(crate) mod connect {
-    use super::{FixedHeader, Error, Buf, read_mqtt_bytes, read_u8, BytesMut, BufMut, write_remaining_length, write_mqtt_string, read_u16, QoS, qos, write_mqtt_bytes};
+    use super::{
+        Buf, BufMut, BytesMut, Error, FixedHeader, QoS, qos, read_mqtt_bytes, read_u8, read_u16,
+        write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    };
     use bytes::Bytes;
 
     /// Connection packet initiated by the client
@@ -93,7 +99,7 @@ pub(crate) mod connect {
             write_mqtt_string(buffer, &self.client_id);
 
             if let Some(last_will) = &self.last_will {
-                connect_flags |= last_will.write(buffer)?;
+                connect_flags |= last_will.write(buffer);
             }
 
             if let Some(login) = &self.login {
@@ -180,7 +186,7 @@ pub(crate) mod connect {
             Ok(last_will)
         }
 
-        fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        fn write(&self, buffer: &mut BytesMut) -> u8 {
             let mut connect_flags = 0;
 
             connect_flags |= 0x04 | ((self.qos as u8) << 3);
@@ -190,7 +196,7 @@ pub(crate) mod connect {
 
             write_mqtt_string(buffer, &self.topic);
             write_mqtt_bytes(buffer, &self.message);
-            Ok(connect_flags)
+            connect_flags
         }
     }
 
@@ -209,12 +215,16 @@ pub(crate) mod connect {
         }
 
         fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
-            let username = if connect_flags & 0b1000_0000 == 0 { String::new() } else {
+            let username = if connect_flags & 0b1000_0000 == 0 {
+                String::new()
+            } else {
                 let username = read_mqtt_bytes(bytes)?;
                 std::str::from_utf8(&username)?.to_owned()
             };
 
-            let password = if connect_flags & 0b0100_0000 == 0 { String::new() } else {
+            let password = if connect_flags & 0b0100_0000 == 0 {
+                String::new()
+            } else {
                 let password = read_mqtt_bytes(bytes)?;
                 std::str::from_utf8(&password)?.to_owned()
             };
@@ -258,7 +268,7 @@ pub(crate) mod connect {
 }
 
 pub(crate) mod connack {
-    use super::{FixedHeader, Error, read_u8, write_remaining_length};
+    use super::{Error, FixedHeader, read_u8, write_remaining_length};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
     /// Return code in connack
@@ -337,7 +347,10 @@ pub(crate) mod connack {
 }
 
 pub(crate) mod publish {
-    use super::{FixedHeader, Error, view_u16, view_str, Buf, read_mqtt_bytes, check, QoS, write_remaining_length, write_mqtt_string};
+    use super::{
+        Buf, Error, FixedHeader, QoS, check, read_mqtt_bytes, view_str, view_u16,
+        write_mqtt_string, write_remaining_length,
+    };
     use bytes::{BufMut, Bytes, BytesMut};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,13 +451,11 @@ pub(crate) mod publish {
             Ok((topic, payload))
         }
 
-        pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Result<Self, Error> {
-            let publish = Publish {
+        pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Self {
+            Publish {
                 fixed_header,
                 raw: bytes,
-            };
-
-            Ok(publish)
+            }
         }
     }
 
@@ -500,7 +511,7 @@ pub(crate) mod publish {
 }
 
 pub(crate) mod puback {
-    use super::{FixedHeader, Error, read_u16, write_remaining_length};
+    use super::{Error, FixedHeader, read_u16, write_remaining_length};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
     /// Acknowledgement to `QoS1` publish
@@ -546,7 +557,10 @@ pub(crate) mod puback {
 }
 
 pub(crate) mod subscribe {
-    use super::{QoS, FixedHeader, Error, read_u16, read_mqtt_bytes, read_u8, qos, BytesMut, BufMut, write_remaining_length, write_mqtt_string};
+    use super::{
+        BufMut, BytesMut, Error, FixedHeader, QoS, qos, read_mqtt_bytes, read_u8, read_u16,
+        write_mqtt_string, write_remaining_length,
+    };
     use bytes::{Buf, Bytes};
 
     /// Subscription packet
@@ -606,6 +620,7 @@ pub(crate) mod subscribe {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn write(
         filters: Vec<SubscribeFilter>,
         pkid: u16,
@@ -659,7 +674,9 @@ pub(crate) mod subscribe {
 pub(crate) mod suback {
     use std::convert::{TryFrom, TryInto};
 
-    use super::{FixedHeader, Error, read_u16, read_u8, BytesMut, BufMut, write_remaining_length, QoS, qos};
+    use super::{
+        BufMut, BytesMut, Error, FixedHeader, QoS, qos, read_u8, read_u16, write_remaining_length,
+    };
     use bytes::{Buf, Bytes};
 
     /// Acknowledgement to subscribe
@@ -698,6 +715,7 @@ pub(crate) mod suback {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn write(
         return_codes: Vec<SubscribeReasonCode>,
         pkid: u16,
@@ -753,20 +771,20 @@ pub(crate) mod suback {
 }
 
 pub(crate) mod pingresp {
-    use super::{BytesMut, Error, BufMut};
+    use super::{BufMut, BytesMut};
 
-    pub fn write(payload: &mut BytesMut) -> Result<usize, Error> {
+    pub fn write(payload: &mut BytesMut) -> usize {
         payload.put_slice(&[0xD0, 0x00]);
-        Ok(2)
+        2
     }
 }
 
 pub(crate) mod pingreq {
-    use super::{BytesMut, Error, BufMut};
+    use super::{BufMut, BytesMut};
 
-    pub fn write(payload: &mut BytesMut) -> Result<usize, Error> {
+    pub fn write(payload: &mut BytesMut) -> usize {
         payload.put_slice(&[0xC0, 0x00]);
-        Ok(2)
+        2
     }
 }
 
@@ -792,7 +810,7 @@ pub fn read_mut(stream: &mut BytesMut, max_size: usize) -> Result<Packet, Error>
     let packet = match packet_type {
         PacketType::Connect => Packet::Connect(connect::Connect::read(fixed_header, packet)?),
         PacketType::ConnAck => Packet::ConnAck(connack::ConnAck::read(fixed_header, packet)?),
-        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)?),
+        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)),
         PacketType::PubAck => Packet::PubAck(puback::PubAck::read(fixed_header, packet)?),
         PacketType::Subscribe => {
             Packet::Subscribe(subscribe::Subscribe::read(fixed_header, packet)?)
@@ -828,7 +846,7 @@ pub fn read(stream: &mut Bytes, max_size: usize) -> Result<Packet, Error> {
     let packet = match packet_type {
         PacketType::Connect => Packet::Connect(connect::Connect::read(fixed_header, packet)?),
         PacketType::ConnAck => Packet::ConnAck(connack::ConnAck::read(fixed_header, packet)?),
-        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)?),
+        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)),
         PacketType::PubAck => Packet::PubAck(puback::PubAck::read(fixed_header, packet)?),
         PacketType::Subscribe => {
             Packet::Subscribe(subscribe::Subscribe::read(fixed_header, packet)?)

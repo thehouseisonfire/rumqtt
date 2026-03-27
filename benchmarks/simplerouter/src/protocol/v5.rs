@@ -4,10 +4,17 @@ use std::fmt;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::{FixedHeader, Error, read_mqtt_bytes, read_u8, read_u16, QoS, qos, length, read_u32, len_len, write_remaining_length, write_mqtt_string, write_mqtt_bytes, view_u16, view_str, check, PacketType};
+use super::{
+    Error, FixedHeader, PacketType, QoS, check, len_len, length, qos, read_mqtt_bytes, read_u8,
+    read_u16, read_u32, view_str, view_u16, write_mqtt_bytes, write_mqtt_string,
+    write_remaining_length,
+};
 
 pub(crate) mod connect {
-    use super::{FixedHeader, Error, Buf, read_mqtt_bytes, read_u8, read_u16, QoS, qos, length, property, PropertyType, read_u32};
+    use super::{
+        Buf, Error, FixedHeader, PropertyType, QoS, length, property, qos, read_mqtt_bytes,
+        read_u8, read_u16, read_u32,
+    };
     use bytes::Bytes;
 
     /// Connection packet initiated by the client
@@ -174,12 +181,16 @@ pub(crate) mod connect {
         }
 
         fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Login>, Error> {
-            let username = if connect_flags & 0b1000_0000 == 0 { String::new() } else {
+            let username = if connect_flags & 0b1000_0000 == 0 {
+                String::new()
+            } else {
                 let username = read_mqtt_bytes(bytes)?;
                 std::str::from_utf8(&username)?.to_owned()
             };
 
-            let password = if connect_flags & 0b0100_0000 == 0 { String::new() } else {
+            let password = if connect_flags & 0b0100_0000 == 0 {
+                String::new()
+            } else {
                 let password = read_mqtt_bytes(bytes)?;
                 std::str::from_utf8(&password)?.to_owned()
             };
@@ -369,7 +380,10 @@ pub(crate) mod connect {
 }
 
 pub(crate) mod connack {
-    use super::{len_len, FixedHeader, Error, read_u8, write_remaining_length, length, property, PropertyType, read_u32, read_u16, read_mqtt_bytes, write_mqtt_string, write_mqtt_bytes};
+    use super::{
+        Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_u8,
+        read_u16, read_u32, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    };
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
     /// Return code in connack
@@ -606,6 +620,7 @@ pub(crate) mod connack {
             len
         }
 
+        #[allow(clippy::too_many_lines)]
         pub fn extract(bytes: &mut Bytes) -> Result<Option<ConnAckProperties>, Error> {
             let mut session_expiry_interval = None;
             let mut receive_max = None;
@@ -871,7 +886,10 @@ pub(crate) mod connack {
 }
 
 pub(crate) mod publish {
-    use super::{FixedHeader, Error, view_u16, view_str, Buf, read_mqtt_bytes, check, QoS, write_remaining_length, write_mqtt_string};
+    use super::{
+        Buf, Error, FixedHeader, QoS, check, read_mqtt_bytes, view_str, view_u16,
+        write_mqtt_string, write_remaining_length,
+    };
     use bytes::{BufMut, Bytes, BytesMut};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -972,13 +990,11 @@ pub(crate) mod publish {
             Ok((topic, payload))
         }
 
-        pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Result<Self, Error> {
-            let publish = Publish {
+        pub fn read(fixed_header: FixedHeader, bytes: Bytes) -> Self {
+            Publish {
                 fixed_header,
                 raw: bytes,
-            };
-
-            Ok(publish)
+            }
         }
     }
 
@@ -1034,7 +1050,10 @@ pub(crate) mod publish {
 }
 
 pub(crate) mod puback {
-    use super::{FixedHeader, Error, read_u16, read_u8, len_len, write_remaining_length, length, property, PropertyType, read_mqtt_bytes, write_mqtt_string};
+    use super::{
+        Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_u8,
+        read_u16, write_mqtt_string, write_remaining_length,
+    };
     use bytes::{Buf, BufMut, Bytes, BytesMut};
 
     /// Acknowledgement to `QoS1` publish
@@ -1088,6 +1107,7 @@ pub(crate) mod puback {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn write(
         pkid: u16,
         reason: PubAckReason,
@@ -1243,7 +1263,10 @@ pub(crate) mod puback {
 }
 
 pub(crate) mod subscribe {
-    use super::{QoS, len_len, FixedHeader, Error, read_u16, read_mqtt_bytes, read_u8, qos, BytesMut, BufMut, write_remaining_length, write_mqtt_string, length, property, PropertyType, fmt};
+    use super::{
+        BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, fmt, len_len, length, property,
+        qos, read_mqtt_bytes, read_u8, read_u16, write_mqtt_string, write_remaining_length,
+    };
     use bytes::{Buf, Bytes};
 
     /// Subscription packet
@@ -1349,6 +1372,7 @@ pub(crate) mod subscribe {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn write(
         filters: Vec<SubscribeFilter>,
         pkid: u16,
@@ -1552,7 +1576,10 @@ pub(crate) mod subscribe {
 pub(crate) mod suback {
     use std::convert::{TryFrom, TryInto};
 
-    use super::{len_len, FixedHeader, Error, read_u16, read_u8, BytesMut, BufMut, write_remaining_length, length, property, PropertyType, read_mqtt_bytes, write_mqtt_string, qos, QoS};
+    use super::{
+        BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
+        read_mqtt_bytes, read_u8, read_u16, write_mqtt_string, write_remaining_length,
+    };
     use bytes::{Buf, Bytes};
 
     /// Acknowledgement to subscribe
@@ -1617,6 +1644,7 @@ pub(crate) mod suback {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn write(
         return_codes: Vec<SubscribeReasonCode>,
         pkid: u16,
@@ -1788,11 +1816,11 @@ pub(crate) mod suback {
 }
 
 pub(crate) mod pingresp {
-    use super::{BytesMut, Error, BufMut};
+    use super::{BufMut, BytesMut};
 
-    pub fn write(payload: &mut BytesMut) -> Result<usize, Error> {
+    pub fn write(payload: &mut BytesMut) -> usize {
         payload.put_slice(&[0xD0, 0x00]);
-        Ok(2)
+        2
     }
 }
 
@@ -1818,7 +1846,7 @@ pub fn read_mut(stream: &mut BytesMut, max_size: usize) -> Result<Packet, Error>
     let packet = match packet_type {
         PacketType::Connect => Packet::Connect(connect::Connect::read(fixed_header, packet)?),
         PacketType::ConnAck => Packet::ConnAck(connack::ConnAck::read(fixed_header, packet)?),
-        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)?),
+        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)),
         PacketType::PubAck => Packet::PubAck(puback::PubAck::read(fixed_header, packet)?),
         PacketType::Subscribe => {
             Packet::Subscribe(subscribe::Subscribe::read(fixed_header, packet)?)
@@ -1854,7 +1882,7 @@ pub fn read(stream: &mut Bytes, max_size: usize) -> Result<Packet, Error> {
     let packet = match packet_type {
         PacketType::Connect => Packet::Connect(connect::Connect::read(fixed_header, packet)?),
         PacketType::ConnAck => Packet::ConnAck(connack::ConnAck::read(fixed_header, packet)?),
-        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)?),
+        PacketType::Publish => Packet::Publish(publish::Publish::read(fixed_header, packet)),
         PacketType::PubAck => Packet::PubAck(puback::PubAck::read(fixed_header, packet)?),
         PacketType::Subscribe => {
             Packet::Subscribe(subscribe::Subscribe::read(fixed_header, packet)?)

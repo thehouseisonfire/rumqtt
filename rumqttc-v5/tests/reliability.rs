@@ -46,7 +46,7 @@ async fn run(eventloop: &mut EventLoop, reconnect: bool) -> Result<(), Connectio
             let polled = eventloop.poll().await;
             println!("Polled = {polled:?}");
             match polled {
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) if reconnect => continue 'reconnect,
                 Err(error) => return Err(error),
             }
@@ -57,9 +57,7 @@ async fn run(eventloop: &mut EventLoop, reconnect: bool) -> Result<(), Connectio
 async fn poll_ignoring_connect_races(eventloop: &mut EventLoop) -> Result<Event, ConnectionError> {
     loop {
         match eventloop.poll().await {
-            Err(ConnectionError::Io(error)) if error.kind() == ErrorKind::ConnectionRefused => {
-                continue;
-            }
+            Err(ConnectionError::Io(error)) if error.kind() == ErrorKind::ConnectionRefused => {}
             value => return value,
         }
     }
@@ -207,7 +205,7 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     .await;
     let mut count = 0;
 
-    broker.spawn_publishes(10, QoS::AtMostOnce, 1).await;
+    broker.spawn_publishes(10, QoS::AtMostOnce, 1);
 
     let mut start = Instant::now();
     loop {
@@ -362,7 +360,10 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
             .await
             .expect("didn't receive initial publishes");
         for (index, packet) in packets.iter().enumerate() {
-            assert_eq!(packet.payload[0], (index + 1) as u8);
+            assert_eq!(
+                packet.payload[0],
+                u8::try_from(index + 1).expect("test payload index fits in u8")
+            );
         }
 
         broker.ack_many(&[3, 4]).await;
@@ -380,12 +381,8 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
             tokio::select! {
                 _ = &mut stop_broker_rx => break,
                 packet = broker.read_packet() => {
-                    if let Some(packet) = packet {
-                        match packet {
-                            Packet::Publish(publish) => broker.ack(publish.pkid).await,
-                            Packet::PingReq(_) => {}
-                            _ => {}
-                        }
+                    if let Some(Packet::Publish(publish)) = packet {
+                        broker.ack(publish.pkid).await;
                     }
                 }
             }
@@ -456,7 +453,10 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
             .expect("didn't receive initial inflight publishes");
 
         for (index, packet) in packets.iter().enumerate() {
-            assert_eq!(packet.payload[0], (index + 1) as u8);
+            assert_eq!(
+                packet.payload[0],
+                u8::try_from(index + 1).expect("test payload index fits in u8")
+            );
         }
 
         broker.ack_many(&[3, 4]).await;
@@ -667,7 +667,10 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
             .await
             .expect("didn't receive initial inflight publishes");
         for (index, publish) in publishes.iter().enumerate() {
-            assert_eq!(publish.payload[0], (index + 1) as u8);
+            assert_eq!(
+                publish.payload[0],
+                u8::try_from(index + 1).expect("test payload index fits in u8")
+            );
         }
 
         broker.ack(publishes[1].pkid).await;

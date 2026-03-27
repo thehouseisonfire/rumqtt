@@ -204,6 +204,17 @@ pub fn websocket_tls_connector(
     }
 }
 
+/// Establishes a TLS stream on top of an already connected transport.
+///
+/// # Errors
+///
+/// Returns any TLS configuration, server-name validation, or handshake error
+/// produced by the selected backend.
+///
+/// # Panics
+///
+/// Panics only if the build enables no backend matching `tls_config`, which
+/// indicates an invalid internal configuration.
 pub async fn tls_connect(
     addr: &str,
     _port: u16,

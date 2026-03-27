@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
 
-pub fn profile(name: &str, guard: ProfilerGuard) {
+pub fn profile(name: &str, guard: &ProfilerGuard) {
     if let Ok(report) = guard.report().build() {
         let mut file = File::create(name).unwrap();
         let profile = report.pprof().unwrap();

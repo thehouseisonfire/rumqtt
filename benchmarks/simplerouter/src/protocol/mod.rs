@@ -147,6 +147,7 @@ pub fn qos(num: u8) -> Result<QoS, Error> {
 /// <https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349207>
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+#[allow(clippy::struct_field_names)]
 pub struct FixedHeader {
     /// First byte of the stream. Used to identify packet types and
     /// several flags
@@ -289,9 +290,8 @@ pub fn view_u16(stream: &[u8]) -> Result<u16, Error> {
 
 /// Returns big endian u16 view from next 2 bytes
 pub fn view_str(stream: &[u8], end: usize) -> Result<&str, Error> {
-    let v = match stream.get(0..end) {
-        Some(v) => v,
-        None => return Err(Error::BoundaryCrossed(stream.len())),
+    let Some(v) = stream.get(0..end) else {
+        return Err(Error::BoundaryCrossed(stream.len()));
     };
 
     let v = std::str::from_utf8(v)?;
@@ -344,7 +344,7 @@ fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
 
 /// Serializes bytes to stream (including length)
 fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
-    stream.put_u16(bytes.len() as u16);
+    stream.put_u16(u16::try_from(bytes.len()).expect("MQTT string/bytes length must fit in u16"));
     stream.extend_from_slice(bytes);
 }
 
@@ -364,7 +364,7 @@ pub fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize
     let mut count = 0;
 
     while !done {
-        let mut byte = (x % 128) as u8;
+        let mut byte = u8::try_from(x % 128).expect("remainder in 0..=127 always fits in u8");
         x /= 128;
         if x > 0 {
             byte |= 128;

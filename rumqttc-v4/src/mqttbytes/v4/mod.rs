@@ -1,18 +1,32 @@
 use super::*;
 
+#[allow(clippy::missing_errors_doc)]
 mod codec;
+#[allow(clippy::missing_errors_doc)]
 mod connack;
+#[allow(clippy::missing_errors_doc)]
 mod connect;
+#[allow(clippy::missing_errors_doc)]
 mod disconnect;
+#[allow(clippy::missing_errors_doc)]
 mod ping;
+#[allow(clippy::missing_errors_doc)]
 mod puback;
+#[allow(clippy::missing_errors_doc)]
 mod pubcomp;
+#[allow(clippy::missing_errors_doc)]
 mod publish;
+#[allow(clippy::missing_errors_doc)]
 mod pubrec;
+#[allow(clippy::missing_errors_doc)]
 mod pubrel;
+#[allow(clippy::missing_errors_doc)]
 mod suback;
+#[allow(clippy::missing_errors_doc)]
 mod subscribe;
+#[allow(clippy::missing_errors_doc)]
 mod unsuback;
+#[allow(clippy::missing_errors_doc)]
 mod unsubscribe;
 
 pub use codec::*;
@@ -69,7 +83,12 @@ impl Packet {
         }
     }
 
-    /// Reads a stream of bytes and extracts next MQTT packet out of it
+    /// Reads the next MQTT v3.1.1 packet from the buffered stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the packet is incomplete, malformed, or exceeds
+    /// `max_size`.
     pub fn read(stream: &mut BytesMut, max_size: usize) -> Result<Self, Error> {
         let fixed_header = check(stream.iter(), max_size)?;
 
@@ -111,7 +130,12 @@ impl Packet {
         Ok(packet)
     }
 
-    /// Serializes the MQTT packet into a stream of bytes
+    /// Serializes this MQTT v3.1.1 packet into the output buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the packet cannot be encoded within `max_size` or
+    /// violates MQTT encoding limits.
     pub fn write(&self, stream: &mut BytesMut, max_size: usize) -> Result<usize, Error> {
         if self.size() > max_size {
             return Err(Error::OutgoingPacketTooLarge {

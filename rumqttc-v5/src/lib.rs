@@ -6,8 +6,6 @@
 #![allow(clippy::if_not_else)]
 #![allow(clippy::ignored_unit_patterns)]
 #![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_panics_doc)]
 #![allow(clippy::option_if_let_else)]
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::too_long_first_doc_paragraph)]
@@ -199,7 +197,9 @@ impl Broker {
     pub fn unix_path(&self) -> Option<&std::path::Path> {
         match &self.inner {
             BrokerInner::Unix { path } => Some(path.as_path()),
-            _ => None,
+            BrokerInner::Tcp { .. } => None,
+            #[cfg(feature = "websocket")]
+            BrokerInner::Websocket { .. } => None,
         }
     }
 
@@ -208,7 +208,9 @@ impl Broker {
     pub fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
             BrokerInner::Websocket { url } => Some(url.as_str()),
-            _ => None,
+            BrokerInner::Tcp { .. } => None,
+            #[cfg(unix)]
+            BrokerInner::Unix { .. } => None,
         }
     }
 
@@ -264,6 +266,11 @@ pub trait AuthManager: std::fmt::Debug + Send {
     ///
     /// * `Ok(auth_prop)` - The authentication Properties to be sent back to the server.
     /// * `Err(error_message)` - An error indicating that the authentication process has failed or terminated.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(String)` when the authentication exchange should be
+    /// aborted.
     fn auth_continue(
         &mut self,
         auth_prop: Option<AuthProperties>,

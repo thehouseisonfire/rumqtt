@@ -48,13 +48,24 @@ pub struct PublishNotice(pub(crate) oneshot::Receiver<PublishNoticeResult>);
 impl PublishNotice {
     /// Wait for publish completion by blocking the current thread.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop drops the notice sender or if the
+    /// publish fails its tracked completion criteria.
+    ///
     /// # Panics
+    ///
     /// Panics if called in an async context.
     pub fn wait(self) -> PublishNoticeResult {
         self.0.blocking_recv()?
     }
 
     /// Wait for publish completion asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop drops the notice sender or if the
+    /// publish fails its tracked completion criteria.
     pub async fn wait_async(self) -> PublishNoticeResult {
         self.0.await?
     }
@@ -83,13 +94,24 @@ pub struct RequestNotice(pub(crate) oneshot::Receiver<RequestNoticeResult>);
 impl RequestNotice {
     /// Wait for request completion by blocking the current thread.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop drops the notice sender or if the
+    /// tracked subscribe or unsubscribe fails.
+    ///
     /// # Panics
+    ///
     /// Panics if called in an async context.
     pub fn wait(self) -> RequestNoticeResult {
         self.0.blocking_recv()?
     }
 
     /// Wait for request completion asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop drops the notice sender or if the
+    /// tracked subscribe or unsubscribe fails.
     pub async fn wait_async(self) -> RequestNoticeResult {
         self.0.await?
     }

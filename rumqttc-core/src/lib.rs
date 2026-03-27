@@ -107,6 +107,12 @@ pub enum TlsConfiguration {
 impl TlsConfiguration {
     #[cfg(feature = "use-rustls-no-provider")]
     #[must_use]
+    /// Builds a rustls client configuration backed by the platform root store.
+    ///
+    /// # Panics
+    ///
+    /// Panics if loading native certificates fails or a certificate cannot be
+    /// inserted into the root store.
     pub fn default_rustls() -> Self {
         let mut root_cert_store = RootCertStore::empty();
         for cert in load_native_certs().expect("could not load platform certs") {
@@ -221,6 +227,12 @@ impl NetworkOptions {
 ///
 /// This resolves the host, applies [`NetworkOptions`] on each candidate socket,
 /// and returns the first successful connection.
+///
+/// # Errors
+///
+/// Returns any DNS lookup, socket configuration, or connect error encountered.
+/// When multiple address candidates are available, the last connect error is
+/// returned if they all fail.
 pub async fn default_socket_connect(
     host: String,
     network_options: NetworkOptions,

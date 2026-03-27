@@ -380,6 +380,12 @@ impl AsyncClient {
         self.send_tracked_publish_async(publish).await
     }
 
+    /// Sends a MQTT Publish with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_with_properties<T, P>(
         &self,
         topic: T,
@@ -396,6 +402,12 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Publish with properties to the `EventLoop` and returns a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_with_properties_tracked<T, P>(
         &self,
         topic: T,
@@ -412,6 +424,12 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish<T, P>(
         &self,
         topic: T,
@@ -426,6 +444,12 @@ impl AsyncClient {
         self.handle_publish(topic, qos, retain, payload, None).await
     }
 
+    /// Sends a MQTT Publish to the `EventLoop` and returns a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_tracked<T, P>(
         &self,
         topic: T,
@@ -495,6 +519,12 @@ impl AsyncClient {
         self.try_send_tracked_publish(publish)
     }
 
+    /// Attempts to send a MQTT Publish with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued immediately on the event loop.
     pub fn try_publish_with_properties<T, P>(
         &self,
         topic: T,
@@ -510,6 +540,12 @@ impl AsyncClient {
         self.handle_try_publish(topic, qos, retain, payload, Some(properties))
     }
 
+    /// Attempts to send a MQTT Publish with properties to the `EventLoop` and returns a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued immediately on the event loop.
     pub fn try_publish_with_properties_tracked<T, P>(
         &self,
         topic: T,
@@ -525,6 +561,12 @@ impl AsyncClient {
         self.handle_try_publish_tracked(topic, qos, retain, payload, Some(properties))
     }
 
+    /// Attempts to send a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued immediately on the event loop.
     pub fn try_publish<T, P>(
         &self,
         topic: T,
@@ -539,6 +581,12 @@ impl AsyncClient {
         self.handle_try_publish(topic, qos, retain, payload, None)
     }
 
+    /// Attempts to send a MQTT Publish to the `EventLoop` and returns a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued immediately on the event loop.
     pub fn try_publish_tracked<T, P>(
         &self,
         topic: T,
@@ -563,12 +611,22 @@ impl AsyncClient {
     /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
     ///
     /// This is useful when `manual_acks` is enabled and acknowledgement must be deferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued on the event
+    /// loop.
     pub async fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.send_request_async(ack.into_request()).await?;
         Ok(())
     }
 
     /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued immediately on
+    /// the event loop.
     pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.try_send_request(ack.into_request())?;
         Ok(())
@@ -576,6 +634,11 @@ impl AsyncClient {
 
     /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued on the
+    /// event loop.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack).await?;
@@ -585,6 +648,11 @@ impl AsyncClient {
 
     /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued
+    /// immediately on the event loop.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -592,7 +660,11 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a MQTT AUTH to `EventLoop` for authentication.
+    /// Sends a MQTT AUTH packet to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued on the event loop.
     pub async fn reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
@@ -600,7 +672,12 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT AUTH to `EventLoop` for authentication.
+    /// Attempts to send a MQTT AUTH packet to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued immediately on the
+    /// event loop.
     pub fn try_reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
@@ -660,6 +737,12 @@ impl AsyncClient {
         self.send_tracked_publish_async(publish).await
     }
 
+    /// Sends a MQTT Publish with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_bytes_with_properties<T>(
         &self,
         topic: T,
@@ -675,6 +758,12 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Publish with `Bytes` payload and properties, returning a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_bytes_with_properties_tracked<T>(
         &self,
         topic: T,
@@ -690,6 +779,12 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Publish with `Bytes` payload to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_bytes<T>(
         &self,
         topic: T,
@@ -704,6 +799,12 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Publish with `Bytes` payload to the `EventLoop` and returns a tracked notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub async fn publish_bytes_tracked<T>(
         &self,
         topic: T,
@@ -750,6 +851,12 @@ impl AsyncClient {
         self.send_tracked_subscribe_async(subscribe).await
     }
 
+    /// Sends a MQTT Subscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub async fn subscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -759,6 +866,12 @@ impl AsyncClient {
         self.handle_subscribe(topic, qos, Some(properties)).await
     }
 
+    /// Sends a tracked MQTT Subscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub async fn subscribe_with_properties_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -769,10 +882,22 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub async fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.handle_subscribe(topic, qos, None).await
     }
 
+    /// Sends a tracked MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub async fn subscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -813,6 +938,12 @@ impl AsyncClient {
         self.try_send_tracked_subscribe(subscribe)
     }
 
+    /// Attempts to send a MQTT Subscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -822,6 +953,12 @@ impl AsyncClient {
         self.handle_try_subscribe(topic, qos, Some(properties))
     }
 
+    /// Attempts to send a tracked MQTT Subscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe_with_properties_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -831,10 +968,22 @@ impl AsyncClient {
         self.handle_try_subscribe_tracked(topic, qos, Some(properties))
     }
 
+    /// Attempts to send a MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.handle_try_subscribe(topic, qos, None)
     }
 
+    /// Attempts to send a tracked MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -878,6 +1027,12 @@ impl AsyncClient {
         self.send_tracked_subscribe_async(subscribe).await
     }
 
+    /// Sends a MQTT Subscribe for multiple topics with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub async fn subscribe_many_with_properties<T>(
         &self,
         topics: T,
@@ -889,6 +1044,12 @@ impl AsyncClient {
         self.handle_subscribe_many(topics, Some(properties)).await
     }
 
+    /// Sends a tracked MQTT Subscribe for multiple topics with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub async fn subscribe_many_with_properties_tracked<T>(
         &self,
         topics: T,
@@ -901,6 +1062,12 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub async fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = Filter>,
@@ -908,6 +1075,12 @@ impl AsyncClient {
         self.handle_subscribe_many(topics, None).await
     }
 
+    /// Sends a tracked MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub async fn subscribe_many_tracked<T>(&self, topics: T) -> Result<RequestNotice, ClientError>
     where
         T: IntoIterator<Item = Filter>,
@@ -949,6 +1122,12 @@ impl AsyncClient {
         self.try_send_tracked_subscribe(subscribe)
     }
 
+    /// Attempts to send a MQTT Subscribe for multiple topics with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many_with_properties<T>(
         &self,
         topics: T,
@@ -960,6 +1139,12 @@ impl AsyncClient {
         self.handle_try_subscribe_many(topics, Some(properties))
     }
 
+    /// Attempts to send a tracked MQTT Subscribe for multiple topics with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many_with_properties_tracked<T>(
         &self,
         topics: T,
@@ -971,6 +1156,12 @@ impl AsyncClient {
         self.handle_try_subscribe_many_tracked(topics, Some(properties))
     }
 
+    /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = Filter>,
@@ -978,6 +1169,12 @@ impl AsyncClient {
         self.handle_try_subscribe_many(topics, None)
     }
 
+    /// Attempts to send a tracked MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many_tracked<T>(&self, topics: T) -> Result<RequestNotice, ClientError>
     where
         T: IntoIterator<Item = Filter>,
@@ -1006,6 +1203,11 @@ impl AsyncClient {
         self.send_tracked_unsubscribe_async(unsubscribe).await
     }
 
+    /// Sends a MQTT Unsubscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub async fn unsubscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -1014,6 +1216,11 @@ impl AsyncClient {
         self.handle_unsubscribe(topic, Some(properties)).await
     }
 
+    /// Sends a tracked MQTT Unsubscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub async fn unsubscribe_with_properties_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -1023,10 +1230,20 @@ impl AsyncClient {
             .await
     }
 
+    /// Sends a MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub async fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, None).await
     }
 
+    /// Sends a tracked MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub async fn unsubscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -1055,6 +1272,12 @@ impl AsyncClient {
         self.try_send_tracked_unsubscribe(unsubscribe)
     }
 
+    /// Attempts to send a MQTT Unsubscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -1063,6 +1286,12 @@ impl AsyncClient {
         self.handle_try_unsubscribe(topic, Some(properties))
     }
 
+    /// Attempts to send a tracked MQTT Unsubscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe_with_properties_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -1071,10 +1300,22 @@ impl AsyncClient {
         self.handle_try_unsubscribe_tracked(topic, Some(properties))
     }
 
+    /// Attempts to send a MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.handle_try_unsubscribe(topic, None)
     }
 
+    /// Attempts to send a tracked MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe_tracked<S: Into<String>>(
         &self,
         topic: S,
@@ -1083,12 +1324,22 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
     pub async fn disconnect(&self) -> Result<(), ClientError> {
         self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
             .await
     }
 
     /// Sends a MQTT disconnect to the `EventLoop` with properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
     pub async fn disconnect_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -1103,17 +1354,27 @@ impl AsyncClient {
         reason: DisconnectReasonCode,
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
-        let request = self.build_disconnect_request(reason, properties);
+        let request = Self::build_disconnect_request(reason, properties);
         self.send_request_async(request).await?;
         Ok(())
     }
 
     /// Attempts to send a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         self.handle_try_disconnect(DisconnectReasonCode::NormalDisconnection, None)
     }
 
     /// Attempts to send a MQTT disconnect to the `EventLoop` with properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
     pub fn try_disconnect_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -1128,14 +1389,13 @@ impl AsyncClient {
         reason: DisconnectReasonCode,
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
-        let request = self.build_disconnect_request(reason, properties);
+        let request = Self::build_disconnect_request(reason, properties);
         self.try_send_request(request)?;
         Ok(())
     }
 
     // Helper function to build disconnect request
     fn build_disconnect_request(
-        &self,
         reason: DisconnectReasonCode,
         properties: Option<DisconnectProperties>,
     ) -> Request {
@@ -1174,6 +1434,10 @@ impl Client {
     /// Create a new `Client`
     ///
     /// `cap` specifies the capacity of the bounded async channel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current-thread Tokio runtime cannot be created.
     pub fn new(options: MqttOptions, cap: usize) -> (Client, Connection) {
         let (client, eventloop) = AsyncClient::new(options, cap);
         let client = Client { client };
@@ -1226,6 +1490,12 @@ impl Client {
         Ok(())
     }
 
+    /// Sends a MQTT Publish with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub fn publish_with_properties<T, P>(
         &self,
         topic: T,
@@ -1241,6 +1511,12 @@ impl Client {
         self.handle_publish(topic, qos, retain, payload, Some(properties))
     }
 
+    /// Sends a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued on the event loop.
     pub fn publish<T, P>(
         &self,
         topic: T,
@@ -1255,6 +1531,12 @@ impl Client {
         self.handle_publish(topic, qos, retain, payload, None)
     }
 
+    /// Attempts to send a MQTT Publish with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued immediately on the event loop.
     pub fn try_publish_with_properties<T, P>(
         &self,
         topic: T,
@@ -1271,6 +1553,12 @@ impl Client {
             .try_publish_with_properties(topic, qos, retain, payload, properties)
     }
 
+    /// Attempts to send a MQTT Publish to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic or topic alias usage is invalid, or if
+    /// the request cannot be queued immediately on the event loop.
     pub fn try_publish<T, P>(
         &self,
         topic: T,
@@ -1293,12 +1581,22 @@ impl Client {
     }
 
     /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued on the event
+    /// loop.
     pub fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.client.send_request(ack.into_request())?;
         Ok(())
     }
 
     /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the acknowledgement cannot be queued immediately on
+    /// the event loop.
     pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.client.try_manual_ack(ack)?;
         Ok(())
@@ -1306,6 +1604,11 @@ impl Client {
 
     /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued on the
+    /// event loop.
     pub fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack)?;
@@ -1315,6 +1618,11 @@ impl Client {
 
     /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
     /// Only needed if the `manual_acks` flag is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the derived acknowledgement cannot be queued
+    /// immediately on the event loop.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -1322,7 +1630,11 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT AUTH to `EventLoop` for authentication.
+    /// Sends a MQTT AUTH packet to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued on the event loop.
     pub fn reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
@@ -1330,7 +1642,12 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT AUTH to `EventLoop` for authentication.
+    /// Attempts to send a MQTT AUTH packet to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued immediately on the
+    /// event loop.
     pub fn try_reauth(&self, properties: Option<AuthProperties>) -> Result<(), ClientError> {
         let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
         let auth = Request::Auth(auth);
@@ -1355,6 +1672,12 @@ impl Client {
         Ok(())
     }
 
+    /// Sends a MQTT Subscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub fn subscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -1364,11 +1687,22 @@ impl Client {
         self.handle_subscribe(topic, qos, Some(properties))
     }
 
+    /// Sends a MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued on the event loop.
     pub fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.handle_subscribe(topic, qos, None)
     }
 
-    /// Sends a MQTT Subscribe to the `EventLoop`
+    /// Attempts to send a MQTT Subscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -1379,6 +1713,12 @@ impl Client {
             .try_subscribe_with_properties(topic, qos, properties)
     }
 
+    /// Attempts to send a MQTT Subscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic filter is invalid or if the request
+    /// cannot be queued immediately on the event loop.
     pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
         self.client.try_subscribe(topic, qos)
     }
@@ -1401,6 +1741,12 @@ impl Client {
         Ok(())
     }
 
+    /// Sends a MQTT Subscribe for multiple topics with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub fn subscribe_many_with_properties<T>(
         &self,
         topics: T,
@@ -1412,6 +1758,12 @@ impl Client {
         self.handle_subscribe_many(topics, Some(properties))
     }
 
+    /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
     pub fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = Filter>,
@@ -1419,6 +1771,12 @@ impl Client {
         self.handle_subscribe_many(topics, None)
     }
 
+    /// Attempts to send a MQTT Subscribe for multiple topics with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many_with_properties<T>(
         &self,
         topics: T,
@@ -1431,6 +1789,12 @@ impl Client {
             .try_subscribe_many_with_properties(topics, properties)
     }
 
+    /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = Filter>,
@@ -1450,6 +1814,11 @@ impl Client {
         Ok(())
     }
 
+    /// Sends a MQTT Unsubscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub fn unsubscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -1458,11 +1827,21 @@ impl Client {
         self.handle_unsubscribe(topic, Some(properties))
     }
 
+    /// Sends a MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued on the event loop.
     pub fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, None)
     }
 
-    /// Sends a MQTT Unsubscribe to the `EventLoop`
+    /// Attempts to send a MQTT Unsubscribe with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe_with_properties<S: Into<String>>(
         &self,
         topic: S,
@@ -1472,16 +1851,32 @@ impl Client {
             .try_unsubscribe_with_properties(topic, properties)
     }
 
+    /// Attempts to send a MQTT Unsubscribe to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be queued immediately on the
+    /// event loop.
     pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
         self.client.try_unsubscribe(topic)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
+    /// Sends a MQTT disconnect to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
     pub fn disconnect(&self) -> Result<(), ClientError> {
         self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
     }
 
     /// Sends a MQTT disconnect to the `EventLoop` with properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
     pub fn disconnect_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -1495,17 +1890,27 @@ impl Client {
         reason: DisconnectReasonCode,
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
-        let request = self.client.build_disconnect_request(reason, properties);
+        let request = AsyncClient::build_disconnect_request(reason, properties);
         self.client.send_request(request)?;
         Ok(())
     }
 
-    /// Try to send a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
+    /// Attempts to send a MQTT disconnect to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         self.client.try_disconnect()
     }
 
     /// Attempts to send a MQTT disconnect to the `EventLoop` with properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
     pub fn try_disconnect_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -1580,6 +1985,10 @@ impl Connection {
     /// if all clients/users have closed requests channel.
     ///
     /// [`EventLoop`]: super::EventLoop
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError`] if all request senders have been dropped.
     pub fn recv(&mut self) -> Result<Result<Event, ConnectionError>, RecvError> {
         let f = self.eventloop.poll();
         let event = self.runtime.block_on(f);
@@ -1591,6 +2000,11 @@ impl Connection {
     /// if none immediately present or all clients/users have closed requests channel.
     ///
     /// [`EventLoop`]: super::EventLoop
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] if no event is immediately ready, or
+    /// [`TryRecvError::Disconnected`] if all request senders have been dropped.
     pub fn try_recv(&mut self) -> Result<Result<Event, ConnectionError>, TryRecvError> {
         let f = self.eventloop.poll();
         // Enters the runtime context so we can poll the future, as required by `now_or_never()`.
@@ -1605,6 +2019,12 @@ impl Connection {
     /// if all clients/users have closed requests channel or the timeout has expired.
     ///
     /// [`EventLoop`]: super::EventLoop
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvTimeoutError::Timeout`] if no event arrives before
+    /// `duration`, or [`RecvTimeoutError::Disconnected`] if all request
+    /// senders have been dropped.
     pub fn recv_timeout(
         &mut self,
         duration: Duration,

@@ -60,7 +60,7 @@ async fn run(eventloop: &mut EventLoop, reconnect: bool) -> Result<(), Connectio
             let o = eventloop.poll().await;
             println!("Polled = {o:?}");
             match o {
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) if reconnect => continue 'reconnect,
                 Err(e) => return Err(e),
             }
@@ -71,9 +71,7 @@ async fn run(eventloop: &mut EventLoop, reconnect: bool) -> Result<(), Connectio
 async fn poll_ignoring_connect_races(eventloop: &mut EventLoop) -> Result<Event, ConnectionError> {
     loop {
         match eventloop.poll().await {
-            Err(ConnectionError::Io(error)) if error.kind() == ErrorKind::ConnectionRefused => {
-                continue;
-            }
+            Err(ConnectionError::Io(error)) if error.kind() == ErrorKind::ConnectionRefused => {}
             value => return value,
         }
     }
@@ -89,7 +87,7 @@ async fn _tick(
             let o = eventloop.poll().await;
             println!("{i}. Polled = {o:?}");
             match o {
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) if reconnect => continue 'reconnect,
                 Err(e) => return Err(e),
             }
@@ -251,7 +249,7 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
 
     // Start sending qos 0 publishes to the client. This triggers
     // some incoming and no outgoing packets in the client
-    broker.spawn_publishes(10, QoS::AtMostOnce, 1).await;
+    broker.spawn_publishes(10, QoS::AtMostOnce, 1);
 
     let mut start = Instant::now();
     loop {
@@ -398,7 +396,10 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
             .await
             .expect("didn't receive initial publishes");
         for (i, packet) in packets.iter().enumerate() {
-            assert_eq!(packet.payload[0], (i + 1) as u8);
+            assert_eq!(
+                packet.payload[0],
+                u8::try_from(i + 1).expect("test payload index fits in u8")
+            );
         }
 
         // out of order ack
@@ -418,12 +419,8 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
             tokio::select! {
                 _ = &mut stop_broker_rx => break,
                 packet = broker.read_packet() => {
-                    if let Some(packet) = packet {
-                        match packet {
-                            Packet::Publish(publish) => broker.ack(publish.pkid).await,
-                            Packet::PingReq => {}
-                            _ => {}
-                        }
+                    if let Some(Packet::Publish(publish)) = packet {
+                        broker.ack(publish.pkid).await;
                     }
                 }
             }
@@ -487,7 +484,10 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
             .expect("didn't receive initial inflight publishes");
 
         for (i, packet) in packets.iter().enumerate() {
-            assert_eq!(packet.payload[0], (i + 1) as u8);
+            assert_eq!(
+                packet.payload[0],
+                u8::try_from(i + 1).expect("test payload index fits in u8")
+            );
         }
 
         // Force collision on packet id 1 by acking later packet ids first.
@@ -673,7 +673,10 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
             .await
             .expect("didn't receive initial inflight publishes");
         for (i, publish) in publishes.iter().enumerate() {
-            assert_eq!(publish.payload[0], (i + 1) as u8);
+            assert_eq!(
+                publish.payload[0],
+                u8::try_from(i + 1).expect("test payload index fits in u8")
+            );
         }
 
         // Ack packet 2 while packet 1 is still unacked to force out-of-order ack boundary tracking.
