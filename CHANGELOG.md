@@ -11,13 +11,60 @@
 
 ## [rumqttc-next 0.29.0] - 27-03-2026
 
-
+### Added
+- `rumqttc`: Add `Broker`-based first-class Unix domain socket and websocket construction, plus `unix:///...` URL parsing on Unix targets.
+### Changed
+- `rumqttc`: Secure endpoint schemes are no longer implicit transport selectors. Configure `mqtts://` / `ssl://` and secure websockets explicitly with `MqttOptions::set_transport(...)`; `Broker::websocket(...)` now accepts only `ws://...`.
+- `rumqttc`: Refactor CONNECT authentication to version-specific public `ConnectAuth` enums and make auth field presence explicit instead of inferring it from empty strings or bytes.
+  `MqttOptions` now stores/exposes auth via `set_auth(...)`, `auth()`, `clear_auth()`, `set_username(...)`, and `set_credentials(...)`.
+  MQTT 5 also adds `set_password(...)` because password-only CONNECT auth is spec-valid there, while MQTT 3.1.1 keeps the stricter username/password dependency.
+  CONNECT passwords continue to use `bytes::Bytes` / `Into<Bytes>` and now round-trip correctly as MQTT binary data, including embedded `NUL` bytes, non-UTF-8 bytes, and explicitly empty passwords.
+  This is a user-visible API break: the old `Option<Login>` / `credentials()` shape has been replaced by `ConnectAuth`.
+### Deprecated
+### Removed
+### Fixed
+- `rumqttc`: Avoid eager default TLS/WSS initialization during option construction so manual-provider/custom-TLS setups under `use-rustls-no-provider` no longer fail before `set_transport(...)` can be applied.
+### Security
 
 ---
 
 ## [rumqttc-next 0.28.0] - 23-03-2026
 
-
+### Added
+- `rumqttc` v4/v5: Add `set_read_batch_size(usize)` and `read_batch_size()` on `MqttOptions` to configure network read batching; default of `0` enables adaptive batching based on inflight/pending load.
+- `rumqttc` v4/v5: Add `set_max_request_batch(usize)` and `max_request_batch()` on `MqttOptions` to control how many queued requests are processed per eventloop iteration (higher values can improve throughput by batching writes/flushes).
+- `rumqttc` v4/v5 websocket transport: Add `set_fallible_request_modifier(...)` on `MqttOptions` to support request modifiers that return `Result<http::Request<()>, E>`; errors now surface as `ConnectionError::RequestModifier`.
+- `rumqttc` v4/v5 async clients: Add opt-in tracked publish APIs (`publish_tracked` variants) that return `PublishNotice` and resolve on QoS milestones (`flush` for QoS0, `PUBACK` for QoS1, `PUBCOMP` for QoS2).
+- `rumqttc` v4/v5 eventloops: Add public `EventLoop::reset_session_state()` and `EventLoop::drain_pending_as_failed(reason) -> usize` plus new `NoticeFailureReason` for controlled pending/session failure handling.
+- `rumqttc` v4/v5 state: Add tracked request queue helpers `tracked_subscribe_len`, `tracked_unsubscribe_len`, `tracked_requests_is_empty`, and `drain_tracked_requests_as_failed(reason) -> usize`.
+### Changed
+- Split the client package into protocol-specific crates: `rumqttc-v4` (MQTT 3.1.1) and `rumqttc-v5` (MQTT 5), and removed the combined `rumqttc-next` package.
+- Updated workspace tooling, CI, and benchmark dependencies to target the new protocol crates directly.
+- `rumqttc` v5: Change connect timeout API from seconds-based `connection_timeout()`/`set_connection_timeout(u64)` to `Duration`-based `connect_timeout()`/`set_connect_timeout(Duration)`, and update internal connect timeout handling accordingly.
+- `rumqttc` v4: Change `mqttbytes::v4::Publish.topic` from `String` to `bytes::Bytes`, reducing topic allocation/copy overhead in packet decode/encode paths (topic UTF-8 validation is still enforced).
+- `rumqttc` v4/v5: Replace publish API bound `Topic` with `Into<PublishTopic>`, restoring support for common string inputs like `&String` and `Cow<'_, str>` while preserving `ValidatedTopic` fast-path behavior.
+### Deprecated
+### Removed
+- `rumqttc` v4: Remove `Outgoing::Auth` from MQTT 3.1.1 outgoing events.
+- `rumqttc-core`: Remove `Transport`; use `rumqttc-v4::Transport` for MQTT 3.1.1 and
+  `rumqttc-v5::Transport` for MQTT 5.
+### Fixed
+- `rumqttc` v4/v5: Avoid panicking when applying TCP socket send/recv buffer sizes; these configuration failures now return an error from connect setup.
+- `rumqttc` v4/v5: Restore cross-crate rustls provider isolation so mixed builds (`rumqttc-v4/use-rustls-ring` with `rumqttc-v5/use-rustls-aws-lc`, and vice versa) compile successfully.
+- `rumqttc` v4/v5: Fix mixed-backend builds so WSS honors the selected `TlsConfiguration` backend and no longer fails when one crate uses rustls while the other enables native-tls.
+- `rumqttc` v4/v5: Make `Transport::{tls_with_default_config,wss_with_default_config}` choose defaults from each crate's enabled TLS features instead of leaking shared-core defaults across crates.
+- `rumqttc` transport core: Remove ambiguous dual-backend `TlsConfiguration::default()` behavior; mixed-backend callers now select backend explicitly via `default_rustls`/`default_native` or explicit `TlsConfiguration` variants.
+- `rumqttc` v4: Reject client-side publish requests with empty topic names (MQTT 3.1.1 Topic Name must be at least one character).
+- `rumqttc` v4 codec: Enforce strict MQTT 3.1.1 fixed-header flag validation while decoding packets (invalid reserved/required flag patterns are now rejected).
+- `rumqttc` v4 CONNECT/CONNACK: Enforce stricter 3.1.1 packet validation (CONNECT reserved/password-username flag rules and CONNACK remaining-length/session-present flag rules).
+- `rumqttc` v4 PUBLISH: Reject packets with empty Topic Name or wildcard characters in Topic Name during decode/encode.
+- `rumqttc` v4 ACK codecs: Enforce strict decode/encode validation for PUBACK/PUBREC/PUBREL/PUBCOMP (`remaining_len == 2`, non-zero packet identifier).
+- `rumqttc` v4 SUBSCRIBE: Reject payload entries with non-zero reserved subscription option bits during decode.
+- `rumqttc` v4 PUBLISH: Reject QoS0 packets with DUP set during decode/encode.
+- `rumqttc` v5: Reject client-side publish requests with an empty topic unless `PublishProperties.topic_alias` is present and non-zero.
+### Security
+- `rumqttc` `auth-scram`: switch SCRAM backend dependency from `scram` to `scram-2`, removing `ring` `<0.17` from that feature path.
+- `cargo-audit`: add temporary ignore for `RUSTSEC-2026-0009` in `.cargo/audit.toml`; advisory is currently reachable via `rcgen` dev-dependency path and fixed `time` requires Rust `1.88+` (above current MSRV `1.85`).
 
 ---
 
