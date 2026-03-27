@@ -1,4 +1,4 @@
-use super::*;
+use super::Error;
 use bytes::BytesMut;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,7 +10,7 @@ impl PingReq {
     }
 
     #[must_use]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         2
     }
 }
@@ -24,7 +24,7 @@ impl PingResp {
     }
 
     #[must_use]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         2
     }
 }

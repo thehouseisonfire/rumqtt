@@ -1,7 +1,10 @@
-use super::*;
+use super::{
+    Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_string, read_u8,
+    read_u16, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-/// Return code in PubComp
+/// Return code in `PubComp`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PubCompReason {
@@ -9,7 +12,7 @@ pub enum PubCompReason {
     PacketIdentifierNotFound = 146,
 }
 
-/// QoS2 Assured publish complete, in response to PUBREL packet
+/// `QoS2` Assured publish complete, in response to PUBREL packet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PubComp {
     pub pkid: u16,
@@ -19,7 +22,7 @@ pub struct PubComp {
 
 impl PubComp {
     #[must_use]
-    pub fn new(pkid: u16, properties: Option<PubCompProperties>) -> Self {
+    pub const fn new(pkid: u16, properties: Option<PubCompProperties>) -> Self {
         Self {
             pkid,
             reason: PubCompReason::Success,
@@ -59,13 +62,13 @@ impl PubComp {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<PubComp, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
         if fixed_header.remaining_len == 2 {
-            return Ok(PubComp {
+            return Ok(Self {
                 pkid,
                 reason: PubCompReason::Success,
                 properties: None,
@@ -74,7 +77,7 @@ impl PubComp {
 
         let ack_reason = read_u8(&mut bytes)?;
         if fixed_header.remaining_len < 4 {
-            return Ok(PubComp {
+            return Ok(Self {
                 pkid,
                 reason: reason(ack_reason)?,
                 properties: None,
@@ -82,7 +85,7 @@ impl PubComp {
         }
 
         let properties = PubCompProperties::read(&mut bytes)?;
-        let puback = PubComp {
+        let puback = Self {
             pkid,
             reason: reason(ack_reason)?,
             properties,
@@ -128,14 +131,14 @@ impl PubCompProperties {
             len += 1 + 2 + reason.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<PubCompProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut reason_string = None;
         let mut user_properties = Vec::new();
 
@@ -167,7 +170,7 @@ impl PubCompProperties {
             }
         }
 
-        Ok(Some(PubCompProperties {
+        Ok(Some(Self {
             reason_string,
             user_properties,
         }))
@@ -182,7 +185,7 @@ impl PubCompProperties {
             write_mqtt_string(buffer, reason);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -197,7 +200,7 @@ fn reason(num: u8) -> Result<PubCompReason, Error> {
     num.try_into()
 }
 
-fn code(reason: PubCompReason) -> u8 {
+const fn code(reason: PubCompReason) -> u8 {
     reason as u8
 }
 

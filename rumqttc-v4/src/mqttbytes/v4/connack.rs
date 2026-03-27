@@ -1,4 +1,4 @@
-use super::*;
+use super::{Error, FixedHeader, len_len, read_u8, write_remaining_length};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Return code in connack
@@ -22,14 +22,14 @@ pub struct ConnAck {
 
 impl ConnAck {
     #[must_use]
-    pub fn new(code: ConnectReturnCode, session_present: bool) -> ConnAck {
-        ConnAck {
+    pub const fn new(code: ConnectReturnCode, session_present: bool) -> Self {
+        Self {
             session_present,
             code,
         }
     }
 
-    fn len() -> usize {
+    const fn len() -> usize {
         // sesssion present + code
 
         1 + 1
@@ -40,7 +40,7 @@ impl ConnAck {
             return Err(Error::PayloadSizeIncorrect);
         }
 
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let flags = read_u8(&mut bytes)?;
@@ -56,7 +56,7 @@ impl ConnAck {
             return Err(Error::IncorrectPacketFormat);
         }
 
-        let connack = ConnAck {
+        let connack = Self {
             session_present,
             code,
         };
@@ -85,7 +85,7 @@ impl ConnAck {
 }
 
 /// Connection return code type
-fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
+const fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
     match num {
         0 => Ok(ConnectReturnCode::Success),
         1 => Ok(ConnectReturnCode::RefusedProtocolVersion),
@@ -100,6 +100,7 @@ fn connect_return(num: u8) -> Result<ConnectReturnCode, Error> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 

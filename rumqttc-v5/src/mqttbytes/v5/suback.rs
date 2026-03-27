@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Error, FixedHeader, PropertyType, QoS, len_len, length, property, read_mqtt_string, read_u8,
+    read_u16, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Acknowledgement to subscribe
@@ -33,8 +36,8 @@ impl SubAck {
         1 + remaining_len_size + len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<SubAck, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
@@ -50,7 +53,7 @@ impl SubAck {
             return_codes.push(reason(return_code)?);
         }
 
-        let suback = SubAck {
+        let suback = Self {
             pkid,
             return_codes,
             properties,
@@ -108,14 +111,14 @@ impl SubAckProperties {
             len += 1 + 2 + reason.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<SubAckProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut reason_string = None;
         let mut user_properties = Vec::new();
 
@@ -147,7 +150,7 @@ impl SubAckProperties {
             }
         }
 
-        Ok(Some(SubAckProperties {
+        Ok(Some(Self {
             reason_string,
             user_properties,
         }))
@@ -162,7 +165,7 @@ impl SubAckProperties {
             write_mqtt_string(buffer, reason);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -176,7 +179,7 @@ fn reason(code: u8) -> Result<SubscribeReasonCode, Error> {
     code.try_into()
 }
 
-fn code(value: SubscribeReasonCode) -> u8 {
+const fn code(value: SubscribeReasonCode) -> u8 {
     match value {
         SubscribeReasonCode::Success(qos) => qos as u8,
         SubscribeReasonCode::Failure | SubscribeReasonCode::Unspecified => 0x80,

@@ -84,7 +84,7 @@ Quick overview of features
 - Queue size based flow control on outgoing packets
 - Automatic reconnections by just continuing the `eventloop.poll()/connection.iter()` loop
 - Natural backpressure to client APIs during bad network
-- Support for WebSockets
+- Support for `WebSockets`
 - Secure transport using TLS
 - Unix domain sockets on Unix targets
 - MQTT 5 properties, reason codes, session controls, and topic aliases
@@ -124,7 +124,7 @@ out side the library and `Eventloop` is accessible, users can
 rumqttc supports two TLS backends:
 
 - **`use-rustls`** (default): Uses [rustls](https://github.com/rustls/rustls) with `aws-lc` as the crypto provider and native platform certificates
-- **`use-native-tls`**: Uses the platform's native TLS implementation (Secure Transport on macOS, SChannel on Windows, OpenSSL on Linux)
+- **`use-native-tls`**: Uses the platform's native TLS implementation (Secure Transport on macOS, `SChannel` on Windows, OpenSSL on Linux)
 
 ### TLS Feature Flags
 

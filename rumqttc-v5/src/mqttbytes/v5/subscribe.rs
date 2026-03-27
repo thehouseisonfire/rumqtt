@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
+    read_mqtt_string, read_u8, read_u16, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Subscription packet
@@ -53,8 +56,8 @@ impl Subscribe {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Subscribe, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
@@ -65,7 +68,7 @@ impl Subscribe {
 
         match filters.len() {
             0 => Err(Error::EmptySubscription),
-            _ => Ok(Subscribe {
+            _ => Ok(Self {
                 pkid,
                 filters,
                 properties,
@@ -91,7 +94,7 @@ impl Subscribe {
         }
 
         // write filters
-        for f in self.filters.iter() {
+        for f in &self.filters {
             f.write(buffer);
         }
 
@@ -123,7 +126,7 @@ impl Filter {
         2 + self.path.len() + 1
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Vec<Filter>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Vec<Self>, Error> {
         // variable header size = 2 (packet identifier)
         let mut filters = Vec::new();
 
@@ -146,7 +149,7 @@ impl Filter {
                 r => return Err(Error::InvalidRetainForwardRule(r)),
             };
 
-            filters.push(Filter {
+            filters.push(Self {
                 path,
                 qos: qos(requested_qos).ok_or(Error::InvalidQoS(requested_qos))?,
                 nolocal,
@@ -203,14 +206,14 @@ impl SubscribeProperties {
             len += 1 + len_len(*id);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<SubscribeProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut id = None;
         let mut user_properties = Vec::new();
 
@@ -247,7 +250,7 @@ impl SubscribeProperties {
             }
         }
 
-        Ok(Some(SubscribeProperties {
+        Ok(Some(Self {
             id,
             user_properties,
         }))
@@ -265,7 +268,7 @@ impl SubscribeProperties {
             write_remaining_length(buffer, *id)?;
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
+    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, write_mqtt_bytes,
+    write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Publish packet
@@ -56,13 +60,13 @@ impl Publish {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Publish, Error> {
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
         let qos_num = (fixed_header.byte1 & 0b0110) >> 1;
         let qos = qos(qos_num).ok_or(Error::InvalidQoS(qos_num))?;
         let dup = (fixed_header.byte1 & 0b1000) != 0;
         let retain = (fixed_header.byte1 & 0b0001) != 0;
 
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let topic = read_mqtt_bytes(&mut bytes)?;
 
@@ -77,7 +81,7 @@ impl Publish {
         }
 
         let properties = PublishProperties::read(&mut bytes)?;
-        let publish = Publish {
+        let publish = Self {
             dup,
             retain,
             qos,
@@ -158,11 +162,11 @@ impl PublishProperties {
             len += 1 + 2 + data.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
-        for id in self.subscription_identifiers.iter() {
+        for id in &self.subscription_identifiers {
             len += 1 + len_len(*id);
         }
 
@@ -173,7 +177,7 @@ impl PublishProperties {
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<PublishProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut payload_format_indicator = None;
         let mut message_expiry_interval = None;
         let mut topic_alias = None;
@@ -239,7 +243,7 @@ impl PublishProperties {
             }
         }
 
-        Ok(Some(PublishProperties {
+        Ok(Some(Self {
             payload_format_indicator,
             message_expiry_interval,
             topic_alias,
@@ -280,13 +284,13 @@ impl PublishProperties {
             write_mqtt_bytes(buffer, data);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
         }
 
-        for id in self.subscription_identifiers.iter() {
+        for id in &self.subscription_identifiers {
             buffer.put_u8(PropertyType::SubscriptionIdentifier as u8);
             write_remaining_length(buffer, *id)?;
         }

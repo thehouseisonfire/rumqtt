@@ -4,7 +4,10 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use crate::eventloop::RequestEnvelope;
-use crate::mqttbytes::{QoS, v4::*};
+use crate::mqttbytes::{
+    QoS,
+    v4::{Disconnect, PubAck, PubRec, Publish, Subscribe, SubscribeFilter, Unsubscribe},
+};
 use crate::notice::{PublishNoticeTx, RequestNoticeTx};
 use crate::{
     ConnectionError, Event, EventLoop, MqttOptions, PublishNotice, Request, RequestNotice,
@@ -156,7 +159,7 @@ pub enum ManualAck {
 }
 
 impl ManualAck {
-    fn into_request(self) -> Request {
+    const fn into_request(self) -> Request {
         match self {
             Self::PubAck(ack) => Request::PubAck(ack),
             Self::PubRec(rec) => Request::PubRec(rec),
@@ -180,10 +183,10 @@ impl AsyncClient {
     /// Create a new `AsyncClient`.
     ///
     /// `cap` specifies the capacity of the bounded async channel.
-    pub fn new(options: MqttOptions, cap: usize) -> (AsyncClient, EventLoop) {
+    pub fn new(options: MqttOptions, cap: usize) -> (Self, EventLoop) {
         let (eventloop, request_tx) = EventLoop::new_for_async_client(options, cap);
 
-        let client = AsyncClient {
+        let client = Self {
             request_tx: RequestSender::WithNotice(request_tx),
         };
 
@@ -195,8 +198,8 @@ impl AsyncClient {
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
     #[must_use]
-    pub fn from_senders(request_tx: Sender<Request>) -> AsyncClient {
-        AsyncClient {
+    pub const fn from_senders(request_tx: Sender<Request>) -> Self {
+        Self {
             request_tx: RequestSender::Plain(request_tx),
         }
     }
@@ -502,8 +505,8 @@ impl AsyncClient {
 
     /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
     ///
-    /// Returns `None` for QoS0 publishes, which do not require acknowledgement.
-    pub fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
+    /// Returns `None` for `QoS0` publishes, which do not require acknowledgement.
+    pub const fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
         prepare_ack(publish)
     }
 
@@ -531,7 +534,7 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -545,7 +548,7 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -866,7 +869,7 @@ impl AsyncClient {
     }
 }
 
-fn prepare_ack(publish: &Publish) -> Option<ManualAck> {
+const fn prepare_ack(publish: &Publish) -> Option<ManualAck> {
     let ack = match publish.qos {
         QoS::AtMostOnce => return None,
         QoS::AtLeastOnce => ManualAck::PubAck(PubAck::new(publish.pkid)),
@@ -898,9 +901,9 @@ impl Client {
     /// # Panics
     ///
     /// Panics if the current-thread Tokio runtime cannot be created.
-    pub fn new(options: MqttOptions, cap: usize) -> (Client, Connection) {
+    pub fn new(options: MqttOptions, cap: usize) -> (Self, Connection) {
         let (client, eventloop) = AsyncClient::new(options, cap);
-        let client = Client { client };
+        let client = Self { client };
         let runtime = runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -915,8 +918,8 @@ impl Client {
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
     #[must_use]
-    pub fn from_sender(request_tx: Sender<Request>) -> Client {
-        Client {
+    pub const fn from_sender(request_tx: Sender<Request>) -> Self {
+        Self {
             client: AsyncClient::from_senders(request_tx),
         }
     }
@@ -973,8 +976,8 @@ impl Client {
 
     /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
     ///
-    /// Returns `None` for QoS0 publishes, which do not require acknowledgement.
-    pub fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
+    /// Returns `None` for `QoS0` publishes, which do not require acknowledgement.
+    pub const fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
         self.client.prepare_ack(publish)
     }
 
@@ -1000,7 +1003,7 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -1014,7 +1017,7 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -1176,8 +1179,8 @@ pub struct Connection {
     runtime: Runtime,
 }
 impl Connection {
-    fn new(eventloop: EventLoop, runtime: Runtime) -> Connection {
-        Connection { eventloop, runtime }
+    const fn new(eventloop: EventLoop, runtime: Runtime) -> Self {
+        Self { eventloop, runtime }
     }
 
     /// Returns an iterator over this connection. Iterating over this is all that's
@@ -1187,7 +1190,7 @@ impl Connection {
     // ideally this should be named iter_mut because it requires a mutable reference
     // Also we can implement IntoIter for this to make it easy to iterate over it
     #[must_use = "Connection should be iterated over a loop to make progress"]
-    pub fn iter(&mut self) -> Iter<'_> {
+    pub const fn iter(&mut self) -> Iter<'_> {
         Iter { connection: self }
     }
 
@@ -1277,6 +1280,7 @@ impl Iterator for Iter<'_> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::LastWill;
 
     #[test]
     fn calling_iter_twice_on_connection_shouldnt_panic() {

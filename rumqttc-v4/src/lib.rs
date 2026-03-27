@@ -1,18 +1,5 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(clippy::default_trait_access)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::explicit_iter_loop)]
-#![allow(clippy::if_not_else)]
-#![allow(clippy::ignored_unit_patterns)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::struct_field_names)]
-#![allow(clippy::too_long_first_doc_paragraph)]
-#![allow(clippy::uninlined_format_args)]
-#![allow(clippy::unnecessary_wraps)]
-#![allow(clippy::use_self)]
-#![allow(clippy::wildcard_imports)]
 
 #[cfg(all(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
 compile_error!(
@@ -108,19 +95,19 @@ pub type Incoming = Packet;
 /// Current outgoing activity on the eventloop
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outgoing {
-    /// Publish packet with packet identifier. 0 implies QoS 0
+    /// Publish packet with packet identifier. 0 implies `QoS` 0
     Publish(u16),
     /// Subscribe packet with packet identifier
     Subscribe(u16),
     /// Unsubscribe packet with packet identifier
     Unsubscribe(u16),
-    /// PubAck packet
+    /// `PubAck` packet
     PubAck(u16),
-    /// PubRec packet
+    /// `PubRec` packet
     PubRec(u16),
-    /// PubRel packet
+    /// `PubRel` packet
     PubRel(u16),
-    /// PubComp packet
+    /// `PubComp` packet
     PubComp(u16),
     /// Ping request packet
     PingReq,
@@ -151,20 +138,20 @@ pub enum Request {
 }
 
 impl From<Publish> for Request {
-    fn from(publish: Publish) -> Request {
-        Request::Publish(publish)
+    fn from(publish: Publish) -> Self {
+        Self::Publish(publish)
     }
 }
 
 impl From<Subscribe> for Request {
-    fn from(subscribe: Subscribe) -> Request {
-        Request::Subscribe(subscribe)
+    fn from(subscribe: Subscribe) -> Self {
+        Self::Subscribe(subscribe)
     }
 }
 
 impl From<Unsubscribe> for Request {
-    fn from(unsubscribe: Unsubscribe) -> Request {
-        Request::Unsubscribe(unsubscribe)
+    fn from(unsubscribe: Unsubscribe) -> Self {
+        Self::Unsubscribe(unsubscribe)
     }
 }
 
@@ -266,7 +253,7 @@ impl Broker {
         }
     }
 
-    pub(crate) fn default_transport(&self) -> Transport {
+    pub(crate) const fn default_transport(&self) -> Transport {
         match &self.inner {
             BrokerInner::Tcp { .. } => Transport::tcp(),
             #[cfg(unix)]
@@ -350,9 +337,9 @@ impl MqttOptions {
     /// # use rumqttc::MqttOptions;
     /// let options = MqttOptions::new("123", "localhost");
     /// ```
-    pub fn new<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> MqttOptions {
+    pub fn new<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> Self {
         let broker = broker.into();
-        MqttOptions {
+        Self {
             transport: broker.default_transport(),
             broker,
             keep_alive: Duration::from_secs(60),
@@ -407,15 +394,15 @@ impl MqttOptions {
     /// ```
     ///
     /// On Unix platforms, `unix:///tmp/mqtt.sock?client_id=123` is also supported.
-    pub fn parse_url<S: Into<String>>(url: S) -> Result<MqttOptions, OptionError> {
+    pub fn parse_url<S: Into<String>>(url: S) -> Result<Self, OptionError> {
         let url = url::Url::parse(&url.into())?;
-        let options = MqttOptions::try_from(url)?;
+        let options = Self::try_from(url)?;
 
         Ok(options)
     }
 
     /// Broker target
-    pub fn broker(&self) -> &Broker {
+    pub const fn broker(&self) -> &Broker {
         &self.broker
     }
 
@@ -433,6 +420,13 @@ impl MqttOptions {
         self
     }
 
+    #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
+    pub const fn set_transport(&mut self, transport: Transport) -> &mut Self {
+        self.transport = transport;
+        self
+    }
+
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     pub fn set_transport(&mut self, transport: Transport) -> &mut Self {
         self.transport = transport;
         self
@@ -451,7 +445,7 @@ impl MqttOptions {
     }
 
     /// Keep alive time
-    pub fn keep_alive(&self) -> Duration {
+    pub const fn keep_alive(&self) -> Duration {
         self.keep_alive
     }
 
@@ -461,14 +455,14 @@ impl MqttOptions {
     }
 
     /// Set packet size limit for outgoing and incoming packets
-    pub fn set_max_packet_size(&mut self, incoming: usize, outgoing: usize) -> &mut Self {
+    pub const fn set_max_packet_size(&mut self, incoming: usize, outgoing: usize) -> &mut Self {
         self.max_incoming_packet_size = incoming;
         self.max_outgoing_packet_size = outgoing;
         self
     }
 
     /// Maximum packet size
-    pub fn max_packet_size(&self) -> usize {
+    pub const fn max_packet_size(&self) -> usize {
         self.max_incoming_packet_size
     }
 
@@ -498,7 +492,7 @@ impl MqttOptions {
     }
 
     /// Clean session
-    pub fn clean_session(&self) -> bool {
+    pub const fn clean_session(&self) -> bool {
         self.clean_session
     }
 
@@ -587,38 +581,38 @@ impl MqttOptions {
     ///     auth => panic!("unexpected auth state: {auth:?}"),
     /// }
     /// ```
-    pub fn auth(&self) -> &ConnectAuth {
+    pub const fn auth(&self) -> &ConnectAuth {
         &self.auth
     }
 
     /// Set request channel capacity
-    pub fn set_request_channel_capacity(&mut self, capacity: usize) -> &mut Self {
+    pub const fn set_request_channel_capacity(&mut self, capacity: usize) -> &mut Self {
         self.request_channel_capacity = capacity;
         self
     }
 
     /// Request channel capacity
-    pub fn request_channel_capacity(&self) -> usize {
+    pub const fn request_channel_capacity(&self) -> usize {
         self.request_channel_capacity
     }
 
     /// Set maximum number of requests processed in one eventloop iteration.
     ///
     /// `0` preserves legacy behavior (effectively processes one request).
-    pub fn set_max_request_batch(&mut self, max: usize) -> &mut Self {
+    pub const fn set_max_request_batch(&mut self, max: usize) -> &mut Self {
         self.max_request_batch = max;
         self
     }
 
     /// Maximum number of requests processed in one eventloop iteration.
-    pub fn max_request_batch(&self) -> usize {
+    pub const fn max_request_batch(&self) -> usize {
         self.max_request_batch
     }
 
     /// Set maximum number of packets processed in one network read batch.
     ///
     /// `0` enables adaptive batching.
-    pub fn set_read_batch_size(&mut self, size: usize) -> &mut Self {
+    pub const fn set_read_batch_size(&mut self, size: usize) -> &mut Self {
         self.read_batch_size = size;
         self
     }
@@ -626,18 +620,18 @@ impl MqttOptions {
     /// Maximum number of packets processed in one network read batch.
     ///
     /// `0` means adaptive batching.
-    pub fn read_batch_size(&self) -> usize {
+    pub const fn read_batch_size(&self) -> usize {
         self.read_batch_size
     }
 
     /// Enables throttling and sets outoing message rate to the specified 'rate'
-    pub fn set_pending_throttle(&mut self, duration: Duration) -> &mut Self {
+    pub const fn set_pending_throttle(&mut self, duration: Duration) -> &mut Self {
         self.pending_throttle = duration;
         self
     }
 
     /// Outgoing message rate
-    pub fn pending_throttle(&self) -> Duration {
+    pub const fn pending_throttle(&self) -> Duration {
         self.pending_throttle
     }
 
@@ -654,18 +648,18 @@ impl MqttOptions {
     }
 
     /// Number of concurrent in flight messages
-    pub fn inflight(&self) -> u16 {
+    pub const fn inflight(&self) -> u16 {
         self.inflight
     }
 
     /// set manual acknowledgements
-    pub fn set_manual_acks(&mut self, manual_acks: bool) -> &mut Self {
+    pub const fn set_manual_acks(&mut self, manual_acks: bool) -> &mut Self {
         self.manual_acks = manual_acks;
         self
     }
 
     /// get manual acknowledgements
-    pub fn manual_acks(&self) -> bool {
+    pub const fn manual_acks(&self) -> bool {
         self.manual_acks
     }
 
@@ -880,7 +874,7 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             .ok_or(OptionError::ClientId)?
             .into_owned();
 
-        let mut options = MqttOptions::new(id, broker);
+        let mut options = Self::new(id, broker);
 
         if let Some(keep_alive) = queries
             .remove("keep_alive_secs")

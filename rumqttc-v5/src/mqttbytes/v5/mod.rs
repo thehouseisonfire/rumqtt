@@ -18,7 +18,7 @@ pub use self::{
     unsubscribe::{Unsubscribe, UnsubscribeProperties},
 };
 
-use super::*;
+use super::{Error, QoS, qos};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use mqttbytes_core::primitives::{self as core_primitives, Error as PrimitiveError};
 
@@ -92,7 +92,7 @@ impl Packet {
     ///
     /// Returns an error if the packet is incomplete, malformed, or exceeds the
     /// configured packet-size limit.
-    pub fn read(stream: &mut BytesMut, max_size: Option<u32>) -> Result<Packet, Error> {
+    pub fn read(stream: &mut BytesMut, max_size: Option<u32>) -> Result<Self, Error> {
         let fixed_header = check(stream.iter(), max_size)?;
 
         // Test with a stream with exactly the size to check border panics
@@ -102,8 +102,8 @@ impl Packet {
         if fixed_header.remaining_len == 0 {
             // no payload packets, Disconnect still has a bit more info
             return match packet_type {
-                PacketType::PingReq => Ok(Packet::PingReq(PingReq)),
-                PacketType::PingResp => Ok(Packet::PingResp(PingResp)),
+                PacketType::PingReq => Ok(Self::PingReq(PingReq)),
+                PacketType::PingResp => Ok(Self::PingResp(PingResp)),
                 _ => Err(Error::PayloadRequired),
             };
         }
@@ -112,57 +112,57 @@ impl Packet {
         let packet = match packet_type {
             PacketType::Connect => {
                 let (connect, will, auth) = Connect::read(fixed_header, packet)?;
-                Packet::Connect(connect, will, auth)
+                Self::Connect(connect, will, auth)
             }
             PacketType::Publish => {
                 let publish = Publish::read(fixed_header, packet)?;
-                Packet::Publish(publish)
+                Self::Publish(publish)
             }
             PacketType::Subscribe => {
                 let subscribe = Subscribe::read(fixed_header, packet)?;
-                Packet::Subscribe(subscribe)
+                Self::Subscribe(subscribe)
             }
             PacketType::Unsubscribe => {
                 let unsubscribe = Unsubscribe::read(fixed_header, packet)?;
-                Packet::Unsubscribe(unsubscribe)
+                Self::Unsubscribe(unsubscribe)
             }
             PacketType::ConnAck => {
                 let connack = ConnAck::read(fixed_header, packet)?;
-                Packet::ConnAck(connack)
+                Self::ConnAck(connack)
             }
             PacketType::PubAck => {
                 let puback = PubAck::read(fixed_header, packet)?;
-                Packet::PubAck(puback)
+                Self::PubAck(puback)
             }
             PacketType::PubRec => {
                 let pubrec = PubRec::read(fixed_header, packet)?;
-                Packet::PubRec(pubrec)
+                Self::PubRec(pubrec)
             }
             PacketType::PubRel => {
                 let pubrel = PubRel::read(fixed_header, packet)?;
-                Packet::PubRel(pubrel)
+                Self::PubRel(pubrel)
             }
             PacketType::PubComp => {
                 let pubcomp = PubComp::read(fixed_header, packet)?;
-                Packet::PubComp(pubcomp)
+                Self::PubComp(pubcomp)
             }
             PacketType::SubAck => {
                 let suback = SubAck::read(fixed_header, packet)?;
-                Packet::SubAck(suback)
+                Self::SubAck(suback)
             }
             PacketType::UnsubAck => {
                 let unsuback = UnsubAck::read(fixed_header, packet)?;
-                Packet::UnsubAck(unsuback)
+                Self::UnsubAck(unsuback)
             }
-            PacketType::PingReq => Packet::PingReq(PingReq),
-            PacketType::PingResp => Packet::PingResp(PingResp),
+            PacketType::PingReq => Self::PingReq(PingReq),
+            PacketType::PingResp => Self::PingResp(PingResp),
             PacketType::Disconnect => {
                 let disconnect = Disconnect::read(fixed_header, packet)?;
-                Packet::Disconnect(disconnect)
+                Self::Disconnect(disconnect)
             }
             PacketType::Auth => {
                 let auth = Auth::read(fixed_header, packet)?;
-                Packet::Auth(auth)
+                Self::Auth(auth)
             }
         };
 
@@ -298,7 +298,7 @@ pub struct FixedHeader {
     /// Length of fixed header. Byte 1 + (1..4) bytes. So fixed header
     /// len can vary from 2 bytes to 5 bytes
     /// 1..4 bytes are variable length encoded to represent remaining length
-    fixed_header_len: usize,
+    header_len: usize,
     /// Remaining length of the packet. Doesn't include fixed header bytes
     /// Represents variable header + payload size
     remaining_len: usize,
@@ -306,10 +306,10 @@ pub struct FixedHeader {
 
 impl FixedHeader {
     #[must_use]
-    pub fn new(byte1: u8, remaining_len_len: usize, remaining_len: usize) -> FixedHeader {
-        FixedHeader {
+    pub const fn new(byte1: u8, remaining_len_len: usize, remaining_len: usize) -> Self {
+        Self {
             byte1,
-            fixed_header_len: remaining_len_len + 1,
+            header_len: remaining_len_len + 1,
             remaining_len,
         }
     }
@@ -320,7 +320,7 @@ impl FixedHeader {
     ///
     /// Returns an error if the fixed-header flags are invalid for the decoded
     /// packet type.
-    pub fn packet_type(&self) -> Result<PacketType, Error> {
+    pub const fn packet_type(&self) -> Result<PacketType, Error> {
         let num = self.byte1 >> 4;
         match num {
             1 => Ok(PacketType::Connect),
@@ -345,12 +345,12 @@ impl FixedHeader {
     /// Returns the size of full packet (fixed header + variable header + payload)
     /// Fixed header is enough to get the size of a frame in the stream
     #[must_use]
-    pub fn frame_length(&self) -> usize {
-        self.fixed_header_len + self.remaining_len
+    pub const fn frame_length(&self) -> usize {
+        self.header_len + self.remaining_len
     }
 }
 
-fn property(num: u8) -> Result<PropertyType, Error> {
+const fn property(num: u8) -> Result<PropertyType, Error> {
     let property = match num {
         1 => PropertyType::PayloadFormatIndicator,
         2 => PropertyType::MessageExpiryInterval,
@@ -385,13 +385,13 @@ fn property(num: u8) -> Result<PropertyType, Error> {
     Ok(property)
 }
 
-/// Checks if the stream has enough bytes to frame a packet and returns fixed header
-/// only if a packet can be framed with existing bytes in the `stream`.
-/// The passed stream doesn't modify parent stream's cursor. If this function
-/// returned an error, next `check` on the same parent stream is forced start
-/// with cursor at 0 again (Iter is owned. Only Iter's cursor is changed internally)
 /// Checks whether the stream contains a complete MQTT v5 packet within the
 /// configured size limit.
+///
+/// The fixed header is returned only if the existing bytes are enough to frame
+/// the packet. The passed stream does not modify the parent stream's cursor. If
+/// this function returns an error, the next `check` on the same parent stream
+/// starts again with the cursor at `0`.
 ///
 /// # Errors
 ///
@@ -466,7 +466,7 @@ fn len_len(len: usize) -> usize {
     core_primitives::len_len(len)
 }
 
-/// After collecting enough bytes to frame a packet (packet's frame())
+/// After collecting enough bytes to frame a packet (packet's `frame()`)
 /// , It's possible that content itself in the stream is wrong. Like expected
 /// packet id or qos not being present. In cases where `read_mqtt_string` or
 /// `read_mqtt_bytes` exhausted remaining length but packet framing expects to

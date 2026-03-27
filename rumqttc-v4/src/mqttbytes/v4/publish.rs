@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, QoS, fmt, len_len, qos, read_mqtt_bytes, read_u16,
+    write_mqtt_bytes, write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Publish packet
@@ -13,9 +16,9 @@ pub struct Publish {
 }
 
 impl Publish {
-    pub fn new<S: Into<String>, P: Into<Vec<u8>>>(topic: S, qos: QoS, payload: P) -> Publish {
+    pub fn new<S: Into<String>, P: Into<Vec<u8>>>(topic: S, qos: QoS, payload: P) -> Self {
         let topic = topic.into();
-        Publish {
+        Self {
             dup: false,
             qos,
             retain: false,
@@ -25,9 +28,9 @@ impl Publish {
         }
     }
 
-    pub fn from_bytes<S: Into<String>>(topic: S, qos: QoS, payload: Bytes) -> Publish {
+    pub fn from_bytes<S: Into<String>>(topic: S, qos: QoS, payload: Bytes) -> Self {
         let topic = topic.into();
-        Publish {
+        Self {
             dup: false,
             qos,
             retain: false,
@@ -61,7 +64,7 @@ impl Publish {
             return Err(Error::IncorrectPacketFormat);
         }
 
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let topic = read_mqtt_bytes(&mut bytes)?;
         validate_publish_topic_name(&topic)?;
@@ -76,7 +79,7 @@ impl Publish {
             return Err(Error::PacketIdZero);
         }
 
-        let publish = Publish {
+        let publish = Self {
             dup,
             retain,
             qos,
@@ -154,6 +157,7 @@ impl fmt::Debug for Publish {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 

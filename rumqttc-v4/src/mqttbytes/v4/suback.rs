@@ -1,4 +1,4 @@
-use super::*;
+use super::{Error, FixedHeader, QoS, len_len, read_u8, read_u16, write_remaining_length};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::convert::{TryFrom, TryInto};
 
@@ -11,8 +11,8 @@ pub struct SubAck {
 
 impl SubAck {
     #[must_use]
-    pub fn new(pkid: u16, return_codes: Vec<SubscribeReasonCode>) -> SubAck {
-        SubAck { pkid, return_codes }
+    pub const fn new(pkid: u16, return_codes: Vec<SubscribeReasonCode>) -> Self {
+        Self { pkid, return_codes }
     }
 
     fn len(&self) -> usize {
@@ -27,7 +27,7 @@ impl SubAck {
     }
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
@@ -41,7 +41,7 @@ impl SubAck {
             return_codes.push(return_code.try_into()?);
         }
 
-        let suback = SubAck { pkid, return_codes };
+        let suback = Self { pkid, return_codes };
         Ok(suback)
     }
 
@@ -75,10 +75,10 @@ impl TryFrom<u8> for SubscribeReasonCode {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         let v = match value {
-            0 => SubscribeReasonCode::Success(QoS::AtMostOnce),
-            1 => SubscribeReasonCode::Success(QoS::AtLeastOnce),
-            2 => SubscribeReasonCode::Success(QoS::ExactlyOnce),
-            128 => SubscribeReasonCode::Failure,
+            0 => Self::Success(QoS::AtMostOnce),
+            1 => Self::Success(QoS::AtLeastOnce),
+            2 => Self::Success(QoS::ExactlyOnce),
+            128 => Self::Failure,
             v => return Err(super::Error::InvalidSubscribeReasonCode(v)),
         };
 
@@ -89,6 +89,7 @@ impl TryFrom<u8> for SubscribeReasonCode {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 

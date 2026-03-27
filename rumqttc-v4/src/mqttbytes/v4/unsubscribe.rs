@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, len_len, read_mqtt_string, read_u16, write_mqtt_string,
+    write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Unsubscribe packet
@@ -9,8 +12,8 @@ pub struct Unsubscribe {
 }
 
 impl Unsubscribe {
-    pub fn new<S: Into<String>>(topic: S) -> Unsubscribe {
-        Unsubscribe {
+    pub fn new<S: Into<String>>(topic: S) -> Self {
+        Self {
             pkid: 0,
             topics: vec![topic.into()],
         }
@@ -30,7 +33,7 @@ impl Unsubscribe {
     }
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
@@ -43,7 +46,7 @@ impl Unsubscribe {
             topics.push(topic_filter);
         }
 
-        let unsubscribe = Unsubscribe { pkid, topics };
+        let unsubscribe = Self { pkid, topics };
         Ok(unsubscribe)
     }
 
@@ -54,7 +57,7 @@ impl Unsubscribe {
         let remaining_len_bytes = write_remaining_length(payload, remaining_len)?;
         payload.put_u16(self.pkid);
 
-        for topic in self.topics.iter() {
+        for topic in &self.topics {
             write_mqtt_string(payload, topic.as_str());
         }
         Ok(1 + remaining_len_bytes + remaining_len)

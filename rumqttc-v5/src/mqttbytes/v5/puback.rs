@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_string, read_u8,
+    read_u16, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Return code in puback
@@ -16,7 +19,7 @@ pub enum PubAckReason {
     PayloadFormatInvalid = 153,
 }
 
-/// Acknowledgement to QoS1 publish
+/// Acknowledgement to `QoS1` publish
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PubAck {
     pub pkid: u16,
@@ -26,7 +29,7 @@ pub struct PubAck {
 
 impl PubAck {
     #[must_use]
-    pub fn new(pkid: u16, properties: Option<PubAckProperties>) -> Self {
+    pub const fn new(pkid: u16, properties: Option<PubAckProperties>) -> Self {
         Self {
             pkid,
             reason: PubAckReason::Success,
@@ -65,14 +68,14 @@ impl PubAck {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<PubAck, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
         // No reason code or properties if remaining length == 2
         if fixed_header.remaining_len == 2 {
-            return Ok(PubAck {
+            return Ok(Self {
                 pkid,
                 reason: PubAckReason::Success,
                 properties: None,
@@ -82,7 +85,7 @@ impl PubAck {
         // No properties len or properties if remaining len > 2 but < 4
         let ack_reason = read_u8(&mut bytes)?;
         if fixed_header.remaining_len < 4 {
-            return Ok(PubAck {
+            return Ok(Self {
                 pkid,
                 reason: reason(ack_reason)?,
                 properties: None,
@@ -90,7 +93,7 @@ impl PubAck {
         }
 
         let properties = PubAckProperties::read(&mut bytes)?;
-        let puback = PubAck {
+        let puback = Self {
             pkid,
             reason: reason(ack_reason)?,
             properties,
@@ -136,14 +139,14 @@ impl PubAckProperties {
             len += 1 + 2 + reason.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<PubAckProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut reason_string = None;
         let mut user_properties = Vec::new();
 
@@ -175,7 +178,7 @@ impl PubAckProperties {
             }
         }
 
-        Ok(Some(PubAckProperties {
+        Ok(Some(Self {
             reason_string,
             user_properties,
         }))
@@ -190,7 +193,7 @@ impl PubAckProperties {
             write_mqtt_string(buffer, reason);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -205,7 +208,7 @@ fn reason(num: u8) -> Result<PubAckReason, Error> {
     num.try_into()
 }
 
-fn code(reason: PubAckReason) -> u8 {
+const fn code(reason: PubAckReason) -> u8 {
     reason as u8
 }
 

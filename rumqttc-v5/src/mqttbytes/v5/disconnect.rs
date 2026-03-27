@@ -2,7 +2,10 @@ use std::convert::{TryFrom, TryInto};
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::*;
+use super::{
+    Buf, Error, FixedHeader, PacketType, len_len, length, read_mqtt_string, read_u8, read_u32,
+    write_mqtt_string, write_remaining_length,
+};
 
 use super::{PropertyType, property};
 
@@ -29,7 +32,7 @@ pub enum DisconnectReasonCode {
     ServerShuttingDown = 0x8B,
     /// The Connection is closed because no packet has been received for 1.5 times the Keepalive time.
     KeepAliveTimeout = 0x8D,
-    /// Another Connection using the same ClientID has connected causing this Connection to be closed.
+    /// Another Connection using the same `ClientID` has connected causing this Connection to be closed.
     SessionTakenOver = 0x8E,
     /// The Topic Filter is correctly formed, but is not accepted by this Sever.
     TopicFilterInvalid = 0x8F,
@@ -51,7 +54,7 @@ pub enum DisconnectReasonCode {
     PayloadFormatInvalid = 0x99,
     /// The Server has does not support retained messages.
     RetainNotSupported = 0x9A,
-    /// The Client specified a QoS greater than the QoS specified in a Maximum QoS in the CONNACK.
+    /// The Client specified a `QoS` greater than the `QoS` specified in a Maximum `QoS` in the CONNACK.
     QoSNotSupported = 0x9B,
     /// The Client should temporarily change its Server.
     UseAnotherServer = 0x9C,
@@ -155,7 +158,7 @@ impl DisconnectProperties {
             length += 1 + 2 + reason.len();
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             length += 1 + 2 + key.len() + 2 + value.len();
         }
 
@@ -236,7 +239,7 @@ impl DisconnectProperties {
             write_mqtt_string(buffer, reason);
         }
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
@@ -253,7 +256,7 @@ impl DisconnectProperties {
 
 impl Disconnect {
     #[must_use]
-    pub fn new(reason: DisconnectReasonCode) -> Self {
+    pub const fn new(reason: DisconnectReasonCode) -> Self {
         Self {
             reason_code: reason,
             properties: None,
@@ -261,7 +264,7 @@ impl Disconnect {
     }
 
     #[must_use]
-    pub fn new_with_properties(
+    pub const fn new_with_properties(
         reason: DisconnectReasonCode,
         properties: DisconnectProperties,
     ) -> Self {
@@ -305,7 +308,7 @@ impl Disconnect {
         let packet_type = fixed_header.byte1 >> 4;
         let flags = fixed_header.byte1 & 0b0000_1111;
 
-        bytes.advance(fixed_header.fixed_header_len);
+        bytes.advance(fixed_header.header_len);
 
         if packet_type != PacketType::Disconnect as u8 {
             return Err(Error::InvalidPacketType(packet_type));
@@ -357,9 +360,8 @@ impl Disconnect {
 mod test {
     use bytes::BytesMut;
 
-    use super::parse_fixed_header;
-
     use super::{Disconnect, DisconnectProperties, DisconnectReasonCode};
+    use crate::mqttbytes::v5::parse_fixed_header;
 
     #[test]
     fn disconnect1_parsing_works() {

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, QoS, fmt, len_len, qos, read_mqtt_string, read_u8,
+    read_u16, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Subscription packet
@@ -9,25 +12,25 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
-    pub fn new<S: Into<String>>(path: S, qos: QoS) -> Subscribe {
+    pub fn new<S: Into<String>>(path: S, qos: QoS) -> Self {
         let filter = SubscribeFilter {
             path: path.into(),
             qos,
         };
 
-        Subscribe {
+        Self {
             pkid: 0,
             filters: vec![filter],
         }
     }
 
-    pub fn new_many<T>(topics: T) -> Subscribe
+    pub fn new_many<T>(topics: T) -> Self
     where
         T: IntoIterator<Item = SubscribeFilter>,
     {
         let filters: Vec<SubscribeFilter> = topics.into_iter().collect();
 
-        Subscribe { pkid: 0, filters }
+        Self { pkid: 0, filters }
     }
 
     pub fn add(&mut self, path: String, qos: QoS) -> &mut Self {
@@ -51,7 +54,7 @@ impl Subscribe {
     }
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
@@ -75,7 +78,7 @@ impl Subscribe {
 
         match filters.len() {
             0 => Err(Error::EmptySubscription),
-            _ => Ok(Subscribe { pkid, filters }),
+            _ => Ok(Self { pkid, filters }),
         }
     }
 
@@ -91,7 +94,7 @@ impl Subscribe {
         buffer.put_u16(self.pkid);
 
         // write filters
-        for filter in self.filters.iter() {
+        for filter in &self.filters {
             filter.write(buffer);
         }
 
@@ -108,8 +111,8 @@ pub struct SubscribeFilter {
 
 impl SubscribeFilter {
     #[must_use]
-    pub fn new(path: String, qos: QoS) -> SubscribeFilter {
-        SubscribeFilter { path, qos }
+    pub const fn new(path: String, qos: QoS) -> Self {
+        Self { path, qos }
     }
 
     fn len(&self) -> usize {
@@ -152,6 +155,7 @@ impl fmt::Debug for SubscribeFilter {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 

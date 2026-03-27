@@ -188,9 +188,9 @@ impl AsyncClient {
     /// Create a new `AsyncClient`.
     ///
     /// `cap` specifies the capacity of the bounded async channel.
-    pub fn new(options: MqttOptions, cap: usize) -> (AsyncClient, EventLoop) {
+    pub fn new(options: MqttOptions, cap: usize) -> (Self, EventLoop) {
         let (eventloop, request_tx) = EventLoop::new_for_async_client(options, cap);
-        let client = AsyncClient {
+        let client = Self {
             request_tx: RequestSender::WithNotice(request_tx),
         };
 
@@ -202,8 +202,8 @@ impl AsyncClient {
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
     #[must_use]
-    pub fn from_senders(request_tx: Sender<Request>) -> AsyncClient {
-        AsyncClient {
+    pub const fn from_senders(request_tx: Sender<Request>) -> Self {
+        Self {
             request_tx: RequestSender::Plain(request_tx),
         }
     }
@@ -603,8 +603,8 @@ impl AsyncClient {
 
     /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
     ///
-    /// Returns `None` for QoS0 publishes, which do not require acknowledgement.
-    pub fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
+    /// Returns `None` for `QoS0` publishes, which do not require acknowledgement.
+    pub const fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
         prepare_ack(publish)
     }
 
@@ -632,7 +632,7 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -646,7 +646,7 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -1323,7 +1323,7 @@ impl AsyncClient {
         self.handle_try_unsubscribe_tracked(topic, None)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
+    /// Sends a MQTT disconnect to the `EventLoop` with default `DisconnectReasonCode::NormalDisconnection`
     ///
     /// # Errors
     ///
@@ -1359,7 +1359,7 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT disconnect to the `EventLoop` with default DisconnectReasonCode::NormalDisconnection
+    /// Attempts to send a MQTT disconnect to the `EventLoop` with default `DisconnectReasonCode::NormalDisconnection`
     ///
     /// # Errors
     ///
@@ -1399,14 +1399,14 @@ impl AsyncClient {
         reason: DisconnectReasonCode,
         properties: Option<DisconnectProperties>,
     ) -> Request {
-        match properties {
-            Some(p) => Request::Disconnect(Disconnect::new_with_properties(reason, p)),
-            None => Request::Disconnect(Disconnect::new(reason)),
-        }
+        properties.map_or_else(
+            || Request::Disconnect(Disconnect::new(reason)),
+            |p| Request::Disconnect(Disconnect::new_with_properties(reason, p)),
+        )
     }
 }
 
-fn prepare_ack(publish: &Publish) -> Option<ManualAck> {
+const fn prepare_ack(publish: &Publish) -> Option<ManualAck> {
     let ack = match publish.qos {
         QoS::AtMostOnce => return None,
         QoS::AtLeastOnce => ManualAck::PubAck(PubAck::new(publish.pkid, None)),
@@ -1438,9 +1438,9 @@ impl Client {
     /// # Panics
     ///
     /// Panics if the current-thread Tokio runtime cannot be created.
-    pub fn new(options: MqttOptions, cap: usize) -> (Client, Connection) {
+    pub fn new(options: MqttOptions, cap: usize) -> (Self, Connection) {
         let (client, eventloop) = AsyncClient::new(options, cap);
-        let client = Client { client };
+        let client = Self { client };
 
         let runtime = runtime::Builder::new_current_thread()
             .enable_all()
@@ -1456,8 +1456,8 @@ impl Client {
     /// This is mostly useful for creating a test instance where you can
     /// listen on the corresponding receiver.
     #[must_use]
-    pub fn from_sender(request_tx: Sender<Request>) -> Client {
-        Client {
+    pub const fn from_sender(request_tx: Sender<Request>) -> Self {
+        Self {
             client: AsyncClient::from_senders(request_tx),
         }
     }
@@ -1575,8 +1575,8 @@ impl Client {
 
     /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
     ///
-    /// Returns `None` for QoS0 publishes, which do not require acknowledgement.
-    pub fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
+    /// Returns `None` for `QoS0` publishes, which do not require acknowledgement.
+    pub const fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
         self.client.prepare_ack(publish)
     }
 
@@ -1602,7 +1602,7 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -1616,7 +1616,7 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish QoS.
+    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
     /// Only needed if the `manual_acks` flag is set.
     ///
     /// # Errors
@@ -1966,8 +1966,8 @@ pub struct Connection {
     runtime: Runtime,
 }
 impl Connection {
-    fn new(eventloop: EventLoop, runtime: Runtime) -> Connection {
-        Connection { eventloop, runtime }
+    const fn new(eventloop: EventLoop, runtime: Runtime) -> Self {
+        Self { eventloop, runtime }
     }
 
     /// Returns an iterator over this connection. Iterating over this is all that's
@@ -1977,7 +1977,7 @@ impl Connection {
     // ideally this should be named iter_mut because it requires a mutable reference
     // Also we can implement IntoIter for this to make it easy to iterate over it
     #[must_use = "Connection should be iterated over a loop to make progress"]
-    pub fn iter(&mut self) -> Iter<'_> {
+    pub const fn iter(&mut self) -> Iter<'_> {
         Iter { connection: self }
     }
 
@@ -2140,7 +2140,7 @@ mod test {
                 assert_eq!(ack.reason, PubAckReason::NoMatchingSubscribers);
                 assert_eq!(ack.properties, Some(expected_properties));
             }
-            request => panic!("Expected PubAck request, got {:?}", request),
+            request => panic!("Expected PubAck request, got {request:?}"),
         }
     }
 
@@ -2168,7 +2168,7 @@ mod test {
                 assert_eq!(ack.reason, PubRecReason::ImplementationSpecificError);
                 assert_eq!(ack.properties, Some(expected_properties));
             }
-            request => panic!("Expected PubRec request, got {:?}", request),
+            request => panic!("Expected PubRec request, got {request:?}"),
         }
     }
 
@@ -2194,7 +2194,7 @@ mod test {
                 assert_eq!(ack.reason, PubAckReason::Success);
                 assert_eq!(ack.properties, None);
             }
-            request => panic!("Expected PubAck request, got {:?}", request),
+            request => panic!("Expected PubAck request, got {request:?}"),
         }
 
         let second = rx.try_recv().expect("Should receive second ack request");
@@ -2204,7 +2204,7 @@ mod test {
                 assert_eq!(ack.reason, PubRecReason::Success);
                 assert_eq!(ack.properties, None);
             }
-            request => panic!("Expected PubRec request, got {:?}", request),
+            request => panic!("Expected PubRec request, got {request:?}"),
         }
     }
 
@@ -2387,7 +2387,7 @@ mod test {
                     Some(1)
                 );
             }
-            request => panic!("Expected Publish request, got {:?}", request),
+            request => panic!("Expected Publish request, got {request:?}"),
         }
     }
 
@@ -2607,7 +2607,7 @@ mod test {
                 );
                 assert_eq!(disconnect.properties, Some(properties));
             }
-            request => panic!("Expected disconnect request, got {:?}", request),
+            request => panic!("Expected disconnect request, got {request:?}"),
         }
     }
 
@@ -2638,7 +2638,7 @@ mod test {
                 );
                 assert_eq!(disconnect.properties, Some(properties));
             }
-            request => panic!("Expected disconnect request, got {:?}", request),
+            request => panic!("Expected disconnect request, got {request:?}"),
         }
     }
 
@@ -2676,7 +2676,7 @@ mod test {
                 );
                 assert_eq!(disconnect.properties, Some(properties));
             }
-            request => panic!("Expected disconnect request, got {:?}", request),
+            request => panic!("Expected disconnect request, got {request:?}"),
         }
     }
 
@@ -2707,7 +2707,7 @@ mod test {
                 );
                 assert_eq!(disconnect.properties, Some(properties));
             }
-            request => panic!("Expected disconnect request, got {:?}", request),
+            request => panic!("Expected disconnect request, got {request:?}"),
         }
     }
 

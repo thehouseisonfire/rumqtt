@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, Protocol, QoS, len_len, qos, read_mqtt_bytes,
+    read_mqtt_string, read_u8, read_u16, write_mqtt_bytes, write_mqtt_string,
+    write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Connection packet initiated by the client
@@ -19,8 +23,8 @@ pub struct Connect {
 }
 
 impl Connect {
-    pub fn new<S: Into<String>>(id: S) -> Connect {
-        Connect {
+    pub fn new<S: Into<String>>(id: S) -> Self {
+        Self {
             protocol: Protocol::V4,
             keep_alive: 10,
             client_id: id.into(),
@@ -30,17 +34,17 @@ impl Connect {
         }
     }
 
-    pub fn set_auth(&mut self, auth: ConnectAuth) -> &mut Connect {
+    pub fn set_auth(&mut self, auth: ConnectAuth) -> &mut Self {
         self.auth = auth;
         self
     }
 
-    pub fn clear_auth(&mut self) -> &mut Connect {
+    pub fn clear_auth(&mut self) -> &mut Self {
         self.auth = ConnectAuth::None;
         self
     }
 
-    pub fn set_username<U: Into<String>>(&mut self, username: U) -> &mut Connect {
+    pub fn set_username<U: Into<String>>(&mut self, username: U) -> &mut Self {
         self.auth = ConnectAuth::Username {
             username: username.into(),
         };
@@ -51,7 +55,7 @@ impl Connect {
         &mut self,
         username: U,
         password: P,
-    ) -> &mut Connect {
+    ) -> &mut Self {
         self.auth = ConnectAuth::UsernamePassword {
             username: username.into(),
             password: password.into(),
@@ -78,8 +82,8 @@ impl Connect {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Connect, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         // Variable header
@@ -104,7 +108,7 @@ impl Connect {
         let last_will = LastWill::read(connect_flags, &mut bytes)?;
         let auth = ConnectAuth::read(connect_flags, &mut bytes)?;
 
-        let connect = Connect {
+        let connect = Self {
             protocol,
             keep_alive,
             client_id,
@@ -139,7 +143,7 @@ impl Connect {
         write_mqtt_string(buffer, &self.client_id);
 
         if let Some(last_will) = &self.last_will {
-            connect_flags |= last_will.write(buffer)?;
+            connect_flags |= last_will.write(buffer);
         }
 
         connect_flags |= self.auth.write(buffer);
@@ -157,7 +161,7 @@ impl Connect {
     }
 }
 
-/// LastWill that broker forwards on behalf of the client
+/// `LastWill` that broker forwards on behalf of the client
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastWill {
     pub topic: String,
@@ -172,8 +176,8 @@ impl LastWill {
         payload: impl Into<Vec<u8>>,
         qos: QoS,
         retain: bool,
-    ) -> LastWill {
-        LastWill {
+    ) -> Self {
+        Self {
             topic: topic.into(),
             message: Bytes::from(payload.into()),
             qos,
@@ -187,7 +191,7 @@ impl LastWill {
         len
     }
 
-    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<LastWill>, Error> {
+    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let last_will = match connect_flags & 0b100 {
             0 if (connect_flags & 0b0011_1000) != 0 => {
                 return Err(Error::IncorrectPacketFormat);
@@ -197,7 +201,7 @@ impl LastWill {
                 let will_topic = read_mqtt_string(bytes)?;
                 let will_message = read_mqtt_bytes(bytes)?;
                 let will_qos = qos((connect_flags & 0b11000) >> 3)?;
-                Some(LastWill {
+                Some(Self {
                     topic: will_topic,
                     message: will_message,
                     qos: will_qos,
@@ -209,7 +213,7 @@ impl LastWill {
         Ok(last_will)
     }
 
-    fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+    fn write(&self, buffer: &mut BytesMut) -> u8 {
         let mut connect_flags = 0;
 
         connect_flags |= 0x04 | ((self.qos as u8) << 3);
@@ -219,7 +223,7 @@ impl LastWill {
 
         write_mqtt_string(buffer, &self.topic);
         write_mqtt_bytes(buffer, &self.message);
-        Ok(connect_flags)
+        connect_flags
     }
 }
 
@@ -237,16 +241,16 @@ pub enum ConnectAuth {
 }
 
 impl ConnectAuth {
-    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<ConnectAuth, Error> {
+    fn read(connect_flags: u8, bytes: &mut Bytes) -> Result<Self, Error> {
         let username_flag = (connect_flags & 0b1000_0000) != 0;
         let password_flag = (connect_flags & 0b0100_0000) != 0;
 
         match (username_flag, password_flag) {
-            (false, false) => Ok(ConnectAuth::None),
-            (true, false) => Ok(ConnectAuth::Username {
+            (false, false) => Ok(Self::None),
+            (true, false) => Ok(Self::Username {
                 username: read_mqtt_string(bytes)?,
             }),
-            (true, true) => Ok(ConnectAuth::UsernamePassword {
+            (true, true) => Ok(Self::UsernamePassword {
                 username: read_mqtt_string(bytes)?,
                 password: read_mqtt_bytes(bytes)?,
             }),
@@ -291,7 +295,7 @@ impl ConnectAuth {
     }
 }
 
-fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
+const fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
     // CONNECT reserved bit must be zero.
     if (connect_flags & 0x01) != 0 {
         return Err(Error::IncorrectPacketFormat);
@@ -310,6 +314,7 @@ fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 

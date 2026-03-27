@@ -1,4 +1,4 @@
-use super::*;
+use super::Error;
 use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6,7 +6,7 @@ pub struct Disconnect;
 
 impl Disconnect {
     #[must_use]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         2
     }
 

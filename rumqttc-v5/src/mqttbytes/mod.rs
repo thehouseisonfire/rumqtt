@@ -1,9 +1,7 @@
 use std::str::Utf8Error;
 
-/// This module is the place where all the protocol specifics gets abstracted
-/// out and creates a structures which are common across protocols. Since,
-/// MQTT is the core protocol that this broker supports, a lot of structs closely
-/// map to what MQTT specifies in its protocol
+/// This module contains the protocol-specific pieces needed to assemble and
+/// disassemble MQTT v5 packets in rumqttc.
 pub mod v5;
 
 pub use mqttbytes_core::{QoS, has_wildcards, matches, qos, valid_filter, valid_topic};

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BufMut, BytesMut, Error, FixedHeader, PropertyType, len_len, length, property,
+    read_mqtt_string, read_u8, read_u16, write_mqtt_string, write_remaining_length,
+};
 use bytes::{Buf, Bytes};
 
 /// Unsubscribe packet
@@ -43,8 +46,8 @@ impl Unsubscribe {
         len
     }
 
-    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Unsubscribe, Error> {
-        let variable_header_index = fixed_header.fixed_header_len;
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
@@ -56,7 +59,7 @@ impl Unsubscribe {
             filters.push(filter);
         }
 
-        let unsubscribe = Unsubscribe {
+        let unsubscribe = Self {
             pkid,
             filters,
             properties,
@@ -81,7 +84,7 @@ impl Unsubscribe {
         }
 
         // write filters
-        for filter in self.filters.iter() {
+        for filter in &self.filters {
             write_mqtt_string(buffer, filter);
         }
 
@@ -98,14 +101,14 @@ impl UnsubscribeProperties {
     fn len(&self) -> usize {
         let mut len = 0;
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             len += 1 + 2 + key.len() + 2 + value.len();
         }
 
         len
     }
 
-    pub fn read(bytes: &mut Bytes) -> Result<Option<UnsubscribeProperties>, Error> {
+    pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let mut user_properties = Vec::new();
 
         let (properties_len_len, properties_len) = length(bytes.iter())?;
@@ -132,14 +135,14 @@ impl UnsubscribeProperties {
             }
         }
 
-        Ok(Some(UnsubscribeProperties { user_properties }))
+        Ok(Some(Self { user_properties }))
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 
-        for (key, value) in self.user_properties.iter() {
+        for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
             write_mqtt_string(buffer, key);
             write_mqtt_string(buffer, value);
