@@ -2223,7 +2223,7 @@ mod test {
         let _ = connection.iter().next().expect("Should have event");
 
         client
-            .try_reauth(Some(props.clone()))
+            .try_reauth(Some(props))
             .expect("Should be able to reauth");
         let _ = connection.iter().next().expect("Should have event");
     }

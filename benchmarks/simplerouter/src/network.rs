@@ -12,7 +12,7 @@ use crate::{
     protocol::{self, Connect, Packet, v4, v5},
 };
 
-pub(crate) struct Network {
+pub struct Network {
     stream: TcpStream,
     buf: BytesMut,
     protocol_level: u8,

@@ -30,15 +30,16 @@ fn main() {
     let total_size_gb = total_size as f32 / 1024.0 / 1024.0 / 1024.0;
 
     let start = Instant::now();
-    let mut packets: Vec<ServerOp> = Vec::with_capacity(count);
+    let mut packet_count = 0usize;
 
     let len = output.written;
     let mut buffer = Cursor::new(output.bytes);
     while buffer.position() < len as u64 - 1 {
         // dbg!(buffer.position());
-        let packet = decode(&mut buffer).unwrap().unwrap();
-        packets.push(packet);
+        let _packet = decode(&mut buffer).unwrap().unwrap();
+        packet_count += 1;
     }
+    std::hint::black_box(packet_count);
 
     let elapsed_micros = start.elapsed().as_micros();
     let throughput = (total_size * 1_000_000) / elapsed_micros as usize;
@@ -101,8 +102,8 @@ use std::io::{self, Error, ErrorKind};
 
 impl Buffer {
     /// Creates a new buffer with the given size.
-    fn new(size: usize) -> Buffer {
-        Buffer {
+    fn new(size: usize) -> Self {
+        Self {
             bytes: vec![0_u8; size].into_boxed_slice(),
             written: 0,
             flushed: 0,
@@ -427,7 +428,7 @@ impl FromIterator<(String, String)> for Headers {
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
-        Headers { inner }
+        Self { inner }
     }
 }
 
@@ -443,7 +444,7 @@ impl<'a> FromIterator<(&'a String, &'a String)> for Headers {
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
-        Headers { inner }
+        Self { inner }
     }
 }
 
@@ -459,7 +460,7 @@ impl<'a> FromIterator<&'a (&'a String, &'a String)> for Headers {
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
-        Headers { inner }
+        Self { inner }
     }
 }
 
@@ -475,7 +476,7 @@ impl<'a> FromIterator<(&'a str, &'a str)> for Headers {
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
-        Headers { inner }
+        Self { inner }
     }
 }
 
@@ -491,7 +492,7 @@ impl<'a> FromIterator<&'a (&'a str, &'a str)> for Headers {
             let entry = inner.entry(k).or_insert_with(HashSet::default);
             entry.insert(v);
         }
-        Headers { inner }
+        Self { inner }
     }
 }
 
@@ -535,7 +536,7 @@ impl TryFrom<&[u8]> for Headers {
             }
         }
 
-        Ok(Headers { inner })
+        Ok(Self { inner })
     }
 }
 

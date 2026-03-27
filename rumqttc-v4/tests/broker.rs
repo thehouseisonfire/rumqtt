@@ -30,7 +30,7 @@ impl Broker {
     /// Panics if the test listener cannot be bound or if the initial CONNECT
     /// handshake cannot be completed.
     #[allow(dead_code)]
-    pub async fn new(port: u16, connack: u8, session_saved: bool) -> Broker {
+    pub async fn new(port: u16, connack: u8, session_saved: bool) -> Self {
         let addr = format!("127.0.0.1:{port}");
         let listener = TcpListener::bind(&addr).await.unwrap();
         Self::from_listener(listener, connack, session_saved).await
@@ -42,7 +42,7 @@ impl Broker {
     ///
     /// Panics if accepting the test connection, reading the initial packet, or
     /// writing the `CONNACK` fails unexpectedly.
-    pub async fn from_listener(listener: TcpListener, connack: u8, session_saved: bool) -> Broker {
+    pub async fn from_listener(listener: TcpListener, connack: u8, session_saved: bool) -> Self {
         let (stream, _) = listener.accept().await.unwrap();
         let mut framed = Network::new(stream, 10 * 1024);
         let mut incoming = VecDeque::new();
@@ -58,7 +58,7 @@ impl Broker {
                     ),
                     1 => ConnAck::new(ConnectReturnCode::BadUserNamePassword, false),
                     _ => {
-                        return Broker {
+                        return Self {
                             framed,
                             incoming,
                             outgoing_tx,
@@ -74,7 +74,7 @@ impl Broker {
             }
         }
 
-        Broker {
+        Self {
             framed,
             incoming: VecDeque::new(),
             outgoing_tx,
@@ -193,7 +193,7 @@ impl Broker {
     ///
     /// Panics if the internal test channel is closed while the spawned task is
     /// sending publishes.
-    pub fn spawn_publishes(&mut self, count: u8, qos: QoS, delay: u64) {
+    pub fn spawn_publishes(&self, count: u8, qos: QoS, delay: u64) {
         let tx = self.outgoing_tx.clone();
 
         task::spawn(async move {
@@ -256,9 +256,9 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn new(socket: impl N + 'static, max_incoming_size: usize) -> Network {
+    pub fn new(socket: impl N + 'static, max_incoming_size: usize) -> Self {
         let socket = Box::new(socket) as Box<dyn N>;
-        Network {
+        Self {
             socket,
             read: BytesMut::with_capacity(10 * 1024),
             write: BytesMut::with_capacity(10 * 1024),

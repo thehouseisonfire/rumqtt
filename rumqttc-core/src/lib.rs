@@ -150,7 +150,7 @@ impl Default for TlsConfiguration {
 #[cfg(feature = "use-rustls-no-provider")]
 impl From<ClientConfig> for TlsConfiguration {
     fn from(config: ClientConfig) -> Self {
-        TlsConfiguration::Rustls(Arc::new(config))
+        Self::Rustls(Arc::new(config))
     }
 }
 
@@ -174,8 +174,8 @@ pub struct NetworkOptions {
 
 impl NetworkOptions {
     #[must_use]
-    pub fn new() -> Self {
-        NetworkOptions {
+    pub const fn new() -> Self {
+        Self {
             tcp_send_buffer_size: None,
             tcp_recv_buffer_size: None,
             tcp_nodelay: false,
@@ -185,27 +185,27 @@ impl NetworkOptions {
         }
     }
 
-    pub fn set_tcp_nodelay(&mut self, nodelay: bool) {
+    pub const fn set_tcp_nodelay(&mut self, nodelay: bool) {
         self.tcp_nodelay = nodelay;
     }
 
-    pub fn set_tcp_send_buffer_size(&mut self, size: u32) {
+    pub const fn set_tcp_send_buffer_size(&mut self, size: u32) {
         self.tcp_send_buffer_size = Some(size);
     }
 
-    pub fn set_tcp_recv_buffer_size(&mut self, size: u32) {
+    pub const fn set_tcp_recv_buffer_size(&mut self, size: u32) {
         self.tcp_recv_buffer_size = Some(size);
     }
 
     /// set connection timeout in secs
-    pub fn set_connection_timeout(&mut self, timeout: u64) -> &mut Self {
+    pub const fn set_connection_timeout(&mut self, timeout: u64) -> &mut Self {
         self.conn_timeout = timeout;
         self
     }
 
     /// get timeout in secs
     #[must_use]
-    pub fn connection_timeout(&self) -> u64 {
+    pub const fn connection_timeout(&self) -> u64 {
         self.conn_timeout
     }
 

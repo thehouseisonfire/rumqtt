@@ -32,11 +32,12 @@ fn main() {
     // --------------------------- v4 read throughput -------------------------------
 
     let start = Instant::now();
-    let mut packets = Vec::with_capacity(count);
+    let mut packet_count = 0usize;
     while output.has_remaining() {
-        let packet = Packet::read(&mut output, 10 * 1024).unwrap();
-        packets.push(packet);
+        let _packet = Packet::read(&mut output, 10 * 1024).unwrap();
+        packet_count += 1;
     }
+    std::hint::black_box(packet_count);
 
     let elapsed_micros = start.elapsed().as_micros();
     let throughput = (total_size * 1_000_000) / elapsed_micros as usize;

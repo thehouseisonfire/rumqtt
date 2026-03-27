@@ -1418,7 +1418,7 @@ mod test {
         assert_eq!(mqtt.inflight, 1);
 
         // Now there should be space in the outgoing queue
-        mqtt.outgoing_publish(publish.clone()).unwrap();
+        mqtt.outgoing_publish(publish).unwrap();
         assert_eq!(mqtt.last_pkid, 0);
         assert_eq!(mqtt.inflight, 2);
     }
@@ -1967,7 +1967,7 @@ mod test {
         };
         let disconnect = Disconnect::new_with_properties(
             DisconnectReasonCode::ImplementationSpecificError,
-            properties.clone(),
+            properties,
         );
 
         let packet = mqtt

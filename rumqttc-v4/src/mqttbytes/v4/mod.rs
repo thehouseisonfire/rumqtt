@@ -190,7 +190,7 @@ const fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Resu
 }
 
 /// Return number of remaining length bytes required for encoding length
-fn len_len(len: usize) -> usize {
+const fn len_len(len: usize) -> usize {
     mqttbytes_core::primitives::len_len(len)
 }
 
