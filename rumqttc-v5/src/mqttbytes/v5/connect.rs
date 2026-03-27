@@ -1,6 +1,8 @@
 use super::*;
 use bytes::{Buf, Bytes};
 
+type ConnectReadParts = (Connect, Option<LastWill>, ConnectAuth);
+
 /// Connection packet initiated by the client
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connect {
@@ -14,11 +16,7 @@ pub struct Connect {
 }
 
 impl Connect {
-    #[allow(clippy::type_complexity)]
-    pub fn read(
-        fixed_header: FixedHeader,
-        mut bytes: Bytes,
-    ) -> Result<(Connect, Option<LastWill>, ConnectAuth), Error> {
+    pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<ConnectReadParts, Error> {
         let variable_header_index = fixed_header.fixed_header_len;
         bytes.advance(variable_header_index);
 
