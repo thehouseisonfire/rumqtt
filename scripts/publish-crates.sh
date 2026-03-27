@@ -158,7 +158,13 @@ cut_changelog() {
   VERSION="$version" TODAY="$today" perl -0pi -e '
     my $version = $ENV{VERSION};
     my $today = $ENV{TODAY};
-    my $replacement = <<"EOF";
+    s{
+      ## \s \[Unreleased\] \n \n
+      (.*?)
+      \n \n --- \n
+    }{
+      my $unreleased = $1;
+      <<"EOF";
 ## [Unreleased]
 
 ### Added
@@ -172,16 +178,11 @@ cut_changelog() {
 
 ## [rumqttc-next $version] - $today
 
-$1
+$unreleased
 
 ---
 EOF
-
-    s{
-      ## \s \[Unreleased\] \n
-      (.*?)
-      \n---\n
-    }{$replacement}xs
+    }xse
       or die "failed to cut CHANGELOG.md\n";
   ' CHANGELOG.md
 }
