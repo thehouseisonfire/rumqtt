@@ -5,6 +5,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Add `SessionStateMismatch` error and `reconcile_connack_session()` validation to reject broker replies where `session_present` contradicts the client's `clean_session`/`clean_start` setting.
 ### Security
 
 ---

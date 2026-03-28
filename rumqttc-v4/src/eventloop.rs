@@ -104,6 +104,13 @@ pub enum ConnectionError {
     ConnectionRefused(ConnectReturnCode),
     #[error("Expected ConnAck packet, received: {0:?}")]
     NotConnAck(Packet),
+    #[error(
+        "Broker replied with session_present={session_present} for clean_session={clean_session}"
+    )]
+    SessionStateMismatch {
+        clean_session: bool,
+        session_present: bool,
+    },
     #[error("Broker target is incompatible with the selected transport")]
     BrokerTransportMismatch,
     /// All request senders have been dropped. Use `AsyncClient::disconnect` for MQTT-level
@@ -152,6 +159,22 @@ pub enum Event {
 }
 
 impl EventLoop {
+    fn reconcile_connack_session(&mut self, session_present: bool) -> Result<(), ConnectionError> {
+        let clean_session = self.mqtt_options.clean_session();
+        if clean_session && session_present {
+            return Err(ConnectionError::SessionStateMismatch {
+                clean_session,
+                session_present,
+            });
+        }
+
+        if !session_present {
+            self.reset_session_state();
+        }
+
+        Ok(())
+    }
+
     /// New MQTT `EventLoop`
     ///
     /// When connection encounters critical errors (like auth failure), user has a choice to
@@ -279,10 +302,7 @@ impl EventLoop {
                 Ok(inner) => inner?,
                 Err(_) => return Err(ConnectionError::NetworkTimeout),
             };
-            // Last session might contain packets which aren't acked. If it's a new session, clear the pending packets and any existing collision state.
-            if !connack.session_present {
-                self.reset_session_state();
-            }
+            self.reconcile_connack_session(connack.session_present)?;
             self.network = Some(network);
 
             if self.keepalive_timeout.is_none() && !self.mqtt_options.keep_alive.is_zero() {
@@ -752,6 +772,15 @@ mod tests {
         eventloop.pending.front().map(|envelope| &envelope.request)
     }
 
+    fn build_eventloop_with_pending(clean_session: bool) -> EventLoop {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_clean_session(clean_session);
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        push_pending(&mut eventloop, Request::PingReq(PingReq));
+        eventloop
+    }
+
     #[test]
     fn eventloop_new_keeps_internal_sender_alive() {
         let options = MqttOptions::new("test-client", "localhost");
@@ -1164,5 +1193,48 @@ mod tests {
             notice.wait_async().await.unwrap_err(),
             PublishNoticeError::SessionReset
         );
+    }
+
+    #[test]
+    fn connack_reconcile_rejects_clean_session_with_session_present() {
+        let mut eventloop = build_eventloop_with_pending(true);
+
+        let err = eventloop.reconcile_connack_session(true).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::SessionStateMismatch {
+                clean_session: true,
+                session_present: true
+            }
+        ));
+        assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[test]
+    fn connack_reconcile_resets_pending_when_clean_session_gets_new_session() {
+        let mut eventloop = build_eventloop_with_pending(true);
+
+        eventloop.reconcile_connack_session(false).unwrap();
+
+        assert!(eventloop.pending_is_empty());
+    }
+
+    #[test]
+    fn connack_reconcile_resets_pending_when_resumed_session_is_missing() {
+        let mut eventloop = build_eventloop_with_pending(false);
+
+        eventloop.reconcile_connack_session(false).unwrap();
+
+        assert!(eventloop.pending_is_empty());
+    }
+
+    #[test]
+    fn connack_reconcile_keeps_pending_when_resumed_session_exists() {
+        let mut eventloop = build_eventloop_with_pending(false);
+
+        eventloop.reconcile_connack_session(true).unwrap();
+
+        assert_eq!(eventloop.pending_len(), 1);
     }
 }
