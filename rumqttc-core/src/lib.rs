@@ -221,6 +221,47 @@ impl NetworkOptions {
     }
 }
 
+fn configure_tcp_socket(socket: &TcpSocket, network_options: &NetworkOptions) -> io::Result<()> {
+    socket.set_nodelay(network_options.tcp_nodelay)?;
+
+    if let Some(send_buff_size) = network_options.tcp_send_buffer_size {
+        socket.set_send_buffer_size(send_buff_size)?;
+    }
+    if let Some(recv_buffer_size) = network_options.tcp_recv_buffer_size {
+        socket.set_recv_buffer_size(recv_buffer_size)?;
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    {
+        if let Some(bind_device) = &network_options.bind_device {
+            socket.bind_device(Some(bind_device.as_bytes()))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Connects a single resolved socket address using the provided [`NetworkOptions`].
+///
+/// This is the per-address building block used by the default sequential dialer and by callers
+/// that want to apply a custom scheduling policy across multiple resolved addresses.
+///
+/// # Errors
+///
+/// Returns any socket construction, socket configuration, or connect error encountered.
+pub async fn connect_socket_addr(
+    addr: SocketAddr,
+    network_options: NetworkOptions,
+) -> io::Result<TcpStream> {
+    let socket = match addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4()?,
+        SocketAddr::V6(_) => TcpSocket::new_v6()?,
+    };
+
+    configure_tcp_socket(&socket, &network_options)?;
+    socket.connect(addr).await
+}
+
 /// Default TCP socket connection logic used by the MQTT event loop.
 ///
 /// This resolves the host, applies [`NetworkOptions`] on each candidate socket,
@@ -239,31 +280,10 @@ pub async fn default_socket_connect(
     let mut last_err = None;
 
     for addr in addrs {
-        let socket = match addr {
-            SocketAddr::V4(_) => TcpSocket::new_v4()?,
-            SocketAddr::V6(_) => TcpSocket::new_v6()?,
-        };
-
-        socket.set_nodelay(network_options.tcp_nodelay)?;
-
-        if let Some(send_buff_size) = network_options.tcp_send_buffer_size {
-            socket.set_send_buffer_size(send_buff_size)?;
-        }
-        if let Some(recv_buffer_size) = network_options.tcp_recv_buffer_size {
-            socket.set_recv_buffer_size(recv_buffer_size)?;
-        }
-
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        {
-            if let Some(bind_device) = &network_options.bind_device {
-                socket.bind_device(Some(bind_device.as_bytes()))?;
-            }
-        }
-
-        match socket.connect(addr).await {
-            Ok(s) => return Ok(s),
-            Err(e) => {
-                last_err = Some(e);
+        match connect_socket_addr(addr, network_options.clone()).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                last_err = Some(err);
             }
         }
     }
