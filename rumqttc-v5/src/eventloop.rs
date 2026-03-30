@@ -612,7 +612,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                         &domain,
                         port,
                         options.network_options(),
-                        options.socket_connector(),
+                        Some(options.effective_socket_connector()),
                     )
                     .await?
             }

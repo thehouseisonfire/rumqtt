@@ -633,7 +633,12 @@ async fn network_connect(
         match options.proxy() {
             Some(proxy) => {
                 proxy
-                    .connect(&domain, port, network_options, options.socket_connector())
+                    .connect(
+                        &domain,
+                        port,
+                        network_options,
+                        Some(options.effective_socket_connector()),
+                    )
                     .await?
             }
             None => {

@@ -11,9 +11,13 @@ extern crate log;
 
 use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
+use std::io;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::{TcpStream, lookup_host};
+use tokio::task::JoinSet;
 
 #[cfg(all(feature = "url", unix))]
 use percent_encoding::percent_decode_str;
@@ -157,6 +161,95 @@ impl From<Unsubscribe> for Request {
 
 /// Custom socket connector used to establish the underlying stream before optional proxy/TLS layers.
 pub(crate) type SocketConnector = rumqttc_core::SocketConnector;
+
+const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(100);
+
+async fn first_success_with_stagger<T, I, F, Fut>(
+    items: I,
+    attempt_delay: Duration,
+    connect_fn: F,
+) -> io::Result<T>
+where
+    T: Send + 'static,
+    I: IntoIterator,
+    I::Item: Send + 'static,
+    F: Fn(I::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
+{
+    let mut join_set = JoinSet::new();
+    let mut item_count = 0usize;
+
+    for (index, item) in items.into_iter().enumerate() {
+        item_count += 1;
+        let delay = attempt_delay.saturating_mul(u32::try_from(index).unwrap_or(u32::MAX));
+        let connect_fn = connect_fn.clone();
+        join_set.spawn(async move {
+            tokio::time::sleep(delay).await;
+            connect_fn(item).await
+        });
+    }
+
+    if item_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "could not resolve to any address",
+        ));
+    }
+
+    let mut last_err = None;
+
+    while let Some(task_result) = join_set.join_next().await {
+        match task_result {
+            Ok(Ok(stream)) => {
+                join_set.abort_all();
+                return Ok(stream);
+            }
+            Ok(Err(err)) => {
+                last_err = Some(err);
+            }
+            Err(err) => {
+                last_err = Some(io::Error::other(format!(
+                    "concurrent connect task failed: {err}"
+                )));
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "could not resolve to any address",
+        )
+    }))
+}
+
+async fn connect_resolved_addrs_staggered(
+    addrs: Vec<SocketAddr>,
+    network_options: NetworkOptions,
+) -> io::Result<TcpStream> {
+    first_success_with_stagger(addrs, CONNECTION_ATTEMPT_DELAY, move |addr| {
+        let network_options = network_options.clone();
+        async move { rumqttc_core::connect_socket_addr(addr, network_options).await }
+    })
+    .await
+}
+
+async fn default_socket_connect_staggered(
+    host: String,
+    network_options: NetworkOptions,
+) -> io::Result<TcpStream> {
+    let addrs = lookup_host(host).await?.collect::<Vec<_>>();
+    connect_resolved_addrs_staggered(addrs, network_options).await
+}
+
+fn default_socket_connector() -> SocketConnector {
+    Arc::new(|host, network_options| {
+        Box::pin(async move {
+            let tcp = default_socket_connect_staggered(host, network_options).await?;
+            Ok(Box::new(tcp) as Box<dyn crate::framed::AsyncReadWrite>)
+        })
+    })
+}
 
 const DEFAULT_BROKER_PORT: u16 = 1883;
 
@@ -765,9 +858,10 @@ impl MqttOptions {
         self.socket_connector.is_some()
     }
 
-    #[cfg(feature = "proxy")]
-    pub(crate) fn socket_connector(&self) -> Option<SocketConnector> {
-        self.socket_connector.clone()
+    pub(crate) fn effective_socket_connector(&self) -> SocketConnector {
+        self.socket_connector
+            .clone()
+            .unwrap_or_else(default_socket_connector)
     }
 
     pub(crate) async fn socket_connect(
@@ -775,12 +869,8 @@ impl MqttOptions {
         host: String,
         network_options: NetworkOptions,
     ) -> std::io::Result<Box<dyn crate::framed::AsyncReadWrite>> {
-        if let Some(connector) = &self.socket_connector {
-            connector(host, network_options).await
-        } else {
-            let tcp = default_socket_connect(host, network_options).await?;
-            Ok(Box::new(tcp))
-        }
+        let connector = self.effective_socket_connector();
+        connector(host, network_options).await
     }
 }
 
@@ -1009,6 +1099,115 @@ impl Debug for MqttOptions {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::net::Ipv4Addr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::net::TcpListener;
+    use tokio::runtime::Builder;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
+    #[test]
+    fn staggered_attempts_allow_later_success_to_win() {
+        runtime().block_on(async {
+            let started = Arc::new(AtomicUsize::new(0));
+            let started_for_connect = Arc::clone(&started);
+            let begin = std::time::Instant::now();
+
+            let result = first_success_with_stagger(
+                [0_u8, 1_u8],
+                std::time::Duration::from_millis(10),
+                move |attempt| {
+                    let started = Arc::clone(&started_for_connect);
+                    async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            Err(std::io::Error::other("slow failure"))
+                        } else {
+                            Ok(42_u8)
+                        }
+                    }
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result, 42);
+            assert_eq!(started.load(Ordering::SeqCst), 2);
+            assert!(begin.elapsed() < std::time::Duration::from_millis(150));
+        });
+    }
+
+    #[test]
+    fn staggered_connect_returns_invalid_input_for_empty_candidates() {
+        runtime().block_on(async {
+            let err = connect_resolved_addrs_staggered(Vec::new(), NetworkOptions::new())
+                .await
+                .unwrap_err();
+
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(err.to_string(), "could not resolve to any address");
+        });
+    }
+
+    #[test]
+    fn staggered_connect_tries_later_candidates() {
+        runtime().block_on(async {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let good_addr = listener.local_addr().unwrap();
+
+            let unused_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let bad_addr = unused_listener.local_addr().unwrap();
+            drop(unused_listener);
+
+            let accept_task = tokio::spawn(async move {
+                let (_stream, _) = listener.accept().await.unwrap();
+            });
+
+            let stream =
+                connect_resolved_addrs_staggered(vec![bad_addr, good_addr], NetworkOptions::new())
+                    .await
+                    .unwrap();
+            assert_eq!(stream.peer_addr().unwrap(), good_addr);
+
+            accept_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn socket_connect_uses_custom_connector_over_default() {
+        runtime().block_on(async {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let good_addr = listener.local_addr().unwrap();
+            let used_custom = Arc::new(AtomicUsize::new(0));
+            let used_custom_for_connector = Arc::clone(&used_custom);
+
+            let accept_task = tokio::spawn(async move {
+                let (_stream, _) = listener.accept().await.unwrap();
+            });
+
+            let mut options = MqttOptions::new("test-client", "localhost");
+            options.set_socket_connector(move |_host, _network_options| {
+                let used_custom = Arc::clone(&used_custom_for_connector);
+                async move {
+                    used_custom.fetch_add(1, Ordering::SeqCst);
+                    TcpStream::connect(good_addr).await
+                }
+            });
+
+            assert!(options.has_socket_connector());
+            options
+                .socket_connect("invalid.invalid:1883".to_owned(), NetworkOptions::new())
+                .await
+                .unwrap();
+
+            assert_eq!(used_custom.load(Ordering::SeqCst), 1);
+            accept_task.await.unwrap();
+        });
+    }
 
     #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
     mod request_modifier_tests {
