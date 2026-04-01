@@ -15,7 +15,6 @@ const PHASE_TIMEOUT: Duration = Duration::from_secs(5);
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const KEEP_ALIVE_EARLY_TOLERANCE: Duration = Duration::from_secs(1);
 const KEEP_ALIVE_LATE_TOLERANCE: Duration = Duration::from_secs(2);
-
 async fn reserve_listener() -> (TcpListener, u16) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

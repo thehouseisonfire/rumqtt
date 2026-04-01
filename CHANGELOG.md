@@ -1,12 +1,15 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v4/v5: Add `NetworkOptions::set_bind_addr(SocketAddr)` to bind outgoing TCP sockets to a specific local address before connect.
+- `rumqttc` v4/v5: Add `TlsConfiguration::simple_native(...)` for native-tls client configuration, including secure websocket transports.
 ### Changed
 ### Deprecated
 ### Removed
 ### Fixed
 - `rumqttc` v4/v5: Add `SessionStateMismatch` error and `reconcile_connack_session()` validation to reject broker replies where `session_present` contradicts the client's `clean_session`/`clean_start` setting.
 - `rumqttc` v4/v5: Default multi-address TCP dialing now starts resolved connection attempts with a small stagger, so a stalled first route no longer prevents later resolved addresses from being tried within the outer connect timeout.
+- `rumqttc` v4/v5: Clarify that `NetworkOptions::set_bind_addr(...:fixed_port)` trades away same-family staggered fallback. With a fixed local port, the default dialer keeps one active candidate at a time until it completes or the overall connect timeout expires.
 ### Security
 
 ---

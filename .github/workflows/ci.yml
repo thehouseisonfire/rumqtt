@@ -83,6 +83,11 @@ jobs:
             cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v4 --no-report nextest
             cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v5 --no-report nextest
 
+      - name: Test native-tls WSS integration
+        run: |
+            cargo test --manifest-path rumqttc-v4/Cargo.toml --no-default-features --features "websocket,use-native-tls" --test websocket_integration
+            cargo test --manifest-path rumqttc-v5/Cargo.toml --no-default-features --features "websocket,use-native-tls" --test websocket_integration
+
       - name: Verify rustls provider conflict guard
         run: |
             if cargo check -p rumqttc-v4 --no-default-features --features "use-rustls-aws-lc,use-rustls-ring"; then

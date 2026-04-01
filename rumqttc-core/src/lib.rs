@@ -128,6 +128,14 @@ impl TlsConfiguration {
 
     #[cfg(feature = "use-native-tls")]
     #[must_use]
+    /// Builds a native-tls configuration from PEM CA bytes and optional
+    /// PKCS#12 client identity data.
+    pub fn simple_native(ca: Vec<u8>, client_auth: Option<(Vec<u8>, String)>) -> Self {
+        Self::SimpleNative { ca, client_auth }
+    }
+
+    #[cfg(feature = "use-native-tls")]
+    #[must_use]
     pub fn default_native() -> Self {
         Self::Native
     }
@@ -168,6 +176,7 @@ pub struct NetworkOptions {
     tcp_recv_buffer_size: Option<u32>,
     tcp_nodelay: bool,
     conn_timeout: u64,
+    bind_addr: Option<SocketAddr>,
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     bind_device: Option<String>,
 }
@@ -180,6 +189,7 @@ impl NetworkOptions {
             tcp_recv_buffer_size: None,
             tcp_nodelay: false,
             conn_timeout: 5,
+            bind_addr: None,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             bind_device: None,
         }
@@ -209,6 +219,26 @@ impl NetworkOptions {
         self.conn_timeout
     }
 
+    /// Bind a connection to a specific local socket address.
+    ///
+    /// When the address uses a fixed nonzero port, the default multi-address
+    /// dialer avoids overlapping attempts to prevent `AddrInUse`, which means
+    /// same-family fallback attempts are no longer staggered in parallel.
+    ///
+    /// In that mode, an earlier candidate keeps the fixed port until it
+    /// completes or the overall connect timeout expires. This preserves source
+    /// port stability, but gives up happy-eyeballs-style fallback across
+    /// same-family addresses.
+    pub const fn set_bind_addr(&mut self, bind_addr: SocketAddr) -> &mut Self {
+        self.bind_addr = Some(bind_addr);
+        self
+    }
+
+    #[must_use]
+    pub const fn bind_addr(&self) -> Option<SocketAddr> {
+        self.bind_addr
+    }
+
     /// bind connection to a specific network device by name
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[cfg_attr(
@@ -229,6 +259,10 @@ fn configure_tcp_socket(socket: &TcpSocket, network_options: &NetworkOptions) ->
     }
     if let Some(recv_buffer_size) = network_options.tcp_recv_buffer_size {
         socket.set_recv_buffer_size(recv_buffer_size)?;
+    }
+
+    if let Some(bind_addr) = network_options.bind_addr {
+        socket.bind(bind_addr)?;
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -298,7 +332,12 @@ pub async fn default_socket_connect(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     use super::TlsConfiguration;
+    use super::{NetworkOptions, connect_socket_addr, default_socket_connect};
+    use std::io;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+    use tokio::net::TcpListener;
 
     #[cfg(all(
         feature = "use-rustls-no-provider",
@@ -319,5 +358,126 @@ mod tests {
             TlsConfiguration::default_native(),
             TlsConfiguration::Native
         ));
+    }
+
+    #[cfg(feature = "use-native-tls")]
+    #[test]
+    fn simple_native_returns_simple_native_variant() {
+        let config = TlsConfiguration::simple_native(
+            Vec::from("Test CA"),
+            Some((vec![1, 2, 3], String::from("secret"))),
+        );
+
+        assert!(matches!(
+            config,
+            TlsConfiguration::SimpleNative {
+                ca,
+                client_auth: Some((identity, password))
+            } if ca == b"Test CA" && identity == vec![1, 2, 3] && password == "secret"
+        ));
+    }
+
+    #[tokio::test]
+    async fn connect_socket_addr_succeeds_with_ipv4_bind_addr() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let listener_addr = listener.local_addr().unwrap();
+
+        let accept = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            drop(stream);
+            peer_addr
+        });
+
+        let mut network_options = NetworkOptions::new();
+        network_options.set_bind_addr(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)));
+
+        let stream = connect_socket_addr(listener_addr, network_options)
+            .await
+            .unwrap();
+        let local_addr = stream.local_addr().unwrap();
+        assert!(local_addr.ip().is_loopback());
+        drop(stream);
+
+        let peer_addr = accept.await.unwrap();
+        assert_eq!(peer_addr.ip(), local_addr.ip());
+    }
+
+    #[tokio::test]
+    async fn connect_socket_addr_returns_error_for_mismatched_bind_addr_family() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let listener_addr = listener.local_addr().unwrap();
+
+        let mut network_options = NetworkOptions::new();
+        network_options.set_bind_addr(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::LOCALHOST,
+            0,
+            0,
+            0,
+        )));
+
+        let err = connect_socket_addr(listener_addr, network_options)
+            .await
+            .unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    #[tokio::test]
+    async fn connect_socket_addr_succeeds_with_ipv6_bind_addr() {
+        let listener = match TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await {
+            Ok(listener) => listener,
+            Err(_) => return,
+        };
+        let listener_addr = listener.local_addr().unwrap();
+
+        let accept = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            drop(stream);
+            peer_addr
+        });
+
+        let mut network_options = NetworkOptions::new();
+        network_options.set_bind_addr(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::LOCALHOST,
+            0,
+            0,
+            0,
+        )));
+
+        let stream = connect_socket_addr(listener_addr, network_options)
+            .await
+            .unwrap();
+        let local_addr = stream.local_addr().unwrap();
+        assert_eq!(local_addr.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+        drop(stream);
+
+        let peer_addr = accept.await.unwrap();
+        assert_eq!(peer_addr.ip(), local_addr.ip());
+    }
+
+    #[tokio::test]
+    async fn default_socket_connect_still_connects_without_bind_addr() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let accept = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream);
+        });
+
+        let stream = default_socket_connect(addr.to_string(), NetworkOptions::new())
+            .await
+            .unwrap();
+        assert!(stream.local_addr().unwrap().ip().is_loopback());
+        drop(stream);
+        accept.await.unwrap();
+    }
+
+    #[test]
+    fn bind_addr_returns_configured_socket_addr() {
+        let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1883));
+        let mut network_options = NetworkOptions::new();
+        network_options.set_bind_addr(bind_addr);
+
+        assert_eq!(network_options.bind_addr(), Some(bind_addr));
     }
 }

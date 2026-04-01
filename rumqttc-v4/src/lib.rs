@@ -223,14 +223,101 @@ where
     }))
 }
 
+async fn first_success_sequential<T, I, F, Fut>(items: I, connect_fn: F) -> io::Result<T>
+where
+    I: IntoIterator,
+    F: Fn(I::Item) -> Fut,
+    Fut: std::future::Future<Output = io::Result<T>>,
+{
+    let mut item_count = 0usize;
+    let mut last_err = None;
+
+    for item in items {
+        item_count += 1;
+        match connect_fn(item).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    if item_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "could not resolve to any address",
+        ));
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "could not resolve to any address",
+        )
+    }))
+}
+
+fn should_stagger_connect_attempts(network_options: &NetworkOptions) -> bool {
+    network_options
+        .bind_addr()
+        .is_none_or(|bind_addr| bind_addr.port() == 0)
+}
+
+async fn connect_with_retry_mode<T, I, F, Fut>(
+    items: I,
+    network_options: NetworkOptions,
+    connect_fn: F,
+) -> io::Result<T>
+where
+    T: Send + 'static,
+    I: IntoIterator,
+    I::Item: Send + 'static,
+    F: Fn(I::Item, NetworkOptions) -> Fut + Send + Sync + Clone + 'static,
+    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
+{
+    connect_with_retry_mode_and_delay(items, network_options, CONNECTION_ATTEMPT_DELAY, connect_fn)
+        .await
+}
+
+async fn connect_with_retry_mode_and_delay<T, I, F, Fut>(
+    items: I,
+    network_options: NetworkOptions,
+    connection_attempt_delay: Duration,
+    connect_fn: F,
+) -> io::Result<T>
+where
+    T: Send + 'static,
+    I: IntoIterator,
+    I::Item: Send + 'static,
+    F: Fn(I::Item, NetworkOptions) -> Fut + Send + Sync + Clone + 'static,
+    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
+{
+    if should_stagger_connect_attempts(&network_options) {
+        first_success_with_stagger(items, connection_attempt_delay, move |item| {
+            let network_options = network_options.clone();
+            let connect_fn = connect_fn.clone();
+            async move { connect_fn(item, network_options).await }
+        })
+        .await
+    } else {
+        first_success_sequential(items, move |item| {
+            let network_options = network_options.clone();
+            let connect_fn = connect_fn.clone();
+            async move { connect_fn(item, network_options).await }
+        })
+        .await
+    }
+}
+
 async fn connect_resolved_addrs_staggered(
     addrs: Vec<SocketAddr>,
     network_options: NetworkOptions,
 ) -> io::Result<TcpStream> {
-    first_success_with_stagger(addrs, CONNECTION_ATTEMPT_DELAY, move |addr| {
-        let network_options = network_options.clone();
-        async move { rumqttc_core::connect_socket_addr(addr, network_options).await }
-    })
+    connect_with_retry_mode(
+        addrs,
+        network_options,
+        move |addr, network_options| async move {
+            rumqttc_core::connect_socket_addr(addr, network_options).await
+        },
+    )
     .await
 }
 
@@ -896,7 +983,7 @@ pub enum OptionError {
 
     #[cfg(feature = "websocket")]
     #[error(
-        "Secure websocket URLs require Broker::websocket(\"ws://...\") plus MqttOptions::set_transport(Transport::wss(...))."
+        "Secure websocket URLs require Broker::websocket(\"ws://...\") plus MqttOptions::set_transport(Transport::wss_with_config(...))."
     )]
     WssRequiresExplicitTransport,
 
@@ -1099,11 +1186,12 @@ impl Debug for MqttOptions {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::net::{TcpListener, TcpSocket};
     use tokio::runtime::Builder;
+    use tokio::sync::Notify;
 
     fn runtime() -> tokio::runtime::Runtime {
         Builder::new_current_thread().enable_all().build().unwrap()
@@ -1174,6 +1262,111 @@ mod test {
             assert_eq!(stream.peer_addr().unwrap(), good_addr);
 
             accept_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn fixed_bind_port_retry_mode_keeps_slow_first_candidate_alive() {
+        runtime().block_on(async {
+            let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let bind_port = reserved.local_addr().unwrap().port();
+            drop(reserved);
+
+            let mut network_options = NetworkOptions::new();
+            network_options.set_bind_addr(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::LOCALHOST,
+                bind_port,
+            )));
+
+            let first_attempt_started = Arc::new(Notify::new());
+            let second_attempt_started = Arc::new(AtomicBool::new(false));
+
+            let mut connect_task = tokio::spawn({
+                let first_attempt_started = Arc::clone(&first_attempt_started);
+                let second_attempt_started = Arc::clone(&second_attempt_started);
+                let network_options = network_options.clone();
+                async move {
+                    connect_with_retry_mode_and_delay(
+                        [0_u8, 1_u8],
+                        network_options,
+                        Duration::from_millis(10),
+                        move |attempt, network_options| {
+                            let first_attempt_started = Arc::clone(&first_attempt_started);
+                            let second_attempt_started = Arc::clone(&second_attempt_started);
+                            async move {
+                                if attempt == 0 {
+                                    let bind_addr = network_options.bind_addr().unwrap();
+                                    let socket = match bind_addr {
+                                        SocketAddr::V4(_) => TcpSocket::new_v4()?,
+                                        SocketAddr::V6(_) => TcpSocket::new_v6()?,
+                                    };
+                                    socket.bind(bind_addr)?;
+                                    first_attempt_started.notify_one();
+                                    std::future::pending::<io::Result<()>>().await
+                                } else {
+                                    second_attempt_started.store(true, Ordering::SeqCst);
+                                    let _ = network_options;
+                                    Ok(())
+                                }
+                            }
+                        },
+                    )
+                    .await
+                }
+            });
+
+            first_attempt_started.notified().await;
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut connect_task)
+                    .await
+                    .is_err(),
+                "fixed-port dialing should keep the first slow candidate alive instead of capping it to the stagger delay"
+            );
+            assert!(
+                !second_attempt_started.load(Ordering::SeqCst),
+                "fixed-port dialing should not start later same-family candidates while the first is still pending"
+            );
+            connect_task.abort();
+        });
+    }
+
+    #[test]
+    fn fixed_bind_port_resolved_addrs_try_later_candidates() {
+        runtime().block_on(async {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let good_addr = listener.local_addr().unwrap();
+
+            let unused_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let bad_addr = unused_listener.local_addr().unwrap();
+            drop(unused_listener);
+
+            let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let bind_port = reserved.local_addr().unwrap().port();
+            drop(reserved);
+
+            let mut network_options = NetworkOptions::new();
+            network_options.set_bind_addr(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::LOCALHOST,
+                bind_port,
+            )));
+
+            let accept_task = tokio::spawn(async move {
+                let (stream, peer_addr) = listener.accept().await.unwrap();
+                drop(stream);
+                peer_addr
+            });
+
+            let stream =
+                connect_resolved_addrs_staggered(vec![bad_addr, good_addr], network_options)
+                    .await
+                    .unwrap();
+            assert_eq!(stream.peer_addr().unwrap(), good_addr);
+            drop(stream);
+
+            let peer_addr = accept_task.await.unwrap();
+            assert_eq!(peer_addr.port(), bind_port);
+            assert!(peer_addr.ip().is_loopback());
         });
     }
 
