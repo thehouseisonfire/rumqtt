@@ -150,3 +150,6 @@ Secure websocket connections upgrade the TCP stream using the selected `TlsConfi
 In dual-backend dependency graphs, avoid relying on `TlsConfiguration::default()`, because default backend selection must be explicit.
 Use `TlsConfiguration::default_rustls()` or `TlsConfiguration::default_native()` (when available) or pass an explicit configuration to
 `Transport::tls_with_config(...)` / `Transport::wss_with_config(...)`.
+
+Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` or a custom CA / identity via
+`TlsConfiguration::simple_native(...)`.

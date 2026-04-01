@@ -2,9 +2,14 @@
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
-#[cfg(all(
-    feature = "use-rustls-no-provider",
-    any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
+#[cfg(feature = "use-native-tls")]
+use rumqttc::TlsConfiguration;
+#[cfg(any(
+    feature = "use-native-tls",
+    all(
+        feature = "use-rustls-no-provider",
+        any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
+    )
 ))]
 use rumqttc::Transport;
 use rumqttc::mqttbytes::v4::{ConnAck, ConnectReturnCode, Packet};
@@ -22,12 +27,17 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
+#[cfg(feature = "use-native-tls")]
+use tokio_native_tls::{
+    TlsAcceptor as NativeTlsAcceptor,
+    native_tls::{self, Identity},
+};
 #[cfg(all(
     feature = "use-rustls-no-provider",
     any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
 ))]
 use tokio_rustls::{
-    TlsAcceptor,
+    TlsAcceptor as RustlsTlsAcceptor,
     rustls::{
         ServerConfig,
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
@@ -246,7 +256,7 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     feature = "use-rustls-no-provider",
     any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
 ))]
-fn make_wss_acceptor_and_ca() -> (TlsAcceptor, Vec<u8>) {
+fn make_rustls_wss_acceptor_and_ca() -> (RustlsTlsAcceptor, Vec<u8>) {
     install_test_rustls_provider();
 
     let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
@@ -264,9 +274,20 @@ fn make_wss_acceptor_and_ca() -> (TlsAcceptor, Vec<u8>) {
         .unwrap();
 
     (
-        TlsAcceptor::from(Arc::new(server_config)),
+        RustlsTlsAcceptor::from(Arc::new(server_config)),
         cert_pem.into_bytes(),
     )
+}
+
+#[cfg(feature = "use-native-tls")]
+fn make_native_wss_acceptor_and_ca() -> (NativeTlsAcceptor, Vec<u8>) {
+    let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let cert_pem = certified_key.cert.pem();
+    let key_pem = certified_key.signing_key.serialize_pem();
+    let identity = Identity::from_pkcs8(cert_pem.as_bytes(), key_pem.as_bytes()).unwrap();
+    let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
+
+    (NativeTlsAcceptor::from(acceptor), cert_pem.into_bytes())
 }
 
 #[cfg(all(
@@ -275,7 +296,7 @@ fn make_wss_acceptor_and_ca() -> (TlsAcceptor, Vec<u8>) {
 ))]
 #[tokio::test]
 async fn wss_client_publishes_over_tls_websocket() {
-    let (tls_acceptor, cert_pem) = make_wss_acceptor_and_ca();
+    let (tls_acceptor, cert_pem) = make_rustls_wss_acceptor_and_ca();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -319,13 +340,62 @@ async fn wss_client_publishes_over_tls_websocket() {
     assert_eq!(publish_count.load(Ordering::SeqCst), 10);
 }
 
+#[cfg(feature = "use-native-tls")]
+#[tokio::test]
+async fn wss_client_publishes_over_native_tls_websocket() {
+    let (tls_acceptor, cert_pem) = make_native_wss_acceptor_and_ca();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let publish_count = Arc::new(AtomicUsize::new(0));
+    let server_publish_count = Arc::clone(&publish_count);
+
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let tls_stream = tls_acceptor.accept(stream).await.unwrap();
+
+        let mut websocket = accept_hdr_async(tls_stream, websocket_handshake_callback)
+            .await
+            .unwrap();
+        process_websocket_connection(&mut websocket, &server_publish_count, None).await;
+    });
+
+    let mut mqtt_options = MqttOptions::new(
+        "wss-native-adapter-test",
+        Broker::websocket(format!("ws://localhost:{port}/mqtt")).expect("valid websocket broker"),
+    );
+    mqtt_options.set_transport(Transport::wss_with_config(TlsConfiguration::simple_native(
+        cert_pem, None,
+    )));
+    mqtt_options.set_keep_alive(2);
+
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 20);
+    let eventloop_task = tokio::spawn(async move {
+        loop {
+            let _ = eventloop.poll().await;
+        }
+    });
+
+    for index in 0..10 {
+        publish_with_retry(&client, [0xCD, index]).await;
+    }
+
+    wait_for_at_least(&publish_count, 10, Duration::from_secs(10)).await;
+
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
+    server_task.await.unwrap();
+
+    assert_eq!(publish_count.load(Ordering::SeqCst), 10);
+}
+
 #[cfg(all(
     feature = "use-rustls-no-provider",
     any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
 ))]
 #[tokio::test]
 async fn wss_client_reconnects_and_delivers_all_messages() {
-    let (tls_acceptor, cert_pem) = make_wss_acceptor_and_ca();
+    let (tls_acceptor, cert_pem) = make_rustls_wss_acceptor_and_ca();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -388,6 +458,87 @@ async fn wss_client_reconnects_and_delivers_all_messages() {
 
     for index in FIRST_CONNECTION_MESSAGES..TOTAL_MESSAGES {
         publish_with_retry(&client, [0xEF, index as u8]).await;
+    }
+
+    wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
+
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
+
+    server_task.await.unwrap();
+
+    assert_eq!(received_count.load(Ordering::SeqCst), TOTAL_MESSAGES);
+    assert!(connection_count.load(Ordering::SeqCst) >= 2);
+}
+
+#[cfg(feature = "use-native-tls")]
+#[tokio::test]
+async fn wss_client_reconnects_and_delivers_all_messages_over_native_tls_websocket() {
+    let (tls_acceptor, cert_pem) = make_native_wss_acceptor_and_ca();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let connection_count = Arc::new(AtomicUsize::new(0));
+    let received_count = Arc::new(AtomicUsize::new(0));
+
+    let server_connection_count = Arc::clone(&connection_count);
+    let server_received_count = Arc::clone(&received_count);
+
+    let server_task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let this_connection = server_connection_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let tls_stream = tls_acceptor.accept(stream).await.unwrap();
+            let mut websocket = accept_hdr_async(tls_stream, websocket_handshake_callback)
+                .await
+                .unwrap();
+
+            let close_after_publish_count =
+                (this_connection == 1).then_some(FIRST_CONNECTION_MESSAGES);
+            process_websocket_connection(
+                &mut websocket,
+                &server_received_count,
+                close_after_publish_count,
+            )
+            .await;
+
+            if server_received_count.load(Ordering::SeqCst) >= TOTAL_MESSAGES {
+                break;
+            }
+        }
+    });
+
+    let mut mqtt_options = MqttOptions::new(
+        "wss-native-adapter-reconnect-test",
+        Broker::websocket(format!("ws://localhost:{port}/mqtt")).expect("valid websocket broker"),
+    );
+    mqtt_options.set_transport(Transport::wss_with_config(TlsConfiguration::simple_native(
+        cert_pem, None,
+    )));
+    mqtt_options.set_keep_alive(2);
+
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 100);
+    let eventloop_task = tokio::spawn(async move {
+        loop {
+            let _ = eventloop.poll().await;
+        }
+    });
+
+    for index in 0..FIRST_CONNECTION_MESSAGES {
+        publish_with_retry(&client, [0xAB, index as u8]).await;
+    }
+
+    wait_for_at_least(
+        &received_count,
+        FIRST_CONNECTION_MESSAGES,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_at_least(&connection_count, 2, Duration::from_secs(10)).await;
+
+    for index in FIRST_CONNECTION_MESSAGES..TOTAL_MESSAGES {
+        publish_with_retry(&client, [0xAB, index as u8]).await;
     }
 
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
