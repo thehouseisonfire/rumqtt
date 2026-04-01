@@ -10,6 +10,7 @@
 - `rumqttc` v4/v5: Add `SessionStateMismatch` error and `reconcile_connack_session()` validation to reject broker replies where `session_present` contradicts the client's `clean_session`/`clean_start` setting.
 - `rumqttc` v4/v5: Default multi-address TCP dialing now starts resolved connection attempts with a small stagger, so a stalled first route no longer prevents later resolved addresses from being tried within the outer connect timeout.
 - `rumqttc` v4/v5: Clarify that `NetworkOptions::set_bind_addr(...:fixed_port)` trades away same-family staggered fallback. With a fixed local port, the default dialer keeps one active candidate at a time until it completes or the overall connect timeout expires.
+- `rumqttc` v5: Classify inbound malformed/protocol-invalid decode failures more precisely and attempt the corresponding MQTT 5 `DISCONNECT` reason code (`0x81`, `0x82`, `0x95`) before terminating. The outbound `DISCONNECT` is best-effort under write-side backpressure so protocol-error handling does not hang waiting for a non-reading peer.
 ### Security
 
 ---
