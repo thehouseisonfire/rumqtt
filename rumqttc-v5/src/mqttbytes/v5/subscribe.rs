@@ -234,7 +234,7 @@ impl SubscribeProperties {
                 PropertyType::SubscriptionIdentifier => {
                     let (id_len, sub_id) = length(bytes.iter())?;
                     if sub_id == 0 {
-                        return Err(Error::SubscriptionIdZero);
+                        return Err(Error::ProtocolError);
                     }
                     cursor += id_len;
                     bytes.advance(id_len);
@@ -262,7 +262,7 @@ impl SubscribeProperties {
 
         if let Some(id) = &self.id {
             if *id == 0 {
-                return Err(Error::SubscriptionIdZero);
+                return Err(Error::ProtocolError);
             }
             buffer.put_u8(PropertyType::SubscriptionIdentifier as u8);
             write_remaining_length(buffer, *id)?;
@@ -313,7 +313,7 @@ mod test {
         let mut bytes = Bytes::from_static(&[0x02, 0x0B, 0x00]);
         let result = SubscribeProperties::read(&mut bytes);
 
-        assert!(matches!(result, Err(Error::SubscriptionIdZero)));
+        assert!(matches!(result, Err(Error::ProtocolError)));
     }
 
     #[test]
@@ -326,7 +326,7 @@ mod test {
         let mut bytes = BytesMut::new();
         let result = props.write(&mut bytes);
 
-        assert!(matches!(result, Err(Error::SubscriptionIdZero)));
+        assert!(matches!(result, Err(Error::ProtocolError)));
     }
 
     #[test]

@@ -33,8 +33,8 @@ pub enum Error {
     PacketIdZero,
     #[error("Empty Subscription")]
     EmptySubscription,
-    #[error("Subscription had id Zero")]
-    SubscriptionIdZero,
+    #[error("Packet violates the MQTT protocol")]
+    ProtocolError,
     #[error("Payload size is incorrect")]
     PayloadSizeIncorrect,
     #[error("Payload is too long")]

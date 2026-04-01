@@ -62,7 +62,7 @@ impl Publish {
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
         let qos_num = (fixed_header.byte1 & 0b0110) >> 1;
-        let qos = qos(qos_num).ok_or(Error::InvalidQoS(qos_num))?;
+        let qos = qos(qos_num).ok_or(Error::MalformedPacket)?;
         let dup = (fixed_header.byte1 & 0b1000) != 0;
         let retain = (fixed_header.byte1 & 0b0001) != 0;
 
@@ -308,6 +308,7 @@ impl PublishProperties {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
+    use crate::Packet;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 
@@ -340,5 +341,13 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn invalid_qos_bits_are_reported_as_malformed_packet() {
+        let mut frame = BytesMut::from(&[0x36, 0x02, 0x00, 0x00][..]);
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
     }
 }
