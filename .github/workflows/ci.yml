@@ -67,21 +67,46 @@ jobs:
             cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4
             cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5
 
+      - name: Check standalone crates
+        run: |
+            cargo clippy --verbose --all-targets -p mqttbytes-core-next
+            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
+            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
+
       - name: Check docs
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5
 
+      - name: Check standalone crate docs
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: |
+            cargo doc --verbose --no-deps -p mqttbytes-core-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
+
       - name: Doctests
         run: |
             cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v4
             cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v5
 
+      - name: Standalone crate doctests
+        run: |
+            cargo test --doc -p mqttbytes-core-next
+            cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-core-next
+            cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-next
+
       - name: Test rumqttc
         run: |
             cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v4 --no-report nextest
             cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v5 --no-report nextest
+
+      - name: Test standalone crates
+        run: |
+            cargo test -p mqttbytes-core-next
+            cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next
+            cargo hack --each-feature --exclude-all-features test -p rumqttc-next
 
       - name: Test native-tls WSS integration
         run: |
@@ -106,6 +131,15 @@ jobs:
             cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features -F rumqttc-v4/websocket
             cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features --features "rumqttc-v4/use-rustls-ring rumqttc-v5/use-rustls-aws-lc"
             cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features --features "rumqttc-v4/use-rustls-aws-lc rumqttc-v5/use-rustls-ring"
+
+      - name: Verify rumqttc-next feature forwarding
+        run: |
+            cargo check -p rumqttc-next --no-default-features --features websocket
+            cargo check -p rumqttc-next --no-default-features --features use-native-tls
+            cargo check -p rumqttc-next --no-default-features --features "auth-scram,url"
+
+      - name: Check workspace
+        run: cargo check --workspace
 
       - name: Combine coverage
         run: cargo llvm-cov report --lcov --output-path coverage.lcov
