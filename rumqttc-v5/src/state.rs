@@ -568,18 +568,19 @@ impl MqttState {
             });
         }
 
-        if let Some(props) = &connack.properties {
-            if let Some(topic_alias_max) = props.topic_alias_max {
-                self.broker_topic_alias_max = topic_alias_max;
-            }
+        if let Some(props) = &connack.properties
+            && let Some(topic_alias_max) = props.topic_alias_max
+        {
+            self.broker_topic_alias_max = topic_alias_max;
+        }
 
-            if let Some(max_inflight) = props.receive_max {
-                self.max_outgoing_inflight =
-                    max_inflight.min(self.max_outgoing_inflight_upper_limit);
-                // Shrinking depends on pending retransmission state in eventloop.
-                // Grow immediately so incoming/outgoing packet-id indexed tracking stays valid.
-                self.reconcile_outgoing_tracking_capacity(false);
-            }
+        if let Some(props) = &connack.properties
+            && let Some(max_inflight) = props.receive_max
+        {
+            self.max_outgoing_inflight = max_inflight.min(self.max_outgoing_inflight_upper_limit);
+            // Shrinking depends on pending retransmission state in eventloop.
+            // Grow immediately so incoming/outgoing packet-id indexed tracking stays valid.
+            self.reconcile_outgoing_tracking_capacity(false);
         }
         Ok(None)
     }
@@ -613,12 +614,12 @@ impl MqttState {
             if let Some(alias) = topic_alias {
                 self.topic_alises.insert(alias, publish.topic.clone());
             }
-        } else if let Some(alias) = topic_alias {
-            if let Some(topic) = self.topic_alises.get(&alias) {
-                topic.clone_into(&mut publish.topic);
-            } else {
-                self.handle_protocol_error()?;
-            }
+        } else if let Some(alias) = topic_alias
+            && let Some(topic) = self.topic_alises.get(&alias)
+        {
+            topic.clone_into(&mut publish.topic);
+        } else if topic_alias.is_some() {
+            self.handle_protocol_error()?;
         }
 
         match qos {
@@ -860,17 +861,16 @@ impl MqttState {
 
         let pkid = publish.pkid;
 
-        if let Some(props) = &publish.properties {
-            if let Some(alias) = props.topic_alias {
-                if alias > self.broker_topic_alias_max {
-                    // We MUST NOT send a Topic Alias that is greater than the
-                    // broker's Topic Alias Maximum.
-                    return Err(StateError::InvalidAlias {
-                        alias,
-                        max: self.broker_topic_alias_max,
-                    });
-                }
-            }
+        if let Some(props) = &publish.properties
+            && let Some(alias) = props.topic_alias
+            && alias > self.broker_topic_alias_max
+        {
+            // We MUST NOT send a Topic Alias that is greater than the
+            // broker's Topic Alias Maximum.
+            return Err(StateError::InvalidAlias {
+                alias,
+                max: self.broker_topic_alias_max,
+            });
         }
 
         let event = Event::Outgoing(Outgoing::Publish(pkid));
@@ -1018,13 +1018,13 @@ impl MqttState {
     }
 
     fn check_collision(&mut self, pkid: u16) -> Option<(Publish, Option<PublishNoticeTx>)> {
-        if let Some(publish) = &self.collision {
-            if publish.pkid == pkid {
-                return self
-                    .collision
-                    .take()
-                    .map(|publish| (publish, self.collision_notice.take()));
-            }
+        if let Some(publish) = &self.collision
+            && publish.pkid == pkid
+        {
+            return self
+                .collision
+                .take()
+                .map(|publish| (publish, self.collision_notice.take()));
         }
 
         None

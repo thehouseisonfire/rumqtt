@@ -176,13 +176,13 @@ impl Packet {
     /// Returns an error if the packet cannot be encoded within the configured
     /// packet-size limit or violates MQTT encoding rules.
     pub fn write(&self, write: &mut BytesMut, max_size: Option<u32>) -> Result<usize, Error> {
-        if let Some(max_size) = max_size {
-            if self.size() > max_size as usize {
-                return Err(Error::OutgoingPacketTooLarge {
-                    pkt_size: u32::try_from(self.size()).unwrap_or(u32::MAX),
-                    max: max_size,
-                });
-            }
+        if let Some(max_size) = max_size
+            && self.size() > max_size as usize
+        {
+            return Err(Error::OutgoingPacketTooLarge {
+                pkt_size: u32::try_from(self.size()).unwrap_or(u32::MAX),
+                max: max_size,
+            });
         }
 
         match self {
@@ -403,13 +403,13 @@ pub fn check(stream: Iter<u8>, max_packet_size: Option<u32>) -> Result<FixedHead
 
     // Don't let rogue connections attack with huge payloads.
     // Disconnect them before reading all that data
-    if let Some(max_size) = max_packet_size {
-        if fixed_header.remaining_len > max_size as usize {
-            return Err(Error::PayloadSizeLimitExceeded {
-                pkt_size: fixed_header.remaining_len,
-                max: max_size,
-            });
-        }
+    if let Some(max_size) = max_packet_size
+        && fixed_header.remaining_len > max_size as usize
+    {
+        return Err(Error::PayloadSizeLimitExceeded {
+            pkt_size: fixed_header.remaining_len,
+            max: max_size,
+        });
     }
 
     let frame_length = fixed_header.frame_length();

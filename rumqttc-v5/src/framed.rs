@@ -65,12 +65,11 @@ impl Network {
                 }
 
                 match self.framed.poll_flush_unpin(cx) {
-                    Poll::Ready(Ok(())) => Poll::Ready(()),
                     Poll::Ready(Err(err)) => {
                         trace!("dropping best-effort inbound disconnect after flush error: {err}");
                         Poll::Ready(())
                     }
-                    Poll::Pending => Poll::Ready(()),
+                    Poll::Ready(Ok(())) | Poll::Pending => Poll::Ready(()),
                 }
             }
             Poll::Ready(Err(err)) => {

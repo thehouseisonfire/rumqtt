@@ -108,6 +108,7 @@ impl Transport {
     /// Use websockets as transport
     #[cfg(feature = "websocket")]
     #[cfg_attr(docsrs, doc(cfg(feature = "websocket")))]
+    #[must_use]
     pub const fn ws() -> Self {
         Self::Ws
     }

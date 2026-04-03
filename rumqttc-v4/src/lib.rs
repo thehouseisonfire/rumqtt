@@ -382,6 +382,11 @@ impl Broker {
     }
 
     #[cfg(feature = "websocket")]
+    /// # Errors
+    ///
+    /// Returns [`OptionError::WebsocketUrl`] when `url` is not a valid websocket URL or cannot
+    /// be split into broker components, [`OptionError::WssRequiresExplicitTransport`] for `wss://`
+    /// URLs, and [`OptionError::Scheme`] for unsupported schemes.
     pub fn websocket<S: Into<String>>(url: S) -> Result<Self, OptionError> {
         let url = url.into();
         let uri = url
@@ -401,7 +406,7 @@ impl Broker {
     }
 
     #[must_use]
-    pub fn tcp_address(&self) -> Option<(&str, u16)> {
+    pub const fn tcp_address(&self) -> Option<(&str, u16)> {
         match &self.inner {
             BrokerInner::Tcp { host, port } => Some((host.as_str(), *port)),
             #[cfg(unix)]
@@ -424,7 +429,7 @@ impl Broker {
 
     #[cfg(feature = "websocket")]
     #[must_use]
-    pub fn websocket_url(&self) -> Option<&str> {
+    pub const fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
             BrokerInner::Websocket { url } => Some(url.as_str()),
             BrokerInner::Tcp { .. } => None,
@@ -574,6 +579,11 @@ impl MqttOptions {
     /// ```
     ///
     /// On Unix platforms, `unix:///tmp/mqtt.sock?client_id=123` is also supported.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`OptionError`] produced while parsing the URL, validating its scheme,
+    /// interpreting query parameters, or constructing the broker options from it.
     pub fn parse_url<S: Into<String>>(url: S) -> Result<Self, OptionError> {
         let url = url::Url::parse(&url.into())?;
         let options = Self::try_from(url)?;
@@ -1069,13 +1079,7 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             options.set_clean_session(clean_session);
         }
 
-        let username = url.username();
-        let password = url.password();
-        if password.is_some() {
-            options.set_credentials(username, password.unwrap_or_default().to_owned());
-        } else if !username.is_empty() {
-            options.set_username(username);
-        }
+        set_url_credentials(&mut options, &url);
 
         if let (Some(incoming), Some(outgoing)) = (
             queries
@@ -1144,6 +1148,16 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
         }
 
         Ok(options)
+    }
+}
+
+#[cfg(feature = "url")]
+fn set_url_credentials(options: &mut MqttOptions, url: &url::Url) {
+    let username = url.username();
+    if let Some(password) = url.password() {
+        options.set_credentials(username, password.to_owned());
+    } else if !username.is_empty() {
+        options.set_username(username);
     }
 }
 

@@ -121,7 +121,7 @@ impl Filter {
         }
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         // filter len + filter + options
         2 + self.path.len() + 1
     }
