@@ -605,23 +605,20 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
 
     let tcp_stream: Box<dyn AsyncReadWrite> = {
         #[cfg(feature = "proxy")]
-        match options.proxy() {
-            Some(proxy) => {
-                proxy
-                    .connect(
-                        &domain,
-                        port,
-                        options.network_options(),
-                        Some(options.effective_socket_connector()),
-                    )
-                    .await?
-            }
-            None => {
-                let addr = format!("{domain}:{port}");
-                options
-                    .socket_connect(addr, options.network_options())
-                    .await?
-            }
+        if let Some(proxy) = options.proxy() {
+            proxy
+                .connect(
+                    &domain,
+                    port,
+                    options.network_options(),
+                    Some(options.effective_socket_connector()),
+                )
+                .await?
+        } else {
+            let addr = format!("{domain}:{port}");
+            options
+                .socket_connect(addr, options.network_options())
+                .await?
         }
         #[cfg(not(feature = "proxy"))]
         {
@@ -728,10 +725,13 @@ async fn mqtt_connect(
     loop {
         match network.read().await? {
             Incoming::ConnAck(connack) if connack.code == ConnectReturnCode::Success => {
+                if let Some(props) = &connack.properties
+                    && let Some(keep_alive) = props.server_keep_alive
+                {
+                    options.keep_alive = Duration::from_secs(u64::from(keep_alive));
+                }
+
                 if let Some(props) = &connack.properties {
-                    if let Some(keep_alive) = props.server_keep_alive {
-                        options.keep_alive = Duration::from_secs(u64::from(keep_alive));
-                    }
                     network.set_max_outgoing_size(props.max_packet_size);
 
                     // Override local session_expiry_interval value if set by server.

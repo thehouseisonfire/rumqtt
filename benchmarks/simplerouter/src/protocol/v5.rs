@@ -46,7 +46,7 @@ pub mod connect {
             }
         }
 
-        pub fn len(&self) -> usize {
+        pub const fn len(&self) -> usize {
             let mut len = 2 + "MQTT".len() // protocol name
                               + 1            // protocol version
                               + 1            // connect flags
@@ -136,7 +136,7 @@ pub mod connect {
             }
         }
 
-        fn len(&self) -> usize {
+        const fn len(&self) -> usize {
             let mut len = 0;
             len += 2 + self.topic.len() + 2 + self.message.len();
             len
@@ -202,7 +202,7 @@ pub mod connect {
             }
         }
 
-        fn len(&self) -> usize {
+        const fn len(&self) -> usize {
             let mut len = 0;
 
             if !self.username.is_empty() {
@@ -1435,7 +1435,7 @@ pub mod subscribe {
             }
         }
 
-        pub fn len(&self) -> usize {
+        pub const fn len(&self) -> usize {
             // filter len + filter + options
             2 + self.path.len() + 1
         }

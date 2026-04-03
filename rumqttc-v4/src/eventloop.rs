@@ -630,21 +630,18 @@ async fn network_connect(
 
     let tcp_stream: Box<dyn AsyncReadWrite> = {
         #[cfg(feature = "proxy")]
-        match options.proxy() {
-            Some(proxy) => {
-                proxy
-                    .connect(
-                        &domain,
-                        port,
-                        network_options,
-                        Some(options.effective_socket_connector()),
-                    )
-                    .await?
-            }
-            None => {
-                let addr = format!("{domain}:{port}");
-                options.socket_connect(addr, network_options).await?
-            }
+        if let Some(proxy) = options.proxy() {
+            proxy
+                .connect(
+                    &domain,
+                    port,
+                    network_options,
+                    Some(options.effective_socket_connector()),
+                )
+                .await?
+        } else {
+            let addr = format!("{domain}:{port}");
+            options.socket_connect(addr, network_options).await?
         }
         #[cfg(not(feature = "proxy"))]
         {

@@ -63,7 +63,7 @@ impl Connect {
         self
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         let mut len = 2 + "MQTT".len() // protocol name
                               + 1            // protocol version
                               + 1            // connect flags
@@ -153,7 +153,7 @@ impl Connect {
         Ok(1 + count + len)
     }
 
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);
 
@@ -185,7 +185,7 @@ impl LastWill {
         }
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         let mut len = 0;
         len += 2 + self.topic.len() + 2 + self.message.len();
         len
@@ -258,7 +258,7 @@ impl ConnectAuth {
         }
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         match self {
             Self::None => 0,
             Self::Username { username } => 2 + username.len(),

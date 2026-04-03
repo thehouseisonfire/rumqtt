@@ -4,6 +4,7 @@
 - `rumqttc` v4/v5: Add `NetworkOptions::set_bind_addr(SocketAddr)` to bind outgoing TCP sockets to a specific local address before connect.
 - `rumqttc` v4/v5: Add `TlsConfiguration::simple_native(...)` for native-tls client configuration, including secure websocket transports.
 ### Changed
+- `rumqttc`: Bump workspace MSRV from Rust `1.85` to `1.89` and inherit `rust-version` from the workspace manifest so member crates stay aligned.
 ### Deprecated
 ### Removed
 ### Fixed
