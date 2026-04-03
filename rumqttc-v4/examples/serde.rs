@@ -17,7 +17,7 @@ impl TryFrom<&[u8]> for Message {
     type Error = wincode::ReadError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        wincode::deserialize(value)
+        wincode::deserialize_exact(value)
     }
 }
 
