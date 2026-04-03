@@ -12,7 +12,7 @@ struct InboundDisconnect {
 }
 
 impl InboundDisconnect {
-    fn classify(error: &mqttbytes::Error) -> Option<Self> {
+    const fn classify(error: &mqttbytes::Error) -> Option<Self> {
         let reason = match error {
             mqttbytes::Error::MalformedPacket | mqttbytes::Error::MalformedRemainingLength => {
                 DisconnectReasonCode::MalformedPacket

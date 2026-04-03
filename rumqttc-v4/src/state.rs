@@ -188,6 +188,7 @@ impl MqttState {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
+    #[must_use] 
     pub fn new(max_inflight: u16, manual_acks: bool) -> Self {
         let tracking_len = Self::warm_tracking_len(max_inflight);
         Self {
