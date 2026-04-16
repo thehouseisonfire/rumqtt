@@ -3,12 +3,38 @@ use flume::bounded;
 use rumqttc::mqttbytes::{QoS, v5::AuthProperties};
 use rumqttc::{AuthManager, Client, MqttOptions};
 #[cfg(feature = "auth-scram")]
-use scram::ScramClient;
-#[cfg(feature = "auth-scram")]
-use scram::client::ServerFirst;
+use scram::{
+    ChannelBindType, ScramAuthClient, ScramCbHelper, ScramNonce, ScramResultClient,
+    ScramSha256RustNative, scram_sync::SyncScramClient,
+};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+#[cfg(feature = "auth-scram")]
+type ScramSha256Client<'a> =
+    SyncScramClient<ScramSha256RustNative, ScramCredentials<'a>, ScramCredentials<'a>>;
+
+#[cfg(feature = "auth-scram")]
+#[derive(Clone, Copy, Debug)]
+struct ScramCredentials<'a> {
+    user: &'a str,
+    password: &'a str,
+}
+
+#[cfg(feature = "auth-scram")]
+impl ScramAuthClient for ScramCredentials<'_> {
+    fn get_username(&self) -> &str {
+        self.user
+    }
+
+    fn get_password(&self) -> &str {
+        self.password
+    }
+}
+
+#[cfg(feature = "auth-scram")]
+impl ScramCbHelper for ScramCredentials<'_> {}
 
 #[derive(Debug)]
 struct ScramAuthManager<'a> {
@@ -17,7 +43,7 @@ struct ScramAuthManager<'a> {
     #[allow(dead_code)]
     password: &'a str,
     #[cfg(feature = "auth-scram")]
-    scram: Option<ServerFirst<'a>>,
+    scram: Option<ScramSha256Client<'a>>,
 }
 
 impl<'a> ScramAuthManager<'a> {
@@ -30,11 +56,31 @@ impl<'a> ScramAuthManager<'a> {
         }
     }
 
+    #[cfg(feature = "auth-scram")]
+    fn new_scram_client(&self) -> Result<ScramSha256Client<'a>, String> {
+        let credentials = ScramCredentials {
+            user: self.user,
+            password: self.password,
+        };
+
+        SyncScramClient::new(
+            credentials,
+            ScramNonce::none().map_err(|e| e.to_string())?,
+            ChannelBindType::None,
+            credentials,
+            false,
+        )
+        .map_err(|e| e.to_string())
+    }
+
     fn auth_start(&mut self) -> Result<Option<Bytes>, String> {
         #[cfg(feature = "auth-scram")]
         {
-            let scram = ScramClient::new(self.user, self.password, None);
-            let (scram, client_first) = scram.client_first();
+            let mut scram = self.new_scram_client()?;
+            let client_first = scram
+                .init_client()
+                .unwrap_output()
+                .map_err(|e| e.to_string())?;
             self.scram = Some(scram);
 
             Ok(Some(client_first.into()))
@@ -52,34 +98,30 @@ impl<'a> AuthManager for ScramAuthManager<'a> {
     ) -> Result<Option<AuthProperties>, String> {
         #[cfg(feature = "auth-scram")]
         {
-            // Unwrap the properties.
-            let prop = auth_prop.unwrap();
+            let prop = auth_prop.ok_or_else(|| "Missing authentication properties".to_string())?;
 
-            // Check if the authentication method is SCRAM-SHA-256
-            if let Some(auth_method) = &prop.method {
-                if auth_method != "SCRAM-SHA-256" {
-                    return Err("Invalid authentication method".to_string());
-                }
-            } else {
+            if prop.method.as_deref() != Some("SCRAM-SHA-256") {
                 return Err("Invalid authentication method".to_string());
             }
 
-            if self.scram.is_none() {
-                return Err("Invalid state".to_string());
-            }
+            let scram = self
+                .scram
+                .as_mut()
+                .ok_or_else(|| "Invalid state".to_string())?;
 
-            let scram = self.scram.take().unwrap();
+            let auth_data = prop
+                .data
+                .ok_or_else(|| "Missing authentication data".to_string())
+                .and_then(|data| String::from_utf8(data.to_vec()).map_err(|e| e.to_string()))?;
 
-            let auth_data = String::from_utf8(prop.data.unwrap().to_vec()).unwrap();
-
-            // Process the server first message and reassign the SCRAM state.
-            let scram = match scram.handle_server_first(&auth_data) {
-                Ok(scram) => scram,
+            let client_final = match scram.parse_response(&auth_data) {
+                Ok(ScramResultClient::Output(client_final)) => client_final,
+                Ok(ScramResultClient::Completed) => {
+                    self.scram = None;
+                    return Ok(None);
+                }
                 Err(e) => return Err(e.to_string()),
             };
-
-            // Get the client final message and reassign the SCRAM state.
-            let (_, client_final) = scram.client_final();
 
             Ok(Some(AuthProperties {
                 method: Some("SCRAM-SHA-256".to_string()),

@@ -13,6 +13,8 @@
 - `rumqttc` v4/v5: Clarify that `NetworkOptions::set_bind_addr(...:fixed_port)` trades away same-family staggered fallback. With a fixed local port, the default dialer keeps one active candidate at a time until it completes or the overall connect timeout expires.
 - `rumqttc` v5: Classify inbound malformed/protocol-invalid decode failures more precisely and attempt the corresponding MQTT 5 `DISCONNECT` reason code (`0x81`, `0x82`, `0x95`) before terminating. The outbound `DISCONNECT` is best-effort under write-side backpressure so protocol-error handling does not hang waiting for a non-reading peer.
 ### Security
+- `rumqttc` v5 `auth-scram`: switch SCRAM backend dependency from `scram-2` to the maintained `scram-rs` crate.
+- Address security audits from `cargo audit` related to `rustls-webpki` (`RUSTSEC-2026-0098`, `RUSTSEC-2026-0099`) and `rand` (`RUSTSEC-2026-0097`).
 
 ---
 
