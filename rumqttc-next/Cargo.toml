@@ -1,6 +1,6 @@
 [package]
 name = "rumqttc-next"
-version = "0.29.0"
+version = "0.30.0"
 publish = true
 description = "MQTT 5 facade crate that re-exports rumqttc-v5-next"
 keywords = ["mqtt", "iot", "coap", "http"]
@@ -32,4 +32,4 @@ auth-scram = ["rumqttc_v5/auth-scram"]
 url = ["rumqttc_v5/url"]
 
 [dependencies]
-rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5", version = "0.29.0", default-features = false }
+rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5", version = "0.30.0", default-features = false }

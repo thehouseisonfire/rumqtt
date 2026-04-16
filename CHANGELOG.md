@@ -1,6 +1,19 @@
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+---
+
+## [rumqttc-next 0.30.0] - 16-04-2026
+
+## [Unreleased]
+
+### Added
 - `rumqttc` v4/v5: Add `NetworkOptions::set_bind_addr(SocketAddr)` to bind outgoing TCP sockets to a specific local address before connect.
 - `rumqttc` v4/v5: Add `TlsConfiguration::simple_native(...)` for native-tls client configuration, including secure websocket transports.
 ### Changed
