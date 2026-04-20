@@ -34,7 +34,7 @@ use crate::proxy::ProxyError;
 
 #[derive(Debug)]
 pub struct RequestEnvelope {
-    request: Request,
+    pub request: Request,
     notice: Option<TrackedNoticeTx>,
 }
 
@@ -140,7 +140,7 @@ pub struct EventLoop {
     /// This is intentionally dropped in the `AsyncClient::new` constructor path.
     _requests_tx: Option<Sender<RequestEnvelope>>,
     /// Pending packets from last session
-    pending: VecDeque<RequestEnvelope>,
+    pub pending: VecDeque<RequestEnvelope>,
     /// Network connection to the broker
     network: Option<Network>,
     /// Keep alive time
