@@ -24,7 +24,7 @@ impl Publish {
         payload: P,
         properties: Option<PublishProperties>,
     ) -> Self {
-        let topic = Bytes::copy_from_slice(topic.into().as_bytes());
+        let topic = Bytes::from(topic.into().into_bytes());
         Self {
             qos,
             topic,
