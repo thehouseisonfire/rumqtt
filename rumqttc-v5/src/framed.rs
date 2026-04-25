@@ -14,6 +14,7 @@ struct InboundDisconnect {
 impl InboundDisconnect {
     const fn classify(error: &mqttbytes::Error) -> Option<Self> {
         let reason = match error {
+            mqttbytes::Error::ProtocolViolation(reason) => *reason,
             mqttbytes::Error::MalformedPacket | mqttbytes::Error::MalformedRemainingLength => {
                 DisconnectReasonCode::MalformedPacket
             }
@@ -330,6 +331,31 @@ mod tests {
         assert_eq!(
             response,
             [0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_sends_topic_alias_invalid_disconnect_for_zero_topic_alias() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+
+        peer.write_all(&[0x30, 0x07, 0x00, 0x01, b'a', 0x03, 0x23, 0x00, 0x00])
+            .await
+            .unwrap();
+
+        let err = network.read().await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::ProtocolViolation(
+                DisconnectReasonCode::TopicAliasInvalid
+            ))
+        ));
+
+        let mut response = [0; 3];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [0xE0, 0x01, DisconnectReasonCode::TopicAliasInvalid as u8]
         );
     }
 

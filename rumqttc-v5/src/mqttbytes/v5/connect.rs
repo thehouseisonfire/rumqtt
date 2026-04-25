@@ -199,7 +199,11 @@ impl ConnectProperties {
                     cursor += 4;
                 }
                 PropertyType::ReceiveMaximum => {
-                    receive_maximum = Some(read_u16(bytes)?);
+                    let receive_max = read_u16(bytes)?;
+                    if receive_max == 0 {
+                        return Err(Error::ProtocolError);
+                    }
+                    receive_maximum = Some(receive_max);
                     cursor += 2;
                 }
                 PropertyType::MaximumPacketSize => {
@@ -707,6 +711,18 @@ mod test {
         let size_from_bytes = dummy_bytes.len();
 
         assert_eq!(reported_size, size_from_bytes);
+    }
+
+    #[test]
+    fn read_rejects_receive_maximum_zero() {
+        let mut bytes = Bytes::from_static(&[
+            0x03, // properties length
+            0x21, // ReceiveMaximum property
+            0x00, 0x00, // value = 0
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
     }
 
     #[test]

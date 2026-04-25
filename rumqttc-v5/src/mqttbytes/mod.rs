@@ -35,6 +35,8 @@ pub enum Error {
     EmptySubscription,
     #[error("Packet violates the MQTT protocol")]
     ProtocolError,
+    #[error("Packet violates the MQTT protocol with disconnect reason {0:?}")]
+    ProtocolViolation(v5::DisconnectReasonCode),
     #[error("Payload size is incorrect")]
     PayloadSizeIncorrect,
     #[error("Payload is too long")]
