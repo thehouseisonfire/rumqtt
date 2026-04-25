@@ -1,7 +1,7 @@
 use super::{
-    BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
-    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, write_mqtt_bytes,
-    write_mqtt_string, write_remaining_length,
+    BufMut, BytesMut, DisconnectReasonCode, Error, FixedHeader, PropertyType, QoS, len_len, length,
+    property, qos, read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32,
+    write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -209,7 +209,13 @@ impl PublishProperties {
                     cursor += 4;
                 }
                 PropertyType::TopicAlias => {
-                    topic_alias = Some(read_u16(bytes)?);
+                    let alias = read_u16(bytes)?;
+                    if alias == 0 {
+                        return Err(Error::ProtocolViolation(
+                            DisconnectReasonCode::TopicAliasInvalid,
+                        ));
+                    }
+                    topic_alias = Some(alias);
                     cursor += 2;
                 }
                 PropertyType::ResponseTopic => {
@@ -309,7 +315,7 @@ mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
     use crate::Packet;
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -349,5 +355,22 @@ mod test {
         let result = Packet::read(&mut frame, Some(1024));
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn read_rejects_topic_alias_zero() {
+        let mut bytes = Bytes::from_static(&[
+            0x03, // properties length
+            0x23, // TopicAlias property
+            0x00, 0x00, // value = 0
+        ]);
+        let result = PublishProperties::read(&mut bytes);
+
+        assert!(matches!(
+            result,
+            Err(Error::ProtocolViolation(
+                DisconnectReasonCode::TopicAliasInvalid
+            ))
+        ));
     }
 }

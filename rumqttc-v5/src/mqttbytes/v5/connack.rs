@@ -343,7 +343,11 @@ fn read_connack_property(
             *cursor += 4;
         }
         PropertyType::ReceiveMaximum => {
-            properties.receive_max = Some(read_u16(bytes)?);
+            let receive_max = read_u16(bytes)?;
+            if receive_max == 0 {
+                return Err(Error::ProtocolError);
+            }
+            properties.receive_max = Some(receive_max);
             *cursor += 2;
         }
         PropertyType::MaximumQos => {
@@ -483,7 +487,7 @@ fn connect_code(return_code: ConnectReturnCode) -> u8 {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -523,5 +527,17 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn read_rejects_receive_maximum_zero() {
+        let mut bytes = Bytes::from_static(&[
+            0x03, // properties length
+            0x21, // ReceiveMaximum property
+            0x00, 0x00, // value = 0
+        ]);
+        let result = ConnAckProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
     }
 }
