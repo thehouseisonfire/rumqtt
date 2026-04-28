@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: clippy
         name: clippy
-        entry: bash -c 'export RUSTFLAGS="-D warnings" && cargo hack clippy --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next'
+        entry: bash -c 'export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery" && cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next',
         language: system
         pass_filenames: false
         always_run: true
