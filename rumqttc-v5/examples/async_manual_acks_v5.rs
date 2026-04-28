@@ -21,7 +21,7 @@ fn create_conn() -> (AsyncClient, EventLoop) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // todo!("fix this example with new way of spawning clients")
+    // Spawn work that uses cloned clients so the event loop can keep polling.
     pretty_env_logger::init();
 
     // create mqtt connection with clean_session = false and manual_acks = true

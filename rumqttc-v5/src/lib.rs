@@ -1252,7 +1252,13 @@ impl MqttOptions {
             .map_or_else(|| None, |conn_props| conn_props.authentication_data.clone())
     }
 
-    /// set manual acknowledgements
+    /// Enables or disables manual acknowledgements for incoming publishes.
+    ///
+    /// When enabled, incoming `QoS1` and `QoS2` publishes are not acknowledged
+    /// automatically. The application must acknowledge them explicitly with
+    /// [`Client::ack`](`crate::Client::ack`), [`AsyncClient::ack`](`crate::AsyncClient::ack`),
+    /// or by preparing a packet with `prepare_ack(...)` and sending it later
+    /// with `manual_ack(...)`.
     pub const fn set_manual_acks(&mut self, manual_acks: bool) -> &mut Self {
         self.manual_acks = manual_acks;
         self
