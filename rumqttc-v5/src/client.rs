@@ -604,6 +604,34 @@ impl AsyncClient {
     /// Prepares a MQTT PubAck/PubRec packet for manual acknowledgement.
     ///
     /// Returns `None` for `QoS0` publishes, which do not require acknowledgement.
+    ///
+    /// This is typically used together with
+    /// [`MqttOptions::set_manual_acks`](`crate::MqttOptions::set_manual_acks`)
+    /// when acknowledgement must be deferred or customized.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rumqttc::mqttbytes::v5::{PubAckProperties, PubAckReason, Publish};
+    /// use rumqttc::{AsyncClient, ManualAck, MqttOptions};
+    ///
+    /// # async fn example(client: AsyncClient, publish: Publish) -> Result<(), rumqttc::ClientError> {
+    /// let Some(mut ack) = client.prepare_ack(&publish) else {
+    ///     return Ok(());
+    /// };
+    ///
+    /// if let ManualAck::PubAck(puback) = &mut ack {
+    ///     puback.reason = PubAckReason::NoMatchingSubscribers;
+    ///     puback.properties = Some(PubAckProperties {
+    ///         reason_string: Some("No active subscribers now".to_owned()),
+    ///         user_properties: vec![("source".to_owned(), "application".to_owned())],
+    ///     });
+    /// }
+    ///
+    /// client.manual_ack(ack).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub const fn prepare_ack(&self, publish: &Publish) -> Option<ManualAck> {
         prepare_ack(publish)
     }
