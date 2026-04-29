@@ -231,19 +231,44 @@ impl EventLoop {
     pub fn clean(&mut self) {
         self.network = None;
         self.keepalive_timeout = None;
+        let mut replay_topic_aliases = self.state.replay_topic_aliases();
+
         for (request, notice) in self.state.clean_with_notices() {
-            self.pending
-                .push_back(RequestEnvelope::from_parts(request, notice));
+            self.push_replay_envelope(
+                RequestEnvelope::from_parts(request, notice),
+                &mut replay_topic_aliases,
+            );
         }
 
         // drain requests from channel which weren't yet received
-        for envelope in self.requests_rx.drain() {
+        let drained_requests: Vec<_> = self.requests_rx.drain().collect();
+        for envelope in drained_requests {
             // Wait for publish retransmission, else the broker could be confused by an unexpected
             // inbound acknowledgment replayed from a previous connection.
             if !matches!(&envelope.request, Request::PubAck(_) | Request::PubRec(_)) {
-                self.pending.push_back(envelope);
+                self.push_replay_envelope(envelope, &mut replay_topic_aliases);
             }
         }
+
+        self.state.reset_connection_scoped_state();
+    }
+
+    fn push_replay_envelope(
+        &mut self,
+        mut envelope: RequestEnvelope,
+        replay_topic_aliases: &mut std::collections::HashMap<u16, bytes::Bytes>,
+    ) {
+        if let Err(err) = MqttState::prepare_request_for_replay_with_aliases(
+            &mut envelope.request,
+            replay_topic_aliases,
+        ) {
+            if let Some(TrackedNoticeTx::Publish(notice)) = envelope.notice {
+                notice.error(err);
+            }
+            return;
+        }
+
+        self.pending.push_back(envelope);
     }
 
     /// Number of pending requests queued for retransmission.
@@ -282,6 +307,7 @@ impl EventLoop {
     pub fn reset_session_state(&mut self) {
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.fail_pending_notices();
+        self.state.reset_connection_scoped_state();
     }
 
     fn reconcile_outgoing_tracking_after_connack(&mut self) {
@@ -766,7 +792,9 @@ async fn mqtt_connect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConnAckProperties, Filter, PubAck, PubRec};
+    use crate::mqttbytes::QoS;
+    use crate::{ConnAckProperties, Filter, PubAck, PubRec, PublishProperties};
+    use bytes::Bytes;
     use flume::TryRecvError;
 
     fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
@@ -810,6 +838,22 @@ mod tests {
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         push_pending(&mut eventloop, Request::PingReq);
         eventloop
+    }
+
+    fn publish_properties_with_alias(alias: u16) -> PublishProperties {
+        PublishProperties {
+            topic_alias: Some(alias),
+            ..Default::default()
+        }
+    }
+
+    fn publish_with_alias(topic: &str, qos: QoS, alias: u16) -> Publish {
+        Publish::new(
+            topic,
+            qos,
+            "payload",
+            Some(publish_properties_with_alias(alias)),
+        )
     }
 
     #[test]
@@ -859,6 +903,170 @@ mod tests {
         assert!(matches!(
             pending_front_request(&eventloop),
             Some(Request::PingReq)
+        ));
+    }
+
+    #[test]
+    fn clean_rewrites_alias_only_pending_publish_when_mapping_is_known() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.state.broker_topic_alias_max = 10;
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "hello/replay",
+                QoS::AtMostOnce,
+                4,
+            )))
+            .unwrap();
+
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 4),
+            )))
+            .unwrap();
+
+        eventloop.clean();
+
+        assert_eq!(eventloop.pending_len(), 1);
+        match pending_front_request(&eventloop) {
+            Some(Request::Publish(publish)) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"hello/replay"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            request => panic!("expected replay publish, got {request:?}"),
+        }
+        assert_eq!(eventloop.state.broker_topic_alias_max, 0);
+    }
+
+    #[test]
+    fn clean_uses_earlier_drained_publish_to_rewrite_later_alias_only_publish() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
+
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("fresh/topic", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+
+        eventloop.clean();
+
+        assert_eq!(eventloop.pending_len(), 2);
+        assert!(matches!(
+            eventloop.pending.pop_front().map(|envelope| envelope.request),
+            Some(Request::Publish(publish)) if publish.topic == Bytes::from_static(b"fresh/topic")
+        ));
+        assert!(matches!(
+            eventloop.pending.pop_front().map(|envelope| envelope.request),
+            Some(Request::Publish(publish)) if publish.topic == Bytes::from_static(b"fresh/topic")
+        ));
+    }
+
+    #[test]
+    fn clean_prefers_earlier_replay_alias_mapping_over_stale_previous_mapping() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
+        eventloop.state.broker_topic_alias_max = 10;
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "stale/topic",
+                QoS::AtMostOnce,
+                1,
+            )))
+            .unwrap();
+
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("fresh/topic", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+
+        eventloop.clean();
+
+        assert_eq!(eventloop.pending_len(), 2);
+        _ = eventloop.pending.pop_front();
+        assert!(matches!(
+            eventloop.pending.pop_front().map(|envelope| envelope.request),
+            Some(Request::Publish(publish)) if publish.topic == Bytes::from_static(b"fresh/topic")
+        ));
+    }
+
+    #[test]
+    fn clean_fails_tracked_alias_only_publish_when_mapping_is_unknown() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (notice_tx, notice) = PublishNoticeTx::new();
+
+        request_tx
+            .send(RequestEnvelope::tracked_publish(
+                publish_with_alias("", QoS::AtLeastOnce, 5),
+                notice_tx,
+            ))
+            .unwrap();
+
+        eventloop.clean();
+
+        assert!(eventloop.pending_is_empty());
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            PublishNoticeError::TopicAliasReplayUnavailable(5)
+        );
+    }
+
+    #[test]
+    fn clean_preserves_surviving_pending_order_when_alias_replay_is_filtered() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
+        push_pending(&mut eventloop, Request::PingReq);
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        request_tx
+            .send(RequestEnvelope::tracked_publish(
+                publish_with_alias("", QoS::AtLeastOnce, 6),
+                notice_tx,
+            ))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingResp))
+            .unwrap();
+
+        eventloop.clean();
+
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            PublishNoticeError::TopicAliasReplayUnavailable(6)
+        );
+        assert_eq!(eventloop.pending_len(), 2);
+        assert!(matches!(
+            eventloop
+                .pending
+                .pop_front()
+                .map(|envelope| envelope.request),
+            Some(Request::PingReq)
+        ));
+        assert!(matches!(
+            eventloop
+                .pending
+                .pop_front()
+                .map(|envelope| envelope.request),
+            Some(Request::PingResp)
         ));
     }
 
