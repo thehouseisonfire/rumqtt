@@ -31,6 +31,8 @@ pub enum PublishNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("publish with topic alias {0} cannot be replayed after reconnect")]
+    TopicAliasReplayUnavailable(u16),
     #[error("qos0 publish was not flushed to the network")]
     Qos0NotFlushed,
     #[error("v5 puback returned non-success reason: {0:?}")]

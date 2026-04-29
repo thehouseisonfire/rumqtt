@@ -1,10 +1,12 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v5: `PublishNoticeError::TopicAliasReplayUnavailable(alias)` for unreplayable alias-only publishes after reconnect.
 ### Changed
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v5: Scope topic-alias mappings to the network connection lifetime (MQTT 5 §3.3.2.3.4). Split `topic_alises` into `incoming_topic_aliases`/`outgoing_topic_aliases`, clear both on CONNACK/clean/reset. Drop unreplayable alias-only publishes with `TopicAliasReplayUnavailable` instead of sending empty topics. DISCONNECT with `ProtocolError` on unknown incoming aliases. This change roughly maps to upstream [PR #1040](https://github.com/bytebeamio/rumqtt/pull/1040).
 - `rumqttc` v4/v5 eventloops: Reuse a persistent never-firing placeholder sleep when keepalive is disabled, avoiding per-iteration zero-duration timer setup inside `select!`.
 - `rumqttc` v5 codecs/network read path: Enforce MQTT 5 forbidden-zero property values for SUBSCRIBE `Subscription Identifier` (§3.8.2.1.2), PUBLISH `Topic Alias` (§3.3.2.3.4), and CONNECT/CONNACK `Receive Maximum` (§3.1.2.11.3, §3.2.2.3.3); preserve protocol-violation reason codes so read-side DISCONNECT uses the precise MQTT 5 reason. This change roughly maps to upstream [PR #1038](https://github.com/bytebeamio/rumqtt/pull/1038).
 ### Security
