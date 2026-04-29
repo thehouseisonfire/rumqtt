@@ -63,15 +63,19 @@ jobs:
       #     args: --verbose --all-targets -p benchmarks
 
       - name: Check rumqttc
+        env:
+          RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
-            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4
-            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5
 
       - name: Check standalone crates
+        env:
+          RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
-            cargo clippy --verbose --all-targets -p mqttbytes-core-next
-            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
-            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
+            cargo clippy --fix --allow-dirty --verbose --all-targets -p mqttbytes-core-next
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
 
       - name: Check docs
         if: ${{ matrix.os != 'windows-latest' }}
