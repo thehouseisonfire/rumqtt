@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+EXPECTED_GITHUB_USER="${EXPECTED_GITHUB_USER:-thehouseisonfire}"
+
 PACKAGE_NAMES=(
   "mqttbytes-core-next"
   "rumqttc-core-next"
@@ -37,14 +39,36 @@ require_clean_tree() {
   fi
 }
 
+require_tool() {
+  local tool="$1"
+
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "error: required tool '$tool' not found" >&2
+    exit 1
+  fi
+}
+
 require_tools() {
   local tool
   for tool in cargo cargo-audit curl git perl; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "error: required tool '$tool' not found" >&2
-      exit 1
-    fi
+    require_tool "$tool"
   done
+}
+
+require_github_user() {
+  local actual_user
+
+  if ! actual_user="$(gh api user --jq .login 2>/dev/null)"; then
+    echo "error: GitHub CLI is not logged in or cannot access the current user" >&2
+    echo "run: gh auth login" >&2
+    exit 1
+  fi
+
+  if [[ "$actual_user" != "$EXPECTED_GITHUB_USER" ]]; then
+    echo "error: GitHub CLI is logged in as '$actual_user', expected '$EXPECTED_GITHUB_USER'" >&2
+    echo "run: gh auth switch --user '$EXPECTED_GITHUB_USER'" >&2
+    exit 1
+  fi
 }
 
 current_version() {
@@ -297,6 +321,8 @@ maybe_push() {
 main() {
   local branch current release_type next today
 
+  require_tool gh
+  require_github_user
   require_tools
   require_clean_tree
 
