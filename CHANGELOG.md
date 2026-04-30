@@ -1,6 +1,19 @@
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+---
+
+## [rumqttc-next 0.30.1] - 30-04-2026
+
+## [Unreleased]
+
+### Added
 - `rumqttc` v5: `PublishNoticeError::TopicAliasReplayUnavailable(alias)` for unreplayable alias-only publishes after reconnect.
 ### Changed
 ### Deprecated
