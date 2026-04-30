@@ -24,7 +24,7 @@ impl TryFrom<&[u8]> for Message {
 fn main() {
     let mqtt_opts = MqttOptions::new("test-1", "localhost");
 
-    let (client, mut connection) = Client::new(mqtt_opts, 10);
+    let (client, mut connection) = Client::builder(mqtt_opts).capacity(10).build();
     client.subscribe("hello/rumqtt", QoS::AtMostOnce).unwrap();
     thread::spawn(move || {
         for i in 0..10 {

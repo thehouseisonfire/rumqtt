@@ -49,8 +49,8 @@ mod websockets;
 mod proxy;
 
 pub use client::{
-    AsyncClient, Client, ClientError, Connection, InvalidTopic, Iter, ManualAck, PublishTopic,
-    RecvError, RecvTimeoutError, TryRecvError, ValidatedTopic,
+    AsyncClient, Client, ClientBuilder, ClientError, Connection, InvalidTopic, Iter, ManualAck,
+    PublishTopic, RecvError, RecvTimeoutError, TryRecvError, ValidatedTopic,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v5::*;

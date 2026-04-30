@@ -5,7 +5,7 @@ use crate::framed::AsyncReadWrite;
 use crate::notice::{PublishNoticeTx, RequestNoticeTx, TrackedNoticeTx};
 use crate::{NoticeFailureReason, PublishNoticeError};
 
-use flume::{Receiver, Sender, TryRecvError, bounded};
+use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
@@ -79,6 +79,12 @@ impl RequestEnvelope {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestChannelCapacity {
+    Bounded(usize),
+    Unbounded,
+}
+
 /// Critical errors during eventloop polling
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
@@ -137,7 +143,7 @@ pub struct EventLoop {
     /// Request stream
     requests_rx: Receiver<RequestEnvelope>,
     /// Internal request sender retained for compatibility in `EventLoop::new`.
-    /// This is intentionally dropped in the `AsyncClient::new` constructor path.
+    /// This is intentionally dropped in the client builder path.
     _requests_tx: Option<Sender<RequestEnvelope>>,
     /// Pending packets from last session
     pending: VecDeque<RequestEnvelope>,
@@ -184,17 +190,29 @@ impl EventLoop {
         Self::with_channel(options, requests_rx, Some(requests_tx))
     }
 
-    /// Internal constructor used by `AsyncClient::new`.
+    /// Internal constructor used by client builders.
     ///
     /// Unlike `EventLoop::new`, this does not keep an internal sender handle, so dropping all
     /// `AsyncClient` handles can terminate polling with `ConnectionError::RequestsDone`.
+    pub(crate) fn new_for_async_client_with_capacity(
+        options: MqttOptions,
+        capacity: RequestChannelCapacity,
+    ) -> (Self, Sender<RequestEnvelope>) {
+        let (requests_tx, requests_rx) = match capacity {
+            RequestChannelCapacity::Bounded(cap) => bounded(cap),
+            RequestChannelCapacity::Unbounded => unbounded(),
+        };
+        let eventloop = Self::with_channel(options, requests_rx, None);
+        (eventloop, requests_tx)
+    }
+
+    /// Internal bounded constructor retained for tests that already choose a capacity.
+    #[cfg(test)]
     pub(crate) fn new_for_async_client(
         options: MqttOptions,
         cap: usize,
     ) -> (Self, Sender<RequestEnvelope>) {
-        let (requests_tx, requests_rx) = bounded(cap);
-        let eventloop = Self::with_channel(options, requests_rx, None);
-        (eventloop, requests_tx)
+        Self::new_for_async_client_with_capacity(options, RequestChannelCapacity::Bounded(cap))
     }
 
     fn with_channel(

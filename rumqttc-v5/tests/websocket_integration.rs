@@ -221,7 +221,9 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     );
     mqtt_options.set_keep_alive(2);
 
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 100);
+    let (client, mut eventloop) = AsyncClient::builder(mqtt_options)
+        .capacity(100)
+        .build_async();
     let eventloop_task = tokio::spawn(async move {
         loop {
             let _ = eventloop.poll().await;
@@ -324,7 +326,9 @@ async fn wss_client_publishes_over_tls_websocket() {
     mqtt_options.set_transport(Transport::wss(cert_pem, None, None));
     mqtt_options.set_keep_alive(2);
 
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 20);
+    let (client, mut eventloop) = AsyncClient::builder(mqtt_options)
+        .capacity(20)
+        .build_async();
     let eventloop_task = tokio::spawn(async move {
         loop {
             let _ = eventloop.poll().await;
@@ -373,7 +377,9 @@ async fn wss_client_publishes_over_native_tls_websocket() {
     )));
     mqtt_options.set_keep_alive(2);
 
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 20);
+    let (client, mut eventloop) = AsyncClient::builder(mqtt_options)
+        .capacity(20)
+        .build_async();
     let eventloop_task = tokio::spawn(async move {
         loop {
             let _ = eventloop.poll().await;
@@ -440,7 +446,9 @@ async fn wss_client_reconnects_and_delivers_all_messages() {
     mqtt_options.set_transport(Transport::wss(cert_pem, None, None));
     mqtt_options.set_keep_alive(2);
 
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 100);
+    let (client, mut eventloop) = AsyncClient::builder(mqtt_options)
+        .capacity(100)
+        .build_async();
     let eventloop_task = tokio::spawn(async move {
         loop {
             let _ = eventloop.poll().await;
@@ -521,7 +529,9 @@ async fn wss_client_reconnects_and_delivers_all_messages_over_native_tls_websock
     )));
     mqtt_options.set_keep_alive(2);
 
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 100);
+    let (client, mut eventloop) = AsyncClient::builder(mqtt_options)
+        .capacity(100)
+        .build_async();
     let eventloop_task = tokio::spawn(async move {
         loop {
             let _ = eventloop.poll().await;

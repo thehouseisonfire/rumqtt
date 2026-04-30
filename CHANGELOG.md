@@ -1,9 +1,11 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v4/v5: Add `ClientBuilder` via `Client::builder(...)` and `AsyncClient::builder(...)`, with bounded default capacity from `MqttOptions::request_channel_capacity()`, `.capacity(n)` overrides, and explicit `.unbounded()` request-channel opt-in.
 ### Changed
 ### Deprecated
 ### Removed
+- `rumqttc` v4/v5 (Breaking Change): Remove `Client::new(options, cap)` and `AsyncClient::new(options, cap)` in favor of the builder API.
 ### Fixed
 ### Security
 
