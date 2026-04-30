@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     mqttoptions.set_authentication_method(Some("SCRAM-SHA-256".to_string()));
     mqttoptions.set_authentication_data(client_first);
     mqttoptions.set_auth_manager(authmanager.clone());
-    let (client, mut connection) = Client::new(mqttoptions, 10);
+    let (client, mut connection) = Client::builder(mqttoptions).capacity(10).build();
 
     let (tx, rx) = bounded(1);
 

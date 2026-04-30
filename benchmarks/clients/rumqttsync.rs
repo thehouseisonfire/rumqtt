@@ -20,7 +20,7 @@ pub fn start(id: &str, payload_size: usize, count: usize) -> Result<(), Box<dyn 
     mqttoptions.set_keep_alive(20);
     mqttoptions.set_inflight(100);
 
-    let (client, mut connection) = Client::new(mqttoptions, 10);
+    let (client, mut connection) = Client::builder(mqttoptions).capacity(10).build();
     thread::spawn(move || {
         for _i in 0..count {
             let payload = vec![0; payload_size];

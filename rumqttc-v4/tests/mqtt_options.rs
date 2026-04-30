@@ -24,7 +24,9 @@ async fn v4_custom_socket_connector_is_invoked() {
 
     assert!(options.has_socket_connector());
 
-    let (_client, mut eventloop) = rumqttc::AsyncClient::new(options, 10);
+    let (_client, mut eventloop) = rumqttc::AsyncClient::builder(options)
+        .capacity(10)
+        .build_async();
     let error = eventloop
         .poll()
         .await

@@ -144,7 +144,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(keep_alive);
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
     let publisher = client.clone();
 
     task::spawn(async move {
@@ -268,7 +268,7 @@ async fn requests_are_blocked_after_max_inflight_queue_size() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_outgoing_inflight_upper_limit(inflight);
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
     task::spawn(async move {
         start_requests(10, QoS::AtLeastOnce, 1, client).await;
     });
@@ -299,7 +299,7 @@ async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_outgoing_inflight_upper_limit(3);
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
 
     task::spawn(async move {
         start_requests(5, QoS::AtLeastOnce, 1, client).await;
@@ -338,7 +338,7 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_outgoing_inflight_upper_limit(4);
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
     let (release_acks_tx, release_acks_rx) = oneshot::channel::<()>();
     let (stop_broker_tx, mut stop_broker_rx) = oneshot::channel::<()>();
 
@@ -433,7 +433,7 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
         .set_outgoing_inflight_upper_limit(4)
         .set_keep_alive(1);
 
-    let (client, mut eventloop) = AsyncClient::new(options, 10);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build_async();
     let (stop_broker_tx, stop_broker_rx) = oneshot::channel::<()>();
     let requests = task::spawn(async move {
         start_requests(6, QoS::AtLeastOnce, 0, client).await;
@@ -551,7 +551,7 @@ async fn reconnection_resumes_from_the_previous_state() {
         .set_clean_start(false)
         .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY));
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
     task::spawn(async move {
         start_requests(10, QoS::AtLeastOnce, 1, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -598,7 +598,7 @@ async fn reconnection_resends_unacked_packets_from_the_previous_connection_first
         .set_clean_start(false)
         .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY));
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
     task::spawn(async move {
         start_requests(10, QoS::AtLeastOnce, 1, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -644,7 +644,7 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
         .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
         .set_outgoing_inflight_upper_limit(4);
 
-    let (client, mut eventloop) = AsyncClient::new(options, 10);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build_async();
     task::spawn(async move {
         start_requests(8, QoS::AtLeastOnce, 0, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -733,7 +733,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_start_
         }
     });
 
-    let (client, mut eventloop) = AsyncClient::new(options, 5);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
     task::spawn(async move {
         start_requests(3, QoS::AtLeastOnce, 1, client).await;
         time::sleep(Duration::from_secs(10)).await;

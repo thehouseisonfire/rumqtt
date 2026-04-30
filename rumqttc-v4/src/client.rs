@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
-use crate::eventloop::RequestEnvelope;
+use crate::eventloop::{RequestChannelCapacity, RequestEnvelope};
 use crate::mqttbytes::{
     QoS,
     v4::{Disconnect, PubAck, PubRec, Publish, Subscribe, SubscribeFilter, Unsubscribe},
@@ -179,18 +179,78 @@ pub struct AsyncClient {
     request_tx: RequestSender,
 }
 
-impl AsyncClient {
-    /// Create a new `AsyncClient`.
-    ///
-    /// `cap` specifies the capacity of the bounded async channel.
-    pub fn new(options: MqttOptions, cap: usize) -> (Self, EventLoop) {
-        let (eventloop, request_tx) = EventLoop::new_for_async_client(options, cap);
+/// Builder for synchronous and asynchronous MQTT clients.
+///
+/// The request channel is bounded by default using
+/// [`MqttOptions::request_channel_capacity`]. Use [`Self::capacity`] to override
+/// the bounded capacity, or [`Self::unbounded`] to opt into an unbounded request channel.
+#[derive(Debug)]
+pub struct ClientBuilder {
+    options: MqttOptions,
+    capacity: RequestChannelCapacity,
+}
 
-        let client = Self {
+impl ClientBuilder {
+    /// Create a new client builder.
+    #[must_use]
+    pub const fn new(options: MqttOptions) -> Self {
+        let capacity = RequestChannelCapacity::Bounded(options.request_channel_capacity());
+        Self { options, capacity }
+    }
+
+    /// Use a bounded request channel with the given capacity.
+    ///
+    /// `0` creates a bounded zero-capacity rendezvous channel. Use [`Self::unbounded`]
+    /// for an unbounded request channel.
+    #[must_use]
+    pub const fn capacity(mut self, cap: usize) -> Self {
+        self.capacity = RequestChannelCapacity::Bounded(cap);
+        self
+    }
+
+    /// Use an unbounded request channel.
+    #[must_use]
+    pub const fn unbounded(mut self) -> Self {
+        self.capacity = RequestChannelCapacity::Unbounded;
+        self
+    }
+
+    /// Build an asynchronous client and event loop.
+    #[must_use]
+    pub fn build_async(self) -> (AsyncClient, EventLoop) {
+        let (eventloop, request_tx) =
+            EventLoop::new_for_async_client_with_capacity(self.options, self.capacity);
+        let client = AsyncClient {
             request_tx: RequestSender::WithNotice(request_tx),
         };
 
         (client, eventloop)
+    }
+
+    /// Build a synchronous client and connection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current-thread Tokio runtime cannot be created.
+    #[must_use]
+    pub fn build(self) -> (Client, Connection) {
+        let (client, eventloop) = self.build_async();
+        let client = Client { client };
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let connection = Connection::new(eventloop, runtime);
+        (client, connection)
+    }
+}
+
+impl AsyncClient {
+    /// Create a builder for an `AsyncClient`.
+    #[must_use]
+    pub const fn builder(options: MqttOptions) -> ClientBuilder {
+        ClientBuilder::new(options)
     }
 
     /// Create a new `AsyncClient` from a channel `Sender`.
@@ -894,23 +954,10 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a new `Client`
-    ///
-    /// `cap` specifies the capacity of the bounded async channel.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the current-thread Tokio runtime cannot be created.
-    pub fn new(options: MqttOptions, cap: usize) -> (Self, Connection) {
-        let (client, eventloop) = AsyncClient::new(options, cap);
-        let client = Self { client };
-        let runtime = runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let connection = Connection::new(eventloop, runtime);
-        (client, connection)
+    /// Create a builder for a `Client`.
+    #[must_use]
+    pub const fn builder(options: MqttOptions) -> ClientBuilder {
+        ClientBuilder::new(options)
     }
 
     /// Create a new `Client` from a channel `Sender`.
@@ -1288,9 +1335,96 @@ mod test {
         let will = LastWill::new("hello/world", "good bye", QoS::AtMostOnce, false);
         mqttoptions.set_keep_alive(5).set_last_will(will);
 
-        let (_, mut connection) = Client::new(mqttoptions, 10);
+        let (_, mut connection) = Client::builder(mqttoptions).capacity(10).build();
         let _ = connection.iter();
         let _ = connection.iter();
+    }
+
+    #[test]
+    fn builder_uses_options_request_channel_capacity_by_default() {
+        let mut mqttoptions = MqttOptions::new("test-1", "localhost");
+        mqttoptions.set_request_channel_capacity(1);
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).build_async();
+
+        client
+            .try_publish("hello/world", QoS::AtMostOnce, false, "one")
+            .expect("first request should fit configured capacity");
+        assert!(matches!(
+            client.try_publish("hello/world", QoS::AtMostOnce, false, "two"),
+            Err(ClientError::TryRequest(Request::Publish(_)))
+        ));
+    }
+
+    #[test]
+    fn builder_capacity_overrides_options_request_channel_capacity() {
+        let mut mqttoptions = MqttOptions::new("test-1", "localhost");
+        mqttoptions.set_request_channel_capacity(1);
+        let (client, _eventloop) = Client::builder(mqttoptions).capacity(2).build();
+
+        client
+            .try_publish("hello/world", QoS::AtMostOnce, false, "one")
+            .expect("first request should fit overridden capacity");
+        client
+            .try_publish("hello/world", QoS::AtMostOnce, false, "two")
+            .expect("second request should fit overridden capacity");
+        assert!(matches!(
+            client.try_publish("hello/world", QoS::AtMostOnce, false, "three"),
+            Err(ClientError::TryRequest(Request::Publish(_)))
+        ));
+    }
+
+    #[test]
+    fn builder_capacity_zero_is_bounded_rendezvous() {
+        let mqttoptions = MqttOptions::new("test-1", "localhost");
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).capacity(0).build_async();
+
+        assert!(matches!(
+            client.try_publish("hello/world", QoS::AtMostOnce, false, "one"),
+            Err(ClientError::TryRequest(Request::Publish(_)))
+        ));
+    }
+
+    #[test]
+    fn unbounded_builder_allows_try_publish_without_polling() {
+        let mqttoptions = MqttOptions::new("test-1", "localhost");
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build_async();
+
+        for i in 0..128 {
+            client
+                .try_publish("hello/world", QoS::AtMostOnce, false, vec![i])
+                .expect("unbounded channel should accept requests without polling");
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_publish_blocks_when_channel_is_full_without_polling() {
+        let mqttoptions = MqttOptions::new("test-1", "localhost");
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).capacity(1).build_async();
+
+        client
+            .publish("hello/world", QoS::AtMostOnce, false, "one")
+            .await
+            .expect("first request should fit bounded channel");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(25),
+            client.publish("hello/world", QoS::AtMostOnce, false, "two"),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn unbounded_publish_completes_without_polling() {
+        let mqttoptions = MqttOptions::new("test-1", "localhost");
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build_async();
+
+        for i in 0..128 {
+            client
+                .publish("hello/world", QoS::AtMostOnce, false, vec![i])
+                .await
+                .expect("unbounded channel should accept requests without polling");
+        }
     }
 
     #[test]

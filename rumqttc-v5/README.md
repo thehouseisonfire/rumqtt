@@ -35,7 +35,7 @@ use std::thread;
 let mut mqttoptions = MqttOptions::new("rumqtt-sync", "test.mosquitto.org");
 mqttoptions.set_keep_alive(5);
 
-let (mut client, mut connection) = Client::new(mqttoptions, 10);
+let (mut client, mut connection) = Client::builder(mqttoptions).capacity(10).build();
 client.subscribe("hello/rumqtt", QoS::AtMostOnce).unwrap();
 thread::spawn(move || for i in 0..10 {
    client.publish("hello/rumqtt", QoS::AtLeastOnce, false, vec![i; i as usize]).unwrap();
@@ -61,7 +61,7 @@ async fn main() {
 let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org");
 mqttoptions.set_keep_alive(5);
 
-let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+let (mut client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build_async();
 client.subscribe("hello/rumqtt", QoS::AtMostOnce).await.unwrap();
 
 task::spawn(async move {

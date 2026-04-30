@@ -10,7 +10,7 @@ fn main() {
     let will = LastWill::new("hello/world", "good bye", QoS::AtMostOnce, false, None);
     mqttoptions.set_keep_alive(5).set_last_will(will);
 
-    let (client, mut connection) = Client::new(mqttoptions, 10);
+    let (client, mut connection) = Client::builder(mqttoptions).capacity(10).build();
     thread::spawn(move || publish(&client));
 
     if let Ok(notification) = connection.recv() {
