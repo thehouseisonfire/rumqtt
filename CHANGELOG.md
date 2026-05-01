@@ -2,11 +2,14 @@
 
 ### Added
 ### Changed
+- `rumqttc` v4/v5 (Breaking Change): Change `disconnect()`/`try_disconnect()` into graceful barriers that flush previously accepted QoS 0 publishes and drain previously accepted QoS 1/ QoS 2 publish plus tracked subscribe/unsubscribe state (`SUBACK`/`UNSUBACK`) before sending terminal DISCONNECT. Use `disconnect_now()`/`try_disconnect_now()` to preserve immediate DISCONNECT behavior, or `disconnect_with_timeout()`/`try_disconnect_with_timeout()` to bound graceful draining; if the timeout expires first, polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not sent.
+- `rumqttc` v4/v5: Document that disconnect requests still use the normal client request channel: if the event loop is blocked from reading new requests by a full QoS 1/ QoS 2 publish inflight window or packet-id collision, graceful/immediate disconnect handling begins only after the event loop observes the request.
 - `rumqttc` v4/v5 (Breaking Change): Split the client builder API into `ClientBuilder` and `AsyncClientBuilder`. `AsyncClient::builder(...)` now returns `AsyncClientBuilder` and uses `.build()` to produce `(AsyncClient, EventLoop)`.
 ### Deprecated
 ### Removed
 - `rumqttc` v4/v5 (Breaking Change): Remove `AsyncClientBuilder::build_async()` in favor of `AsyncClientBuilder::build()`.
 ### Fixed
+- `rumqttc` v5: Accept zero-length MQTT v5 DISCONNECT packets in the packet reader.
 ### Security
 
 ---
@@ -174,8 +177,6 @@
 * Make `v5::ClientError` store boxed requests to reduce `Result<_, ClientError>` footprint across publish/subscribe APIs.
 * Change v4/v5 `MqttOptions::set_keep_alive` to accept `u16` seconds (MQTT wire-level keepalive units), including `0` to disable automatic keep-alive pings.
 * Update v5 disconnect request plumbing to use `Request::Disconnect(Disconnect)` so disconnect reason code/properties are propagated end-to-end.
-* Change v4/v5 `disconnect()`/`try_disconnect()` into graceful barriers that flush previously accepted QoS 0 publishes and drain previously accepted QoS 1/ QoS 2 publish plus tracked subscribe/unsubscribe state (`SUBACK`/`UNSUBACK`) before sending terminal DISCONNECT. Use `disconnect_now()`/`try_disconnect_now()` to preserve immediate DISCONNECT behavior, or `disconnect_with_timeout()`/`try_disconnect_with_timeout()` to bound graceful draining; if the timeout expires first, polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not sent.
-* Document that disconnect requests still use the normal client request channel: if the event loop is blocked from reading new requests by a full QoS 1/ QoS 2 publish inflight window or packet-id collision, graceful/immediate disconnect handling begins only after the event loop observes the request.
 ### Deprecated
 ### Removed
 ### Fixed 
@@ -186,7 +187,6 @@
 * Improve debug output behavior for `MqttOptions` manual `Debug` impls via non-exhaustive finishing.
 * Clear collision state on reconnection with clean session.
 * Preserve MQTT v5 DISCONNECT properties on the wire for `disconnect_with_properties` and `try_disconnect_with_properties`.
-* Accept zero-length MQTT v5 DISCONNECT packets in the packet reader.
 * Restore `EventLoop::new` API compatibility while allowing `AsyncClient::new` event loops to terminate with `ConnectionError::RequestsDone` when all client handles are dropped.
 * Clarify shutdown semantics: `disconnect()`/`try_disconnect()` performs MQTT graceful shutdown (sends DISCONNECT), while dropping all clients ends polling with `ConnectionError::RequestsDone` without implicit DISCONNECT.
 ### Security
