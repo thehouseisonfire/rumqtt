@@ -88,6 +88,18 @@ pub enum RequestChannelCapacity {
     Unbounded,
 }
 
+struct PendingDisconnect {
+    deadline: Option<Instant>,
+}
+
+impl PendingDisconnect {
+    fn new(timeout: Option<Duration>) -> Self {
+        Self {
+            deadline: timeout.map(|timeout| Instant::now() + timeout),
+        }
+    }
+}
+
 /// Critical errors during eventloop polling
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
@@ -97,6 +109,8 @@ pub enum ConnectionError {
     NetworkTimeout,
     #[error("Flush timeout")]
     FlushTimeout,
+    #[error("Graceful disconnect timed out before outbound protocol state drained")]
+    DisconnectTimeout,
     #[cfg(feature = "websocket")]
     #[error("Websocket: {0}")]
     Websocket(#[from] async_tungstenite::tungstenite::error::Error),
@@ -160,6 +174,8 @@ pub struct EventLoop {
     /// Initialized once with `Duration::MAX` so that it never fires.
     no_sleep: Option<Pin<Box<Sleep>>>,
     pub network_options: NetworkOptions,
+    pending_disconnect: Option<PendingDisconnect>,
+    disconnect_complete: bool,
 }
 
 /// Events which can be yielded by the event loop
@@ -239,6 +255,8 @@ impl EventLoop {
             keepalive_timeout: None,
             no_sleep: None,
             network_options: NetworkOptions::new(),
+            pending_disconnect: None,
+            disconnect_complete: false,
         }
     }
 
@@ -253,6 +271,7 @@ impl EventLoop {
     pub fn clean(&mut self) {
         self.network = None;
         self.keepalive_timeout = None;
+        self.pending_disconnect = None;
         for (request, notice) in self.state.clean_with_notices() {
             self.pending
                 .push_back(RequestEnvelope::from_parts(request, notice));
@@ -319,6 +338,10 @@ impl EventLoop {
     /// Returns a [`ConnectionError`] if connecting, reading, writing, or
     /// protocol handling fails.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
+        if self.disconnect_complete {
+            return Err(ConnectionError::RequestsDone);
+        }
+
         if self.network.is_none() {
             let (network, connack) = match time::timeout(
                 Duration::from_secs(self.network_options.connection_timeout()),
@@ -341,6 +364,13 @@ impl EventLoop {
 
         match self.select().await {
             Ok(v) => Ok(v),
+            Err(ConnectionError::DisconnectTimeout) => {
+                self.network = None;
+                self.keepalive_timeout = None;
+                self.pending_disconnect = None;
+                self.disconnect_complete = true;
+                Err(ConnectionError::DisconnectTimeout)
+            }
             Err(e) => {
                 // MQTT requires that packets pending acknowledgement should be republished on session resume.
                 // Move pending messages from state to eventloop.
@@ -353,164 +383,232 @@ impl EventLoop {
     /// Select on network and requests and generate keepalive pings when necessary
     #[allow(clippy::too_many_lines)]
     async fn select(&mut self) -> Result<Event, ConnectionError> {
-        let read_batch_size = self.effective_read_batch_size();
-        let network = self.network.as_mut().unwrap();
-        // let await_acks = self.state.await_acks;
-        let inflight_full = self.state.inflight >= self.mqtt_options.inflight;
-        let collision = self.state.collision.is_some();
-        let network_timeout = Duration::from_secs(self.network_options.connection_timeout());
+        loop {
+            if let Some(event) = self.state.events.pop_front() {
+                return Ok(event);
+            }
 
-        // Read buffered events from previous polls before calling a new poll
-        if let Some(event) = self.state.events.pop_front() {
-            return Ok(event);
-        }
+            if self.pending_disconnect.is_some() {
+                if self.state.outbound_requests_drained() {
+                    return self.send_pending_disconnect().await;
+                }
 
-        let no_sleep = self
-            .no_sleep
-            .get_or_insert_with(|| Box::pin(time::sleep(Duration::MAX)));
-        // this loop is necessary since self.incoming.pop_front() might return None. In that case,
-        // instead of returning a None event, we try again.
-        select! {
-            // Handles pending and new requests.
-            // If available, prioritises pending requests from previous session.
-            // Else, pulls next request from user requests channel.
-            // If conditions in the below branch are for flow control.
-            // The branch is disabled if there's no pending messages and new user requests
-            // cannot be serviced due flow control.
-            // We read next user user request only when inflight messages are < configured inflight
-            // and there are no collisions while handling previous outgoing requests.
-            //
-            // Flow control is based on ack count. If inflight packet count in the buffer is
-            // less than max_inflight setting, next outgoing request will progress. For this
-            // to work correctly, broker should ack in sequence (a lot of brokers won't)
-            //
-            // E.g If max inflight = 5, user requests will be blocked when inflight queue
-            // looks like this                 -> [1, 2, 3, 4, 5].
-            // If broker acking 2 instead of 1 -> [1, x, 3, 4, 5].
-            // This pulls next user request. But because max packet id = max_inflight, next
-            // user request's packet id will roll to 1. This replaces existing packet id 1.
-            // Resulting in a collision
-            //
-            // Eventloop can stop receiving outgoing user requests when previous outgoing
-            // request collided. I.e collision state. Collision state will be cleared only
-            // when correct ack is received
-            // Full inflight queue will look like -> [1a, 2, 3, 4, 5].
-            // If 3 is acked instead of 1 first   -> [1a, 2, x, 4, 5].
-            // After collision with pkid 1        -> [1b ,2, x, 4, 5].
-            // 1a is saved to state and event loop is set to collision mode stopping new
-            // outgoing requests (along with 1b).
-            o = Self::next_request(
-                &mut self.pending,
-                &self.requests_rx,
-                self.mqtt_options.pending_throttle
-            ), if !self.pending.is_empty() || (!inflight_full && !collision) => match o {
-                Ok((request, notice)) => {
-                    let max_request_batch = self.mqtt_options.max_request_batch.max(1);
-                    let mut should_flush = false;
-                    let mut qos0_notices = Vec::new();
+                self.poll_disconnect_drain().await?;
+                continue;
+            }
 
-                    let (outgoing, flush_notice) =
-                        self.state.handle_outgoing_packet_with_notice(request, notice)?;
-                    if let Some(notice) = flush_notice {
-                        qos0_notices.push(notice);
+            let read_batch_size = self.effective_read_batch_size();
+            let inflight_full = self.state.inflight >= self.mqtt_options.inflight;
+            let collision = self.state.collision.is_some();
+            let no_sleep = self
+                .no_sleep
+                .get_or_insert_with(|| Box::pin(time::sleep(Duration::MAX)));
+
+            return select! {
+                o = Self::next_request(
+                    &mut self.pending,
+                    &self.requests_rx,
+                    self.mqtt_options.pending_throttle
+                ), if !self.pending.is_empty() || (!inflight_full && !collision) => match o {
+                    Ok((request, notice)) => {
+                        let mut should_flush = false;
+                        let mut qos0_notices = Vec::new();
+
+                        if self.handle_request(request, notice, &mut should_flush, &mut qos0_notices).await? {
+                            for _ in 1..self.mqtt_options.max_request_batch.max(1) {
+                                let inflight_full = self.state.inflight >= self.mqtt_options.inflight;
+                                let collision = self.state.collision.is_some();
+
+                                if self.pending.is_empty() && (inflight_full || collision) {
+                                    break;
+                                }
+
+                                let Some((next_request, next_notice)) = Self::try_next_request(
+                                    &mut self.pending,
+                                    &self.requests_rx,
+                                    self.mqtt_options.pending_throttle,
+                                ).await else {
+                                    break;
+                                };
+
+                                if !self.handle_request(
+                                    next_request,
+                                    next_notice,
+                                    &mut should_flush,
+                                    &mut qos0_notices,
+                                ).await? {
+                                    break;
+                                }
+                            }
+                        }
+
+                        self.flush_request_batch(should_flush, qos0_notices).await?;
+                        if let Some(event) = self.state.events.pop_front() {
+                            Ok(event)
+                        } else {
+                            continue;
+                        }
                     }
+                    Err(_) => Err(ConnectionError::RequestsDone),
+                },
+                o = self.network.as_mut().unwrap().readb(&mut self.state, read_batch_size) => {
+                    o?;
+                    self.flush_network().await?;
+                    Ok(self.state.events.pop_front().unwrap())
+                },
+                () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
+                    if self.keepalive_timeout.is_some() && !self.mqtt_options.keep_alive.is_zero() => {
+                    let timeout = self.keepalive_timeout.as_mut().unwrap();
+                    timeout.as_mut().reset(Instant::now() + self.mqtt_options.keep_alive);
+
+                    let (outgoing, _flush_notice) = self
+                        .state
+                        .handle_outgoing_packet_with_notice(Request::PingReq(PingReq), None)?;
                     if let Some(outgoing) = outgoing {
-                        if let Err(err) = network.write(outgoing).await {
-                            for notice in qos0_notices {
-                                notice.error(PublishNoticeError::Qos0NotFlushed);
-                            }
-                            return Err(ConnectionError::MqttState(err));
-                        }
-                        should_flush = true;
+                        self.network.as_mut().unwrap().write(outgoing).await?;
                     }
-
-                    for _ in 1..max_request_batch {
-                        let inflight_full = self.state.inflight >= self.mqtt_options.inflight;
-                        let collision = self.state.collision.is_some();
-
-                        if self.pending.is_empty() && (inflight_full || collision) {
-                            break;
-                        }
-
-                        let Some((next_request, next_notice)) = Self::try_next_request(
-                            &mut self.pending,
-                            &self.requests_rx,
-                            self.mqtt_options.pending_throttle,
-                        ).await else {
-                            break;
-                        };
-
-                        let (outgoing, flush_notice) =
-                            self.state.handle_outgoing_packet_with_notice(next_request, next_notice)?;
-                        if let Some(notice) = flush_notice {
-                            qos0_notices.push(notice);
-                        }
-                        if let Some(outgoing) = outgoing {
-                            if let Err(err) = network.write(outgoing).await {
-                                for notice in qos0_notices {
-                                    notice.error(PublishNoticeError::Qos0NotFlushed);
-                                }
-                                return Err(ConnectionError::MqttState(err));
-                            }
-                            should_flush = true;
-                        }
-                    }
-
-                    if should_flush {
-                        match time::timeout(network_timeout, network.flush()).await {
-                            Ok(Ok(())) => {
-                                for notice in qos0_notices {
-                                    notice.success(PublishResult::Qos0Flushed);
-                                }
-                            }
-                            Ok(Err(err)) => {
-                                for notice in qos0_notices {
-                                    notice.error(PublishNoticeError::Qos0NotFlushed);
-                                }
-                                return Err(ConnectionError::MqttState(err));
-                            }
-                            Err(_) => {
-                                for notice in qos0_notices {
-                                    notice.error(PublishNoticeError::Qos0NotFlushed);
-                                }
-                                return Err(ConnectionError::FlushTimeout);
-                            }
-                        }
-                    }
+                    self.flush_network().await?;
                     Ok(self.state.events.pop_front().unwrap())
                 }
-                Err(_) => Err(ConnectionError::RequestsDone),
-            },
-            // Pull a bunch of packets from network, reply in bunch and yield the first item
-            o = network.readb(&mut self.state, read_batch_size) => {
-                o?;
-                // flush all the acks and return first incoming packet
-                match time::timeout(network_timeout, network.flush()).await {
-                    Ok(inner) => inner?,
-                    Err(_)=> return Err(ConnectionError::FlushTimeout),
-                }
-                Ok(self.state.events.pop_front().unwrap())
-            },
-            // We generate pings irrespective of network activity. This keeps the ping logic
-            // simple. We can change this behavior in future if necessary (to prevent extra pings)
-            () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
-                if self.keepalive_timeout.is_some() && !self.mqtt_options.keep_alive.is_zero() => {
-                let timeout = self.keepalive_timeout.as_mut().unwrap();
-                timeout.as_mut().reset(Instant::now() + self.mqtt_options.keep_alive);
+            };
+        }
+    }
 
-                let (outgoing, _flush_notice) = self
+    async fn handle_request(
+        &mut self,
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+        should_flush: &mut bool,
+        qos0_notices: &mut Vec<PublishNoticeTx>,
+    ) -> Result<bool, ConnectionError> {
+        match request {
+            Request::Disconnect(_) => {
+                self.pending_disconnect = Some(PendingDisconnect::new(None));
+                Ok(false)
+            }
+            Request::DisconnectWithTimeout(_, timeout) => {
+                self.pending_disconnect = Some(PendingDisconnect::new(Some(timeout)));
+                Ok(false)
+            }
+            Request::DisconnectNow(_) => {
+                let (outgoing, _) = self
                     .state
-                    .handle_outgoing_packet_with_notice(Request::PingReq(PingReq), None)?;
+                    .handle_outgoing_packet_with_notice(request, notice)?;
                 if let Some(outgoing) = outgoing {
-                    network.write(outgoing).await?;
+                    if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
+                        return Err(ConnectionError::MqttState(err));
+                    }
+                    *should_flush = true;
                 }
-                match time::timeout(network_timeout, network.flush()).await {
-                    Ok(inner) => inner?,
-                    Err(_)=> return Err(ConnectionError::FlushTimeout),
+                self.disconnect_complete = true;
+                Ok(false)
+            }
+            request => {
+                let (outgoing, flush_notice) = self
+                    .state
+                    .handle_outgoing_packet_with_notice(request, notice)?;
+                if let Some(notice) = flush_notice {
+                    qos0_notices.push(notice);
                 }
-                Ok(self.state.events.pop_front().unwrap())
+                if let Some(outgoing) = outgoing {
+                    if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
+                        for notice in qos0_notices.drain(..) {
+                            notice.error(PublishNoticeError::Qos0NotFlushed);
+                        }
+                        return Err(ConnectionError::MqttState(err));
+                    }
+                    *should_flush = true;
+                }
+                Ok(true)
             }
         }
+    }
+
+    async fn flush_request_batch(
+        &mut self,
+        should_flush: bool,
+        qos0_notices: Vec<PublishNoticeTx>,
+    ) -> Result<(), ConnectionError> {
+        if !should_flush {
+            return Ok(());
+        }
+
+        match time::timeout(
+            Duration::from_secs(self.network_options.connection_timeout()),
+            self.network.as_mut().unwrap().flush(),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                for notice in qos0_notices {
+                    notice.success(PublishResult::Qos0Flushed);
+                }
+                Ok(())
+            }
+            Ok(Err(err)) => {
+                for notice in qos0_notices {
+                    notice.error(PublishNoticeError::Qos0NotFlushed);
+                }
+                Err(ConnectionError::MqttState(err))
+            }
+            Err(_) => {
+                for notice in qos0_notices {
+                    notice.error(PublishNoticeError::Qos0NotFlushed);
+                }
+                Err(ConnectionError::FlushTimeout)
+            }
+        }
+    }
+
+    async fn flush_network(&mut self) -> Result<(), ConnectionError> {
+        time::timeout(
+            Duration::from_secs(self.network_options.connection_timeout()),
+            self.network.as_mut().unwrap().flush(),
+        )
+        .await
+        .map_or_else(
+            |_| Err(ConnectionError::FlushTimeout),
+            |inner| inner.map_err(ConnectionError::MqttState),
+        )
+    }
+
+    async fn poll_disconnect_drain(&mut self) -> Result<(), ConnectionError> {
+        let read_batch_size = self.effective_read_batch_size();
+        let read = self
+            .network
+            .as_mut()
+            .unwrap()
+            .readb(&mut self.state, read_batch_size);
+
+        if let Some(deadline) = self
+            .pending_disconnect
+            .as_ref()
+            .and_then(|pending| pending.deadline)
+        {
+            match time::timeout_at(deadline, read).await {
+                Ok(result) => result?,
+                Err(_) => return Err(ConnectionError::DisconnectTimeout),
+            }
+        } else {
+            read.await?;
+        }
+
+        self.flush_network().await
+    }
+
+    async fn send_pending_disconnect(&mut self) -> Result<Event, ConnectionError> {
+        self.pending_disconnect = None;
+        let (outgoing, _) = self
+            .state
+            .handle_outgoing_packet_with_notice(Request::DisconnectNow(crate::Disconnect), None)?;
+
+        if let Some(outgoing) = outgoing {
+            self.network.as_mut().unwrap().write(outgoing).await?;
+            self.flush_network().await?;
+        }
+
+        self.disconnect_complete = true;
+        Ok(self.state.events.pop_front().unwrap())
     }
 
     pub fn network_options(&self) -> NetworkOptions {

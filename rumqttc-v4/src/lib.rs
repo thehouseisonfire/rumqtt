@@ -140,6 +140,8 @@ pub enum Request {
     Unsubscribe(Unsubscribe),
     UnsubAck(UnsubAck),
     Disconnect(Disconnect),
+    DisconnectNow(Disconnect),
+    DisconnectWithTimeout(Disconnect, Duration),
 }
 
 impl From<Publish> for Request {

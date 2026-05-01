@@ -120,9 +120,22 @@ out side the library and `Eventloop` is accessible, users can
 - Blocking inside the `connection.iter()`/`eventloop.poll()` loop will block
   connection progress.
 
-- Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown
-  (sends DISCONNECT). Dropping all client handles ends polling with
-  `ConnectionError::RequestsDone` and closes locally without sending DISCONNECT.
+- Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown.
+  The event loop first flushes previously accepted QoS 0 publishes and drains
+  previously accepted `QoS` 1/QoS 2 publish and tracked subscribe/unsubscribe
+  state (`SUBACK`/`UNSUBACK`), then sends terminal DISCONNECT. Use
+  `disconnect_with_timeout()` to bound this drain; if the timeout expires first,
+  polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not
+  sent. Use `disconnect_now()` to send DISCONNECT immediately and abandon
+  unresolved in-flight work. Dropping or aborting the transport closes locally
+  without sending DISCONNECT and may trigger Will publication.
+
+- Disconnect requests use the normal client request channel. If the event loop
+  is not currently reading new requests because the outbound QoS 1/QoS 2
+  publish inflight window is full or a packet-id collision is pending, a queued
+  `disconnect_with_timeout()` timeout starts only after the event loop observes
+  the disconnect request, and `disconnect_now()` is not an out-of-band transport
+  abort.
 
 - This crate is MQTT 5-specific. If you need MQTT 3.1.1 instead, use
   `rumqttc-v4-next`.

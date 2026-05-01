@@ -693,6 +693,166 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
 }
 
 #[tokio::test]
+async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("issue-1031", ("127.0.0.1", port));
+    options.set_keep_alive(60);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build_async();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let client_task = task::spawn(async move {
+        for _ in 0..10 {
+            client
+                .publish("test/topic", QoS::ExactlyOnce, false, "Test payload.")
+                .await
+                .unwrap();
+        }
+        client.disconnect().await.unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
+    let mut pubrels = Vec::new();
+    let mut disconnect_seen = false;
+
+    while !disconnect_seen {
+        let event = time::timeout(PHASE_TIMEOUT, broker.tick())
+            .await
+            .expect("timed out waiting for graceful disconnect packets");
+        match event {
+            Event::Incoming(Packet::Publish(publish)) => {
+                assert!(
+                    !disconnect_seen,
+                    "PUBLISH observed after terminal DISCONNECT"
+                );
+                broker.pubrec(publish.pkid).await;
+            }
+            Event::Incoming(Packet::PubRel(pubrel)) => {
+                assert!(
+                    !disconnect_seen,
+                    "PUBREL observed after terminal DISCONNECT"
+                );
+                pubrels.push(pubrel.pkid);
+                broker.pubcomp(pubrel.pkid).await;
+            }
+            Event::Incoming(Packet::Disconnect) => {
+                disconnect_seen = true;
+            }
+            event => panic!("unexpected broker event while draining QoS2: {event:?}"),
+        }
+    }
+
+    assert_eq!(pubrels.len(), 10);
+    assert_eq!(pubrels, (1..=10).collect::<Vec<_>>());
+
+    client_task.await.unwrap();
+    eventloop_task.await.unwrap().unwrap();
+    assert!(
+        broker
+            .read_packet_with_timeout(Duration::from_millis(100))
+            .await
+            .is_none(),
+        "DISCONNECT must be terminal"
+    );
+}
+
+#[tokio::test]
+async fn graceful_disconnect_timeout_does_not_send_disconnect() {
+    let (listener, port) = reserve_listener().await;
+    let options = MqttOptions::new("issue-1031-timeout", ("127.0.0.1", port));
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build_async();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(error) => return error,
+            }
+        }
+    });
+
+    let client_task = task::spawn(async move {
+        client
+            .publish("test/topic", QoS::ExactlyOnce, false, "Test payload.")
+            .await
+            .unwrap();
+        client
+            .disconnect_with_timeout(Duration::from_millis(50))
+            .await
+            .unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
+    let publish = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("expected QoS2 publish before disconnect timeout");
+    assert_eq!(publish.qos, QoS::ExactlyOnce);
+
+    client_task.await.unwrap();
+    let error = eventloop_task.await.unwrap();
+    assert!(matches!(error, ConnectionError::DisconnectTimeout));
+    assert!(
+        broker
+            .read_packet_with_timeout(Duration::from_millis(100))
+            .await
+            .is_none(),
+        "timed-out graceful disconnect must not send DISCONNECT"
+    );
+}
+
+#[tokio::test]
+async fn disconnect_now_sends_disconnect_without_waiting_for_qos2_completion() {
+    let (listener, port) = reserve_listener().await;
+    let options = MqttOptions::new("issue-1031-now", ("127.0.0.1", port));
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build_async();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let client_task = task::spawn(async move {
+        client
+            .publish("test/topic", QoS::ExactlyOnce, false, "Test payload.")
+            .await
+            .unwrap();
+        client.disconnect_now().await.unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
+    let publish = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("expected QoS2 publish before immediate disconnect");
+    assert_eq!(publish.qos, QoS::ExactlyOnce);
+
+    match time::timeout(PHASE_TIMEOUT, broker.tick())
+        .await
+        .expect("timed out waiting for immediate disconnect")
+    {
+        Event::Incoming(Packet::Disconnect) => {}
+        event => panic!("expected immediate DISCONNECT, got {event:?}"),
+    }
+
+    client_task.await.unwrap();
+    eventloop_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn reconnection_clean_both_pending_packets_and_collision_when_clean_session_is_true() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));

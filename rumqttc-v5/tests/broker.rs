@@ -4,7 +4,7 @@
 use bytes::BytesMut;
 use flume::{Receiver, Sender, bounded};
 use rumqttc::mqttbytes::v5::{
-    ConnAck, ConnectReturnCode, Packet, PingReq, PingResp, PubAck, Publish,
+    ConnAck, ConnectReturnCode, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, Publish,
 };
 use rumqttc::mqttbytes::{self, QoS};
 use rumqttc::{Event, Incoming, Outgoing};
@@ -147,7 +147,11 @@ impl Broker {
     }
 
     pub async fn read_packet(&mut self) -> Option<Packet> {
-        let _ = time::timeout(Duration::from_secs(30), async {
+        self.read_packet_with_timeout(Duration::from_secs(30)).await
+    }
+
+    pub async fn read_packet_with_timeout(&mut self, timeout: Duration) -> Option<Packet> {
+        let _ = time::timeout(timeout, async {
             let result = self.framed.readb(&mut self.incoming).await;
             if result.is_err() {
                 println!("Broker read = {result:?}");
@@ -183,6 +187,16 @@ impl Broker {
         for pkid in packet_ids {
             self.ack(*pkid).await;
         }
+    }
+
+    pub async fn pubrec(&mut self, pkid: u16) {
+        let packet = Packet::PubRec(PubRec::new(pkid, None));
+        self.framed.write(packet).await.unwrap();
+    }
+
+    pub async fn pubcomp(&mut self, pkid: u16) {
+        let packet = Packet::PubComp(PubComp::new(pkid, None));
+        self.framed.write(packet).await.unwrap();
     }
 
     /// Sends a `PINGRESP`.

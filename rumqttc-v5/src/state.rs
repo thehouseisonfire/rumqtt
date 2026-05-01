@@ -232,7 +232,7 @@ impl MqttState {
         }
     }
 
-    fn can_shrink_outgoing_tracking(&self) -> bool {
+    pub(crate) fn outbound_requests_drained(&self) -> bool {
         self.inflight == 0
             && self.collision.is_none()
             && self.collision_notice.is_none()
@@ -248,7 +248,7 @@ impl MqttState {
     fn maybe_shrink_outgoing_tracking_capacity(&mut self, target_len: usize, pending_empty: bool) {
         if !pending_empty
             || self.outgoing_pub.len() <= target_len
-            || !self.can_shrink_outgoing_tracking()
+            || !self.outbound_requests_drained()
         {
             return;
         }
@@ -473,51 +473,55 @@ impl MqttState {
         request: Request,
         notice: Option<TrackedNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
-        let result = match request {
-            Request::Publish(publish) => {
-                let publish_notice = match notice {
-                    Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
-                    | None => None,
-                };
-                self.outgoing_publish_with_notice(publish, publish_notice)?
-            }
-            Request::PubRel(pubrel) => {
-                let publish_notice = match notice {
-                    Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
-                    | None => None,
-                };
-                self.outgoing_pubrel_with_notice(pubrel, publish_notice)
-            }
-            Request::Subscribe(subscribe) => {
-                let request_notice = match notice {
-                    Some(TrackedNoticeTx::Subscribe(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Unsubscribe(_)) | None => {
-                        None
-                    }
-                };
-                (self.outgoing_subscribe(subscribe, request_notice)?, None)
-            }
-            Request::Unsubscribe(unsubscribe) => {
-                let request_notice = match notice {
-                    Some(TrackedNoticeTx::Unsubscribe(notice)) => Some(notice),
-                    Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Subscribe(_)) | None => {
-                        None
-                    }
-                };
-                (
-                    Some(self.outgoing_unsubscribe(unsubscribe, request_notice)),
-                    None,
-                )
-            }
-            Request::PingReq => (self.outgoing_ping()?, None),
-            Request::Disconnect(disconnect) => (Some(self.outgoing_disconnect(disconnect)), None),
-            Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
-            Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
-            Request::Auth(auth) => (Some(self.outgoing_auth(auth)), None),
-            _ => unimplemented!(),
-        };
+        let result =
+            match request {
+                Request::Publish(publish) => {
+                    let publish_notice = match notice {
+                        Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
+                        Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
+                        | None => None,
+                    };
+                    self.outgoing_publish_with_notice(publish, publish_notice)?
+                }
+                Request::PubRel(pubrel) => {
+                    let publish_notice = match notice {
+                        Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
+                        Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
+                        | None => None,
+                    };
+                    self.outgoing_pubrel_with_notice(pubrel, publish_notice)
+                }
+                Request::Subscribe(subscribe) => {
+                    let request_notice = match notice {
+                        Some(TrackedNoticeTx::Subscribe(notice)) => Some(notice),
+                        Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Unsubscribe(_))
+                        | None => None,
+                    };
+                    (self.outgoing_subscribe(subscribe, request_notice)?, None)
+                }
+                Request::Unsubscribe(unsubscribe) => {
+                    let request_notice = match notice {
+                        Some(TrackedNoticeTx::Unsubscribe(notice)) => Some(notice),
+                        Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Subscribe(_))
+                        | None => None,
+                    };
+                    (
+                        Some(self.outgoing_unsubscribe(unsubscribe, request_notice)),
+                        None,
+                    )
+                }
+                Request::PingReq => (self.outgoing_ping()?, None),
+                Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
+                    unreachable!("graceful disconnect requests are handled by the event loop")
+                }
+                Request::DisconnectNow(disconnect) => {
+                    (Some(self.outgoing_disconnect(disconnect)), None)
+                }
+                Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
+                Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
+                Request::Auth(auth) => (Some(self.outgoing_auth(auth)), None),
+                _ => unimplemented!(),
+            };
 
         self.last_outgoing = Instant::now();
         Ok(result)
@@ -2427,7 +2431,7 @@ mod test {
         );
 
         let packet = mqtt
-            .handle_outgoing_packet(Request::Disconnect(disconnect.clone()))
+            .handle_outgoing_packet(Request::DisconnectNow(disconnect.clone()))
             .unwrap()
             .unwrap();
         assert_eq!(packet, Packet::Disconnect(disconnect));
