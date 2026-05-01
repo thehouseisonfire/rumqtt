@@ -553,6 +553,20 @@ impl MqttOptions {
         }
     }
 
+    /// Create a builder for [`MqttOptions`].
+    ///
+    /// ```
+    /// # use rumqttc::MqttOptions;
+    /// let options = MqttOptions::builder("123", "localhost")
+    ///     .keep_alive(5)
+    ///     .clean_session(true)
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn builder<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> MqttOptionsBuilder {
+        MqttOptionsBuilder::new(id, broker)
+    }
+
     #[cfg(feature = "url")]
     /// Creates an [`MqttOptions`] object by parsing provided string with the [url] crate's
     /// [`Url::parse(url)`](url::Url::parse) method and is only enabled when run using the "url" feature.
@@ -976,6 +990,207 @@ impl MqttOptions {
     ) -> std::io::Result<Box<dyn crate::framed::AsyncReadWrite>> {
         let connector = self.effective_socket_connector();
         connector(host, network_options).await
+    }
+}
+
+/// Builder for [`MqttOptions`].
+pub struct MqttOptionsBuilder {
+    options: MqttOptions,
+}
+
+impl MqttOptionsBuilder {
+    /// Create a new [`MqttOptions`] builder.
+    #[must_use]
+    pub fn new<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> Self {
+        Self {
+            options: MqttOptions::new(id, broker),
+        }
+    }
+
+    /// Build the configured [`MqttOptions`].
+    #[must_use]
+    pub fn build(self) -> MqttOptions {
+        self.options
+    }
+
+    /// Set the last will.
+    #[must_use]
+    pub fn last_will(mut self, will: LastWill) -> Self {
+        self.options.set_last_will(will);
+        self
+    }
+
+    /// Set the client identifier.
+    #[must_use]
+    pub fn client_id(mut self, client_id: String) -> Self {
+        self.options.set_client_id(client_id);
+        self
+    }
+
+    /// Set the transport.
+    #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
+    #[must_use]
+    pub const fn transport(mut self, transport: Transport) -> Self {
+        self.options.set_transport(transport);
+        self
+    }
+
+    /// Set the transport.
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[must_use]
+    pub fn transport(mut self, transport: Transport) -> Self {
+        self.options.set_transport(transport);
+        self
+    }
+
+    /// Set number of seconds after which client should ping the broker if there is no other data exchange.
+    #[must_use]
+    pub fn keep_alive(mut self, seconds: u16) -> Self {
+        self.options.set_keep_alive(seconds);
+        self
+    }
+
+    /// Set packet size limits for incoming and outgoing packets.
+    #[must_use]
+    pub const fn max_packet_size(mut self, incoming: usize, outgoing: usize) -> Self {
+        self.options.set_max_packet_size(incoming, outgoing);
+        self
+    }
+
+    /// Set whether the broker should clean the client session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `clean_session` is false when `client_id` is empty.
+    #[must_use]
+    pub fn clean_session(mut self, clean_session: bool) -> Self {
+        self.options.set_clean_session(clean_session);
+        self
+    }
+
+    /// Replace the current CONNECT authentication state.
+    #[must_use]
+    pub fn auth(mut self, auth: ConnectAuth) -> Self {
+        self.options.set_auth(auth);
+        self
+    }
+
+    /// Clear CONNECT authentication fields.
+    #[must_use]
+    pub fn clear_auth(mut self) -> Self {
+        self.options.clear_auth();
+        self
+    }
+
+    /// Set only the MQTT username field.
+    #[must_use]
+    pub fn username<U: Into<String>>(mut self, username: U) -> Self {
+        self.options.set_username(username);
+        self
+    }
+
+    /// Set both MQTT username and binary password fields.
+    #[must_use]
+    pub fn credentials<U: Into<String>, P: Into<Bytes>>(
+        mut self,
+        username: U,
+        password: P,
+    ) -> Self {
+        self.options.set_credentials(username, password);
+        self
+    }
+
+    /// Set request channel capacity.
+    #[must_use]
+    pub const fn request_channel_capacity(mut self, capacity: usize) -> Self {
+        self.options.set_request_channel_capacity(capacity);
+        self
+    }
+
+    /// Set maximum number of requests processed in one eventloop iteration.
+    #[must_use]
+    pub const fn max_request_batch(mut self, max: usize) -> Self {
+        self.options.set_max_request_batch(max);
+        self
+    }
+
+    /// Set maximum number of packets processed in one network read batch.
+    #[must_use]
+    pub const fn read_batch_size(mut self, size: usize) -> Self {
+        self.options.set_read_batch_size(size);
+        self
+    }
+
+    /// Set the minimum delay between retransmitted outgoing packets.
+    #[must_use]
+    pub const fn pending_throttle(mut self, duration: Duration) -> Self {
+        self.options.set_pending_throttle(duration);
+        self
+    }
+
+    /// Set number of concurrent in flight messages.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `inflight` is zero.
+    #[must_use]
+    pub fn inflight(mut self, inflight: u16) -> Self {
+        self.options.set_inflight(inflight);
+        self
+    }
+
+    /// Enable or disable manual acknowledgements.
+    #[must_use]
+    pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
+        self.options.set_manual_acks(manual_acks);
+        self
+    }
+
+    /// Set proxy configuration.
+    #[cfg(feature = "proxy")]
+    #[must_use]
+    pub fn proxy(mut self, proxy: Proxy) -> Self {
+        self.options.set_proxy(proxy);
+        self
+    }
+
+    /// Set an infallible handler for modifying the websocket HTTP request before it is sent.
+    #[cfg(feature = "websocket")]
+    #[must_use]
+    pub fn request_modifier<F, O>(mut self, request_modifier: F) -> Self
+    where
+        F: Fn(http::Request<()>) -> O + Send + Sync + 'static,
+        O: IntoFuture<Output = http::Request<()>> + 'static,
+        O::IntoFuture: Send,
+    {
+        self.options.set_request_modifier(request_modifier);
+        self
+    }
+
+    /// Set a fallible handler for modifying the websocket HTTP request before it is sent.
+    #[cfg(feature = "websocket")]
+    #[must_use]
+    pub fn fallible_request_modifier<F, O, E>(mut self, request_modifier: F) -> Self
+    where
+        F: Fn(http::Request<()>) -> O + Send + Sync + 'static,
+        O: IntoFuture<Output = Result<http::Request<()>, E>> + 'static,
+        O::IntoFuture: Send,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        self.options.set_fallible_request_modifier(request_modifier);
+        self
+    }
+
+    /// Set a custom socket connector.
+    #[must_use]
+    pub fn socket_connector<F, Fut, S>(mut self, f: F) -> Self
+    where
+        F: Fn(String, NetworkOptions) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<S, std::io::Error>> + Send + 'static,
+        S: crate::framed::AsyncReadWrite + 'static,
+    {
+        self.options.set_socket_connector(f);
+        self
     }
 }
 
@@ -1783,6 +1998,98 @@ mod test {
     #[test]
     fn accept_empty_client_id() {
         let _mqtt_opts = MqttOptions::new("", "127.0.0.1").set_clean_session(true);
+    }
+
+    #[test]
+    fn mqtt_options_builder_matches_setter_configuration() {
+        let will = LastWill::new("hello/world", "good bye", QoS::AtLeastOnce, false);
+        let mut expected = MqttOptions::new("client", ("localhost", 1884));
+        expected
+            .set_keep_alive(5)
+            .set_last_will(will.clone())
+            .set_clean_session(false)
+            .set_credentials("user", Bytes::from_static(b"password"))
+            .set_request_channel_capacity(16)
+            .set_max_request_batch(8)
+            .set_read_batch_size(32)
+            .set_pending_throttle(Duration::from_micros(250))
+            .set_inflight(4)
+            .set_manual_acks(true)
+            .set_max_packet_size(4096, 2048);
+
+        let actual = MqttOptions::builder("client", ("localhost", 1884))
+            .keep_alive(5)
+            .last_will(will)
+            .clean_session(false)
+            .credentials("user", Bytes::from_static(b"password"))
+            .request_channel_capacity(16)
+            .max_request_batch(8)
+            .read_batch_size(32)
+            .pending_throttle(Duration::from_micros(250))
+            .inflight(4)
+            .manual_acks(true)
+            .max_packet_size(4096, 2048)
+            .build();
+
+        assert_eq!(
+            actual.broker().tcp_address(),
+            expected.broker().tcp_address()
+        );
+        assert_eq!(actual.keep_alive(), expected.keep_alive());
+        assert_eq!(actual.last_will(), expected.last_will());
+        assert_eq!(actual.clean_session(), expected.clean_session());
+        assert_eq!(actual.auth(), expected.auth());
+        assert_eq!(
+            actual.request_channel_capacity(),
+            expected.request_channel_capacity()
+        );
+        assert_eq!(actual.max_request_batch(), expected.max_request_batch());
+        assert_eq!(actual.read_batch_size(), expected.read_batch_size());
+        assert_eq!(actual.pending_throttle(), expected.pending_throttle());
+        assert_eq!(actual.inflight(), expected.inflight());
+        assert_eq!(actual.manual_acks(), expected.manual_acks());
+        assert_eq!(
+            actual.max_incoming_packet_size,
+            expected.max_incoming_packet_size
+        );
+        assert_eq!(
+            actual.max_outgoing_packet_size,
+            expected.max_outgoing_packet_size
+        );
+    }
+
+    #[test]
+    fn mqtt_options_builder_can_replace_and_clear_auth() {
+        let actual = MqttOptions::builder("client", "localhost")
+            .username("user")
+            .clear_auth()
+            .auth(ConnectAuth::Username {
+                username: "next".to_owned(),
+            })
+            .build();
+
+        assert_eq!(
+            actual.auth(),
+            &ConnectAuth::Username {
+                username: "next".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn mqtt_options_builder_request_capacity_feeds_client_builder_default() {
+        let mqttoptions = MqttOptions::builder("test-1", "localhost")
+            .request_channel_capacity(1)
+            .build();
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).build_async();
+
+        client
+            .try_publish("hello/world", QoS::AtMostOnce, false, "one")
+            .expect("first request should fit configured capacity");
+        assert!(matches!(
+            client.try_publish("hello/world", QoS::AtMostOnce, false, "two"),
+            Err(ClientError::TryRequest(Request::Publish(_)))
+        ));
     }
 
     #[test]
