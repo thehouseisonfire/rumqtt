@@ -56,7 +56,8 @@ pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
 pub use notice::{
-    NoticeFailureReason, PublishNotice, PublishNoticeError, RequestNotice, RequestNoticeError,
+    NoticeFailureReason, PublishNotice, PublishNoticeError, PublishResult, SubscribeNotice,
+    SubscribeNoticeError, UnsubscribeNotice, UnsubscribeNoticeError,
 };
 pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]

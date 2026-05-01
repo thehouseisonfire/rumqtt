@@ -2,7 +2,9 @@ use super::framed::Network;
 use super::mqttbytes::v5::{ConnAck, Connect, Packet, Publish, Subscribe, Unsubscribe};
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
 use crate::framed::AsyncReadWrite;
-use crate::notice::{PublishNoticeTx, RequestNoticeTx, TrackedNoticeTx};
+use crate::notice::{
+    PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx, UnsubscribeNoticeTx,
+};
 use crate::{NoticeFailureReason, PublishNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
@@ -57,20 +59,20 @@ impl RequestEnvelope {
         }
     }
 
-    pub(crate) const fn tracked_subscribe(subscribe: Subscribe, notice: RequestNoticeTx) -> Self {
+    pub(crate) const fn tracked_subscribe(subscribe: Subscribe, notice: SubscribeNoticeTx) -> Self {
         Self {
             request: Request::Subscribe(subscribe),
-            notice: Some(TrackedNoticeTx::Request(notice)),
+            notice: Some(TrackedNoticeTx::Subscribe(notice)),
         }
     }
 
     pub(crate) const fn tracked_unsubscribe(
         unsubscribe: Unsubscribe,
-        notice: RequestNoticeTx,
+        notice: UnsubscribeNoticeTx,
     ) -> Self {
         Self {
             request: Request::Unsubscribe(unsubscribe),
-            notice: Some(TrackedNoticeTx::Request(notice)),
+            notice: Some(TrackedNoticeTx::Unsubscribe(notice)),
         }
     }
 
@@ -311,8 +313,11 @@ impl EventLoop {
                     TrackedNoticeTx::Publish(notice) => {
                         notice.error(reason.publish_error());
                     }
-                    TrackedNoticeTx::Request(notice) => {
-                        notice.error(reason.request_error());
+                    TrackedNoticeTx::Subscribe(notice) => {
+                        notice.error(reason.subscribe_error());
+                    }
+                    TrackedNoticeTx::Unsubscribe(notice) => {
+                        notice.error(reason.unsubscribe_error());
                     }
                 }
             }
@@ -483,7 +488,7 @@ impl EventLoop {
                         match network.flush().await {
                             Ok(()) => {
                                 for notice in qos0_notices {
-                                    notice.success();
+                                    notice.success(PublishResult::Qos0Flushed);
                                 }
                             }
                             Err(err) => {
@@ -1470,7 +1475,7 @@ mod tests {
             .pending
             .push_back(RequestEnvelope::tracked_publish(publish, publish_notice_tx));
 
-        let (request_notice_tx, request_notice) = RequestNoticeTx::new();
+        let (request_notice_tx, request_notice) = SubscribeNoticeTx::new();
         let subscribe = Subscribe::new(
             Filter::new("hello/world", crate::mqttbytes::QoS::AtMostOnce),
             None,
@@ -1490,7 +1495,7 @@ mod tests {
         );
         assert_eq!(
             request_notice.wait_async().await.unwrap_err(),
-            crate::RequestNoticeError::SessionReset
+            crate::SubscribeNoticeError::SessionReset
         );
     }
 

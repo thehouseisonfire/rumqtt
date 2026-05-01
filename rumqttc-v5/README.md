@@ -77,6 +77,19 @@ while let Ok(notification) = eventloop.poll().await {
 }
 ```
 
+Tracked protocol results
+------------------------------
+
+Tracked APIs return notices that resolve with MQTT protocol responses:
+`publish_tracked(...).wait_async()` returns `PublishResult`,
+`subscribe_tracked(...).wait_async()` returns `SubAck`, and
+`unsubscribe_tracked(...).wait_async()` returns `UnsubAck`. MQTT 5 broker ACKs
+are returned as `Ok(...)` even when their reason code reports failure or
+rejection, so applications can inspect reason codes and properties. Use
+`wait_completion_async()` when only completion/failure status is needed.
+
+See `examples/tracked_notices_v5.rs` for a runnable async example.
+
 Quick overview of features
 - Eventloop orchestrates outgoing/incoming packets concurrently and handles the state
 - Pings the broker when necessary and detects client side half open connections as well

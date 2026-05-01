@@ -2,10 +2,15 @@
 
 ### Added
 - `rumqttc` v4/v5: Add `ClientBuilder` via `Client::builder(...)` and `AsyncClient::builder(...)`, with bounded default capacity from `MqttOptions::request_channel_capacity()`, `.capacity(n)` overrides, and explicit `.unbounded()` request-channel opt-in.
+- `rumqttc` v4/v5: Add ACK-returning tracked notices. `publish_tracked` resolves to a crate-local `PublishResult`, `subscribe_tracked` resolves to `SubAck`, and `unsubscribe_tracked` resolves to `UnsubAck`. ACK packets are cloned into notices while remaining visible through `Event::Incoming(...)`.
+- `rumqttc` v4/v5: Add operation-specific `SubscribeNotice` and `UnsubscribeNotice` types plus `wait_completion()` / `wait_completion_async()` helpers for callers that only need completion-style behavior.
 ### Changed
+- `rumqttc` v4/v5 (Breaking Change): Change `PublishNotice::wait()` / `wait_async()` to return detailed publish protocol results instead of `Result<(), PublishNoticeError>`. Broker ACK packets with failure/rejection reason codes are returned as protocol results; notice errors are reserved for local lifecycle failures.
+- `rumqttc` v4/v5 (Breaking Change): Change tracked subscribe/unsubscribe APIs to return operation-specific detailed notices instead of the broad completion-only `RequestNotice`.
 ### Deprecated
 ### Removed
 - `rumqttc` v4/v5 (Breaking Change): Remove `Client::new(options, cap)` and `AsyncClient::new(options, cap)` in favor of the builder API.
+- `rumqttc` v4/v5 (Breaking Change): Remove the public `RequestNotice` / `RequestNoticeError` API in favor of `SubscribeNotice` / `SubscribeNoticeError` and `UnsubscribeNotice` / `UnsubscribeNoticeError`.
 ### Fixed
 ### Security
 
