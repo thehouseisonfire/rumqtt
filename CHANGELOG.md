@@ -2,8 +2,10 @@
 
 ### Added
 ### Changed
+- `rumqttc` v4/v5 (Breaking Change): Split the client builder API into `ClientBuilder` and `AsyncClientBuilder`. `AsyncClient::builder(...)` now returns `AsyncClientBuilder` and uses `.build()` to produce `(AsyncClient, EventLoop)`.
 ### Deprecated
 ### Removed
+- `rumqttc` v4/v5 (Breaking Change): Remove `AsyncClientBuilder::build_async()` in favor of `AsyncClientBuilder::build()`.
 ### Fixed
 ### Security
 

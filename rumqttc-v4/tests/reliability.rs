@@ -193,7 +193,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
 
     // start sending qos0 publishes. this makes sure that there is
     // outgoing activity but no incoming activity
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     let publisher = client.clone();
 
     // Start sending publishes
@@ -313,7 +313,7 @@ async fn requests_are_blocked_after_max_inflight_queue_size() {
 
     // start sending qos0 publishes. this makes sure that there is
     // outgoing activity but no incoming activity
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     task::spawn(async move {
         start_requests(10, QoS::AtLeastOnce, 1, client).await;
     });
@@ -339,7 +339,7 @@ async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(3);
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
 
     task::spawn(async move {
         start_requests(5, QoS::AtLeastOnce, 1, client).await;
@@ -378,7 +378,7 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(10);
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     let (release_acks_tx, release_acks_rx) = oneshot::channel::<()>();
     let (stop_broker_tx, mut stop_broker_rx) = oneshot::channel::<()>();
 
@@ -469,7 +469,7 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(4).set_keep_alive(1);
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build();
     let (stop_broker_tx, stop_broker_rx) = oneshot::channel::<()>();
     let requests = task::spawn(async move {
         start_requests(6, QoS::AtLeastOnce, 0, client).await;
@@ -576,7 +576,7 @@ async fn reconnection_resumes_from_the_previous_state() {
     options.set_keep_alive(5).set_clean_session(false);
 
     // start sending qos0 publishes. Makes sure that there is out activity but no in activity
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     task::spawn(async move {
         start_requests(10, QoS::AtLeastOnce, 1, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -619,7 +619,7 @@ async fn reconnection_resends_unacked_packets_from_the_previous_connection_first
 
     // start sending qos0 publishes. this makes sure that there is
     // outgoing activity but no incoming activity
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     task::spawn(async move {
         start_requests(10, QoS::AtLeastOnce, 1, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -655,7 +655,7 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
         .set_clean_session(false)
         .set_inflight(4);
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build();
     task::spawn(async move {
         start_requests(8, QoS::AtLeastOnce, 0, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -698,7 +698,7 @@ async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
     let mut options = MqttOptions::new("issue-1031", ("127.0.0.1", port));
     options.set_keep_alive(60);
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build();
     let eventloop_task = task::spawn(async move {
         loop {
             match eventloop.poll().await {
@@ -769,7 +769,7 @@ async fn graceful_disconnect_timeout_does_not_send_disconnect() {
     let (listener, port) = reserve_listener().await;
     let options = MqttOptions::new("issue-1031-timeout", ("127.0.0.1", port));
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
     let eventloop_task = task::spawn(async move {
         loop {
             match eventloop.poll().await {
@@ -814,7 +814,7 @@ async fn disconnect_now_sends_disconnect_without_waiting_for_qos2_completion() {
     let (listener, port) = reserve_listener().await;
     let options = MqttOptions::new("issue-1031-now", ("127.0.0.1", port));
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
     let eventloop_task = task::spawn(async move {
         loop {
             match eventloop.poll().await {
@@ -892,7 +892,7 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_sessio
 
     // start sending qos0 publishes. this makes sure that there is
     // outgoing activity but no incoming activity
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     task::spawn(async move {
         start_requests(3, QoS::AtLeastOnce, 1, client).await;
         time::sleep(Duration::from_secs(10)).await;
@@ -932,7 +932,7 @@ async fn state_is_being_cleaned_properly_and_pending_request_calculated_properly
     let mut network_options = NetworkOptions::new();
     network_options.set_tcp_send_buffer_size(1024);
 
-    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
     eventloop.set_network_options(network_options);
     task::spawn(async move {
         start_requests_with_payload(100, QoS::AtLeastOnce, 0, client, 5000).await;

@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     mqttoptions.set_transport(transport);
 
-    let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
 
     task::spawn(async move {
         client.subscribe("topic1", QoS::AtLeastOnce).await.unwrap();
