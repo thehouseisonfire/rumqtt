@@ -907,15 +907,15 @@ impl AsyncClient {
     /// Queues a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and
-    /// waits for previously accepted outbound QoS 1/QoS 2 publishes and
-    /// tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
-    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and
+    /// waits for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and
+    /// tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
     /// `UNSUBACK`. It then sends and flushes MQTT `DISCONNECT`.
     ///
     /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
     /// window or packet-id collision, graceful shutdown starts only after the
     /// event loop observes this request.
     ///
@@ -932,10 +932,10 @@ impl AsyncClient {
     /// Queues a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
-    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
-    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
     /// `UNSUBACK`.
     ///
@@ -961,7 +961,7 @@ impl AsyncClient {
     ///
     /// This request uses the normal client request channel and is not an
     /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
     /// collision, the immediate disconnect is processed only after the event
     /// loop observes this request.
     ///
@@ -978,13 +978,13 @@ impl AsyncClient {
     /// Attempts to queue a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and tracked
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
     /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
     /// window or packet-id collision, graceful shutdown starts only after the
     /// event loop observes this request.
     ///
@@ -1001,10 +1001,10 @@ impl AsyncClient {
     /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
-    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
-    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
     /// `UNSUBACK`.
     ///
@@ -1030,7 +1030,7 @@ impl AsyncClient {
     ///
     /// This request uses the normal client request channel and is not an
     /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
     /// collision, the immediate disconnect is processed only after the event
     /// loop observes this request.
     ///
@@ -1279,13 +1279,13 @@ impl Client {
     /// Queues a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and tracked
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
     /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
     /// window or packet-id collision, graceful shutdown starts only after the
     /// event loop observes this request.
     ///
@@ -1302,10 +1302,10 @@ impl Client {
     /// Queues a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
-    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
-    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
     /// `UNSUBACK`.
     ///
@@ -1331,7 +1331,7 @@ impl Client {
     ///
     /// This request uses the normal client request channel and is not an
     /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
     /// collision, the immediate disconnect is processed only after the event
     /// loop observes this request.
     ///
@@ -1348,13 +1348,13 @@ impl Client {
     /// Attempts to queue a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and tracked
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
     /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
     /// window or packet-id collision, graceful shutdown starts only after the
     /// event loop observes this request.
     ///
@@ -1370,10 +1370,10 @@ impl Client {
     /// Attempts to queue a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted QoS 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
-    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
-    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
     /// `UNSUBACK`.
     ///
@@ -1398,7 +1398,7 @@ impl Client {
     ///
     /// This request uses the normal client request channel and is not an
     /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
     /// collision, the immediate disconnect is processed only after the event
     /// loop observes this request.
     ///

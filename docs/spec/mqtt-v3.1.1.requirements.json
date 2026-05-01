@@ -1252,7 +1252,7 @@
       "section_number": "3.8.4",
       "section_title": "Response",
       "obligation": "MUST",
-      "summary": "The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
+      "summary": "The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/ QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
       "source_anchor": "_Toc384800440",
       "occurrences": 3,
       "candidate_paths": [
@@ -1266,7 +1266,7 @@
       "section_number": "3.8.4",
       "section_title": "Response",
       "obligation": "MUST",
-      "summary": "The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
+      "summary": "The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/ QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
       "source_anchor": "_Toc384800440",
       "occurrences": 3,
       "candidate_paths": [

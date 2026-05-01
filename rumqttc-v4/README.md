@@ -110,8 +110,8 @@ out side the library and `Eventloop` is accessible, users can
   connection progress.
 
 - Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown.
-  The event loop first flushes previously accepted QoS 0 publishes and drains
-  previously accepted `QoS` 1/QoS 2 publish and tracked subscribe/unsubscribe
+  The event loop first flushes previously accepted `QoS` 0 publishes and drains
+  previously accepted `QoS` 1/ `QoS` 2 publish and tracked subscribe/unsubscribe
   state (`SUBACK`/`UNSUBACK`), then sends terminal DISCONNECT. Use
   `disconnect_with_timeout()` to bound this drain; if the timeout expires first,
   polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not
@@ -120,7 +120,7 @@ out side the library and `Eventloop` is accessible, users can
   without sending DISCONNECT and may trigger Will publication.
 
 - Disconnect requests use the normal client request channel. If the event loop
-  is not currently reading new requests because the outbound QoS 1/QoS 2
+  is not currently reading new requests because the outbound `QoS` 1/ `QoS` 2
   publish inflight window is full or a packet-id collision is pending, a queued
   `disconnect_with_timeout()` timeout starts only after the event loop observes
   the disconnect request, and `disconnect_now()` is not an out-of-band transport
