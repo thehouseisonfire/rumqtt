@@ -1413,7 +1413,19 @@ impl AsyncClient {
         self.handle_try_unsubscribe_tracked(topic, None)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop` with default `DisconnectReasonCode::NormalDisconnection`
+    /// Queues a graceful MQTT disconnect barrier with default
+    /// `DisconnectReasonCode::NormalDisconnection`.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1424,7 +1436,18 @@ impl AsyncClient {
             .await
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop` with properties.
+    /// Queues a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1438,6 +1461,106 @@ impl AsyncClient {
         self.handle_disconnect(reason, Some(properties)).await
     }
 
+    /// Queues a graceful MQTT disconnect barrier with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub async fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(
+            DisconnectReasonCode::NormalDisconnection,
+            None,
+            timeout,
+        )
+        .await
+    }
+
+    /// Queues a graceful MQTT disconnect barrier with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub async fn disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(reason, Some(properties), timeout)
+            .await
+    }
+
+    /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub async fn disconnect_now(&self) -> Result<(), ClientError> {
+        self.handle_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
+            .await
+    }
+
+    /// Sends a MQTT disconnect with properties immediately without waiting for in-flight requests.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub async fn disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_now(reason, Some(properties)).await
+    }
+
     // Handle disconnect interface which can have properties or not
     async fn handle_disconnect(
         &self,
@@ -1449,7 +1572,42 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT disconnect to the `EventLoop` with default `DisconnectReasonCode::NormalDisconnection`
+    async fn handle_disconnect_with_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        let disconnect = Self::build_disconnect_packet(reason, properties);
+        self.send_request_async(Request::DisconnectWithTimeout(disconnect, timeout))
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_disconnect_now(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Result<(), ClientError> {
+        let disconnect = Self::build_disconnect_packet(reason, properties);
+        self.send_request_async(Request::DisconnectNow(disconnect))
+            .await?;
+        Ok(())
+    }
+
+    /// Attempts to queue a graceful MQTT disconnect barrier with default
+    /// `DisconnectReasonCode::NormalDisconnection`.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1459,7 +1617,18 @@ impl AsyncClient {
         self.handle_try_disconnect(DisconnectReasonCode::NormalDisconnection, None)
     }
 
-    /// Attempts to send a MQTT disconnect to the `EventLoop` with properties.
+    /// Attempts to queue a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1473,6 +1642,103 @@ impl AsyncClient {
         self.handle_try_disconnect(reason, Some(properties))
     }
 
+    /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle_try_disconnect_with_timeout(
+            DisconnectReasonCode::NormalDisconnection,
+            None,
+            timeout,
+        )
+    }
+
+    /// Attempts to queue a graceful MQTT disconnect with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.handle_try_disconnect_with_timeout(reason, Some(properties), timeout)
+    }
+
+    /// Attempts to queue an immediate MQTT disconnect.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
+        self.handle_try_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    /// Attempts to queue an immediate MQTT disconnect with properties.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_try_disconnect_now(reason, Some(properties))
+    }
+
     // Handle disconnect interface which can have properties or not
     fn handle_try_disconnect(
         &self,
@@ -1484,14 +1750,42 @@ impl AsyncClient {
         Ok(())
     }
 
+    fn handle_try_disconnect_with_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        let disconnect = Self::build_disconnect_packet(reason, properties);
+        self.try_send_request(Request::DisconnectWithTimeout(disconnect, timeout))?;
+        Ok(())
+    }
+
+    fn handle_try_disconnect_now(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Result<(), ClientError> {
+        let disconnect = Self::build_disconnect_packet(reason, properties);
+        self.try_send_request(Request::DisconnectNow(disconnect))?;
+        Ok(())
+    }
+
     // Helper function to build disconnect request
     fn build_disconnect_request(
         reason: DisconnectReasonCode,
         properties: Option<DisconnectProperties>,
     ) -> Request {
+        Request::Disconnect(Self::build_disconnect_packet(reason, properties))
+    }
+
+    fn build_disconnect_packet(
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Disconnect {
         properties.map_or_else(
-            || Request::Disconnect(Disconnect::new(reason)),
-            |p| Request::Disconnect(Disconnect::new_with_properties(reason, p)),
+            || Disconnect::new(reason),
+            |p| Disconnect::new_with_properties(reason, p),
         )
     }
 }
@@ -1937,7 +2231,18 @@ impl Client {
         self.client.try_unsubscribe(topic)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop`.
+    /// Queues a graceful MQTT disconnect barrier.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1947,7 +2252,18 @@ impl Client {
         self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
     }
 
-    /// Sends a MQTT disconnect to the `EventLoop` with properties.
+    /// Queues a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1961,6 +2277,103 @@ impl Client {
         self.handle_disconnect(reason, Some(properties))
     }
 
+    /// Queues a graceful MQTT disconnect barrier with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(
+            DisconnectReasonCode::NormalDisconnection,
+            None,
+            timeout,
+        )
+    }
+
+    /// Queues a graceful MQTT disconnect barrier with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub fn disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(reason, Some(properties), timeout)
+    }
+
+    /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub fn disconnect_now(&self) -> Result<(), ClientError> {
+        self.handle_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    /// Sends a MQTT disconnect with properties immediately without waiting for in-flight requests.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// event loop.
+    pub fn disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_now(reason, Some(properties))
+    }
+
     fn handle_disconnect(
         &self,
         reason: DisconnectReasonCode,
@@ -1971,7 +2384,41 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT disconnect to the `EventLoop`.
+    fn handle_disconnect_with_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        let disconnect = AsyncClient::build_disconnect_packet(reason, properties);
+        self.client
+            .send_request(Request::DisconnectWithTimeout(disconnect, timeout))?;
+        Ok(())
+    }
+
+    fn handle_disconnect_now(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: Option<DisconnectProperties>,
+    ) -> Result<(), ClientError> {
+        let disconnect = AsyncClient::build_disconnect_packet(reason, properties);
+        self.client
+            .send_request(Request::DisconnectNow(disconnect))?;
+        Ok(())
+    }
+
+    /// Attempts to queue a graceful MQTT disconnect barrier.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1981,7 +2428,18 @@ impl Client {
         self.client.try_disconnect()
     }
 
-    /// Attempts to send a MQTT disconnect to the `EventLoop` with properties.
+    /// Attempts to queue a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// for previously accepted outbound QoS 1/QoS 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// This request uses the normal client request channel. If the event loop is
+    /// blocked from reading new requests by a full QoS 1/QoS 2 publish inflight
+    /// window or packet-id collision, graceful shutdown starts only after the
+    /// event loop observes this request.
     ///
     /// # Errors
     ///
@@ -1993,6 +2451,101 @@ impl Client {
         properties: DisconnectProperties,
     ) -> Result<(), ClientError> {
         self.client.handle_try_disconnect(reason, Some(properties))
+    }
+
+    /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.client.try_disconnect_with_timeout(timeout)
+    }
+
+    /// Attempts to queue a graceful MQTT disconnect with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes previously accepted QoS 0 publishes, and waits
+    /// up to `timeout` for previously accepted outbound QoS 1/QoS 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. QoS 1 publishes
+    /// complete on `PUBACK`, QoS 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// This request uses the normal client request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.client
+            .handle_try_disconnect_with_timeout(reason, Some(properties), timeout)
+    }
+
+    /// Attempts to queue an immediate MQTT disconnect.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
+        self.client.try_disconnect_now()
+    }
+
+    /// Attempts to queue an immediate MQTT disconnect with properties.
+    ///
+    /// This request uses the normal client request channel and is not an
+    /// out-of-band transport abort. If the event loop is blocked from reading
+    /// new requests by a full QoS 1/QoS 2 publish inflight window or packet-id
+    /// collision, the immediate disconnect is processed only after the event
+    /// loop observes this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately on the event loop.
+    pub fn try_disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.client
+            .handle_try_disconnect_now(reason, Some(properties))
     }
 }
 

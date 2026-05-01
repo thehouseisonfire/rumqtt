@@ -467,6 +467,8 @@ pub enum Request {
     UnsubAck(UnsubAck),
     Auth(Auth),
     Disconnect(Disconnect),
+    DisconnectNow(Disconnect),
+    DisconnectWithTimeout(Disconnect, Duration),
 }
 
 impl From<Subscribe> for Request {

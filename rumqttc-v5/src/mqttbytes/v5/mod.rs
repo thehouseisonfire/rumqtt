@@ -104,6 +104,9 @@ impl Packet {
             return match packet_type {
                 PacketType::PingReq => Ok(Self::PingReq(PingReq)),
                 PacketType::PingResp => Ok(Self::PingResp(PingResp)),
+                PacketType::Disconnect => {
+                    Disconnect::read(fixed_header, packet.freeze()).map(Self::Disconnect)
+                }
                 _ => Err(Error::PayloadRequired),
             };
         }

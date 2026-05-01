@@ -138,7 +138,7 @@ impl MqttState {
         }
     }
 
-    fn can_shrink_outgoing_tracking(&self) -> bool {
+    pub(crate) fn outbound_requests_drained(&self) -> bool {
         self.inflight == 0
             && self.collision.is_none()
             && self.collision_notice.is_none()
@@ -153,7 +153,7 @@ impl MqttState {
 
     fn maybe_shrink_outgoing_tracking_capacity(&mut self) {
         let target_len = Self::warm_tracking_len(self.max_inflight);
-        if self.outgoing_pub.len() <= target_len || !self.can_shrink_outgoing_tracking() {
+        if self.outgoing_pub.len() <= target_len || !self.outbound_requests_drained() {
             return;
         }
 
@@ -403,7 +403,10 @@ impl MqttState {
                     )
                 }
                 Request::PingReq(_) => (self.outgoing_ping()?, None),
-                Request::Disconnect(_) => (Some(self.outgoing_disconnect()), None),
+                Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
+                    unreachable!("graceful disconnect requests are handled by the event loop")
+                }
+                Request::DisconnectNow(_) => (Some(self.outgoing_disconnect()), None),
                 Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
                 Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
                 _ => unimplemented!(),
