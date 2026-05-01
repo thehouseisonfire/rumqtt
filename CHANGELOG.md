@@ -11,8 +11,6 @@
 
 ## [rumqttc-next 0.31.0] - 30-04-2026
 
-## [Unreleased]
-
 ### Added
 - `rumqttc` v4/v5: Add `ClientBuilder` via `Client::builder(...)` and `AsyncClient::builder(...)`, with bounded default capacity from `MqttOptions::request_channel_capacity()`, `.capacity(n)` overrides, and explicit `.unbounded()` request-channel opt-in.
 - `rumqttc` v4/v5: Add ACK-returning tracked notices. `publish_tracked` resolves to a crate-local `PublishResult`, `subscribe_tracked` resolves to `SubAck`, and `unsubscribe_tracked` resolves to `UnsubAck`. ACK packets are cloned into notices while remaining visible through `Event::Incoming(...)`.
@@ -30,8 +28,6 @@
 ---
 
 ## [rumqttc-next 0.30.1] - 30-04-2026
-
-## [Unreleased]
 
 ### Added
 - `rumqttc` v5: `PublishNoticeError::TopicAliasReplayUnavailable(alias)` for unreplayable alias-only publishes after reconnect.
