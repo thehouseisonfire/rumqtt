@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut mqttoptions = MqttOptions::new("test-1", ("localhost", 1884));
     mqttoptions.set_keep_alive(5);
 
-    let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build_async();
+    let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
     task::spawn(async move {
         requests(client).await;
         time::sleep(Duration::from_secs(3)).await;

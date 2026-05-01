@@ -179,7 +179,7 @@ pub struct AsyncClient {
     request_tx: RequestSender,
 }
 
-/// Builder for synchronous and asynchronous MQTT clients.
+/// Builder for synchronous MQTT clients.
 ///
 /// The request channel is bounded by default using
 /// [`MqttOptions::request_channel_capacity`]. Use [`Self::capacity`] to override
@@ -190,8 +190,79 @@ pub struct ClientBuilder {
     capacity: RequestChannelCapacity,
 }
 
+/// Builder for asynchronous MQTT clients.
+///
+/// The request channel is bounded by default using
+/// [`MqttOptions::request_channel_capacity`]. Use [`Self::capacity`] to override
+/// the bounded capacity, or [`Self::unbounded`] to opt into an unbounded request channel.
+#[derive(Debug)]
+pub struct AsyncClientBuilder {
+    options: MqttOptions,
+    capacity: RequestChannelCapacity,
+}
+
+#[must_use]
+fn build_async_client(
+    options: MqttOptions,
+    capacity: RequestChannelCapacity,
+) -> (AsyncClient, EventLoop) {
+    let (eventloop, request_tx) = EventLoop::new_for_async_client_with_capacity(options, capacity);
+    let client = AsyncClient {
+        request_tx: RequestSender::WithNotice(request_tx),
+    };
+
+    (client, eventloop)
+}
+
 impl ClientBuilder {
-    /// Create a new client builder.
+    /// Create a new builder for a synchronous [`Client`].
+    #[must_use]
+    pub const fn new(options: MqttOptions) -> Self {
+        let capacity = RequestChannelCapacity::Bounded(options.request_channel_capacity());
+        Self { options, capacity }
+    }
+
+    /// Use a bounded request channel with the given capacity.
+    ///
+    /// `0` creates a bounded zero-capacity rendezvous channel. Use [`Self::unbounded`]
+    /// for an unbounded request channel.
+    #[must_use]
+    pub const fn capacity(mut self, cap: usize) -> Self {
+        self.capacity = RequestChannelCapacity::Bounded(cap);
+        self
+    }
+
+    /// Use an unbounded request channel.
+    #[must_use]
+    pub const fn unbounded(mut self) -> Self {
+        self.capacity = RequestChannelCapacity::Unbounded;
+        self
+    }
+
+    /// Build a synchronous client and connection.
+    ///
+    /// This builder always produces the synchronous client pair so the
+    /// terminal `build()` method matches the entry point that created it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current-thread Tokio runtime cannot be created.
+    #[must_use]
+    pub fn build(self) -> (Client, Connection) {
+        let (client, eventloop) = build_async_client(self.options, self.capacity);
+        let client = Client { client };
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let connection = Connection::new(eventloop, runtime);
+        (client, connection)
+    }
+}
+
+impl AsyncClientBuilder {
+    /// Create a new builder for an asynchronous [`AsyncClient`].
     #[must_use]
     pub const fn new(options: MqttOptions) -> Self {
         let capacity = RequestChannelCapacity::Bounded(options.request_channel_capacity());
@@ -216,41 +287,24 @@ impl ClientBuilder {
     }
 
     /// Build an asynchronous client and event loop.
-    #[must_use]
-    pub fn build_async(self) -> (AsyncClient, EventLoop) {
-        let (eventloop, request_tx) =
-            EventLoop::new_for_async_client_with_capacity(self.options, self.capacity);
-        let client = AsyncClient {
-            request_tx: RequestSender::WithNotice(request_tx),
-        };
-
-        (client, eventloop)
-    }
-
-    /// Build a synchronous client and connection.
     ///
-    /// # Panics
-    ///
-    /// Panics if the current-thread Tokio runtime cannot be created.
+    /// This builder always produces the asynchronous client pair so the
+    /// terminal `build()` method matches the entry point that created it.
     #[must_use]
-    pub fn build(self) -> (Client, Connection) {
-        let (client, eventloop) = self.build_async();
-        let client = Client { client };
-        let runtime = runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let connection = Connection::new(eventloop, runtime);
-        (client, connection)
+    pub fn build(self) -> (AsyncClient, EventLoop) {
+        build_async_client(self.options, self.capacity)
     }
 }
 
 impl AsyncClient {
-    /// Create a builder for an `AsyncClient`.
+    /// Create a builder for an [`AsyncClient`].
+    ///
+    /// The returned [`AsyncClientBuilder`] only builds the asynchronous
+    /// client pair, which keeps the terminal `build()` method aligned with
+    /// this entry point.
     #[must_use]
-    pub const fn builder(options: MqttOptions) -> ClientBuilder {
-        ClientBuilder::new(options)
+    pub const fn builder(options: MqttOptions) -> AsyncClientBuilder {
+        AsyncClientBuilder::new(options)
     }
 
     /// Create a new `AsyncClient` from a channel `Sender`.
@@ -1070,7 +1124,11 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a builder for a `Client`.
+    /// Create a builder for a [`Client`].
+    ///
+    /// The returned [`ClientBuilder`] only builds the synchronous client
+    /// pair, which keeps the terminal `build()` method aligned with this
+    /// entry point.
     #[must_use]
     pub const fn builder(options: MqttOptions) -> ClientBuilder {
         ClientBuilder::new(options)
@@ -1572,7 +1630,8 @@ mod test {
     fn builder_uses_options_request_channel_capacity_by_default() {
         let mut mqttoptions = MqttOptions::new("test-1", "localhost");
         mqttoptions.set_request_channel_capacity(1);
-        let (client, _eventloop) = AsyncClient::builder(mqttoptions).build_async();
+        let builder: AsyncClientBuilder = AsyncClient::builder(mqttoptions);
+        let (client, _eventloop) = builder.build();
 
         client
             .try_publish("hello/world", QoS::AtMostOnce, false, "one")
@@ -1581,6 +1640,15 @@ mod test {
             client.try_publish("hello/world", QoS::AtMostOnce, false, "two"),
             Err(ClientError::TryRequest(Request::Publish(_)))
         ));
+    }
+
+    #[test]
+    fn sync_and_async_entry_points_return_distinct_builder_types() {
+        let sync_builder = Client::builder(MqttOptions::new("test-sync", "localhost"));
+        let async_builder = AsyncClient::builder(MqttOptions::new("test-async", "localhost"));
+
+        let _: ClientBuilder = sync_builder;
+        let _: AsyncClientBuilder = async_builder;
     }
 
     #[test]
@@ -1604,7 +1672,7 @@ mod test {
     #[test]
     fn builder_capacity_zero_is_bounded_rendezvous() {
         let mqttoptions = MqttOptions::new("test-1", "localhost");
-        let (client, _eventloop) = AsyncClient::builder(mqttoptions).capacity(0).build_async();
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).capacity(0).build();
 
         assert!(matches!(
             client.try_publish("hello/world", QoS::AtMostOnce, false, "one"),
@@ -1615,7 +1683,7 @@ mod test {
     #[test]
     fn unbounded_builder_allows_try_publish_without_polling() {
         let mqttoptions = MqttOptions::new("test-1", "localhost");
-        let (client, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build_async();
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build();
 
         for i in 0..128 {
             client
@@ -1627,7 +1695,7 @@ mod test {
     #[tokio::test]
     async fn bounded_publish_blocks_when_channel_is_full_without_polling() {
         let mqttoptions = MqttOptions::new("test-1", "localhost");
-        let (client, _eventloop) = AsyncClient::builder(mqttoptions).capacity(1).build_async();
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).capacity(1).build();
 
         client
             .publish("hello/world", QoS::AtMostOnce, false, "one")
@@ -1645,7 +1713,7 @@ mod test {
     #[tokio::test]
     async fn unbounded_publish_completes_without_polling() {
         let mqttoptions = MqttOptions::new("test-1", "localhost");
-        let (client, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build_async();
+        let (client, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build();
 
         for i in 0..128 {
             client

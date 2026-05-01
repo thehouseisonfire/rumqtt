@@ -53,7 +53,7 @@ async fn main() {
 let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org");
 mqttoptions.set_keep_alive(5);
 
-let (mut client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build_async();
+let (mut client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
 client.subscribe("hello/rumqtt", QoS::AtMostOnce).await.unwrap();
 
 task::spawn(async move {

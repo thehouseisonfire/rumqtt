@@ -16,7 +16,7 @@ fn create_conn() -> (AsyncClient, EventLoop) {
         .set_manual_acks(true)
         .set_clean_start(false);
 
-    AsyncClient::builder(mqttoptions).capacity(10).build_async()
+    AsyncClient::builder(mqttoptions).capacity(10).build()
 }
 
 #[tokio::main(flavor = "current_thread")]

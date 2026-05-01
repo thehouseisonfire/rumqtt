@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     mqttoptions.set_transport(transport);
 
-    let (_client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build_async();
+    let (_client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
 
     loop {
         match eventloop.poll().await {
