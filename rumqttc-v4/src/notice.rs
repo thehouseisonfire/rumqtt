@@ -69,9 +69,43 @@ type PublishNoticeResult = Result<PublishResult, PublishNoticeError>;
 type SubscribeNoticeResult = Result<SubAck, SubscribeNoticeError>;
 type UnsubscribeNoticeResult = Result<UnsubAck, UnsubscribeNoticeError>;
 
+#[derive(Debug)]
+struct NoticeRx<T, E>(oneshot::Receiver<Result<T, E>>);
+
+impl<T, E> NoticeRx<T, E>
+where
+    E: From<oneshot::error::RecvError>,
+{
+    fn wait_blocking(self) -> Result<T, E> {
+        self.0.blocking_recv()?
+    }
+
+    async fn wait_async(self) -> Result<T, E> {
+        self.0.await?
+    }
+}
+
+#[derive(Debug)]
+struct NoticeTx<T, E>(oneshot::Sender<Result<T, E>>);
+
+impl<T, E> NoticeTx<T, E> {
+    fn success(self, result: T) {
+        _ = self.0.send(Ok(result));
+    }
+
+    fn error(self, err: E) {
+        _ = self.0.send(Err(err));
+    }
+}
+
+fn notice_channel<T, E>() -> (NoticeTx<T, E>, NoticeRx<T, E>) {
+    let (tx, rx) = oneshot::channel();
+    (NoticeTx(tx), NoticeRx(rx))
+}
+
 /// Wait handle returned by tracked publish APIs.
 #[derive(Debug)]
-pub struct PublishNotice(pub(crate) oneshot::Receiver<PublishNoticeResult>);
+pub struct PublishNotice(NoticeRx<PublishResult, PublishNoticeError>);
 
 impl PublishNotice {
     /// Wait for the publish protocol result by blocking the current thread.
@@ -85,7 +119,7 @@ impl PublishNotice {
     ///
     /// Panics if called in an async context.
     pub fn wait(self) -> PublishNoticeResult {
-        self.0.blocking_recv()?
+        self.0.wait_blocking()
     }
 
     /// Wait for the publish protocol result asynchronously.
@@ -95,7 +129,7 @@ impl PublishNotice {
     /// Returns an error if the event loop drops the notice sender or if the
     /// publish fails before a protocol result is available.
     pub async fn wait_async(self) -> PublishNoticeResult {
-        self.0.await?
+        self.0.wait_async().await
     }
 
     /// Wait for publish completion while discarding the detailed protocol result.
@@ -140,7 +174,7 @@ impl From<oneshot::error::RecvError> for SubscribeNoticeError {
 
 /// Wait handle returned by tracked subscribe APIs.
 #[derive(Debug)]
-pub struct SubscribeNotice(pub(crate) oneshot::Receiver<SubscribeNoticeResult>);
+pub struct SubscribeNotice(NoticeRx<SubAck, SubscribeNoticeError>);
 
 impl SubscribeNotice {
     /// Wait for `SubAck` by blocking the current thread.
@@ -154,7 +188,7 @@ impl SubscribeNotice {
     ///
     /// Panics if called in an async context.
     pub fn wait(self) -> SubscribeNoticeResult {
-        self.0.blocking_recv()?
+        self.0.wait_blocking()
     }
 
     /// Wait for `SubAck` asynchronously.
@@ -164,7 +198,7 @@ impl SubscribeNotice {
     /// Returns an error if the event loop drops the notice sender or if the
     /// subscribe fails before a `SubAck` is available.
     pub async fn wait_async(self) -> SubscribeNoticeResult {
-        self.0.await?
+        self.0.wait_async().await
     }
 
     /// Wait for subscribe completion and treat failing `SubAck` return codes as
@@ -210,7 +244,7 @@ impl From<oneshot::error::RecvError> for UnsubscribeNoticeError {
 
 /// Wait handle returned by tracked unsubscribe APIs.
 #[derive(Debug)]
-pub struct UnsubscribeNotice(pub(crate) oneshot::Receiver<UnsubscribeNoticeResult>);
+pub struct UnsubscribeNotice(NoticeRx<UnsubAck, UnsubscribeNoticeError>);
 
 impl UnsubscribeNotice {
     /// Wait for `UnsubAck` by blocking the current thread.
@@ -224,7 +258,7 @@ impl UnsubscribeNotice {
     ///
     /// Panics if called in an async context.
     pub fn wait(self) -> UnsubscribeNoticeResult {
-        self.0.blocking_recv()?
+        self.0.wait_blocking()
     }
 
     /// Wait for `UnsubAck` asynchronously.
@@ -234,7 +268,7 @@ impl UnsubscribeNotice {
     /// Returns an error if the event loop drops the notice sender or if the
     /// unsubscribe fails before an `UnsubAck` is available.
     pub async fn wait_async(self) -> UnsubscribeNoticeResult {
-        self.0.await?
+        self.0.wait_async().await
     }
 
     /// Wait for unsubscribe completion while discarding the `UnsubAck`.
@@ -262,56 +296,56 @@ impl UnsubscribeNotice {
 }
 
 #[derive(Debug)]
-pub struct PublishNoticeTx(pub(crate) oneshot::Sender<PublishNoticeResult>);
+pub struct PublishNoticeTx(NoticeTx<PublishResult, PublishNoticeError>);
 
 impl PublishNoticeTx {
     pub(crate) fn new() -> (Self, PublishNotice) {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = notice_channel();
         (Self(tx), PublishNotice(rx))
     }
 
     pub(crate) fn success(self, result: PublishResult) {
-        _ = self.0.send(Ok(result));
+        self.0.success(result);
     }
 
     pub(crate) fn error(self, err: PublishNoticeError) {
-        _ = self.0.send(Err(err));
+        self.0.error(err);
     }
 }
 
 #[derive(Debug)]
-pub struct SubscribeNoticeTx(pub(crate) oneshot::Sender<SubscribeNoticeResult>);
+pub struct SubscribeNoticeTx(NoticeTx<SubAck, SubscribeNoticeError>);
 
 impl SubscribeNoticeTx {
     pub(crate) fn new() -> (Self, SubscribeNotice) {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = notice_channel();
         (Self(tx), SubscribeNotice(rx))
     }
 
     pub(crate) fn success(self, suback: SubAck) {
-        _ = self.0.send(Ok(suback));
+        self.0.success(suback);
     }
 
     pub(crate) fn error(self, err: SubscribeNoticeError) {
-        _ = self.0.send(Err(err));
+        self.0.error(err);
     }
 }
 
 #[derive(Debug)]
-pub struct UnsubscribeNoticeTx(pub(crate) oneshot::Sender<UnsubscribeNoticeResult>);
+pub struct UnsubscribeNoticeTx(NoticeTx<UnsubAck, UnsubscribeNoticeError>);
 
 impl UnsubscribeNoticeTx {
     pub(crate) fn new() -> (Self, UnsubscribeNotice) {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = notice_channel();
         (Self(tx), UnsubscribeNotice(rx))
     }
 
     pub(crate) fn success(self, unsuback: UnsubAck) {
-        _ = self.0.send(Ok(unsuback));
+        self.0.success(unsuback);
     }
 
     pub(crate) fn error(self, err: UnsubscribeNoticeError) {
-        _ = self.0.send(Err(err));
+        self.0.error(err);
     }
 }
 
