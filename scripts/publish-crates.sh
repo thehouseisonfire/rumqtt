@@ -188,6 +188,7 @@ cut_changelog() {
       \n \n --- \n
     }{
       my $unreleased = $1;
+      $unreleased =~ s{^\#\# \s \[Unreleased\] \n (?=\n \#\#\# \s Added \n)}{}xmg;
       <<"EOF";
 ## [Unreleased]
 
@@ -208,6 +209,12 @@ $unreleased
 EOF
     }xse
       or die "failed to cut CHANGELOG.md\n";
+
+    s{
+      ( ^\#\# \s \[[^\]]+\] [^\n]* \n \n )
+      \#\# \s \[Unreleased\] \n \n
+      (?= \#\#\# \s Added \n )
+    }{$1}xmsg;
   ' CHANGELOG.md
 }
 
