@@ -1,13 +1,15 @@
 use super::framed::Network;
 use super::mqttbytes::v5::{
-    ConnAck, Connect, Disconnect, DisconnectReasonCode, Packet, Publish, Subscribe, Unsubscribe,
+    ConnAck, Connect, ConnectProperties, Disconnect, DisconnectReasonCode, Packet, Publish,
+    Subscribe, Unsubscribe,
 };
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
 use crate::framed::AsyncReadWrite;
 use crate::notice::{
-    PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx, UnsubscribeNoticeTx,
+    AuthNoticeTx, PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx,
+    UnsubscribeNoticeTx,
 };
-use crate::{NoticeFailureReason, PublishNoticeError};
+use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use tokio::select;
@@ -75,6 +77,16 @@ impl RequestEnvelope {
         Self {
             request: Request::Unsubscribe(unsubscribe),
             notice: Some(TrackedNoticeTx::Unsubscribe(notice)),
+        }
+    }
+
+    pub(crate) const fn tracked_auth(
+        auth: super::mqttbytes::v5::Auth,
+        notice: AuthNoticeTx,
+    ) -> Self {
+        Self {
+            request: Request::Auth(auth),
+            notice: Some(TrackedNoticeTx::Auth(notice)),
         }
     }
 
@@ -184,6 +196,7 @@ pub struct EventLoop {
 pub enum Event {
     Incoming(Incoming),
     Outgoing(Outgoing),
+    Auth(AuthEvent),
 }
 
 impl EventLoop {
@@ -246,7 +259,7 @@ impl EventLoop {
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let manual_acks = options.manual_acks;
 
-        let auth_manager = options.auth_manager();
+        let authenticator = options.authenticator();
         let authentication_method = options.authentication_method();
 
         Self {
@@ -255,7 +268,7 @@ impl EventLoop {
                 inflight_limit,
                 manual_acks,
                 authentication_method,
-                auth_manager,
+                authenticator,
             ),
             requests_rx,
             _requests_tx: requests_tx,
@@ -299,6 +312,7 @@ impl EventLoop {
             }
         }
 
+        self.state.fail_auth_exchange_due_to_session_reset();
         self.state.reset_connection_scoped_state();
     }
 
@@ -348,6 +362,9 @@ impl EventLoop {
                     TrackedNoticeTx::Unsubscribe(notice) => {
                         notice.error(reason.unsubscribe_error());
                     }
+                    TrackedNoticeTx::Auth(notice) => {
+                        notice.error(reason.auth_error());
+                    }
                 }
             }
         }
@@ -359,6 +376,7 @@ impl EventLoop {
     pub fn reset_session_state(&mut self) {
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.fail_pending_notices();
+        self.state.fail_reauth_exchange_due_to_session_reset();
         self.state.reset_connection_scoped_state();
     }
 
@@ -520,14 +538,17 @@ impl EventLoop {
     ) -> Result<bool, ConnectionError> {
         match request {
             Request::Disconnect(disconnect) => {
+                self.state.fail_auth_exchange_due_to_client_disconnect();
                 self.pending_disconnect = Some(PendingDisconnect::new(disconnect, None));
                 Ok(false)
             }
             Request::DisconnectWithTimeout(disconnect, timeout) => {
+                self.state.fail_auth_exchange_due_to_client_disconnect();
                 self.pending_disconnect = Some(PendingDisconnect::new(disconnect, Some(timeout)));
                 Ok(false)
             }
             Request::DisconnectNow(_) => {
+                self.state.fail_auth_exchange_due_to_client_disconnect();
                 let (outgoing, _) = self
                     .state
                     .handle_outgoing_packet_with_notice(request, notice)?;
@@ -862,29 +883,49 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
-    state.set_authentication_method(options.authentication_method());
+    let authentication_method = options.authentication_method();
+    let auth_exchange_started = authentication_method.is_some();
+    let start_auth_properties = state.begin_authentication_connect(authentication_method)?;
+    let mut connect_properties = options.connect_properties();
+    if let Some(auth_properties) = start_auth_properties {
+        let properties = connect_properties.get_or_insert_with(ConnectProperties::new);
+        properties.authentication_method = auth_properties.method;
+        properties.authentication_data = auth_properties.data;
+    }
 
-    let packet = Packet::Connect(
-        Connect {
-            client_id: options.client_id(),
-            keep_alive: u16::try_from(options.keep_alive().as_secs()).unwrap_or(u16::MAX),
-            clean_start: options.clean_start(),
-            properties: options.connect_properties(),
-        },
-        options.last_will(),
-        options.auth().clone(),
-    );
+    let result = mqtt_connect_inner(options, network, state, connect_properties).await;
+    if result.is_err() && auth_exchange_started {
+        state.fail_auth_exchange_due_to_connection_closed();
+    }
+    result
+}
 
+async fn mqtt_connect_inner(
+    options: &mut MqttOptions,
+    network: &mut Network,
+    state: &mut MqttState,
+    connect_properties: Option<ConnectProperties>,
+) -> Result<ConnAck, ConnectionError> {
     // send mqtt connect packet
-    network.write(packet).await?;
+    network
+        .write(Packet::Connect(
+            Connect {
+                client_id: options.client_id(),
+                keep_alive: u16::try_from(options.keep_alive().as_secs()).unwrap_or(u16::MAX),
+                clean_start: options.clean_start(),
+                properties: connect_properties,
+            },
+            options.last_will(),
+            options.auth().clone(),
+        ))
+        .await?;
     network.flush().await?;
 
     // validate connack
     loop {
         match network.read().await? {
             Incoming::ConnAck(connack) if connack.code == ConnectReturnCode::Success => {
-                if let Err(err) =
-                    validate_successful_connack_authentication_method(options, &connack)
+                if let Err(err) = state.validate_successful_connack_authentication_method(&connack)
                 {
                     send_protocol_error_disconnect(network).await?;
                     return Err(err.into());
@@ -936,25 +977,6 @@ async fn send_protocol_error_disconnect(network: &mut Network) -> Result<(), Con
     Ok(())
 }
 
-fn validate_successful_connack_authentication_method(
-    options: &MqttOptions,
-    connack: &ConnAck,
-) -> Result<(), StateError> {
-    let expected = options.authentication_method();
-    let actual = connack
-        .properties
-        .as_ref()
-        .and_then(|properties| properties.authentication_method.as_deref());
-
-    match (expected.as_deref(), actual) {
-        (Some(expected), Some(actual)) if expected == actual => Ok(()),
-        (None, None) => Ok(()),
-        _ => Err(StateError::Deserialization(
-            super::mqttbytes::Error::ProtocolError,
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -971,13 +993,34 @@ mod tests {
         response: Result<Option<AuthProperties>, String>,
     }
 
-    impl crate::AuthManager for StaticAuthManager {
-        fn auth_continue(
+    impl crate::Authenticator for StaticAuthManager {
+        fn start(
             &mut self,
-            _auth_prop: Option<AuthProperties>,
-        ) -> Result<Option<AuthProperties>, String> {
-            self.response.clone()
+            _context: crate::AuthContext<'_>,
+        ) -> Result<Option<AuthProperties>, crate::AuthError> {
+            Ok(None)
         }
+
+        fn continue_auth(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _auth_prop: Option<AuthProperties>,
+        ) -> Result<crate::AuthAction, crate::AuthError> {
+            self.response
+                .clone()
+                .map(|props| props.map_or(crate::AuthAction::Complete, crate::AuthAction::Send))
+                .map_err(crate::AuthError::from)
+        }
+
+        fn success(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _incoming: Option<AuthProperties>,
+        ) -> Result<(), crate::AuthError> {
+            Ok(())
+        }
+
+        fn failure(&mut self, _context: crate::AuthContext<'_>, _error: crate::AuthError) {}
     }
 
     fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
@@ -1063,6 +1106,31 @@ mod tests {
         tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker)
     }
 
+    async fn run_mqtt_connect_with_connack_and_return_state(
+        mut options: MqttOptions,
+        connack: ConnAck,
+    ) -> (Result<ConnAck, ConnectionError>, MqttState) {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            false,
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        };
+
+        let (result, ()) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        (result, state)
+    }
+
     async fn run_mqtt_connect_with_stale_state_auth_method(
         mut options: MqttOptions,
         stale_authentication_method: Option<&str>,
@@ -1122,6 +1190,58 @@ mod tests {
 
     fn pending_front_request(eventloop: &EventLoop) -> Option<&Request> {
         eventloop.pending.front().map(|envelope| &envelope.request)
+    }
+
+    #[tokio::test]
+    async fn graceful_disconnect_fails_active_tracked_reauth_notice() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let (mut eventloop, _) = EventLoop::new_for_async_client(options, 10);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+
+        assert!(
+            eventloop
+                .handle_request(
+                    Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                    Some(TrackedNoticeTx::Auth(notice_tx)),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(eventloop.state.outbound_requests_drained());
+
+        let handled = eventloop
+            .handle_request(
+                Request::Disconnect(Disconnect::new(DisconnectReasonCode::NormalDisconnection)),
+                None,
+                &mut should_flush,
+                &mut qos0_notices,
+            )
+            .await
+            .unwrap();
+
+        assert!(!handled);
+        assert!(eventloop.pending_disconnect.is_some());
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            crate::notice::AuthNoticeError::ConnectionClosed
+        );
+        assert!(eventloop.state.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::Reauthentication,
+                    reason: crate::AuthFailureReason::ConnectionClosed,
+                    ..
+                })
+            )
+        }));
     }
 
     #[tokio::test]
@@ -1215,6 +1335,68 @@ mod tests {
             disconnect,
             vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
         );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_failure_resets_initial_auth_exchange() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::BadAuthenticationMethod,
+            properties: None,
+        };
+
+        let (result, state) =
+            run_mqtt_connect_with_connack_and_return_state(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::ConnectionRefused(
+                ConnectReturnCode::BadAuthenticationMethod
+            ))
+        ));
+        assert!(state.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    reason: crate::AuthFailureReason::ConnectionClosed,
+                    ..
+                })
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_protocol_error_resets_initial_auth_exchange() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        };
+
+        let (result, state) =
+            run_mqtt_connect_with_connack_and_return_state(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert!(state.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    reason: crate::AuthFailureReason::ConnectionClosed,
+                    ..
+                })
+            )
+        }));
     }
 
     #[tokio::test]
@@ -1923,6 +2105,84 @@ mod tests {
             notice.wait_async().await.unwrap_err(),
             PublishNoticeError::SessionReset
         );
+    }
+
+    #[tokio::test]
+    async fn reset_session_state_fails_active_tracked_reauth_notice() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap();
+
+        eventloop.reset_session_state();
+
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            crate::notice::AuthNoticeError::SessionReset
+        );
+        assert!(eventloop.state.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::Reauthentication,
+                    reason: crate::AuthFailureReason::SessionReset,
+                    ..
+                })
+            )
+        }));
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Auth(Auth::new(
+                AuthReasonCode::ReAuthenticate,
+                None,
+            )))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reset_session_state_does_not_fail_initial_auth_exchange() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        eventloop
+            .state
+            .begin_authentication_connect(Some("test-method".to_owned()))
+            .unwrap();
+        eventloop.reset_session_state();
+
+        assert!(!eventloop.state.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    ..
+                })
+            )
+        }));
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_authentication_method(
+                Some("test-method"),
+            )))
+            .unwrap();
+        assert!(eventloop.state.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Succeeded {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    ..
+                })
+            )
+        }));
     }
 
     #[test]

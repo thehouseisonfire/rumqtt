@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use flume::bounded;
 use rumqttc::mqttbytes::{QoS, v5::AuthProperties};
-use rumqttc::{AuthManager, Client, MqttOptions};
+use rumqttc::{AuthAction, AuthContext, AuthError, Authenticator, Client, MqttOptions};
 #[cfg(feature = "auth-scram")]
 use scram::{
     ChannelBindType, ScramAuthClient, ScramCbHelper, ScramNonce, ScramResultClient,
@@ -91,39 +91,56 @@ impl<'a> ScramAuthManager<'a> {
     }
 }
 
-impl<'a> AuthManager for ScramAuthManager<'a> {
-    fn auth_continue(
+impl<'a> Authenticator for ScramAuthManager<'a> {
+    fn start(&mut self, _context: AuthContext<'_>) -> Result<Option<AuthProperties>, AuthError> {
+        self.auth_start()
+            .map(|data| {
+                data.map(|data| AuthProperties {
+                    method: Some("SCRAM-SHA-256".to_string()),
+                    data: Some(data),
+                    reason: None,
+                    user_properties: Vec::new(),
+                })
+            })
+            .map_err(AuthError::from)
+    }
+
+    fn continue_auth(
         &mut self,
+        _context: AuthContext<'_>,
         #[allow(unused_variables)] auth_prop: Option<AuthProperties>,
-    ) -> Result<Option<AuthProperties>, String> {
+    ) -> Result<AuthAction, AuthError> {
         #[cfg(feature = "auth-scram")]
         {
-            let prop = auth_prop.ok_or_else(|| "Missing authentication properties".to_string())?;
+            let prop =
+                auth_prop.ok_or_else(|| AuthError::from("Missing authentication properties"))?;
 
             if prop.method.as_deref() != Some("SCRAM-SHA-256") {
-                return Err("Invalid authentication method".to_string());
+                return Err(AuthError::from("Invalid authentication method"));
             }
 
             let scram = self
                 .scram
                 .as_mut()
-                .ok_or_else(|| "Invalid state".to_string())?;
+                .ok_or_else(|| AuthError::from("Invalid state"))?;
 
             let auth_data = prop
                 .data
-                .ok_or_else(|| "Missing authentication data".to_string())
-                .and_then(|data| String::from_utf8(data.to_vec()).map_err(|e| e.to_string()))?;
+                .ok_or_else(|| AuthError::from("Missing authentication data"))
+                .and_then(|data| {
+                    String::from_utf8(data.to_vec()).map_err(|e| AuthError::from(e.to_string()))
+                })?;
 
             let client_final = match scram.parse_response(&auth_data) {
                 Ok(ScramResultClient::Output(client_final)) => client_final,
                 Ok(ScramResultClient::Completed) => {
                     self.scram = None;
-                    return Ok(None);
+                    return Ok(AuthAction::Complete);
                 }
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(AuthError::from(e.to_string())),
             };
 
-            Ok(Some(AuthProperties {
+            Ok(AuthAction::Send(AuthProperties {
                 method: Some("SCRAM-SHA-256".to_string()),
                 data: Some(client_final.into()),
                 reason: None,
@@ -132,23 +149,40 @@ impl<'a> AuthManager for ScramAuthManager<'a> {
         }
 
         #[cfg(not(feature = "auth-scram"))]
-        Ok(Some(AuthProperties {
+        Ok(AuthAction::Send(AuthProperties {
             method: Some("SCRAM-SHA-256".to_string()),
             data: Some("client final message".into()),
             reason: None,
             user_properties: Vec::new(),
         }))
     }
+
+    fn success(
+        &mut self,
+        _context: AuthContext<'_>,
+        _incoming: Option<AuthProperties>,
+    ) -> Result<(), AuthError> {
+        #[cfg(feature = "auth-scram")]
+        {
+            self.scram = None;
+        }
+        Ok(())
+    }
+
+    fn failure(&mut self, _context: AuthContext<'_>, _error: AuthError) {
+        #[cfg(feature = "auth-scram")]
+        {
+            self.scram = None;
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut authmanager = ScramAuthManager::new("user1", "123456");
-    let client_first = authmanager.auth_start().unwrap();
+    let authmanager = ScramAuthManager::new("user1", "123456");
     let authmanager = Arc::new(Mutex::new(authmanager));
 
     let mut mqttoptions = MqttOptions::new("auth_test", "127.0.0.1");
     mqttoptions.set_authentication_method(Some("SCRAM-SHA-256".to_string()));
-    mqttoptions.set_authentication_data(client_first);
     mqttoptions.set_auth_manager(authmanager.clone());
     let (client, mut connection) = Client::builder(mqttoptions).capacity(10).build();
 
@@ -166,14 +200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         rx.recv().unwrap();
 
         // Reauthenticate using SCRAM-SHA-256
-        let client_first = authmanager.clone().lock().unwrap().auth_start().unwrap();
-        let properties = AuthProperties {
-            method: Some("SCRAM-SHA-256".to_string()),
-            data: client_first,
-            reason: None,
-            user_properties: Vec::new(),
-        };
-        client.reauth(Some(properties)).unwrap();
+        client.reauth(None).unwrap();
     });
 
     for notification in connection.iter() {

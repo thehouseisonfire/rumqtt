@@ -5,6 +5,7 @@ use crate::mqttbytes::v5::{
     PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, SubAck,
     SubscribeReasonCode as V5SubscribeReasonCode, UnsubAck, UnsubAckReason as V5UnsubAckReason,
 };
+use crate::{AuthFailureReason, AuthOutcome};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeFailureReason {
@@ -28,6 +29,12 @@ impl NoticeFailureReason {
     pub(crate) const fn unsubscribe_error(self) -> UnsubscribeNoticeError {
         match self {
             Self::SessionReset => UnsubscribeNoticeError::SessionReset,
+        }
+    }
+
+    pub(crate) const fn auth_error(self) -> AuthNoticeError {
+        match self {
+            Self::SessionReset => AuthNoticeError::SessionReset,
         }
     }
 }
@@ -78,6 +85,7 @@ impl From<oneshot::error::RecvError> for PublishNoticeError {
 type PublishNoticeResult = Result<PublishResult, PublishNoticeError>;
 type SubscribeNoticeResult = Result<SubAck, SubscribeNoticeError>;
 type UnsubscribeNoticeResult = Result<UnsubAck, UnsubscribeNoticeError>;
+type AuthNoticeResult = Result<AuthOutcome, AuthNoticeError>;
 
 #[derive(Debug)]
 struct NoticeRx<T, E>(oneshot::Receiver<Result<T, E>>);
@@ -313,6 +321,74 @@ impl UnsubscribeNotice {
     }
 }
 
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum AuthNoticeError {
+    #[error("event loop dropped notice sender")]
+    Recv,
+    #[error("authentication exchange was dropped due to session reset")]
+    SessionReset,
+    #[error("authentication exchange failed due to a protocol error")]
+    ProtocolError,
+    #[error("authentication failed: {0}")]
+    AuthenticationFailed(String),
+    #[error("connection closed before authentication completed")]
+    ConnectionClosed,
+    #[error("re-authentication is already active")]
+    OverlappingReauth,
+    #[error("re-authentication requires a CONNECT Authentication Method")]
+    MissingAuthenticationMethod,
+}
+
+impl From<oneshot::error::RecvError> for AuthNoticeError {
+    fn from(_: oneshot::error::RecvError) -> Self {
+        Self::Recv
+    }
+}
+
+impl AuthFailureReason {
+    pub(crate) fn from_notice_error(error: AuthNoticeError) -> Self {
+        match error {
+            AuthNoticeError::Recv => Self::NoticeDropped,
+            AuthNoticeError::SessionReset => Self::SessionReset,
+            AuthNoticeError::ProtocolError => Self::ProtocolError,
+            AuthNoticeError::AuthenticationFailed(message) => Self::AuthenticationFailed(message),
+            AuthNoticeError::ConnectionClosed => Self::ConnectionClosed,
+            AuthNoticeError::OverlappingReauth => Self::OverlappingReauth,
+            AuthNoticeError::MissingAuthenticationMethod => Self::MissingAuthenticationMethod,
+        }
+    }
+}
+
+/// Wait handle returned by tracked re-authentication APIs.
+#[derive(Debug)]
+pub struct AuthNotice(NoticeRx<AuthOutcome, AuthNoticeError>);
+
+impl AuthNotice {
+    /// Wait for the authentication result by blocking the current thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop drops the notice sender or if the
+    /// authentication exchange fails before a result is available.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called in an async context.
+    pub fn wait(self) -> AuthNoticeResult {
+        self.0.wait_blocking()
+    }
+
+    /// Wait for the authentication result asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop drops the notice sender or if the
+    /// authentication exchange fails before a result is available.
+    pub async fn wait_async(self) -> AuthNoticeResult {
+        self.0.wait_async().await
+    }
+}
+
 #[derive(Debug)]
 pub struct PublishNoticeTx(NoticeTx<PublishResult, PublishNoticeError>);
 
@@ -368,10 +444,29 @@ impl UnsubscribeNoticeTx {
 }
 
 #[derive(Debug)]
+pub struct AuthNoticeTx(NoticeTx<AuthOutcome, AuthNoticeError>);
+
+impl AuthNoticeTx {
+    pub(crate) fn new() -> (Self, AuthNotice) {
+        let (tx, rx) = notice_channel();
+        (Self(tx), AuthNotice(rx))
+    }
+
+    pub(crate) fn success(self, outcome: AuthOutcome) {
+        self.0.success(outcome);
+    }
+
+    pub(crate) fn error(self, err: AuthNoticeError) {
+        self.0.error(err);
+    }
+}
+
+#[derive(Debug)]
 pub enum TrackedNoticeTx {
     Publish(PublishNoticeTx),
     Subscribe(SubscribeNoticeTx),
     Unsubscribe(UnsubscribeNoticeTx),
+    Auth(AuthNoticeTx),
 }
 
 fn validate_v5_publish_completion(result: &PublishResult) -> Result<(), PublishNoticeError> {

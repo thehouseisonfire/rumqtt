@@ -13,8 +13,10 @@ use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
     MqttOptions, Request,
 };
-use crate::notice::{PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
-use crate::{PublishNotice, SubscribeNotice, UnsubscribeNotice, valid_filter, valid_topic};
+use crate::notice::{AuthNoticeTx, PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
+use crate::{
+    AuthNotice, PublishNotice, SubscribeNotice, UnsubscribeNotice, valid_filter, valid_topic,
+};
 
 use bytes::Bytes;
 use flume::{SendError, Sender, TrySendError};
@@ -442,6 +444,43 @@ impl AsyncClient {
         Ok(notice)
     }
 
+    async fn send_tracked_auth_async(&self, auth: Auth) -> Result<AuthNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        request_tx
+            .send_async(RequestEnvelope::tracked_auth(auth, notice_tx))
+            .await
+            .map_err(map_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    fn send_tracked_auth(&self, auth: Auth) -> Result<AuthNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        request_tx
+            .send(RequestEnvelope::tracked_auth(auth, notice_tx))
+            .map_err(map_send_envelope_error)?;
+        Ok(notice)
+    }
+
+    fn try_send_tracked_auth(&self, auth: Auth) -> Result<AuthNotice, ClientError> {
+        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+            return Err(ClientError::TrackingUnavailable);
+        };
+
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        request_tx
+            .try_send(RequestEnvelope::tracked_auth(auth, notice_tx))
+            .map_err(map_try_send_envelope_error)?;
+        Ok(notice)
+    }
+
     /// Sends a MQTT Publish to the `EventLoop`.
     async fn handle_publish<T, P>(
         &self,
@@ -816,6 +855,20 @@ impl AsyncClient {
         Ok(())
     }
 
+    /// Sends a tracked MQTT re-authentication request to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued on the event loop
+    /// or if tracked request notices are unavailable for this client instance.
+    pub async fn reauth_tracked(
+        &self,
+        properties: Option<AuthProperties>,
+    ) -> Result<AuthNotice, ClientError> {
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
+        self.send_tracked_auth_async(auth).await
+    }
+
     /// Attempts to send a MQTT AUTH packet to the `EventLoop`.
     ///
     /// # Errors
@@ -827,6 +880,21 @@ impl AsyncClient {
         let auth = Request::Auth(auth);
         self.try_send_request(auth)?;
         Ok(())
+    }
+
+    /// Attempts to send a tracked MQTT re-authentication request to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued immediately on the
+    /// event loop or if tracked request notices are unavailable for this client
+    /// instance.
+    pub fn try_reauth_tracked(
+        &self,
+        properties: Option<AuthProperties>,
+    ) -> Result<AuthNotice, ClientError> {
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
+        self.try_send_tracked_auth(auth)
     }
 
     /// Sends a MQTT Publish to the `EventLoop`
@@ -2070,6 +2138,20 @@ impl Client {
         Ok(())
     }
 
+    /// Sends a tracked MQTT re-authentication request to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued on the event loop
+    /// or if tracked request notices are unavailable for this client instance.
+    pub fn reauth_tracked(
+        &self,
+        properties: Option<AuthProperties>,
+    ) -> Result<AuthNotice, ClientError> {
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
+        self.client.send_tracked_auth(auth)
+    }
+
     /// Attempts to send a MQTT AUTH packet to the `EventLoop`.
     ///
     /// # Errors
@@ -2081,6 +2163,21 @@ impl Client {
         let auth = Request::Auth(auth);
         self.client.try_send_request(auth)?;
         Ok(())
+    }
+
+    /// Attempts to send a tracked MQTT re-authentication request to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AUTH packet cannot be queued immediately on the
+    /// event loop or if tracked request notices are unavailable for this client
+    /// instance.
+    pub fn try_reauth_tracked(
+        &self,
+        properties: Option<AuthProperties>,
+    ) -> Result<AuthNotice, ClientError> {
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, properties);
+        self.client.try_send_tracked_auth(auth)
     }
 
     /// Sends a MQTT Subscribe to the `EventLoop`
