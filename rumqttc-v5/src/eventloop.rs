@@ -1,5 +1,7 @@
 use super::framed::Network;
-use super::mqttbytes::v5::{ConnAck, Connect, Packet, Publish, Subscribe, Unsubscribe};
+use super::mqttbytes::v5::{
+    ConnAck, Connect, Disconnect, DisconnectReasonCode, Packet, Publish, Subscribe, Unsubscribe,
+};
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
 use crate::framed::AsyncReadWrite;
 use crate::notice::{
@@ -245,10 +247,16 @@ impl EventLoop {
         let manual_acks = options.manual_acks;
 
         let auth_manager = options.auth_manager();
+        let authentication_method = options.authentication_method();
 
         Self {
             options,
-            state: MqttState::new(inflight_limit, manual_acks, auth_manager),
+            state: MqttState::new_with_auth_method(
+                inflight_limit,
+                manual_acks,
+                authentication_method,
+                auth_manager,
+            ),
             requests_rx,
             _requests_tx: requests_tx,
             pending,
@@ -854,6 +862,8 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
+    state.set_authentication_method(options.authentication_method());
+
     let packet = Packet::Connect(
         Connect {
             client_id: options.client_id(),
@@ -873,6 +883,13 @@ async fn mqtt_connect(
     loop {
         match network.read().await? {
             Incoming::ConnAck(connack) if connack.code == ConnectReturnCode::Success => {
+                if let Err(err) =
+                    validate_successful_connack_authentication_method(options, &connack)
+                {
+                    send_protocol_error_disconnect(network).await?;
+                    return Err(err.into());
+                }
+
                 if let Some(props) = &connack.properties
                     && let Some(keep_alive) = props.server_keep_alive
                 {
@@ -892,26 +909,76 @@ async fn mqtt_connect(
             Incoming::ConnAck(connack) => {
                 return Err(ConnectionError::ConnectionRefused(connack.code));
             }
-            Incoming::Auth(auth) => {
-                if let Some(outgoing) = state.handle_incoming_packet(Incoming::Auth(auth))? {
+            Incoming::Auth(auth) => match state.handle_incoming_packet(Incoming::Auth(auth)) {
+                Ok(Some(outgoing)) => {
                     network.write(outgoing).await?;
                     network.flush().await?;
-                } else {
-                    return Err(ConnectionError::AuthProcessingError);
                 }
-            }
+                Ok(None) => return Err(ConnectionError::AuthProcessingError),
+                Err(err @ StateError::Deserialization(super::mqttbytes::Error::ProtocolError)) => {
+                    send_protocol_error_disconnect(network).await?;
+                    return Err(err.into());
+                }
+                Err(err) => return Err(err.into()),
+            },
             packet => return Err(ConnectionError::NotConnAck(Box::new(packet))),
         }
+    }
+}
+
+async fn send_protocol_error_disconnect(network: &mut Network) -> Result<(), ConnectionError> {
+    network
+        .write(Packet::Disconnect(Disconnect::new(
+            DisconnectReasonCode::ProtocolError,
+        )))
+        .await?;
+    network.flush().await?;
+    Ok(())
+}
+
+fn validate_successful_connack_authentication_method(
+    options: &MqttOptions,
+    connack: &ConnAck,
+) -> Result<(), StateError> {
+    let expected = options.authentication_method();
+    let actual = connack
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.authentication_method.as_deref());
+
+    match (expected.as_deref(), actual) {
+        (Some(expected), Some(actual)) if expected == actual => Ok(()),
+        (None, None) => Ok(()),
+        _ => Err(StateError::Deserialization(
+            super::mqttbytes::Error::ProtocolError,
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mqttbytes::QoS;
+    use crate::mqttbytes::{Error as MqttError, QoS};
+    use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{ConnAckProperties, Filter, PubAck, PubRec, PublishProperties};
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+    #[derive(Debug)]
+    struct StaticAuthManager {
+        response: Result<Option<AuthProperties>, String>,
+    }
+
+    impl crate::AuthManager for StaticAuthManager {
+        fn auth_continue(
+            &mut self,
+            _auth_prop: Option<AuthProperties>,
+        ) -> Result<Option<AuthProperties>, String> {
+            self.response.clone()
+        }
+    }
 
     fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
         ConnAck {
@@ -939,12 +1006,254 @@ mod tests {
         }
     }
 
+    fn build_connack_with_authentication_method(authentication_method: Option<&str>) -> ConnAck {
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().authentication_method =
+            authentication_method.map(str::to_owned);
+        connack
+    }
+
+    async fn read_packet_bytes(peer: &mut DuplexStream) -> Vec<u8> {
+        let byte1 = peer.read_u8().await.unwrap();
+        let mut multiplier = 1usize;
+        let mut remaining_len = 0usize;
+        let mut remaining_len_bytes = Vec::new();
+
+        loop {
+            let encoded_byte = peer.read_u8().await.unwrap();
+            remaining_len_bytes.push(encoded_byte);
+            remaining_len += usize::from(encoded_byte & 0x7F) * multiplier;
+            if encoded_byte & 0x80 == 0 {
+                break;
+            }
+            multiplier *= 128;
+        }
+
+        let mut payload = vec![0; remaining_len];
+        peer.read_exact(&mut payload).await.unwrap();
+
+        let mut packet = Vec::with_capacity(1 + remaining_len_bytes.len() + payload.len());
+        packet.push(byte1);
+        packet.extend(remaining_len_bytes);
+        packet.extend(payload);
+        packet
+    }
+
+    async fn run_mqtt_connect_with_connack(
+        mut options: MqttOptions,
+        connack: ConnAck,
+    ) -> (Result<ConnAck, ConnectionError>, Vec<u8>) {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_with_auth_method(
+            10,
+            false,
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            read_packet_bytes(&mut peer).await
+        };
+
+        tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker)
+    }
+
+    async fn run_mqtt_connect_with_stale_state_auth_method(
+        mut options: MqttOptions,
+        stale_authentication_method: Option<&str>,
+        incoming: Vec<Packet>,
+    ) -> Result<ConnAck, ConnectionError> {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_with_auth_method(
+            10,
+            false,
+            stale_authentication_method.map(str::to_owned),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            for packet in incoming {
+                let mut encoded = BytesMut::new();
+                packet.write(&mut encoded, None).unwrap();
+                peer.write_all(&encoded).await.unwrap();
+            }
+        };
+
+        let (result, ()) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        result
+    }
+
+    async fn run_successful_mqtt_connect_with_connack(
+        mut options: MqttOptions,
+        connack: ConnAck,
+    ) -> Result<ConnAck, ConnectionError> {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_with_auth_method(
+            10,
+            false,
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        };
+
+        let (result, ()) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        result
+    }
+
     fn push_pending(eventloop: &mut EventLoop, request: Request) {
         eventloop.pending.push_back(RequestEnvelope::plain(request));
     }
 
     fn pending_front_request(eventloop: &EventLoop) -> Option<&Request> {
         eventloop.pending.front().map(|envelope| &envelope.request)
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_accepts_matching_connack_authentication_method() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let connack = build_connack_with_authentication_method(Some("test-method"));
+
+        let result = run_successful_mqtt_connect_with_connack(options, connack)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.properties.unwrap().authentication_method.as_deref(),
+            Some("test-method")
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        };
+
+        let result = run_successful_mqtt_connect_with_connack(options, connack)
+            .await
+            .unwrap();
+
+        assert!(result.properties.is_none());
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_refreshes_state_authentication_method_from_mutated_options() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("new-method".to_owned()));
+        options.set_auth_manager(Arc::new(Mutex::new(StaticAuthManager {
+            response: Ok(Some(AuthProperties {
+                method: Some("new-method".to_owned()),
+                data: None,
+                reason: None,
+                user_properties: vec![],
+            })),
+        })));
+        let auth = Auth::new(
+            AuthReasonCode::Continue,
+            Some(AuthProperties {
+                method: Some("new-method".to_owned()),
+                data: None,
+                reason: None,
+                user_properties: vec![],
+            }),
+        );
+        let connack = build_connack_with_authentication_method(Some("new-method"));
+
+        let result = run_mqtt_connect_with_stale_state_auth_method(
+            options,
+            Some("old-method"),
+            vec![Packet::Auth(auth), Packet::ConnAck(connack)],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.properties.unwrap().authentication_method.as_deref(),
+            Some("new-method")
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_missing_connack_authentication_method() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        };
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_mismatched_connack_authentication_method() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let connack = build_connack_with_authentication_method(Some("other-method"));
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_connack_authentication_method_when_connect_omits_it() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let connack = build_connack_with_authentication_method(Some("test-method"));
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
     }
 
     fn build_eventloop_with_pending(clean_start: bool) -> EventLoop {

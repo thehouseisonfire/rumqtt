@@ -114,8 +114,17 @@ impl Network {
         loop {
             match res {
                 Some(Ok(packet)) => {
-                    if let Some(outgoing) = state.handle_incoming_packet(packet)? {
-                        self.write(outgoing).await?;
+                    match state.handle_incoming_packet(packet) {
+                        Ok(Some(outgoing)) => self.write(outgoing).await?,
+                        Ok(None) => {}
+                        Err(err @ StateError::Deserialization(mqttbytes::Error::ProtocolError)) => {
+                            self.try_send_inbound_disconnect(InboundDisconnect {
+                                reason: DisconnectReasonCode::ProtocolError,
+                            })
+                            .await;
+                            return Err(err);
+                        }
+                        Err(err) => return Err(err),
                     }
 
                     count += 1;
@@ -156,6 +165,8 @@ impl Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mqttbytes::v5::{Auth, AuthProperties, AuthReasonCode};
+    use bytes::BytesMut;
     use std::{
         io,
         pin::Pin,
@@ -283,6 +294,40 @@ mod tests {
         assert_eq!(
             response,
             [0xE0, 0x01, DisconnectReasonCode::PacketTooLarge as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn readb_sends_protocol_error_disconnect_for_server_reauthenticate() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state =
+            MqttState::new_with_auth_method(10, false, Some("test-method".to_owned()), None);
+        let auth = Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            Some(AuthProperties {
+                method: Some("test-method".to_owned()),
+                data: None,
+                reason: None,
+                user_properties: vec![],
+            }),
+        );
+        let mut encoded = BytesMut::new();
+        auth.write(&mut encoded).unwrap();
+
+        peer.write_all(&encoded).await.unwrap();
+
+        let err = network.readb(&mut state, 1).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::ProtocolError)
+        ));
+
+        let mut response = [0; 3];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
         );
     }
 
@@ -416,6 +461,38 @@ mod tests {
                 pkt_size: 20,
                 max: 10,
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn readb_returns_state_protocol_error_promptly_under_write_backpressure() {
+        let auth = Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            Some(AuthProperties {
+                method: Some("test-method".to_owned()),
+                data: None,
+                reason: None,
+                user_properties: vec![],
+            }),
+        );
+        let mut encoded = BytesMut::new();
+        auth.write(&mut encoded).unwrap();
+        let io = BackpressuredIo::new(&encoded);
+        let mut network = Network::new(io, Some(1024));
+        let mut state =
+            MqttState::new_with_auth_method(10, false, Some("test-method".to_owned()), None);
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            network.readb(&mut state, 1),
+        )
+        .await
+        .expect("readb should not wait for best-effort state protocol-error disconnect")
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::ProtocolError)
         ));
     }
 }

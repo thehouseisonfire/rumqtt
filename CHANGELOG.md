@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v5: Add `MqttState::set_authentication_method()` for low-level MQTT 5 enhanced-authentication users that process AUTH packets through `MqttState` directly.
 ### Changed
 - `rumqttc` v4/v5 (Breaking Change): Change `disconnect()`/`try_disconnect()` into graceful barriers that flush previously accepted QoS 0 publishes and drain previously accepted QoS 1/ QoS 2 publish plus tracked subscribe/unsubscribe state (`SUBACK`/`UNSUBACK`) before sending terminal DISCONNECT. Use `disconnect_now()`/`try_disconnect_now()` to preserve immediate DISCONNECT behavior, or `disconnect_with_timeout()`/`try_disconnect_with_timeout()` to bound graceful draining; if the timeout expires first, polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not sent.
 - `rumqttc` v4/v5: Document that disconnect requests still use the normal client request channel: if the event loop is blocked from reading new requests by a full QoS 1/ QoS 2 publish inflight window or packet-id collision, graceful/immediate disconnect handling begins only after the event loop observes the request.
@@ -10,6 +11,8 @@
 - `rumqttc` v4/v5 (Breaking Change): Remove `AsyncClientBuilder::build_async()` in favor of `AsyncClientBuilder::build()`.
 ### Fixed
 - `rumqttc` v5: Accept zero-length MQTT v5 DISCONNECT packets in the packet reader.
+- `rumqttc` v5: Validate CONNACK `Authentication Method` against the CONNECT `Authentication Method` (MQTT 5 §3.2.2.3.5); send `ProtocolError` DISCONNECT on mismatch or unexpected presence.
+- `rumqttc` v5: Validate incoming AUTH `Authentication Method` against the CONNECT method; reject server-sent `ReAuthenticate` as `ProtocolError` (§3.15.2.1); normalize outgoing AUTH method (auto-fill from CONNECT, reject mismatch).
 ### Security
 
 ---

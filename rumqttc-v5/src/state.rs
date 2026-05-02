@@ -1,8 +1,8 @@
 use super::mqttbytes::v5::{
-    Auth, AuthReasonCode, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet,
-    PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel,
-    PubRelReason, Publish, SubAck, Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason,
-    Unsubscribe,
+    Auth, AuthProperties, AuthReasonCode, ConnAck, ConnectReturnCode, Disconnect,
+    DisconnectReasonCode, Packet, PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec,
+    PubRecReason, PubRel, PubRelReason, Publish, SubAck, Subscribe, SubscribeReasonCode, UnsubAck,
+    UnsubAckReason, Unsubscribe,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::notice::{
@@ -142,6 +142,8 @@ pub struct MqttState {
     max_outgoing_inflight_upper_limit: u16,
     /// Authentication manager
     auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
+    /// Authentication Method configured on the CONNECT packet.
+    authentication_method: Option<String>,
 }
 
 impl MqttState {
@@ -174,9 +176,20 @@ impl MqttState {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
+    #[must_use]
     pub fn new(
         max_inflight: u16,
         manual_acks: bool,
+        auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
+    ) -> Self {
+        Self::new_with_auth_method(max_inflight, manual_acks, None, auth_manager)
+    }
+
+    /// Creates new mqtt state with the CONNECT Authentication Method.
+    pub(crate) fn new_with_auth_method(
+        max_inflight: u16,
+        manual_acks: bool,
+        authentication_method: Option<String>,
         auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
     ) -> Self {
         Self {
@@ -207,7 +220,18 @@ impl MqttState {
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
             auth_manager,
+            authentication_method,
         }
+    }
+
+    /// Set the Authentication Method used in the CONNECT packet for this state.
+    ///
+    /// Low-level users that send or process MQTT 5 AUTH packets through
+    /// [`MqttState`] must keep this value in sync with the CONNECT packet's
+    /// Authentication Method property. The event loop updates it automatically
+    /// before each CONNECT attempt.
+    pub fn set_authentication_method(&mut self, authentication_method: Option<String>) {
+        self.authentication_method = authentication_method;
     }
 
     fn ensure_outgoing_tracking_capacity(&mut self, target_len: usize) {
@@ -519,7 +543,7 @@ impl MqttState {
                 }
                 Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
                 Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
-                Request::Auth(auth) => (Some(self.outgoing_auth(auth)), None),
+                Request::Auth(auth) => (Some(self.outgoing_auth(auth)?), None),
                 _ => unimplemented!(),
             };
 
@@ -842,8 +866,12 @@ impl MqttState {
 
     fn handle_incoming_auth(&mut self, auth: &Auth) -> Result<Option<Packet>, StateError> {
         match auth.code {
-            AuthReasonCode::Success => Ok(None),
+            AuthReasonCode::Success => {
+                self.validate_incoming_auth_method(auth.properties.as_ref())?;
+                Ok(None)
+            }
             AuthReasonCode::Continue => {
+                self.validate_incoming_auth_method(auth.properties.as_ref())?;
                 let props = auth.properties.clone();
 
                 // Check if auth manager is set
@@ -862,12 +890,59 @@ impl MqttState {
 
                 let client_auth = Auth::new(AuthReasonCode::Continue, out_auth_props);
 
-                Ok(Some(self.outgoing_auth(client_auth)))
+                Ok(Some(self.outgoing_auth(client_auth)?))
             }
-            AuthReasonCode::ReAuthenticate => {
-                Err(StateError::AuthError("Authentication Failed!".to_string()))
-            }
+            AuthReasonCode::ReAuthenticate => Err(Self::auth_protocol_error()),
         }
+    }
+
+    fn configured_authentication_method(&self) -> Result<&str, StateError> {
+        self.authentication_method.as_deref().ok_or_else(|| {
+            StateError::AuthError("AUTH packet requires a CONNECT Authentication Method".to_owned())
+        })
+    }
+
+    const fn auth_protocol_error() -> StateError {
+        StateError::Deserialization(MqttError::ProtocolError)
+    }
+
+    fn validate_incoming_auth_method(
+        &self,
+        properties: Option<&AuthProperties>,
+    ) -> Result<(), StateError> {
+        let expected = self
+            .configured_authentication_method()
+            .map_err(|_| Self::auth_protocol_error())?;
+
+        let Some(actual) = properties.and_then(|properties| properties.method.as_deref()) else {
+            return Err(Self::auth_protocol_error());
+        };
+
+        if actual != expected {
+            return Err(Self::auth_protocol_error());
+        }
+
+        Ok(())
+    }
+
+    fn normalize_outgoing_auth_properties(
+        &self,
+        properties: Option<AuthProperties>,
+    ) -> Result<AuthProperties, StateError> {
+        let expected = self.configured_authentication_method()?.to_owned();
+        let mut properties = properties.unwrap_or_default();
+
+        match &properties.method {
+            Some(actual) if actual != &expected => {
+                return Err(StateError::AuthError(format!(
+                    "AUTH packet Authentication Method '{actual}' does not match CONNECT Authentication Method '{expected}'"
+                )));
+            }
+            Some(_) => {}
+            None => properties.method = Some(expected),
+        }
+
+        Ok(properties)
     }
 
     /// Adds next packet identifier to `QoS` 1 and 2 publish packets and returns
@@ -1061,15 +1136,16 @@ impl MqttState {
         Packet::Disconnect(disconnect)
     }
 
-    fn outgoing_auth(&mut self, auth: Auth) -> Packet {
-        let props = auth.properties.as_ref().unwrap();
+    fn outgoing_auth(&mut self, mut auth: Auth) -> Result<Packet, StateError> {
+        let props = self.normalize_outgoing_auth_properties(auth.properties.take())?;
         debug!(
             "Auth packet sent. Auth Method: {:?}. Auth Data: {:?}",
             props.method, props.data
         );
+        auth.properties = Some(props);
         let event = Event::Outgoing(Outgoing::Auth);
         self.events.push_back(event);
-        Packet::Auth(auth)
+        Ok(Packet::Auth(auth))
     }
 
     fn check_collision(&mut self, pkid: u16) -> Option<(Publish, Option<PublishNoticeTx>)> {
@@ -1223,6 +1299,7 @@ impl Clone for MqttState {
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
             auth_manager: self.auth_manager.clone(),
+            authentication_method: self.authentication_method.clone(),
         }
     }
 }
@@ -1240,6 +1317,9 @@ mod test {
     };
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
+    use std::sync::{Arc, Mutex};
+
+    const AUTH_METHOD: &str = "test-method";
 
     fn build_outgoing_publish(qos: QoS) -> Publish {
         let topic = "hello/world".to_owned();
@@ -1278,6 +1358,33 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::new(u16::MAX, false, None)
+    }
+
+    fn build_auth_mqttstate(authentication_method: Option<&str>) -> MqttState {
+        MqttState::new_with_auth_method(10, false, authentication_method.map(str::to_owned), None)
+    }
+
+    fn auth_properties(authentication_method: Option<&str>) -> AuthProperties {
+        AuthProperties {
+            method: authentication_method.map(str::to_owned),
+            data: Some(Bytes::from_static(b"auth-data")),
+            reason: None,
+            user_properties: vec![],
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticAuthManager {
+        response: Result<Option<AuthProperties>, String>,
+    }
+
+    impl crate::AuthManager for StaticAuthManager {
+        fn auth_continue(
+            &mut self,
+            _auth_prop: Option<AuthProperties>,
+        ) -> Result<Option<AuthProperties>, String> {
+            self.response.clone()
+        }
     }
 
     fn queue_publish_with_notice(mqtt: &mut MqttState, publish: Publish) -> PublishNotice {
@@ -1824,6 +1931,247 @@ mod test {
             mqtt.events,
             VecDeque::from([Event::Outgoing(Outgoing::Disconnect)])
         );
+    }
+
+    #[test]
+    fn outgoing_reauth_without_properties_synthesizes_connect_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, None);
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::Auth(auth))
+            .unwrap()
+            .unwrap();
+
+        let Packet::Auth(auth) = packet else {
+            panic!("expected AUTH packet");
+        };
+        let properties = auth.properties.unwrap();
+        assert_eq!(properties.method.as_deref(), Some(AUTH_METHOD));
+        assert_eq!(auth.code, AuthReasonCode::ReAuthenticate);
+    }
+
+    #[test]
+    fn outgoing_reauth_without_connect_authentication_method_fails() {
+        let mut mqtt = build_auth_mqttstate(None);
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, None);
+
+        let err = mqtt
+            .handle_outgoing_packet(Request::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+    }
+
+    #[test]
+    fn public_state_authentication_method_setter_enables_outgoing_reauth() {
+        let mut mqtt = MqttState::new(10, false, None);
+        mqtt.set_authentication_method(Some(AUTH_METHOD.to_owned()));
+        let auth = Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::Auth(auth))
+            .unwrap()
+            .unwrap();
+
+        let Packet::Auth(auth) = packet else {
+            panic!("expected AUTH packet");
+        };
+        assert_eq!(
+            auth.properties.unwrap().method.as_deref(),
+            Some(AUTH_METHOD)
+        );
+    }
+
+    #[test]
+    fn outgoing_reauth_fills_missing_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, Some(auth_properties(None)));
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::Auth(auth))
+            .unwrap()
+            .unwrap();
+
+        let Packet::Auth(auth) = packet else {
+            panic!("expected AUTH packet");
+        };
+        assert_eq!(
+            auth.properties.unwrap().method.as_deref(),
+            Some(AUTH_METHOD)
+        );
+    }
+
+    #[test]
+    fn outgoing_reauth_rejects_mismatched_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            Some(auth_properties(Some("other-method"))),
+        );
+
+        let err = mqtt
+            .handle_outgoing_packet(Request::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+    }
+
+    #[test]
+    fn incoming_auth_success_accepts_matching_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(
+            AuthReasonCode::Success,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let packet = mqtt.handle_incoming_packet(Incoming::Auth(auth)).unwrap();
+
+        assert!(packet.is_none());
+    }
+
+    #[test]
+    fn incoming_auth_success_rejects_missing_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(AuthReasonCode::Success, None);
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+    }
+
+    #[test]
+    fn incoming_auth_success_rejects_mismatched_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(
+            AuthReasonCode::Success,
+            Some(auth_properties(Some("other-method"))),
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+    }
+
+    #[test]
+    fn incoming_auth_success_without_connect_authentication_method_is_protocol_error() {
+        let mut mqtt = build_auth_mqttstate(None);
+        let auth = Auth::new(
+            AuthReasonCode::Success,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+    }
+
+    #[test]
+    fn incoming_auth_continue_synthesizes_method_when_auth_manager_omits_it() {
+        let auth_manager = Arc::new(Mutex::new(StaticAuthManager { response: Ok(None) }));
+        let mut mqtt = MqttState::new_with_auth_method(
+            10,
+            false,
+            Some(AUTH_METHOD.to_owned()),
+            Some(auth_manager),
+        );
+        let auth = Auth::new(
+            AuthReasonCode::Continue,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let packet = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap()
+            .unwrap();
+
+        let Packet::Auth(auth) = packet else {
+            panic!("expected AUTH packet");
+        };
+        assert_eq!(auth.code, AuthReasonCode::Continue);
+        assert_eq!(
+            auth.properties.unwrap().method.as_deref(),
+            Some(AUTH_METHOD)
+        );
+    }
+
+    #[test]
+    fn incoming_auth_continue_without_connect_authentication_method_is_protocol_error() {
+        let auth_manager = Arc::new(Mutex::new(StaticAuthManager { response: Ok(None) }));
+        let mut mqtt = MqttState::new_with_auth_method(10, false, None, Some(auth_manager));
+        let auth = Auth::new(
+            AuthReasonCode::Continue,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+    }
+
+    #[test]
+    fn incoming_auth_continue_rejects_mismatched_server_method() {
+        let auth_manager = Arc::new(Mutex::new(StaticAuthManager { response: Ok(None) }));
+        let mut mqtt = MqttState::new_with_auth_method(
+            10,
+            false,
+            Some(AUTH_METHOD.to_owned()),
+            Some(auth_manager),
+        );
+        let auth = Auth::new(
+            AuthReasonCode::Continue,
+            Some(auth_properties(Some("other-method"))),
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+    }
+
+    #[test]
+    fn incoming_auth_reauthenticate_is_protocol_error() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
     }
 
     #[test]
