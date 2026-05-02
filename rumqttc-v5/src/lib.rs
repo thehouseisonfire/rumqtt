@@ -31,6 +31,7 @@ use std::{
     pin::Pin,
 };
 
+mod auth;
 mod client;
 mod eventloop;
 mod framed;
@@ -56,8 +57,9 @@ pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
 pub use notice::{
-    NoticeFailureReason, PublishNotice, PublishNoticeError, PublishResult, SubscribeNotice,
-    SubscribeNoticeError, UnsubscribeNotice, UnsubscribeNoticeError,
+    AuthNotice, AuthNoticeError, NoticeFailureReason, PublishNotice, PublishNoticeError,
+    PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
+    UnsubscribeNoticeError,
 };
 pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -428,26 +430,121 @@ pub enum IncomingPacketSizeLimit {
     Bytes(u32),
 }
 
-pub trait AuthManager: std::fmt::Debug + Send {
-    /// Process authentication data received from the server and generate authentication data to be sent back.
-    ///
-    /// # Arguments
-    ///
-    /// * `auth_prop` - The authentication Properties received from the server.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(auth_prop)` - The authentication Properties to be sent back to the server.
-    /// * `Err(error_message)` - An error indicating that the authentication process has failed or terminated.
+/// Identifies which MQTT 5 enhanced-authentication exchange is active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthExchangeKind {
+    InitialConnect,
+    Reauthentication,
+}
+
+/// Context supplied to MQTT 5 enhanced-authentication callbacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuthContext<'a> {
+    pub kind: AuthExchangeKind,
+    pub method: &'a str,
+}
+
+/// Action returned by an [`Authenticator`] after an AUTH Continue packet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthAction {
+    Send(AuthProperties),
+    Complete,
+    Fail(String),
+}
+
+/// Errors returned by MQTT 5 enhanced-authentication callbacks.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum AuthError {
+    #[error("authentication failed: {0}")]
+    Failed(String),
+}
+
+impl From<String> for AuthError {
+    fn from(value: String) -> Self {
+        Self::Failed(value)
+    }
+}
+
+impl From<&str> for AuthError {
+    fn from(value: &str) -> Self {
+        Self::Failed(value.to_owned())
+    }
+}
+
+/// Structured reason emitted when an authentication exchange fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthFailureReason {
+    SessionReset,
+    ProtocolError,
+    AuthenticationFailed(String),
+    ConnectionClosed,
+    OverlappingReauth,
+    MissingAuthenticationMethod,
+    NoticeDropped,
+}
+
+/// Structured result of a completed MQTT 5 authentication exchange.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthOutcome {
+    Success,
+}
+
+/// Structured authentication lifecycle event yielded by the event loop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthEvent {
+    Started {
+        kind: AuthExchangeKind,
+        method: String,
+    },
+    Continue {
+        kind: AuthExchangeKind,
+        method: String,
+    },
+    Succeeded {
+        kind: AuthExchangeKind,
+        method: String,
+    },
+    Failed {
+        kind: AuthExchangeKind,
+        method: String,
+        reason: AuthFailureReason,
+    },
+}
+
+/// MQTT 5 enhanced-authentication callback interface.
+pub trait Authenticator: std::fmt::Debug + Send {
+    /// Called when an enhanced-authentication exchange starts.
     ///
     /// # Errors
     ///
-    /// Returns `Err(String)` when the authentication exchange should be
-    /// aborted.
-    fn auth_continue(
+    /// Return an error to abort the exchange locally.
+    fn start(&mut self, context: AuthContext<'_>) -> Result<Option<AuthProperties>, AuthError>;
+
+    /// Called when the broker sends AUTH Continue.
+    ///
+    /// # Errors
+    ///
+    /// Return an error to abort the exchange locally.
+    fn continue_auth(
         &mut self,
-        auth_prop: Option<AuthProperties>,
-    ) -> Result<Option<AuthProperties>, String>;
+        context: AuthContext<'_>,
+        incoming: Option<AuthProperties>,
+    ) -> Result<AuthAction, AuthError>;
+
+    /// Called when the broker sends AUTH Success.
+    ///
+    /// # Errors
+    ///
+    /// Return an error if the successful server response cannot be accepted by
+    /// the authentication mechanism.
+    fn success(
+        &mut self,
+        context: AuthContext<'_>,
+        incoming: Option<AuthProperties>,
+    ) -> Result<(), AuthError>;
+
+    /// Called when an active exchange fails or is aborted.
+    fn failure(&mut self, context: AuthContext<'_>, error: AuthError);
 }
 
 /// Requests by the client to mqtt event loop. Request are
@@ -549,7 +646,7 @@ pub struct MqttOptions {
     fallible_request_modifier: Option<FallibleRequestModifierFn>,
     socket_connector: Option<SocketConnector>,
 
-    auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
+    authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
 }
 
 impl MqttOptions {
@@ -589,7 +686,7 @@ impl MqttOptions {
             #[cfg(feature = "websocket")]
             fallible_request_modifier: None,
             socket_connector: None,
-            auth_manager: None,
+            authenticator: None,
         }
     }
 
@@ -1344,15 +1441,23 @@ impl MqttOptions {
         self.outgoing_inflight_upper_limit
     }
 
-    pub fn set_auth_manager(&mut self, auth_manager: Arc<Mutex<dyn AuthManager>>) -> &mut Self {
-        self.auth_manager = Some(auth_manager);
+    pub fn set_authenticator(&mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> &mut Self {
+        self.authenticator = Some(authenticator);
         self
     }
 
-    pub fn auth_manager(&self) -> Option<Arc<Mutex<dyn AuthManager>>> {
-        self.auth_manager.as_ref()?;
+    pub fn authenticator(&self) -> Option<Arc<Mutex<dyn Authenticator>>> {
+        self.authenticator.as_ref()?;
 
-        self.auth_manager.clone()
+        self.authenticator.clone()
+    }
+
+    pub fn set_auth_manager(&mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> &mut Self {
+        self.set_authenticator(authenticator)
+    }
+
+    pub fn auth_manager(&self) -> Option<Arc<Mutex<dyn Authenticator>>> {
+        self.authenticator()
     }
 }
 
@@ -1662,10 +1767,17 @@ impl MqttOptionsBuilder {
         self
     }
 
-    /// Set the authentication manager.
+    /// Set the authentication callback.
     #[must_use]
-    pub fn auth_manager(mut self, auth_manager: Arc<Mutex<dyn AuthManager>>) -> Self {
-        self.options.set_auth_manager(auth_manager);
+    pub fn authenticator(mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> Self {
+        self.options.set_authenticator(authenticator);
+        self
+    }
+
+    /// Set the authentication callback.
+    #[must_use]
+    pub fn auth_manager(mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> Self {
+        self.options.set_authenticator(authenticator);
         self
     }
 }
@@ -2465,7 +2577,7 @@ mod test {
             options.outgoing_inflight_upper_limit,
             baseline.outgoing_inflight_upper_limit
         );
-        assert!(options.auth_manager.is_none());
+        assert!(options.authenticator.is_none());
     }
 
     #[test]

@@ -1,16 +1,20 @@
 use super::mqttbytes::v5::{
-    Auth, AuthProperties, AuthReasonCode, ConnAck, ConnectReturnCode, Disconnect,
-    DisconnectReasonCode, Packet, PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec,
-    PubRecReason, PubRel, PubRelReason, Publish, SubAck, Subscribe, SubscribeReasonCode, UnsubAck,
-    UnsubAckReason, Unsubscribe,
+    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PingReq, PubAck,
+    PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish,
+    SubAck, Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
+use crate::auth::{AuthLifecycle, IncomingAuthEffect};
 use crate::notice::{
-    PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx, UnsubscribeNoticeTx,
+    AuthNoticeError, PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx,
+    UnsubscribeNoticeTx,
 };
-use crate::{NoticeFailureReason, PublishNoticeError};
+use crate::{
+    AuthContext, AuthError, AuthExchangeKind, Authenticator, NoticeFailureReason,
+    PublishNoticeError,
+};
 
-use super::{AuthManager, Event, Incoming, Outgoing, Request};
+use super::{Event, Incoming, Outgoing, Request};
 
 use bytes::Bytes;
 use fixedbitset::FixedBitSet;
@@ -67,8 +71,8 @@ pub enum StateError {
     ConnectionAborted,
     #[error("Authentication error: {0}")]
     AuthError(String),
-    #[error("Auth Manager not set")]
-    AuthManagerNotSet,
+    #[error("Authenticator not set")]
+    AuthenticatorNotSet,
 }
 
 impl From<mqttbytes::Error> for StateError {
@@ -140,10 +144,10 @@ pub struct MqttState {
     pub(crate) max_outgoing_inflight: u16,
     /// Upper limit on the maximum number of allowed inflight `QoS1` & `QoS2` requests
     max_outgoing_inflight_upper_limit: u16,
-    /// Authentication manager
-    auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
-    /// Authentication Method configured on the CONNECT packet.
-    authentication_method: Option<String>,
+    /// Authentication callback
+    authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
+    /// Authentication lifecycle state.
+    auth: AuthLifecycle,
 }
 
 /// Builder for low-level MQTT 5 protocol state.
@@ -155,7 +159,7 @@ pub struct MqttState {
 pub struct MqttStateBuilder {
     max_inflight: u16,
     manual_acks: bool,
-    auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
+    authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     authentication_method: Option<String>,
 }
 
@@ -166,7 +170,7 @@ impl MqttStateBuilder {
         Self {
             max_inflight,
             manual_acks: false,
-            auth_manager: None,
+            authenticator: None,
             authentication_method: None,
         }
     }
@@ -185,10 +189,17 @@ impl MqttStateBuilder {
         self
     }
 
-    /// Set the authentication manager used for MQTT 5 enhanced authentication.
+    /// Set the authentication callback used for MQTT 5 enhanced authentication.
     #[must_use]
-    pub fn auth_manager(mut self, auth_manager: Arc<Mutex<dyn AuthManager>>) -> Self {
-        self.auth_manager = Some(auth_manager);
+    pub fn authenticator(mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> Self {
+        self.authenticator = Some(authenticator);
+        self
+    }
+
+    /// Set the authentication callback used for MQTT 5 enhanced authentication.
+    #[must_use]
+    pub fn auth_manager(mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> Self {
+        self.authenticator = Some(authenticator);
         self
     }
 
@@ -199,7 +210,7 @@ impl MqttStateBuilder {
             self.max_inflight,
             self.manual_acks,
             self.authentication_method,
-            self.auth_manager,
+            self.authenticator,
         )
     }
 }
@@ -245,7 +256,7 @@ impl MqttState {
         max_inflight: u16,
         manual_acks: bool,
         authentication_method: Option<String>,
-        auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
+        authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     ) -> Self {
         Self {
             await_pingresp: false,
@@ -274,8 +285,8 @@ impl MqttState {
             broker_topic_alias_max: 0,
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
-            auth_manager,
-            authentication_method,
+            authenticator,
+            auth: AuthLifecycle::new(authentication_method),
         }
     }
 
@@ -286,7 +297,40 @@ impl MqttState {
     /// Authentication Method property. The event loop updates it automatically
     /// before each CONNECT attempt.
     pub fn set_authentication_method(&mut self, authentication_method: Option<String>) {
-        self.authentication_method = authentication_method;
+        self.auth.set_method(authentication_method);
+    }
+
+    pub(crate) fn begin_authentication_connect(
+        &mut self,
+        authentication_method: Option<String>,
+    ) -> Result<Option<crate::mqttbytes::v5::AuthProperties>, StateError> {
+        self.auth
+            .begin_connect(authentication_method, &mut self.events);
+        let Some(method) = self.auth.method().map(str::to_owned) else {
+            return Ok(None);
+        };
+        let Some(authenticator) = self.authenticator.clone() else {
+            return Ok(None);
+        };
+        let context = AuthContext {
+            kind: AuthExchangeKind::InitialConnect,
+            method: &method,
+        };
+        let start_result = authenticator.lock().unwrap().start(context);
+        let properties = match start_result {
+            Ok(properties) => properties,
+            Err(err) => return Err(self.fail_authenticator(&err)),
+        };
+        properties
+            .map(|properties| crate::auth::normalize_auth_properties(&method, Some(properties)))
+            .transpose()
+    }
+
+    pub(crate) fn validate_successful_connack_authentication_method(
+        &self,
+        connack: &ConnAck,
+    ) -> Result<(), StateError> {
+        self.auth.validate_successful_connack(connack)
     }
 
     fn ensure_outgoing_tracking_capacity(&mut self, target_len: usize) {
@@ -529,6 +573,46 @@ impl MqttState {
         self.clear_collision();
     }
 
+    pub(crate) fn fail_auth_exchange_due_to_session_reset(&mut self) {
+        self.fail_auth_exchange(
+            AuthNoticeError::SessionReset,
+            AuthError::Failed("authentication exchange was reset with the session".to_owned()),
+        );
+    }
+
+    pub(crate) fn fail_reauth_exchange_due_to_session_reset(&mut self) {
+        let Some((method, notice_error)) = self
+            .auth
+            .reset_reauth(AuthNoticeError::SessionReset, &mut self.events)
+        else {
+            return;
+        };
+
+        if let Some(authenticator) = self.authenticator.clone() {
+            authenticator.lock().unwrap().failure(
+                AuthContext {
+                    kind: AuthExchangeKind::Reauthentication,
+                    method: &method,
+                },
+                AuthError::Failed(notice_error.to_string()),
+            );
+        }
+    }
+
+    pub(crate) fn fail_auth_exchange_due_to_connection_closed(&mut self) {
+        self.fail_auth_exchange(
+            AuthNoticeError::ConnectionClosed,
+            AuthError::Failed("connection closed before authentication completed".to_owned()),
+        );
+    }
+
+    pub(crate) fn fail_auth_exchange_due_to_client_disconnect(&mut self) {
+        self.fail_auth_exchange(
+            AuthNoticeError::ConnectionClosed,
+            AuthError::Failed("authentication aborted by client disconnect".to_owned()),
+        );
+    }
+
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a packet which should
     /// be put on to the network by the eventloop
     ///
@@ -552,55 +636,81 @@ impl MqttState {
         request: Request,
         notice: Option<TrackedNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
-        let result =
-            match request {
-                Request::Publish(publish) => {
-                    let publish_notice = match notice {
-                        Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
-                        | None => None,
-                    };
-                    self.outgoing_publish_with_notice(publish, publish_notice)?
-                }
-                Request::PubRel(pubrel) => {
-                    let publish_notice = match notice {
-                        Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
-                        | None => None,
-                    };
-                    self.outgoing_pubrel_with_notice(pubrel, publish_notice)
-                }
-                Request::Subscribe(subscribe) => {
-                    let request_notice = match notice {
-                        Some(TrackedNoticeTx::Subscribe(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Unsubscribe(_))
-                        | None => None,
-                    };
-                    (self.outgoing_subscribe(subscribe, request_notice)?, None)
-                }
-                Request::Unsubscribe(unsubscribe) => {
-                    let request_notice = match notice {
-                        Some(TrackedNoticeTx::Unsubscribe(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Subscribe(_))
-                        | None => None,
-                    };
-                    (
-                        Some(self.outgoing_unsubscribe(unsubscribe, request_notice)),
-                        None,
+        let result = match request {
+            Request::Publish(publish) => {
+                let publish_notice = match notice {
+                    Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
+                    Some(
+                        TrackedNoticeTx::Subscribe(_)
+                        | TrackedNoticeTx::Unsubscribe(_)
+                        | TrackedNoticeTx::Auth(_),
                     )
-                }
-                Request::PingReq => (self.outgoing_ping()?, None),
-                Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
-                    unreachable!("graceful disconnect requests are handled by the event loop")
-                }
-                Request::DisconnectNow(disconnect) => {
-                    (Some(self.outgoing_disconnect(disconnect)), None)
-                }
-                Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
-                Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
-                Request::Auth(auth) => (Some(self.outgoing_auth(auth)?), None),
-                _ => unimplemented!(),
-            };
+                    | None => None,
+                };
+                self.outgoing_publish_with_notice(publish, publish_notice)?
+            }
+            Request::PubRel(pubrel) => {
+                let publish_notice = match notice {
+                    Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
+                    Some(
+                        TrackedNoticeTx::Subscribe(_)
+                        | TrackedNoticeTx::Unsubscribe(_)
+                        | TrackedNoticeTx::Auth(_),
+                    )
+                    | None => None,
+                };
+                self.outgoing_pubrel_with_notice(pubrel, publish_notice)
+            }
+            Request::Subscribe(subscribe) => {
+                let request_notice = match notice {
+                    Some(TrackedNoticeTx::Subscribe(notice)) => Some(notice),
+                    Some(
+                        TrackedNoticeTx::Publish(_)
+                        | TrackedNoticeTx::Unsubscribe(_)
+                        | TrackedNoticeTx::Auth(_),
+                    )
+                    | None => None,
+                };
+                (self.outgoing_subscribe(subscribe, request_notice)?, None)
+            }
+            Request::Unsubscribe(unsubscribe) => {
+                let request_notice = match notice {
+                    Some(TrackedNoticeTx::Unsubscribe(notice)) => Some(notice),
+                    Some(
+                        TrackedNoticeTx::Publish(_)
+                        | TrackedNoticeTx::Subscribe(_)
+                        | TrackedNoticeTx::Auth(_),
+                    )
+                    | None => None,
+                };
+                (
+                    Some(self.outgoing_unsubscribe(unsubscribe, request_notice)),
+                    None,
+                )
+            }
+            Request::PingReq => (self.outgoing_ping()?, None),
+            Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
+                unreachable!("graceful disconnect requests are handled by the event loop")
+            }
+            Request::DisconnectNow(disconnect) => {
+                (Some(self.outgoing_disconnect(disconnect)), None)
+            }
+            Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
+            Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
+            Request::Auth(auth) => {
+                let auth_notice = match notice {
+                    Some(TrackedNoticeTx::Auth(notice)) => Some(notice),
+                    Some(
+                        TrackedNoticeTx::Publish(_)
+                        | TrackedNoticeTx::Subscribe(_)
+                        | TrackedNoticeTx::Unsubscribe(_),
+                    )
+                    | None => None,
+                };
+                (Some(self.outgoing_auth(auth, auth_notice)?), None)
+            }
+            _ => unimplemented!(),
+        };
 
         self.last_outgoing = Instant::now();
         Ok(result)
@@ -709,7 +819,9 @@ impl MqttState {
             });
         }
 
+        self.auth.validate_successful_connack(connack)?;
         self.reset_connection_scoped_state();
+        self.auth.complete_initial_connack(&mut self.events);
 
         if let Some(props) = &connack.properties
             && let Some(topic_alias_max) = props.topic_alias_max
@@ -920,84 +1032,87 @@ impl MqttState {
     }
 
     fn handle_incoming_auth(&mut self, auth: &Auth) -> Result<Option<Packet>, StateError> {
-        match auth.code {
-            AuthReasonCode::Success => {
-                self.validate_incoming_auth_method(auth.properties.as_ref())?;
-                Ok(None)
+        let effect = match self.auth.incoming_auth(auth, &mut self.events) {
+            Ok(effect) => effect,
+            Err(err @ StateError::Deserialization(mqttbytes::Error::ProtocolError)) => {
+                self.fail_auth_exchange(
+                    AuthNoticeError::ProtocolError,
+                    AuthError::Failed("authentication protocol error".to_owned()),
+                );
+                return Err(err);
             }
-            AuthReasonCode::Continue => {
-                self.validate_incoming_auth_method(auth.properties.as_ref())?;
-                let props = auth.properties.clone();
-
-                // Check if auth manager is set
-                if self.auth_manager.is_none() {
-                    return Err(StateError::AuthManagerNotSet);
-                }
-
-                let auth_manager = self.auth_manager.clone().unwrap();
-
-                // Call auth_continue method of auth manager
-                let auth_data = auth_manager.lock().unwrap().auth_continue(props);
-                let out_auth_props = match auth_data {
-                    Ok(data) => data,
-                    Err(err) => return Err(StateError::AuthError(err)),
-                };
-
-                let client_auth = Auth::new(AuthReasonCode::Continue, out_auth_props);
-
-                Ok(Some(self.outgoing_auth(client_auth)?))
-            }
-            AuthReasonCode::ReAuthenticate => Err(Self::auth_protocol_error()),
-        }
-    }
-
-    fn configured_authentication_method(&self) -> Result<&str, StateError> {
-        self.authentication_method.as_deref().ok_or_else(|| {
-            StateError::AuthError("AUTH packet requires a CONNECT Authentication Method".to_owned())
-        })
-    }
-
-    const fn auth_protocol_error() -> StateError {
-        StateError::Deserialization(MqttError::ProtocolError)
-    }
-
-    fn validate_incoming_auth_method(
-        &self,
-        properties: Option<&AuthProperties>,
-    ) -> Result<(), StateError> {
-        let expected = self
-            .configured_authentication_method()
-            .map_err(|_| Self::auth_protocol_error())?;
-
-        let Some(actual) = properties.and_then(|properties| properties.method.as_deref()) else {
-            return Err(Self::auth_protocol_error());
+            Err(err) => return Err(err),
         };
 
-        if actual != expected {
-            return Err(Self::auth_protocol_error());
-        }
+        match effect {
+            IncomingAuthEffect::Success { kind, method } => {
+                if let Some(authenticator) = self.authenticator.clone() {
+                    let context = AuthContext {
+                        kind,
+                        method: &method,
+                    };
+                    let auth_result = authenticator
+                        .lock()
+                        .unwrap()
+                        .success(context, auth.properties.clone());
+                    if let Err(err) = auth_result {
+                        return Err(self.fail_authenticator(&err));
+                    }
+                }
+                self.auth.complete_success(kind, method, &mut self.events);
+                Ok(None)
+            }
+            IncomingAuthEffect::Continue { kind } => {
+                let authenticator = self
+                    .authenticator
+                    .clone()
+                    .ok_or(StateError::AuthenticatorNotSet)?;
+                let method = auth
+                    .properties
+                    .as_ref()
+                    .and_then(|props| props.method.as_deref())
+                    .unwrap_or_default();
+                let context = AuthContext { kind, method };
+                let continue_result = authenticator
+                    .lock()
+                    .unwrap()
+                    .continue_auth(context, auth.properties.clone());
+                let action = match continue_result {
+                    Ok(action) => action,
+                    Err(err) => return Err(self.fail_authenticator(&err)),
+                };
 
-        Ok(())
+                let out_auth_props = match action.into_continue_properties() {
+                    Ok(properties) => properties,
+                    Err(err) => return Err(self.fail_authenticator(&err)),
+                };
+                let client_auth = self.auth.outgoing_continue(out_auth_props)?;
+                Ok(Some(self.outgoing_auth_packet(client_auth)))
+            }
+        }
     }
 
-    fn normalize_outgoing_auth_properties(
-        &self,
-        properties: Option<AuthProperties>,
-    ) -> Result<AuthProperties, StateError> {
-        let expected = self.configured_authentication_method()?.to_owned();
-        let mut properties = properties.unwrap_or_default();
+    fn fail_authenticator(&mut self, error: &AuthError) -> StateError {
+        self.fail_auth_exchange(
+            AuthNoticeError::AuthenticationFailed(error.to_string()),
+            error.clone(),
+        );
+        StateError::AuthError(error.to_string())
+    }
 
-        match &properties.method {
-            Some(actual) if actual != &expected => {
-                return Err(StateError::AuthError(format!(
-                    "AUTH packet Authentication Method '{actual}' does not match CONNECT Authentication Method '{expected}'"
-                )));
-            }
-            Some(_) => {}
-            None => properties.method = Some(expected),
+    fn fail_auth_exchange(&mut self, notice_error: AuthNoticeError, callback_error: AuthError) {
+        if let Some((kind, method)) = self.auth.active_exchange()
+            && let Some(authenticator) = self.authenticator.clone()
+        {
+            authenticator.lock().unwrap().failure(
+                AuthContext {
+                    kind,
+                    method: &method,
+                },
+                callback_error,
+            );
         }
-
-        Ok(properties)
+        self.auth.reset(notice_error, &mut self.events);
     }
 
     /// Adds next packet identifier to `QoS` 1 and 2 publish packets and returns
@@ -1183,6 +1298,7 @@ impl MqttState {
     }
 
     fn outgoing_disconnect(&mut self, disconnect: Disconnect) -> Packet {
+        self.fail_auth_exchange_due_to_client_disconnect();
         let reason = disconnect.reason_code;
         debug!("Disconnect with {reason:?}");
         let event = Event::Outgoing(Outgoing::Disconnect);
@@ -1191,16 +1307,58 @@ impl MqttState {
         Packet::Disconnect(disconnect)
     }
 
-    fn outgoing_auth(&mut self, mut auth: Auth) -> Result<Packet, StateError> {
-        let props = self.normalize_outgoing_auth_properties(auth.properties.take())?;
+    fn outgoing_auth(
+        &mut self,
+        mut auth: Auth,
+        mut notice: Option<crate::notice::AuthNoticeTx>,
+    ) -> Result<Packet, StateError> {
+        let method = match self.auth.reauth_method() {
+            Ok(method) => method.to_owned(),
+            Err(err) => {
+                if let Some(notice) = notice.take() {
+                    notice.error(err.clone());
+                }
+                return Err(StateError::AuthError(err.to_string()));
+            }
+        };
+
+        if let Some(authenticator) = self.authenticator.clone() {
+            let context = AuthContext {
+                kind: AuthExchangeKind::Reauthentication,
+                method: &method,
+            };
+            let start_result = authenticator.lock().unwrap().start(context);
+            match start_result {
+                Ok(Some(properties)) if auth.properties.is_none() => {
+                    auth.properties = Some(properties);
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    if let Some(notice) = notice.take() {
+                        notice.error(AuthNoticeError::AuthenticationFailed(err.to_string()));
+                    }
+                    return Err(StateError::AuthError(err.to_string()));
+                }
+            }
+        }
+        let auth = self
+            .auth
+            .begin_reauth(auth.properties, notice, &mut self.events)?;
+        Ok(self.outgoing_auth_packet(auth))
+    }
+
+    fn outgoing_auth_packet(&mut self, auth: Auth) -> Packet {
+        let props = auth
+            .properties
+            .as_ref()
+            .expect("AUTH packets created by state always contain properties");
         debug!(
             "Auth packet sent. Auth Method: {:?}. Auth Data: {:?}",
             props.method, props.data
         );
-        auth.properties = Some(props);
         let event = Event::Outgoing(Outgoing::Auth);
         self.events.push_back(event);
-        Ok(Packet::Auth(auth))
+        Packet::Auth(auth)
     }
 
     fn check_collision(&mut self, pkid: u16) -> Option<(Publish, Option<PublishNoticeTx>)> {
@@ -1353,8 +1511,8 @@ impl Clone for MqttState {
             broker_topic_alias_max: self.broker_topic_alias_max,
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
-            auth_manager: self.auth_manager.clone(),
-            authentication_method: self.authentication_method.clone(),
+            authenticator: self.authenticator.clone(),
+            auth: self.auth.clone(),
         }
     }
 }
@@ -1367,8 +1525,9 @@ mod test {
     use super::{MqttState, StateError};
     use crate::NoticeFailureReason;
     use crate::notice::{
-        PublishNotice, PublishNoticeError, PublishNoticeTx, PublishResult, SubscribeNoticeError,
-        SubscribeNoticeTx, UnsubscribeNoticeError, UnsubscribeNoticeTx,
+        AuthNoticeError, AuthNoticeTx, PublishNotice, PublishNoticeError, PublishNoticeTx,
+        PublishResult, SubscribeNoticeError, SubscribeNoticeTx, UnsubscribeNoticeError,
+        UnsubscribeNoticeTx,
     };
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
@@ -1435,13 +1594,96 @@ mod test {
         response: Result<Option<AuthProperties>, String>,
     }
 
-    impl crate::AuthManager for StaticAuthManager {
-        fn auth_continue(
+    impl crate::Authenticator for StaticAuthManager {
+        fn start(
             &mut self,
-            _auth_prop: Option<AuthProperties>,
-        ) -> Result<Option<AuthProperties>, String> {
-            self.response.clone()
+            _context: crate::AuthContext<'_>,
+        ) -> Result<Option<AuthProperties>, crate::AuthError> {
+            Ok(None)
         }
+
+        fn continue_auth(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _auth_prop: Option<AuthProperties>,
+        ) -> Result<crate::AuthAction, crate::AuthError> {
+            self.response
+                .clone()
+                .map(|props| props.map_or(crate::AuthAction::Complete, crate::AuthAction::Send))
+                .map_err(crate::AuthError::from)
+        }
+
+        fn success(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _incoming: Option<AuthProperties>,
+        ) -> Result<(), crate::AuthError> {
+            Ok(())
+        }
+
+        fn failure(&mut self, _context: crate::AuthContext<'_>, _error: crate::AuthError) {}
+    }
+
+    #[derive(Debug)]
+    struct StartAuthManager {
+        response: Option<AuthProperties>,
+    }
+
+    impl crate::Authenticator for StartAuthManager {
+        fn start(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+        ) -> Result<Option<AuthProperties>, crate::AuthError> {
+            Ok(self.response.clone())
+        }
+
+        fn continue_auth(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _auth_prop: Option<AuthProperties>,
+        ) -> Result<crate::AuthAction, crate::AuthError> {
+            Ok(crate::AuthAction::Complete)
+        }
+
+        fn success(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _incoming: Option<AuthProperties>,
+        ) -> Result<(), crate::AuthError> {
+            Ok(())
+        }
+
+        fn failure(&mut self, _context: crate::AuthContext<'_>, _error: crate::AuthError) {}
+    }
+
+    #[derive(Debug)]
+    struct FailingStartAuthManager;
+
+    impl crate::Authenticator for FailingStartAuthManager {
+        fn start(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+        ) -> Result<Option<AuthProperties>, crate::AuthError> {
+            Err(crate::AuthError::from("start failed"))
+        }
+
+        fn continue_auth(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _auth_prop: Option<AuthProperties>,
+        ) -> Result<crate::AuthAction, crate::AuthError> {
+            Ok(crate::AuthAction::Complete)
+        }
+
+        fn success(
+            &mut self,
+            _context: crate::AuthContext<'_>,
+            _incoming: Option<AuthProperties>,
+        ) -> Result<(), crate::AuthError> {
+            Ok(())
+        }
+
+        fn failure(&mut self, _context: crate::AuthContext<'_>, _error: crate::AuthError) {}
     }
 
     fn queue_publish_with_notice(mqtt: &mut MqttState, publish: Publish) -> PublishNotice {
@@ -2078,8 +2320,200 @@ mod test {
     }
 
     #[test]
+    fn tracked_reauth_missing_method_notice_fails_with_specific_error() {
+        let mut mqtt = build_auth_mqttstate(None);
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        let err = mqtt
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            AuthNoticeError::MissingAuthenticationMethod
+        );
+    }
+
+    #[test]
+    fn tracked_reauth_mismatched_method_notice_fails_with_auth_error() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        let err = mqtt
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(
+                    AuthReasonCode::ReAuthenticate,
+                    Some(auth_properties(Some("other-method"))),
+                )),
+                Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+        assert!(matches!(
+            notice.wait().unwrap_err(),
+            AuthNoticeError::AuthenticationFailed(_)
+        ));
+    }
+
+    #[test]
+    fn tracked_reauth_start_failure_notice_fails_with_auth_error() {
+        let authenticator = Arc::new(Mutex::new(FailingStartAuthManager));
+        let mut mqtt = MqttState::builder(10)
+            .authentication_method(Some(AUTH_METHOD.to_owned()))
+            .authenticator(authenticator)
+            .build();
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        let err = mqtt
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+        assert!(matches!(
+            notice.wait().unwrap_err(),
+            AuthNoticeError::AuthenticationFailed(_)
+        ));
+    }
+
+    #[test]
+    fn initial_auth_start_returns_normalized_auth_properties() {
+        let authenticator = Arc::new(Mutex::new(StartAuthManager {
+            response: Some(auth_properties(None)),
+        }));
+        let mut mqtt = MqttState::builder(10)
+            .authentication_method(Some(AUTH_METHOD.to_owned()))
+            .authenticator(authenticator)
+            .build();
+
+        let properties = mqtt
+            .begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(properties.method.as_deref(), Some(AUTH_METHOD));
+        assert_eq!(properties.data, Some(Bytes::from_static(b"auth-data")));
+    }
+
+    #[test]
+    fn outgoing_reauth_rejects_overlapping_attempt() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, None);
+
+        mqtt.handle_outgoing_packet(Request::Auth(auth.clone()))
+            .unwrap();
+        let err = mqtt
+            .handle_outgoing_packet(Request::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+    }
+
+    #[test]
+    fn tracked_reauth_notice_completes_on_matching_auth_success() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        let auth = Auth::new(AuthReasonCode::ReAuthenticate, None);
+
+        mqtt.handle_outgoing_packet_with_notice(
+            Request::Auth(auth),
+            Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+        )
+        .unwrap();
+        mqtt.handle_incoming_packet(Incoming::Auth(Auth::new(
+            AuthReasonCode::Success,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        )))
+        .unwrap();
+
+        assert_eq!(notice.wait().unwrap(), crate::AuthOutcome::Success);
+    }
+
+    #[test]
+    fn disconnect_now_fails_active_tracked_reauth_notice() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        mqtt.handle_outgoing_packet_with_notice(
+            Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+            Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+        )
+        .unwrap();
+        mqtt.handle_outgoing_packet(Request::DisconnectNow(Disconnect::new(
+            DisconnectReasonCode::NormalDisconnection,
+        )))
+        .unwrap();
+
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            AuthNoticeError::ConnectionClosed
+        );
+        assert!(mqtt.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::Reauthentication,
+                    reason: crate::AuthFailureReason::ConnectionClosed,
+                    ..
+                })
+            )
+        }));
+    }
+
+    #[test]
+    fn tracked_overlapping_reauth_notice_fails() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.handle_outgoing_packet(Request::Auth(Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            None,
+        )))
+        .unwrap();
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        let err = mqtt
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::AuthError(_)));
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            AuthNoticeError::OverlappingReauth
+        );
+    }
+
+    #[test]
+    fn incoming_auth_success_without_active_exchange_is_protocol_error() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        let auth = Auth::new(
+            AuthReasonCode::Success,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+    }
+
+    #[test]
     fn incoming_auth_success_accepts_matching_authentication_method() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
         let auth = Auth::new(
             AuthReasonCode::Success,
             Some(auth_properties(Some(AUTH_METHOD))),
@@ -2091,8 +2525,42 @@ mod test {
     }
 
     #[test]
+    fn initial_auth_survives_fresh_session_pending_notice_cleanup() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
+        mqtt.fail_pending_notices();
+
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().authentication_method = Some(AUTH_METHOD.to_owned());
+        mqtt.handle_incoming_packet(Incoming::ConnAck(connack))
+            .unwrap();
+
+        assert!(mqtt.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Succeeded {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    ..
+                })
+            )
+        }));
+        assert!(!mqtt.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    ..
+                })
+            )
+        }));
+    }
+
+    #[test]
     fn incoming_auth_success_rejects_missing_authentication_method() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
         let auth = Auth::new(AuthReasonCode::Success, None);
 
         let err = mqtt
@@ -2108,6 +2576,8 @@ mod test {
     #[test]
     fn incoming_auth_success_rejects_mismatched_authentication_method() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
         let auth = Auth::new(
             AuthReasonCode::Success,
             Some(auth_properties(Some("other-method"))),
@@ -2148,6 +2618,8 @@ mod test {
             .authentication_method(Some(AUTH_METHOD.to_owned()))
             .auth_manager(auth_manager)
             .build();
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
         let auth = Auth::new(
             AuthReasonCode::Continue,
             Some(auth_properties(Some(AUTH_METHOD))),
@@ -2194,6 +2666,8 @@ mod test {
             .authentication_method(Some(AUTH_METHOD.to_owned()))
             .auth_manager(auth_manager)
             .build();
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
         let auth = Auth::new(
             AuthReasonCode::Continue,
             Some(auth_properties(Some("other-method"))),
