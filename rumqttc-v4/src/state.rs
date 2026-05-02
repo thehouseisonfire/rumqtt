@@ -91,6 +91,41 @@ pub struct MqttState {
     pub manual_acks: bool,
 }
 
+/// Builder for low-level MQTT 3.1.1 protocol state.
+///
+/// Most users should configure clients through [`crate::MqttOptions`] and
+/// construct them with [`crate::Client::builder`] or [`crate::AsyncClient::builder`].
+/// This builder is intended for users driving [`MqttState`] directly.
+#[derive(Debug)]
+pub struct MqttStateBuilder {
+    max_inflight: u16,
+    manual_acks: bool,
+}
+
+impl MqttStateBuilder {
+    /// Create a new [`MqttState`] builder.
+    #[must_use]
+    pub const fn new(max_inflight: u16) -> Self {
+        Self {
+            max_inflight,
+            manual_acks: false,
+        }
+    }
+
+    /// Set whether incoming publish acknowledgements should be sent manually.
+    #[must_use]
+    pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
+        self.manual_acks = manual_acks;
+        self
+    }
+
+    /// Build the configured [`MqttState`].
+    #[must_use]
+    pub fn build(self) -> MqttState {
+        MqttState::new_internal(self.max_inflight, self.manual_acks)
+    }
+}
+
 impl MqttState {
     const WARM_TRACKING_SLOTS: usize = 32;
 
@@ -184,11 +219,17 @@ impl MqttState {
             + self.tracked_unsubscribe.len()
     }
 
+    /// Create a builder for low-level MQTT 3.1.1 protocol state.
+    #[must_use]
+    pub const fn builder(max_inflight: u16) -> MqttStateBuilder {
+        MqttStateBuilder::new(max_inflight)
+    }
+
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
-    /// instantiated for clean sessions
+    /// instantiated for clean sessions.
     #[must_use]
-    pub fn new(max_inflight: u16, manual_acks: bool) -> Self {
+    pub(crate) fn new_internal(max_inflight: u16, manual_acks: bool) -> Self {
         let tracking_len = Self::warm_tracking_len(max_inflight);
         Self {
             await_pingresp: false,
@@ -927,7 +968,7 @@ mod test {
     }
 
     fn build_mqttstate() -> MqttState {
-        MqttState::new(100, false)
+        MqttState::builder(100).build()
     }
 
     fn queue_publish_with_notice(mqtt: &mut MqttState, publish: Publish) -> crate::PublishNotice {
@@ -942,13 +983,13 @@ mod test {
 
     #[test]
     fn new_state_preallocates_event_queue_for_read_batch_bursts() {
-        let mqtt = MqttState::new(10, false);
+        let mqtt = MqttState::builder(10).build();
         assert!(mqtt.events.capacity() >= MqttState::initial_events_capacity());
     }
 
     #[test]
     fn new_state_uses_warm_tracking_floor() {
-        let mqtt = MqttState::new(100, false);
+        let mqtt = MqttState::builder(100).build();
 
         assert_eq!(mqtt.outgoing_pub.len(), 33);
         assert_eq!(mqtt.outgoing_pub_notice.len(), 33);
@@ -959,7 +1000,7 @@ mod test {
 
     #[test]
     fn new_state_uses_full_tracking_len_when_max_inflight_is_below_warm_floor() {
-        let mqtt = MqttState::new(10, false);
+        let mqtt = MqttState::builder(10).build();
 
         assert_eq!(mqtt.outgoing_pub.len(), 11);
         assert_eq!(mqtt.outgoing_pub_notice.len(), 11);
@@ -970,7 +1011,7 @@ mod test {
 
     #[test]
     fn clean_pending_capacity_counts_publish_rel_and_tracked_requests() {
-        let mut mqtt = MqttState::new(10, false);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.outgoing_pub[1] = Some(build_outgoing_publish(QoS::AtLeastOnce));
         mqtt.outgoing_pub[2] = Some(build_outgoing_publish(QoS::ExactlyOnce));
         mqtt.outgoing_rel.insert(3);
@@ -989,7 +1030,7 @@ mod test {
 
     #[test]
     fn tracked_request_len_helpers_report_counts() {
-        let mut mqtt = MqttState::new(10, false);
+        let mut mqtt = MqttState::builder(10).build();
         let (sub_notice, _) = SubscribeNoticeTx::new();
         mqtt.tracked_subscribe
             .insert(5, (Subscribe::new("a/b", QoS::AtMostOnce), sub_notice));
@@ -1007,7 +1048,7 @@ mod test {
 
     #[test]
     fn drain_tracked_requests_as_failed_reports_session_reset_and_returns_count() {
-        let mut mqtt = MqttState::new(10, false);
+        let mut mqtt = MqttState::builder(10).build();
         let (sub_notice_tx, sub_notice) = SubscribeNoticeTx::new();
         mqtt.tracked_subscribe
             .insert(5, (Subscribe::new("a/b", QoS::AtMostOnce), sub_notice_tx));
@@ -1031,7 +1072,7 @@ mod test {
 
     #[test]
     fn drain_tracked_requests_as_failed_is_noop_when_empty() {
-        let mut mqtt = MqttState::new(10, false);
+        let mut mqtt = MqttState::builder(10).build();
         let drained = mqtt.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
 
         assert_eq!(drained, 0);
@@ -1435,7 +1476,7 @@ mod test {
 
     #[test]
     fn outgoing_publish_with_pkid_above_max_inflight_is_unsolicited_and_does_not_grow_tracking() {
-        let mut mqtt = MqttState::new(10, false);
+        let mut mqtt = MqttState::builder(10).build();
         let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
         publish.pkid = 50;
 
@@ -1455,7 +1496,7 @@ mod test {
 
     #[test]
     fn outgoing_pubrel_with_pkid_above_max_inflight_is_unsolicited_and_does_not_grow_tracking() {
-        let mut mqtt = MqttState::new(10, false);
+        let mut mqtt = MqttState::builder(10).build();
 
         let got = mqtt
             .handle_outgoing_packet(Request::PubRel(PubRel::new(50)))

@@ -146,6 +146,64 @@ pub struct MqttState {
     authentication_method: Option<String>,
 }
 
+/// Builder for low-level MQTT 5 protocol state.
+///
+/// Most users should configure clients through [`crate::MqttOptions`] and
+/// construct them with [`crate::Client::builder`] or [`crate::AsyncClient::builder`].
+/// This builder is intended for users driving [`MqttState`] directly.
+#[derive(Debug)]
+pub struct MqttStateBuilder {
+    max_inflight: u16,
+    manual_acks: bool,
+    auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
+    authentication_method: Option<String>,
+}
+
+impl MqttStateBuilder {
+    /// Create a new [`MqttState`] builder.
+    #[must_use]
+    pub const fn new(max_inflight: u16) -> Self {
+        Self {
+            max_inflight,
+            manual_acks: false,
+            auth_manager: None,
+            authentication_method: None,
+        }
+    }
+
+    /// Set whether incoming publish acknowledgements should be sent manually.
+    #[must_use]
+    pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
+        self.manual_acks = manual_acks;
+        self
+    }
+
+    /// Set the Authentication Method used in the CONNECT packet.
+    #[must_use]
+    pub fn authentication_method(mut self, authentication_method: Option<String>) -> Self {
+        self.authentication_method = authentication_method;
+        self
+    }
+
+    /// Set the authentication manager used for MQTT 5 enhanced authentication.
+    #[must_use]
+    pub fn auth_manager(mut self, auth_manager: Arc<Mutex<dyn AuthManager>>) -> Self {
+        self.auth_manager = Some(auth_manager);
+        self
+    }
+
+    /// Build the configured [`MqttState`].
+    #[must_use]
+    pub fn build(self) -> MqttState {
+        MqttState::new_internal(
+            self.max_inflight,
+            self.manual_acks,
+            self.authentication_method,
+            self.auth_manager,
+        )
+    }
+}
+
 impl MqttState {
     const fn initial_events_capacity() -> usize {
         128
@@ -173,20 +231,17 @@ impl MqttState {
             + self.tracked_unsubscribe.len()
     }
 
-    /// Creates new mqtt state. Same state should be used during a
-    /// connection for persistent sessions while new state should
-    /// instantiated for clean sessions
+    /// Create a builder for low-level MQTT 5 protocol state.
     #[must_use]
-    pub fn new(
-        max_inflight: u16,
-        manual_acks: bool,
-        auth_manager: Option<Arc<Mutex<dyn AuthManager>>>,
-    ) -> Self {
-        Self::new_with_auth_method(max_inflight, manual_acks, None, auth_manager)
+    pub const fn builder(max_inflight: u16) -> MqttStateBuilder {
+        MqttStateBuilder::new(max_inflight)
     }
 
-    /// Creates new mqtt state with the CONNECT Authentication Method.
-    pub(crate) fn new_with_auth_method(
+    /// Creates new mqtt state. Same state should be used during a
+    /// connection for persistent sessions while new state should
+    /// instantiated for clean sessions.
+    #[must_use]
+    pub(crate) fn new_internal(
         max_inflight: u16,
         manual_acks: bool,
         authentication_method: Option<String>,
@@ -1357,11 +1412,13 @@ mod test {
     }
 
     fn build_mqttstate() -> MqttState {
-        MqttState::new(u16::MAX, false, None)
+        MqttState::builder(u16::MAX).build()
     }
 
     fn build_auth_mqttstate(authentication_method: Option<&str>) -> MqttState {
-        MqttState::new_with_auth_method(10, false, authentication_method.map(str::to_owned), None)
+        MqttState::builder(10)
+            .authentication_method(authentication_method.map(str::to_owned))
+            .build()
     }
 
     fn auth_properties(authentication_method: Option<&str>) -> AuthProperties {
@@ -1399,13 +1456,13 @@ mod test {
 
     #[test]
     fn new_state_preallocates_event_queue_for_read_batch_bursts() {
-        let mqtt = MqttState::new(10, false, None);
+        let mqtt = MqttState::builder(10).build();
         assert!(mqtt.events.capacity() >= MqttState::initial_events_capacity());
     }
 
     #[test]
     fn clean_pending_capacity_counts_publish_rel_and_tracked_requests() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.outgoing_pub[1] = Some(build_outgoing_publish(QoS::AtLeastOnce));
         mqtt.outgoing_pub[2] = Some(build_outgoing_publish(QoS::ExactlyOnce));
         mqtt.outgoing_rel.insert(3);
@@ -1425,7 +1482,7 @@ mod test {
 
     #[test]
     fn tracked_request_len_helpers_report_counts() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         let filter = Filter::new("a/b", QoS::AtMostOnce);
         let (sub_notice, _) = SubscribeNoticeTx::new();
         mqtt.tracked_subscribe
@@ -1444,7 +1501,7 @@ mod test {
 
     #[test]
     fn drain_tracked_requests_as_failed_reports_session_reset_and_returns_count() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         let filter = Filter::new("a/b", QoS::AtMostOnce);
         let (sub_notice_tx, sub_notice) = SubscribeNoticeTx::new();
         mqtt.tracked_subscribe
@@ -1469,7 +1526,7 @@ mod test {
 
     #[test]
     fn drain_tracked_requests_as_failed_is_noop_when_empty() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         let drained = mqtt.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
 
         assert_eq!(drained, 0);
@@ -1589,7 +1646,7 @@ mod test {
 
     #[test]
     fn connack_receive_max_can_grow_tracking_capacity_after_previous_shrink() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(4)))
             .unwrap();
         mqtt.reconcile_outgoing_tracking_capacity(true);
@@ -1606,7 +1663,7 @@ mod test {
 
     #[test]
     fn connack_receive_max_shrinks_when_tracking_is_empty_and_pending_is_empty() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.last_pkid = 9;
         mqtt.last_puback = 8;
 
@@ -1626,7 +1683,7 @@ mod test {
 
     #[test]
     fn connack_resets_connection_scoped_alias_state_when_topic_alias_maximum_is_omitted() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.broker_topic_alias_max = 10;
         mqtt.outgoing_publish(build_outgoing_publish_with_alias(
             "hello/replay",
@@ -1653,7 +1710,7 @@ mod test {
 
     #[test]
     fn connack_receive_max_does_not_shrink_when_tracking_is_non_empty() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
         publish.pkid = 8;
         mqtt.outgoing_pub[8] = Some(publish);
@@ -1669,7 +1726,7 @@ mod test {
 
     #[test]
     fn clone_preserves_current_tracking_queue_lengths() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
             .unwrap();
         mqtt.reconcile_outgoing_tracking_capacity(true);
@@ -1738,7 +1795,7 @@ mod test {
 
     #[test]
     fn outgoing_publish_with_max_inflight_is_ok() {
-        let mut mqtt = MqttState::new(2, false, None);
+        let mut mqtt = MqttState::builder(2).build();
 
         // QoS2 publish
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
@@ -1965,7 +2022,7 @@ mod test {
 
     #[test]
     fn public_state_authentication_method_setter_enables_outgoing_reauth() {
-        let mut mqtt = MqttState::new(10, false, None);
+        let mut mqtt = MqttState::builder(10).build();
         mqtt.set_authentication_method(Some(AUTH_METHOD.to_owned()));
         let auth = Auth::new(
             AuthReasonCode::ReAuthenticate,
@@ -2087,12 +2144,10 @@ mod test {
     #[test]
     fn incoming_auth_continue_synthesizes_method_when_auth_manager_omits_it() {
         let auth_manager = Arc::new(Mutex::new(StaticAuthManager { response: Ok(None) }));
-        let mut mqtt = MqttState::new_with_auth_method(
-            10,
-            false,
-            Some(AUTH_METHOD.to_owned()),
-            Some(auth_manager),
-        );
+        let mut mqtt = MqttState::builder(10)
+            .authentication_method(Some(AUTH_METHOD.to_owned()))
+            .auth_manager(auth_manager)
+            .build();
         let auth = Auth::new(
             AuthReasonCode::Continue,
             Some(auth_properties(Some(AUTH_METHOD))),
@@ -2116,7 +2171,7 @@ mod test {
     #[test]
     fn incoming_auth_continue_without_connect_authentication_method_is_protocol_error() {
         let auth_manager = Arc::new(Mutex::new(StaticAuthManager { response: Ok(None) }));
-        let mut mqtt = MqttState::new_with_auth_method(10, false, None, Some(auth_manager));
+        let mut mqtt = MqttState::builder(10).auth_manager(auth_manager).build();
         let auth = Auth::new(
             AuthReasonCode::Continue,
             Some(auth_properties(Some(AUTH_METHOD))),
@@ -2135,12 +2190,10 @@ mod test {
     #[test]
     fn incoming_auth_continue_rejects_mismatched_server_method() {
         let auth_manager = Arc::new(Mutex::new(StaticAuthManager { response: Ok(None) }));
-        let mut mqtt = MqttState::new_with_auth_method(
-            10,
-            false,
-            Some(AUTH_METHOD.to_owned()),
-            Some(auth_manager),
-        );
+        let mut mqtt = MqttState::builder(10)
+            .authentication_method(Some(AUTH_METHOD.to_owned()))
+            .auth_manager(auth_manager)
+            .build();
         let auth = Auth::new(
             AuthReasonCode::Continue,
             Some(auth_properties(Some("other-method"))),

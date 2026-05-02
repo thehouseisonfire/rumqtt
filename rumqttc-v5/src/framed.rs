@@ -228,7 +228,7 @@ mod tests {
     async fn readb_processes_exactly_two_packets_when_limit_is_two() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, Some(1024));
-        let mut state = MqttState::new(10, false, None);
+        let mut state = MqttState::builder(10).build();
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
@@ -241,7 +241,7 @@ mod tests {
     async fn readb_processes_one_packet_when_limit_is_one() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, Some(1024));
-        let mut state = MqttState::new(10, false, None);
+        let mut state = MqttState::builder(10).build();
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
@@ -276,7 +276,7 @@ mod tests {
     async fn readb_sends_packet_too_large_disconnect_before_returning_error() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, Some(10));
-        let mut state = MqttState::new(10, false, None);
+        let mut state = MqttState::builder(10).build();
 
         peer.write_all(&[0x30, 0x14]).await.unwrap();
 
@@ -301,8 +301,9 @@ mod tests {
     async fn readb_sends_protocol_error_disconnect_for_server_reauthenticate() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, Some(1024));
-        let mut state =
-            MqttState::new_with_auth_method(10, false, Some("test-method".to_owned()), None);
+        let mut state = MqttState::builder(10)
+            .authentication_method(Some("test-method".to_owned()))
+            .build();
         let auth = Auth::new(
             AuthReasonCode::ReAuthenticate,
             Some(AuthProperties {
@@ -445,7 +446,7 @@ mod tests {
     async fn readb_returns_decode_error_promptly_under_write_backpressure() {
         let io = BackpressuredIo::new(&[0x30, 0x14]);
         let mut network = Network::new(io, Some(10));
-        let mut state = MqttState::new(10, false, None);
+        let mut state = MqttState::builder(10).build();
 
         let err = tokio::time::timeout(
             std::time::Duration::from_millis(50),
@@ -479,8 +480,9 @@ mod tests {
         auth.write(&mut encoded).unwrap();
         let io = BackpressuredIo::new(&encoded);
         let mut network = Network::new(io, Some(1024));
-        let mut state =
-            MqttState::new_with_auth_method(10, false, Some("test-method".to_owned()), None);
+        let mut state = MqttState::builder(10)
+            .authentication_method(Some("test-method".to_owned()))
+            .build();
 
         let err = tokio::time::timeout(
             std::time::Duration::from_millis(50),

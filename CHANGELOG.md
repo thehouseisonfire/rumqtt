@@ -2,6 +2,7 @@
 
 ### Added
 - `rumqttc` v5: Add `MqttState::set_authentication_method()` for low-level MQTT 5 enhanced-authentication users that process AUTH packets through `MqttState` directly.
+- `rumqttc` v4/v5: Add `MqttStateBuilder` for fluent low-level `MqttState` construction via `MqttState::builder(max_inflight).manual_acks(...).build()` (v5 also exposes `.authentication_method(...)` and `.auth_manager(...)`).
 ### Changed
 - `rumqttc` v4/v5 (Breaking Change): Change `disconnect()`/`try_disconnect()` into graceful barriers that flush previously accepted QoS 0 publishes and drain previously accepted QoS 1/ QoS 2 publish plus tracked subscribe/unsubscribe state (`SUBACK`/`UNSUBACK`) before sending terminal DISCONNECT. Use `disconnect_now()`/`try_disconnect_now()` to preserve immediate DISCONNECT behavior, or `disconnect_with_timeout()`/`try_disconnect_with_timeout()` to bound graceful draining; if the timeout expires first, polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not sent.
 - `rumqttc` v4/v5: Document that disconnect requests still use the normal client request channel: if the event loop is blocked from reading new requests by a full QoS 1/ QoS 2 publish inflight window or packet-id collision, graceful/immediate disconnect handling begins only after the event loop observes the request.
@@ -9,6 +10,7 @@
 ### Deprecated
 ### Removed
 - `rumqttc` v4/v5 (Breaking Change): Remove `AsyncClientBuilder::build_async()` in favor of `AsyncClientBuilder::build()`.
+- `rumqttc` v4/v5 (Breaking Change): Remove public `MqttState::new()` / `MqttState::new_with_auth_method()` constructors in favor of `MqttState::builder(max_inflight)`.
 ### Fixed
 - `rumqttc` v5: Accept zero-length MQTT v5 DISCONNECT packets in the packet reader.
 - `rumqttc` v5: Validate CONNACK `Authentication Method` against the CONNECT `Authentication Method` (MQTT 5 §3.2.2.3.5); send `ProtocolError` DISCONNECT on mismatch or unexpected presence.

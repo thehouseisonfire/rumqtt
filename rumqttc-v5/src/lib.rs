@@ -63,7 +63,7 @@ pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::TlsConfiguration;
 pub use rumqttc_core::default_socket_connect;
-pub use state::{MqttState, StateError};
+pub use state::{MqttState, MqttStateBuilder, StateError};
 pub use transport::Transport;
 
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
