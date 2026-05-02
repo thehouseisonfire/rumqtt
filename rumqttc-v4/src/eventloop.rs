@@ -247,7 +247,7 @@ impl EventLoop {
 
         Self {
             mqtt_options,
-            state: MqttState::new(max_inflight, manual_acks),
+            state: MqttState::new_internal(max_inflight, manual_acks),
             requests_rx,
             _requests_tx: requests_tx,
             pending,

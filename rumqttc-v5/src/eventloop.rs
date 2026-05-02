@@ -251,7 +251,7 @@ impl EventLoop {
 
         Self {
             options,
-            state: MqttState::new_with_auth_method(
+            state: MqttState::new_internal(
                 inflight_limit,
                 manual_acks,
                 authentication_method,
@@ -1045,7 +1045,7 @@ mod tests {
     ) -> (Result<ConnAck, ConnectionError>, Vec<u8>) {
         let (client, mut peer) = tokio::io::duplex(1024);
         let mut network = Network::new(client, Some(1024));
-        let mut state = MqttState::new_with_auth_method(
+        let mut state = MqttState::new_internal(
             10,
             false,
             options.authentication_method(),
@@ -1070,7 +1070,7 @@ mod tests {
     ) -> Result<ConnAck, ConnectionError> {
         let (client, mut peer) = tokio::io::duplex(1024);
         let mut network = Network::new(client, Some(1024));
-        let mut state = MqttState::new_with_auth_method(
+        let mut state = MqttState::new_internal(
             10,
             false,
             stale_authentication_method.map(str::to_owned),
@@ -1097,7 +1097,7 @@ mod tests {
     ) -> Result<ConnAck, ConnectionError> {
         let (client, mut peer) = tokio::io::duplex(1024);
         let mut network = Network::new(client, Some(1024));
-        let mut state = MqttState::new_with_auth_method(
+        let mut state = MqttState::new_internal(
             10,
             false,
             options.authentication_method(),

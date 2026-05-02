@@ -104,7 +104,7 @@ mod tests {
     async fn readb_processes_exactly_two_packets_when_limit_is_two() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, 1024, 1024);
-        let mut state = MqttState::new(10, false);
+        let mut state = MqttState::builder(10).build();
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
@@ -117,7 +117,7 @@ mod tests {
     async fn readb_processes_one_packet_when_limit_is_one() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, 1024, 1024);
-        let mut state = MqttState::new(10, false);
+        let mut state = MqttState::builder(10).build();
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
