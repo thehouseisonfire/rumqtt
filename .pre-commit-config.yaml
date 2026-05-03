@@ -3,28 +3,78 @@ repos:
     hooks:
       - id: clippy
         name: clippy
-        entry: bash -c 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery" && cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next'
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}";
+          export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
+          cargo hack clippy --fix --allow-dirty
+          --each-feature
+          --exclude-all-features
+          --no-dev-deps
+          --optional-deps url
+          -p rumqttc-v4-next
+          -p rumqttc-v5-next
+          '
         language: system
         pass_filenames: false
         always_run: true
+        require_serial: true
 
       - id: tests
         name: tests
-        entry: bash -c 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" && cargo hack --each-feature --exclude-all-features --optional-deps url test -p rumqttc-v4-next -p rumqttc-v5-next'
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}";
+          cargo hack
+          --each-feature
+          --exclude-all-features
+          --optional-deps url
+          test
+          -p rumqttc-v4-next
+          -p rumqttc-v5-next
+          '
         language: system
         pass_filenames: false
         always_run: true
+        require_serial: true
 
       - id: combo-tests
         name: combo tests
-        entry: bash -c 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" && cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-ring" && cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring" && cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-aws-lc" && cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-aws-lc"'
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}";
+
+          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-ring";
+          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring";
+          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-aws-lc";
+          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-aws-lc";
+          '
         language: system
         pass_filenames: false
         always_run: true
+        require_serial: true
 
       - id: rustls-conflict-guard
         name: rustls conflict guard
-        entry: bash -c 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" && if cargo check -p rumqttc-v4-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then echo "ERROR - rumqttc-v4-next rustls provider conflict guard failed"; exit 1; fi; if cargo check -p rumqttc-v5-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then echo "ERROR - rumqttc-v5-next rustls provider conflict guard failed"; exit 1; fi'
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}";
+
+          if cargo check -p rumqttc-v4-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then
+            echo "ERROR - rumqttc-v4-next rustls provider conflict guard failed";
+            exit 1;
+          fi;
+
+          if cargo check -p rumqttc-v5-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then
+            echo "ERROR - rumqttc-v5-next rustls provider conflict guard failed";
+            exit 1;
+          fi;
+          '
         language: system
         pass_filenames: false
         always_run: true
+        require_serial: true
