@@ -629,6 +629,8 @@ pub struct MqttOptions {
     incoming_packet_size_limit: IncomingPacketSizeLimit,
     /// Connect Properties
     connect_properties: Option<ConnectProperties>,
+    /// Automatically assign outgoing MQTT 5 topic aliases when the broker supports them.
+    auto_topic_aliases: bool,
     /// If set to `true` MQTT acknowledgements are not sent automatically.
     /// Every incoming publish packet must be acknowledged manually with either
     /// `client.ack(...)` or the `prepare_ack(...)` + `manual_ack(...)` flow.
@@ -676,6 +678,7 @@ impl MqttOptions {
             default_max_incoming_size: 10 * 1024,
             incoming_packet_size_limit: IncomingPacketSizeLimit::Default,
             connect_properties: None,
+            auto_topic_aliases: false,
             manual_acks: false,
             network_options: NetworkOptions::new(),
             #[cfg(feature = "proxy")]
@@ -1274,6 +1277,22 @@ impl MqttOptions {
         }
     }
 
+    /// Enable or disable automatic outgoing topic alias assignment.
+    ///
+    /// When enabled, the event loop assigns topic aliases immediately before
+    /// sending publishes on connections where the broker advertises a non-zero
+    /// Topic Alias Maximum. Publishes that already contain a topic alias are
+    /// left unchanged.
+    pub const fn set_auto_topic_aliases(&mut self, auto_topic_aliases: bool) -> &mut Self {
+        self.auto_topic_aliases = auto_topic_aliases;
+        self
+    }
+
+    /// Returns whether automatic outgoing topic alias assignment is enabled.
+    pub const fn auto_topic_aliases(&self) -> bool {
+        self.auto_topic_aliases
+    }
+
     /// set request response info on connection properties
     pub fn set_request_response_info(&mut self, request_response_info: Option<u8>) -> &mut Self {
         if let Some(conn_props) = &mut self.connect_properties {
@@ -1701,6 +1720,13 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Enable or disable automatic outgoing topic alias assignment.
+    #[must_use]
+    pub const fn auto_topic_aliases(mut self, auto_topic_aliases: bool) -> Self {
+        self.options.set_auto_topic_aliases(auto_topic_aliases);
+        self
+    }
+
     /// Set request response info on connection properties.
     #[must_use]
     pub fn request_response_info(mut self, request_response_info: Option<u8>) -> Self {
@@ -1996,6 +2022,7 @@ impl Debug for MqttOptions {
             .field("pending_throttle", &self.pending_throttle)
             .field("last_will", &self.last_will)
             .field("connect_timeout", &self.connect_timeout)
+            .field("auto_topic_aliases", &self.auto_topic_aliases)
             .field("manual_acks", &self.manual_acks)
             .field("connect properties", &self.connect_properties)
             .finish_non_exhaustive()
@@ -2665,6 +2692,7 @@ mod test {
             .set_user_properties(vec![("k".to_owned(), "v".to_owned())])
             .set_authentication_method(Some("SCRAM-SHA-256".to_owned()))
             .set_authentication_data(Some(Bytes::from_static(b"auth")))
+            .set_auto_topic_aliases(true)
             .set_manual_acks(true)
             .set_outgoing_inflight_upper_limit(4);
 
@@ -2686,6 +2714,7 @@ mod test {
             .user_properties(vec![("k".to_owned(), "v".to_owned())])
             .authentication_method(Some("SCRAM-SHA-256".to_owned()))
             .authentication_data(Some(Bytes::from_static(b"auth")))
+            .auto_topic_aliases(true)
             .manual_acks(true)
             .outgoing_inflight_upper_limit(4)
             .build();
@@ -2707,6 +2736,7 @@ mod test {
         assert_eq!(actual.pending_throttle(), expected.pending_throttle());
         assert_eq!(actual.connect_timeout(), expected.connect_timeout());
         assert_eq!(actual.connect_properties(), expected.connect_properties());
+        assert_eq!(actual.auto_topic_aliases(), expected.auto_topic_aliases());
         assert_eq!(actual.manual_acks(), expected.manual_acks());
         assert_eq!(
             actual.get_outgoing_inflight_upper_limit(),

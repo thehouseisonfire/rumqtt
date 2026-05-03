@@ -1,7 +1,8 @@
 use super::mqttbytes::v5::{
     Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PingReq, PubAck,
     PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish,
-    SubAck, Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
+    PublishProperties, SubAck, Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+    Unsubscribe,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::auth::{AuthLifecycle, IncomingAuthEffect};
@@ -21,6 +22,39 @@ use fixedbitset::FixedBitSet;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::{io, time::Instant};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingAutoTopicAlias {
+    topic: Bytes,
+    alias: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AutoTopicAliasAction {
+    Existing { original_topic: Bytes },
+    New(PendingAutoTopicAlias),
+}
+
+impl AutoTopicAliasAction {
+    const fn pending_alias(&self) -> Option<&PendingAutoTopicAlias> {
+        match self {
+            Self::Existing { .. } => None,
+            Self::New(pending) => Some(pending),
+        }
+    }
+
+    fn restore_for_replay(self, publish: &mut Publish) {
+        match self {
+            Self::Existing { original_topic } => {
+                publish.topic = original_topic;
+                MqttState::strip_publish_topic_alias(publish);
+            }
+            Self::New(_) => {
+                MqttState::strip_publish_topic_alias(publish);
+            }
+        }
+    }
+}
 
 /// Errors during state handling
 #[derive(Debug, thiserror::Error)]
@@ -138,6 +172,10 @@ pub struct MqttState {
     incoming_topic_aliases: HashMap<u16, Bytes>,
     /// Client-to-server topic aliases scoped to the current network connection.
     outgoing_topic_aliases: HashMap<u16, Bytes>,
+    /// Automatically assigned client-to-server topic aliases for the current network connection.
+    auto_outgoing_topic_aliases: HashMap<Bytes, u16>,
+    next_auto_topic_alias: Option<u16>,
+    auto_topic_aliases: bool,
     /// `topic_alias_maximum` RECEIVED via connack packet
     pub broker_topic_alias_max: u16,
     /// Maximum number of allowed inflight `QoS1` & `QoS2` requests
@@ -159,6 +197,7 @@ pub struct MqttState {
 pub struct MqttStateBuilder {
     max_inflight: u16,
     manual_acks: bool,
+    auto_topic_aliases: bool,
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     authentication_method: Option<String>,
 }
@@ -170,6 +209,7 @@ impl MqttStateBuilder {
         Self {
             max_inflight,
             manual_acks: false,
+            auto_topic_aliases: false,
             authenticator: None,
             authentication_method: None,
         }
@@ -179,6 +219,13 @@ impl MqttStateBuilder {
     #[must_use]
     pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
         self.manual_acks = manual_acks;
+        self
+    }
+
+    /// Enable or disable automatic outgoing topic alias assignment.
+    #[must_use]
+    pub const fn auto_topic_aliases(mut self, auto_topic_aliases: bool) -> Self {
+        self.auto_topic_aliases = auto_topic_aliases;
         self
     }
 
@@ -209,6 +256,7 @@ impl MqttStateBuilder {
         MqttState::new_internal(
             self.max_inflight,
             self.manual_acks,
+            self.auto_topic_aliases,
             self.authentication_method,
             self.authenticator,
         )
@@ -255,6 +303,7 @@ impl MqttState {
     pub(crate) fn new_internal(
         max_inflight: u16,
         manual_acks: bool,
+        auto_topic_aliases: bool,
         authentication_method: Option<String>,
         authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     ) -> Self {
@@ -281,6 +330,9 @@ impl MqttState {
             manual_acks,
             incoming_topic_aliases: HashMap::new(),
             outgoing_topic_aliases: HashMap::new(),
+            auto_outgoing_topic_aliases: HashMap::new(),
+            next_auto_topic_alias: Some(1),
+            auto_topic_aliases,
             // Set via CONNACK
             broker_topic_alias_max: 0,
             max_outgoing_inflight: max_inflight,
@@ -395,6 +447,8 @@ impl MqttState {
     pub(crate) fn reset_connection_scoped_state(&mut self) {
         self.incoming_topic_aliases.clear();
         self.outgoing_topic_aliases.clear();
+        self.auto_outgoing_topic_aliases.clear();
+        self.next_auto_topic_alias = Some(1);
         self.broker_topic_alias_max = 0;
     }
 
@@ -1132,6 +1186,7 @@ impl MqttState {
         notice: Option<PublishNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
         let mut notice = notice;
+        let auto_topic_alias_action = self.apply_auto_topic_alias(&mut publish);
         self.validate_outgoing_topic_alias(&publish)?;
 
         if publish.qos != QoS::AtMostOnce {
@@ -1147,6 +1202,9 @@ impl MqttState {
                 .is_some()
             {
                 info!("Collision on packet id = {:?}", publish.pkid);
+                if let Some(action) = auto_topic_alias_action {
+                    action.restore_for_replay(&mut publish);
+                }
                 self.collision = Some(publish);
                 self.collision_notice = notice.take();
                 let event = Event::Outgoing(Outgoing::AwaitAck(pkid));
@@ -1171,6 +1229,12 @@ impl MqttState {
         );
 
         let pkid = publish.pkid;
+        if let Some(pending_auto_topic_alias) = auto_topic_alias_action
+            .as_ref()
+            .and_then(AutoTopicAliasAction::pending_alias)
+        {
+            self.record_auto_topic_alias(pending_auto_topic_alias.clone());
+        }
         self.record_outgoing_topic_alias(&publish);
 
         let event = Event::Outgoing(Outgoing::Publish(pkid));
@@ -1441,6 +1505,75 @@ impl MqttState {
             .and_then(|props| props.topic_alias)
     }
 
+    fn set_publish_topic_alias(publish: &mut Publish, alias: u16) {
+        publish
+            .properties
+            .get_or_insert_with(PublishProperties::default)
+            .topic_alias = Some(alias);
+    }
+
+    fn apply_auto_topic_alias(&self, publish: &mut Publish) -> Option<AutoTopicAliasAction> {
+        if !self.auto_topic_aliases
+            || self.broker_topic_alias_max == 0
+            || publish.topic.is_empty()
+            || Self::publish_topic_alias(publish).is_some()
+        {
+            return None;
+        }
+
+        if let Some(alias) = self
+            .auto_outgoing_topic_aliases
+            .get(&publish.topic)
+            .copied()
+        {
+            let original_topic = publish.topic.clone();
+            Self::set_publish_topic_alias(publish, alias);
+            publish.topic = Bytes::new();
+            return Some(AutoTopicAliasAction::Existing { original_topic });
+        }
+
+        let alias = self.next_available_auto_topic_alias()?;
+
+        let pending = PendingAutoTopicAlias {
+            topic: publish.topic.clone(),
+            alias,
+        };
+        Self::set_publish_topic_alias(publish, alias);
+        Some(AutoTopicAliasAction::New(pending))
+    }
+
+    fn next_available_auto_topic_alias(&self) -> Option<u16> {
+        let next_auto_topic_alias = self.next_auto_topic_alias?;
+        (next_auto_topic_alias..=self.broker_topic_alias_max)
+            .find(|&alias| !self.outgoing_topic_aliases.contains_key(&alias))
+    }
+
+    fn record_auto_topic_alias(&mut self, pending: PendingAutoTopicAlias) {
+        self.auto_outgoing_topic_aliases
+            .insert(pending.topic.clone(), pending.alias);
+        self.outgoing_topic_aliases
+            .insert(pending.alias, pending.topic);
+        self.advance_next_auto_topic_alias();
+    }
+
+    fn advance_next_auto_topic_alias(&mut self) {
+        let Some(mut alias) = self.next_auto_topic_alias else {
+            return;
+        };
+
+        while alias <= self.broker_topic_alias_max
+            && self.outgoing_topic_aliases.contains_key(&alias)
+        {
+            let Some(next_alias) = alias.checked_add(1) else {
+                self.next_auto_topic_alias = None;
+                return;
+            };
+            alias = next_alias;
+        }
+
+        self.next_auto_topic_alias = (alias <= self.broker_topic_alias_max).then_some(alias);
+    }
+
     const fn strip_publish_topic_alias(publish: &mut Publish) {
         if let Some(props) = &mut publish.properties {
             props.topic_alias = None;
@@ -1478,8 +1611,15 @@ impl MqttState {
         if !publish.topic.is_empty()
             && let Some(alias) = Self::publish_topic_alias(publish)
         {
-            self.outgoing_topic_aliases
-                .insert(alias, publish.topic.clone());
+            if let Some(previous_topic) = self
+                .outgoing_topic_aliases
+                .insert(alias, publish.topic.clone())
+                && previous_topic != publish.topic
+            {
+                self.auto_outgoing_topic_aliases.remove(&previous_topic);
+            }
+            self.auto_outgoing_topic_aliases
+                .retain(|topic, mapped_alias| *mapped_alias != alias || topic == &publish.topic);
         }
     }
 }
@@ -1508,6 +1648,9 @@ impl Clone for MqttState {
             manual_acks: self.manual_acks,
             incoming_topic_aliases: self.incoming_topic_aliases.clone(),
             outgoing_topic_aliases: self.outgoing_topic_aliases.clone(),
+            auto_outgoing_topic_aliases: self.auto_outgoing_topic_aliases.clone(),
+            next_auto_topic_alias: self.next_auto_topic_alias,
+            auto_topic_aliases: self.auto_topic_aliases,
             broker_topic_alias_max: self.broker_topic_alias_max,
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
@@ -2806,6 +2949,398 @@ mod test {
 
         assert_eq!(err, PublishNoticeError::TopicAliasReplayUnavailable(3));
         assert!(replay.topic.is_empty());
+    }
+
+    #[test]
+    fn auto_topic_aliases_are_disabled_by_default() {
+        let mut mqtt = build_mqttstate();
+        mqtt.broker_topic_alias_max = 10;
+
+        let packet = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtMostOnce))
+            .unwrap()
+            .unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"hello/world"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_aliases_send_topic_and_alias_before_alias_only_publish() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+        mqtt.broker_topic_alias_max = 10;
+
+        let first = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtMostOnce))
+            .unwrap()
+            .unwrap();
+        let second = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtMostOnce))
+            .unwrap()
+            .unwrap();
+
+        match first {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"hello/world"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    Some(1)
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+        match second {
+            Packet::Publish(publish) => {
+                assert!(publish.topic.is_empty());
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    Some(1)
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_aliases_do_nothing_when_broker_allows_no_aliases() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+
+        let packet = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtMostOnce))
+            .unwrap()
+            .unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"hello/world"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_aliases_stop_allocating_when_capacity_is_exhausted() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+        mqtt.broker_topic_alias_max = 1;
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+
+        let packet = mqtt
+            .outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"topic/two"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_aliases_preserve_manual_aliases_and_skip_used_aliases() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+        mqtt.broker_topic_alias_max = 2;
+        mqtt.outgoing_publish(build_outgoing_publish_with_alias(
+            "manual/topic",
+            QoS::AtMostOnce,
+            1,
+        ))
+        .unwrap();
+
+        let packet = mqtt
+            .outgoing_publish(Publish::new("auto/topic", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"auto/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    Some(2)
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn manual_rebind_clears_stale_auto_topic_alias_mapping() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+        mqtt.broker_topic_alias_max = 2;
+        mqtt.outgoing_publish(Publish::new("auto/topic", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish_with_alias(
+            "manual/topic",
+            QoS::AtMostOnce,
+            1,
+        ))
+        .unwrap();
+
+        let packet = mqtt
+            .outgoing_publish(Publish::new("auto/topic", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"auto/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    Some(2)
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_alias_qos_replay_uses_full_topic_after_clean() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+        mqtt.broker_topic_alias_max = 10;
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtMostOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+
+        let requests = mqtt.clean();
+
+        assert_eq!(requests.len(), 1);
+        match &requests[0] {
+            Request::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"hello/world"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            request => panic!("expected replay publish, got {request:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_alias_collision_does_not_register_unsent_alias() {
+        let mut mqtt = MqttState::builder(2).auto_topic_aliases(true).build();
+        mqtt.broker_topic_alias_max = 10;
+        mqtt.outgoing_publish(Publish::new(
+            "inflight/topic",
+            QoS::AtLeastOnce,
+            vec![],
+            None,
+        ))
+        .unwrap();
+
+        let mut collided = Publish::new("collided/topic", QoS::AtLeastOnce, vec![], None);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt.outgoing_publish_with_notice(collided, None).unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+        assert!(mqtt.collision.is_some());
+
+        let packet = mqtt
+            .outgoing_publish(Publish::new(
+                "collided/topic",
+                QoS::AtMostOnce,
+                vec![],
+                None,
+            ))
+            .unwrap()
+            .unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"collided/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    Some(2)
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_topic_alias_collision_replay_does_not_send_uncommitted_alias() {
+        let mut mqtt = MqttState::builder(2).auto_topic_aliases(true).build();
+        mqtt.broker_topic_alias_max = 10;
+        let first_notice = queue_publish_with_notice(
+            &mut mqtt,
+            Publish::new("inflight/topic", QoS::AtLeastOnce, vec![], None),
+        );
+
+        let mut collided = Publish::new("collided/topic", QoS::AtLeastOnce, vec![], None);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt.outgoing_publish_with_notice(collided, None).unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+
+        let puback = PubAck::new(1, None);
+        let packet = mqtt.handle_incoming_puback(&puback).unwrap().unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"collided/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+        assert_eq!(first_notice.wait(), Ok(PublishResult::Qos1(puback)));
+    }
+
+    #[test]
+    fn auto_topic_alias_collision_replay_restores_reused_alias_topic_after_rebind() {
+        let mut mqtt = MqttState::builder(2).auto_topic_aliases(true).build();
+        mqtt.broker_topic_alias_max = 10;
+        let first_notice = queue_publish_with_notice(
+            &mut mqtt,
+            Publish::new("aliased/topic", QoS::AtLeastOnce, vec![], None),
+        );
+
+        let mut collided = Publish::new("aliased/topic", QoS::AtLeastOnce, vec![], None);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt.outgoing_publish_with_notice(collided, None).unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+
+        mqtt.outgoing_publish(build_outgoing_publish_with_alias(
+            "manual/rebind",
+            QoS::AtMostOnce,
+            1,
+        ))
+        .unwrap();
+
+        let puback = PubAck::new(1, None);
+        let packet = mqtt.handle_incoming_puback(&puback).unwrap().unwrap();
+
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"aliased/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+        assert_eq!(first_notice.wait(), Ok(PublishResult::Qos1(puback)));
+    }
+
+    #[test]
+    fn auto_topic_aliases_exhaust_without_wrapping_at_u16_max() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .auto_topic_aliases(true)
+            .build();
+        mqtt.broker_topic_alias_max = u16::MAX;
+        mqtt.next_auto_topic_alias = Some(u16::MAX);
+
+        let last_packet = mqtt
+            .outgoing_publish(Publish::new("last/topic", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        match last_packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"last/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    Some(u16::MAX)
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
+        assert_eq!(mqtt.next_auto_topic_alias, None);
+
+        let exhausted_packet = mqtt
+            .outgoing_publish(Publish::new(
+                "exhausted/topic",
+                QoS::AtMostOnce,
+                vec![],
+                None,
+            ))
+            .unwrap()
+            .unwrap();
+
+        match exhausted_packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"exhausted/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
     }
 
     #[test]

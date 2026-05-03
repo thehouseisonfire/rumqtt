@@ -258,6 +258,7 @@ impl EventLoop {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let manual_acks = options.manual_acks;
+        let auto_topic_aliases = options.auto_topic_aliases();
 
         let authenticator = options.authenticator();
         let authentication_method = options.authentication_method();
@@ -267,6 +268,7 @@ impl EventLoop {
             state: MqttState::new_internal(
                 inflight_limit,
                 manual_acks,
+                auto_topic_aliases,
                 authentication_method,
                 authenticator,
             ),
@@ -1091,6 +1093,7 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             false,
+            options.auto_topic_aliases(),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1115,6 +1118,7 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             false,
+            options.auto_topic_aliases(),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1141,6 +1145,7 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             false,
+            options.auto_topic_aliases(),
             stale_authentication_method.map(str::to_owned),
             options.auth_manager(),
         );
@@ -1168,6 +1173,7 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             false,
+            options.auto_topic_aliases(),
             options.authentication_method(),
             options.auth_manager(),
         );
