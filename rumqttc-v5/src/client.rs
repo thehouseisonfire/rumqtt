@@ -181,6 +181,16 @@ impl ManualAck {
 ///
 /// **NOTE**: The `EventLoop` must be regularly polled in order to send, receive and process packets
 /// from the broker, i.e. move ahead.
+///
+/// Bounded clients apply backpressure through the client request channel. If the
+/// same task that drives [`EventLoop::poll`](crate::EventLoop::poll) awaits
+/// request-sending APIs such as [`publish`](Self::publish),
+/// [`subscribe`](Self::subscribe), [`unsubscribe`](Self::unsubscribe), or
+/// [`ack`](Self::ack) while that channel is full, it can self-block: the send is
+/// waiting for the event loop to read a request, but the event loop cannot make
+/// progress until that same task polls it again. For bounded async clients,
+/// prefer driving the event loop in a dedicated task. Use [`try_publish`](Self::try_publish)
+/// when dropping outgoing publishes under overload is intended.
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
     request_tx: RequestSender,
@@ -676,6 +686,10 @@ impl AsyncClient {
 
     /// Attempts to send a MQTT Publish with properties to the `EventLoop`.
     ///
+    /// This is the non-blocking publish API for overload policies that may drop
+    /// outgoing publishes. If the bounded request channel is full, this returns
+    /// an error immediately and the publish has not been queued.
+    ///
     /// # Errors
     ///
     /// Returns an error if the topic or topic alias usage is invalid, or if
@@ -696,6 +710,10 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Publish with properties to the `EventLoop` and returns a tracked notice.
+    ///
+    /// This is the non-blocking tracked publish API for overload policies that
+    /// may drop outgoing publishes. If the bounded request channel is full, this
+    /// returns an error immediately and the publish has not been queued.
     ///
     /// # Errors
     ///
@@ -718,6 +736,10 @@ impl AsyncClient {
 
     /// Attempts to send a MQTT Publish to the `EventLoop`.
     ///
+    /// This is the non-blocking publish API for overload policies that may drop
+    /// outgoing publishes. If the bounded request channel is full, this returns
+    /// an error immediately and the publish has not been queued.
+    ///
     /// # Errors
     ///
     /// Returns an error if the topic or topic alias usage is invalid, or if
@@ -737,6 +759,10 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT Publish to the `EventLoop` and returns a tracked notice.
+    ///
+    /// This is the non-blocking tracked publish API for overload policies that
+    /// may drop outgoing publishes. If the bounded request channel is full, this
+    /// returns an error immediately and the publish has not been queued.
     ///
     /// # Errors
     ///
