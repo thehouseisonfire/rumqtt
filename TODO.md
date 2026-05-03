@@ -90,19 +90,35 @@ Expected scheduling behavior:
 
 - A full QoS 1/2 publish inflight window blocks only additional outbound QoS 1/2 `PUBLISH` packets.
 - Protocol-progress packets must be able to advance while publish inflight is full.
-- Application control packets should be able to advance while publish inflight is full, subject to terminal
-  disconnect and any explicit API ordering guarantees.
+- Application control packets may pass an earlier QoS 1/2 `PUBLISH` only when that publish is not currently sendable
+  because of publish inflight / Receive Maximum quota, subject to terminal disconnect and any explicit API ordering
+  guarantees. They should not generally preempt earlier sendable application publishes.
 - `DISCONNECT` must remain terminal once sent.
 - Graceful disconnect must drain the selected barrier set before sending MQTT `DISCONNECT`.
 - Immediate disconnect must use a narrow shutdown/control path and must not wait for unresolved publish handshakes.
 - A timeout-based graceful disconnect must start its timeout when the event loop observes the disconnect barrier and
   starts the drain phase, not when the client API merely accepts/enqueues the request.
 
+The scheduler should be an oldest-eligible scheduler with packet classes, not a pure priority scheduler:
+
+```text
+1. If terminal state has already sent MQTT DISCONNECT, send nothing else.
+2. If immediate shutdown is requested, use the immediate shutdown path.
+3. If a protocol-error DISCONNECT is pending and can be sent, send it terminally.
+4. Drain protocol-progress packets required to keep MQTT state valid.
+5. Among normal application requests, send the oldest scheduler-eligible request.
+6. If the oldest application request is a QoS 1/2 PUBLISH blocked only by publish quota, later non-PUBLISH control
+   traffic may pass it.
+7. Later publishes, including QoS 0 publishes, do not pass earlier publishes by default.
+8. Once a graceful-disconnect barrier is active and its drain set is empty, send MQTT DISCONNECT terminally.
+```
+
 ## Ordering model
 
 The refactor must explicitly define which ordering guarantees are preserved:
 
 - Preserve FIFO for outbound application publishes by default.
+- Preserve normal application FIFO when the earlier request is currently scheduler-eligible.
 - Do not let later QoS 0 publishes overtake earlier blocked QoS 1/2 publishes by default. MQTT 5 Receive Maximum does
   not gate QoS 0 `PUBLISH`, so bypass would be protocol-legal, but it changes API FIFO semantics and
   broker-observed publish order.
@@ -119,12 +135,21 @@ fragile unless enqueueing is centralized in the state machine. A more robust app
 publish-flow-controlled work, protocol-progress work, and application control work, with one scheduler responsible for
 selecting the next packet.
 
+Packet identifier allocation must not leak across unsent queues:
+
+- Unsent application work should be classified at admission, but packet identifiers should be allocated only when the
+  scheduler selects a packet for actual send.
+- State for a packet identifier should be committed only when the packet is about to be written.
+- Already-sent packets are different: retransmission, acknowledgement, and QoS 2 continuation state must retain the
+  committed packet identifier across retries and session recovery.
+
 ## Recommended policy
 
-- Use class-based scheduling, not global FIFO wire scheduling.
+- Use oldest-eligible class-based scheduling, not global FIFO wire scheduling and not blunt priority scheduling.
 - Preserve FIFO within outbound application publishes by default.
 - Do not let QoS 0 publishes bypass earlier blocked QoS 1/2 publishes by default.
-- Let non-`PUBLISH` protocol/control packets pass blocked QoS 1/2 publishes.
+- Let non-`PUBLISH` protocol/control packets pass QoS 1/2 publishes that are blocked only by publish quota.
+- Do not let control packets generally preempt earlier sendable application publishes.
 - Preserve MQTT-required ordering for `PUBACK`, `PUBREC`, and `PUBREL`.
 - Preserve tracked `SUBSCRIBE` / `UNSUBSCRIBE` completion semantics.
 - Make `disconnect_with_timeout()` a graceful drain barrier whose timeout starts when the event loop observes the
@@ -137,7 +162,7 @@ Short model:
 ```text
 Publish lane: FIFO, flow-controlled.
 Protocol-progress lane: always allowed when protocol-valid.
-Control lane: allowed through publish flow control.
+Control lane: allowed through publish flow control only when earlier publishes are quota-blocked.
 QoS 0: legal to bypass Receive Maximum, but do not bypass by default.
 Graceful disconnect: barrier + drain + DISCONNECT.
 Immediate disconnect: dedicated shutdown path.
@@ -240,16 +265,26 @@ The scheduler policy should be shared for consistency across users, tests, and m
    - Full receive maximum must block further QoS 1/2 `PUBLISH`.
    - Full receive maximum must not block `SUBSCRIBE`, `UNSUBSCRIBE`, `PINGREQ`, `AUTH`, `DISCONNECT`, `PUBACK`,
      `PUBREC`, `PUBREL`, or `PUBCOMP` once those packets are observable to the event loop.
+   - A sendable QoS 1/2 `PUBLISH` before a later `SUBSCRIBE` is sent before the `SUBSCRIBE`.
+   - A quota-blocked QoS 1/2 `PUBLISH` before a later `SUBSCRIBE` allows the `SUBSCRIBE` to be sent.
+   - A quota-blocked QoS 1/2 `PUBLISH` before a later QoS 0 `PUBLISH` does not let the QoS 0 `PUBLISH` bypass it by
+     default.
    - `PUBACK`, `PUBREC`, and `PUBREL` ordering rules are preserved.
+   - `PUBREL` generated after an inbound `PUBREC` is sent even when the outbound publish window is full.
+   - Manual acknowledgement requests are not held behind outbound publish inflight limits.
    - `DISCONNECT` remains terminal; no packet is sent after it.
    - Graceful disconnect drains the intended barrier set before sending `DISCONNECT`.
    - Immediate disconnect does not wait for unresolved publish state.
+   - Blocked unsent publishes do not reserve packet identifiers in a way that blocks later `SUBSCRIBE` or
+     `UNSUBSCRIBE` requests.
 2. Centralize request classification:
    - Identify whether a request is QoS 1/2 publish-flow-controlled, QoS 0 publish, protocol-progress, or control.
    - Ensure manual ack requests are not accidentally held behind publish inflight limits.
 3. Split queueing from sending:
    - Request channel admission may remain a bounded API backpressure mechanism.
    - Event-loop scheduling should not equate a full publish inflight window with "do not inspect or send anything".
+   - Allocate packet identifiers when a packet is selected for send, not when unsent application work is first
+     admitted.
 4. Preserve retransmission and reconnect behavior:
    - `clean()` must retain the right pending order for unacknowledged publishes and QoS 2 continuations.
    - Do not replay inbound ack requests from a previous connection in a way that confuses the broker.
