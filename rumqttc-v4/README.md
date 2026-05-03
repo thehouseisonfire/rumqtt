@@ -109,6 +109,16 @@ out side the library and `Eventloop` is accessible, users can
 - Blocking inside the `connection.iter()`/`eventloop.poll()` loop will block
   connection progress.
 
+- Bounded clients apply backpressure through the client request channel. If the
+  same task that drives `eventloop.poll()` awaits `publish()`, `subscribe()`,
+  `unsubscribe()`, `ack()`, or another request-sending API while that bounded
+  channel is full, it can self-block: the request is waiting for the event loop
+  to read from the channel, but the event loop cannot make progress until that
+  task polls it again. For bounded async clients, prefer driving
+  `eventloop.poll()` in a dedicated task and dispatch application work to other
+  tasks. When dropping outgoing publishes under overload is intended, use
+  `try_publish()` and treat a full-channel error as the drop signal.
+
 - Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown.
   The event loop first flushes previously accepted `QoS` 0 publishes and drains
   previously accepted `QoS` 1/ `QoS` 2 publish and tracked subscribe/unsubscribe
