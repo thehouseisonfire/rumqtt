@@ -259,6 +259,7 @@ impl EventLoop {
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let manual_acks = options.manual_acks;
         let auto_topic_aliases = options.auto_topic_aliases();
+        let topic_alias_policy = options.topic_alias_policy();
 
         let authenticator = options.authenticator();
         let authentication_method = options.authentication_method();
@@ -269,6 +270,7 @@ impl EventLoop {
                 inflight_limit,
                 manual_acks,
                 auto_topic_aliases,
+                topic_alias_policy,
                 authentication_method,
                 authenticator,
             ),
@@ -1094,6 +1096,7 @@ mod tests {
             10,
             false,
             options.auto_topic_aliases(),
+            options.topic_alias_policy(),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1119,6 +1122,7 @@ mod tests {
             10,
             false,
             options.auto_topic_aliases(),
+            options.topic_alias_policy(),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1146,6 +1150,7 @@ mod tests {
             10,
             false,
             options.auto_topic_aliases(),
+            options.topic_alias_policy(),
             stale_authentication_method.map(str::to_owned),
             options.auth_manager(),
         );
@@ -1174,6 +1179,7 @@ mod tests {
             10,
             false,
             options.auto_topic_aliases(),
+            options.topic_alias_policy(),
             options.authentication_method(),
             options.auth_manager(),
         );

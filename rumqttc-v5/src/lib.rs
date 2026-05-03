@@ -68,6 +68,16 @@ pub use rumqttc_core::default_socket_connect;
 pub use state::{MqttState, MqttStateBuilder, StateError};
 pub use transport::Transport;
 
+/// Policy used for automatic MQTT 5 client-side topic alias assignment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TopicAliasPolicy {
+    /// Assign aliases monotonically until the broker's Topic Alias Maximum is reached.
+    #[default]
+    Monotonic,
+    /// Recycle automatically assigned aliases using least-recently-used eviction.
+    Lru,
+}
+
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use crate::tls::Error as TlsError;
 
@@ -631,6 +641,8 @@ pub struct MqttOptions {
     connect_properties: Option<ConnectProperties>,
     /// Automatically assign outgoing MQTT 5 topic aliases when the broker supports them.
     auto_topic_aliases: bool,
+    /// Policy used when automatically assigning outgoing MQTT 5 topic aliases.
+    topic_alias_policy: TopicAliasPolicy,
     /// If set to `true` MQTT acknowledgements are not sent automatically.
     /// Every incoming publish packet must be acknowledged manually with either
     /// `client.ack(...)` or the `prepare_ack(...)` + `manual_ack(...)` flow.
@@ -679,6 +691,7 @@ impl MqttOptions {
             incoming_packet_size_limit: IncomingPacketSizeLimit::Default,
             connect_properties: None,
             auto_topic_aliases: false,
+            topic_alias_policy: TopicAliasPolicy::default(),
             manual_acks: false,
             network_options: NetworkOptions::new(),
             #[cfg(feature = "proxy")]
@@ -1293,6 +1306,23 @@ impl MqttOptions {
         self.auto_topic_aliases
     }
 
+    /// Set the policy used for automatic outgoing topic alias assignment.
+    ///
+    /// This only has an effect when automatic topic aliases are enabled with
+    /// [`MqttOptions::set_auto_topic_aliases`].
+    pub const fn set_topic_alias_policy(
+        &mut self,
+        topic_alias_policy: TopicAliasPolicy,
+    ) -> &mut Self {
+        self.topic_alias_policy = topic_alias_policy;
+        self
+    }
+
+    /// Returns the policy used for automatic outgoing topic alias assignment.
+    pub const fn topic_alias_policy(&self) -> TopicAliasPolicy {
+        self.topic_alias_policy
+    }
+
     /// set request response info on connection properties
     pub fn set_request_response_info(&mut self, request_response_info: Option<u8>) -> &mut Self {
         if let Some(conn_props) = &mut self.connect_properties {
@@ -1727,6 +1757,13 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Set the policy used for automatic outgoing topic alias assignment.
+    #[must_use]
+    pub const fn topic_alias_policy(mut self, topic_alias_policy: TopicAliasPolicy) -> Self {
+        self.options.set_topic_alias_policy(topic_alias_policy);
+        self
+    }
+
     /// Set request response info on connection properties.
     #[must_use]
     pub fn request_response_info(mut self, request_response_info: Option<u8>) -> Self {
@@ -2023,6 +2060,7 @@ impl Debug for MqttOptions {
             .field("last_will", &self.last_will)
             .field("connect_timeout", &self.connect_timeout)
             .field("auto_topic_aliases", &self.auto_topic_aliases)
+            .field("topic_alias_policy", &self.topic_alias_policy)
             .field("manual_acks", &self.manual_acks)
             .field("connect properties", &self.connect_properties)
             .finish_non_exhaustive()
@@ -2693,6 +2731,7 @@ mod test {
             .set_authentication_method(Some("SCRAM-SHA-256".to_owned()))
             .set_authentication_data(Some(Bytes::from_static(b"auth")))
             .set_auto_topic_aliases(true)
+            .set_topic_alias_policy(TopicAliasPolicy::Lru)
             .set_manual_acks(true)
             .set_outgoing_inflight_upper_limit(4);
 
@@ -2715,6 +2754,7 @@ mod test {
             .authentication_method(Some("SCRAM-SHA-256".to_owned()))
             .authentication_data(Some(Bytes::from_static(b"auth")))
             .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Lru)
             .manual_acks(true)
             .outgoing_inflight_upper_limit(4)
             .build();
@@ -2737,6 +2777,7 @@ mod test {
         assert_eq!(actual.connect_timeout(), expected.connect_timeout());
         assert_eq!(actual.connect_properties(), expected.connect_properties());
         assert_eq!(actual.auto_topic_aliases(), expected.auto_topic_aliases());
+        assert_eq!(actual.topic_alias_policy(), expected.topic_alias_policy());
         assert_eq!(actual.manual_acks(), expected.manual_acks());
         assert_eq!(
             actual.get_outgoing_inflight_upper_limit(),

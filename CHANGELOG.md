@@ -2,6 +2,7 @@
 
 ### Added
 - `rumqttc` v5: Add opt-in automatic client-side topic alias management via `MqttOptions::set_auto_topic_aliases(...)` / builder `.auto_topic_aliases(...)`, assigning broker-supported aliases immediately before publish while preserving reconnect and replay safety.
+- `rumqttc` v5: Add `TopicAliasPolicy::Lru` for opt-in automatic topic alias recycling once broker-supported aliases are exhausted.
 - `rumqttc` v5: Add first-class MQTT 5 enhanced-authentication lifecycle events and tracked re-authentication notices. `Event::Auth(AuthEvent)` reports authentication start/continue/success/failure, and `reauth_tracked` / `try_reauth_tracked` return `AuthNotice` handles that resolve to structured `AuthOutcome` / `AuthNoticeError` results.
 - `rumqttc` v5: Add the context-aware `Authenticator` API for enhanced authentication callbacks, including exchange kind (`InitialConnect` vs `Reauthentication`) and explicit success/failure notifications.
 - `rumqttc` v5: Add `MqttState::set_authentication_method()` for low-level MQTT 5 enhanced-authentication users that process AUTH packets through `MqttState` directly.

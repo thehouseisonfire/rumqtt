@@ -12,7 +12,7 @@ use crate::notice::{
 };
 use crate::{
     AuthContext, AuthError, AuthExchangeKind, Authenticator, NoticeFailureReason,
-    PublishNoticeError,
+    PublishNoticeError, TopicAliasPolicy,
 };
 
 use super::{Event, Incoming, Outgoing, Request};
@@ -27,11 +27,12 @@ use std::{io, time::Instant};
 struct PendingAutoTopicAlias {
     topic: Bytes,
     alias: u16,
+    previous_topic: Option<Bytes>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AutoTopicAliasAction {
-    Existing { original_topic: Bytes },
+    Existing { original_topic: Bytes, alias: u16 },
     New(PendingAutoTopicAlias),
 }
 
@@ -43,9 +44,16 @@ impl AutoTopicAliasAction {
         }
     }
 
+    const fn existing_alias(&self) -> Option<u16> {
+        match self {
+            Self::Existing { alias, .. } => Some(*alias),
+            Self::New(_) => None,
+        }
+    }
+
     fn restore_for_replay(self, publish: &mut Publish) {
         match self {
-            Self::Existing { original_topic } => {
+            Self::Existing { original_topic, .. } => {
                 publish.topic = original_topic;
                 MqttState::strip_publish_topic_alias(publish);
             }
@@ -176,6 +184,8 @@ pub struct MqttState {
     auto_outgoing_topic_aliases: HashMap<Bytes, u16>,
     next_auto_topic_alias: Option<u16>,
     auto_topic_aliases: bool,
+    auto_topic_alias_policy: TopicAliasPolicy,
+    auto_topic_alias_lru: VecDeque<u16>,
     /// `topic_alias_maximum` RECEIVED via connack packet
     pub broker_topic_alias_max: u16,
     /// Maximum number of allowed inflight `QoS1` & `QoS2` requests
@@ -198,6 +208,7 @@ pub struct MqttStateBuilder {
     max_inflight: u16,
     manual_acks: bool,
     auto_topic_aliases: bool,
+    auto_topic_alias_policy: TopicAliasPolicy,
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     authentication_method: Option<String>,
 }
@@ -210,6 +221,7 @@ impl MqttStateBuilder {
             max_inflight,
             manual_acks: false,
             auto_topic_aliases: false,
+            auto_topic_alias_policy: TopicAliasPolicy::Monotonic,
             authenticator: None,
             authentication_method: None,
         }
@@ -226,6 +238,13 @@ impl MqttStateBuilder {
     #[must_use]
     pub const fn auto_topic_aliases(mut self, auto_topic_aliases: bool) -> Self {
         self.auto_topic_aliases = auto_topic_aliases;
+        self
+    }
+
+    /// Set the policy used for automatic outgoing topic alias assignment.
+    #[must_use]
+    pub const fn topic_alias_policy(mut self, auto_topic_alias_policy: TopicAliasPolicy) -> Self {
+        self.auto_topic_alias_policy = auto_topic_alias_policy;
         self
     }
 
@@ -257,6 +276,7 @@ impl MqttStateBuilder {
             self.max_inflight,
             self.manual_acks,
             self.auto_topic_aliases,
+            self.auto_topic_alias_policy,
             self.authentication_method,
             self.authenticator,
         )
@@ -304,6 +324,7 @@ impl MqttState {
         max_inflight: u16,
         manual_acks: bool,
         auto_topic_aliases: bool,
+        auto_topic_alias_policy: TopicAliasPolicy,
         authentication_method: Option<String>,
         authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     ) -> Self {
@@ -333,6 +354,8 @@ impl MqttState {
             auto_outgoing_topic_aliases: HashMap::new(),
             next_auto_topic_alias: Some(1),
             auto_topic_aliases,
+            auto_topic_alias_policy,
+            auto_topic_alias_lru: VecDeque::new(),
             // Set via CONNACK
             broker_topic_alias_max: 0,
             max_outgoing_inflight: max_inflight,
@@ -449,6 +472,7 @@ impl MqttState {
         self.outgoing_topic_aliases.clear();
         self.auto_outgoing_topic_aliases.clear();
         self.next_auto_topic_alias = Some(1);
+        self.auto_topic_alias_lru.clear();
         self.broker_topic_alias_max = 0;
     }
 
@@ -1234,6 +1258,11 @@ impl MqttState {
             .and_then(AutoTopicAliasAction::pending_alias)
         {
             self.record_auto_topic_alias(pending_auto_topic_alias.clone());
+        } else if let Some(alias) = auto_topic_alias_action
+            .as_ref()
+            .and_then(AutoTopicAliasAction::existing_alias)
+        {
+            self.record_auto_topic_alias_use(alias);
         }
         self.record_outgoing_topic_alias(&publish);
 
@@ -1529,17 +1558,33 @@ impl MqttState {
             let original_topic = publish.topic.clone();
             Self::set_publish_topic_alias(publish, alias);
             publish.topic = Bytes::new();
-            return Some(AutoTopicAliasAction::Existing { original_topic });
+            return Some(AutoTopicAliasAction::Existing {
+                original_topic,
+                alias,
+            });
         }
 
-        let alias = self.next_available_auto_topic_alias()?;
+        let (alias, previous_topic) = self.next_auto_topic_alias_assignment()?;
 
         let pending = PendingAutoTopicAlias {
             topic: publish.topic.clone(),
             alias,
+            previous_topic,
         };
         Self::set_publish_topic_alias(publish, alias);
         Some(AutoTopicAliasAction::New(pending))
+    }
+
+    fn next_auto_topic_alias_assignment(&self) -> Option<(u16, Option<Bytes>)> {
+        if let Some(alias) = self.next_available_auto_topic_alias() {
+            return Some((alias, None));
+        }
+
+        if self.auto_topic_alias_policy != TopicAliasPolicy::Lru {
+            return None;
+        }
+
+        self.least_recent_auto_topic_alias()
     }
 
     fn next_available_auto_topic_alias(&self) -> Option<u16> {
@@ -1549,11 +1594,46 @@ impl MqttState {
     }
 
     fn record_auto_topic_alias(&mut self, pending: PendingAutoTopicAlias) {
+        if let Some(previous_topic) = pending.previous_topic {
+            self.auto_outgoing_topic_aliases.remove(&previous_topic);
+        }
         self.auto_outgoing_topic_aliases
             .insert(pending.topic.clone(), pending.alias);
         self.outgoing_topic_aliases
-            .insert(pending.alias, pending.topic);
+            .insert(pending.alias, pending.topic.clone());
+        self.record_auto_topic_alias_use(pending.alias);
         self.advance_next_auto_topic_alias();
+    }
+
+    fn record_auto_topic_alias_use(&mut self, alias: u16) {
+        if self.auto_topic_alias_policy != TopicAliasPolicy::Lru {
+            return;
+        }
+
+        self.auto_topic_alias_lru.retain(|entry| *entry != alias);
+        self.auto_topic_alias_lru.push_back(alias);
+    }
+
+    fn least_recent_auto_topic_alias(&self) -> Option<(u16, Option<Bytes>)> {
+        for &alias in &self.auto_topic_alias_lru {
+            if alias == 0 || alias > self.broker_topic_alias_max {
+                continue;
+            }
+
+            let Some(topic) = self.outgoing_topic_aliases.get(&alias) else {
+                continue;
+            };
+
+            if self
+                .auto_outgoing_topic_aliases
+                .get(topic)
+                .is_some_and(|mapped_alias| *mapped_alias == alias)
+            {
+                return Some((alias, Some(topic.clone())));
+            }
+        }
+
+        None
     }
 
     fn advance_next_auto_topic_alias(&mut self) {
@@ -1617,6 +1697,7 @@ impl MqttState {
                 && previous_topic != publish.topic
             {
                 self.auto_outgoing_topic_aliases.remove(&previous_topic);
+                self.auto_topic_alias_lru.retain(|entry| *entry != alias);
             }
             self.auto_outgoing_topic_aliases
                 .retain(|topic, mapped_alias| *mapped_alias != alias || topic == &publish.topic);
@@ -1651,6 +1732,8 @@ impl Clone for MqttState {
             auto_outgoing_topic_aliases: self.auto_outgoing_topic_aliases.clone(),
             next_auto_topic_alias: self.next_auto_topic_alias,
             auto_topic_aliases: self.auto_topic_aliases,
+            auto_topic_alias_policy: self.auto_topic_alias_policy,
+            auto_topic_alias_lru: self.auto_topic_alias_lru.clone(),
             broker_topic_alias_max: self.broker_topic_alias_max,
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
@@ -1666,12 +1749,12 @@ mod test {
     use super::mqttbytes::*;
     use super::{Event, Incoming, Outgoing, Request};
     use super::{MqttState, StateError};
-    use crate::NoticeFailureReason;
     use crate::notice::{
         AuthNoticeError, AuthNoticeTx, PublishNotice, PublishNoticeError, PublishNoticeTx,
         PublishResult, SubscribeNoticeError, SubscribeNoticeTx, UnsubscribeNoticeError,
         UnsubscribeNoticeTx,
     };
+    use crate::{NoticeFailureReason, TopicAliasPolicy};
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
@@ -1715,6 +1798,31 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::builder(u16::MAX).build()
+    }
+
+    fn build_lru_auto_alias_mqttstate(max_inflight: u16, broker_topic_alias_max: u16) -> MqttState {
+        let mut mqtt = MqttState::builder(max_inflight)
+            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Lru)
+            .build();
+        mqtt.broker_topic_alias_max = broker_topic_alias_max;
+        mqtt
+    }
+
+    fn assert_publish(packet: Packet, topic: &'static [u8], alias: Option<u16>) {
+        match packet {
+            Packet::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(topic));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    alias
+                );
+            }
+            packet => panic!("expected publish, got {packet:?}"),
+        }
     }
 
     fn build_auth_mqttstate(authentication_method: Option<&str>) -> MqttState {
@@ -3341,6 +3449,207 @@ mod test {
             }
             packet => panic!("expected publish, got {packet:?}"),
         }
+    }
+
+    #[test]
+    fn lru_auto_topic_aliases_evict_least_recent_topic() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, 2);
+
+        let first = mqtt
+            .outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        let second = mqtt
+            .outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        let third = mqtt
+            .outgoing_publish(Publish::new("topic/three", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        assert_publish(first, b"topic/one", Some(1));
+        assert_publish(second, b"topic/two", Some(2));
+        assert_publish(third, b"topic/three", Some(1));
+
+        let packet = mqtt
+            .outgoing_publish(Publish::new("topic/three", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        assert_publish(packet, b"", Some(1));
+    }
+
+    #[test]
+    fn lru_auto_topic_aliases_refresh_existing_topic_recency() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, 2);
+
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+        mqtt.outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+        let refresh = mqtt
+            .outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        let evict = mqtt
+            .outgoing_publish(Publish::new("topic/three", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        assert_publish(refresh, b"", Some(1));
+        assert_publish(evict, b"topic/three", Some(2));
+    }
+
+    #[test]
+    fn lru_auto_topic_aliases_rebound_alias_sends_full_topic_then_alias_only() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, 1);
+
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+        let rebound = mqtt
+            .outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        let alias_only = mqtt
+            .outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        assert_publish(rebound, b"topic/two", Some(1));
+        assert_publish(alias_only, b"", Some(1));
+    }
+
+    #[test]
+    fn lru_auto_topic_aliases_do_not_evict_manual_aliases() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, 2);
+        mqtt.outgoing_publish(build_outgoing_publish_with_alias(
+            "manual/topic",
+            QoS::AtMostOnce,
+            1,
+        ))
+        .unwrap();
+
+        let first_auto = mqtt
+            .outgoing_publish(Publish::new("auto/one", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        let second_auto = mqtt
+            .outgoing_publish(Publish::new("auto/two", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        assert_publish(first_auto, b"auto/one", Some(2));
+        assert_publish(second_auto, b"auto/two", Some(2));
+        assert_eq!(
+            mqtt.outgoing_topic_aliases.get(&1),
+            Some(&Bytes::from_static(b"manual/topic"))
+        );
+    }
+
+    #[test]
+    fn lru_auto_topic_aliases_reset_on_reconnect() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, 1);
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+
+        mqtt.reset_connection_scoped_state();
+        mqtt.broker_topic_alias_max = 1;
+        let packet = mqtt
+            .outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        assert_publish(packet, b"topic/one", Some(1));
+    }
+
+    #[test]
+    fn lru_auto_topic_alias_qos_replay_after_eviction_uses_full_topic() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, 1);
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtLeastOnce, vec![], None))
+            .unwrap();
+        mqtt.outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+
+        let requests = mqtt.clean();
+
+        assert_eq!(requests.len(), 1);
+        match &requests[0] {
+            Request::Publish(publish) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"topic/one"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.topic_alias),
+                    None
+                );
+            }
+            request => panic!("expected replay publish, got {request:?}"),
+        }
+    }
+
+    #[test]
+    fn lru_auto_topic_alias_collision_during_rebind_does_not_commit_rebind() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(2, 1);
+        mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtLeastOnce, vec![], None))
+            .unwrap();
+
+        let mut collided = Publish::new("topic/two", QoS::AtLeastOnce, vec![], None);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt.outgoing_publish_with_notice(collided, None).unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+
+        let packet = mqtt
+            .outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        assert_publish(packet, b"", Some(1));
+    }
+
+    #[test]
+    fn lru_auto_topic_alias_collision_replay_after_later_rebind_uses_original_topic() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(2, 1);
+        let first_notice = queue_publish_with_notice(
+            &mut mqtt,
+            Publish::new("topic/one", QoS::AtLeastOnce, vec![], None),
+        );
+
+        let mut collided = Publish::new("topic/one", QoS::AtLeastOnce, vec![], None);
+        collided.pkid = 1;
+        let (packet, flush_notice) = mqtt.outgoing_publish_with_notice(collided, None).unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+
+        mqtt.outgoing_publish(Publish::new("topic/two", QoS::AtMostOnce, vec![], None))
+            .unwrap();
+
+        let puback = PubAck::new(1, None);
+        let packet = mqtt.handle_incoming_puback(&puback).unwrap().unwrap();
+
+        assert_publish(packet, b"topic/one", None);
+        assert_eq!(first_notice.wait(), Ok(PublishResult::Qos1(puback)));
+    }
+
+    #[test]
+    fn lru_auto_topic_aliases_do_not_wrap_at_u16_max() {
+        let mut mqtt = build_lru_auto_alias_mqttstate(u16::MAX, u16::MAX);
+        mqtt.next_auto_topic_alias = Some(u16::MAX);
+
+        let last_packet = mqtt
+            .outgoing_publish(Publish::new("last/topic", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+        let rebound_packet = mqtt
+            .outgoing_publish(Publish::new("rebound/topic", QoS::AtMostOnce, vec![], None))
+            .unwrap()
+            .unwrap();
+
+        assert_publish(last_packet, b"last/topic", Some(u16::MAX));
+        assert_eq!(mqtt.next_auto_topic_alias, None);
+        assert_publish(rebound_packet, b"rebound/topic", Some(u16::MAX));
     }
 
     #[test]
