@@ -6,7 +6,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}";
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
           cargo hack clippy --fix --allow-dirty
           --each-feature
@@ -26,7 +26,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}";
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           cargo hack
           --each-feature
           --exclude-all-features
@@ -45,7 +45,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}";
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
 
           cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-ring";
           cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring";
@@ -62,7 +62,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}";
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
 
           if cargo check -p rumqttc-v4-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then
             echo "ERROR - rumqttc-v4-next rustls provider conflict guard failed";
