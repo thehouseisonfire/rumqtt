@@ -2,6 +2,7 @@
 name = "rumqttc-v4-next"
 version = "0.32.0"
 publish = true
+autoexamples = false
 description = "Explicit MQTT 3.1.1 client crate in the rumqttc-next family"
 keywords = ["mqtt", "iot", "coap", "http"]
 categories = ["network-programming"]
@@ -73,6 +74,30 @@ rcgen = "0.14"
 criterion = "0.8.2"
 
 [[example]]
+name = "async_manual_acks"
+path = "examples/async_manual_acks.rs"
+
+[[example]]
+name = "asyncpubsub"
+path = "examples/asyncpubsub.rs"
+
+[[example]]
+name = "auth_v4"
+path = "examples/auth.rs"
+
+[[example]]
+name = "serde"
+path = "examples/serde.rs"
+
+[[example]]
+name = "syncpubsub"
+path = "examples/syncpubsub.rs"
+
+[[example]]
+name = "syncrecv"
+path = "examples/syncrecv.rs"
+
+[[example]]
 name = "tls"
 path = "examples/tls.rs"
 required-features = ["use-rustls"]
@@ -86,6 +111,14 @@ required-features = ["use-native-tls"]
 name = "tls2"
 path = "examples/tls2.rs"
 required-features = ["use-rustls"]
+
+[[example]]
+name = "tracked_notices"
+path = "examples/tracked_notices.rs"
+
+[[example]]
+name = "unbounded_v4"
+path = "examples/unbounded.rs"
 
 [[example]]
 name = "websocket"

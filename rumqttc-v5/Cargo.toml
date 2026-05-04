@@ -2,6 +2,7 @@
 name = "rumqttc-v5-next"
 version = "0.32.0"
 publish = true
+autoexamples = false
 description = "Explicit MQTT 5 client crate in the rumqttc-next family"
 keywords = ["mqtt", "iot", "coap", "http"]
 categories = ["network-programming"]
@@ -86,6 +87,42 @@ path = "examples/async_auth_scram.rs"
 required-features = ["auth-scram"]
 
 [[example]]
+name = "async_manual_acks_v5"
+path = "examples/async_manual_acks_v5.rs"
+
+[[example]]
+name = "asyncpubsub_v5"
+path = "examples/asyncpubsub_v5.rs"
+
+[[example]]
+name = "auth_v5"
+path = "examples/auth.rs"
+
+[[example]]
+name = "subscription_ids"
+path = "examples/subscription_ids.rs"
+
+[[example]]
 name = "sync_auth_scram"
 path = "examples/sync_auth_scram.rs"
 required-features = ["auth-scram"]
+
+[[example]]
+name = "syncpubsub_v5"
+path = "examples/syncpubsub_v5.rs"
+
+[[example]]
+name = "syncrecv_v5"
+path = "examples/syncrecv_v5.rs"
+
+[[example]]
+name = "topic_alias"
+path = "examples/topic_alias.rs"
+
+[[example]]
+name = "tracked_notices_v5"
+path = "examples/tracked_notices_v5.rs"
+
+[[example]]
+name = "unbounded_v5"
+path = "examples/unbounded.rs"
