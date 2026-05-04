@@ -136,7 +136,7 @@ pub const fn qos(num: u8) -> Result<QoS, Error> {
 
 /// Packet type from a byte
 ///
-/// ```ignore
+/// ```text
 ///          7                          3                          0
 ///          +--------------------------+--------------------------+
 /// byte 1   | MQTT Control Packet Type | Flags for each type      |
