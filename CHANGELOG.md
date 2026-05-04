@@ -2,6 +2,18 @@
 
 ### Added
 ### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+---
+
+## [rumqttc-next 0.33.0] - 03-05-2026
+
+
+### Added
+### Changed
 - `rumqttc` v4/v5: Replace broad request-channel blocking under publish flow-control pressure with protocol-aware outbound scheduling. QoS 1/ QoS 2 publishes preserve publish ordering and wait for inflight quota plus packet-id availability, QoS 0 publishes do not bypass earlier blocked publishes, and non-`PUBLISH` control packets may pass blocked QoS 1/ QoS 2 publishes when protocol-valid.
 - `rumqttc` v4/v5: Move `disconnect_now()` / `try_disconnect_now()` to a dedicated immediate shutdown channel so immediate disconnect is not blocked behind queued application work or a full application request channel.
 ### Deprecated
