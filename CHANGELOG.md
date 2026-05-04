@@ -2,9 +2,12 @@
 
 ### Added
 ### Changed
+- `rumqttc` v4/v5: Replace broad request-channel blocking under publish flow-control pressure with protocol-aware outbound scheduling. QoS 1/ QoS 2 publishes preserve publish ordering and wait for inflight quota plus packet-id availability, QoS 0 publishes do not bypass earlier blocked publishes, and non-`PUBLISH` control packets may pass blocked QoS 1/ QoS 2 publishes when protocol-valid.
+- `rumqttc` v4/v5: Move `disconnect_now()` / `try_disconnect_now()` to a dedicated immediate shutdown channel so immediate disconnect is not blocked behind queued application work or a full application request channel.
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Avoid entering packet-id collision timeout for unsent publishes. Queued publishes now wait until the next candidate packet id is free, while keepalive and eligible control traffic can continue.
 ### Security
 
 ---
@@ -23,8 +26,6 @@
 - `rumqttc` v5 (Breaking Change): Replace the packet-shaped `AuthManager` abstraction with `Authenticator`, which receives authentication context, can start initial and re-auth exchanges, and is notified when an exchange succeeds, fails, or is aborted.
 - `rumqttc` v5: Manage enhanced authentication as an explicit client-side lifecycle. The client now tracks initial CONNECT authentication separately from post-CONNACK re-authentication, prevents overlapping re-auth attempts, correlates `AUTH Success` with the active exchange, and resolves active re-auth notices on disconnect, session reset, connection failure, or protocol/authentication failure.
 - `rumqttc` v4/v5 (Breaking Change): Change `disconnect()`/`try_disconnect()` into graceful barriers that flush previously accepted QoS 0 publishes and drain previously accepted QoS 1/ QoS 2 publish plus tracked subscribe/unsubscribe state (`SUBACK`/`UNSUBACK`) before sending terminal DISCONNECT. Use `disconnect_now()`/`try_disconnect_now()` to preserve immediate DISCONNECT behavior, or `disconnect_with_timeout()`/`try_disconnect_with_timeout()` to bound graceful draining; if the timeout expires first, polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not sent.
-- `rumqttc` v4/v5: Replace broad request-channel blocking under publish flow-control pressure with protocol-aware outbound scheduling. QoS 1/ QoS 2 publishes preserve publish ordering and wait for inflight quota plus packet-id availability, QoS 0 publishes do not bypass earlier blocked publishes, and non-`PUBLISH` control packets may pass blocked QoS 1/ QoS 2 publishes when protocol-valid.
-- `rumqttc` v4/v5: Move `disconnect_now()` / `try_disconnect_now()` to a dedicated immediate shutdown channel so immediate disconnect is not blocked behind queued application work or a full application request channel.
 - `rumqttc` v4/v5 (Breaking Change): Split the client builder API into `ClientBuilder` and `AsyncClientBuilder`. `AsyncClient::builder(...)` now returns `AsyncClientBuilder` and uses `.build()` to produce `(AsyncClient, EventLoop)`.
 ### Deprecated
 ### Removed
@@ -36,7 +37,6 @@
 - `rumqttc` v5: Validate CONNACK `Authentication Method` against the CONNECT `Authentication Method` (MQTT 5 §3.2.2.3.5); send `ProtocolError` DISCONNECT on mismatch or unexpected presence.
 - `rumqttc` v5: Validate incoming AUTH `Authentication Method` against the CONNECT method; reject server-sent `ReAuthenticate` as `ProtocolError` (§3.15.2.1); normalize outgoing AUTH method (auto-fill from CONNECT, reject mismatch), and reject unsolicited or methodless `AUTH Success` packets.
 - `rumqttc` v5: Avoid panics and invalid client output for AUTH packets without properties. Client-initiated re-authentication now synthesizes the configured CONNECT `Authentication Method` when possible and fails locally when no CONNECT method is available.
-- `rumqttc` v4/v5: Avoid entering packet-id collision timeout for unsent publishes. Queued publishes now wait until the next candidate packet id is free, while keepalive and eligible control traffic can continue.
 ### Security
 
 ---
