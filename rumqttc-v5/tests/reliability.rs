@@ -333,13 +333,204 @@ async fn requests_are_recovered_after_inflight_queue_size_falls_below_max() {
 }
 
 #[tokio::test]
-async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
+async fn bounded_publish_backpressure_is_preserved_while_inflight_is_full() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_outgoing_inflight_upper_limit(1);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(0).build();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+
+    client
+        .publish("test/topic", QoS::AtLeastOnce, false, "first")
+        .await
+        .unwrap();
+    let first = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("missing first publish");
+
+    client
+        .publish("test/topic", QoS::AtLeastOnce, false, "second")
+        .await
+        .unwrap();
+
+    let mut third = task::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .publish("test/topic", QoS::AtLeastOnce, false, "third")
+                .await
+        }
+    });
+
+    assert!(
+        time::timeout(Duration::from_millis(100), &mut third)
+            .await
+            .is_err(),
+        "bounded publish should wait while a queued QoS publish is blocked"
+    );
+
+    broker.ack(first.pkid).await;
+    third
+        .await
+        .expect("third publish task panicked")
+        .expect("third publish failed");
+
+    let second = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("missing second publish after ack");
+    assert_eq!(second.payload.as_ref(), b"second");
+
+    drop(client);
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
+}
+
+#[tokio::test]
+async fn control_request_bypasses_blocked_publish_without_ack_progress() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_outgoing_inflight_upper_limit(1);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(0).build();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+
+    client
+        .publish("test/topic", QoS::AtLeastOnce, false, "first")
+        .await
+        .unwrap();
+    let first = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("missing first publish");
+
+    client
+        .publish("test/topic", QoS::AtLeastOnce, false, "second")
+        .await
+        .unwrap();
+    client
+        .subscribe("control/topic", QoS::AtMostOnce)
+        .await
+        .unwrap();
+
+    match time::timeout(PHASE_TIMEOUT, broker.tick())
+        .await
+        .expect("timed out waiting for control request behind blocked publish")
+    {
+        Event::Incoming(Packet::Subscribe(subscribe)) => {
+            assert_eq!(subscribe.filters[0].path, "control/topic");
+            assert_ne!(subscribe.pkid, first.pkid);
+        }
+        event => panic!("expected subscribe to bypass blocked publish, got {event:?}"),
+    }
+
+    drop(client);
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
+}
+
+#[tokio::test]
+async fn tracked_unsubscribe_bypasses_blocked_publish_without_ack_progress() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_outgoing_inflight_upper_limit(1);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(0).build();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+
+    client
+        .publish("test/topic", QoS::AtLeastOnce, false, "first")
+        .await
+        .unwrap();
+    let first = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("missing first publish");
+
+    client
+        .publish("test/topic", QoS::AtLeastOnce, false, "second")
+        .await
+        .unwrap();
+    let _notice = client
+        .unsubscribe_tracked("control/topic")
+        .await
+        .expect("tracked unsubscribe should queue on control channel");
+
+    match time::timeout(PHASE_TIMEOUT, broker.tick())
+        .await
+        .expect("timed out waiting for tracked unsubscribe behind blocked publish")
+    {
+        Event::Incoming(Packet::Unsubscribe(unsubscribe)) => {
+            assert_eq!(unsubscribe.filters[0], "control/topic");
+            assert_ne!(unsubscribe.pkid, first.pkid);
+        }
+        event => panic!("expected tracked unsubscribe to bypass blocked publish, got {event:?}"),
+    }
+
+    drop(client);
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
+}
+
+#[tokio::test]
+async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_outgoing_inflight_upper_limit(4);
 
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
-    let (release_acks_tx, release_acks_rx) = oneshot::channel::<()>();
+    let (out_of_order_acks_tx, out_of_order_acks_rx) = oneshot::channel::<()>();
+    let (ack_first_tx, ack_first_rx) = oneshot::channel::<()>();
     let (stop_broker_tx, mut stop_broker_rx) = oneshot::channel::<()>();
 
     let requests = task::spawn(async move {
@@ -367,15 +558,17 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
         }
 
         broker.ack_many(&[3, 4]).await;
-        release_acks_rx.await.expect("ack release signal dropped");
-
-        broker.ack_many(&[1, 2]).await;
-
+        out_of_order_acks_tx
+            .send(())
+            .expect("eventloop task already exited");
         let packet = broker
             .read_publish_with_timeout(PHASE_TIMEOUT)
             .await
-            .expect("missing publish after releasing ack blockage");
+            .expect("missing publish after freeing packet id 3");
+        assert_eq!(packet.pkid, 3);
+        assert_eq!(packet.payload[0], 5);
         broker.ack(packet.pkid).await;
+        ack_first_rx.await.expect("ack release signal dropped");
 
         loop {
             tokio::select! {
@@ -389,36 +582,49 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
         }
     });
 
+    // Sends 4 requests. The 5th request should use the first packet id made
+    // available by the out-of-order acknowledgements instead of waiting for
+    // the wrapped packet id 1.
     time::timeout(TEST_TIMEOUT, async {
         loop {
             let event = poll_ignoring_connect_races(&mut eventloop)
                 .await
                 .expect("poll should not fail");
             println!("Poll = {event:?}");
-            if event == Event::Outgoing(Outgoing::AwaitAck(1)) {
+            if event == Event::Outgoing(Outgoing::Publish(4)) {
                 break;
             }
         }
     })
     .await
-    .expect("timed out waiting for collision await-ack signal");
-    release_acks_tx
-        .send(())
+    .expect("timed out waiting for initial publishes");
+
+    out_of_order_acks_rx
+        .await
         .expect("broker task already exited");
 
+    let mut acked = 0;
+    let mut reused_available_pkid = false;
     time::timeout(TEST_TIMEOUT, async {
-        loop {
+        while acked < 2 || !reused_available_pkid {
             let event = poll_ignoring_connect_races(&mut eventloop)
                 .await
                 .expect("poll should not fail");
             println!("Poll = {event:?}");
-            if event == Event::Outgoing(Outgoing::Publish(1)) {
-                break;
+            match event {
+                Event::Incoming(Packet::PubAck(_)) => acked += 1,
+                Event::Outgoing(Outgoing::Publish(pkid)) => {
+                    assert_eq!(pkid, 3);
+                    reused_available_pkid = true;
+                }
+                _ => {}
             }
         }
     })
     .await
-    .expect("timed out waiting for republish of blocked packet id");
+    .expect("timed out waiting for out-of-order acknowledgements and packet id reuse");
+
+    ack_first_tx.send(()).expect("broker task already exited");
 
     stop_broker_tx.send(()).expect("broker task already exited");
     broker.await.unwrap();
@@ -426,7 +632,7 @@ async fn packet_id_collisions_are_detected_and_flow_control_is_applied() {
 }
 
 #[tokio::test]
-async fn packet_id_collisions_are_timed_out_on_second_ping() {
+async fn blocked_publish_does_not_trigger_collision_timeout_while_keepalive_progresses() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options
@@ -434,7 +640,6 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
         .set_keep_alive(1);
 
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build();
-    let (stop_broker_tx, stop_broker_rx) = oneshot::channel::<()>();
     let requests = task::spawn(async move {
         start_requests(6, QoS::AtLeastOnce, 0, client).await;
     });
@@ -459,48 +664,50 @@ async fn packet_id_collisions_are_timed_out_on_second_ping() {
             );
         }
 
-        broker.ack_many(&[3, 4]).await;
-
-        time::timeout(PHASE_TIMEOUT, async {
-            loop {
-                if matches!(broker.read_packet().await, Some(Packet::PingReq(_))) {
-                    break;
+        let mut pings = 0;
+        time::timeout(TEST_TIMEOUT, async {
+            while pings < 2 {
+                match broker.read_packet().await {
+                    Some(Packet::PingReq(_)) => {
+                        pings += 1;
+                        broker.pingresp().await;
+                    }
+                    Some(Packet::Publish(publish)) => {
+                        panic!("unexpected publish while packet ids 1 and 2 are still in use: {publish:?}")
+                    }
+                    Some(_) => {}
+                    None => panic!("broker connection closed before keepalive progress"),
                 }
             }
         })
         .await
-        .expect("didn't observe first keepalive ping");
-
-        stop_broker_rx.await.expect("stop signal dropped");
+        .expect("didn't observe keepalive pings");
     });
 
+    let mut publishes = 0;
+    let mut pings = 0;
     time::timeout(TEST_TIMEOUT, async {
-        loop {
-            let event = poll_ignoring_connect_races(&mut eventloop)
-                .await
-                .expect("poll should not fail");
-            println!("Poll = {event:?}");
-            if event == Event::Outgoing(Outgoing::AwaitAck(1)) {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for collision await-ack signal");
-
-    time::timeout(TEST_TIMEOUT, async {
-        loop {
+        while pings < 2 {
             match poll_ignoring_connect_races(&mut eventloop).await {
-                Err(ConnectionError::MqttState(StateError::CollisionTimeout)) => break,
+                Ok(Event::Outgoing(Outgoing::Publish(pkid))) => {
+                    publishes += 1;
+                    assert!(
+                        publishes <= 4,
+                        "unexpected publish with packet id {pkid} while packet ids 1 and 2 are still in use"
+                    );
+                }
+                Ok(Event::Outgoing(Outgoing::PingReq)) => pings += 1,
                 Ok(event) => println!("Poll = {event:?}"),
-                Err(error) => panic!("Expected CollisionTimeout, got {error:?}"),
+                Err(ConnectionError::MqttState(StateError::CollisionTimeout)) => {
+                    panic!("blocked publish should not enter collision timeout state")
+                }
+                Err(error) => panic!("poll failed while waiting for keepalive progress: {error:?}"),
             }
         }
     })
     .await
-    .expect("timed out waiting for collision timeout error");
+    .expect("timed out waiting for keepalive progress");
 
-    stop_broker_tx.send(()).expect("broker task already exited");
     broker.await.unwrap();
     requests.abort();
 }
@@ -852,17 +1059,21 @@ async fn disconnect_now_sends_disconnect_without_waiting_for_qos2_completion() {
         },
     )
     .await;
-    let publish = broker
-        .read_publish_with_timeout(PHASE_TIMEOUT)
-        .await
-        .expect("expected QoS2 publish before immediate disconnect");
-    assert_eq!(publish.qos, QoS::ExactlyOnce);
-
     match time::timeout(PHASE_TIMEOUT, broker.tick())
         .await
         .expect("timed out waiting for immediate disconnect")
     {
         Event::Incoming(Packet::Disconnect(_)) => {}
+        Event::Incoming(Packet::Publish(publish)) => {
+            assert_eq!(publish.qos, QoS::ExactlyOnce);
+            match time::timeout(PHASE_TIMEOUT, broker.tick())
+                .await
+                .expect("timed out waiting for immediate disconnect after publish")
+            {
+                Event::Incoming(Packet::Disconnect(_)) => {}
+                event => panic!("expected immediate DISCONNECT after publish, got {event:?}"),
+            }
+        }
         event => panic!("expected immediate DISCONNECT, got {event:?}"),
     }
 
@@ -871,7 +1082,47 @@ async fn disconnect_now_sends_disconnect_without_waiting_for_qos2_completion() {
 }
 
 #[tokio::test]
-async fn reconnection_clean_both_pending_packets_and_collision_when_clean_start_is_true() {
+async fn disconnect_now_wakes_idle_eventloop() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("issue-1031-now-idle", ("127.0.0.1", port));
+    options.set_keep_alive(60);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
+    let eventloop_task = task::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+    time::sleep(Duration::from_millis(100)).await;
+
+    client.disconnect_now().await.unwrap();
+
+    match time::timeout(PHASE_TIMEOUT, broker.tick())
+        .await
+        .expect("timed out waiting for idle immediate disconnect")
+    {
+        Event::Incoming(Packet::Disconnect(_)) => {}
+        event => panic!("expected immediate DISCONNECT from idle eventloop, got {event:?}"),
+    }
+
+    drop(client);
+    eventloop_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn reconnection_clean_start_drops_pending_packets_after_reconnect() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options
@@ -879,64 +1130,64 @@ async fn reconnection_clean_both_pending_packets_and_collision_when_clean_start_
         .set_keep_alive(2)
         .set_clean_start(true);
 
-    task::spawn(async move {
-        let mut first_listener = Some(listener);
-        loop {
-            let listener = match first_listener.take() {
-                Some(listener) => listener,
-                None => listener_on(port).await,
-            };
-            let mut broker = TestBroker::from_listener(
-                listener,
-                ConnectBehavior::Accept {
-                    session_saved: false,
-                },
-            )
-            .await;
+    let broker = task::spawn(async move {
+        let mut broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await;
+        let publish = broker
+            .read_publish_with_timeout(SETUP_TIMEOUT)
+            .await
+            .expect("missing publish before forced disconnect");
+        assert_eq!(publish.pkid, 1);
+        drop(broker);
 
-            let mut first_publish_unacked = false;
-            while let Some(packet) = broker.read_packet().await {
-                match packet {
-                    Packet::PingReq(_) => broker.pingresp().await,
-                    Packet::Publish(publish) => {
-                        if first_publish_unacked {
-                            broker.ack(publish.pkid).await;
-                        }
-                        first_publish_unacked = true;
-                    }
-                    _ => {}
-                }
-                time::sleep(Duration::from_secs_f64(0.5)).await;
-            }
-        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let listener = listener_on(port).await;
+        let _broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
     });
 
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
-    task::spawn(async move {
-        start_requests(3, QoS::AtLeastOnce, 1, client).await;
-        time::sleep(Duration::from_secs(10)).await;
+    let requests = task::spawn(async move {
+        start_requests(3, QoS::AtLeastOnce, 0, client).await;
     });
 
-    loop {
-        if matches!(
-            eventloop.poll().await,
-            Err(ConnectionError::MqttState(StateError::CollisionTimeout))
-        ) {
-            break;
+    let mut saw_publish = false;
+    let mut saw_disconnect = false;
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Outgoing(Outgoing::Publish(_))) => saw_publish = true,
+                Ok(Event::Incoming(Packet::ConnAck(ConnAck {
+                    code: ConnectReturnCode::Success,
+                    session_present: false,
+                    properties: None,
+                }))) if saw_disconnect => {
+                    assert!(eventloop.pending_is_empty());
+                    assert!(eventloop.state.collision.is_none());
+                    break;
+                }
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => panic!("eventloop ended before reconnect"),
+                Err(_) if saw_publish => saw_disconnect = true,
+                Err(error) => panic!("poll failed before first publish: {error:?}"),
+            }
         }
-    }
+    })
+    .await
+    .expect("timed out waiting for clean-start reconnect");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    match eventloop.poll().await {
-        Ok(Event::Incoming(Packet::ConnAck(ConnAck {
-            code: ConnectReturnCode::Success,
-            session_present: false,
-            properties: None,
-        }))) => {
-            assert!(eventloop.pending_is_empty());
-            assert!(eventloop.state.collision.is_none());
-        }
-        value => panic!("Expected ConnAck Success. Found = {value:?}"),
-    }
+    requests.await.unwrap();
+    broker.await.unwrap();
 }

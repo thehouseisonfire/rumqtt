@@ -209,6 +209,43 @@ impl MqttState {
         Ok(())
     }
 
+    const fn next_publish_pkid_after(&self, pkid: u16) -> u16 {
+        if pkid >= self.max_inflight {
+            1
+        } else {
+            pkid + 1
+        }
+    }
+
+    fn packet_identifier_in_use(&self, pkid: u16) -> bool {
+        let index = usize::from(pkid);
+        self.outgoing_pub.get(index).is_some_and(Option::is_some)
+            || self.outgoing_rel.contains(index)
+            || self.tracked_subscribe.contains_key(&pkid)
+            || self.tracked_unsubscribe.contains_key(&pkid)
+    }
+
+    pub(crate) fn can_send_publish(&self, publish: &Publish) -> bool {
+        if publish.qos == QoS::AtMostOnce {
+            return true;
+        }
+
+        if self.inflight >= self.max_inflight || self.collision.is_some() {
+            return false;
+        }
+
+        if publish.pkid == 0 {
+            return self.next_publish_pkid().is_some();
+        }
+
+        self.validate_outgoing_pkid_bound(publish.pkid).is_ok()
+            && !self.packet_identifier_in_use(publish.pkid)
+    }
+
+    pub(crate) fn control_packet_identifier_available(&self) -> bool {
+        (1..=u16::MAX).any(|pkid| !self.packet_identifier_in_use(pkid))
+    }
+
     fn clean_pending_capacity(&self) -> usize {
         self.outgoing_pub
             .iter()
@@ -439,7 +476,7 @@ impl MqttState {
                         | None => None,
                     };
                     (
-                        Some(self.outgoing_unsubscribe(unsubscribe, request_notice)),
+                        Some(self.outgoing_unsubscribe(unsubscribe, request_notice)?),
                         None,
                     )
                 }
@@ -766,7 +803,7 @@ impl MqttState {
             return Err(StateError::EmptySubscription);
         }
 
-        let pkid = self.next_pkid();
+        let pkid = self.next_control_pkid()?;
         subscription.pkid = pkid;
 
         debug!(
@@ -788,8 +825,8 @@ impl MqttState {
         &mut self,
         mut unsub: Unsubscribe,
         notice: Option<UnsubscribeNoticeTx>,
-    ) -> Packet {
-        let pkid = self.next_pkid();
+    ) -> Result<Packet, StateError> {
+        let pkid = self.next_control_pkid()?;
         unsub.pkid = pkid;
 
         debug!(
@@ -804,7 +841,7 @@ impl MqttState {
                 .insert(unsub.pkid, (unsub.clone(), notice));
         }
 
-        Packet::Unsubscribe(unsub)
+        Ok(Packet::Unsubscribe(unsub))
     }
 
     fn outgoing_disconnect(&mut self) -> Packet {
@@ -891,20 +928,41 @@ impl MqttState {
     /// <http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation>
     /// Packet ids are incremented till maximum set inflight messages and reset to 1 after that.
     ///
-    const fn next_pkid(&mut self) -> u16 {
-        let next_pkid = self.last_pkid + 1;
-
-        // When next packet id is at the edge of inflight queue,
-        // set await flag. This instructs eventloop to stop
-        // processing requests until all the inflight publishes
-        // are acked
-        if next_pkid == self.max_inflight {
-            self.last_pkid = 0;
-            return next_pkid;
+    fn next_publish_pkid(&self) -> Option<u16> {
+        let mut pkid = self.next_publish_pkid_after(self.last_pkid);
+        for _ in 0..usize::from(self.max_inflight) {
+            if !self.packet_identifier_in_use(pkid) {
+                return Some(pkid);
+            }
+            pkid = self.next_publish_pkid_after(pkid);
         }
 
-        self.last_pkid = next_pkid;
-        next_pkid
+        None
+    }
+
+    fn next_pkid(&mut self) -> u16 {
+        let pkid = self
+            .next_publish_pkid()
+            .unwrap_or_else(|| self.next_publish_pkid_after(self.last_pkid));
+        if pkid == self.max_inflight {
+            self.last_pkid = 0;
+        } else {
+            self.last_pkid = pkid;
+        }
+
+        pkid
+    }
+
+    fn next_control_pkid(&mut self) -> Result<u16, StateError> {
+        for offset in 1..=u16::MAX {
+            let pkid = self.last_pkid.wrapping_add(offset);
+            if pkid != 0 && !self.packet_identifier_in_use(pkid) {
+                self.last_pkid = pkid;
+                return Ok(pkid);
+            }
+        }
+
+        Err(StateError::InvalidState)
     }
 }
 
@@ -1125,7 +1183,8 @@ mod test {
     fn tracked_unsuback_returns_ack_and_preserves_incoming_event() {
         let mut mqtt = build_mqttstate();
         let (tx, notice) = UnsubscribeNoticeTx::new();
-        mqtt.outgoing_unsubscribe(Unsubscribe::new("a/b"), Some(tx));
+        mqtt.outgoing_unsubscribe(Unsubscribe::new("a/b"), Some(tx))
+            .unwrap();
         mqtt.events.clear();
 
         let unsuback = UnsubAck::new(1);
@@ -1263,6 +1322,27 @@ mod test {
             }
 
             assert_eq!(expected, pkid);
+        }
+    }
+
+    #[test]
+    fn can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit() {
+        let mut mqtt = MqttState::builder(4).build();
+        let mut active_publish = build_outgoing_publish(QoS::AtLeastOnce);
+        active_publish.pkid = 1;
+        mqtt.outgoing_pub[1] = Some(active_publish);
+        mqtt.inflight = 1;
+        mqtt.last_pkid = 5;
+
+        assert!(mqtt.can_send_publish(&build_outgoing_publish(QoS::AtLeastOnce)));
+
+        let packet = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::Publish(publish) => assert_eq!(publish.pkid, 2),
+            packet => panic!("Unexpected packet: {packet:?}"),
         }
     }
 

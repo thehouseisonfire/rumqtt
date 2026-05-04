@@ -1,4 +1,4 @@
-# Protocol-correct outbound scheduling for rumqttc
+# Protocol-correct outbound scheduling for rumqttc (Implemented)
 
 This note captures follow-up work discovered while fixing graceful disconnect behavior for issue #1031.
 It intentionally does not depend on `TODO.md`.

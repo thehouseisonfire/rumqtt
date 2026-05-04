@@ -12,6 +12,7 @@ use crate::notice::{
 use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
+use rumqttc_core::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
@@ -172,13 +173,21 @@ pub struct EventLoop {
     pub options: MqttOptions,
     /// Current state of the connection
     pub state: MqttState,
-    /// Request stream
+    /// Flow-controlled publish request stream.
     requests_rx: Receiver<RequestEnvelope>,
+    /// Control request stream.
+    control_requests_rx: Receiver<RequestEnvelope>,
+    /// Narrow immediate shutdown stream.
+    immediate_disconnect_rx: Receiver<RequestEnvelope>,
     /// Internal request sender retained for compatibility in `EventLoop::new`.
     /// This is intentionally dropped in the client builder path.
     _requests_tx: Option<Sender<RequestEnvelope>>,
+    _control_requests_tx: Option<Sender<RequestEnvelope>>,
+    _immediate_disconnect_tx: Option<Sender<RequestEnvelope>>,
     /// Pending packets from last session
     pending: VecDeque<RequestEnvelope>,
+    /// Requests admitted by the event loop and waiting for protocol scheduling.
+    queued: OutboundScheduler<RequestEnvelope>,
     /// Network connection to the broker
     network: Option<Network>,
     /// Keep alive time
@@ -222,7 +231,17 @@ impl EventLoop {
     /// access and update `options`, `state` and `requests`.
     pub fn new(options: MqttOptions, cap: usize) -> Self {
         let (requests_tx, requests_rx) = bounded(cap);
-        Self::with_channel(options, requests_rx, Some(requests_tx))
+        let (control_requests_tx, control_requests_rx) = bounded(cap);
+        let (immediate_disconnect_tx, immediate_disconnect_rx) = unbounded();
+        Self::with_channel(
+            options,
+            requests_rx,
+            control_requests_rx,
+            immediate_disconnect_rx,
+            Some(requests_tx),
+            Some(control_requests_tx),
+            Some(immediate_disconnect_tx),
+        )
     }
 
     /// Internal constructor used by client builders.
@@ -232,13 +251,36 @@ impl EventLoop {
     pub(crate) fn new_for_async_client_with_capacity(
         options: MqttOptions,
         capacity: RequestChannelCapacity,
-    ) -> (Self, Sender<RequestEnvelope>) {
+    ) -> (
+        Self,
+        Sender<RequestEnvelope>,
+        Sender<RequestEnvelope>,
+        Sender<RequestEnvelope>,
+    ) {
         let (requests_tx, requests_rx) = match capacity {
             RequestChannelCapacity::Bounded(cap) => bounded(cap),
             RequestChannelCapacity::Unbounded => unbounded(),
         };
-        let eventloop = Self::with_channel(options, requests_rx, None);
-        (eventloop, requests_tx)
+        let (control_requests_tx, control_requests_rx) = match capacity {
+            RequestChannelCapacity::Bounded(cap) => bounded(cap),
+            RequestChannelCapacity::Unbounded => unbounded(),
+        };
+        let (immediate_disconnect_tx, immediate_disconnect_rx) = unbounded();
+        let eventloop = Self::with_channel(
+            options,
+            requests_rx,
+            control_requests_rx,
+            immediate_disconnect_rx,
+            None,
+            None,
+            None,
+        );
+        (
+            eventloop,
+            requests_tx,
+            control_requests_tx,
+            immediate_disconnect_tx,
+        )
     }
 
     /// Internal bounded constructor retained for tests that already choose a capacity.
@@ -247,13 +289,19 @@ impl EventLoop {
         options: MqttOptions,
         cap: usize,
     ) -> (Self, Sender<RequestEnvelope>) {
-        Self::new_for_async_client_with_capacity(options, RequestChannelCapacity::Bounded(cap))
+        let (eventloop, request_tx, _control_request_tx, _immediate_disconnect_tx) =
+            Self::new_for_async_client_with_capacity(options, RequestChannelCapacity::Bounded(cap));
+        (eventloop, request_tx)
     }
 
     fn with_channel(
         options: MqttOptions,
         requests_rx: Receiver<RequestEnvelope>,
+        control_requests_rx: Receiver<RequestEnvelope>,
+        immediate_disconnect_rx: Receiver<RequestEnvelope>,
         requests_tx: Option<Sender<RequestEnvelope>>,
+        control_requests_tx: Option<Sender<RequestEnvelope>>,
+        immediate_disconnect_tx: Option<Sender<RequestEnvelope>>,
     ) -> Self {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
@@ -275,8 +323,13 @@ impl EventLoop {
                 authenticator,
             ),
             requests_rx,
+            control_requests_rx,
+            immediate_disconnect_rx,
             _requests_tx: requests_tx,
+            _control_requests_tx: control_requests_tx,
+            _immediate_disconnect_tx: immediate_disconnect_tx,
             pending,
+            queued: OutboundScheduler::default(),
             network: None,
             keepalive_timeout: None,
             no_sleep: None,
@@ -306,12 +359,28 @@ impl EventLoop {
             );
         }
 
+        let queued: Vec<_> = self.queued.drain().collect();
+        for envelope in queued {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.push_replay_envelope(envelope, &mut replay_topic_aliases);
+            }
+        }
+
         // drain requests from channel which weren't yet received
         let drained_requests: Vec<_> = self.requests_rx.drain().collect();
         for envelope in drained_requests {
             // Wait for publish retransmission, else the broker could be confused by an unexpected
             // inbound acknowledgment replayed from a previous connection.
-            if !matches!(&envelope.request, Request::PubAck(_) | Request::PubRec(_)) {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.push_replay_envelope(envelope, &mut replay_topic_aliases);
+            }
+        }
+
+        let drained_control_requests: Vec<_> = self.control_requests_rx.drain().collect();
+        for envelope in drained_control_requests {
+            // Wait for publish retransmission, else the broker could be confused by an unexpected
+            // inbound acknowledgment replayed from a previous connection.
+            if should_replay_after_reconnect(&envelope.request) {
                 self.push_replay_envelope(envelope, &mut replay_topic_aliases);
             }
         }
@@ -340,12 +409,12 @@ impl EventLoop {
 
     /// Number of pending requests queued for retransmission.
     pub fn pending_len(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.queued.len()
     }
 
     /// Returns true when there are no pending requests queued for retransmission.
     pub fn pending_is_empty(&self) -> bool {
-        self.pending.is_empty()
+        self.pending.is_empty() && self.queued.is_empty()
     }
 
     /// Drains pending retransmission queue and fails tracked notices with the given reason.
@@ -354,6 +423,25 @@ impl EventLoop {
     pub fn drain_pending_as_failed(&mut self, reason: NoticeFailureReason) -> usize {
         let mut drained = 0;
         for envelope in self.pending.drain(..) {
+            drained += 1;
+            if let Some(notice) = envelope.notice {
+                match notice {
+                    TrackedNoticeTx::Publish(notice) => {
+                        notice.error(reason.publish_error());
+                    }
+                    TrackedNoticeTx::Subscribe(notice) => {
+                        notice.error(reason.subscribe_error());
+                    }
+                    TrackedNoticeTx::Unsubscribe(notice) => {
+                        notice.error(reason.unsubscribe_error());
+                    }
+                    TrackedNoticeTx::Auth(notice) => {
+                        notice.error(reason.auth_error());
+                    }
+                }
+            }
+        }
+        for envelope in self.queued.drain() {
             drained += 1;
             if let Some(notice) = envelope.notice {
                 match notice {
@@ -404,6 +492,14 @@ impl EventLoop {
         }
 
         if self.network.is_none() {
+            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
+                self.disconnect_complete = true;
+                if let Some(notice) = envelope.notice {
+                    drop(notice);
+                }
+                return Err(ConnectionError::RequestsDone);
+            }
+
             let (network, connack) = time::timeout(
                 self.options.connect_timeout(),
                 connect(&mut self.options, &mut self.state),
@@ -447,68 +543,78 @@ impl EventLoop {
                 return Ok(event);
             }
 
+            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
+                return self.handle_immediate_disconnect(envelope).await;
+            }
+
+            if self.queued.is_empty()
+                && self.pending.is_empty()
+                && self.pending_disconnect.is_none()
+                && self.requests_rx.is_disconnected()
+                && self.requests_rx.is_empty()
+                && self.control_requests_rx.is_disconnected()
+                && self.control_requests_rx.is_empty()
+                && self.state.outbound_requests_drained()
+            {
+                return Err(ConnectionError::RequestsDone);
+            }
+
+            if self.handle_ready_requests().await? {
+                if let Some(event) = self.state.events.pop_front() {
+                    return Ok(event);
+                }
+                continue;
+            }
+
             if self.pending_disconnect.is_some() {
-                if self.state.outbound_requests_drained() {
+                if self.queued.is_empty() && self.state.outbound_requests_drained() {
                     return self.send_pending_disconnect().await;
                 }
 
-                self.poll_disconnect_drain().await?;
+                if let Some(event) = self.poll_disconnect_drain().await? {
+                    return Ok(event);
+                }
                 continue;
             }
 
             let read_batch_size = self.effective_read_batch_size();
-            let inflight_full = self.state.inflight >= self.state.max_outgoing_inflight;
-            let collision = self.state.collision.is_some();
+            let normal_request_admission_allowed =
+                self.normal_request_admission_allowed() || !self.pending.is_empty();
             let no_sleep = self
                 .no_sleep
                 .get_or_insert_with(|| Box::pin(time::sleep(Duration::MAX)));
 
             return select! {
+                biased;
+                o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
+                    Ok(envelope) => self.handle_immediate_disconnect(envelope).await,
+                    Err(_) => continue,
+                },
+                o = self.control_requests_rx.recv_async(),
+                    if self.pending_disconnect.is_none()
+                        && (!self.control_requests_rx.is_empty()
+                            || !self.control_requests_rx.is_disconnected()) => match o {
+                    Ok(envelope) => {
+                        self.try_admit_existing_normal_requests().await;
+                        self.queued.push_back(envelope);
+                        continue;
+                    }
+                    Err(_) => continue,
+                },
                 o = Self::next_request(
                     &mut self.pending,
                     &self.requests_rx,
                     self.options.pending_throttle
-                ), if !self.pending.is_empty() || (!inflight_full && !collision) => match o {
+                ), if self.pending_disconnect.is_none()
+                    && normal_request_admission_allowed
+                    && (!self.pending.is_empty()
+                        || !self.requests_rx.is_empty()
+                        || !self.requests_rx.is_disconnected()) => match o {
                     Ok((request, notice)) => {
-                        let mut should_flush = false;
-                        let mut qos0_notices = Vec::new();
-
-                        if self.handle_request(request, notice, &mut should_flush, &mut qos0_notices).await? {
-                            for _ in 1..self.options.max_request_batch.max(1) {
-                                let inflight_full = self.state.inflight >= self.state.max_outgoing_inflight;
-                                let collision = self.state.collision.is_some();
-
-                                if self.pending.is_empty() && (inflight_full || collision) {
-                                    break;
-                                }
-
-                                let Some((next_request, next_notice)) = Self::try_next_request(
-                                    &mut self.pending,
-                                    &self.requests_rx,
-                                    self.options.pending_throttle,
-                                ).await else {
-                                    break;
-                                };
-
-                                if !self.handle_request(
-                                    next_request,
-                                    next_notice,
-                                    &mut should_flush,
-                                    &mut qos0_notices,
-                                ).await? {
-                                    break;
-                                }
-                            }
-                        }
-
-                        self.flush_request_batch(should_flush, qos0_notices).await?;
-                        if let Some(event) = self.state.events.pop_front() {
-                            Ok(event)
-                        } else {
-                            continue;
-                        }
+                        self.admit_normal_request_batch((request, notice)).await;
+                        continue;
                     }
-                    Err(_) => Err(ConnectionError::RequestsDone),
+                    Err(_) => continue,
                 },
                 o = self.network.as_mut().unwrap().readb(&mut self.state, read_batch_size) => {
                     o?;
@@ -530,6 +636,122 @@ impl EventLoop {
                     Ok(self.state.events.pop_front().unwrap())
                 }
             };
+        }
+    }
+
+    async fn handle_immediate_disconnect(
+        &mut self,
+        envelope: RequestEnvelope,
+    ) -> Result<Event, ConnectionError> {
+        let (request, notice) = envelope.into_parts();
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        self.handle_request(request, notice, &mut should_flush, &mut qos0_notices)
+            .await?;
+        self.flush_request_batch(should_flush, qos0_notices).await?;
+        Ok(self.state.events.pop_front().unwrap())
+    }
+
+    async fn handle_ready_requests(&mut self) -> Result<bool, ConnectionError> {
+        let Some((request, notice)) = self.next_scheduled_request() else {
+            return Ok(false);
+        };
+
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+
+        if self
+            .handle_request(request, notice, &mut should_flush, &mut qos0_notices)
+            .await?
+        {
+            for _ in 1..self.options.max_request_batch.max(1) {
+                let Some((next_request, next_notice)) = self.next_scheduled_request() else {
+                    break;
+                };
+
+                if !self
+                    .handle_request(
+                        next_request,
+                        next_notice,
+                        &mut should_flush,
+                        &mut qos0_notices,
+                    )
+                    .await?
+                {
+                    break;
+                }
+            }
+        }
+
+        self.flush_request_batch(should_flush, qos0_notices).await?;
+        Ok(true)
+    }
+
+    fn next_scheduled_request(&mut self) -> Option<(Request, Option<TrackedNoticeTx>)> {
+        let state = &self.state;
+        self.queued
+            .pop_next(|envelope| classify_request(state, &envelope.request))
+            .map(RequestEnvelope::into_parts)
+    }
+
+    fn normal_request_admission_allowed(&self) -> bool {
+        self.queued.is_empty()
+            || self
+                .queued
+                .has_ready(|envelope| classify_request(&self.state, &envelope.request))
+    }
+
+    async fn try_admit_existing_normal_requests(&mut self) {
+        let ready = self.pending.len() + self.requests_rx.len();
+        for _ in 0..ready {
+            if !(self.normal_request_admission_allowed() || !self.pending.is_empty()) {
+                break;
+            }
+
+            let Some((request, notice)) = Self::try_next_request(
+                &mut self.pending,
+                &self.requests_rx,
+                self.options.pending_throttle,
+            )
+            .await
+            else {
+                break;
+            };
+
+            let stop_batch = is_disconnect_request(&request);
+            self.queued
+                .push_back(RequestEnvelope::from_parts(request, notice));
+            if stop_batch {
+                break;
+            }
+        }
+    }
+
+    async fn admit_normal_request_batch(&mut self, first: (Request, Option<TrackedNoticeTx>)) {
+        let (request, notice) = first;
+        let stop_batch = is_disconnect_request(&request);
+        self.queued
+            .push_back(RequestEnvelope::from_parts(request, notice));
+        if stop_batch || !(self.normal_request_admission_allowed() || !self.pending.is_empty()) {
+            return;
+        }
+
+        for _ in 1..self.options.max_request_batch.max(1) {
+            let Some((request, notice)) = Self::try_next_request(
+                &mut self.pending,
+                &self.requests_rx,
+                self.options.pending_throttle,
+            )
+            .await
+            else {
+                break;
+            };
+            let stop_batch = is_disconnect_request(&request);
+            self.queued
+                .push_back(RequestEnvelope::from_parts(request, notice));
+            if stop_batch {
+                break;
+            }
         }
     }
 
@@ -611,7 +833,7 @@ impl EventLoop {
         }
     }
 
-    async fn poll_disconnect_drain(&mut self) -> Result<(), ConnectionError> {
+    async fn poll_disconnect_drain(&mut self) -> Result<Option<Event>, ConnectionError> {
         let read_batch_size = self.effective_read_batch_size();
         let read = self
             .network
@@ -624,16 +846,26 @@ impl EventLoop {
             .as_ref()
             .and_then(|pending| pending.deadline)
         {
-            match time::timeout_at(deadline, read).await {
-                Ok(result) => result?,
-                Err(_) => return Err(ConnectionError::DisconnectTimeout),
+            select! {
+                o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
+                    Ok(envelope) => return self.handle_immediate_disconnect(envelope).await.map(Some),
+                    Err(_) => return Ok(None),
+                },
+                result = read => result?,
+                () = time::sleep_until(deadline) => return Err(ConnectionError::DisconnectTimeout),
             }
         } else {
-            read.await?;
+            select! {
+                o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
+                    Ok(envelope) => return self.handle_immediate_disconnect(envelope).await.map(Some),
+                    Err(_) => return Ok(None),
+                },
+                result = read => result?,
+            }
         }
 
         self.network.as_mut().unwrap().flush().await?;
-        Ok(())
+        Ok(None)
     }
 
     async fn send_pending_disconnect(&mut self) -> Result<Event, ConnectionError> {
@@ -715,12 +947,54 @@ impl EventLoop {
         let inflight = usize::from(self.state.max_outgoing_inflight);
         let mut adaptive = request_batch.max(inflight / 2).max(8);
 
-        if !self.pending.is_empty() || !self.requests_rx.is_empty() {
+        if !self.pending.is_empty()
+            || !self.queued.is_empty()
+            || !self.requests_rx.is_empty()
+            || !self.control_requests_rx.is_empty()
+        {
             adaptive = adaptive.min(PENDING_FAIRNESS_CAP);
         }
 
         adaptive.clamp(1, MAX_READ_BATCH_SIZE)
     }
+}
+
+fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
+    match request {
+        Request::Publish(publish) if publish.qos != crate::mqttbytes::QoS::AtMostOnce => {
+            ScheduledRequest {
+                class: RequestClass::FlowControlledPublish,
+                readiness: if state.can_send_publish(publish) {
+                    RequestReadiness::Ready
+                } else {
+                    RequestReadiness::Blocked
+                },
+            }
+        }
+        Request::Publish(_) => ScheduledRequest {
+            class: RequestClass::Publish,
+            readiness: RequestReadiness::Ready,
+        },
+        Request::Subscribe(_) | Request::Unsubscribe(_) => ScheduledRequest {
+            class: RequestClass::Control,
+            readiness: if state.control_packet_identifier_available() {
+                RequestReadiness::Ready
+            } else {
+                RequestReadiness::Blocked
+            },
+        },
+        _ => ScheduledRequest {
+            class: RequestClass::Control,
+            readiness: RequestReadiness::Ready,
+        },
+    }
+}
+
+const fn is_disconnect_request(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) | Request::DisconnectNow(_)
+    )
 }
 
 /// This stream internally processes requests from the request stream provided to the eventloop
@@ -981,12 +1255,16 @@ async fn send_protocol_error_disconnect(network: &mut Network) -> Result<(), Con
     Ok(())
 }
 
+const fn should_replay_after_reconnect(request: &Request) -> bool {
+    !matches!(request, Request::PubAck(_) | Request::PubRec(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mqttbytes::{Error as MqttError, QoS};
     use crate::{Auth, AuthProperties, AuthReasonCode};
-    use crate::{ConnAckProperties, Filter, PubAck, PubRec, PublishProperties};
+    use crate::{ConnAckProperties, Filter, PubAck, PubComp, PubRec, PubRel, PublishProperties};
     use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
     use std::sync::{Arc, Mutex};
@@ -1459,6 +1737,236 @@ mod tests {
         eventloop
     }
 
+    fn publish(qos: QoS) -> Publish {
+        Publish::new("hello/world", qos, "payload", None)
+    }
+
+    fn subscribe() -> Subscribe {
+        Subscribe::new(Filter::new("hello/world", QoS::AtMostOnce), None)
+    }
+
+    fn fill_publish_window(eventloop: &mut EventLoop) {
+        let mut active = publish(QoS::AtLeastOnce);
+        active.pkid = 1;
+        eventloop.state.outgoing_pub[1] = Some(active);
+        eventloop.state.inflight = 1;
+    }
+
+    fn next_after_blocked_publish(request: Request) -> Option<Request> {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_outgoing_inflight_upper_limit(1);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        fill_publish_window(&mut eventloop);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop.queued.push_back(RequestEnvelope::plain(request));
+
+        eventloop
+            .next_scheduled_request()
+            .map(|(request, _notice)| request)
+    }
+
+    #[test]
+    fn scheduler_sends_control_after_receive_max_blocked_publish() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_outgoing_inflight_upper_limit(1);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        fill_publish_window(&mut eventloop);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Subscribe(subscribe())));
+
+        let (request, _) = eventloop.next_scheduled_request().unwrap();
+
+        assert!(matches!(request, Request::Subscribe(_)));
+        match eventloop.state.handle_outgoing_packet(request).unwrap() {
+            Some(Packet::Subscribe(subscribe)) => assert_ne!(subscribe.pkid, 1),
+            packet => panic!("expected subscribe packet, got {packet:?}"),
+        }
+        assert!(matches!(
+            eventloop
+                .queued
+                .drain()
+                .next()
+                .map(|envelope| envelope.request),
+            Some(Request::Publish(_))
+        ));
+    }
+
+    #[test]
+    fn scheduler_does_not_let_qos0_publish_pass_blocked_publish() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_outgoing_inflight_upper_limit(1);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        fill_publish_window(&mut eventloop);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtMostOnce,
+            ))));
+
+        assert!(eventloop.next_scheduled_request().is_none());
+    }
+
+    #[test]
+    fn scheduler_allows_each_progress_and_control_class_after_blocked_publish() {
+        assert!(matches!(
+            next_after_blocked_publish(Request::PubAck(PubAck::new(7, None))),
+            Some(Request::PubAck(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::PubRec(PubRec::new(8, None))),
+            Some(Request::PubRec(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::PubRel(PubRel::new(9, None))),
+            Some(Request::PubRel(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::PubComp(PubComp::new(10, None))),
+            Some(Request::PubComp(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::PingReq),
+            Some(Request::PingReq)
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::Subscribe(subscribe())),
+            Some(Request::Subscribe(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::Unsubscribe(Unsubscribe::new("hello/world", None))),
+            Some(Request::Unsubscribe(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::Auth(Auth::new(
+                AuthReasonCode::ReAuthenticate,
+                None
+            ))),
+            Some(Request::Auth(_))
+        ));
+        assert!(matches!(
+            next_after_blocked_publish(Request::Disconnect(Disconnect::new(
+                DisconnectReasonCode::NormalDisconnection
+            ))),
+            Some(Request::Disconnect(_))
+        ));
+    }
+
+    #[test]
+    fn scheduler_unsubscribe_after_blocked_publish_uses_non_conflicting_packet_id() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_outgoing_inflight_upper_limit(1);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        fill_publish_window(&mut eventloop);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Unsubscribe(
+                Unsubscribe::new("hello/world", None),
+            )));
+
+        let (request, _) = eventloop.next_scheduled_request().unwrap();
+
+        assert!(matches!(request, Request::Unsubscribe(_)));
+        match eventloop.state.handle_outgoing_packet(request).unwrap() {
+            Some(Packet::Unsubscribe(unsubscribe)) => assert_ne!(unsubscribe.pkid, 1),
+            packet => panic!("expected unsubscribe packet, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn scheduler_preserves_sendable_publish_before_later_control() {
+        let (mut eventloop, _request_tx) =
+            EventLoop::new_for_async_client(MqttOptions::new("test-client", "localhost"), 1);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Subscribe(subscribe())));
+
+        let (request, _) = eventloop.next_scheduled_request().unwrap();
+
+        assert!(matches!(request, Request::Publish(_)));
+    }
+
+    #[tokio::test]
+    async fn select_admits_control_request_after_ready_publish_backlog_snapshot() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_max_request_batch(1);
+        let (mut eventloop, request_tx, control_request_tx, _immediate_disconnect_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Unbounded,
+            );
+        let (client, _peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        network.set_max_outgoing_size(Some(1024));
+        eventloop.network = Some(network);
+
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtMostOnce,
+            ))))
+            .await
+            .unwrap();
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtMostOnce,
+            ))))
+            .await
+            .unwrap();
+        control_request_tx
+            .send_async(RequestEnvelope::plain(Request::Disconnect(
+                Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            )))
+            .await
+            .unwrap();
+
+        let first = time::timeout(Duration::from_secs(1), eventloop.select())
+            .await
+            .expect("timed out waiting for first request")
+            .expect("select should not fail");
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtMostOnce,
+            ))))
+            .await
+            .unwrap();
+        let second = time::timeout(Duration::from_secs(1), eventloop.select())
+            .await
+            .expect("timed out waiting for second request")
+            .expect("select should not fail");
+        let third = time::timeout(Duration::from_secs(1), eventloop.select())
+            .await
+            .expect("timed out waiting for control request")
+            .expect("select should not fail");
+
+        assert!(matches!(first, Event::Outgoing(Outgoing::Publish(_))));
+        assert!(matches!(second, Event::Outgoing(Outgoing::Publish(_))));
+        assert!(matches!(third, Event::Outgoing(Outgoing::Disconnect)));
+    }
+
     fn publish_properties_with_alias(alias: u16) -> PublishProperties {
         PublishProperties {
             topic_alias: Some(alias),
@@ -1515,6 +2023,33 @@ mod tests {
         request_tx
             .send(RequestEnvelope::plain(Request::PingReq))
             .unwrap();
+
+        eventloop.clean();
+
+        assert_eq!(eventloop.pending_len(), 1);
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::PingReq)
+        ));
+    }
+
+    #[test]
+    fn clean_drops_ack_requests_drained_from_queued_scheduler() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 3);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PubAck(PubAck::new(
+                7, None,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PubRec(PubRec::new(
+                8, None,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PingReq));
 
         eventloop.clean();
 

@@ -138,7 +138,11 @@ impl From<TrySendError<Request>> for ClientError {
 #[derive(Clone, Debug)]
 enum RequestSender {
     Plain(Sender<Request>),
-    WithNotice(Sender<RequestEnvelope>),
+    WithNotice {
+        requests: Sender<RequestEnvelope>,
+        control_requests: Sender<RequestEnvelope>,
+        immediate_disconnect: Sender<RequestEnvelope>,
+    },
 }
 
 fn into_request(envelope: RequestEnvelope) -> Request {
@@ -156,6 +160,10 @@ fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientErro
             ClientError::TryRequest(Box::new(into_request(envelope)))
         }
     }
+}
+
+const fn is_publish_request(request: &Request) -> bool {
+    matches!(request, Request::Publish(_))
 }
 
 /// Prepared acknowledgement packet for manual acknowledgement mode.
@@ -191,6 +199,11 @@ impl ManualAck {
 /// progress until that same task polls it again. For bounded async clients,
 /// prefer driving the event loop in a dedicated task. Use [`try_publish`](Self::try_publish)
 /// when dropping outgoing publishes under overload is intended.
+///
+/// The request channel is an admission queue, not a strict global wire FIFO
+/// guarantee. Under publish flow-control pressure, non-`PUBLISH` control
+/// packets can pass earlier `QoS` 1/ `QoS` 2 publishes that are not currently
+/// sendable. Application publishes preserve FIFO with other publishes.
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
     request_tx: RequestSender,
@@ -223,9 +236,14 @@ fn build_async_client(
     options: MqttOptions,
     capacity: RequestChannelCapacity,
 ) -> (AsyncClient, EventLoop) {
-    let (eventloop, request_tx) = EventLoop::new_for_async_client_with_capacity(options, capacity);
+    let (eventloop, request_tx, control_request_tx, immediate_disconnect_tx) =
+        EventLoop::new_for_async_client_with_capacity(options, capacity);
     let client = AsyncClient {
-        request_tx: RequestSender::WithNotice(request_tx),
+        request_tx: RequestSender::WithNotice {
+            requests: request_tx,
+            control_requests: control_request_tx,
+            immediate_disconnect: immediate_disconnect_tx,
+        },
     };
 
     (client, eventloop)
@@ -339,28 +357,95 @@ impl AsyncClient {
     async fn send_request_async(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
             RequestSender::Plain(tx) => tx.send_async(request).await.map_err(ClientError::from),
-            RequestSender::WithNotice(tx) => tx
-                .send_async(RequestEnvelope::plain(request))
-                .await
-                .map_err(map_send_envelope_error),
+            RequestSender::WithNotice {
+                requests,
+                control_requests,
+                ..
+            } => {
+                let tx = if is_publish_request(&request) {
+                    requests
+                } else {
+                    control_requests
+                };
+                tx.send_async(RequestEnvelope::plain(request))
+                    .await
+                    .map_err(map_send_envelope_error)
+            }
         }
     }
 
     fn try_send_request(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
             RequestSender::Plain(tx) => tx.try_send(request).map_err(ClientError::from),
-            RequestSender::WithNotice(tx) => tx
-                .try_send(RequestEnvelope::plain(request))
-                .map_err(map_try_send_envelope_error),
+            RequestSender::WithNotice {
+                requests,
+                control_requests,
+                ..
+            } => {
+                let tx = if is_publish_request(&request) {
+                    requests
+                } else {
+                    control_requests
+                };
+                tx.try_send(RequestEnvelope::plain(request))
+                    .map_err(map_try_send_envelope_error)
+            }
         }
     }
 
     fn send_request(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
             RequestSender::Plain(tx) => tx.send(request).map_err(ClientError::from),
-            RequestSender::WithNotice(tx) => tx
+            RequestSender::WithNotice {
+                requests,
+                control_requests,
+                ..
+            } => {
+                let tx = if is_publish_request(&request) {
+                    requests
+                } else {
+                    control_requests
+                };
+                tx.send(RequestEnvelope::plain(request))
+                    .map_err(map_send_envelope_error)
+            }
+        }
+    }
+
+    async fn send_immediate_disconnect_async(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(ClientError::from),
+            RequestSender::WithNotice {
+                immediate_disconnect,
+                ..
+            } => immediate_disconnect
+                .send_async(RequestEnvelope::plain(request))
+                .await
+                .map_err(map_send_envelope_error),
+        }
+    }
+
+    fn send_immediate_disconnect(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.send(request).map_err(ClientError::from),
+            RequestSender::WithNotice {
+                immediate_disconnect,
+                ..
+            } => immediate_disconnect
                 .send(RequestEnvelope::plain(request))
                 .map_err(map_send_envelope_error),
+        }
+    }
+
+    fn try_send_immediate_disconnect(&self, request: Request) -> Result<(), ClientError> {
+        match &self.request_tx {
+            RequestSender::Plain(tx) => tx.try_send(request).map_err(ClientError::from),
+            RequestSender::WithNotice {
+                immediate_disconnect,
+                ..
+            } => immediate_disconnect
+                .try_send(RequestEnvelope::plain(request))
+                .map_err(map_try_send_envelope_error),
         }
     }
 
@@ -368,7 +453,11 @@ impl AsyncClient {
         &self,
         publish: Publish,
     ) -> Result<PublishNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -381,7 +470,11 @@ impl AsyncClient {
     }
 
     fn try_send_tracked_publish(&self, publish: Publish) -> Result<PublishNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -396,7 +489,11 @@ impl AsyncClient {
         &self,
         subscribe: Subscribe,
     ) -> Result<SubscribeNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -412,7 +509,11 @@ impl AsyncClient {
         &self,
         subscribe: Subscribe,
     ) -> Result<SubscribeNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -427,7 +528,11 @@ impl AsyncClient {
         &self,
         unsubscribe: Unsubscribe,
     ) -> Result<UnsubscribeNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -443,7 +548,11 @@ impl AsyncClient {
         &self,
         unsubscribe: Unsubscribe,
     ) -> Result<UnsubscribeNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -455,7 +564,11 @@ impl AsyncClient {
     }
 
     async fn send_tracked_auth_async(&self, auth: Auth) -> Result<AuthNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -468,7 +581,11 @@ impl AsyncClient {
     }
 
     fn send_tracked_auth(&self, auth: Auth) -> Result<AuthNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -480,7 +597,11 @@ impl AsyncClient {
     }
 
     fn try_send_tracked_auth(&self, auth: Auth) -> Result<AuthNotice, ClientError> {
-        let RequestSender::WithNotice(request_tx) = &self.request_tx else {
+        let RequestSender::WithNotice {
+            control_requests: request_tx,
+            ..
+        } = &self.request_tx
+        else {
             return Err(ClientError::TrackingUnavailable);
         };
 
@@ -1570,10 +1691,10 @@ impl AsyncClient {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -1592,10 +1713,10 @@ impl AsyncClient {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -1674,11 +1795,9 @@ impl AsyncClient {
 
     /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -1691,11 +1810,9 @@ impl AsyncClient {
 
     /// Sends a MQTT disconnect with properties immediately without waiting for in-flight requests.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -1738,7 +1855,7 @@ impl AsyncClient {
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
         let disconnect = Self::build_disconnect_packet(reason, properties);
-        self.send_request_async(Request::DisconnectNow(disconnect))
+        self.send_immediate_disconnect_async(Request::DisconnectNow(disconnect))
             .await?;
         Ok(())
     }
@@ -1752,10 +1869,10 @@ impl AsyncClient {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -1773,10 +1890,10 @@ impl AsyncClient {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -1853,11 +1970,9 @@ impl AsyncClient {
 
     /// Attempts to queue an immediate MQTT disconnect.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -1869,11 +1984,9 @@ impl AsyncClient {
 
     /// Attempts to queue an immediate MQTT disconnect with properties.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -1915,7 +2028,7 @@ impl AsyncClient {
         properties: Option<DisconnectProperties>,
     ) -> Result<(), ClientError> {
         let disconnect = Self::build_disconnect_packet(reason, properties);
-        self.try_send_request(Request::DisconnectNow(disconnect))?;
+        self.try_send_immediate_disconnect(Request::DisconnectNow(disconnect))?;
         Ok(())
     }
 
@@ -2420,10 +2533,10 @@ impl Client {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -2441,10 +2554,10 @@ impl Client {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -2521,11 +2634,9 @@ impl Client {
 
     /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -2537,11 +2648,9 @@ impl Client {
 
     /// Sends a MQTT disconnect with properties immediately without waiting for in-flight requests.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -2584,7 +2693,7 @@ impl Client {
     ) -> Result<(), ClientError> {
         let disconnect = AsyncClient::build_disconnect_packet(reason, properties);
         self.client
-            .send_request(Request::DisconnectNow(disconnect))?;
+            .send_immediate_disconnect(Request::DisconnectNow(disconnect))?;
         Ok(())
     }
 
@@ -2596,10 +2705,10 @@ impl Client {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -2617,10 +2726,10 @@ impl Client {
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. If the event loop is
-    /// blocked from reading new requests by a full `QoS` 1/ `QoS` 2 publish inflight
-    /// window or packet-id collision, graceful shutdown starts only after the
-    /// event loop observes this request.
+    /// This request uses the normal client request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
     ///
     /// # Errors
     ///
@@ -2694,11 +2803,9 @@ impl Client {
 
     /// Attempts to queue an immediate MQTT disconnect.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -2710,11 +2817,9 @@ impl Client {
 
     /// Attempts to queue an immediate MQTT disconnect with properties.
     ///
-    /// This request uses the normal client request channel and is not an
-    /// out-of-band transport abort. If the event loop is blocked from reading
-    /// new requests by a full `QoS` 1/ `QoS` 2 publish inflight window or packet-id
-    /// collision, the immediate disconnect is processed only after the event
-    /// loop observes this request.
+    /// This request uses a dedicated immediate shutdown channel, not the normal
+    /// application request channel. It may bypass queued application work and
+    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
     ///
     /// # Errors
     ///
@@ -3680,5 +3785,61 @@ mod test {
             .try_unsubscribe_tracked("hello/world")
             .expect_err("tracked try_unsubscribe should fail without tracked channel");
         assert!(matches!(err, ClientError::TrackingUnavailable));
+    }
+
+    #[test]
+    fn tracked_unsubscribe_uses_control_request_channel() {
+        let (requests, requests_rx) = flume::bounded(1);
+        let (control_requests, control_requests_rx) = flume::bounded(1);
+        let (immediate_disconnect, _immediate_disconnect_rx) = flume::unbounded();
+        let client = AsyncClient {
+            request_tx: RequestSender::WithNotice {
+                requests,
+                control_requests,
+                immediate_disconnect,
+            },
+        };
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime
+            .block_on(client.unsubscribe_tracked("hello/world"))
+            .expect("tracked unsubscribe should enqueue");
+
+        assert!(requests_rx.is_empty());
+        let envelope = control_requests_rx
+            .try_recv()
+            .expect("tracked unsubscribe should use control channel");
+        assert!(matches!(envelope.into_parts().0, Request::Unsubscribe(_)));
+    }
+
+    #[test]
+    fn tracked_auth_uses_control_request_channel() {
+        let (requests, requests_rx) = flume::bounded(1);
+        let (control_requests, control_requests_rx) = flume::bounded(1);
+        let (immediate_disconnect, _immediate_disconnect_rx) = flume::unbounded();
+        let client = AsyncClient {
+            request_tx: RequestSender::WithNotice {
+                requests,
+                control_requests,
+                immediate_disconnect,
+            },
+        };
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime
+            .block_on(client.reauth_tracked(None))
+            .expect("tracked auth should enqueue");
+
+        assert!(requests_rx.is_empty());
+        let envelope = control_requests_rx
+            .try_recv()
+            .expect("tracked auth should use control channel");
+        assert!(matches!(envelope.into_parts().0, Request::Auth(_)));
     }
 }
