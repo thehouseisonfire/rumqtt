@@ -4,8 +4,8 @@
 
 - Source: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html
 - Spec version: 5.0
-- Source Last-Modified: Thu, 07 Mar 2019 17:00:00 GMT
-- Generated (UTC): 2026-03-04T03:30:32+00:00
+- Source Last-Modified: Tue, 21 Apr 2026 10:58:17 GMT
+- Generated (UTC): 2026-05-05T17:50:55+00:00
 - Unique requirements: 252
 
 ## Section Index
@@ -348,7 +348,7 @@ Compliance digest: 7 requirement IDs extracted and mapped to candidate implement
 | MQTT-3.1.3-2 | MUST | The Client Identifier (ClientID) identifies the Client to the Server. Each Client connecting to the Server has a unique ClientID. The ClientID MUST be used by Clients and by Servers to identify state that they hold relating to this MQTT Session between the Client and the Server . | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc385349242) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
 | MQTT-3.1.3-3 | MUST | The ClientID MUST be present and is the first field in the CONNECT packet Payload . | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
 | MQTT-3.1.3-4 | MUST | The ClientID MUST be a UTF-8 Encoded String as defined in section 1.5.4 . | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
-| MQTT-3.1.3-5 | UNSPECIFIED | "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" . | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
+| MQTT-3.1.3-5 | MUST | "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" . | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
 | MQTT-3.1.3-6 | MAY | A Server MAY allow a Client to supply a ClientID that has a length of zero bytes, however if it does so the Server MUST treat this as a special case and assign a unique ClientID to that Client . It MUST then process the CONNECT packet as if the Client had provided that unique... | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
 | MQTT-3.1.3-7 | MAY | A Server MAY allow a Client to supply a ClientID that has a length of zero bytes, however if it does so the Server MUST treat this as a special case and assign a unique ClientID to that Client . It MUST then process the CONNECT packet as if the Client had provided that unique... | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
 | MQTT-3.1.3-8 | MAY | If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection . | [_Toc473620032](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc473620032) | rumqttc-v5/src/mqttbytes/v5/connect.rs | unreviewed |
@@ -1166,6 +1166,6 @@ Compliance digest: 2 requirement IDs extracted and mapped to candidate implement
 
 | ID | Obligation | Summary | Anchor | Candidate Code | Mapping Status |
 | --- | --- | --- | --- | --- | --- |
-| MQTT-3.2.2-8 | UNSPECIFIED |  | [AppendixB](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#AppendixB) | rumqttc-v5/tests<br>rumqttc-v5/src/mqttbytes/v5 | unreviewed |
-| MQTT-4.2.0-1 | UNSPECIFIED |  | [AppendixB](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#AppendixB) | rumqttc-v5/tests<br>rumqttc-v5/src/mqttbytes/v5 | unreviewed |
+| MQTT-3.2.2-8 | MUST |  | [AppendixB](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#AppendixB) | rumqttc-v5/tests<br>rumqttc-v5/src/mqttbytes/v5 | unreviewed |
+| MQTT-4.2.0-1 | MUST |  | [AppendixB](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#AppendixB) | rumqttc-v5/tests<br>rumqttc-v5/src/mqttbytes/v5 | unreviewed |
 

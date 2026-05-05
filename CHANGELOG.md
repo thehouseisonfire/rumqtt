@@ -5,6 +5,8 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- Spec generator: recover obligation keywords only from tightly local split clauses (adjacent unfinished paragraph fragments or the same table row), and only allow section `7` conformance duplicates to backfill earlier `UNSPECIFIED` requirements when the original occurrence is just a placeholder bare-ID reference. This preserves correct labels such as `MQTT-3.1.3-5 = MUST` and the v3 QoS 1/2 reference-only entries, without reintroducing wrapper bleed-through or appendix-driven mislabeling such as `MQTT-3.1.2-12` in v5.
+
 ### Security
 
 ---
