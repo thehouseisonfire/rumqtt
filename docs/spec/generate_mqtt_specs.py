@@ -285,6 +285,56 @@ def mapping_for_section(version: str, section_number: str, section_title: str) -
     return [fallback_root], f"Fallback mapping for section {section_number} ({section_title})."
 
 
+def is_conformance_section(section_number: str) -> bool:
+    return section_number == "7" or section_number.startswith("7.")
+
+
+def is_placeholder_summary(summary: str) -> bool:
+    return not summary or summary == "."
+
+
+def find_obligation_with_lookback(node: Any, text: str) -> str:
+    """Find the obligation keyword for a requirement-bearing node.
+
+    Most requirements embed the ID and normative keyword in the same element,
+    but some source tables place the ID in one cell and the clause text in an
+    adjacent cell. Some clauses are also split across consecutive paragraph
+    elements, where the requirement-bearing paragraph is only the trailing
+    fragment of an unfinished sentence. Restrict fallback inference to these
+    tightly local structures so standalone paragraphs do not inherit unrelated
+    keywords from wrapper elements or appendix duplicates.
+    """
+    obligation_match = NORMATIVE_RE.search(text)
+    if obligation_match:
+        return obligation_match.group(1)
+
+    prev = node.getprevious()
+    if prev is not None:
+        prev_text = normalize_text(prev.text_content())
+        current_text = normalize_text(REQUIREMENT_RE.sub("", text))
+        tail_fragment = re.split(r'(?<=[.!?;:])\s+', prev_text)[-1]
+        tail_fragment = normalize_text(REQUIREMENT_RE.sub("", tail_fragment))
+        if (
+            prev.tag == node.tag
+            and prev_text
+            and current_text
+            and tail_fragment
+            and not re.search(r'[.!?;:]["\')\]]?$', prev_text)
+        ):
+            obligation_match = NORMATIVE_RE.search(f"{tail_fragment} {current_text}")
+            if obligation_match:
+                return obligation_match.group(1)
+
+    row = node.xpath("ancestor::tr[1]")
+    if row:
+        row_text = normalize_text(row[0].text_content())
+        obligation_match = NORMATIVE_RE.search(row_text)
+        if obligation_match:
+            return obligation_match.group(1)
+
+    return "UNSPECIFIED"
+
+
 def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) -> list[dict[str, Any]]:
     all_nodes = list(doc.iter())
     node_index = {id(node): i for i, node in enumerate(all_nodes)}
@@ -321,8 +371,7 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
         if not local_anchor:
             local_anchor = section.anchor
 
-        obligation_match = NORMATIVE_RE.search(text)
-        obligation = obligation_match.group(1) if obligation_match else "UNSPECIFIED"
+        obligation = find_obligation_with_lookback(node, text)
         summary = clean_summary(text)
 
         for req_id in req_ids:
@@ -345,7 +394,14 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
                 requirement_items[req_id] = req
             else:
                 req["occurrences"] += 1
-                if req["obligation"] == "UNSPECIFIED" and obligation != "UNSPECIFIED":
+                if (
+                    req["obligation"] == "UNSPECIFIED"
+                    and obligation != "UNSPECIFIED"
+                    and (
+                        not is_conformance_section(section.number)
+                        or is_placeholder_summary(req["summary"])
+                    )
+                ):
                     req["obligation"] = obligation
 
     requirements = sorted(requirement_items.values(), key=lambda item: requirement_sort_key(item["id"]))

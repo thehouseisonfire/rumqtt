@@ -4,8 +4,8 @@
 
 - Source: https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
 - Spec version: 3.1.1
-- Source Last-Modified: Wed, 29 Oct 2014 16:00:00 GMT
-- Generated (UTC): 2026-03-04T03:30:32+00:00
+- Source Last-Modified: Sun, 05 Apr 2026 13:50:05 GMT
+- Generated (UTC): 2026-05-05T17:50:55+00:00
 - Unique requirements: 139
 
 ## Section Index
@@ -221,7 +221,7 @@ Compliance digest: 8 requirement IDs extracted and mapped to candidate implement
 | MQTT-3.1.3-2 | MUST | The Client Identifier (ClientId) identifies the Client to the Server. Each Client connecting to the Server has a unique ClientId. The ClientId MUST be used by Clients and by Servers to identify state that they hold relating to this MQTT Session between the Client and the Server . | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
 | MQTT-3.1.3-3 | MUST | The Client Identifier (ClientId) MUST be present and MUST be the first field in the CONNECT packet payload . | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
 | MQTT-3.1.3-4 | MUST | The ClientId MUST be a UTF-8 encoded string as defined in Section 1.5.3 . The Server MUST allow ClientIds which are between 1 and 23 UTF-8 encoded bytes in length, and that contain only the characters | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
-| MQTT-3.1.3-5 | UNSPECIFIED | "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" . | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
+| MQTT-3.1.3-5 | MUST | "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" . | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
 | MQTT-3.1.3-6 | MAY | The Server MAY allow ClientId’s that contain more than 23 encoded bytes. The Server MAY allow ClientId’s that contain characters not included in the list given above. A Server MAY allow a Client to supply a ClientId that has a length of zero bytes, however if it does so the Se... | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
 | MQTT-3.1.3-7 | MAY | The Server MAY allow ClientId’s that contain more than 23 encoded bytes. The Server MAY allow ClientId’s that contain characters not included in the list given above. A Server MAY allow a Client to supply a ClientId that has a length of zero bytes, however if it does so the Se... | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
 | MQTT-3.1.3-8 | MAY | The Server MAY allow ClientId’s that contain more than 23 encoded bytes. The Server MAY allow ClientId’s that contain characters not included in the list given above. A Server MAY allow a Client to supply a ClientId that has a length of zero bytes, however if it does so the Se... | [_Toc385349242](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349242) | rumqttc-v4/src/mqttbytes/v4/connect.rs | unreviewed |
@@ -378,8 +378,8 @@ Compliance digest: 6 requirement IDs extracted and mapped to candidate implement
 | MQTT-3.8.4-2 | MUST | When the Server receives a SUBSCRIBE Packet from a Client, the Server MUST respond with a SUBACK Packet . The SUBACK Packet MUST have the same Packet Identifier as the SUBSCRIBE Packet that it is acknowledging . | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
 | MQTT-3.8.4-3 | MUST | If a Server receives a SUBSCRIBE Packet containing a Topic Filter that is identical to an existing Subscription’s Topic Filter then it MUST completely replace that existing Subscription with a new Subscription. The Topic Filter in the new Subscription will be identical to that... | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
 | MQTT-3.8.4-4 | MUST | If a Server receives a SUBSCRIBE packet that contains multiple Topic Filters it MUST handle that packet as if it had received a sequence of multiple SUBSCRIBE packets, except that it combines their responses into a single SUBACK response . | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
-| MQTT-3.8.4-5 | MUST | The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/ QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed . | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
-| MQTT-3.8.4-6 | MUST | The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/ QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed . | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
+| MQTT-3.8.4-5 | MUST | The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed . | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
+| MQTT-3.8.4-6 | MUST | The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed . | [_Toc384800440](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800440) | rumqttc-v4/src/mqttbytes/v4/subscribe.rs | unreviewed |
 
 ### 3.9.3 Payload
 
@@ -469,8 +469,8 @@ Compliance digest: 2 requirement IDs extracted and mapped to candidate implement
 
 | ID | Obligation | Summary | Anchor | Candidate Code | Mapping Status |
 | --- | --- | --- | --- | --- | --- |
-| MQTT-4.3.2-1 | UNSPECIFIED | . | [_Ref384138490](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138490) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
-| MQTT-4.3.2-2 | UNSPECIFIED | . | [_Ref384138490](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138490) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
+| MQTT-4.3.2-1 | MUST | . | [_Ref384138490](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138490) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
+| MQTT-4.3.2-2 | MUST | . | [_Ref384138490](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138490) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
 
 ### 4.3.3 QoS 2: Exactly once delivery
 
@@ -478,8 +478,8 @@ Compliance digest: 2 requirement IDs extracted and mapped to candidate implement
 
 | ID | Obligation | Summary | Anchor | Candidate Code | Mapping Status |
 | --- | --- | --- | --- | --- | --- |
-| MQTT-4.3.3-1 | UNSPECIFIED | . | [_Ref384138602](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138602) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
-| MQTT-4.3.3-2 | UNSPECIFIED | . | [_Ref384138602](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138602) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
+| MQTT-4.3.3-1 | MUST | . | [_Ref384138602](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138602) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
+| MQTT-4.3.3-2 | MUST | . | [_Ref384138602](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Ref384138602) | rumqttc-v4/src/state.rs<br>rumqttc-v4/src/eventloop.rs<br>rumqttc-v4/src/client.rs<br>mqttbytes-core/src/topic.rs | unreviewed |
 
 ### 4.4 Message delivery retry
 
@@ -597,6 +597,6 @@ Compliance digest: 2 requirement IDs extracted and mapped to candidate implement
 
 | ID | Obligation | Summary | Anchor | Candidate Code | Mapping Status |
 | --- | --- | --- | --- | --- | --- |
-| MQTT-3.3.1-1 | UNSPECIFIED |  | [_Toc384800507](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800507) | rumqttc-v4/tests<br>rumqttc-v4/src/mqttbytes/v4 | unreviewed |
+| MQTT-3.3.1-1 | MUST |  | [_Toc384800507](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800507) | rumqttc-v4/tests<br>rumqttc-v4/src/mqttbytes/v4 | unreviewed |
 | MQTT-7.1.2-1 | MUST | A conformant Client MUST support the use of one or more underlying transport protocols that provide an ordered, lossless, stream of bytes from the Client to Server and Server to Client . However conformance does not depend on it supporting any specific transport protocols. | [_Toc384800505](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc384800505) | rumqttc-v4/tests<br>rumqttc-v4/src/mqttbytes/v4 | unreviewed |
 
