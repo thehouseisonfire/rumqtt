@@ -5,6 +5,9 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5 codecs: Enforce MQTT UTF-8 string validation on read/write paths, rejecting malformed UTF-8 and U+0000 in MQTT strings, including publish topics, will topics, subscribe filters, and unsubscribe filters.
+- `rumqttc` v4/v5: Prevent packet identifier reuse across publish, `PUBREL`, subscribe, and unsubscribe flows, returning state errors instead of silently colliding identifiers.
+- `rumqttc` v4/v5: Reject zero packet identifiers and unsolicited ACK/`PUBREL` packets in codec/state handling, including tracked `SUBACK`/`UNSUBACK` and manual `PUBACK`/`PUBREC` acknowledgement flows.
 - Spec generator: recover obligation keywords only from tightly local split clauses (adjacent unfinished paragraph fragments or the same table row), and only allow section `7` conformance duplicates to backfill earlier `UNSPECIFIED` requirements when the original occurrence is just a placeholder bare-ID reference. This preserves correct labels such as `MQTT-3.1.3-5 = MUST` and the v3 QoS 1/2 reference-only entries, without reintroducing wrapper bleed-through or appendix-driven mislabeling such as `MQTT-3.1.2-12` in v5.
 
 ### Security
