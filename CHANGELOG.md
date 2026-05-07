@@ -2,6 +2,7 @@
 
 ### Added
 ### Changed
+- `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
 ### Deprecated
 ### Removed
 ### Fixed

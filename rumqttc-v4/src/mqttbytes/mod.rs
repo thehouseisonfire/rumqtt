@@ -101,13 +101,6 @@ pub enum PacketType {
     Disconnect,
 }
 
-/// Protocol type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Protocol {
-    V4,
-    V5,
-}
-
 /// Packet type from a byte
 ///
 /// ```text

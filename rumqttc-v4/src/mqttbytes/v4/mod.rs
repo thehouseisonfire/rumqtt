@@ -1,6 +1,6 @@
 use super::{
-    BufMut, BytesMut, Error, FixedHeader, PacketType, Protocol, QoS, check, fmt, qos,
-    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, write_mqtt_bytes, write_mqtt_string,
+    BufMut, BytesMut, Error, FixedHeader, PacketType, QoS, check, fmt, qos, read_mqtt_bytes,
+    read_mqtt_string, read_u8, read_u16, write_mqtt_bytes, write_mqtt_string,
     write_remaining_length,
 };
 

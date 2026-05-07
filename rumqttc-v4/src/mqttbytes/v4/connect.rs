@@ -1,15 +1,12 @@
 use super::{
-    BufMut, BytesMut, Error, FixedHeader, Protocol, QoS, len_len, qos, read_mqtt_bytes,
-    read_mqtt_string, read_u8, read_u16, write_mqtt_bytes, write_mqtt_string,
-    write_remaining_length,
+    BufMut, BytesMut, Error, FixedHeader, QoS, len_len, qos, read_mqtt_bytes, read_mqtt_string,
+    read_u8, read_u16, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
 /// Connection packet initiated by the client
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connect {
-    /// Mqtt protocol version
-    pub protocol: Protocol,
     /// Mqtt keep alive time
     pub keep_alive: u16,
     /// Client Id
@@ -25,7 +22,6 @@ pub struct Connect {
 impl Connect {
     pub fn new<S: Into<String>>(id: S) -> Self {
         Self {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: id.into(),
             clean_session: true,
@@ -93,11 +89,9 @@ impl Connect {
             return Err(Error::InvalidProtocol);
         }
 
-        let protocol = match protocol_level {
-            4 => Protocol::V4,
-            5 => Protocol::V5,
-            num => return Err(Error::InvalidProtocolLevel(num)),
-        };
+        if protocol_level != 4 {
+            return Err(Error::InvalidProtocolLevel(protocol_level));
+        }
 
         let connect_flags = read_u8(&mut bytes)?;
         validate_connect_flags(connect_flags)?;
@@ -109,7 +103,6 @@ impl Connect {
         let auth = ConnectAuth::read(connect_flags, &mut bytes)?;
 
         let connect = Self {
-            protocol,
             keep_alive,
             client_id,
             clean_session,
@@ -126,10 +119,7 @@ impl Connect {
         let count = write_remaining_length(buffer, len)?;
         write_mqtt_string(buffer, "MQTT")?;
 
-        match self.protocol {
-            Protocol::V4 => buffer.put_u8(0x04),
-            Protocol::V5 => buffer.put_u8(0x05),
-        }
+        buffer.put_u8(0x04);
 
         let flags_index = 1 + count + 2 + 4 + 1;
 
@@ -379,7 +369,6 @@ mod test {
         assert_eq!(
             packet,
             Connect {
-                protocol: Protocol::V4,
                 keep_alive: 10,
                 client_id: "test".to_owned(),
                 clean_session: true,
@@ -441,7 +430,6 @@ mod test {
     #[test]
     fn connect_encoding_works() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,
@@ -491,10 +479,92 @@ mod test {
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 
+    /// MQTT-3.1.2-2: Protocol Level for v3.1.1 MUST be 4 (0x04).
+    #[test]
+    fn connect_parsing_rejects_invalid_protocol_level() {
+        let packetstream: Vec<u8> = [
+            0x10, 14, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T',
+            0x03, // protocol name "MQTT" + invalid level 3
+            0x02, // connect flags: clean session only
+            0x00, 0x0a, // keep alive = 10
+            0x00, 0x04, b't', b'e', b's', b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::InvalidProtocolLevel(3))));
+    }
+
+    /// MQTT-3.1.2-2: The v3.1.1 codec must reject MQTT 5 CONNECT packets.
+    #[test]
+    fn connect_parsing_rejects_protocol_level_5() {
+        let packetstream: Vec<u8> = [
+            0x10, 14, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, // protocol name "MQTT" + level 5
+            0x02, // connect flags: clean session only
+            0x00, 0x0a, // keep alive = 10
+            0x00, 0x04, b't', b'e', b's', b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::InvalidProtocolLevel(5))));
+    }
+
+    /// MQTT-3.1.2-2: Protocol Level for v3.1.1 MUST be 4 (0x04).
+    #[test]
+    fn connect_encoding_emits_protocol_level_4() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        // After fixed header (1 byte type + 1 byte remaining length) and
+        // protocol name (2 byte length + 4 byte "MQTT"), the protocol level
+        // byte sits at index 8.
+        assert_eq!(buf[8], 0x04);
+    }
+
+    /// MQTT-3.1.2-3: CONNECT flags bit 0 is reserved and must encode as zero.
+    #[test]
+    fn connect_encoding_emits_zero_reserved_connect_flag_bit() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: Some(LastWill::new("/a", "offline", QoS::AtLeastOnce, true)),
+            auth: ConnectAuth::UsernamePassword {
+                username: "rust".to_owned(),
+                password: Bytes::from_static(b"mq"),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        assert_eq!(buf[9] & 0x01, 0);
+    }
+
     #[test]
     fn connect_encoding_with_password_and_empty_username_writes_zero_len_username() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,
@@ -526,7 +596,6 @@ mod test {
     #[test]
     fn connect_roundtrips_binary_password() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,
@@ -555,7 +624,6 @@ mod test {
     #[test]
     fn connect_roundtrips_username_only_auth() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,
@@ -582,7 +650,6 @@ mod test {
     #[test]
     fn connect_roundtrips_explicitly_empty_password() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,
@@ -634,7 +701,6 @@ mod test {
     #[test]
     fn connect_encoding_rejects_null_character_in_client_id() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "a\0b".to_owned(),
             clean_session: true,
@@ -651,7 +717,6 @@ mod test {
     #[test]
     fn connect_encoding_rejects_null_character_in_will_topic() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,
@@ -673,7 +738,6 @@ mod test {
     #[test]
     fn connect_encoding_rejects_null_character_in_username() {
         let connect = Connect {
-            protocol: Protocol::V4,
             keep_alive: 10,
             client_id: "test".to_owned(),
             clean_session: true,

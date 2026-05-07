@@ -685,8 +685,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Client encode path: Connect::write() hardcodes buffer.put_u8(0x05) with no conditional branching, so the v5 client always sends protocol version 5. The Connect struct has no protocol field that callers can modify. Decode path: Connect::read() checks protocol_level != 5 and returns Error::InvalidProtocolLevel. The client also handles CONNACK UnsupportedProtocolVersion (reason code 0x84) via the eventloop's connection error path. The obligation is MAY (server may reject), so the client-side requirement is simply to send the correct version, which it does.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() hardcodes 0x05 as the protocol version byte with no conditional. Connect::read() rejects protocol_level != 5 with Error::InvalidProtocolLevel."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner() constructs Connect directly without any protocol version field; the write method always emits 0x05."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnectReturnCode::UnsupportedProtocolVersion", "connect_return"],
+          "reason": "ConnAck decode maps reason code 132 (0x84) to UnsupportedProtocolVersion. The eventloop treats non-Success ConnAck as a connection error."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_invalid_protocol_level", "connect_encoding_emits_protocol_level_5"],
+        "notes": "Dedicated tests cover Connect::read() rejecting invalid protocol level 4 and Connect::write() emitting 0x05."
+      },
+      "follow_up": "No follow-up needed. Dedicated tests added for protocol version encoding and decode rejection."
     },
     {
       "id": "MQTT-3.1.2-3",
@@ -699,8 +723,22 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is server-side because it says the Server must validate malformed CONNECT flags and handle the Malformed Packet. The client crate cannot implement the server-side error-handling obligation. Client-side packet behavior is correct: Connect::write() starts connect_flags at 0 and only ORs in defined bits (clean_start=0x02, will flag=0x04, will QoS bits 3-4, will retain=0x20, username=0x80, password=0x40), so bit 0 (reserved) is always 0. Decode path: validate_connect_flags() checks (connect_flags & 0x01) != 0 and returns Error::IncorrectPacketFormat if set.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "validate_connect_flags"],
+          "reason": "Connect::write() initializes connect_flags=0 and only sets defined flag bits, guaranteeing bit 0 is 0. validate_connect_flags() rejects inbound CONNECT packets with the reserved bit set."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["connect_parsing_rejects_reserved_connect_flag_bit", "connect_encoding_emits_zero_reserved_connect_flag_bit"],
+        "notes": "The server-side Malformed Packet handling obligation is not testable in this client crate. Related client codec tests explicitly cover decode rejection of reserved bit=1 and encoding bit 0=0."
+      },
+      "follow_up": "No follow-up needed for the client codec. The server-side Malformed Packet handling obligation remains outside this client crate."
     },
     {
       "id": "MQTT-3.1.2-4",
@@ -713,8 +751,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement has both client-side and server-side session lifecycle obligations when Clean Start=1. The client-side obligation is met by encoding Clean Start=1 when requested, rejecting an invalid successful CONNACK that reports session_present=true for a clean start, and discarding local pending session state when the server reports a new session with session_present=false. The server's own discard/start-new-session obligation remains outside this client crate.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() encodes clean_start as bit 1 of connect flags. Connect::read() decodes the same bit."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["reconcile_connack_session", "reset_session_state", "mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner() sets connect.clean_start from MqttOptions. reconcile_connack_session() rejects clean_start=true with session_present=true and calls reset_session_state() when the server reports session_present=false, discarding local pending session state for the new clean session."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connack_reconcile_rejects_clean_start_with_session_present", "connack_reconcile_resets_pending_when_clean_start_gets_new_session"],
+        "notes": "These client tests cover CONNACK validation and local pending-state discard for Clean Start=1. The server discard/start-new-session obligation itself is not testable in this client crate."
+      },
+      "follow_up": "No follow-up needed for the client behavior. The server-side session lifecycle obligation remains outside this client crate."
     },
     {
       "id": "MQTT-3.1.2-5",
@@ -727,8 +784,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement specifies server-side session resumption behavior when Clean Start=0. The client's responsibilities are limited to: (1) correctly encoding the Clean Start flag in the CONNECT packet, which Connect::write() does by leaving bit 1 clear when clean_start=false; (2) handling the CONNACK session_present flag appropriately, which the eventloop does via reconcile_connack_session(). The actual session resumption logic is entirely server-side and outside the client's control.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() correctly encodes clean_start as bit 1 of connect flags, including leaving it clear for clean_start=false. Connect::read() correctly decodes it."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["reconcile_connack_session", "mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner() sets connect.clean_start from MqttOptions. reconcile_connack_session() preserves pending state when a resumed session is present and resets it when the server reports no session."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["connack_reconcile_resets_pending_when_resumed_session_is_missing", "connack_reconcile_keeps_pending_when_resumed_session_exists"],
+        "notes": "The client correctly encodes Clean Start=0 and preserves or resets pending state based on the server's session_present response, but the core requirement (server must resume/create session) is server-only and not testable from the client side."
+      },
+      "follow_up": "No follow-up needed. The requirement is server-only; the client correctly encodes and handles the related flags."
     },
     {
       "id": "MQTT-3.1.2-6",
@@ -741,8 +817,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This duplicate requirement specifies the same server-side session resumption behavior as MQTT-3.1.2-5 when Clean Start=0. The client's responsibilities are limited to correctly encoding the Clean Start flag in CONNECT and reconciling the server's CONNACK session_present response; server resume/create behavior is outside the client's control.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() encodes clean_start as bit 1 of connect flags, including leaving it clear for clean_start=false. Connect::read() decodes the same bit."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["reconcile_connack_session", "mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner() sets connect.clean_start from MqttOptions. reconcile_connack_session() preserves pending state when a resumed session is present and resets it when the server reports no session."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["connack_reconcile_resets_pending_when_resumed_session_is_missing", "connack_reconcile_keeps_pending_when_resumed_session_exists"],
+        "notes": "These client tests cover handling of the server's session_present response for Clean Start=0. The server resume/create obligation itself is not testable in this client crate."
+      },
+      "follow_up": "No follow-up needed. This duplicate requirement is server-only; related client behavior is covered."
     },
     {
       "id": "MQTT-3.1.2-7",
