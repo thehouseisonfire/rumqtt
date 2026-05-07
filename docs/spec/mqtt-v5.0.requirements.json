@@ -850,8 +850,22 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement obligates the Server to store the Will Message and associate it with the Session. The client's responsibility is limited to correctly encoding the Will Flag and Will data (Properties, Topic, Payload) in the CONNECT packet, which is covered by MQTT-3.1.2-9. The storage and lifecycle of the Will Message on the server side is outside the responsibility of a client implementation.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "LastWill::write"],
+          "reason": "The client correctly encodes the Will Flag (bit 2) and Will Properties/Topic/Payload when will is Some, but the obligation to store the Will Message on the server rests entirely on the server."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side Will Message storage cannot be tested in a client crate."
+      },
+      "follow_up": "No follow-up needed. The client-side encoding is covered by MQTT-3.1.2-9."
     },
     {
       "id": "MQTT-3.1.2-8",
@@ -864,8 +878,22 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-7 with identical summary text. Same analysis applies: this is a server-side storage obligation. The client's encoding of Will data is covered by MQTT-3.1.2-9.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "LastWill::write"],
+          "reason": "Same evidence as MQTT-3.1.2-7. Client encodes Will Flag and Will data correctly; storage obligation is server-only."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Duplicate of MQTT-3.1.2-7. Server-side obligation."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.2-9",
@@ -878,8 +906,37 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement has both client-applicable and server-only clauses. The compliant status applies to the client-applicable clause: if Will Flag=1, Will Properties, Will Topic, and Will Payload MUST be present in the payload. The server-only clause (Will Message removal from stored Session State after publish or DISCONNECT) is outside client responsibility. For the client-applicable clause: Connect::write only sets the Will Flag bit when will is Some; LastWill struct requires topic: Bytes, message: Bytes, and properties: Option<LastWillProperties>; LastWill::write always serializes properties (writing 0-length if None), topic, and message. LastWill::read reads all three fields when Will Flag is set, and Connect::read rejects remaining payload bytes after reading the fields selected by the CONNECT flags.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "LastWill::write"],
+          "reason": "Connect::write conditionally sets Will Flag bit only when will is Some. LastWill::write always serializes properties (0-length if None), topic, and message, and sets the Will Flag + QoS + Retain bits."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read"],
+          "reason": "LastWill::read checks connect_flags & 0b100 for the Will Flag. When set, it reads Will Properties, will_topic, and will_message."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill"],
+          "reason": "LastWill struct requires topic: Bytes, message: Bytes, and properties: Option<LastWillProperties>, making it impossible to construct a LastWill without topic and payload. Properties can be None (encoded as 0-length property section per MQTT v5 spec)."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "After decoding Client Identifier, optional Will fields, and optional authentication fields according to the CONNECT flags, rejects any remaining bytes with Error::IncorrectPacketFormat."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_roundtrips_last_will", "connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_set_without_will_topic", "last_will_encoding_writes_zero_length_properties_when_none"],
+        "notes": "Tests cover: round-trip encoding/decoding with Will Flag set; encoding without will produces zero Will bits; decoding with Will Flag=1 but missing Will data is rejected; zero-length Will Properties encoding when None round-trips correctly."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-10",
@@ -892,8 +949,22 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-9 with identical summary text. The compliant status applies only to the client-applicable clause: Will Properties/Topic/Payload MUST be present when Will Flag=1. The server-only clause (Will Message removal after publish or DISCONNECT) is outside client responsibility.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "LastWill::write", "LastWill::read", "LastWill"],
+          "reason": "Same evidence as MQTT-3.1.2-9. Client correctly encodes/decodes Will Flag and Will data; server-side removal obligation is not applicable."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_roundtrips_last_will", "connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_set_without_will_topic", "last_will_encoding_writes_zero_length_properties_when_none"],
+        "notes": "Duplicate of MQTT-3.1.2-9. Same focused tests cover the client-relevant Will data presence and encoding behavior."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-11",
@@ -906,8 +977,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: Connect::write() only sets Will QoS bits inside `if let Some(w) = will`, so when will is None the Will QoS bits in connect_flags remain 0. Decode path: LastWill::read() checks (connect_flags & 0b0011_1000) != 0 when connect_flags & 0b100 == 0 (Will Flag=0), which includes Will QoS bits (0b11000). Returns Error::IncorrectPacketFormat if Will QoS is non-zero when Will Flag=0. Returns None without reading Will data when all Will-related bits are 0.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Encode: Will QoS bits are only set inside `if let Some(w) = will`, so when will is None the Will QoS bits in connect_flags remain 0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read"],
+          "reason": "Decode: when Will Flag=0 (connect_flags & 0b100 == 0), checks (connect_flags & 0b0011_1000) != 0 which includes Will QoS bits (0b11000). Returns Error::IncorrectPacketFormat if Will QoS is non-zero. Returns None without consuming Will data when all are 0."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_qos_1"],
+        "notes": "Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will QoS=1."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-12",
@@ -920,8 +1010,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: LastWill::write() uses (self.qos as u8) << 3. The QoS enum only has variants AtMostOnce=0, AtLeastOnce=1, ExactlyOnce=2, so qos as u8 can never produce 3. Decode path: LastWill::read() extracts Will QoS as (connect_flags & 0b11000) >> 3 and passes it to qos(qos_num).ok_or(Error::InvalidQoS(qos_num)). The mqttbytes_core::qos function returns None for value 3, so the decode rejects Will QoS=3 with Error::InvalidQoS(3), which is the correct Malformed Packet handling per v5 section 4.13.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::write"],
+          "reason": "Encode: uses (self.qos as u8) << 3. QoS enum discriminants are 0, 1, 2 only — value 3 is impossible at the type level."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read"],
+          "reason": "Decode: extracts qos_num = (connect_flags & 0b11000) >> 3, then qos(qos_num).ok_or(Error::InvalidQoS(qos_num)). Value 3 maps to None, producing Error::InvalidQoS(3)."
+        },
+        {
+          "path": "mqttbytes-core/src/qos.rs",
+          "symbols": ["qos", "QoS"],
+          "reason": "qos(3) returns None because QoS only defines AtMostOnce=0, AtLeastOnce=1, ExactlyOnce=2."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_will_qos_3"],
+        "notes": "Decode test verifies Will QoS=3 is rejected with Error::InvalidQoS(3). Encode-side coverage is implicit from the QoS enum having no variant for value 3."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-13",
@@ -934,8 +1048,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement has both client-applicable and server-only clauses. The compliant status applies to the client-applicable clause: if Will Flag=0, Will Retain MUST be 0. Encode: Connect::write() only sets Will Retain bit inside `if let Some(w) = will`, so when will is None the Will Retain bit remains 0. Decode: LastWill::read() checks (connect_flags & 0b0011_1000) != 0 when Will Flag=0, which includes Will Retain bit (0b0010_0000). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0. The server-only clauses requiring the Server to publish the Will Message as retained or non-retained are outside client responsibility. The client correctly encodes the Will Retain flag for the server to consume.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Encode: Will Retain bit (0x20) is only set inside `if let Some(w) = will` via LastWill::write(), so when will is None the Will Retain bit stays 0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read"],
+          "reason": "Decode: when Will Flag=0, checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit (0b0010_0000). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::write"],
+          "reason": "Encode: sets connect_flags |= 0x20 only when self.retain is true, which is only reachable when will is Some. The client correctly encodes Will Retain for the server to act on."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_retain"],
+        "notes": "Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will Retain=1. Server-side Will Message publishing behavior (clauses 2-3) cannot be tested in a client crate."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-14",
@@ -948,8 +1086,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-13 (identical summary and obligation). The compliant status applies only to the client-applicable clause: if Will Flag=0, Will Retain MUST be 0. Encode: Connect::write() only sets Will Retain bit (0x20) inside `if let Some(w) = will`, so when will is None the bit stays 0. Decode: LastWill::read() checks (connect_flags & 0b0011_1000) != 0 when Will Flag=0, which includes Will Retain bit (0x20), returning Error::IncorrectPacketFormat. Server-side publishing obligations are outside client responsibility. The client correctly encodes the Will Retain flag for the server to consume.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Encode: Will Retain bit (0x20) is only set inside `if let Some(w) = will` via LastWill::write(), so when will is None the Will Retain bit stays 0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read"],
+          "reason": "Decode: when Will Flag=0 (connect_flags & 0b100 == 0), checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit (0x20). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::write"],
+          "reason": "Encode: sets connect_flags |= 0x20 only when self.retain is true, which is only reachable when will is Some. The client correctly encodes Will Retain for the server to act on."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_retain"],
+        "notes": "Same tests as MQTT-3.1.2-13. Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will Retain=1. Server-side Will Message publishing behavior (clauses 2-3) cannot be tested in a client crate."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-15",
@@ -962,8 +1124,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-13 and MQTT-3.1.2-14 (identical summary and obligation). The compliant status applies only to the client-applicable clause: if Will Flag=0, Will Retain MUST be 0. Evidence is identical: the client-applicable clause is fully enforced on encode and decode paths. Server-side publishing obligations are outside client responsibility.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Same evidence as MQTT-3.1.2-13. Encode: Will Retain bit (0x20) is only set inside `if let Some(w) = will`, so when will is None the Will Retain bit stays 0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read"],
+          "reason": "Same evidence as MQTT-3.1.2-13. Decode: when Will Flag=0, checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit (0x20). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::write"],
+          "reason": "Same evidence as MQTT-3.1.2-13. Encode: sets connect_flags |= 0x20 only when self.retain is true, which is only reachable when will is Some."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_retain"],
+        "notes": "Same tests as MQTT-3.1.2-13 and MQTT-3.1.2-14. Encode test verifies all Will bits are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will Retain=1."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-16",
@@ -1621,8 +1807,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement obligates the Server to reject a CONNECT with a Will QoS exceeding its capabilities, close the Network Connection, and SHOULD use CONNACK reason code 0x9B. The client's responsibility is limited to correctly encoding the Will QoS in the CONNECT packet (covered by MQTT-3.1.2-12) and being able to decode a CONNACK reason code if the server sends one. The v5 client can decode ConnectReturnCode::QoSNotSupported (0x9B/155) from a CONNACK response, but the obligation to reject and close is entirely server-side.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["connect_return", "ConnectReturnCode::QoSNotSupported"],
+          "reason": "The client can decode CONNACK reason code 0x9B (155) as ConnectReturnCode::QoSNotSupported. The server-side behavior is to reject and close; using this specific reason code is recommended by SHOULD."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::write", "LastWill::read"],
+          "reason": "The client correctly encodes and decodes Will QoS in the CONNECT packet (covered by MQTT-3.1.2-12). Will QoS=3 is rejected as Malformed Packet; valid Will QoS values 0-2 are correctly serialized."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["connack_decodes_qos_not_supported_reason_code"],
+        "notes": "Server-only rejection/close requirement. The client's Will QoS encoding is tested under MQTT-3.1.2-12. The listed test verifies that the client decodes a CONNACK reason code 0x9B when a server chooses to send it."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-13",

@@ -102,6 +102,10 @@ impl Connect {
         let last_will = LastWill::read(connect_flags, &mut bytes)?;
         let auth = ConnectAuth::read(connect_flags, &mut bytes)?;
 
+        if bytes.has_remaining() {
+            return Err(Error::IncorrectPacketFormat);
+        }
+
         let connect = Self {
             keep_alive,
             client_id,
@@ -872,5 +876,221 @@ mod test {
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
         assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    /// MQTT-3.1.2-9 / MQTT-3.1.2-11: When no last will is set, the Will Flag,
+    /// Will QoS, and Will Retain bits in the CONNECT flags MUST all be zero.
+    #[test]
+    fn connect_encoding_without_last_will_emits_zero_will_bits() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet.
+        // Will Flag is bit 2 (0x04), Will QoS is bits 3-4 (0x18),
+        // Will Retain is bit 5 (0x20). All must be zero when last_will is None.
+        assert_eq!(buf[9] & 0x3C, 0);
+    }
+
+    /// MQTT-3.1.2-9: If the Will Flag is set to 1, the Will Topic and Will
+    /// Message fields MUST be present in the payload. Verify that decoding a
+    /// CONNECT with Will Flag=1 but no Will Topic/Message data is rejected.
+    #[test]
+    fn connect_parsing_rejects_will_flag_set_without_will_topic() {
+        // CONNECT with Will Flag=1 but payload truncated right after client_id
+        // (no Will Topic or Will Message bytes follow).
+        let packetstream: Vec<u8> = [
+            0x10,
+            14, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0000_0110, // connect flags: clean session + will flag, will qos 0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(packet.is_err());
+    }
+
+    /// MQTT-3.1.2-11 / MQTT-3.1.2-13: If the Will Flag is set to 0, the Will
+    /// QoS fields in the Connect Flags MUST be set to zero.
+    #[test]
+    fn connect_parsing_rejects_will_flag_zero_with_will_qos_1() {
+        // CONNECT with Will Flag=0 but Will QoS=1 (bits 3-4 = 0b01)
+        // remaining = var_header(10) + client_id(2+4) = 16
+        let packetstream: Vec<u8> = [
+            0x10,
+            16, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0001_0010, // connect flags: clean session + will qos 1, will flag=0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.2-14: If the Will Flag is set to 1, Will QoS MUST NOT be 3.
+    #[test]
+    fn connect_parsing_rejects_will_qos_3() {
+        // CONNECT with Will Flag=1 and Will QoS=3 (bits 3-4 = 0b11)
+        // remaining = var_header(10) + client_id(2+1) + will_topic(2+1) + will_msg(2+1) = 19
+        let packetstream: Vec<u8> = [
+            0x10,
+            19, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0001_1110, // connect flags: clean session + will flag + will qos 3
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x01,
+            b'a', // client_id = "a"
+            0x00,
+            0x01,
+            b'b', // will_topic = "b"
+            0x00,
+            0x01,
+            b'c', // will_message = "c"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::InvalidQoS(3))));
+    }
+
+    /// MQTT-3.1.2-11: If the Will Flag is set to 0, the Will Retain field in
+    /// the Connect Flags MUST be set to zero.
+    #[test]
+    fn connect_parsing_rejects_will_flag_zero_with_will_retain() {
+        // CONNECT with Will Flag=0 but Will Retain=1 (bit 5)
+        // remaining = var_header(10) + client_id(2+4) = 16
+        let packetstream: Vec<u8> = [
+            0x10,
+            16, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0010_0010, // connect flags: clean session + will retain, will flag=0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.2-11: If the Will Flag is 0, Will Topic and Will Message MUST
+    /// NOT be present in the payload.
+    #[test]
+    fn connect_parsing_rejects_will_fields_when_will_flag_zero() {
+        // CONNECT with Will Flag=0 and all Will bits zero, but with length-
+        // prefixed Will Topic/Message bytes after the Client Identifier.
+        // remaining = var_header(10) + client_id(2+4) + will_topic(2+1) + will_msg(2+1) = 22
+        let packetstream: Vec<u8> = [
+            0x10,
+            22, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0000_0010, // connect flags: clean session only, will flag=0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            0x00,
+            0x01,
+            b'a', // forbidden will_topic = "a"
+            0x00,
+            0x01,
+            b'x', // forbidden will_message = "x"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 }

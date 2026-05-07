@@ -487,6 +487,7 @@ fn connect_code(return_code: ConnectReturnCode) -> u8 {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
+    use crate::mqttbytes::v5::parse_fixed_header;
     use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
@@ -539,5 +540,43 @@ mod test {
         let result = ConnAckProperties::read(&mut bytes);
 
         assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn connack_decodes_qos_not_supported_reason_code() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x20, // CONNACK
+                0x03, // remaining length
+                0x00, // session present = false
+                0x9B, // QoS not supported
+                0x00, // properties length = 0
+            ][..],
+        );
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+        let connack = ConnAck::read(fixed_header, packet_bytes).unwrap();
+
+        assert_eq!(connack.code, ConnectReturnCode::QoSNotSupported);
+    }
+
+    #[test]
+    fn connack_decodes_retain_not_supported_reason_code() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x20, // CONNACK
+                0x03, // remaining length
+                0x00, // session present = false
+                0x9A, // Retain not supported
+                0x00, // properties length = 0
+            ][..],
+        );
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+        let connack = ConnAck::read(fixed_header, packet_bytes).unwrap();
+
+        assert_eq!(connack.code, ConnectReturnCode::RetainNotSupported);
     }
 }
