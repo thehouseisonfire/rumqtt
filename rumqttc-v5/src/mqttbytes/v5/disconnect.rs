@@ -236,18 +236,18 @@ impl DisconnectProperties {
 
         if let Some(reason) = &self.reason_string {
             buffer.put_u8(PropertyType::ReasonString as u8);
-            write_mqtt_string(buffer, reason);
+            write_mqtt_string(buffer, reason)?;
         }
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         if let Some(reference) = &self.server_reference {
             buffer.put_u8(PropertyType::ServerReference as u8);
-            write_mqtt_string(buffer, reference);
+            write_mqtt_string(buffer, reference)?;
         }
 
         Ok(())
@@ -305,18 +305,16 @@ impl Disconnect {
     }
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
-        let packet_type = fixed_header.byte1 >> 4;
-        let flags = fixed_header.byte1 & 0b0000_1111;
+        let packet_type = fixed_header.packet_type()?;
+        if packet_type != PacketType::Disconnect {
+            return Err(Error::InvalidPacketType(packet_type as u8));
+        }
+
+        if fixed_header.flags() != 0 {
+            return Err(Error::IncorrectPacketFormat);
+        }
 
         bytes.advance(fixed_header.header_len);
-
-        if packet_type != PacketType::Disconnect as u8 {
-            return Err(Error::InvalidPacketType(packet_type));
-        }
-
-        if flags != 0x00 {
-            return Err(Error::MalformedPacket);
-        }
 
         if fixed_header.remaining_len == 0 {
             return Ok(Self::new(DisconnectReasonCode::NormalDisconnection));
@@ -361,7 +359,7 @@ mod test {
     use bytes::BytesMut;
 
     use super::{Disconnect, DisconnectProperties, DisconnectReasonCode};
-    use crate::mqttbytes::v5::parse_fixed_header;
+    use crate::mqttbytes::{Error, v5::parse_fixed_header};
 
     #[test]
     fn disconnect1_parsing_works() {
@@ -379,6 +377,21 @@ mod test {
         let disconnect = Disconnect::read(fixed_header, disconnect_bytes).unwrap();
 
         assert_eq!(disconnect, expected);
+    }
+
+    #[test]
+    fn disconnect_read_rejects_invalid_fixed_header_flags() {
+        let mut buffer = bytes::BytesMut::new();
+        buffer.extend_from_slice(&[
+            0xE1, // DISCONNECT with reserved flags set
+            0x00, // Remaining length
+        ]);
+
+        let fixed_header = parse_fixed_header(buffer.iter()).unwrap();
+        let disconnect_bytes = buffer.split_to(fixed_header.frame_length()).freeze();
+        let result = Disconnect::read(fixed_header, disconnect_bytes);
+
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
     }
 
     #[test]

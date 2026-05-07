@@ -98,6 +98,7 @@ impl Packet {
         // Test with a stream with exactly the size to check border panics
         let packet = stream.split_to(fixed_header.frame_length());
         let packet_type = fixed_header.packet_type()?;
+        validate_fixed_header_flags(packet_type, fixed_header.byte1)?;
 
         if fixed_header.remaining_len == 0 {
             // no payload packets, Disconnect still has a bit more info
@@ -321,8 +322,8 @@ impl FixedHeader {
     ///
     /// # Errors
     ///
-    /// Returns an error if the fixed-header flags are invalid for the decoded
-    /// packet type.
+    /// Returns an error if the packet type nibble is not a valid MQTT v5 packet
+    /// type.
     pub const fn packet_type(&self) -> Result<PacketType, Error> {
         let num = self.byte1 >> 4;
         match num {
@@ -343,6 +344,12 @@ impl FixedHeader {
             15 => Ok(PacketType::Auth),
             _ => Err(Error::InvalidPacketType(num)),
         }
+    }
+
+    /// Returns the fixed-header flag bits (lower 4 bits of byte 1).
+    #[must_use]
+    pub const fn flags(&self) -> u8 {
+        self.byte1 & 0x0F
     }
 
     /// Returns the size of full packet (fixed header + variable header + payload)
@@ -386,6 +393,43 @@ const fn property(num: u8) -> Result<PropertyType, Error> {
     };
 
     Ok(property)
+}
+
+/// Validates that the fixed-header flag bits match the expected values for
+/// the given packet type, as required by [MQTT-2.1.3-1].
+///
+/// | Packet type        | Expected flags |
+/// |-------------------|---------------|
+/// | PUBLISH           | any (flags carry meaning) |
+/// | PUBREL            | 0b0010 |
+/// | SUBSCRIBE         | 0b0010 |
+/// | UNSUBSCRIBE       | 0b0010 |
+/// | All others        | 0b0000 |
+///
+/// [MQTT-2.1.3-1]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc353481062
+const fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Result<(), Error> {
+    let flags = byte1 & 0x0F;
+    let valid = match packet_type {
+        PacketType::Publish => true,
+        PacketType::PubRel | PacketType::Subscribe | PacketType::Unsubscribe => flags == 0b0010,
+        PacketType::Connect
+        | PacketType::ConnAck
+        | PacketType::PubAck
+        | PacketType::PubRec
+        | PacketType::PubComp
+        | PacketType::SubAck
+        | PacketType::UnsubAck
+        | PacketType::PingReq
+        | PacketType::PingResp
+        | PacketType::Disconnect
+        | PacketType::Auth => flags == 0,
+    };
+
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::IncorrectPacketFormat)
+    }
 }
 
 /// Checks whether the stream contains a complete MQTT v5 packet within the
@@ -449,14 +493,21 @@ fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
     core_primitives::read_mqtt_string(stream).map_err(Error::from)
 }
 
+/// Validates MQTT UTF-8 encoded string bytes without allocating.
+fn validate_mqtt_string(bytes: &[u8]) -> Result<&str, Error> {
+    core_primitives::validate_mqtt_string(bytes).map_err(Error::from)
+}
+
 /// Serializes bytes to stream (including length)
 fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
     core_primitives::write_mqtt_bytes(stream, bytes);
 }
 
 /// Serializes a string to stream
-fn write_mqtt_string(stream: &mut BytesMut, string: &str) {
+fn write_mqtt_string(stream: &mut BytesMut, string: &str) -> Result<(), Error> {
+    validate_mqtt_string(string.as_bytes())?;
     core_primitives::write_mqtt_string(stream, string);
+    Ok(())
 }
 
 /// Writes remaining length to stream and returns number of bytes for remaining length
@@ -496,12 +547,14 @@ mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, check};
+    use bytes::BytesMut;
+
+    use super::{Error, Packet, PacketType, validate_fixed_header_flags};
 
     #[test]
     fn check_rejects_oversized_packet_on_partial_frame() {
         let stream = [0x30, 0x14];
-        let result = check(stream.iter(), Some(10));
+        let result = super::check(stream.iter(), Some(10));
 
         assert!(matches!(
             result,
@@ -510,5 +563,152 @@ mod tests {
                 max: 10,
             })
         ));
+    }
+
+    // MQTT-2.1.3-1: Reserved flag bits MUST be set to the required value.
+    // For most packet types the lower 4 bits of byte 1 must be 0.
+    // SUBSCRIBE, UNSUBSCRIBE, and PUBREL require flags == 0b0010.
+    // PUBLISH uses the flag bits for DUP/QoS/RETAIN, so any value is valid.
+
+    #[test]
+    fn read_rejects_connect_with_nonzero_reserved_flags() {
+        // CONNECT is type 1 (0x10), flags must be 0. 0x11 has flags=1.
+        let mut stream = BytesMut::from(&[0x11, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_connack_with_nonzero_reserved_flags() {
+        // CONNACK is type 2 (0x20), flags must be 0. 0x2F has flags=0xF.
+        let mut stream = BytesMut::from(&[0x2F, 0x03, 0x00, 0x00, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_puback_with_nonzero_reserved_flags() {
+        // PUBACK is type 4 (0x40), flags must be 0. 0x41 has flags=1.
+        let mut stream = BytesMut::from(&[0x41, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_pubrec_with_nonzero_reserved_flags() {
+        // PUBREC is type 5 (0x50), flags must be 0. 0x51 has flags=1.
+        let mut stream = BytesMut::from(&[0x51, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_pubrel_with_wrong_reserved_flags() {
+        // PUBREL is type 6 (0x62), flags must be 0b0010. 0x60 has flags=0.
+        let mut stream = BytesMut::from(&[0x60, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_pubcomp_with_nonzero_reserved_flags() {
+        // PUBCOMP is type 7 (0x70), flags must be 0. 0x71 has flags=1.
+        let mut stream = BytesMut::from(&[0x71, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_subscribe_with_wrong_reserved_flags() {
+        // SUBSCRIBE is type 8 (0x82), flags must be 0b0010. 0x80 has flags=0.
+        let mut stream = BytesMut::from(&[0x80, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_suback_with_nonzero_reserved_flags() {
+        // SUBACK is type 9 (0x90), flags must be 0. 0x91 has flags=1.
+        let mut stream = BytesMut::from(&[0x91, 0x03, 0x00, 0x01, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_unsubscribe_with_wrong_reserved_flags() {
+        // UNSUBSCRIBE is type 10 (0xA2), flags must be 0b0010. 0xA0 has flags=0.
+        let mut stream = BytesMut::from(&[0xA0, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_unsuback_with_nonzero_reserved_flags() {
+        // UNSUBACK is type 11 (0xB0), flags must be 0. 0xB1 has flags=1.
+        let mut stream = BytesMut::from(&[0xB1, 0x03, 0x00, 0x01, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_pingreq_with_nonzero_reserved_flags() {
+        // PINGREQ is type 12 (0xC0), flags must be 0. 0xC1 has flags=1.
+        let mut stream = BytesMut::from(&[0xC1, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_pingresp_with_nonzero_reserved_flags() {
+        // PINGRESP is type 13 (0xD0), flags must be 0. 0xD1 has flags=1.
+        let mut stream = BytesMut::from(&[0xD1, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_disconnect_with_nonzero_reserved_flags() {
+        // DISCONNECT is type 14 (0xE0), flags must be 0. 0xE1 has flags=1.
+        let mut stream = BytesMut::from(&[0xE1, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_rejects_auth_with_nonzero_reserved_flags() {
+        // AUTH is type 15 (0xF0), flags must be 0. 0xF1 has flags=1.
+        let mut stream = BytesMut::from(&[0xF1, 0x00][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn read_accepts_publish_with_any_flag_combination() {
+        // PUBLISH uses flag bits for DUP/QoS/RETAIN, so all combinations are valid
+        // at the fixed-header level. Only QoS 3 is rejected later by Publish::read.
+        // 0x3F = PUBLISH with all flag bits set (QoS 3, DUP=1, RETAIN=1).
+        // This should pass flag validation but fail in Publish::read with MalformedPacket.
+        let mut stream = BytesMut::from(&[0x3F, 0x02, 0x00, 0x01][..]);
+        let result = Packet::read(&mut stream, Some(1024));
+        // Flag validation passes; Publish::read rejects QoS 3
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn validate_flags_const_fn_works_for_all_types() {
+        // Smoke test that the const fn compiles and returns correct results
+        assert!(validate_fixed_header_flags(PacketType::Publish, 0x3F).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::PubRel, 0x62).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::Subscribe, 0x82).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::Unsubscribe, 0xA2).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::Connect, 0x10).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::ConnAck, 0x20).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::Disconnect, 0xE0).is_ok());
+        assert!(validate_fixed_header_flags(PacketType::Auth, 0xF0).is_ok());
+
+        assert!(validate_fixed_header_flags(PacketType::PubRel, 0x60).is_err());
+        assert!(validate_fixed_header_flags(PacketType::Subscribe, 0x80).is_err());
+        assert!(validate_fixed_header_flags(PacketType::ConnAck, 0x2F).is_err());
+        assert!(validate_fixed_header_flags(PacketType::Disconnect, 0xE1).is_err());
     }
 }

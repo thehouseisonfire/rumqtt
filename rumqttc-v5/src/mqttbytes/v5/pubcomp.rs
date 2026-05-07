@@ -182,13 +182,13 @@ impl PubCompProperties {
 
         if let Some(reason) = &self.reason_string {
             buffer.put_u8(PropertyType::ReasonString as u8);
-            write_mqtt_string(buffer, reason);
+            write_mqtt_string(buffer, reason)?;
         }
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         Ok(())

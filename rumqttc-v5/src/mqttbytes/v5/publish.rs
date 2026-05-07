@@ -1,7 +1,7 @@
 use super::{
     BufMut, BytesMut, DisconnectReasonCode, Error, FixedHeader, PropertyType, QoS, len_len, length,
     property, qos, read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32,
-    write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    validate_mqtt_string, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -69,6 +69,7 @@ impl Publish {
         let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let topic = read_mqtt_bytes(&mut bytes)?;
+        validate_mqtt_string(&topic)?;
 
         // Packet identifier exists where QoS > 0
         let pkid = match qos {
@@ -103,6 +104,7 @@ impl Publish {
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
         let count = write_remaining_length(buffer, len)?;
+        validate_mqtt_string(&self.topic)?;
         write_mqtt_bytes(buffer, &self.topic);
 
         if self.qos != QoS::AtMostOnce {
@@ -282,7 +284,7 @@ impl PublishProperties {
 
         if let Some(topic) = &self.response_topic {
             buffer.put_u8(PropertyType::ResponseTopic as u8);
-            write_mqtt_string(buffer, topic);
+            write_mqtt_string(buffer, topic)?;
         }
 
         if let Some(data) = &self.correlation_data {
@@ -292,8 +294,8 @@ impl PublishProperties {
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         for id in &self.subscription_identifiers {
@@ -303,7 +305,7 @@ impl PublishProperties {
 
         if let Some(typ) = &self.content_type {
             buffer.put_u8(PropertyType::ContentType as u8);
-            write_mqtt_string(buffer, typ);
+            write_mqtt_string(buffer, typ)?;
         }
 
         Ok(())
@@ -353,6 +355,48 @@ mod test {
     fn invalid_qos_bits_are_reported_as_malformed_packet() {
         let mut frame = BytesMut::from(&[0x36, 0x02, 0x00, 0x00][..]);
         let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn read_rejects_topic_with_invalid_utf8() {
+        let mut frame = BytesMut::from(
+            &[
+                0x30, 0x04, // PUBLISH, remaining length
+                0x00, 0x01, // topic length
+                0xff, // invalid UTF-8
+                0x00, // properties length
+            ][..],
+        );
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_rejects_topic_with_null_character() {
+        let mut frame = BytesMut::from(
+            &[
+                0x30, 0x06, // PUBLISH, remaining length
+                0x00, 0x03, // topic length
+                b'a', 0x00, b'b', // topic
+                0x00, // properties length
+            ][..],
+        );
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn write_rejects_topic_with_null_character() {
+        let publish = Publish {
+            topic: Bytes::from_static(b"a\0b"),
+            ..Default::default()
+        };
+        let mut buffer = BytesMut::new();
+        let result = publish.write(&mut buffer);
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
     }

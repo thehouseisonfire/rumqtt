@@ -1,7 +1,7 @@
 use super::{
     BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
-    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, write_mqtt_bytes,
-    write_mqtt_string, write_remaining_length,
+    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, validate_mqtt_string,
+    write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -94,7 +94,7 @@ impl Connect {
 
         buffer.put_u8(0b0001_0000);
         let count = write_remaining_length(buffer, len)?;
-        write_mqtt_string(buffer, "MQTT");
+        write_mqtt_string(buffer, "MQTT")?;
 
         buffer.put_u8(0x05);
         let flags_index = 1 + count + 2 + 4 + 1;
@@ -114,13 +114,13 @@ impl Connect {
             }
         }
 
-        write_mqtt_string(buffer, &self.client_id);
+        write_mqtt_string(buffer, &self.client_id)?;
 
         if let Some(w) = will {
             connect_flags |= w.write(buffer)?;
         }
 
-        connect_flags |= auth.write(buffer);
+        connect_flags |= auth.write(buffer)?;
 
         // update connect flags
         buffer[flags_index] = connect_flags;
@@ -333,13 +333,13 @@ impl ConnectProperties {
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         if let Some(authentication_method) = &self.authentication_method {
             buffer.put_u8(PropertyType::AuthenticationMethod as u8);
-            write_mqtt_string(buffer, authentication_method);
+            write_mqtt_string(buffer, authentication_method)?;
         }
 
         if let Some(authentication_data) = &self.authentication_data {
@@ -412,6 +412,7 @@ impl LastWill {
                 let properties = LastWillProperties::read(bytes)?;
 
                 let will_topic = read_mqtt_bytes(bytes)?;
+                validate_mqtt_string(&will_topic)?;
                 let will_message = read_mqtt_bytes(bytes)?;
                 let qos_num = (connect_flags & 0b11000) >> 3;
                 let will_qos = qos(qos_num).ok_or(Error::InvalidQoS(qos_num))?;
@@ -442,6 +443,7 @@ impl LastWill {
             write_remaining_length(buffer, 0)?;
         }
 
+        validate_mqtt_string(&self.topic)?;
         write_mqtt_bytes(buffer, &self.topic);
         write_mqtt_bytes(buffer, &self.message);
         Ok(connect_flags)
@@ -585,12 +587,12 @@ impl LastWillProperties {
 
         if let Some(typ) = &self.content_type {
             buffer.put_u8(PropertyType::ContentType as u8);
-            write_mqtt_string(buffer, typ);
+            write_mqtt_string(buffer, typ)?;
         }
 
         if let Some(topic) = &self.response_topic {
             buffer.put_u8(PropertyType::ResponseTopic as u8);
-            write_mqtt_string(buffer, topic);
+            write_mqtt_string(buffer, topic)?;
         }
 
         if let Some(data) = &self.correlation_data {
@@ -600,8 +602,8 @@ impl LastWillProperties {
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         Ok(())
@@ -654,11 +656,11 @@ impl ConnectAuth {
         }
     }
 
-    pub fn write(&self, buffer: &mut BytesMut) -> u8 {
-        match self {
+    pub fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        let flags = match self {
             Self::None => 0,
             Self::Username { username } => {
-                write_mqtt_string(buffer, username);
+                write_mqtt_string(buffer, username)?;
                 0x80
             }
             Self::Password { password } => {
@@ -666,11 +668,13 @@ impl ConnectAuth {
                 0x40
             }
             Self::UsernamePassword { username, password } => {
-                write_mqtt_string(buffer, username);
+                write_mqtt_string(buffer, username)?;
                 write_mqtt_bytes(buffer, password.as_ref());
                 0xC0
             }
-        }
+        };
+
+        Ok(flags)
     }
 }
 
@@ -723,6 +727,47 @@ mod test {
         let result = ConnectProperties::read(&mut bytes);
 
         assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn last_will_read_rejects_topic_with_invalid_utf8() {
+        let mut bytes = Bytes::from_static(&[
+            0x00, // properties length
+            0x00, 0x01, // topic length
+            0xff, // invalid UTF-8
+            0x00, 0x00, // payload length
+        ]);
+        let result = LastWill::read(0x04, &mut bytes);
+
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn last_will_read_rejects_topic_with_null_character() {
+        let mut bytes = Bytes::from_static(&[
+            0x00, // properties length
+            0x00, 0x03, // topic length
+            b'a', 0x00, b'b', // topic
+            0x00, 0x00, // payload length
+        ]);
+        let result = LastWill::read(0x04, &mut bytes);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn last_will_write_rejects_topic_with_null_character() {
+        let will = LastWill {
+            topic: Bytes::from_static(b"a\0b"),
+            message: Bytes::new(),
+            qos: QoS::AtMostOnce,
+            retain: false,
+            properties: None,
+        };
+        let mut buffer = BytesMut::new();
+        let result = will.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
     }
 
     #[test]

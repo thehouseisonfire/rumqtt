@@ -220,4 +220,33 @@ mod tests {
         let packet = Packet::read(&mut stream, 10);
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
+
+    #[test]
+    fn read_rejects_malformed_reserved_flags_for_all_non_publish_packets() {
+        let cases: &[&[u8]] = &[
+            &[0x11, 0x00],                   // CONNECT
+            &[0x21, 0x02, 0x00, 0x00],       // CONNACK
+            &[0x41, 0x02, 0x00, 0x01],       // PUBACK
+            &[0x51, 0x02, 0x00, 0x01],       // PUBREC
+            &[0x60, 0x02, 0x00, 0x01],       // PUBREL
+            &[0x71, 0x02, 0x00, 0x01],       // PUBCOMP
+            &[0x80, 0x02, 0x00, 0x01],       // SUBSCRIBE
+            &[0x91, 0x03, 0x00, 0x01, 0x00], // SUBACK
+            &[0xA0, 0x02, 0x00, 0x01],       // UNSUBSCRIBE
+            &[0xB1, 0x02, 0x00, 0x01],       // UNSUBACK
+            &[0xC1, 0x00],                   // PINGREQ
+            &[0xD1, 0x00],                   // PINGRESP
+            &[0xE1, 0x00],                   // DISCONNECT
+        ];
+
+        for case in cases {
+            let mut stream = BytesMut::from(*case);
+            let packet = Packet::read(&mut stream, 10);
+
+            assert!(
+                matches!(packet, Err(Error::IncorrectPacketFormat)),
+                "accepted malformed fixed-header flags for {case:02X?}: {packet:?}"
+            );
+        }
+    }
 }

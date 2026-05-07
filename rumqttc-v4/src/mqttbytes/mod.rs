@@ -234,8 +234,10 @@ fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
 }
 
 /// Serializes a string to stream
-fn write_mqtt_string(stream: &mut BytesMut, string: &str) {
+fn write_mqtt_string(stream: &mut BytesMut, string: &str) -> Result<(), Error> {
+    core_primitives::validate_mqtt_string(string.as_bytes()).map_err(Error::from)?;
     core_primitives::write_mqtt_string(stream, string);
+    Ok(())
 }
 
 /// Writes remaining length to stream and returns number of bytes for remaining length

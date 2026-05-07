@@ -124,7 +124,7 @@ impl Connect {
         let len = self.len();
         buffer.put_u8(0b0001_0000);
         let count = write_remaining_length(buffer, len)?;
-        write_mqtt_string(buffer, "MQTT");
+        write_mqtt_string(buffer, "MQTT")?;
 
         match self.protocol {
             Protocol::V4 => buffer.put_u8(0x04),
@@ -140,13 +140,13 @@ impl Connect {
 
         buffer.put_u8(connect_flags);
         buffer.put_u16(self.keep_alive);
-        write_mqtt_string(buffer, &self.client_id);
+        write_mqtt_string(buffer, &self.client_id)?;
 
         if let Some(last_will) = &self.last_will {
-            connect_flags |= last_will.write(buffer);
+            connect_flags |= last_will.write(buffer)?;
         }
 
-        connect_flags |= self.auth.write(buffer);
+        connect_flags |= self.auth.write(buffer)?;
 
         // update connect flags
         buffer[flags_index] = connect_flags;
@@ -213,7 +213,7 @@ impl LastWill {
         Ok(last_will)
     }
 
-    fn write(&self, buffer: &mut BytesMut) -> u8 {
+    fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
         let mut connect_flags = 0;
 
         connect_flags |= 0x04 | ((self.qos as u8) << 3);
@@ -221,9 +221,9 @@ impl LastWill {
             connect_flags |= 0x20;
         }
 
-        write_mqtt_string(buffer, &self.topic);
+        write_mqtt_string(buffer, &self.topic)?;
         write_mqtt_bytes(buffer, &self.message);
-        connect_flags
+        Ok(connect_flags)
     }
 }
 
@@ -268,19 +268,21 @@ impl ConnectAuth {
         }
     }
 
-    fn write(&self, buffer: &mut BytesMut) -> u8 {
-        match self {
+    fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        let flags = match self {
             Self::None => 0,
             Self::Username { username } => {
-                write_mqtt_string(buffer, username);
+                write_mqtt_string(buffer, username)?;
                 0x80
             }
             Self::UsernamePassword { username, password } => {
-                write_mqtt_string(buffer, username);
+                write_mqtt_string(buffer, username)?;
                 write_mqtt_bytes(buffer, password.as_ref());
                 0xC0
             }
-        }
+        };
+
+        Ok(flags)
     }
 
     #[must_use]
@@ -606,5 +608,205 @@ mod test {
                 password: Bytes::new(),
             }
         );
+    }
+
+    #[test]
+    fn connect_parsing_rejects_null_character_in_client_id() {
+        let packetstream: Vec<u8> = [
+            0x10, 15, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, // protocol name + level
+            0x02, // connect flags: clean session only
+            0x00, 0x0a, // keep alive = 10
+            0x00, 0x03, // client_id length = 3
+            b'a', 0x00, b'b',
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn connect_encoding_rejects_null_character_in_client_id() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "a\0b".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn connect_encoding_rejects_null_character_in_will_topic() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: Some(LastWill {
+                topic: "a\0b".to_owned(),
+                message: Bytes::from_static(b"x"),
+                qos: QoS::AtMostOnce,
+                retain: false,
+            }),
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn connect_encoding_rejects_null_character_in_username() {
+        let connect = Connect {
+            protocol: Protocol::V4,
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::Username {
+                username: "a\0b".to_owned(),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    /// MQTT-1.5.3-1: UTF-8 encoded strings MUST be well-formed
+    /// and MUST NOT include encodings of code points between U+D800 and U+DFFF.
+    #[test]
+    fn connect_parsing_rejects_surrogate_in_client_id() {
+        // CONNECT with client_id containing U+D800 (CESU-8: 0xED 0xA0 0x80)
+        // remaining = var_header(10) + client_id(2+3) = 15
+        let packetstream: Vec<u8> = [
+            0x10, 15, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, // protocol name + level
+            0x02, // connect flags: clean session only
+            0x00, 0x0a, // keep alive = 10
+            0x00, 0x03, // client_id length = 3
+            0xED, 0xA0, 0x80, // client_id = U+D800 (surrogate)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn connect_parsing_rejects_surrogate_in_will_topic() {
+        // CONNECT with will_topic containing U+DFFF (CESU-8: 0xED 0xBF 0xBF)
+        // remaining = var_header(10) + client_id(2+1) + will_topic(2+3) + will_msg(2+1) = 21
+        let packetstream: Vec<u8> = [
+            0x10,
+            21, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0000_1110, // connect flags: clean session + will flag + will qos 0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x01,
+            b'a', // client_id = "a"
+            0x00,
+            0x03, // will_topic length = 3
+            0xED,
+            0xBF,
+            0xBF, // will_topic = U+DFFF (surrogate)
+            0x00,
+            0x01,
+            b'x', // will_message = "x"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn connect_parsing_rejects_surrogate_in_username() {
+        // CONNECT with username containing U+D801 (CESU-8: 0xED 0xA0 0x81)
+        // remaining = var_header(10) + client_id(2+1) + username(2+3) = 18
+        let packetstream: Vec<u8> = [
+            0x10,
+            18, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b1000_0010, // connect flags: username + clean session
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x01,
+            b'a', // client_id = "a"
+            0x00,
+            0x03, // username length = 3
+            0xED,
+            0xA0,
+            0x81, // username = U+D801 (surrogate)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn connect_parsing_rejects_overlong_utf8_in_client_id() {
+        // CONNECT with client_id containing overlong encoding (0xC0 0x80)
+        // remaining = var_header(10) + client_id(2+2) = 14
+        let packetstream: Vec<u8> = [
+            0x10, 14, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, // protocol name + level
+            0x02, // connect flags: clean session only
+            0x00, 0x0a, // keep alive = 10
+            0x00, 0x02, // client_id length = 2
+            0xC0, 0x80, // client_id = overlong U+0000
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
     }
 }
