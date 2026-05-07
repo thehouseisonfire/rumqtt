@@ -17,8 +17,37 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Shared validation in validate_mqtt_string checks well-formed UTF-8 without allocating. read_mqtt_string uses that validator, and Publish.topic plus LastWill.topic validate their Bytes-backed topic fields after read_mqtt_bytes and before write_mqtt_bytes while preserving zero-copy storage.",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["validate_mqtt_string", "read_mqtt_string", "write_mqtt_string"],
+          "reason": "validate_mqtt_string uses std::str::from_utf8() to reject ill-formed UTF-8 including surrogates (U+D800-U+DFFF). read_mqtt_string delegates to it, and the v5 write_mqtt_string wrapper validates before serializing."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": ["Publish::read", "Publish::write"],
+          "reason": "Publish.topic remains Bytes, but Publish::read validates the topic bytes immediately after read_mqtt_bytes and Publish::write validates them before write_mqtt_bytes."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::read", "LastWill::write"],
+          "reason": "LastWill.topic remains Bytes, but LastWill::read validates the will topic bytes immediately after read_mqtt_bytes and LastWill::write validates them before write_mqtt_bytes."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": ["InboundDisconnect::classify"],
+          "reason": "Runtime receiver handling maps TopicNotUtf8 decode errors to a Malformed Packet DISCONNECT reason."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["read_mqtt_string_rejects_surrogate_ud800", "read_mqtt_string_rejects_surrogate_udfff", "read_mqtt_string_rejects_surrogate_ud801", "read_mqtt_string_rejects_overlong_encoding", "read_mqtt_string_rejects_truncated_sequence", "read_mqtt_string_rejects_invalid_continuation_byte", "read_mqtt_string_accepts_valid_utf8", "read_mqtt_string_accepts_multibyte_valid_utf8", "read_rejects_topic_with_invalid_utf8", "last_will_read_rejects_topic_with_invalid_utf8", "read_sends_malformed_packet_disconnect_for_invalid_utf8"],
+        "notes": "Core string decoding tests cover malformed UTF-8 and surrogate encodings. v5 packet tests cover Bytes-backed Publish.topic and LastWill.topic validation. The framed runtime test verifies TopicNotUtf8 is handled as a Malformed Packet DISCONNECT."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-1.5.4-2",
@@ -33,8 +62,32 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "validate_mqtt_string rejects U+0000 after well-formed UTF-8 validation. read_mqtt_string delegates to it, the v5 write_mqtt_string wrapper validates all outgoing UTF-8 string fields, and Bytes-backed Publish.topic and LastWill.topic validate on both read and write.",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["validate_mqtt_string", "read_mqtt_string", "write_mqtt_string"],
+          "reason": "validate_mqtt_string rejects literal U+0000 bytes with Error::MalformedPacket. read_mqtt_string delegates to it, and the v5 write_mqtt_string wrapper validates before serializing."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": ["Publish::read", "Publish::write"],
+          "reason": "Publish.topic is validated after read_mqtt_bytes and before write_mqtt_bytes, so Bytes-backed topic storage cannot bypass the U+0000 check."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::read", "Connect::write", "LastWill::read", "LastWill::write"],
+          "reason": "client_id and other String-backed fields use read_mqtt_string/write_mqtt_string validation. LastWill.topic is validated on both read and write."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["read_mqtt_string_rejects_null_character", "read_rejects_topic_with_null_character", "write_rejects_topic_with_null_character", "last_will_read_rejects_topic_with_null_character", "last_will_write_rejects_topic_with_null_character"],
+        "notes": "Tests cover literal U+0000 rejection in the shared string reader plus Bytes-backed Publish.topic and LastWill.topic read/write paths."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-1.5.4-3",
@@ -49,8 +102,27 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "read_mqtt_string uses std::str::from_utf8() followed by to_owned(), which preserves the BOM (0xEF 0xBB 0xBF = U+FEFF) as a regular character. There is no stripping or skipping logic anywhere in the decode path. write_mqtt_string writes the string bytes as-is via write_mqtt_bytes, preserving the BOM. The implementation naturally satisfies this requirement by never manipulating decoded string content.",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["read_mqtt_string", "write_mqtt_string"],
+          "reason": "read_mqtt_string calls from_utf8() then to_owned() with no filtering or stripping. The BOM sequence 0xEF 0xBB 0xBF decodes to U+FEFF and is preserved. write_mqtt_string delegates to write_mqtt_bytes which writes raw bytes without modification."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": ["read_mqtt_string", "write_mqtt_string"],
+          "reason": "v5 module re-exports core primitives directly with no wrapping or post-processing that could strip the BOM."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["read_mqtt_string_preserves_bom"],
+        "notes": "A targeted test verifies that read_mqtt_string preserves a leading U+FEFF character."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-1.5.5-1",
@@ -65,8 +137,27 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Both read and write paths for Variable Byte Integer are implemented correctly in the shared mqttbytes-core primitives, and v5 re-exports them directly. The encoding uses 7 data bits per byte with bit 7 as the continuation flag, limits to 4 bytes max, and caps at 268435455. v5 also uses the same VBI decoder for property lengths via the length() wrapper.",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["length", "write_remaining_length", "len_len"],
+          "reason": "length() reads VBI using continuation bit at position 7, accumulates 7 bits per byte with shift increments of 7, rejects more than 4 bytes (shift > 21), and returns (byte_count, decoded_value). write_remaining_length() encodes using modulo 128 for 7 data bits, sets bit 7 as continuation flag, and rejects values > 268435455. len_len() correctly maps value ranges to 1-4 byte encodings."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": ["length", "write_remaining_length", "len_len"],
+          "reason": "v5 module re-exports core VBI primitives directly with no wrapping or modification that could alter the encoding scheme."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["len_len_matches_expected_thresholds", "write_remaining_length_round_trip"],
+        "notes": "Core primitive tests cover VBI threshold boundaries (0, 127, 128, 16384, 2097152) and round-trip encode/decode for representative values including 0, 127, 128, 321, 16384, and 268435455."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-1.5.7-1",
@@ -81,8 +172,87 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "UTF-8 String Pairs appear as UserProperty values in MQTT v5 properties. Every staged UserProperty read path reads the key and value with two consecutive read_mqtt_string calls, and every staged UserProperty write path writes the key and value with two consecutive write_mqtt_string calls. Those shared helpers delegate to validate_mqtt_string, enforcing well-formed UTF-8, U+0000 rejection, and surrogate rejection (U+D800-U+DFFF). A malformed string in either half of the pair causes the property read/write to fail with MalformedPacket or TopicNotUtf8.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": ["PublishProperties::read", "PublishProperties::write"],
+          "reason": "UserProperty read: two consecutive read_mqtt_string() calls (key then value), each validating UTF-8. UserProperty write: two consecutive write_mqtt_string() calls, each validating UTF-8 before serializing."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectProperties::read", "ConnectProperties::write", "LastWillProperties::read", "LastWillProperties::write"],
+          "reason": "CONNECT and Will UserProperty pairs use two read_mqtt_string/write_mqtt_string calls, each enforcing UTF-8 validation."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/auth.rs",
+          "symbols": ["AuthProperties::read", "AuthProperties::write"],
+          "reason": "AUTH UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnAckProperties", "read_connack_property"],
+          "reason": "CONNACK UserProperty pairs use read_mqtt_string for key and value on decode and write_mqtt_string for key and value on encode."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": ["DisconnectProperties::read", "DisconnectProperties::write"],
+          "reason": "DISCONNECT UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+          "symbols": ["PubAckProperties::read", "PubAckProperties::write"],
+          "reason": "PUBACK UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+          "symbols": ["PubRecProperties::read", "PubRecProperties::write"],
+          "reason": "PUBREC UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": ["PubRelProperties::read", "PubRelProperties::write"],
+          "reason": "PUBREL UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
+          "symbols": ["PubCompProperties::read", "PubCompProperties::write"],
+          "reason": "PUBCOMP UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": ["SubAckProperties::read", "SubAckProperties::write"],
+          "reason": "SUBACK UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": ["UnsubAckProperties::read", "UnsubAckProperties::write"],
+          "reason": "UNSUBACK UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": ["SubscribeProperties::read", "SubscribeProperties::write"],
+          "reason": "SUBSCRIBE UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
+          "symbols": ["UnsubscribeProperties::read", "UnsubscribeProperties::write"],
+          "reason": "UNSUBSCRIBE UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["read_mqtt_string", "write_mqtt_string", "validate_mqtt_string"],
+          "reason": "validate_mqtt_string rejects ill-formed UTF-8 (including surrogates) and U+0000. read_mqtt_string delegates to it. v5 write_mqtt_string validates before writing."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["read_subscription_identifier_and_user_property_parses_both", "read_user_property_rejects_invalid_utf8_key", "read_user_property_rejects_invalid_utf8_value", "read_user_property_rejects_null_character_key", "write_user_property_rejects_null_character_key_or_value"],
+        "notes": "UserProperty tests cover valid string-pair parsing, malformed UTF-8 in either key or value, U+0000 rejection on read, and U+0000 rejection on write. Shared primitive tests cover surrogate and other malformed UTF-8 encodings."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-2.1.3-1",
@@ -97,8 +267,32 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The v5 Packet::read path now validates reserved flag bits in the fixed header via validate_fixed_header_flags(), ported from v4 with the addition of the Auth packet type. The function checks: flags==0 for most types, flags==0b0010 for SUBSCRIBE/UNSUBSCRIBE/PUBREL, and any flags for PUBLISH. IncorrectPacketFormat is returned internally on violation. InboundDisconnect::classify maps IncorrectPacketFormat to DisconnectReasonCode::MalformedPacket because MQTT v5 section 2.1.3 classifies invalid fixed-header flags as a Malformed Packet. Disconnect::read also preserves standalone public-parser validation for packet type and flags. The write side was already compliant (all hardcoded first bytes use correct flag values).",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": ["validate_fixed_header_flags", "FixedHeader::flags", "Packet::read"],
+          "reason": "validate_fixed_header_flags() checks byte1 & 0x0F against expected values per packet type (0 for most, 0b0010 for SUBSCRIBE/UNSUBSCRIBE/PUBREL, any for PUBLISH). Packet::read calls it after packet_type() and before dispatching to individual packet readers. FixedHeader::flags() provides a convenience accessor."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": ["Disconnect::read"],
+          "reason": "Disconnect::read validates packet type and reserved fixed-header flags itself, preserving correctness for direct callers of this public parser. Invalid DISCONNECT flags return IncorrectPacketFormat."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": ["InboundDisconnect::classify"],
+          "reason": "IncorrectPacketFormat is mapped to DisconnectReasonCode::MalformedPacket. MQTT v5 section 2.1.3 states that invalid fixed-header flags are a Malformed Packet; section 4.13 then uses reason code 0x81 for Malformed Packet."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["read_rejects_connect_with_nonzero_reserved_flags", "read_rejects_connack_with_nonzero_reserved_flags", "read_rejects_puback_with_nonzero_reserved_flags", "read_rejects_pubrec_with_nonzero_reserved_flags", "read_rejects_pubrel_with_wrong_reserved_flags", "read_rejects_pubcomp_with_nonzero_reserved_flags", "read_rejects_subscribe_with_wrong_reserved_flags", "read_rejects_suback_with_nonzero_reserved_flags", "read_rejects_unsubscribe_with_wrong_reserved_flags", "read_rejects_unsuback_with_nonzero_reserved_flags", "read_rejects_pingreq_with_nonzero_reserved_flags", "read_rejects_pingresp_with_nonzero_reserved_flags", "read_rejects_disconnect_with_nonzero_reserved_flags", "read_rejects_auth_with_nonzero_reserved_flags", "disconnect_read_rejects_invalid_fixed_header_flags", "read_accepts_publish_with_any_flag_combination", "validate_flags_const_fn_works_for_all_types", "read_sends_malformed_packet_disconnect_before_returning_error", "read_returns_decode_error_promptly_under_write_backpressure"],
+        "notes": "Each non-PUBLISH packet type has a dedicated test for incorrect reserved fixed-header flags. PUBLISH is verified to accept any flag bits at the fixed-header level (QoS 3 is still rejected later by Publish::read). The const fn is smoke-tested for both valid and invalid inputs. Integration tests in framed.rs verify that IncorrectPacketFormat triggers a DISCONNECT with MalformedPacket reason code."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-2.2.1-2",
@@ -129,8 +323,42 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Client-side non-zero pkid assignment is enforced in both the codec and state layers for SUBSCRIBE, UNSUBSCRIBE, and PUBLISH QoS > 0. Publish, Subscribe, and Unsubscribe read/write paths reject pkid==0. next_control_pkid assigns non-zero currently-unused pkids for subscribe/unsubscribe requests. next_publish_pkid and next_pkid assign currently-unused publish pkids, with next_pkid returning None instead of recycling an in-use pkid when the publish pkid range is exhausted. outgoing_publish_with_notice validates pkid bounds, preserves outgoing_pub collision replay handling, and rejects pkids already used by outgoing_rel, tracked_subscribe, or tracked_unsubscribe.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": ["Publish::write", "Publish::read"],
+          "reason": "Publish encode and decode reject pkid==0 for QoS > 0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": ["Subscribe::write", "Subscribe::read"],
+          "reason": "Subscribe encode and decode reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
+          "symbols": ["Unsubscribe::write", "Unsubscribe::read"],
+          "reason": "Unsubscribe encode and decode reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["next_publish_pkid", "next_pkid", "next_control_pkid", "packet_identifier_in_use"],
+          "reason": "Packet id assignment checks packet_identifier_in_use across outgoing_pub, outgoing_rel, tracked_subscribe, and tracked_unsubscribe. next_pkid returns None when no currently-unused publish pkid is available."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["outgoing_subscribe", "outgoing_unsubscribe", "outgoing_publish_with_notice"],
+          "reason": "Subscribe and unsubscribe requests receive pkids from next_control_pkid. Outgoing publish validates pkid bounds and rejects cross-type conflicts with pubrel, subscribe, and unsubscribe tracking before storing a new outgoing publish."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["next_pkid_increments_as_expected", "next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use", "outgoing_publish_should_set_pkid_and_add_publish_to_queue", "outgoing_publish_rejects_packet_identifier_used_by_non_publish_flow", "can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit", "outgoing_publish_with_max_inflight_is_ok", "subscribe_parsing_rejects_zero_packet_identifier", "subscribe_encoding_rejects_zero_packet_identifier", "unsubscribe_parsing_rejects_zero_packet_identifier", "unsubscribe_encoding_rejects_zero_packet_identifier"],
+        "notes": "State tests cover pkid increment, exhausted publish-id allocation, max-inflight behavior, and cross-type conflicts with subscribe, unsubscribe, and pubrel tracking. Packet codec tests cover zero-pkid rejection for PUBLISH QoS > 0, SUBSCRIBE, and UNSUBSCRIBE."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-2.2.1-4",

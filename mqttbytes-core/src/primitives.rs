@@ -148,11 +148,28 @@ pub fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
 /// # Errors
 ///
 /// Returns an error when the stream does not contain a complete MQTT string or
-/// when the bytes are not valid UTF-8.
+/// when the bytes do not satisfy MQTT UTF-8 string requirements.
 pub fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
     let s = read_mqtt_bytes(stream)?;
-    let s = std::str::from_utf8(&s).map_err(|_| Error::TopicNotUtf8)?;
+    let s = validate_mqtt_string(&s)?;
     Ok(s.to_owned())
+}
+
+/// Validates MQTT UTF-8 encoded string bytes without allocating.
+///
+/// # Errors
+///
+/// Returns the validated borrowed string on success, [`Error::TopicNotUtf8`]
+/// when the bytes are not well-formed UTF-8, and [`Error::MalformedPacket`]
+/// when the string contains U+0000.
+pub fn validate_mqtt_string(bytes: &[u8]) -> Result<&str, Error> {
+    let string = std::str::from_utf8(bytes).map_err(|_| Error::TopicNotUtf8)?;
+
+    if bytes.contains(&0) {
+        return Err(Error::MalformedPacket);
+    }
+
+    Ok(string)
 }
 
 /// Serializes bytes to stream (including length)
@@ -299,5 +316,114 @@ mod tests {
         let b = [0x30u8, 0x05, 1, 2];
         let result = check(b.iter());
         assert_eq!(result, Err(Error::InsufficientBytes(3)));
+    }
+
+    /// MQTT-1.5.3-1 / MQTT-1.5.3-2: UTF-8 encoded strings MUST be well-formed
+    /// and MUST NOT include encodings of code points between U+D800 and U+DFFF.
+    #[test]
+    fn read_mqtt_string_rejects_surrogate_ud800() {
+        // U+D800 encoded as CESU-8: 0xED 0xA0 0x80
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(3);
+        bytes.extend_from_slice(&[0xED, 0xA0, 0x80]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_mqtt_string_rejects_surrogate_udfff() {
+        // U+DFFF encoded as CESU-8: 0xED 0xBF 0xBF
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(3);
+        bytes.extend_from_slice(&[0xED, 0xBF, 0xBF]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_mqtt_string_rejects_surrogate_ud801() {
+        // U+D801 encoded as CESU-8: 0xED 0xA0 0x81
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(3);
+        bytes.extend_from_slice(&[0xED, 0xA0, 0x81]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_mqtt_string_rejects_overlong_encoding() {
+        // Overlong encoding of U+0000: 0xC0 0x80 (not valid UTF-8)
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(2);
+        bytes.extend_from_slice(&[0xC0, 0x80]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_mqtt_string_rejects_truncated_sequence() {
+        // Start of a 3-byte sequence (0xE0) but missing continuation bytes
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(1);
+        bytes.extend_from_slice(&[0xE0]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_mqtt_string_rejects_invalid_continuation_byte() {
+        // 0xC2 followed by 0x00 (invalid continuation byte)
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(2);
+        bytes.extend_from_slice(&[0xC2, 0x00]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_mqtt_string_rejects_null_character() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(3);
+        bytes.extend_from_slice(b"a\0b");
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn read_mqtt_string_accepts_valid_utf8() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5);
+        bytes.extend_from_slice("a/b/c".as_bytes());
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert_eq!(result.unwrap(), "a/b/c");
+    }
+
+    #[test]
+    fn read_mqtt_string_accepts_multibyte_valid_utf8() {
+        // U+1F600 (😀) encoded as 4-byte UTF-8: 0xF0 0x9F 0x98 0x80
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(4);
+        bytes.extend_from_slice(&[0xF0, 0x9F, 0x98, 0x80]);
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream);
+        assert_eq!(result.unwrap(), "😀");
+    }
+
+    #[test]
+    fn read_mqtt_string_preserves_bom() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(6);
+        bytes.extend_from_slice("\u{FEFF}abc".as_bytes());
+        let mut stream = bytes.freeze();
+        let result = read_mqtt_string(&mut stream).unwrap();
+        assert_eq!(result, "\u{FEFF}abc");
     }
 }

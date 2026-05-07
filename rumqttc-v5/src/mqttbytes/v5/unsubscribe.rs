@@ -51,6 +51,10 @@ impl Unsubscribe {
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let properties = UnsubscribeProperties::read(&mut bytes)?;
 
         let mut filters = Vec::with_capacity(1);
@@ -68,6 +72,10 @@ impl Unsubscribe {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         buffer.put_u8(0xA2);
 
         // write remaining length
@@ -85,7 +93,7 @@ impl Unsubscribe {
 
         // write filters
         for filter in &self.filters {
-            write_mqtt_string(buffer, filter);
+            write_mqtt_string(buffer, filter)?;
         }
 
         Ok(1 + remaining_len_bytes + remaining_len)
@@ -144,8 +152,8 @@ impl UnsubscribeProperties {
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         Ok(())
@@ -156,6 +164,7 @@ impl UnsubscribeProperties {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
+    use crate::Packet;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 
@@ -169,6 +178,10 @@ mod test {
         };
 
         let unsubscribe_pkt = Unsubscribe::new("hello/world", Some(unsubscribe_props));
+        let unsubscribe_pkt = Unsubscribe {
+            pkid: 1,
+            ..unsubscribe_pkt
+        };
 
         let size_from_size = unsubscribe_pkt.size();
         let size_from_write = unsubscribe_pkt.write(&mut dummy_bytes).unwrap();
@@ -176,5 +189,33 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn unsubscribe_parsing_rejects_zero_packet_identifier() {
+        let mut bytes = BytesMut::from(
+            &[
+                0xA2, // UNSUBSCRIBE
+                0x06, // remaining length
+                0x00, 0x00, // packet identifier
+                0x00, // properties length
+                0x00, 0x01, b'a', // topic filter
+            ][..],
+        );
+
+        let result = Packet::read(&mut bytes, Some(1024));
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn unsubscribe_encoding_rejects_zero_packet_identifier() {
+        let unsubscribe = Unsubscribe::new("a", None);
+        let mut bytes = BytesMut::new();
+
+        let result = unsubscribe.write(&mut bytes);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+        assert!(bytes.is_empty());
     }
 }

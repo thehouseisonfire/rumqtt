@@ -184,7 +184,7 @@ impl AuthProperties {
 
         if let Some(authentication_method) = &self.method {
             buffer.put_u8(PropertyType::AuthenticationMethod as u8);
-            write_mqtt_string(buffer, authentication_method);
+            write_mqtt_string(buffer, authentication_method)?;
         }
 
         if let Some(authentication_data) = &self.data {
@@ -194,13 +194,13 @@ impl AuthProperties {
 
         if let Some(reason) = &self.reason {
             buffer.put_u8(PropertyType::ReasonString as u8);
-            write_mqtt_string(buffer, reason);
+            write_mqtt_string(buffer, reason)?;
         }
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         Ok(())

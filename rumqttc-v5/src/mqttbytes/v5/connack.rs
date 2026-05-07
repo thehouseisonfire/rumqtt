@@ -268,7 +268,7 @@ impl ConnAckProperties {
 
         if let Some(id) = &self.assigned_client_identifier {
             buffer.put_u8(PropertyType::AssignedClientIdentifier as u8);
-            write_mqtt_string(buffer, id);
+            write_mqtt_string(buffer, id)?;
         }
 
         if let Some(topic_alias_max) = self.topic_alias_max {
@@ -278,13 +278,13 @@ impl ConnAckProperties {
 
         if let Some(reason) = &self.reason_string {
             buffer.put_u8(PropertyType::ReasonString as u8);
-            write_mqtt_string(buffer, reason);
+            write_mqtt_string(buffer, reason)?;
         }
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         if let Some(w) = self.wildcard_subscription_available {
@@ -309,17 +309,17 @@ impl ConnAckProperties {
 
         if let Some(info) = &self.response_information {
             buffer.put_u8(PropertyType::ResponseInformation as u8);
-            write_mqtt_string(buffer, info);
+            write_mqtt_string(buffer, info)?;
         }
 
         if let Some(reference) = &self.server_reference {
             buffer.put_u8(PropertyType::ServerReference as u8);
-            write_mqtt_string(buffer, reference);
+            write_mqtt_string(buffer, reference)?;
         }
 
         if let Some(authentication_method) = &self.authentication_method {
             buffer.put_u8(PropertyType::AuthenticationMethod as u8);
-            write_mqtt_string(buffer, authentication_method);
+            write_mqtt_string(buffer, authentication_method)?;
         }
 
         if let Some(authentication_data) = &self.authentication_data {

@@ -686,7 +686,7 @@ impl MqttState {
         let mut notice = notice;
         if publish.qos != QoS::AtMostOnce {
             if publish.pkid == 0 {
-                publish.pkid = self.next_pkid();
+                publish.pkid = self.next_pkid().ok_or(StateError::InvalidState)?;
             }
 
             let pkid = publish.pkid;
@@ -704,6 +704,13 @@ impl MqttState {
                 let event = Event::Outgoing(Outgoing::AwaitAck(pkid));
                 self.events.push_back(event);
                 return Ok((None, None));
+            }
+
+            if self.outgoing_rel.contains(pkid as usize)
+                || self.tracked_subscribe.contains_key(&pkid)
+                || self.tracked_unsubscribe.contains_key(&pkid)
+            {
+                return Err(StateError::InvalidState);
             }
 
             // if there is an existing publish at this pkid, this implies that broker hasn't acked this
@@ -874,7 +881,7 @@ impl MqttState {
         let pubrel = match pubrel.pkid {
             // consider PacketIdentifier(0) as uninitialized packets
             0 => {
-                pubrel.pkid = self.next_pkid();
+                pubrel.pkid = self.next_pkid().ok_or(StateError::InvalidState)?;
                 pubrel
             }
             _ => pubrel,
@@ -940,17 +947,15 @@ impl MqttState {
         None
     }
 
-    fn next_pkid(&mut self) -> u16 {
-        let pkid = self
-            .next_publish_pkid()
-            .unwrap_or_else(|| self.next_publish_pkid_after(self.last_pkid));
+    fn next_pkid(&mut self) -> Option<u16> {
+        let pkid = self.next_publish_pkid()?;
         if pkid == self.max_inflight {
             self.last_pkid = 0;
         } else {
             self.last_pkid = pkid;
         }
 
-        pkid
+        Some(pkid)
     }
 
     fn next_control_pkid(&mut self) -> Result<u16, StateError> {
@@ -1313,7 +1318,7 @@ mod test {
         let mut mqtt = build_mqttstate();
 
         for i in 1..=100 {
-            let pkid = mqtt.next_pkid();
+            let pkid = mqtt.next_pkid().unwrap();
 
             // loops between 0-99. % 100 == 0 implies border
             let expected = i % 100;
@@ -1344,6 +1349,63 @@ mod test {
             Packet::Publish(publish) => assert_eq!(publish.pkid, 2),
             packet => panic!("Unexpected packet: {packet:?}"),
         }
+    }
+
+    #[test]
+    fn next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use() {
+        let mut mqtt = MqttState::builder(4).build();
+
+        for pkid in 1..=4 {
+            let (notice, _) = SubscribeNoticeTx::new();
+            mqtt.tracked_subscribe
+                .insert(pkid, (Subscribe::new("a/b", QoS::AtMostOnce), notice));
+        }
+
+        assert!(!mqtt.can_send_publish(&build_outgoing_publish(QoS::AtLeastOnce)));
+        assert!(mqtt.next_pkid().is_none());
+        assert!(matches!(
+            mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce)),
+            Err(StateError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn outgoing_publish_rejects_packet_identifier_used_by_non_publish_flow() {
+        let mut mqtt = MqttState::builder(10).build();
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 3;
+
+        let (notice, _) = SubscribeNoticeTx::new();
+        mqtt.tracked_subscribe
+            .insert(3, (Subscribe::new("a/b", QoS::AtMostOnce), notice));
+
+        assert!(matches!(
+            mqtt.outgoing_publish(publish),
+            Err(StateError::InvalidState)
+        ));
+        assert!(mqtt.outgoing_pub[3].is_none());
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 4;
+        let (notice, _) = UnsubscribeNoticeTx::new();
+        mqtt.tracked_unsubscribe
+            .insert(4, (Unsubscribe::new("a/b"), notice));
+
+        assert!(matches!(
+            mqtt.outgoing_publish(publish),
+            Err(StateError::InvalidState)
+        ));
+        assert!(mqtt.outgoing_pub[4].is_none());
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 5;
+        mqtt.outgoing_rel.insert(5);
+
+        assert!(matches!(
+            mqtt.outgoing_publish(publish),
+            Err(StateError::InvalidState)
+        ));
+        assert!(mqtt.outgoing_pub[5].is_none());
     }
 
     #[test]

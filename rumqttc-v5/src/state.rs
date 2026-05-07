@@ -326,6 +326,14 @@ impl MqttState {
             || self.tracked_unsubscribe.contains_key(&pkid)
     }
 
+    const fn validate_outgoing_pkid_bound(&self, pkid: u16) -> Result<(), StateError> {
+        if pkid == 0 || pkid > self.max_outgoing_inflight {
+            return Err(StateError::Unsolicited(pkid));
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn can_send_publish(&self, publish: &Publish) -> bool {
         if publish.qos == QoS::AtMostOnce {
             return true;
@@ -775,7 +783,7 @@ impl MqttState {
                     )
                     | None => None,
                 };
-                self.outgoing_pubrel_with_notice(pubrel, publish_notice)
+                self.outgoing_pubrel_with_notice(pubrel, publish_notice)?
             }
             Request::Subscribe(subscribe) => {
                 let request_notice = match notice {
@@ -1253,10 +1261,11 @@ impl MqttState {
 
         if publish.qos != QoS::AtMostOnce {
             if publish.pkid == 0 {
-                publish.pkid = self.next_pkid();
+                publish.pkid = self.next_pkid().ok_or(StateError::InvalidState)?;
             }
 
             let pkid = publish.pkid;
+            self.validate_outgoing_pkid_bound(pkid)?;
             if self
                 .outgoing_pub
                 .get(publish.pkid as usize)
@@ -1272,6 +1281,13 @@ impl MqttState {
                 let event = Event::Outgoing(Outgoing::AwaitAck(pkid));
                 self.events.push_back(event);
                 return Ok((None, None));
+            }
+
+            if self.outgoing_rel.contains(pkid as usize)
+                || self.tracked_subscribe.contains_key(&pkid)
+                || self.tracked_unsubscribe.contains_key(&pkid)
+            {
+                return Err(StateError::InvalidState);
             }
 
             // if there is an existing publish at this pkid, this implies that broker hasn't acked this
@@ -1318,15 +1334,15 @@ impl MqttState {
         &mut self,
         pubrel: PubRel,
         notice: Option<PublishNoticeTx>,
-    ) -> (Option<Packet>, Option<PublishNoticeTx>) {
-        let pubrel = self.save_pubrel_with_notice(pubrel, notice);
+    ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        let pubrel = self.save_pubrel_with_notice(pubrel, notice)?;
 
         debug!("Pubrel. Pkid = {}", pubrel.pkid);
 
         let event = Event::Outgoing(Outgoing::PubRel(pubrel.pkid));
         self.events.push_back(event);
 
-        (Some(Packet::PubRel(PubRel::new(pubrel.pkid, None))), None)
+        Ok((Some(Packet::PubRel(PubRel::new(pubrel.pkid, None))), None))
     }
 
     fn outgoing_puback(&mut self, puback: PubAck) -> Packet {
@@ -1509,20 +1525,21 @@ impl MqttState {
         &mut self,
         mut pubrel: PubRel,
         notice: Option<PublishNoticeTx>,
-    ) -> PubRel {
+    ) -> Result<PubRel, StateError> {
         let pubrel = match pubrel.pkid {
             // consider PacketIdentifier(0) as uninitialized packets
             0 => {
-                pubrel.pkid = self.next_pkid();
+                pubrel.pkid = self.next_pkid().ok_or(StateError::InvalidState)?;
                 pubrel
             }
             _ => pubrel,
         };
 
+        self.validate_outgoing_pkid_bound(pubrel.pkid)?;
         self.outgoing_rel.insert(pubrel.pkid as usize);
         self.outgoing_rel_notice[pubrel.pkid as usize] = notice;
         self.inflight += 1;
-        pubrel
+        Ok(pubrel)
     }
 
     fn advance_last_puback_frontier(&mut self) {
@@ -1561,10 +1578,8 @@ impl MqttState {
         None
     }
 
-    fn next_pkid(&mut self) -> u16 {
-        let next_pkid = self
-            .next_publish_pkid()
-            .unwrap_or_else(|| self.next_publish_pkid_after(self.last_pkid));
+    fn next_pkid(&mut self) -> Option<u16> {
+        let next_pkid = self.next_publish_pkid()?;
 
         // When next packet id is at the edge of inflight queue,
         // set await flag. This instructs eventloop to stop
@@ -1572,11 +1587,11 @@ impl MqttState {
         // are acked
         if next_pkid == self.max_outgoing_inflight {
             self.last_pkid = 0;
-            return next_pkid;
+            return Some(next_pkid);
         }
 
         self.last_pkid = next_pkid;
-        next_pkid
+        Some(next_pkid)
     }
 
     fn next_control_pkid(&mut self) -> Result<u16, StateError> {
@@ -2300,7 +2315,7 @@ mod test {
         let mut mqtt = build_mqttstate();
 
         for i in 1..=100 {
-            let pkid = mqtt.next_pkid();
+            let pkid = mqtt.next_pkid().unwrap();
 
             // loops between 0-99. % 100 == 0 implies border
             let expected = i % 100;
@@ -2331,6 +2346,65 @@ mod test {
             Packet::Publish(publish) => assert_eq!(publish.pkid, 2),
             packet => panic!("Unexpected packet: {packet:?}"),
         }
+    }
+
+    #[test]
+    fn next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use() {
+        let mut mqtt = MqttState::builder(4).build();
+
+        for pkid in 1..=4 {
+            let filter = Filter::new("a/b", QoS::AtMostOnce);
+            let (notice, _) = SubscribeNoticeTx::new();
+            mqtt.tracked_subscribe
+                .insert(pkid, (Subscribe::new(filter, None), notice));
+        }
+
+        assert!(!mqtt.can_send_publish(&build_outgoing_publish(QoS::AtLeastOnce)));
+        assert!(mqtt.next_pkid().is_none());
+        assert!(matches!(
+            mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce)),
+            Err(StateError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn outgoing_publish_rejects_packet_identifier_used_by_non_publish_flow() {
+        let mut mqtt = MqttState::builder(10).build();
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 3;
+
+        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let (notice, _) = SubscribeNoticeTx::new();
+        mqtt.tracked_subscribe
+            .insert(3, (Subscribe::new(filter, None), notice));
+
+        assert!(matches!(
+            mqtt.outgoing_publish(publish),
+            Err(StateError::InvalidState)
+        ));
+        assert!(mqtt.outgoing_pub[3].is_none());
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 4;
+        let (notice, _) = UnsubscribeNoticeTx::new();
+        mqtt.tracked_unsubscribe
+            .insert(4, (Unsubscribe::new("a/b", None), notice));
+
+        assert!(matches!(
+            mqtt.outgoing_publish(publish),
+            Err(StateError::InvalidState)
+        ));
+        assert!(mqtt.outgoing_pub[4].is_none());
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 5;
+        mqtt.outgoing_rel.insert(5);
+
+        assert!(matches!(
+            mqtt.outgoing_publish(publish),
+            Err(StateError::InvalidState)
+        ));
+        assert!(mqtt.outgoing_pub[5].is_none());
     }
 
     #[test]
@@ -2388,20 +2462,22 @@ mod test {
         assert_eq!(mqtt.last_pkid, 0);
         assert_eq!(mqtt.inflight, 2);
 
-        // This should cause a collition
-        mqtt.outgoing_publish(publish.clone()).unwrap();
-        assert_eq!(mqtt.last_pkid, 1);
+        assert!(matches!(
+            mqtt.outgoing_publish(publish.clone()),
+            Err(StateError::InvalidState)
+        ));
+        assert_eq!(mqtt.last_pkid, 0);
         assert_eq!(mqtt.inflight, 2);
-        assert!(mqtt.collision.is_some());
+        assert!(mqtt.collision.is_none());
 
         mqtt.handle_incoming_puback(&PubAck::new(1, None)).unwrap();
         mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
-        assert_eq!(mqtt.inflight, 1);
+        assert_eq!(mqtt.inflight, 0);
 
         // Now there should be space in the outgoing queue
         mqtt.outgoing_publish(publish).unwrap();
-        assert_eq!(mqtt.last_pkid, 0);
-        assert_eq!(mqtt.inflight, 2);
+        assert_eq!(mqtt.last_pkid, 1);
+        assert_eq!(mqtt.inflight, 1);
     }
 
     #[test]

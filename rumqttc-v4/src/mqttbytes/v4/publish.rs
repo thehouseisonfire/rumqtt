@@ -132,8 +132,9 @@ fn validate_publish_topic_name(topic: &[u8]) -> Result<(), Error> {
         return Err(Error::IncorrectPacketFormat);
     }
 
-    if std::str::from_utf8(topic).is_err() {
-        return Err(Error::TopicNotUtf8);
+    let topic = std::str::from_utf8(topic).map_err(|_| Error::TopicNotUtf8)?;
+    if topic.contains('\0') {
+        return Err(Error::MalformedPacket);
     }
 
     Ok(())
@@ -374,5 +375,115 @@ mod test {
         let mut buf = BytesMut::new();
         let result = publish.write(&mut buf);
         assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-1.5.3-1: Publish topic name MUST be well-formed
+    /// UTF-8 and MUST NOT include surrogate code points (U+D800..U+DFFF).
+    #[test]
+    fn publish_parsing_rejects_surrogate_in_topic_name() {
+        // QoS 0 PUBLISH with topic containing U+D800 (CESU-8: 0xED 0xA0 0x80)
+        let stream = &[
+            0b0011_0000,
+            5, // packet type, flags and remaining len
+            0x00,
+            0x03, // topic length = 3
+            0xED,
+            0xA0,
+            0x80, // topic = U+D800 (surrogate)
+            0x01,
+            0x02, // payload
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn publish_encoding_rejects_surrogate_in_topic_name() {
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: Bytes::from_static(&[0xED, 0xA0, 0x80]), // U+D800
+            pkid: 0,
+            payload: Bytes::from(vec![0xE1, 0xE2]),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn publish_parsing_rejects_overlong_utf8_in_topic_name() {
+        // QoS 0 PUBLISH with topic containing overlong encoding of NUL (0xC0 0x80)
+        let stream = &[
+            0b0011_0000,
+            4, // packet type, flags and remaining len
+            0x00,
+            0x02, // topic length = 2
+            0xC0,
+            0x80, // topic = overlong U+0000
+            0x01, // payload
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn publish_encoding_rejects_overlong_utf8_in_topic_name() {
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: Bytes::from_static(&[0xC0, 0x80]), // overlong U+0000
+            pkid: 0,
+            payload: Bytes::from(vec![0xE1]),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn publish_parsing_rejects_null_character_in_topic_name() {
+        let stream = &[
+            0b0011_0000,
+            5, // packet type, flags and remaining len
+            0x00,
+            0x03, // topic length = 3
+            b'a',
+            0x00,
+            b'b',
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+
+        assert!(matches!(packet, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn publish_encoding_rejects_null_character_in_topic_name() {
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: Bytes::from_static(b"a\0b"),
+            pkid: 0,
+            payload: Bytes::from(vec![0xE1]),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
     }
 }

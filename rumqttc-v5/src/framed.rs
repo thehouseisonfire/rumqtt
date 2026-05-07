@@ -15,9 +15,10 @@ impl InboundDisconnect {
     const fn classify(error: &mqttbytes::Error) -> Option<Self> {
         let reason = match error {
             mqttbytes::Error::ProtocolViolation(reason) => *reason,
-            mqttbytes::Error::MalformedPacket | mqttbytes::Error::MalformedRemainingLength => {
-                DisconnectReasonCode::MalformedPacket
-            }
+            mqttbytes::Error::MalformedPacket
+            | mqttbytes::Error::MalformedRemainingLength
+            | mqttbytes::Error::IncorrectPacketFormat
+            | mqttbytes::Error::TopicNotUtf8 => DisconnectReasonCode::MalformedPacket,
             mqttbytes::Error::EmptySubscription | mqttbytes::Error::ProtocolError => {
                 DisconnectReasonCode::ProtocolError
             }
@@ -255,13 +256,13 @@ mod tests {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, Some(1024));
 
-        // DISCONNECT with reserved flags set is a malformed packet.
+        // DISCONNECT with reserved flags set is a malformed packet (MQTT-2.1.3-1).
         peer.write_all(&[0xE1, 0x01, 0x00]).await.unwrap();
 
         let err = network.read().await.unwrap_err();
         assert!(matches!(
             err,
-            StateError::Deserialization(mqttbytes::Error::MalformedPacket)
+            StateError::Deserialization(mqttbytes::Error::IncorrectPacketFormat)
         ));
 
         let mut response = [0; 3];
@@ -427,6 +428,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_sends_malformed_packet_disconnect_for_invalid_utf8() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+
+        peer.write_all(&[
+            0x30, 0x04, // PUBLISH, remaining length
+            0x00, 0x01, // topic length
+            0xff, // invalid UTF-8
+            0x00, // properties length
+        ])
+        .await
+        .unwrap();
+
+        let err = network.read().await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::TopicNotUtf8)
+        ));
+
+        let mut response = [0; 3];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [0xE0, 0x01, DisconnectReasonCode::MalformedPacket as u8]
+        );
+    }
+
+    #[tokio::test]
     async fn read_returns_decode_error_promptly_under_write_backpressure() {
         let io = BackpressuredIo::new(&[0xE1, 0x01, 0x00]);
         let mut network = Network::new(io, Some(1024));
@@ -438,7 +467,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            StateError::Deserialization(mqttbytes::Error::MalformedPacket)
+            StateError::Deserialization(mqttbytes::Error::IncorrectPacketFormat)
         ));
     }
 

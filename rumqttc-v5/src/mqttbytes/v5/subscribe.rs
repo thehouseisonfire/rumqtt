@@ -61,6 +61,10 @@ impl Subscribe {
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let properties = SubscribeProperties::read(&mut bytes)?;
 
         // variable header size = 2 (packet identifier)
@@ -77,6 +81,10 @@ impl Subscribe {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         // write packet type
         buffer.put_u8(0x82);
 
@@ -95,7 +103,7 @@ impl Subscribe {
 
         // write filters
         for f in &self.filters {
-            f.write(buffer);
+            f.write(buffer)?;
         }
 
         Ok(1 + remaining_len_bytes + remaining_len)
@@ -161,7 +169,7 @@ impl Filter {
         Ok(filters)
     }
 
-    pub fn write(&self, buffer: &mut BytesMut) {
+    pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let mut options = 0;
         options |= self.qos as u8;
 
@@ -179,8 +187,9 @@ impl Filter {
             RetainForwardRule::Never => 0b0010_0000,
         };
 
-        write_mqtt_string(buffer, self.path.as_str());
+        write_mqtt_string(buffer, self.path.as_str())?;
         buffer.put_u8(options);
+        Ok(())
     }
 }
 
@@ -270,8 +279,8 @@ impl SubscribeProperties {
 
         for (key, value) in &self.user_properties {
             buffer.put_u8(PropertyType::UserProperty as u8);
-            write_mqtt_string(buffer, key);
-            write_mqtt_string(buffer, value);
+            write_mqtt_string(buffer, key)?;
+            write_mqtt_string(buffer, value)?;
         }
 
         Ok(())
@@ -282,6 +291,7 @@ impl SubscribeProperties {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
+    use crate::Packet;
     use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
@@ -299,6 +309,10 @@ mod test {
             Filter::new("hello/world", QoS::AtMostOnce),
             Some(subscribe_props),
         );
+        let subscribe_pkt = Subscribe {
+            pkid: 1,
+            ..subscribe_pkt
+        };
 
         let size_from_size = subscribe_pkt.size();
         let size_from_write = subscribe_pkt.write(&mut dummy_bytes).unwrap();
@@ -306,6 +320,35 @@ mod test {
 
         assert_eq!(size_from_write, size_from_bytes);
         assert_eq!(size_from_size, size_from_bytes);
+    }
+
+    #[test]
+    fn subscribe_parsing_rejects_zero_packet_identifier() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x82, // SUBSCRIBE
+                0x07, // remaining length
+                0x00, 0x00, // packet identifier
+                0x00, // properties length
+                0x00, 0x01, b'a', // topic filter
+                0x00, // subscription options
+            ][..],
+        );
+
+        let result = Packet::read(&mut bytes, Some(1024));
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn subscribe_encoding_rejects_zero_packet_identifier() {
+        let subscribe = Subscribe::new(Filter::new("a", QoS::AtMostOnce), None);
+        let mut bytes = BytesMut::new();
+
+        let result = subscribe.write(&mut bytes);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+        assert!(bytes.is_empty());
     }
 
     #[test]
@@ -349,5 +392,72 @@ mod test {
             properties.user_properties,
             vec![("k".to_owned(), "v".to_owned())]
         );
+    }
+
+    #[test]
+    fn read_user_property_rejects_invalid_utf8_key() {
+        let mut bytes = Bytes::from_static(&[
+            0x07, // properties length
+            0x26, // UserProperty property
+            0x00, 0x01, 0xff, // invalid UTF-8 key
+            0x00, 0x01, b'v', // value
+        ]);
+
+        let result = SubscribeProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_user_property_rejects_invalid_utf8_value() {
+        let mut bytes = Bytes::from_static(&[
+            0x07, // properties length
+            0x26, // UserProperty property
+            0x00, 0x01, b'k', // key
+            0x00, 0x01, 0xff, // invalid UTF-8 value
+        ]);
+
+        let result = SubscribeProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn read_user_property_rejects_null_character_key() {
+        let mut bytes = Bytes::from_static(&[
+            0x09, // properties length
+            0x26, // UserProperty property
+            0x00, 0x03, b'a', 0x00, b'b', // key
+            0x00, 0x01, b'v', // value
+        ]);
+
+        let result = SubscribeProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn write_user_property_rejects_null_character_key_or_value() {
+        let mut bytes = BytesMut::new();
+        let props = SubscribeProperties {
+            id: None,
+            user_properties: vec![("a\0b".to_owned(), "v".to_owned())],
+        };
+
+        assert!(matches!(
+            props.write(&mut bytes),
+            Err(Error::MalformedPacket)
+        ));
+
+        let mut bytes = BytesMut::new();
+        let props = SubscribeProperties {
+            id: None,
+            user_properties: vec![("k".to_owned(), "a\0b".to_owned())],
+        };
+
+        assert!(matches!(
+            props.write(&mut bytes),
+            Err(Error::MalformedPacket)
+        ));
     }
 }
