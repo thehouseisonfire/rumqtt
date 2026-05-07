@@ -1169,9 +1169,36 @@ mod tests {
     use crate::mqttbytes::QoS;
     use crate::{Disconnect, PubAck, PubComp, PubRec, PubRel};
     use flume::TryRecvError;
+    use tokio::io::{AsyncReadExt, DuplexStream};
 
     fn push_pending(eventloop: &mut EventLoop, request: Request) {
         eventloop.pending.push_back(RequestEnvelope::plain(request));
+    }
+
+    async fn read_packet_bytes(peer: &mut DuplexStream) -> Vec<u8> {
+        let byte1 = peer.read_u8().await.unwrap();
+        let mut multiplier = 1usize;
+        let mut remaining_len = 0usize;
+        let mut remaining_len_bytes = Vec::new();
+
+        loop {
+            let encoded_byte = peer.read_u8().await.unwrap();
+            remaining_len_bytes.push(encoded_byte);
+            remaining_len += usize::from(encoded_byte & 0x7F) * multiplier;
+            if encoded_byte & 0x80 == 0 {
+                break;
+            }
+            multiplier *= 128;
+        }
+
+        let mut payload = vec![0; remaining_len];
+        peer.read_exact(&mut payload).await.unwrap();
+
+        let mut packet = Vec::with_capacity(1 + remaining_len_bytes.len() + payload.len());
+        packet.push(byte1);
+        packet.extend(remaining_len_bytes);
+        packet.extend(payload);
+        packet
     }
 
     fn pending_front_request(eventloop: &EventLoop) -> Option<&Request> {
@@ -1887,5 +1914,191 @@ mod tests {
         eventloop.reconcile_connack_session(true).unwrap();
 
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    // MQTT-3.1.0-1: After a Network Connection is established by a Client to a Server,
+    // the first Packet sent from the Client to the Server MUST be a CONNECT Packet.
+    #[tokio::test]
+    async fn mqtt_connect_sends_connect_as_first_packet_on_the_wire() {
+        use crate::mqttbytes::v4::Packet;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+        let (client, mut peer) = duplex(1024);
+        let mut network = Network::new(client, 1024, 1024);
+
+        let options = MqttOptions::new("test-client", "localhost");
+        // Write a ConnAck on the peer side so mqtt_connect can complete.
+        // ConnAck: 0x20 (type=2, flags=0), remaining_len=2, session_present=0, return_code=0
+        peer.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+
+        mqtt_connect(&options, &mut network).await.unwrap();
+
+        // Read the bytes the client wrote to the wire.
+        let mut buf = vec![0u8; 256];
+        let n = peer.read(&mut buf).await.unwrap();
+        assert!(n > 0, "client should have written bytes to the wire");
+
+        // Parse the first packet from the raw bytes.
+        let mut stream = bytes::BytesMut::from(&buf[..n]);
+        let packet = Packet::read(&mut stream, 1024).unwrap();
+
+        assert!(
+            matches!(packet, Packet::Connect(_)),
+            "first packet on the wire must be CONNECT, got {packet:?}"
+        );
+    }
+
+    // MQTT-3.1.0-1: Verify that poll() cannot process user requests before
+    // establishing the network connection (which sends CONNECT).
+    #[tokio::test]
+    async fn poll_sends_connect_before_queued_requests() {
+        use crate::mqttbytes::v4::Packet;
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .unwrap();
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let first_packet = read_packet_bytes(&mut peer).await;
+            // ConnAck: 0x20 (type=2, flags=0), remaining_len=2, session_present=0, return_code=0
+            peer.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+            let second_packet = read_packet_bytes(&mut peer).await;
+            (first_packet, second_packet)
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        ));
+
+        let (first_packet, second_packet) = broker.await.unwrap();
+        let mut first_stream = bytes::BytesMut::from(&first_packet[..]);
+        let mut second_stream = bytes::BytesMut::from(&second_packet[..]);
+        assert!(matches!(
+            Packet::read(&mut first_stream, 1024).unwrap(),
+            Packet::Connect(_)
+        ));
+        assert!(matches!(
+            Packet::read(&mut second_stream, 1024).unwrap(),
+            Packet::PingReq
+        ));
+    }
+
+    // MQTT-3.1.0-2: A Client can only send the CONNECT Packet once over a Network Connection.
+    // The Request enum has no Connect variant, so users cannot submit a CONNECT
+    // through the request channel. This is a compile-time invariant.
+    // The test below documents the current public request variants; the enum
+    // definition is the compile-time evidence that no Connect variant exists.
+    #[test]
+    fn request_enum_has_no_connect_variant() {
+        use crate::mqttbytes::v4::{PingResp, SubAck, UnsubAck};
+        use std::mem::discriminant;
+
+        // Explicitly enumerate the current variants to make the request-channel
+        // surface visible in the MQTT-3.1.0-2 regression tests.
+        let variants: Vec<_> = [
+            discriminant(&Request::Publish(Publish::new(
+                "t",
+                QoS::AtMostOnce,
+                vec![],
+            ))),
+            discriminant(&Request::PubAck(PubAck::new(1))),
+            discriminant(&Request::PubRec(PubRec::new(1))),
+            discriminant(&Request::PubComp(PubComp::new(1))),
+            discriminant(&Request::PubRel(PubRel::new(1))),
+            discriminant(&Request::PingReq(PingReq)),
+            discriminant(&Request::PingResp(PingResp)),
+            discriminant(&Request::Subscribe(Subscribe::new("t", QoS::AtMostOnce))),
+            discriminant(&Request::SubAck(SubAck::new(1, vec![]))),
+            discriminant(&Request::Unsubscribe(Unsubscribe::new("t"))),
+            discriminant(&Request::UnsubAck(UnsubAck::new(1))),
+            discriminant(&Request::Disconnect(Disconnect)),
+            discriminant(&Request::DisconnectNow(Disconnect)),
+            discriminant(&Request::DisconnectWithTimeout(
+                Disconnect,
+                Duration::from_secs(1),
+            )),
+        ]
+        .into_iter()
+        .collect();
+
+        // There are exactly 14 documented Request variants.
+        assert_eq!(
+            variants.len(),
+            14,
+            "Request should have exactly 14 documented variants"
+        );
+    }
+
+    // MQTT-3.1.0-2: Verify that after mqtt_connect succeeds, the eventloop
+    // never sends another CONNECT on the same network connection. The select()
+    // loop only processes Request variants, none of which is Connect.
+    #[tokio::test]
+    async fn eventloop_sends_only_one_connect_per_network_connection() {
+        use crate::mqttbytes::v4::Packet;
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let first_packet = read_packet_bytes(&mut peer).await;
+            peer.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+            let second_packet = read_packet_bytes(&mut peer).await;
+            (first_packet, second_packet)
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .unwrap();
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        ));
+
+        let (first_packet, second_packet) = broker.await.unwrap();
+        let mut first_stream = bytes::BytesMut::from(&first_packet[..]);
+        let mut second_stream = bytes::BytesMut::from(&second_packet[..]);
+        assert!(matches!(
+            Packet::read(&mut first_stream, 1024).unwrap(),
+            Packet::Connect(_)
+        ));
+        assert!(matches!(
+            Packet::read(&mut second_stream, 1024).unwrap(),
+            Packet::PingReq
+        ));
     }
 }

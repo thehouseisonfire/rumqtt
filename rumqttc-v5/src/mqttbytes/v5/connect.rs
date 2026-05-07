@@ -718,6 +718,23 @@ mod test {
     }
 
     #[test]
+    fn write_uses_mqtt_protocol_name() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        assert_eq!(&bytes[2..8], &[0x00, 0x04, b'M', b'Q', b'T', b'T']);
+    }
+
+    #[test]
     fn read_rejects_receive_maximum_zero() {
         let mut bytes = Bytes::from_static(&[
             0x03, // properties length
