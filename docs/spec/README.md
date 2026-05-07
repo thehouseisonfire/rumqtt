@@ -53,3 +53,14 @@ Each `requirements[]` item includes:
 - `candidate_paths`: heuristic list of likely implementation files.
 - `mapping_status`: currently `unreviewed`.
 - `mapping_reason`: explanation of mapping heuristic used.
+
+Audit passes may add these review fields to individual requirement entries:
+
+- `compliance_status`: reviewed implementation status for obligations applicable to this repository's client
+  crates. Use `not_applicable` for purely server-side obligations. When one spec requirement contains both
+  client-applicable and server-only clauses, `compliant` means the client-applicable clauses are implemented and
+  the server-only clauses are explicitly identified in `mapping_reason`.
+- `evidence`: concrete implementation paths and symbols that enforce the client-applicable behavior.
+- `test_coverage`: tests that assert the reviewed behavior, or an explanation when the requirement is not
+  applicable to a client crate.
+- `follow_up`: remaining work or `null` when no known client-side follow-up remains.

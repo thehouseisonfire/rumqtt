@@ -46,6 +46,10 @@ impl Connect {
         let will = LastWill::read(connect_flags, &mut bytes)?;
         let auth = ConnectAuth::read(connect_flags, &mut bytes)?;
 
+        if bytes.has_remaining() {
+            return Err(Error::IncorrectPacketFormat);
+        }
+
         let connect = Self {
             keep_alive,
             client_id,
@@ -806,6 +810,35 @@ mod test {
     }
 
     #[test]
+    fn connect_roundtrips_last_will() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+        let will = Some(LastWill {
+            topic: "/a".into(),
+            message: Bytes::from_static(b"offline"),
+            qos: QoS::AtLeastOnce,
+            retain: true,
+            properties: None,
+        });
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&will, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let connect_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+        let (_, decoded_will, decoded_auth) = Connect::read(fixed_header, connect_bytes).unwrap();
+
+        assert_eq!(decoded_will, will);
+        assert_eq!(decoded_auth, ConnectAuth::None);
+    }
+
+    #[test]
     fn read_rejects_receive_maximum_zero() {
         let mut bytes = Bytes::from_static(&[
             0x03, // properties length
@@ -1009,5 +1042,268 @@ mod test {
                 password: Bytes::from_static(b"\x00\xffproto\0buf"),
             }
         );
+    }
+
+    /// MQTT-3.1.2-9 / MQTT-3.1.2-11 / MQTT-3.1.2-13: When no last will is set,
+    /// the Will Flag, Will QoS, and Will Retain bits in the CONNECT flags
+    /// MUST all be zero.
+    #[test]
+    fn connect_encoding_without_last_will_emits_zero_will_bits() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut buf = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut buf)
+            .unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet.
+        // Will Flag is bit 2 (0x04), Will QoS is bits 3-4 (0x18),
+        // Will Retain is bit 5 (0x20). All must be zero when will is None.
+        assert_eq!(buf[9] & 0x3C, 0);
+    }
+
+    /// MQTT-3.1.2-9: If the Will Flag is set to 1, the Will Properties, Will
+    /// Topic, and Will Payload fields MUST be present in the Payload. Verify
+    /// that decoding a CONNECT with Will Flag=1 but no Will data is rejected.
+    #[test]
+    fn connect_parsing_rejects_will_flag_set_without_will_topic() {
+        // CONNECT with Will Flag=1 but payload truncated right after client_id
+        // (no Will Properties, Will Topic, or Will Payload bytes follow).
+        let packetstream: Vec<u8> = [
+            0x10,
+            15, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0000_0110, // connect flags: clean start + will flag, will qos 0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(packet.is_err());
+    }
+
+    /// MQTT-3.1.2-9: Will Properties MUST be present when Will Flag=1. When
+    /// there are no Will properties, the spec requires a 0-length property
+    /// section (a single 0x00 byte). Verify this encoding is correct and
+    /// round-trips through read.
+    #[test]
+    fn last_will_encoding_writes_zero_length_properties_when_none() {
+        let will = LastWill {
+            topic: Bytes::from_static(b"goodbye/topic"),
+            message: Bytes::from_static(b"offline"),
+            qos: QoS::AtMostOnce,
+            retain: false,
+            properties: None,
+        };
+
+        let mut buf = BytesMut::new();
+        let flags = will.write(&mut buf).unwrap();
+
+        // Will Flag must be set
+        assert_eq!(flags & 0x04, 0x04);
+        // First byte of Will data is the property length; must be 0x00
+        assert_eq!(buf[0], 0x00);
+
+        // Verify round-trip: reconstruct from the written bytes
+        let mut read_bytes = buf.copy_to_bytes(buf.len());
+        let decoded = LastWill::read(flags, &mut read_bytes).unwrap().unwrap();
+        assert_eq!(decoded.topic, will.topic);
+        assert_eq!(decoded.message, will.message);
+        assert_eq!(decoded.qos, will.qos);
+        assert_eq!(decoded.retain, will.retain);
+        assert_eq!(decoded.properties, None);
+    }
+
+    /// MQTT-3.1.2-11: If the Will Flag is set to 0, the Will QoS fields in
+    /// the Connect Flags MUST be set to zero.
+    #[test]
+    fn connect_parsing_rejects_will_flag_zero_with_will_qos_1() {
+        // CONNECT with Will Flag=0 but Will QoS=1 (bits 3-4 = 0b01)
+        // remaining = var_header(10) + props_len(1) + client_id(2+4) = 17
+        let packetstream: Vec<u8> = [
+            0x10,
+            17, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0001_0010, // connect flags: clean start + will qos 1, will flag=0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.2-13: If the Will Flag is set to 0, the Will Retain field in
+    /// the Connect Flags MUST be set to zero.
+    #[test]
+    fn connect_parsing_rejects_will_flag_zero_with_will_retain() {
+        // CONNECT with Will Flag=0 but Will Retain=1 (bit 5)
+        // remaining = var_header(10) + props_len(1) + client_id(2+4) = 17
+        let packetstream: Vec<u8> = [
+            0x10,
+            17, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0010_0010, // connect flags: clean start + will retain, will flag=0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.2-12: A Will QoS value of 3 (0x03) is a Malformed Packet.
+    #[test]
+    fn connect_parsing_rejects_will_qos_3() {
+        // CONNECT with Will Flag=1 and Will QoS=3 (bits 3-4 = 0b11)
+        // remaining = var_header(10) + props_len(1) + client_id(6)
+        //           + will_props_len(1) + will_topic(3) + will_message(3) = 24
+        let packetstream: Vec<u8> = [
+            0x10,
+            24, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0001_1110, // connect flags: clean start + will flag + will qos 3
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            0x00, // will properties length = 0
+            0x00,
+            0x01,
+            b'a', // will topic = "a"
+            0x00,
+            0x01,
+            b'x', // will message = "x"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::InvalidQoS(3))));
+    }
+
+    /// MQTT-3.1.3-1: CONNECT payload fields are selected by the flags and must
+    /// appear in the specified order. With Will Flag=0, Will Properties, Will
+    /// Topic, and Will Payload MUST NOT be present.
+    #[test]
+    fn connect_parsing_rejects_will_fields_when_will_flag_zero() {
+        // CONNECT with Will Flag=0 and all Will bits zero, but with Will data
+        // bytes after the Client Identifier.
+        // remaining = var_header(10) + props_len(1) + client_id(2+4)
+        //           + will_props_len(1) + will_topic(2+1) + will_payload(2+1) = 24
+        let packetstream: Vec<u8> = [
+            0x10,
+            24, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0000_0010, // connect flags: clean start only, will flag=0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            0x00, // forbidden will properties length = 0
+            0x00,
+            0x01,
+            b'a', // forbidden will topic = "a"
+            0x00,
+            0x01,
+            b'x', // forbidden will payload = "x"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 }
