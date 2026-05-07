@@ -734,6 +734,77 @@ mod test {
         assert_eq!(&bytes[2..8], &[0x00, 0x04, b'M', b'Q', b'T', b'T']);
     }
 
+    /// MQTT-3.1.2-2: Protocol Version for v5 MUST be 5 (0x05).
+    #[test]
+    fn connect_parsing_rejects_invalid_protocol_level() {
+        let packetstream: Vec<u8> = [
+            0x10, 0x10, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T',
+            0x04, // protocol name "MQTT" + invalid level 4
+            0x02, // connect flags: clean start only
+            0x00, 0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00, 0x04, b't', b'e', b's', b't', // client_id = "test"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::InvalidProtocolLevel(4))));
+    }
+
+    /// MQTT-3.1.2-2: Protocol Version for v5 MUST be 5 (0x05).
+    #[test]
+    fn connect_encoding_emits_protocol_level_5() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        // After fixed header (1 byte type + 1 byte remaining length) and
+        // protocol name (2 byte length + 4 byte "MQTT"), the protocol level
+        // byte sits at index 8.
+        assert_eq!(bytes[8], 0x05);
+    }
+
+    /// MQTT-3.1.2-3: CONNECT flags bit 0 is reserved and must encode as zero.
+    #[test]
+    fn connect_encoding_emits_zero_reserved_connect_flag_bit() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+        let will = Some(LastWill {
+            topic: "/a".into(),
+            message: Bytes::from_static(b"offline"),
+            qos: QoS::AtLeastOnce,
+            retain: true,
+            properties: None,
+        });
+        let auth = ConnectAuth::UsernamePassword {
+            username: "rust".to_owned(),
+            password: Bytes::from_static(b"mq"),
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt.write(&will, &auth, &mut bytes).unwrap();
+
+        assert_eq!(bytes[9] & 0x01, 0);
+    }
+
     #[test]
     fn read_rejects_receive_maximum_zero() {
         let mut bytes = Bytes::from_static(&[
