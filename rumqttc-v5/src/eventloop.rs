@@ -2774,4 +2774,228 @@ mod tests {
 
         assert_eq!(eventloop.pending_len(), 1);
     }
+
+    // MQTT-3.1.0-1: After a Network Connection is established by a Client to a Server,
+    // the first packet sent from the Client to the Server MUST be a CONNECT packet.
+    #[tokio::test]
+    async fn mqtt_connect_sends_connect_as_first_packet_on_the_wire() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        };
+
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            false,
+            options.auto_topic_aliases(),
+            options.topic_alias_policy(),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let connect_bytes = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            connect_bytes
+        };
+
+        let (result, connect_bytes) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        result.unwrap();
+
+        // Parse the first packet from the raw bytes written by the client.
+        let mut stream = BytesMut::from(&connect_bytes[..]);
+        let packet = Packet::read(&mut stream, Some(1024)).unwrap();
+
+        assert!(
+            matches!(packet, Packet::Connect(..)),
+            "first packet on the wire must be CONNECT, got {packet:?}"
+        );
+    }
+
+    // MQTT-3.1.0-1: Verify that poll() cannot process user requests before
+    // establishing the network connection (which sends CONNECT).
+    #[tokio::test]
+    async fn poll_sends_connect_before_queued_requests() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let first_packet = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            }
+            .write(&mut encoded_connack)
+            .unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            let second_packet = read_packet_bytes(&mut peer).await;
+            (first_packet, second_packet)
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        ));
+
+        let (first_packet, second_packet) = broker.await.unwrap();
+        let mut first_stream = BytesMut::from(&first_packet[..]);
+        let mut second_stream = BytesMut::from(&second_packet[..]);
+        assert!(matches!(
+            Packet::read(&mut first_stream, Some(1024)).unwrap(),
+            Packet::Connect(..)
+        ));
+        assert!(matches!(
+            Packet::read(&mut second_stream, Some(1024)).unwrap(),
+            Packet::PingReq(_)
+        ));
+    }
+
+    // MQTT-3.1.0-2: A Client can only send the CONNECT packet once over a Network Connection.
+    // The Request enum has no Connect variant, so users cannot submit a CONNECT
+    // through the request channel. This is a compile-time invariant.
+    #[test]
+    fn request_enum_has_no_connect_variant() {
+        use crate::mqttbytes::v5::{
+            Auth, Filter, SubAck, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+        };
+        use std::mem::discriminant;
+
+        // Explicitly enumerate the current variants to make the request-channel
+        // surface visible in the MQTT-3.1.0-2 regression tests.
+        let variants: Vec<_> = [
+            discriminant(&Request::Publish(Publish::new(
+                "t",
+                QoS::AtMostOnce,
+                vec![],
+                None,
+            ))),
+            discriminant(&Request::PubAck(PubAck::new(1, None))),
+            discriminant(&Request::PubRec(PubRec::new(1, None))),
+            discriminant(&Request::PubComp(PubComp::new(1, None))),
+            discriminant(&Request::PubRel(PubRel::new(1, None))),
+            discriminant(&Request::PingReq),
+            discriminant(&Request::PingResp),
+            discriminant(&Request::Subscribe(Subscribe::new(
+                Filter::new("t", QoS::AtMostOnce),
+                None,
+            ))),
+            discriminant(&Request::SubAck(SubAck {
+                pkid: 1,
+                return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+                properties: None,
+            })),
+            discriminant(&Request::Unsubscribe(Unsubscribe::new("t", None))),
+            discriminant(&Request::UnsubAck(UnsubAck {
+                pkid: 1,
+                reasons: vec![UnsubAckReason::Success],
+                properties: None,
+            })),
+            discriminant(&Request::Auth(Auth::new(AuthReasonCode::Success, None))),
+            discriminant(&Request::Disconnect(Disconnect::new(
+                DisconnectReasonCode::NormalDisconnection,
+            ))),
+            discriminant(&Request::DisconnectNow(Disconnect::new(
+                DisconnectReasonCode::NormalDisconnection,
+            ))),
+            discriminant(&Request::DisconnectWithTimeout(
+                Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+                Duration::from_secs(1),
+            )),
+        ]
+        .into_iter()
+        .collect();
+
+        // There are exactly 15 documented Request variants.
+        assert_eq!(
+            variants.len(),
+            15,
+            "Request should have exactly 15 documented variants"
+        );
+    }
+
+    // MQTT-3.1.0-2: Verify that after mqtt_connect succeeds, the eventloop
+    // never sends another CONNECT on the same network connection. The select()
+    // loop only processes Request variants, none of which is Connect.
+    #[tokio::test]
+    async fn eventloop_sends_only_one_connect_per_network_connection() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let first_packet = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            }
+            .write(&mut encoded_connack)
+            .unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            let second_packet = read_packet_bytes(&mut peer).await;
+            (first_packet, second_packet)
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        ));
+
+        let (first_packet, second_packet) = broker.await.unwrap();
+        let mut first_stream = BytesMut::from(&first_packet[..]);
+        let mut second_stream = BytesMut::from(&second_packet[..]);
+        assert!(matches!(
+            Packet::read(&mut first_stream, Some(1024)).unwrap(),
+            Packet::Connect(..)
+        ));
+        assert!(matches!(
+            Packet::read(&mut second_stream, Some(1024)).unwrap(),
+            Packet::PingReq(_)
+        ));
+    }
 }

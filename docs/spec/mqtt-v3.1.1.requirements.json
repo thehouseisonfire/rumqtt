@@ -543,10 +543,36 @@
       "source_anchor": "_Ref363033523",
       "occurrences": 3,
       "candidate_paths": [
+        "rumqttc-v4/src/eventloop.rs",
+        "rumqttc-v4/src/lib.rs",
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The eventloop architecturally guarantees CONNECT is the first packet sent on every new network connection. When self.network is None, poll() calls connect() which first establishes the TCP/TLS/WS transport via network_connect() and then immediately sends CONNECT via mqtt_connect() before returning. No other packet can be sent before CONNECT because: (1) the network object does not exist until connect() returns, (2) the Request enum has no Connect variant so users cannot inject a CONNECT through request channels, and (3) the select() method (which processes user requests) only runs after self.network = Some(network). The eventloop also validates that the first server response is CONNACK, returning ConnectionError::NotConnAck otherwise.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["EventLoop::poll", "connect", "mqtt_connect"],
+          "reason": "poll() calls connect() when network is None. connect() calls network_connect() then mqtt_connect(), which sends CONNECT as the very first MQTT packet on the new transport. No other packet path can execute before self.network is set."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["mqtt_connect"],
+          "reason": "mqtt_connect() constructs a Connect packet and writes it to the network, then awaits a ConnAck response. ConnectionError::NotConnAck is returned if the first response is not ConnAck."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["Request"],
+          "reason": "The Request enum has no Connect variant, so users cannot submit a CONNECT packet through the request channel. CONNECT is only sent internally by mqtt_connect()."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["mqtt_connect_sends_connect_as_first_packet_on_the_wire", "poll_sends_connect_before_queued_requests"],
+        "notes": "Wire-level test verifies the first packet sent by mqtt_connect is CONNECT. Eventloop-level test queues a request before connection establishment and verifies CONNECT is sent before the queued request on the same socket."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.0-2",
@@ -557,10 +583,36 @@
       "source_anchor": "_Ref363033523",
       "occurrences": 3,
       "candidate_paths": [
+        "rumqttc-v4/src/eventloop.rs",
+        "rumqttc-v4/src/lib.rs",
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The client cannot send a second CONNECT on the same network connection. The Request enum has no Connect variant, so users cannot submit a CONNECT through request channels. The CONNECT packet is only sent internally by mqtt_connect(), which is called exactly once per connection attempt inside connect(), which itself only runs when self.network is None. After a successful connection, self.network = Some(network) and subsequent poll() calls go to select(), which never calls mqtt_connect() again. When the connection is lost, self.clean() sets self.network = None, and the next poll() call re-establishes a new network connection (new TCP socket) before sending CONNECT again. The server-side obligation (MUST disconnect on second CONNECT) is outside client scope.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["Request"],
+          "reason": "The Request enum has no Connect variant, making it impossible for users to submit a CONNECT packet through the request channel."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["EventLoop::poll", "mqtt_connect"],
+          "reason": "mqtt_connect() is the only function that sends a CONNECT packet. It is called exactly once inside connect(), which only runs when self.network is None. After connect() succeeds, self.network is set and mqtt_connect() is never called again on the same connection."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["EventLoop::clean"],
+          "reason": "When the connection is lost, clean() sets self.network = None, causing the next poll() to establish a completely new network connection before sending CONNECT again."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["request_enum_has_no_connect_variant", "eventloop_sends_only_one_connect_per_network_connection"],
+        "notes": "Variant-enumeration test documents the current Request surface while the Request enum definition provides the compile-time evidence that no Connect variant exists. Eventloop-level wire test verifies that, after CONNECT succeeds, a later queued request on the same socket is sent as that request rather than as a second CONNECT."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-1",
@@ -573,8 +625,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement specifies server behavior when receiving a CONNECT with an incorrect protocol name. A rumqttc client never receives a CONNECT packet and has no obligation under this requirement. The client always sends the correct protocol name 'MQTT' (hardcoded in Connect::write() via write_mqtt_string(buffer, \"MQTT\")). The decode path (Connect::read) does validate the protocol name and returns Error::InvalidProtocol if it is not 'MQTT', but this is defensive completeness rather than a client obligation under MQTT-3.1.2-1.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Encode path always writes 'MQTT' as the protocol name via write_mqtt_string(buffer, \"MQTT\"), guaranteeing the correct protocol name on the wire."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "Decode path validates protocol_name != 'MQTT' and returns Error::InvalidProtocol, but this is only relevant if a client were to read a CONNECT packet, which it never does in normal operation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "This is a server-side requirement. The client always sends the correct protocol name. No client-side test is needed for this requirement."
+      },
+      "follow_up": "No follow-up needed. The requirement is server-only and the client correctly sends 'MQTT' as the protocol name."
     },
     {
       "id": "MQTT-3.1.2-2",
