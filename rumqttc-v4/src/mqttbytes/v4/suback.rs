@@ -31,6 +31,10 @@ impl SubAck {
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         if !bytes.has_remaining() {
             return Err(Error::MalformedPacket);
         }
@@ -117,5 +121,20 @@ mod test {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn suback_parsing_rejects_zero_packet_identifier() {
+        let stream = &[
+            0x90, 3, // packet type, flags and remaining len
+            0x00, 0x00, // variable header. pkid = 0
+            0x01, // payload. return code [success qos1]
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let ack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = SubAck::read(fixed_header, ack_bytes);
+
+        assert!(matches!(packet, Err(Error::PacketIdZero)));
     }
 }

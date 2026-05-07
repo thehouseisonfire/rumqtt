@@ -306,6 +306,26 @@ mod test {
     }
 
     #[test]
+    fn qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid() {
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: Bytes::from_static(b"a/b"),
+            pkid: 10,
+            payload: Bytes::from(vec![0xE1, 0xE2]),
+        };
+
+        let mut buf = BytesMut::new();
+        publish.write(&mut buf).unwrap();
+
+        assert_eq!(
+            buf,
+            vec![0b0011_0000, 7, 0x00, 0x03, b'a', b'/', b'b', 0xE1, 0xE2]
+        );
+    }
+
+    #[test]
     fn publish_parsing_rejects_empty_topic() {
         let stream = &[0b0011_0000, 2, 0x00, 0x00];
         let mut stream = BytesMut::from(&stream[..]);

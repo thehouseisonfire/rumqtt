@@ -352,6 +352,31 @@ mod test {
     }
 
     #[test]
+    fn qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid() {
+        let mut publish = Publish::new("a/b", QoS::AtMostOnce, vec![0xE1, 0xE2], None);
+        publish.pkid = 10;
+
+        let mut buf = BytesMut::new();
+        publish.write(&mut buf).unwrap();
+
+        assert_eq!(
+            buf,
+            vec![
+                0b0011_0000,
+                8,
+                0x00,
+                0x03,
+                b'a',
+                b'/',
+                b'b',
+                0x00,
+                0xE1,
+                0xE2
+            ]
+        );
+    }
+
+    #[test]
     fn invalid_qos_bits_are_reported_as_malformed_packet() {
         let mut frame = BytesMut::from(&[0x36, 0x02, 0x00, 0x00][..]);
         let result = Packet::read(&mut frame, Some(1024));

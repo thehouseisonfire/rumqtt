@@ -41,6 +41,11 @@ impl SubAck {
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
+
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let properties = SubAckProperties::read(&mut bytes)?;
 
         if !bytes.has_remaining() {
@@ -325,6 +330,22 @@ mod test {
         assert!(matches!(
             SubAck::read(fixed_header, packet),
             Err(Error::InvalidSubscribeReasonCode(0xFF))
+        ));
+    }
+
+    #[test]
+    fn suback_parsing_rejects_zero_packet_identifier() {
+        let packet = Bytes::from_static(&[
+            0x90, 0x04, // packet type + remaining length
+            0x00, 0x00, // pkid = 0
+            0x00, // properties length
+            0x00, // Success QoS0
+        ]);
+
+        let fixed_header = FixedHeader::new(0x90, 1, 0x04);
+        assert!(matches!(
+            SubAck::read(fixed_header, packet),
+            Err(Error::PacketIdZero)
         ));
     }
 }

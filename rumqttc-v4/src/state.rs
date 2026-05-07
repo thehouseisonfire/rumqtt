@@ -73,8 +73,12 @@ pub struct MqttState {
     pub(crate) outgoing_pub_ack: FixedBitSet,
     /// Packet ids of released `QoS` 2 publishes
     pub(crate) outgoing_rel: FixedBitSet,
+    /// Packet ids of released `QoS` 2 publishes queued for replay after clean
+    pub(crate) outgoing_rel_replay: FixedBitSet,
     /// Notice handles for outgoing `QoS` 2 pubrels
     pub(crate) outgoing_rel_notice: Vec<Option<PublishNoticeTx>>,
+    /// Packet ids on incoming `QoS` 1 publishes waiting for PUBACK
+    pub(crate) incoming_puback: FixedBitSet,
     /// Packet ids on incoming `QoS` 2 publishes
     pub(crate) incoming_pub: FixedBitSet,
     /// Last collision due to broker not acking in order
@@ -221,6 +225,7 @@ impl MqttState {
         let index = usize::from(pkid);
         self.outgoing_pub.get(index).is_some_and(Option::is_some)
             || self.outgoing_rel.contains(index)
+            || self.outgoing_rel_replay.contains(index)
             || self.tracked_subscribe.contains_key(&pkid)
             || self.tracked_unsubscribe.contains_key(&pkid)
     }
@@ -282,7 +287,9 @@ impl MqttState {
             outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
             outgoing_pub_ack: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel: FixedBitSet::with_capacity(tracking_len),
+            outgoing_rel_replay: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_notice: Self::new_notice_slots_with_len(tracking_len),
+            incoming_puback: FixedBitSet::with_capacity(u16::MAX as usize + 1),
             incoming_pub: FixedBitSet::with_capacity(u16::MAX as usize + 1),
             collision: None,
             collision_notice: None,
@@ -326,6 +333,7 @@ impl MqttState {
                     .map(TrackedNoticeTx::Publish),
             ));
         }
+        self.outgoing_rel_replay = self.outgoing_rel.clone();
         self.outgoing_rel.clear();
         self.outgoing_pub_ack.clear();
 
@@ -345,7 +353,8 @@ impl MqttState {
             ));
         }
 
-        // remove packet ids of incoming qos2 publishes
+        // remove packet ids of incoming publishes
+        self.incoming_puback.clear();
         self.incoming_pub.clear();
 
         self.await_pingresp = false;
@@ -485,8 +494,8 @@ impl MqttState {
                     unreachable!("graceful disconnect requests are handled by the event loop")
                 }
                 Request::DisconnectNow(_) => (Some(self.outgoing_disconnect()), None),
-                Request::PubAck(puback) => (Some(self.outgoing_puback(puback)), None),
-                Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)), None),
+                Request::PubAck(puback) => (Some(self.outgoing_puback(puback)?), None),
+                Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)?), None),
                 _ => unimplemented!(),
             };
 
@@ -510,9 +519,9 @@ impl MqttState {
         let events_len_before = self.events.len();
         let outgoing = match &packet {
             Incoming::PingResp => Ok(self.handle_incoming_pingresp()),
-            Incoming::Publish(publish) => Ok(self.handle_incoming_publish(publish)),
-            Incoming::SubAck(suback) => Ok(self.handle_incoming_suback(suback)),
-            Incoming::UnsubAck(unsuback) => Ok(self.handle_incoming_unsuback(unsuback)),
+            Incoming::Publish(publish) => self.handle_incoming_publish(publish),
+            Incoming::SubAck(suback) => self.handle_incoming_suback(suback),
+            Incoming::UnsubAck(unsuback) => self.handle_incoming_unsuback(unsuback),
             Incoming::PubAck(puback) => self.handle_incoming_puback(puback),
             Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec),
             Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel),
@@ -539,33 +548,47 @@ impl MqttState {
         self.collision_ping_count = 0;
     }
 
-    fn handle_incoming_suback(&mut self, suback: &SubAck) -> Option<Packet> {
+    fn handle_incoming_suback(&mut self, suback: &SubAck) -> Result<Option<Packet>, StateError> {
         if let Some((_, notice)) = self.tracked_subscribe.remove(&suback.pkid) {
             notice.success(suback.clone());
+        } else {
+            error!("Unsolicited suback packet: {:?}", suback.pkid);
+            return Err(StateError::Unsolicited(suback.pkid));
         }
-        None
+
+        Ok(None)
     }
 
-    fn handle_incoming_unsuback(&mut self, unsuback: &UnsubAck) -> Option<Packet> {
+    fn handle_incoming_unsuback(
+        &mut self,
+        unsuback: &UnsubAck,
+    ) -> Result<Option<Packet>, StateError> {
         if let Some((_, notice)) = self.tracked_unsubscribe.remove(&unsuback.pkid) {
             notice.success(unsuback.clone());
+        } else {
+            error!("Unsolicited unsuback packet: {:?}", unsuback.pkid);
+            return Err(StateError::Unsolicited(unsuback.pkid));
         }
-        None
+
+        Ok(None)
     }
 
     /// Results in a publish notification in all the `QoS` cases. Replys with an ack
     /// in case of `QoS1` and Replys rec in case of `QoS` while also storing the message
-    fn handle_incoming_publish(&mut self, publish: &Publish) -> Option<Packet> {
+    fn handle_incoming_publish(&mut self, publish: &Publish) -> Result<Option<Packet>, StateError> {
         let qos = publish.qos;
 
         match qos {
-            QoS::AtMostOnce => None,
+            QoS::AtMostOnce => Ok(None),
             QoS::AtLeastOnce => {
+                let pkid = publish.pkid;
+                self.incoming_puback.insert(pkid as usize);
+
                 if !self.manual_acks {
-                    let puback = PubAck::new(publish.pkid);
-                    return Some(self.outgoing_puback(puback));
+                    let puback = PubAck::new(pkid);
+                    return Ok(Some(self.outgoing_puback(puback)?));
                 }
-                None
+                Ok(None)
             }
             QoS::ExactlyOnce => {
                 let pkid = publish.pkid;
@@ -573,9 +596,9 @@ impl MqttState {
 
                 if !self.manual_acks {
                     let pubrec = PubRec::new(pkid);
-                    return Some(self.outgoing_pubrec(pubrec));
+                    return Ok(Some(self.outgoing_pubrec(pubrec)?));
                 }
-                None
+                Ok(None)
             }
         }
     }
@@ -707,6 +730,7 @@ impl MqttState {
             }
 
             if self.outgoing_rel.contains(pkid as usize)
+                || self.outgoing_rel_replay.contains(pkid as usize)
                 || self.tracked_subscribe.contains_key(&pkid)
                 || self.tracked_unsubscribe.contains_key(&pkid)
             {
@@ -752,18 +776,29 @@ impl MqttState {
         Ok((Some(Packet::PubRel(pubrel)), None))
     }
 
-    fn outgoing_puback(&mut self, puback: PubAck) -> Packet {
+    fn outgoing_puback(&mut self, puback: PubAck) -> Result<Packet, StateError> {
+        if !self.incoming_puback.contains(puback.pkid as usize) {
+            error!("Unsolicited puback request: {:?}", puback.pkid);
+            return Err(StateError::Unsolicited(puback.pkid));
+        }
+
+        self.incoming_puback.set(puback.pkid as usize, false);
         let event = Event::Outgoing(Outgoing::PubAck(puback.pkid));
         self.events.push_back(event);
 
-        Packet::PubAck(puback)
+        Ok(Packet::PubAck(puback))
     }
 
-    fn outgoing_pubrec(&mut self, pubrec: PubRec) -> Packet {
+    fn outgoing_pubrec(&mut self, pubrec: PubRec) -> Result<Packet, StateError> {
+        if !self.incoming_pub.contains(pubrec.pkid as usize) {
+            error!("Unsolicited pubrec request: {:?}", pubrec.pkid);
+            return Err(StateError::Unsolicited(pubrec.pkid));
+        }
+
         let event = Event::Outgoing(Outgoing::PubRec(pubrec.pkid));
         self.events.push_back(event);
 
-        Packet::PubRec(pubrec)
+        Ok(Packet::PubRec(pubrec))
     }
 
     /// check when the last control packet/pingreq packet is received and return
@@ -875,22 +910,23 @@ impl MqttState {
 
     fn save_pubrel_with_notice(
         &mut self,
-        mut pubrel: PubRel,
+        pubrel: PubRel,
         notice: Option<PublishNoticeTx>,
     ) -> Result<PubRel, StateError> {
-        let pubrel = match pubrel.pkid {
-            // consider PacketIdentifier(0) as uninitialized packets
-            0 => {
-                pubrel.pkid = self.next_pkid().ok_or(StateError::InvalidState)?;
-                pubrel
-            }
-            _ => pubrel,
-        };
-
         self.validate_outgoing_pkid_bound(pubrel.pkid)?;
+        let pkid_index = pubrel.pkid as usize;
+        let replaying_pubrel = self.outgoing_rel_replay.contains(pkid_index);
+        if !self.outgoing_rel.contains(pkid_index) && !replaying_pubrel {
+            error!("Unsolicited pubrel request: {:?}", pubrel.pkid);
+            return Err(StateError::Unsolicited(pubrel.pkid));
+        }
+
+        if replaying_pubrel {
+            self.outgoing_rel_replay.set(pkid_index, false);
+        }
         self.ensure_outgoing_tracking_capacity(pubrel.pkid as usize + 1);
-        self.outgoing_rel.insert(pubrel.pkid as usize);
-        self.outgoing_rel_notice[pubrel.pkid as usize] = notice;
+        self.outgoing_rel.insert(pkid_index);
+        self.outgoing_rel_notice[pkid_index] = notice;
         self.inflight += 1;
         Ok(pubrel)
     }
@@ -987,7 +1023,9 @@ impl Clone for MqttState {
             outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
             outgoing_pub_ack: self.outgoing_pub_ack.clone(),
             outgoing_rel: self.outgoing_rel.clone(),
+            outgoing_rel_replay: self.outgoing_rel_replay.clone(),
             outgoing_rel_notice: Self::new_notice_slots_with_len(self.outgoing_rel_notice.len()),
+            incoming_puback: self.incoming_puback.clone(),
             incoming_pub: self.incoming_pub.clone(),
             collision: self.collision.clone(),
             collision_notice: None,
@@ -1204,6 +1242,72 @@ mod test {
             mqtt.events.pop_front(),
             Some(Event::Incoming(Packet::UnsubAck(unsuback)))
         );
+    }
+
+    #[test]
+    fn incoming_suback_with_untracked_pkid_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+
+        let suback = SubAck::new(5, vec![SubscribeReasonCode::Failure]);
+        let got = mqtt
+            .handle_incoming_packet(Incoming::SubAck(suback))
+            .unwrap_err();
+
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 5),
+            e => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn incoming_unsuback_with_untracked_pkid_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+
+        let unsuback = UnsubAck::new(7);
+        let got = mqtt
+            .handle_incoming_packet(Incoming::UnsubAck(unsuback))
+            .unwrap_err();
+
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 7),
+            e => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn incoming_pubrec_with_untracked_pkid_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+
+        let got = mqtt.handle_incoming_pubrec(&PubRec::new(5)).unwrap_err();
+
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 5),
+            e => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn incoming_pubrel_with_untracked_pkid_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+
+        let got = mqtt.handle_incoming_pubrel(&PubRel::new(7)).unwrap_err();
+
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 7),
+            e => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn incoming_pubcomp_with_untracked_pkid_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+
+        let got = mqtt.handle_incoming_pubcomp(&PubComp::new(11)).unwrap_err();
+
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 11),
+            e => panic!("Unexpected error: {e}"),
+        }
     }
 
     #[test]
@@ -1456,11 +1560,13 @@ mod test {
         let publish2 = build_incoming_publish(QoS::AtLeastOnce, 2);
         let publish3 = build_incoming_publish(QoS::ExactlyOnce, 3);
 
-        let _ = mqtt.handle_incoming_publish(&publish1);
-        let _ = mqtt.handle_incoming_publish(&publish2);
-        let _ = mqtt.handle_incoming_publish(&publish3);
+        let _ = mqtt.handle_incoming_publish(&publish1).unwrap();
+        let _ = mqtt.handle_incoming_publish(&publish2).unwrap();
+        let _ = mqtt.handle_incoming_publish(&publish3).unwrap();
 
-        // only qos2 publish should be add to queue
+        // qos1 and qos2 publishes are tracked until their acknowledgement flow completes
+        assert!(!mqtt.incoming_puback.contains(1));
+        assert!(!mqtt.incoming_puback.contains(2));
         assert!(mqtt.incoming_pub.contains(3));
     }
 
@@ -1473,10 +1579,10 @@ mod test {
         let publish2 = build_incoming_publish(QoS::AtLeastOnce, 2);
         let publish3 = build_incoming_publish(QoS::ExactlyOnce, 3);
 
-        assert!(mqtt.handle_incoming_publish(&publish1).is_none());
+        assert!(mqtt.handle_incoming_publish(&publish1).unwrap().is_none());
 
         let packet = mqtt.handle_incoming_publish(&publish2).unwrap();
-        if let Packet::PubAck(puback) = packet {
+        if let Some(Packet::PubAck(puback)) = packet {
             let pkid = puback.pkid;
             assert_eq!(pkid, 2);
         } else {
@@ -1484,7 +1590,7 @@ mod test {
         }
 
         let packet = mqtt.handle_incoming_publish(&publish3).unwrap();
-        if let Packet::PubRec(pubrec) = packet {
+        if let Some(Packet::PubRec(pubrec)) = packet {
             let pkid = pubrec.pkid;
             assert_eq!(pkid, 3);
         } else {
@@ -1502,13 +1608,82 @@ mod test {
         let publish2 = build_incoming_publish(QoS::AtLeastOnce, 2);
         let publish3 = build_incoming_publish(QoS::ExactlyOnce, 3);
 
-        assert!(mqtt.handle_incoming_publish(&publish1).is_none());
-        assert!(mqtt.handle_incoming_publish(&publish2).is_none());
-        assert!(mqtt.handle_incoming_publish(&publish3).is_none());
+        assert!(mqtt.handle_incoming_publish(&publish1).unwrap().is_none());
+        assert!(mqtt.handle_incoming_publish(&publish2).unwrap().is_none());
+        assert!(mqtt.handle_incoming_publish(&publish3).unwrap().is_none());
 
+        assert!(mqtt.incoming_puback.contains(2));
         assert!(mqtt.incoming_pub.contains(3));
 
         assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn manual_puback_must_match_received_qos1_publish() {
+        let mut mqtt = build_mqttstate();
+        mqtt.manual_acks = true;
+        let publish = build_incoming_publish(QoS::AtLeastOnce, 10);
+
+        assert!(mqtt.handle_incoming_publish(&publish).unwrap().is_none());
+
+        let got = mqtt
+            .handle_outgoing_packet(Request::PubAck(PubAck::new(11)))
+            .unwrap_err();
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 11),
+            e => panic!("Unexpected error: {e}"),
+        }
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::PubAck(PubAck::new(10)))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubAck(puback) => assert_eq!(puback.pkid, 10),
+            packet => panic!("Invalid network request: {packet:?}"),
+        }
+        assert!(!mqtt.incoming_puback.contains(10));
+    }
+
+    #[test]
+    fn manual_pubrec_must_match_received_qos2_publish() {
+        let mut mqtt = build_mqttstate();
+        mqtt.manual_acks = true;
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 10);
+
+        assert!(mqtt.handle_incoming_publish(&publish).unwrap().is_none());
+
+        let got = mqtt
+            .handle_outgoing_packet(Request::PubRec(PubRec::new(11)))
+            .unwrap_err();
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 11),
+            e => panic!("Unexpected error: {e}"),
+        }
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::PubRec(PubRec::new(10)))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubRec(pubrec) => assert_eq!(pubrec.pkid, 10),
+            packet => panic!("Invalid network request: {packet:?}"),
+        }
+        assert!(mqtt.incoming_pub.contains(10));
+    }
+
+    #[test]
+    fn outgoing_pubrel_without_original_publish_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+
+        let got = mqtt
+            .handle_outgoing_packet(Request::PubRel(PubRel::new(7)))
+            .unwrap_err();
+
+        match got {
+            StateError::Unsolicited(pkid) => assert_eq!(pkid, 7),
+            e => panic!("Unexpected error: {e}"),
+        }
     }
 
     #[test]
@@ -1544,7 +1719,7 @@ mod test {
 
         let packet = mqtt.handle_incoming_publish(&publish).unwrap();
         match packet {
-            Packet::PubRec(pubrec) => assert_eq!(pubrec.pkid, 1),
+            Some(Packet::PubRec(pubrec)) => assert_eq!(pubrec.pkid, 1),
             _ => panic!("Invalid network request: {packet:?}"),
         }
     }
@@ -1722,13 +1897,44 @@ mod test {
     }
 
     #[test]
+    fn outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+        mqtt.handle_incoming_pubrec(&PubRec::new(1)).unwrap();
+        let mut pending = mqtt.clean();
+        assert_eq!(pending.len(), 1);
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 1;
+        let got = mqtt
+            .handle_outgoing_packet(Request::Publish(publish))
+            .unwrap_err();
+        assert!(matches!(got, StateError::InvalidState));
+        assert!(mqtt.outgoing_pub[1].is_none());
+        assert!(mqtt.outgoing_rel_replay.contains(1));
+
+        let packet = mqtt
+            .handle_outgoing_packet(pending.remove(0))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, 1),
+            packet => panic!("Invalid network request: {packet:?}"),
+        }
+        assert!(!mqtt.outgoing_rel_replay.contains(1));
+        assert!(mqtt.outgoing_rel.contains(1));
+    }
+
+    #[test]
     fn incoming_pubrel_should_send_comp_to_network_and_nothing_to_user() {
         let mut mqtt = build_mqttstate();
         let publish = build_incoming_publish(QoS::ExactlyOnce, 1);
 
         let packet = mqtt.handle_incoming_publish(&publish).unwrap();
         match packet {
-            Packet::PubRec(pubrec) => assert_eq!(pubrec.pkid, 1),
+            Some(Packet::PubRec(pubrec)) => assert_eq!(pubrec.pkid, 1),
             packet => panic!("Invalid network request: {packet:?}"),
         }
 
