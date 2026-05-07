@@ -67,6 +67,10 @@ impl PubComp {
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         if fixed_header.remaining_len == 2 {
             return Ok(Self {
                 pkid,
@@ -95,6 +99,10 @@ impl PubComp {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let len = self.len();
         buffer.put_u8(0x70);
         let count = write_remaining_length(buffer, len)?;
@@ -268,5 +276,27 @@ mod test {
             reason(42),
             Err(Error::InvalidConnectReturnCode(42))
         ));
+    }
+
+    #[test]
+    fn pubcomp_parsing_rejects_zero_packet_identifier() {
+        let packet = Bytes::from_static(&[
+            0x70, 0x02, // packet type + remaining length
+            0x00, 0x00, // pkid = 0
+        ]);
+
+        let fixed_header = FixedHeader::new(0x70, 1, 0x02);
+        assert!(matches!(
+            PubComp::read(fixed_header, packet),
+            Err(Error::PacketIdZero)
+        ));
+    }
+
+    #[test]
+    fn pubcomp_encoding_rejects_zero_packet_identifier() {
+        let ack = PubComp::new(0, None);
+        let mut buffer = BytesMut::new();
+
+        assert!(matches!(ack.write(&mut buffer), Err(Error::PacketIdZero)));
     }
 }

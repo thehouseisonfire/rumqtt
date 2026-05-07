@@ -41,6 +41,11 @@ impl UnsubAck {
         bytes.advance(variable_header_index);
 
         let pkid = read_u16(&mut bytes)?;
+
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let properties = UnsubAckProperties::read(&mut bytes)?;
 
         if !bytes.has_remaining() {
@@ -296,6 +301,22 @@ mod test {
         assert!(matches!(
             UnsubAck::read(fixed_header, packet),
             Err(Error::InvalidSubscribeReasonCode(0xFF))
+        ));
+    }
+
+    #[test]
+    fn unsuback_parsing_rejects_zero_packet_identifier() {
+        let packet = Bytes::from_static(&[
+            0xB0, 0x04, // packet type + remaining length
+            0x00, 0x00, // pkid = 0
+            0x00, // properties length
+            0x00, // Success
+        ]);
+
+        let fixed_header = FixedHeader::new(0xB0, 1, 0x04);
+        assert!(matches!(
+            UnsubAck::read(fixed_header, packet),
+            Err(Error::PacketIdZero)
         ));
     }
 }

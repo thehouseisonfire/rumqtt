@@ -307,8 +307,27 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: Publish::write() skips pkid serialization entirely when qos == AtMostOnce, so no pkid bytes appear on the wire for QoS 0. Decode path: Publish::read() sets pkid=0 without consuming bytes from the stream for QoS 0. State layer: outgoing_publish_with_notice() does not assign or track a pkid for QoS 0 publishes. Length calculation: Publish::len() excludes the 2-byte pkid field for QoS 0. A QoS 0 Publish struct with a non-zero pkid has its pkid silently ignored at encode time rather than explicitly rejected, but the wire format is still correct.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": ["Publish::write", "Publish::read", "Publish::len"],
+          "reason": "Encode: write() skips pkid serialization for QoS::AtMostOnce. Decode: read() sets pkid=0 without reading from stream for QoS::AtMostOnce. Length: len() excludes pkid bytes for QoS 0."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["outgoing_publish_with_notice"],
+          "reason": "State layer does not assign or track a pkid for QoS 0 publishes (guarded by `if publish.qos != QoS::AtMostOnce`)."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["length_calculation", "qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid"],
+        "notes": "length_calculation verifies size/write consistency for QoS 0. qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid explicitly constructs a QoS 0 Publish with a non-zero struct pkid and verifies the encoded wire bytes omit the packet identifier."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-2.2.1-3",
@@ -389,8 +408,67 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Client-generated acks correctly echo the pkid from the received packet: automatic PUBACK/PUBREC use publish.pkid, automatic PUBREL uses pubrec.pkid, and automatic PUBCOMP uses pubrel.pkid. Manual/outgoing PUBACK and PUBREC are validated against tracked incoming QoS1/QoS2 publish packet identifiers; outgoing PUBREL is validated against packet identifiers for QoS2 publishes that reached PUBREC or are being replayed after reconnect. Explicit outbound PUBLISH packet identifiers are also rejected while reserved for PUBREL replay. Client validates incoming PUBACK/PUBREC/PUBREL/PUBCOMP pkids against tracked packet-id state (returns StateError::Unsolicited on mismatch). Incoming SUBACK and UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. All ack decode paths (PubAck::read, PubRec::read, PubRel::read, PubComp::read, SubAck::read, UnsubAck::read) reject pkid==0 with Error::PacketIdZero. All v5 PUBACK/PUBREC/PUBREL/PUBCOMP encode paths also reject pkid==0.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_publish", "handle_incoming_pubrec", "handle_incoming_pubrel"],
+          "reason": "Client-generated acks correctly echo pkid: PubAck::new(publish.pkid, None) for QoS1, PubRec::new(pkid, None) for QoS2, PubRel::new(pubrec.pkid, None) for PUBREL, PubComp::new(pubrel.pkid, None) for PUBCOMP."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["outgoing_puback", "outgoing_pubrec", "outgoing_publish_with_notice", "save_pubrel_with_notice"],
+          "reason": "Manual/outgoing PUBACK and PUBREC are rejected with StateError::Unsolicited unless their pkid matches a tracked incoming QoS1/QoS2 PUBLISH packet identifier. Explicit outbound PUBLISH pkids are rejected while reserved for PUBREL replay. Outgoing PUBREL is rejected unless the pkid is already in outgoing_rel or the reconnect replay set."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_puback", "handle_incoming_pubrec", "handle_incoming_pubrel", "handle_incoming_pubcomp"],
+          "reason": "Incoming PUBACK/PUBREC/PUBREL/PUBCOMP are validated by packet identifier: return StateError::Unsolicited if pkid doesn't match tracked outgoing/incoming packet-id state."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_suback", "handle_incoming_unsuback"],
+          "reason": "Incoming SUBACK/UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. Returns StateError::Unsolicited if pkid doesn't match any tracked request. Notice is resolved on match."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": ["SubAck::read"],
+          "reason": "SubAck::read rejects pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": ["UnsubAck::read"],
+          "reason": "UnsubAck::read rejects pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+          "symbols": ["PubAck::read", "PubAck::write"],
+          "reason": "PubAck::read and PubAck::write reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+          "symbols": ["PubRec::read", "PubRec::write"],
+          "reason": "PubRec::read and PubRec::write reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": ["PubRel::read", "PubRel::write"],
+          "reason": "PubRel::read and PubRel::write reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
+          "symbols": ["PubComp::read", "PubComp::write"],
+          "reason": "PubComp::read and PubComp::write reject pkid==0 with Error::PacketIdZero."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["tracked_suback_returns_ack_with_properties_and_preserves_incoming_event", "tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event", "manual_puback_must_match_received_qos1_publish", "manual_pubrec_must_match_received_qos2_publish", "outgoing_pubrel_without_original_publish_is_unsolicited", "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay", "incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully", "incoming_suback_with_untracked_pkid_is_unsolicited", "incoming_unsuback_with_untracked_pkid_is_unsolicited", "incoming_pubrec_with_untracked_pkid_is_unsolicited", "incoming_pubrel_with_untracked_pkid_is_unsolicited", "incoming_pubcomp_with_untracked_pkid_is_unsolicited", "suback_parsing_rejects_zero_packet_identifier", "unsuback_parsing_rejects_zero_packet_identifier", "puback_parsing_rejects_zero_packet_identifier", "pubrec_parsing_rejects_zero_packet_identifier", "pubrel_parsing_rejects_zero_packet_identifier", "pubcomp_parsing_rejects_zero_packet_identifier", "puback_encoding_rejects_zero_packet_identifier", "pubrec_encoding_rejects_zero_packet_identifier", "pubrel_encoding_rejects_zero_packet_identifier", "pubcomp_encoding_rejects_zero_packet_identifier"],
+        "notes": "Incoming ack types have direct unsolicited-pkid detection tests. Manual PUBACK/PUBREC, direct PUBREL mismatch, and PUBREL replay pkid reservation boundaries are covered. All v5 ack decode paths and PUBACK/PUBREC/PUBREL/PUBCOMP encode paths reject pkid==0 in tests."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-2.2.1-6",
@@ -405,8 +483,67 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-2.2.1-5 (same summary and obligation). Evidence is identical: client-generated acks correctly echo pkids; manual/outgoing PUBACK/PUBREC/PUBREL validate pkids against tracked packet-id state; explicit outbound PUBLISH pkids cannot reuse ids reserved for PUBREL replay; all incoming ack types (PUBACK/PUBREC/PUBREL/PUBCOMP/SUBACK/UNSUBACK) validate pkids against tracked packet-id state with StateError::Unsolicited; all ack decode paths (PubAck/PubRec/PubRel/PubComp/SubAck/UnsubAck) reject pkid==0 with Error::PacketIdZero; v5 PUBACK/PUBREC/PUBREL/PUBCOMP encode paths reject pkid==0.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_publish", "handle_incoming_pubrec", "handle_incoming_pubrel"],
+          "reason": "Same evidence as MQTT-2.2.1-5. Client-generated acks correctly echo pkid from received packets."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["outgoing_puback", "outgoing_pubrec", "outgoing_publish_with_notice", "save_pubrel_with_notice"],
+          "reason": "Same evidence as MQTT-2.2.1-5. Manual/outgoing PUBACK/PUBREC/PUBREL pkids are validated against tracked packet-id state, and explicit outbound PUBLISH pkids cannot reuse ids reserved for PUBREL replay."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_puback", "handle_incoming_pubrec", "handle_incoming_pubrel", "handle_incoming_pubcomp"],
+          "reason": "Same evidence as MQTT-2.2.1-5. Incoming PUBACK/PUBREC/PUBREL/PUBCOMP pkids validated against tracked packet-id state with StateError::Unsolicited."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_suback", "handle_incoming_unsuback"],
+          "reason": "Same evidence as MQTT-2.2.1-5. Incoming SUBACK/UNSUBACK pkids validated against tracked_subscribe/tracked_unsubscribe with StateError::Unsolicited."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": ["SubAck::read"],
+          "reason": "Same evidence as MQTT-2.2.1-5. SubAck::read rejects pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": ["UnsubAck::read"],
+          "reason": "Same evidence as MQTT-2.2.1-5. UnsubAck::read rejects pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+          "symbols": ["PubAck::read", "PubAck::write"],
+          "reason": "Same evidence as MQTT-2.2.1-5. PubAck read/write reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+          "symbols": ["PubRec::read", "PubRec::write"],
+          "reason": "Same evidence as MQTT-2.2.1-5. PubRec read/write reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": ["PubRel::read", "PubRel::write"],
+          "reason": "Same evidence as MQTT-2.2.1-5. PubRel read/write reject pkid==0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
+          "symbols": ["PubComp::read", "PubComp::write"],
+          "reason": "Same evidence as MQTT-2.2.1-5. PubComp read/write reject pkid==0 with Error::PacketIdZero."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["tracked_suback_returns_ack_with_properties_and_preserves_incoming_event", "tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event", "manual_puback_must_match_received_qos1_publish", "manual_pubrec_must_match_received_qos2_publish", "outgoing_pubrel_without_original_publish_is_unsolicited", "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay", "incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully", "incoming_suback_with_untracked_pkid_is_unsolicited", "incoming_unsuback_with_untracked_pkid_is_unsolicited", "incoming_pubrec_with_untracked_pkid_is_unsolicited", "incoming_pubrel_with_untracked_pkid_is_unsolicited", "incoming_pubcomp_with_untracked_pkid_is_unsolicited", "suback_parsing_rejects_zero_packet_identifier", "unsuback_parsing_rejects_zero_packet_identifier", "puback_parsing_rejects_zero_packet_identifier", "pubrec_parsing_rejects_zero_packet_identifier", "pubrel_parsing_rejects_zero_packet_identifier", "pubcomp_parsing_rejects_zero_packet_identifier", "puback_encoding_rejects_zero_packet_identifier", "pubrec_encoding_rejects_zero_packet_identifier", "pubrel_encoding_rejects_zero_packet_identifier", "pubcomp_encoding_rejects_zero_packet_identifier"],
+        "notes": "Same as MQTT-2.2.1-5: incoming ack unsolicited-pkid detection, manual/outgoing ACK/PUBREL validation boundaries, PUBREL replay pkid reservation, and zero-pkid decode/encode rejection are tested."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-2.2.2-1",

@@ -73,6 +73,10 @@ impl PubAck {
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
 
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         // No reason code or properties if remaining length == 2
         if fixed_header.remaining_len == 2 {
             return Ok(Self {
@@ -103,6 +107,10 @@ impl PubAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let len = self.len();
         buffer.put_u8(0x40);
 
@@ -297,5 +305,27 @@ mod test {
             reason(42),
             Err(Error::InvalidConnectReturnCode(42))
         ));
+    }
+
+    #[test]
+    fn puback_parsing_rejects_zero_packet_identifier() {
+        let packet = Bytes::from_static(&[
+            0x40, 0x02, // packet type + remaining length
+            0x00, 0x00, // pkid = 0
+        ]);
+
+        let fixed_header = FixedHeader::new(0x40, 1, 0x02);
+        assert!(matches!(
+            PubAck::read(fixed_header, packet),
+            Err(Error::PacketIdZero)
+        ));
+    }
+
+    #[test]
+    fn puback_encoding_rejects_zero_packet_identifier() {
+        let ack = PubAck::new(0, None);
+        let mut buffer = BytesMut::new();
+
+        assert!(matches!(ack.write(&mut buffer), Err(Error::PacketIdZero)));
     }
 }

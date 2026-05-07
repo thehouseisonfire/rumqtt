@@ -68,6 +68,11 @@ impl PubRel {
         let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let pkid = read_u16(&mut bytes)?;
+
+        if pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         if fixed_header.remaining_len == 2 {
             return Ok(Self {
                 pkid,
@@ -96,6 +101,10 @@ impl PubRel {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         let len = self.len();
         buffer.put_u8(0x62);
         let count = write_remaining_length(buffer, len)?;
@@ -269,5 +278,27 @@ mod test {
             reason(42),
             Err(Error::InvalidConnectReturnCode(42))
         ));
+    }
+
+    #[test]
+    fn pubrel_parsing_rejects_zero_packet_identifier() {
+        let packet = Bytes::from_static(&[
+            0x62, 0x02, // packet type + remaining length
+            0x00, 0x00, // pkid = 0
+        ]);
+
+        let fixed_header = FixedHeader::new(0x62, 1, 0x02);
+        assert!(matches!(
+            PubRel::read(fixed_header, packet),
+            Err(Error::PacketIdZero)
+        ));
+    }
+
+    #[test]
+    fn pubrel_encoding_rejects_zero_packet_identifier() {
+        let ack = PubRel::new(0, None);
+        let mut buffer = BytesMut::new();
+
+        assert!(matches!(ack.write(&mut buffer), Err(Error::PacketIdZero)));
     }
 }
