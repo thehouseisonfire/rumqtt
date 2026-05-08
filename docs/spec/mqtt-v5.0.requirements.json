@@ -1162,8 +1162,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement combines two clauses: (1) username_flag=0 → username MUST NOT be present, and (2) username_flag=1 → username MUST be present. Encode path: ConnectAuth::None writes zero username bytes and returns flags=0 (no username flag), so no username appears in the payload. ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set the 0x80 flag bit. The Rust type system guarantees that when auth is Username or UsernamePassword, a username String is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None without reading any username bytes when username_flag=false. When username_flag=true, read_mqtt_string() is always called to consume a username; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a username present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username (ConnectAuth::Password variant), so validate_connect_flags() does not reject that combination.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: ConnectAuth::None writes 0 bytes and returns flags=0. ConnectAuth::Username writes the username string and returns 0x80. ConnectAuth::UsernamePassword writes both and returns 0xC0. ConnectAuth::Password writes only password bytes and returns 0x40 (no username flag, no username bytes)."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: when username_flag=false, returns ConnectAuth::None or ConnectAuth::Password without reading any username bytes. When username_flag=true, read_mqtt_string() is always called; truncation produces an error."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "Decode: the bytes.has_remaining() check after reading all flag-indicated fields rejects any trailing payload data, including a username that should not be present when the flag is 0."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_username_when_username_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_encoding_with_password_and_empty_username_writes_zero_len_username", "connect_roundtrips_binary_password"],
+        "notes": "connect_parsing_rejects_username_when_username_flag_zero directly tests that spurious username bytes in the payload are rejected when username_flag=0 via the has_remaining() check. connect_parsing_accepts_password_without_username_flag and connect_roundtrips_password_only_auth directly cover the v5-specific password-without-username boundary. Username+password roundtrip tests verify that username_flag=1 includes a length-prefixed username field, including the valid zero-length username case."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-17",
@@ -1176,8 +1200,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-16 (identical summary and obligation). Evidence is identical: encode path uses ConnectAuth enum variants that guarantee flag/payload consistency; decode path uses ConnectAuth::read() with flag-gated reads and the has_remaining() trailing-data check to reject spurious payload bytes.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Same evidence as MQTT-3.1.2-16. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Same evidence as MQTT-3.1.2-16. Decode: flag-gated reads consume only the indicated fields; truncation produces an error."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "Same evidence as MQTT-3.1.2-16. The has_remaining() check rejects any trailing payload data not indicated by the flags."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_username_when_username_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_encoding_with_password_and_empty_username_writes_zero_len_username", "connect_roundtrips_binary_password"],
+        "notes": "Same as MQTT-3.1.2-16. connect_parsing_rejects_username_when_username_flag_zero directly covers the spurious-username case; the remaining tests cover username-present and password-without-username boundary cases."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-18",
@@ -1190,8 +1238,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement combines two clauses: (1) password_flag=0 → password MUST NOT be present, and (2) password_flag=1 → password MUST be present. Encode path: ConnectAuth::None and ConnectAuth::Username write zero password bytes and do not set the 0x40 flag bit, so no password appears in the payload. ConnectAuth::Password and ConnectAuth::UsernamePassword both write a length-prefixed password and set the 0x40 flag bit. The Rust type system guarantees that when auth is Password or UsernamePassword, a password Bytes value is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes when password_flag=false. When password_flag=true, read_mqtt_bytes() is always called to consume a password; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a password present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username, so the (username_flag=false, password_flag=true) combination is valid and handled by ConnectAuth::Password.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: ConnectAuth::None returns flags=0. ConnectAuth::Username returns 0x80 (no password flag, no password bytes). ConnectAuth::Password writes password bytes and returns 0x40. ConnectAuth::UsernamePassword writes both and returns 0xC0. Password bytes are only written when the Password variant carries them."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: when password_flag=false, returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes. When password_flag=true, read_mqtt_bytes() is always called; truncation produces an error."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "Decode: the bytes.has_remaining() check after reading all flag-indicated fields rejects any trailing payload data, including a password that should not be present when the flag is 0."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_password_flag_set_without_password", "connect_parsing_rejects_password_when_password_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_roundtrips_binary_password", "connect_roundtrips_explicitly_empty_password", "connect_encoding_with_password_and_empty_username_writes_zero_len_username"],
+        "notes": "connect_parsing_rejects_password_flag_set_without_password directly tests that a CONNECT with password_flag=1 but payload truncated before the password field is rejected. connect_parsing_rejects_password_when_password_flag_zero directly tests the spurious-password case. Password roundtrip tests verify a length-prefixed password field is present when password_flag=1, including password-only, empty, and binary password cases."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-19",
@@ -1204,8 +1276,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-18 (identical summary and obligation). Evidence is identical: encode path uses ConnectAuth enum variants that guarantee flag/payload consistency (None→flags=0, Username→0x80, Password→0x40, UsernamePassword→0xC0); decode path uses ConnectAuth::read() with flag-gated reads and the has_remaining() trailing-data check in Connect::read() to reject spurious payload bytes. Note: unlike v3.1.1, v5 allows password-without-username via ConnectAuth::Password, so validate_connect_flags() does not reject (username_flag=false, password_flag=true).",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Same evidence as MQTT-3.1.2-18. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate. None→0, Username→0x80, Password→0x40, UsernamePassword→0xC0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Same evidence as MQTT-3.1.2-18. Decode: flag-gated reads consume only the indicated fields; (false,false)→None, (true,false)→Username, (false,true)→Password, (true,true)→UsernamePassword. Truncation produces an error."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "Same evidence as MQTT-3.1.2-18. The has_remaining() check rejects any trailing payload data not indicated by the flags."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_password_flag_set_without_password", "connect_parsing_rejects_password_when_password_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_roundtrips_binary_password", "connect_roundtrips_explicitly_empty_password"],
+        "notes": "Same as MQTT-3.1.2-18. connect_parsing_rejects_password_flag_set_without_password directly tests the truncated-password case. connect_parsing_rejects_password_when_password_flag_zero directly covers the spurious-password case. Password roundtrip tests cover the password-present boundary, including the v5-specific password-without-username combination."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-20",

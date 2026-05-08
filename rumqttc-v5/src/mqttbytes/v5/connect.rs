@@ -1306,4 +1306,138 @@ mod test {
 
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
+
+    /// MQTT-3.1.2-16: If the User Name Flag is set to 0, a User Name MUST NOT
+    /// be present in the Payload.
+    #[test]
+    fn connect_parsing_rejects_username_when_username_flag_zero() {
+        // CONNECT with username_flag=0 but spurious username bytes in the payload.
+        // The has_remaining() check in Connect::read() should reject this.
+        // remaining = var_header(10) + props_len(1) + client_id(2+4) + spurious_username(2+4) = 23
+        let packetstream: Vec<u8> = [
+            0x10,
+            23, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0000_0010, // connect flags: clean start only, no username flag
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            0x00,
+            0x04,
+            b'u',
+            b's',
+            b'e',
+            b'r', // spurious username (flag says it shouldn't be here)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.2-18: If the Password Flag is set to 1, a Password MUST be
+    /// present in the Payload. Verify that decoding a CONNECT with
+    /// password_flag=1 but no password data is rejected.
+    #[test]
+    fn connect_parsing_rejects_password_flag_set_without_password() {
+        // CONNECT with username_flag=1, password_flag=1, but payload truncated
+        // right after the username (no password bytes follow).
+        // remaining = var_header(10) + props_len(1) + client_id(2+4) + username(2+4) = 23
+        let packetstream: Vec<u8> = [
+            0x10,
+            23, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b1100_0010, // connect flags: username + password + clean start
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            0x00,
+            0x04,
+            b'u',
+            b's',
+            b'e',
+            b'r', // username = "user"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(packet.is_err());
+    }
+
+    /// MQTT-3.1.2-18: If the Password Flag is set to 0, a Password MUST NOT
+    /// be present in the Payload.
+    #[test]
+    fn connect_parsing_rejects_password_when_password_flag_zero() {
+        // CONNECT with password_flag=0 but spurious password bytes in the payload.
+        // The has_remaining() check in Connect::read() should reject this.
+        // remaining = var_header(10) + props_len(1) + client_id(2+4) + spurious_password(2+2) = 21
+        let packetstream: Vec<u8> = [
+            0x10,
+            21, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b0000_0010, // connect flags: clean start only, no password flag
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            0x00,
+            0x02,
+            b'p',
+            b'w', // spurious password (flag says it shouldn't be here)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
 }
