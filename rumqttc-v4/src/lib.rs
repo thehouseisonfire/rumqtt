@@ -516,6 +516,17 @@ pub struct MqttOptions {
     socket_connector: Option<SocketConnector>,
 }
 
+/// Returns whether `client_id` matches the MQTT 3.1.1 `ClientId` interoperability
+/// profile that every compliant server must accept.
+///
+/// MQTT 3.1.1 allows servers to accept broader `ClientId`s, so this helper is
+/// advisory only. It checks for a 1-23 byte ASCII alphanumeric `ClientId`.
+#[must_use]
+pub fn is_mqtt_minimum_client_id(client_id: &str) -> bool {
+    (1..=23).contains(&client_id.len())
+        && client_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 impl MqttOptions {
     /// Create an [`MqttOptions`] object that contains default values for all settings other than
     /// - id: A string to identify the device connecting to a broker
@@ -1998,6 +2009,19 @@ mod test {
     #[test]
     fn accept_empty_client_id() {
         let _mqtt_opts = MqttOptions::new("", "127.0.0.1").set_clean_session(true);
+    }
+
+    #[test]
+    fn minimum_client_id_helper_accepts_server_required_profile() {
+        assert!(is_mqtt_minimum_client_id("abcXYZ01234567890123456"));
+    }
+
+    #[test]
+    fn minimum_client_id_helper_rejects_values_outside_server_required_profile() {
+        assert!(!is_mqtt_minimum_client_id(""));
+        assert!(!is_mqtt_minimum_client_id("abc-123"));
+        assert!(!is_mqtt_minimum_client_id("abcXYZ012345678901234567"));
+        assert!(!is_mqtt_minimum_client_id("clienté"));
     }
 
     #[test]

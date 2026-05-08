@@ -324,7 +324,7 @@ impl ConnAckProperties {
 
         if let Some(authentication_data) = &self.authentication_data {
             buffer.put_u8(PropertyType::AuthenticationData as u8);
-            write_mqtt_bytes(buffer, authentication_data);
+            write_mqtt_bytes(buffer, authentication_data)?;
         }
 
         Ok(())
@@ -540,6 +540,20 @@ mod test {
         let result = ConnAckProperties::read(&mut bytes);
 
         assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn read_decodes_server_keep_alive() {
+        let mut bytes = Bytes::from_static(&[
+            0x03, // properties length
+            PropertyType::ServerKeepAlive as u8,
+            0x04,
+            0xd2, // server keep alive = 1234
+        ]);
+
+        let properties = ConnAckProperties::read(&mut bytes).unwrap().unwrap();
+
+        assert_eq!(properties.server_keep_alive, Some(1234));
     }
 
     #[test]

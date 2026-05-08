@@ -1338,8 +1338,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The Connect struct stores keep_alive as u16, encoded via buffer.put_u16() and decoded via read_u16(). MqttOptions::set_keep_alive accepts u16 seconds, converted to Duration internally. The eventloop uses the Duration to schedule periodic PINGREQ packets at the keep-alive interval while the connection is open. This is conservative for the client's outbound packet deadline, though the timer is not reset after every ordinary outbound packet. The 16-bit representation is enforced by the type system and wire encoding.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::keep_alive", "Connect::read", "Connect::write"],
+          "reason": "keep_alive is u16, written with put_u16 and read with read_u16, ensuring 16-bit wire representation."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["MqttOptions::set_keep_alive", "MqttOptions::keep_alive"],
+          "reason": "API accepts u16 seconds, stored as Duration. Conversion at connect time uses u16::try_from(duration.as_secs()).unwrap_or(u16::MAX)."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["EventLoop::select", "mqtt_connect"],
+          "reason": "Eventloop schedules periodic PINGREQ packets when the keep_alive Duration elapses. mqtt_connect converts Duration back to u16 for the CONNECT packet."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["test_zero_keep_alive_values", "test_valid_keep_alive_values", "idle_connection_triggers_pings_on_time", "some_outgoing_and_no_incoming_should_trigger_pings_on_time", "connect_parsing_works", "connect_encoding_works", "connect_roundtrips_max_keep_alive"],
+        "notes": "Unit tests verify CONNECT roundtrip with keep_alive=10 and keep_alive=u16::MAX. Integration tests verify keep-alive ping timing."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-24",
@@ -1352,8 +1376,22 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement obligates the Server to disconnect the client if no packet arrives within 1.5x the keep-alive period. The client has no obligation to enforce this timeout; it is purely a server-side behavior. The client does implement the complementary behavior of sending PINGREQ within the keep-alive interval to prevent the server from triggering this timeout, but that is covered by MQTT-3.1.2-23.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["EventLoop::select"],
+          "reason": "The eventloop sends PINGREQ when the keep-alive interval expires, which is the client-side behavior that prevents the server from triggering this 1.5x timeout. The 1.5x enforcement itself is server-only."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only requirement. Client-side keep-alive ping behavior is tested under MQTT-3.1.2-23."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-1",
@@ -1366,8 +1404,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Connect::write serializes payload fields in the required order: client_id (via write_mqtt_string), then last_will (which writes will_topic then will_message via LastWill::write), then auth (which writes username then password via ConnectAuth::write). Connect::read reads in the same order: client_id, last_will, auth. The sequential write/read structure guarantees correct wire ordering, and connect_encoding_emits_payload_fields_in_spec_order verifies the byte-level field positions.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "write() emits client_id, then last_will, then auth. read() consumes client_id, then last_will, then auth. This matches the required order: Client Identifier, Will Topic, Will Message, User Name, Password."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["LastWill::write", "LastWill::read"],
+          "reason": "LastWill::write emits will_topic then will_message. LastWill::read reads will_topic then will_message. Correct sub-ordering within the Will fields."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::write", "ConnectAuth::read"],
+          "reason": "ConnectAuth::write emits username then password. ConnectAuth::read reads username then password. Correct sub-ordering within the auth fields."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_works", "connect_encoding_works", "connect_roundtrips_binary_password", "connect_roundtrips_username_only_auth", "connect_roundtrips_explicitly_empty_password", "connect_encoding_emits_payload_fields_in_spec_order"],
+        "notes": "connect_encoding_emits_payload_fields_in_spec_order verifies byte-level positions of each CONNECT payload field in the encoded output, confirming the spec-required ordering: Client Identifier, Will Topic, Will Message, User Name, Password."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-2",
@@ -1380,8 +1442,37 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The client sends the configured ClientId in every CONNECT packet via Connect::write(), and reconnects use the current MqttOptions client_id value. The EventLoop tracks the ClientId associated with retained local session state; before reconnecting, reset_session_state_if_client_id_changed() clears pending and tracked local state if the configured ClientId has changed, so state from one ClientId is not reused under another ClientId. Global ClientId uniqueness across separate client instances remains an application/server responsibility, not something a client library can enforce locally.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() always serializes client_id as the first payload field. Connect::read() always deserializes it. The field is mandatory in the struct."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["MqttOptions::client_id", "MqttOptions::set_client_id"],
+          "reason": "MqttOptions stores and exposes the configured client_id. mqtt_connect() reads this value when constructing each CONNECT packet."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["mqtt_connect", "EventLoop::reset_session_state_if_client_id_changed"],
+          "reason": "mqtt_connect() creates Connect::new(options.client_id()), so each CONNECT packet uses the current configured ClientId. Before establishing a new connection, reset_session_state_if_client_id_changed() clears retained local state when the configured ClientId differs from the ClientId associated with that state."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": ["MqttState"],
+          "reason": "MqttState holds client-side session state owned by the EventLoop. The EventLoop guard prevents this state from being carried across a ClientId change."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_works", "connect_encoding_works", "accept_empty_client_id", "client_id_guard_keeps_state_when_client_id_is_unchanged", "client_id_guard_resets_state_when_client_id_changes"],
+        "notes": "Connect encode/decode tests verify client_id roundtrips correctly. MqttOptions test verifies empty client_id is accepted with clean_session=true. EventLoop guard tests verify retained local state is preserved for an unchanged ClientId and reset when the configured ClientId changes before reconnect."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-3",
@@ -1394,8 +1485,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "ClientId is always present: Connect::client_id is a String field (not Option), so it is always serialized by Connect::write() even when empty (zero-length UTF-8 string is valid per spec). ClientId is always the first payload field: Connect::write() serializes client_id immediately after the variable header, before last_will and auth. Connect::read() also reads client_id first after the variable header. The existing test connect_encoding_emits_payload_fields_in_spec_order verifies byte-level positions confirming client_id appears first in the payload.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() serializes client_id as the first payload field, before last_will and auth. Connect::read() reads client_id first after the variable header. The field is a mandatory String, not Option<String>."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["connect_encoding_emits_payload_fields_in_spec_order"],
+          "reason": "Test verifies byte-level positions: client_id bytes appear at payload_start offset, before will_topic, will_message, username, and password."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_emits_payload_fields_in_spec_order", "connect_parsing_works", "connect_encoding_works"],
+        "notes": "connect_encoding_emits_payload_fields_in_spec_order explicitly verifies client_id is the first payload field at the byte level. connect_parsing_works and connect_encoding_works verify roundtrip with client_id present."
+      },
+      "follow_up": "No follow-up needed. ClientId is always present and always serialized as the first payload field."
     },
     {
       "id": "MQTT-3.1.3-4",
@@ -1408,8 +1518,37 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement has two parts: (1) ClientId MUST be a UTF-8 encoded string as defined in Section 1.5.3 — the client enforces this: Connect::client_id is a Rust String (guaranteed valid UTF-8), write_mqtt_string validates via validate_mqtt_string (rejects U+0000 and returns PayloadTooLong if the string cannot fit in MQTT's two-byte length-prefixed field), and read_mqtt_string validates on decode. (2) The Server MUST allow ClientIds between 1 and 23 UTF-8 bytes containing only [0-9a-zA-Z] — this is a server-side MUST; the client is not required to enforce length or character restrictions on outgoing ClientIds. The client therefore remains compliant while accepting broader UTF-8 ClientIds (including empty with clean_session=true). For interoperability guidance, rumqttc-v4 exposes is_mqtt_minimum_client_id() so applications can check whether a ClientId is in the profile every compliant server must accept.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write() serializes client_id via write_mqtt_string which validates UTF-8 string constraints and returns PayloadTooLong if the length-prefix would overflow. Connect::read() uses read_mqtt_string which validates on decode. No server-side 1-23 byte / alphanumeric restriction is enforced on outgoing client_id."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+          "symbols": ["write_mqtt_string"],
+          "reason": "v4 write_mqtt_string delegates to core_primitives::validate_mqtt_string which checks UTF-8 validity and rejects U+0000, then delegates to the core writer which rejects strings too large for MQTT's two-byte length-prefix."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["validate_mqtt_string", "write_mqtt_string"],
+          "reason": "validate_mqtt_string validates UTF-8 via std::str::from_utf8 and rejects U+0000. write_mqtt_string returns PayloadTooLong instead of panicking when the encoded string is larger than u16::MAX."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["MqttOptions::new", "MqttOptions::set_clean_session", "is_mqtt_minimum_client_id"],
+          "reason": "MqttOptions::new() accepts any String as client_id, including empty. set_clean_session only asserts that empty client_id requires clean_session=true. is_mqtt_minimum_client_id() provides an optional helper for applications that want to stay within the 1-23 byte ASCII alphanumeric ClientId profile every compliant server must accept."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_null_character_in_client_id", "connect_encoding_rejects_null_character_in_client_id", "connect_encoding_rejects_client_id_larger_than_u16", "connect_parsing_rejects_surrogate_in_client_id", "accept_empty_client_id", "minimum_client_id_helper_accepts_server_required_profile", "minimum_client_id_helper_rejects_values_outside_server_required_profile", "write_mqtt_string_rejects_payloads_larger_than_u16"],
+        "notes": "Tests cover UTF-8 validation (null character, surrogate rejection) on client_id, confirm empty ClientIds remain allowed with clean_session=true, cover the optional 1-23 byte ASCII alphanumeric helper, and verify oversized MQTT strings return PayloadTooLong instead of panicking. The client intentionally does not enforce the server-side 1-23 byte / alphanumeric acceptance floor on outgoing ClientIds."
+      },
+      "follow_up": "No follow-up needed. The client is compliant, exposes an optional helper for the server-required interoperable ClientId profile, and returns PayloadTooLong for oversized MQTT strings."
     },
     {
       "id": "MQTT-3.1.3-5",
@@ -1422,8 +1561,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This generated requirement is the continuation of MQTT-3.1.3-4's character-list sentence. It states the alphanumeric ClientId profile that every compliant Server MUST allow. That is a server acceptance obligation, not a client-side restriction: MQTT 3.1.1 permits servers to accept broader ClientIds, and the client is allowed to send broader valid UTF-8 ClientIds. rumqttc-v4 therefore does not enforce this list on outgoing ClientIds, but exposes is_mqtt_minimum_client_id() as an advisory helper for applications that want to stay within the profile every compliant server must accept.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["is_mqtt_minimum_client_id"],
+          "reason": "Advisory helper returns true only for 1-23 byte ASCII alphanumeric ClientIds, matching the server-required acceptance profile."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "CONNECT encoding serializes any valid MQTT UTF-8 ClientId and intentionally does not restrict outgoing values to this server-required acceptance list."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["minimum_client_id_helper_accepts_server_required_profile", "minimum_client_id_helper_rejects_values_outside_server_required_profile"],
+        "notes": "No client enforcement test is required because the requirement is server-side. Helper tests cover the optional advisory predicate."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-6",

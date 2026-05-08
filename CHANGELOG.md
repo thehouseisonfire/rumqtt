@@ -1,11 +1,15 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
 ### Changed
 - `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
+- `mqttbytes-core` (Breaking Change): Change `write_mqtt_bytes(...)` and `write_mqtt_string(...)` to return `Result<(), Error>` so oversized MQTT two-byte length-prefixed fields report `Error::PayloadTooLong` instead of panicking.
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Reset retained local session state before reconnecting with a changed ClientId so pending state from one MQTT identity is not reused under another.
+- `rumqttc` v4/v5 codecs: Return `PayloadTooLong` instead of panicking when encoding MQTT strings or binary fields that exceed the MQTT two-byte length prefix limit.
 - `rumqttc` v4/v5 codecs: Enforce MQTT UTF-8 string validation on read/write paths, rejecting malformed UTF-8 and U+0000 in MQTT strings, including publish topics, will topics, subscribe filters, and unsubscribe filters.
 - `rumqttc` v4/v5: Prevent packet identifier reuse across publish, `PUBREL`, subscribe, and unsubscribe flows, returning state errors instead of silently colliding identifiers.
 - `rumqttc` v4/v5: Reject zero packet identifiers and unsolicited ACK/`PUBREL` packets in codec/state handling, including tracked `SUBACK`/`UNSUBACK` and manual `PUBACK`/`PUBREC` acknowledgement flows.
