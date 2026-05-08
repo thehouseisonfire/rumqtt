@@ -1110,8 +1110,22 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement obligates the Server to publish the Will Message as retained when Will Retain=1. The client's responsibility is limited to correctly encoding the Will Retain flag in the CONNECT packet, which is already covered by MQTT-3.1.2-15. The actual publishing behavior upon client disconnection is entirely server-side and outside the scope of a client library. Same reasoning as MQTT-3.1.2-16 (the Will Retain=0 counterpart).",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["LastWill::write"],
+          "reason": "The client correctly encodes the Will Retain flag (bit 5, 0x20) in the CONNECT variable header. When retain=true, bit 0x20 is set; when retain=false, it is not. The server is responsible for interpreting this flag when publishing the Will Message."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only requirement. The client's encoding of the Will Retain flag is tested under MQTT-3.1.2-15."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.2-18",
@@ -1124,8 +1138,37 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: ConnectAuth::None writes zero username bytes and returns flags=0 (no username flag set), so no username appears in the payload when the flag is 0. Decode path: ConnectAuth::read() returns ConnectAuth::None without reading any username bytes when username_flag=false. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a username present when the flag is 0. Additionally, validate_connect_flags() rejects the invalid combination of password_flag=true with username_flag=false, preventing a password from being read as a username stand-in.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: ConnectAuth::None writes 0 bytes and returns flags=0, so no username flag or username payload bytes are emitted."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: when username_flag=false, ConnectAuth::read() returns ConnectAuth::None without consuming any username bytes from the stream."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "Decode: the bytes.has_remaining() check after reading all flag-indicated fields rejects any trailing payload data, including a username that should not be present when the flag is 0."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["validate_connect_flags"],
+          "reason": "Decode: rejects password_flag=true with username_flag=false, which would otherwise allow password bytes to appear in the payload without a username flag."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_username_when_username_flag_zero", "connect_parsing_rejects_password_flag_without_username_flag"],
+        "notes": "connect_parsing_rejects_username_when_username_flag_zero directly tests that spurious username bytes in the payload are rejected when username_flag=0 via the has_remaining() check. connect_parsing_rejects_password_flag_without_username_flag directly covers the v3.1.1 rule that prevents password_flag=1 when username_flag=0."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-19",
@@ -1138,8 +1181,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set the username flag bit (0x80) in connect_flags. The Rust type system guarantees that when auth is Username or UsernamePassword, a username String is always present. Decode path: when username_flag=true, ConnectAuth::read() always calls read_mqtt_string() to consume a username from the stream. If the stream is truncated or the username field is missing, read_mqtt_string() returns an error. An empty username (zero-length string) is correctly serialized as a 2-byte length prefix with value 0, which is a valid present username per the spec.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: ConnectAuth::Username writes the username string and returns flag 0x80. ConnectAuth::UsernamePassword writes both username and password and returns flag 0xC0. Both set the username flag bit."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: when username_flag=true, read_mqtt_string() is always called to consume a username from the stream. If the data is missing or truncated, read_mqtt_string returns an error."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Encode: Connect::write() ORs the auth flags into connect_flags, so the username flag bit is set in the output when auth contains a username."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_roundtrips_username_only_auth", "connect_encoding_with_password_and_empty_username_writes_zero_len_username", "connect_roundtrips_binary_password"],
+        "notes": "Username-only, username+password, and empty-username roundtrip tests verify that the username flag is set and a length-prefixed username field is present in the payload, including the valid zero-length username case."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.2-20",
@@ -1152,8 +1219,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: ConnectAuth::write() emits no password bytes when the variant is None (flags=0) or Username (flags=0x80), so the password flag is 0 exactly when no password bytes appear in the payload. Decode path: ConnectAuth::read() does not read password bytes when password_flag=false, and the trailing-bytes check in Connect::read() (bytes.has_remaining() → Error::IncorrectPacketFormat) rejects any spurious password data that follows the declared fields. Together these guarantee that a decoded CONNECT with password_flag=0 cannot contain password bytes in the payload.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: ConnectAuth::None writes no bytes and returns flags=0; ConnectAuth::Username writes only username bytes and returns flags=0x80. In both cases password_flag=0 and no password bytes are emitted."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: when (username_flag=false, password_flag=false) returns None without reading password bytes; when (username_flag=true, password_flag=false) reads only username. No password bytes are consumed when password_flag=0."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::read"],
+          "reason": "The bytes.has_remaining() check after all declared fields are read rejects any trailing bytes (including spurious password data) with Error::IncorrectPacketFormat."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_password_when_password_flag_zero"],
+        "notes": "Dedicated test verifies that a CONNECT with password_flag=0 but spurious password bytes in the payload is rejected with Error::IncorrectPacketFormat via the has_remaining() check."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-21",
@@ -1166,8 +1257,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: ConnectAuth::UsernamePassword always writes both username and password bytes and sets flags=0xC0 (both username_flag=1 and password_flag=1), so a password is always present when the password flag is set. Decode path: ConnectAuth::read() unconditionally calls read_mqtt_bytes() for the password when (username_flag=true, password_flag=true), so if the password field is missing from the stream the read will fail with a buffer-underflow error. The type system also prevents constructing a ConnectAuth variant with password_flag=1 but no password data (UsernamePassword always carries a password: Bytes field).",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: ConnectAuth::UsernamePassword writes both username and password bytes and returns flags=0xC0 (password_flag=1). A password is always present on the wire when the password flag is set."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: when (username_flag=true, password_flag=true), read_mqtt_bytes() is called for the password. If the password field is absent from the stream, this call fails with a buffer-underflow error."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth"],
+          "reason": "The ConnectAuth enum has no variant that sets password_flag=1 without carrying a password Bytes field. UsernamePassword { username, password } always contains both."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_password_flag_set_without_password", "connect_roundtrips_explicitly_empty_password", "connect_roundtrips_binary_password"],
+        "notes": "Dedicated test verifies that a CONNECT with password_flag=1 but payload truncated before the password field is rejected. Roundtrip tests verify a length-prefixed password field is present when password_flag=1, including empty and binary passwords."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-22",
@@ -1180,8 +1295,37 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Encode path: The ConnectAuth enum has no variant that sets password_flag=1 without also setting username_flag=1. None yields flags=0 (both flags 0), Username yields flags=0x80 (username_flag=1, password_flag=0), UsernamePassword yields flags=0xC0 (both flags 1). It is impossible to construct a ConnectAuth that encodes password_flag=1 with username_flag=0. Decode path: validate_connect_flags() explicitly checks 'if password_flag && !username_flag' and returns Error::IncorrectPacketFormat, and ConnectAuth::read() also matches (false, true) as an error case. Both checks enforce the constraint on inbound packets.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["validate_connect_flags"],
+          "reason": "Decode validation: checks 'if password_flag && !username_flag' and returns Error::IncorrectPacketFormat. This rejects any CONNECT with password_flag=1 when username_flag=0."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::read"],
+          "reason": "Decode: the match arm (username_flag=false, password_flag=true) returns Err(Error::IncorrectPacketFormat), providing a second layer of enforcement."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::write"],
+          "reason": "Encode: None→flags=0, Username→flags=0x80, UsernamePassword→flags=0xC0. No variant produces flags with password_flag=1 and username_flag=0."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth"],
+          "reason": "The enum design makes it impossible to represent a password-without-username state: the only variant with password_flag=1 is UsernamePassword, which always includes a username."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_parsing_rejects_password_flag_without_username_flag"],
+        "notes": "Direct test constructs a CONNECT with connect_flags=0x42 (password_flag=1, username_flag=0) and verifies it is rejected with Error::IncorrectPacketFormat."
+      },
+      "follow_up": "No follow-up needed. Both encode and decode paths enforce the constraint, and a dedicated test exists."
     },
     {
       "id": "MQTT-3.1.2-23",
