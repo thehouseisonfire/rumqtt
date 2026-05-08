@@ -189,7 +189,7 @@ impl AuthProperties {
 
         if let Some(authentication_data) = &self.data {
             buffer.put_u8(PropertyType::AuthenticationData as u8);
-            write_mqtt_bytes(buffer, authentication_data);
+            write_mqtt_bytes(buffer, authentication_data)?;
         }
 
         if let Some(reason) = &self.reason {

@@ -216,7 +216,7 @@ impl LastWill {
         }
 
         write_mqtt_string(buffer, &self.topic)?;
-        write_mqtt_bytes(buffer, &self.message);
+        write_mqtt_bytes(buffer, &self.message)?;
         Ok(connect_flags)
     }
 }
@@ -271,7 +271,7 @@ impl ConnectAuth {
             }
             Self::UsernamePassword { username, password } => {
                 write_mqtt_string(buffer, username)?;
-                write_mqtt_bytes(buffer, password.as_ref());
+                write_mqtt_bytes(buffer, password.as_ref())?;
                 0xC0
             }
         };
@@ -451,6 +451,25 @@ mod test {
         // println!("{:?}", sample_bytes());
 
         assert_eq!(buf, sample_bytes());
+    }
+
+    #[test]
+    fn connect_roundtrips_max_keep_alive() {
+        let connect = Connect {
+            keep_alive: u16::MAX,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let packet = Connect::read(fixed_header, buf.freeze()).unwrap();
+
+        assert_eq!(packet.keep_alive, u16::MAX);
     }
 
     #[test]
@@ -716,6 +735,26 @@ mod test {
         let result = connect.write(&mut buf);
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn connect_encoding_rejects_client_id_larger_than_u16() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "a".repeat(usize::from(u16::MAX) + 1),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PayloadTooLong)));
+        assert!(
+            !buf.is_empty(),
+            "CONNECT encoding reports the protocol error after writing the packet prefix"
+        );
     }
 
     #[test]
@@ -1230,5 +1269,53 @@ mod test {
         let packet = Connect::read(fixed_header, connect_bytes);
 
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.3-1: CONNECT payload fields MUST appear in the order
+    /// Client Identifier, Will Topic, Will Message, User Name, Password.
+    /// Verify byte-level positions of each field in the encoded output.
+    #[test]
+    fn connect_encoding_emits_payload_fields_in_spec_order() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "cid".to_owned(),
+            clean_session: true,
+            last_will: Some(LastWill::new("wt", "wm", QoS::AtLeastOnce, false)),
+            auth: ConnectAuth::UsernamePassword {
+                username: "un".to_owned(),
+                password: Bytes::from_static(b"pw"),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        // Fixed header: 0x10, remaining_length
+        // Variable header: 0x00 0x04 M Q T T 0x04 connect_flags 0x00 0x0a
+        // Payload starts after variable header (10 bytes) + fixed header (2 bytes) = offset 12.
+        let payload_start = 12;
+
+        // Client Identifier: 0x00 0x03 c i d
+        let client_id_start = payload_start;
+        assert_eq!(&buf[client_id_start..client_id_start + 5], b"\x00\x03cid");
+
+        // Will Topic: 0x00 0x02 w t
+        let will_topic_start = client_id_start + 5;
+        assert_eq!(&buf[will_topic_start..will_topic_start + 4], b"\x00\x02wt");
+
+        // Will Message: 0x00 0x02 w m
+        let will_msg_start = will_topic_start + 4;
+        assert_eq!(&buf[will_msg_start..will_msg_start + 4], b"\x00\x02wm");
+
+        // Username: 0x00 0x02 u n
+        let username_start = will_msg_start + 4;
+        assert_eq!(&buf[username_start..username_start + 4], b"\x00\x02un");
+
+        // Password: 0x00 0x02 p w
+        let password_start = username_start + 4;
+        assert_eq!(&buf[password_start..password_start + 4], b"\x00\x02pw");
+
+        // Nothing after password.
+        assert_eq!(buf.len(), password_start + 4);
     }
 }

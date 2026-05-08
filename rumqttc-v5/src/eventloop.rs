@@ -195,6 +195,8 @@ pub struct EventLoop {
     /// Dummy sleep used as a placeholder in select! when keepalive is disabled.
     /// Initialized once with `Duration::MAX` so that it never fires.
     no_sleep: Option<Pin<Box<Sleep>>>,
+    /// `ClientId` associated with the currently retained local session state.
+    session_client_id: Option<String>,
     pending_disconnect: Option<PendingDisconnect>,
     disconnect_complete: bool,
 }
@@ -333,6 +335,7 @@ impl EventLoop {
             network: None,
             keepalive_timeout: None,
             no_sleep: None,
+            session_client_id: None,
             pending_disconnect: None,
             disconnect_complete: false,
         }
@@ -472,6 +475,18 @@ impl EventLoop {
         self.state.reset_connection_scoped_state();
     }
 
+    fn reset_session_state_if_client_id_changed(&mut self) {
+        let current_client_id = self.options.client_id();
+        if self.session_client_id.as_deref() == Some(current_client_id.as_str()) {
+            return;
+        }
+
+        if self.session_client_id.is_some() {
+            self.reset_session_state();
+        }
+        self.session_client_id = None;
+    }
+
     fn reconcile_outgoing_tracking_after_connack(&mut self) {
         self.state
             .reconcile_outgoing_tracking_capacity(self.pending.is_empty());
@@ -500,12 +515,15 @@ impl EventLoop {
                 return Err(ConnectionError::RequestsDone);
             }
 
+            self.reset_session_state_if_client_id_changed();
+
             let (network, connack) = time::timeout(
                 self.options.connect_timeout(),
                 connect(&mut self.options, &mut self.state),
             )
             .await??;
             self.reconcile_connack_session(connack.session_present)?;
+            self.session_client_id = Some(self.options.client_id());
             self.network = Some(network);
 
             if self.keepalive_timeout.is_none() && !self.options.keep_alive.is_zero() {
@@ -704,7 +722,7 @@ impl EventLoop {
     async fn try_admit_existing_normal_requests(&mut self) {
         let ready = self.pending.len() + self.requests_rx.len();
         for _ in 0..ready {
-            if !(self.normal_request_admission_allowed() || !self.pending.is_empty()) {
+            if !self.normal_request_admission_allowed() && self.pending.is_empty() {
                 break;
             }
 
@@ -732,7 +750,7 @@ impl EventLoop {
         let stop_batch = is_disconnect_request(&request);
         self.queued
             .push_back(RequestEnvelope::from_parts(request, notice));
-        if stop_batch || !(self.normal_request_admission_allowed() || !self.pending.is_empty()) {
+        if stop_batch || !self.normal_request_admission_allowed() && self.pending.is_empty() {
             return;
         }
 
@@ -2773,6 +2791,29 @@ mod tests {
         eventloop.reconcile_connack_session(true).unwrap();
 
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[test]
+    fn client_id_guard_keeps_state_when_client_id_is_unchanged() {
+        let mut eventloop = build_eventloop_with_pending(false);
+        eventloop.session_client_id = Some("test-client".to_owned());
+
+        eventloop.reset_session_state_if_client_id_changed();
+
+        assert_eq!(eventloop.pending_len(), 1);
+        assert_eq!(eventloop.session_client_id.as_deref(), Some("test-client"));
+    }
+
+    #[test]
+    fn client_id_guard_resets_state_when_client_id_changes() {
+        let mut eventloop = build_eventloop_with_pending(false);
+        eventloop.session_client_id = Some("test-client".to_owned());
+        eventloop.options.set_client_id("other-client".to_owned());
+
+        eventloop.reset_session_state_if_client_id_changed();
+
+        assert!(eventloop.pending_is_empty());
+        assert_eq!(eventloop.session_client_id, None);
     }
 
     // MQTT-3.1.0-1: After a Network Connection is established by a Client to a Server,

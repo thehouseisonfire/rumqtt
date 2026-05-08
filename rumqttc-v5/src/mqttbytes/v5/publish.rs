@@ -105,7 +105,7 @@ impl Publish {
 
         let count = write_remaining_length(buffer, len)?;
         validate_mqtt_string(&self.topic)?;
-        write_mqtt_bytes(buffer, &self.topic);
+        write_mqtt_bytes(buffer, &self.topic)?;
 
         if self.qos != QoS::AtMostOnce {
             let pkid = self.pkid;
@@ -289,7 +289,7 @@ impl PublishProperties {
 
         if let Some(data) = &self.correlation_data {
             buffer.put_u8(PropertyType::CorrelationData as u8);
-            write_mqtt_bytes(buffer, data);
+            write_mqtt_bytes(buffer, data)?;
         }
 
         for (key, value) in &self.user_properties {

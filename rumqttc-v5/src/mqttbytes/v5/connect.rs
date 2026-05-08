@@ -348,7 +348,7 @@ impl ConnectProperties {
 
         if let Some(authentication_data) = &self.authentication_data {
             buffer.put_u8(PropertyType::AuthenticationData as u8);
-            write_mqtt_bytes(buffer, authentication_data);
+            write_mqtt_bytes(buffer, authentication_data)?;
         }
 
         Ok(())
@@ -448,8 +448,8 @@ impl LastWill {
         }
 
         validate_mqtt_string(&self.topic)?;
-        write_mqtt_bytes(buffer, &self.topic);
-        write_mqtt_bytes(buffer, &self.message);
+        write_mqtt_bytes(buffer, &self.topic)?;
+        write_mqtt_bytes(buffer, &self.message)?;
         Ok(connect_flags)
     }
 }
@@ -601,7 +601,7 @@ impl LastWillProperties {
 
         if let Some(data) = &self.correlation_data {
             buffer.put_u8(PropertyType::CorrelationData as u8);
-            write_mqtt_bytes(buffer, data);
+            write_mqtt_bytes(buffer, data)?;
         }
 
         for (key, value) in &self.user_properties {
@@ -668,12 +668,12 @@ impl ConnectAuth {
                 0x80
             }
             Self::Password { password } => {
-                write_mqtt_bytes(buffer, password.as_ref());
+                write_mqtt_bytes(buffer, password.as_ref())?;
                 0x40
             }
             Self::UsernamePassword { username, password } => {
                 write_mqtt_string(buffer, username)?;
-                write_mqtt_bytes(buffer, password.as_ref());
+                write_mqtt_bytes(buffer, password.as_ref())?;
                 0xC0
             }
         };
@@ -780,6 +780,47 @@ mod test {
         // protocol name (2 byte length + 4 byte "MQTT"), the protocol level
         // byte sits at index 8.
         assert_eq!(bytes[8], 0x05);
+    }
+
+    #[test]
+    fn connect_roundtrips_max_keep_alive() {
+        let connect_pkt = Connect {
+            keep_alive: u16::MAX,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let (connect, will, auth) = Connect::read(fixed_header, bytes.freeze()).unwrap();
+
+        assert_eq!(connect.keep_alive, u16::MAX);
+        assert_eq!(will, None);
+        assert_eq!(auth, ConnectAuth::None);
+    }
+
+    #[test]
+    fn connect_encoding_rejects_client_id_larger_than_u16() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "a".repeat(usize::from(u16::MAX) + 1),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        let result = connect_pkt.write(&None, &ConnectAuth::None, &mut bytes);
+
+        assert!(matches!(result, Err(Error::PayloadTooLong)));
+        assert!(
+            !bytes.is_empty(),
+            "CONNECT encoding reports the protocol error after writing the packet prefix"
+        );
     }
 
     /// MQTT-3.1.2-3: CONNECT flags bit 0 is reserved and must encode as zero.
@@ -1439,5 +1480,70 @@ mod test {
         let packet = Connect::read(fixed_header, connect_bytes);
 
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.3-1: CONNECT payload fields MUST appear in the order
+    /// Client Identifier, Will Properties, Will Topic, Will Payload,
+    /// User Name, Password. Verify byte-level positions of each field
+    /// in the encoded output.
+    #[test]
+    fn connect_encoding_emits_payload_fields_in_spec_order() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "cid".to_owned(),
+            clean_start: true,
+            properties: None,
+        };
+        let will = Some(LastWill {
+            topic: Bytes::from_static(b"wt"),
+            message: Bytes::from_static(b"wm"),
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            properties: None,
+        });
+        let auth = ConnectAuth::UsernamePassword {
+            username: "un".to_owned(),
+            password: Bytes::from_static(b"pw"),
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&will, &auth, &mut buf).unwrap();
+
+        // Fixed header: 0x10, remaining_length (0x21 = 33)
+        // Variable header: 0x00 0x04 M Q T T 0x05 connect_flags 0x00 0x0a
+        // Connect Properties Length: 0x00
+        // Payload starts after variable header (10 bytes) + connect props length (1 byte)
+        // + fixed header (2 bytes) = offset 13.
+        let payload_start = 13;
+
+        // Client Identifier: 0x00 0x03 c i d
+        let client_id_start = payload_start;
+        assert_eq!(&buf[client_id_start..client_id_start + 5], b"\x00\x03cid");
+
+        // Will Properties Length: 0x00
+        let will_props_start = client_id_start + 5;
+        assert_eq!(buf[will_props_start], 0x00);
+
+        // Will Topic: 0x00 0x02 w t
+        let will_topic_start = will_props_start + 1;
+        assert_eq!(&buf[will_topic_start..will_topic_start + 4], b"\x00\x02wt");
+
+        // Will Payload: 0x00 0x02 w m
+        let will_payload_start = will_topic_start + 4;
+        assert_eq!(
+            &buf[will_payload_start..will_payload_start + 4],
+            b"\x00\x02wm"
+        );
+
+        // Username: 0x00 0x02 u n
+        let username_start = will_payload_start + 4;
+        assert_eq!(&buf[username_start..username_start + 4], b"\x00\x02un");
+
+        // Password: 0x00 0x02 p w
+        let password_start = username_start + 4;
+        assert_eq!(&buf[password_start..password_start + 4], b"\x00\x02pw");
+
+        // Nothing after password.
+        assert_eq!(buf.len(), password_start + 4);
     }
 }

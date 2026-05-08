@@ -106,7 +106,7 @@ impl Publish {
         validate_publish_topic_name(&self.topic)?;
 
         let count = write_remaining_length(buffer, len)?;
-        write_mqtt_bytes(buffer, &self.topic);
+        write_mqtt_bytes(buffer, &self.topic)?;
 
         if self.qos != QoS::AtMostOnce {
             let pkid = self.pkid;

@@ -1314,8 +1314,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The Connect struct stores keep_alive as u16, encoded via buffer.put_u16() and decoded via read_u16(). MqttOptions::set_keep_alive accepts u16 seconds, converted to Duration internally. The eventloop uses the Duration to schedule periodic PINGREQ packets at the keep-alive interval while the connection is open. This is conservative for the client's outbound packet deadline, though the timer is not reset after every ordinary outbound packet. The Two Byte Integer (u16) representation is enforced by the type system and wire encoding. Equivalent to v4's MQTT-3.1.2-23.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::keep_alive", "Connect::read", "Connect::write"],
+          "reason": "keep_alive is u16, written with put_u16 and read with read_u16, ensuring Two Byte Integer wire representation."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": ["MqttOptions::set_keep_alive", "MqttOptions::keep_alive"],
+          "reason": "API accepts u16 seconds, stored as Duration. Conversion at connect time uses u16::try_from(duration.as_secs()).unwrap_or(u16::MAX)."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["EventLoop::select", "mqtt_connect_inner"],
+          "reason": "Eventloop schedules periodic PINGREQ packets when the keep_alive Duration elapses. mqtt_connect_inner converts Duration back to u16 for the CONNECT packet."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["length_calculation", "write_uses_mqtt_protocol_name", "connect_roundtrips_last_will", "connect_roundtrips_binary_password", "connect_roundtrips_max_keep_alive", "idle_connection_triggers_pings_on_time", "some_outgoing_and_no_incoming_should_trigger_pings_on_time"],
+        "notes": "Unit tests verify CONNECT roundtrip with keep_alive=5 and keep_alive=u16::MAX. Integration tests verify keep-alive PINGREQ timing for idle connections and for connections with outgoing traffic. No explicit test for zero keep_alive."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-21",
@@ -1328,8 +1352,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The v5 eventloop's mqtt_connect_inner() reads the CONNACK properties and, if server_keep_alive is present, overrides options.keep_alive with the server's value (Duration::from_secs). This override happens before the keepalive_timeout timer is initialized, so subsequent PINGREQ intervals use the server-assigned value. The ConnAckProperties struct correctly parses the ServerKeepAlive property (id 0x13). This is a v5-only requirement with no v3.1.1 equivalent.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_inner"],
+          "reason": "After receiving a successful CONNACK, if connack.properties.server_keep_alive is Some, options.keep_alive is overridden with Duration::from_secs(u64::from(keep_alive)). The keepalive_timeout is initialized after mqtt_connect_inner returns, so it uses the overridden value."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnAckProperties::server_keep_alive", "ConnAckProperties::read", "ConnAckProperties::write"],
+          "reason": "ConnAckProperties has server_keep_alive: Option<u16>, parsed from PropertyType::ServerKeepAlive (0x13) via read_u16, and written via put_u16. The property is correctly encoded/decoded."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["read_decodes_server_keep_alive", "client_uses_server_keep_alive_from_connack"],
+        "notes": "Unit test verifies CONNACK Server Keep Alive property decoding. Integration test verifies that the client overrides its keep_alive (originally 60s) with the server's Server Keep Alive value (1s) from CONNACK, and that subsequent PINGREQ intervals reflect the server-assigned value."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-22",
@@ -1342,8 +1385,22 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement obligates the Server to close the Network Connection if no packet arrives within 1.5x the keep-alive period. The client has no obligation to enforce this timeout; it is purely a server-side behavior. The client does implement the complementary behavior of sending PINGREQ within the keep-alive interval to prevent the server from triggering this timeout, but that is covered by MQTT-3.1.2-20. Equivalent to v4's MQTT-3.1.2-24.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["EventLoop::select"],
+          "reason": "The eventloop sends PINGREQ when the keep-alive interval expires, which is the client-side behavior that prevents the server from triggering this 1.5x timeout. The 1.5x enforcement itself is server-only."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only requirement. Client-side keep-alive ping behavior is tested under MQTT-3.1.2-20."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-23",
@@ -1356,8 +1413,37 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The client can request a non-zero Session Expiry Interval through MqttOptions::set_session_expiry_interval(), which is serialized into CONNECT properties by ConnectProperties::write(). On reconnect, EventLoop::reconcile_connack_session() preserves local pending/session state when clean_start=false and the broker reports session_present=true; it resets local state when the broker reports session_present=false or when clean_start=true. The EventLoop also tracks the ClientID associated with retained local state and clears that state before reconnecting with a different ClientID, preventing session state from one MQTT identity from being reused under another.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectProperties::session_expiry_interval", "ConnectProperties::read", "ConnectProperties::write"],
+          "reason": "CONNECT properties include session_expiry_interval: Option<u32>. The codec reads PropertyType::SessionExpiryInterval via read_u32 and writes it via put_u32, allowing the client to request a non-zero Session Expiry Interval."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": ["MqttOptions::set_session_expiry_interval", "MqttOptions::session_expiry_interval"],
+          "reason": "MqttOptions exposes the configured Session Expiry Interval and stores it in CONNECT properties used by mqtt_connect_inner()."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["EventLoop::reconcile_connack_session", "EventLoop::reset_session_state_if_client_id_changed", "EventLoop::clean"],
+          "reason": "reconcile_connack_session() preserves pending local state when clean_start=false and session_present=true, and resets state when the broker reports no resumed session. reset_session_state_if_client_id_changed() prevents retained local state from crossing ClientID boundaries. On connection loss, EventLoop::clean() moves unacknowledged outgoing state into the pending queue for replay on a resumed session."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["MqttState"],
+          "reason": "MqttState holds client-side session state, including outgoing QoS state that can be cleaned into pending requests for reconnect/replay when the session is resumed."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["mqtt_options_builder_matches_setter_configuration", "connack_reconcile_resets_pending_when_resumed_session_is_missing", "connack_reconcile_keeps_pending_when_resumed_session_exists", "client_id_guard_keeps_state_when_client_id_is_unchanged", "client_id_guard_resets_state_when_client_id_changes", "reconnection_resumes_from_the_previous_state", "reconnection_resends_unacked_packets_from_the_previous_connection_first", "reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"],
+        "notes": "Unit tests cover Session Expiry option plumbing and CONNACK session reconciliation. Reliability tests configure clean_start=false with a non-zero Session Expiry Interval, then verify pending QoS state is retained/replayed when the broker resumes the session. ClientID guard tests cover the identity boundary for retained local state."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-24",
@@ -1468,8 +1554,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Connect::write serializes payload fields in the required v5 order: client_id (via write_mqtt_string), then last_will (which writes Will Properties via LastWillProperties::write, then Will Topic via write_mqtt_bytes, then Will Payload via write_mqtt_bytes), then auth (which writes Username then Password via ConnectAuth::write). Connect::read reads in the same order: client_id, last_will (Will Properties, Will Topic, Will Payload), auth (Username, Password). The sequential write/read structure guarantees correct wire ordering. Equivalent to v4's MQTT-3.1.3-1 but with the v5 addition of Will Properties.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "write() emits client_id, then last_will, then auth. read() consumes client_id, then last_will, then auth. This matches the required order: Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["LastWill::write", "LastWill::read"],
+          "reason": "LastWill::write emits Will Properties, then Will Topic, then Will Payload. LastWill::read reads Will Properties, then Will Topic, then Will Payload. Correct v5 sub-ordering with Will Properties before Will Topic."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["ConnectAuth::write", "ConnectAuth::read"],
+          "reason": "ConnectAuth::write emits Username then Password. ConnectAuth::read reads Username then Password. Correct sub-ordering within auth fields."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_roundtrips_last_will", "connect_roundtrips_binary_password", "connect_roundtrips_explicitly_empty_password", "connect_roundtrips_password_only_auth", "last_will_encoding_writes_zero_length_properties_when_none", "connect_encoding_emits_payload_fields_in_spec_order"],
+        "notes": "connect_encoding_emits_payload_fields_in_spec_order verifies byte-level positions of each CONNECT payload field in the encoded output, confirming the spec-required v5 ordering: Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-2",

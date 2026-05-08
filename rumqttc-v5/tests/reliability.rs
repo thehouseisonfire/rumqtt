@@ -1191,3 +1191,51 @@ async fn reconnection_clean_start_drops_pending_packets_after_reconnect() {
     requests.await.unwrap();
     broker.await.unwrap();
 }
+
+/// MQTT-3.1.2-21: If the Server returns a Server Keep Alive on the CONNACK
+/// packet, the Client MUST use that value instead of the value it sent as the
+/// Keep Alive. Verify that the client overrides its keep-alive interval with
+/// the server-assigned value and sends PINGREQ accordingly.
+#[tokio::test]
+async fn client_uses_server_keep_alive_from_connack() {
+    let client_keep_alive = 60;
+    let server_keep_alive = 1;
+    let (listener, port) = reserve_listener().await;
+
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_keep_alive(client_keep_alive);
+
+    task::spawn(async move {
+        let mut eventloop = EventLoop::new(options, 5);
+        run(&mut eventloop, false).await.unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::AcceptWithServerKeepAlive {
+            session_saved: false,
+            keep_alive_secs: server_keep_alive,
+        },
+    )
+    .await;
+
+    let mut count = 0;
+    let mut start = Instant::now();
+
+    for _ in 0..3 {
+        let packet = broker.read_packet().await.unwrap();
+        match packet {
+            Packet::PingReq(_) => {
+                count += 1;
+                // PINGREQ must arrive at the *server* keep-alive interval (1s),
+                // not the client's original 60s interval.
+                assert_keep_alive_interval(start.elapsed(), server_keep_alive);
+                broker.pingresp().await;
+                start = Instant::now();
+            }
+            packet => panic!("Expecting ping, received {packet:?}"),
+        }
+    }
+
+    assert_eq!(count, 3);
+}

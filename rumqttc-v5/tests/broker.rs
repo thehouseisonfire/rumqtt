@@ -4,7 +4,8 @@
 use bytes::BytesMut;
 use flume::{Receiver, Sender, bounded};
 use rumqttc::mqttbytes::v5::{
-    ConnAck, ConnectReturnCode, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, Publish,
+    ConnAck, ConnAckProperties, ConnectReturnCode, Packet, PingReq, PingResp, PubAck, PubComp,
+    PubRec, Publish,
 };
 use rumqttc::mqttbytes::{self, QoS};
 use rumqttc::{Event, Incoming, Outgoing};
@@ -18,7 +19,13 @@ use tokio::{task, time};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectBehavior {
-    Accept { session_saved: bool },
+    Accept {
+        session_saved: bool,
+    },
+    AcceptWithServerKeepAlive {
+        session_saved: bool,
+        keep_alive_secs: u16,
+    },
     RefuseBadUserNamePassword,
     StallAfterConnect,
 }
@@ -64,6 +71,36 @@ impl Broker {
                         code: ConnectReturnCode::Success,
                         session_present: !connect.clean_start && session_saved,
                         properties: None,
+                    };
+                    framed.connack(connack).await.unwrap();
+                }
+                ConnectBehavior::AcceptWithServerKeepAlive {
+                    session_saved,
+                    keep_alive_secs,
+                } => {
+                    let props = ConnAckProperties {
+                        session_expiry_interval: None,
+                        receive_max: None,
+                        max_qos: None,
+                        retain_available: None,
+                        max_packet_size: None,
+                        assigned_client_identifier: None,
+                        topic_alias_max: None,
+                        reason_string: None,
+                        user_properties: Vec::new(),
+                        wildcard_subscription_available: None,
+                        subscription_identifiers_available: None,
+                        shared_subscription_available: None,
+                        server_keep_alive: Some(keep_alive_secs),
+                        response_information: None,
+                        server_reference: None,
+                        authentication_method: None,
+                        authentication_data: None,
+                    };
+                    let connack = ConnAck {
+                        code: ConnectReturnCode::Success,
+                        session_present: !connect.clean_start && session_saved,
+                        properties: Some(props),
                     };
                     framed.connack(connack).await.unwrap();
                 }

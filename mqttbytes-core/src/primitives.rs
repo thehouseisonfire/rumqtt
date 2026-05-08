@@ -174,19 +174,25 @@ pub fn validate_mqtt_string(bytes: &[u8]) -> Result<&str, Error> {
 
 /// Serializes bytes to stream (including length)
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `bytes.len()` exceeds the MQTT maximum encoded string length of
-/// `u16::MAX`.
-pub fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) {
-    let len = u16::try_from(bytes.len()).expect("MQTT string/bytes length must fit in u16");
+/// Returns [`Error::PayloadTooLong`] when `bytes` cannot fit in an MQTT
+/// two-byte length-prefixed field.
+pub fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) -> Result<(), Error> {
+    let len = u16::try_from(bytes.len()).map_err(|_| Error::PayloadTooLong)?;
     stream.put_u16(len);
     stream.extend_from_slice(bytes);
+    Ok(())
 }
 
 /// Serializes a string to stream
-pub fn write_mqtt_string(stream: &mut BytesMut, string: &str) {
-    write_mqtt_bytes(stream, string.as_bytes());
+///
+/// # Errors
+///
+/// Returns [`Error::PayloadTooLong`] when `string` cannot fit in an MQTT
+/// two-byte length-prefixed field.
+pub fn write_mqtt_string(stream: &mut BytesMut, string: &str) -> Result<(), Error> {
+    write_mqtt_bytes(stream, string.as_bytes())
 }
 
 /// Writes remaining length to stream and returns number of bytes for remaining length
@@ -425,5 +431,27 @@ mod tests {
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream).unwrap();
         assert_eq!(result, "\u{FEFF}abc");
+    }
+
+    #[test]
+    fn write_mqtt_bytes_rejects_payloads_larger_than_u16() {
+        let bytes = vec![0; usize::from(u16::MAX) + 1];
+        let mut stream = BytesMut::new();
+
+        let result = write_mqtt_bytes(&mut stream, &bytes);
+
+        assert_eq!(result, Err(Error::PayloadTooLong));
+        assert!(stream.is_empty());
+    }
+
+    #[test]
+    fn write_mqtt_string_rejects_payloads_larger_than_u16() {
+        let string = "a".repeat(usize::from(u16::MAX) + 1);
+        let mut stream = BytesMut::new();
+
+        let result = write_mqtt_string(&mut stream, &string);
+
+        assert_eq!(result, Err(Error::PayloadTooLong));
+        assert!(stream.is_empty());
     }
 }
