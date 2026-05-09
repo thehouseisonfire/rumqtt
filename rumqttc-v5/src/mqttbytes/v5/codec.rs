@@ -84,7 +84,7 @@ mod tests {
 
         match codec.decode(&mut buf) {
             Err(Error::PayloadSizeLimitExceeded {
-                pkt_size: 20,
+                pkt_size: 22,
                 max: 10,
             }) => {}
             _ => unreachable!(),

@@ -310,6 +310,7 @@ impl EventLoop {
         let manual_acks = options.manual_acks;
         let auto_topic_aliases = options.auto_topic_aliases();
         let topic_alias_policy = options.topic_alias_policy();
+        let client_topic_alias_max = options.topic_alias_max().unwrap_or(0);
 
         let authenticator = options.authenticator();
         let authentication_method = options.authentication_method();
@@ -321,6 +322,7 @@ impl EventLoop {
                 manual_acks,
                 auto_topic_aliases,
                 topic_alias_policy,
+                client_topic_alias_max,
                 authentication_method,
                 authenticator,
             ),
@@ -1179,6 +1181,7 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
+    state.set_client_topic_alias_max(options.topic_alias_max());
     let authentication_method = options.authentication_method();
     let auth_exchange_started = authentication_method.is_some();
     let start_auth_properties = state.begin_authentication_connect(authentication_method)?;
@@ -1431,6 +1434,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1457,6 +1461,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1485,6 +1490,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             stale_authentication_method.map(str::to_owned),
             options.auth_manager(),
         );
@@ -1514,6 +1520,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1541,6 +1548,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1683,6 +1691,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -1817,6 +1826,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -2263,6 +2273,40 @@ mod tests {
             "payload",
             Some(publish_properties_with_alias(alias)),
         )
+    }
+
+    #[tokio::test]
+    async fn poll_closes_connection_after_incoming_topic_alias_exceeds_client_max() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_topic_alias_max(Some(5));
+        let mut eventloop = EventLoop::new(options, 1);
+        let (client, mut peer) = tokio::io::duplex(64);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        peer.write_all(&[0x30, 0x07, 0x00, 0x01, b'a', 0x03, 0x23, 0x00, 0x06])
+            .await
+            .unwrap();
+
+        let err = time::timeout(Duration::from_secs(1), eventloop.poll())
+            .await
+            .expect("poll should return after protocol-error disconnect")
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(MqttError::ProtocolViolation(
+                DisconnectReasonCode::TopicAliasInvalid
+            )))
+        ));
+        assert!(eventloop.network.is_none());
+        assert!(eventloop.state.events.is_empty());
+
+        let mut response = [0; 3];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [0xE0, 0x01, DisconnectReasonCode::TopicAliasInvalid as u8]
+        );
     }
 
     #[test]
@@ -3098,6 +3142,7 @@ mod tests {
             false,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
             options.auth_manager(),
         );

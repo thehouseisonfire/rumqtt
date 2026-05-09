@@ -192,6 +192,10 @@ pub struct MqttState {
     auto_topic_alias_lru: VecDeque<u16>,
     /// `topic_alias_maximum` RECEIVED via connack packet
     pub broker_topic_alias_max: u16,
+    /// `topic_alias_maximum` SENT in the CONNECT packet.
+    /// The client must reject incoming topic aliases exceeding this value.
+    /// A value of 0 means the client does not accept any topic aliases.
+    client_topic_alias_max: u16,
     /// Maximum number of allowed inflight `QoS1` & `QoS2` requests
     pub(crate) max_outgoing_inflight: u16,
     /// Upper limit on the maximum number of allowed inflight `QoS1` & `QoS2` requests
@@ -213,6 +217,7 @@ pub struct MqttStateBuilder {
     manual_acks: bool,
     auto_topic_aliases: bool,
     auto_topic_alias_policy: TopicAliasPolicy,
+    client_topic_alias_max: u16,
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     authentication_method: Option<String>,
 }
@@ -226,6 +231,7 @@ impl MqttStateBuilder {
             manual_acks: false,
             auto_topic_aliases: false,
             auto_topic_alias_policy: TopicAliasPolicy::Monotonic,
+            client_topic_alias_max: 0,
             authenticator: None,
             authentication_method: None,
         }
@@ -249,6 +255,17 @@ impl MqttStateBuilder {
     #[must_use]
     pub const fn topic_alias_policy(mut self, auto_topic_alias_policy: TopicAliasPolicy) -> Self {
         self.auto_topic_alias_policy = auto_topic_alias_policy;
+        self
+    }
+
+    /// Set the Topic Alias Maximum the client will advertise in CONNECT.
+    ///
+    /// This value is used to validate incoming topic aliases from the server.
+    /// A value of 0 (the default) means the client does not accept any
+    /// topic aliases, per [MQTT-3.1.2-27].
+    #[must_use]
+    pub const fn client_topic_alias_max(mut self, max: u16) -> Self {
+        self.client_topic_alias_max = max;
         self
     }
 
@@ -281,6 +298,7 @@ impl MqttStateBuilder {
             self.manual_acks,
             self.auto_topic_aliases,
             self.auto_topic_alias_policy,
+            self.client_topic_alias_max,
             self.authentication_method,
             self.authenticator,
         )
@@ -376,6 +394,7 @@ impl MqttState {
         manual_acks: bool,
         auto_topic_aliases: bool,
         auto_topic_alias_policy: TopicAliasPolicy,
+        client_topic_alias_max: u16,
         authentication_method: Option<String>,
         authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     ) -> Self {
@@ -411,6 +430,8 @@ impl MqttState {
             auto_topic_alias_lru: VecDeque::new(),
             // Set via CONNACK
             broker_topic_alias_max: 0,
+            // Set from CONNECT properties
+            client_topic_alias_max,
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
             authenticator,
@@ -426,6 +447,14 @@ impl MqttState {
     /// before each CONNECT attempt.
     pub fn set_authentication_method(&mut self, authentication_method: Option<String>) {
         self.auth.set_method(authentication_method);
+    }
+
+    /// Set the Topic Alias Maximum the client will advertise in CONNECT.
+    ///
+    /// This should be called before each connection attempt to keep the
+    /// state in sync with [`crate::MqttOptions::topic_alias_max`].
+    pub fn set_client_topic_alias_max(&mut self, max: Option<u16>) {
+        self.client_topic_alias_max = max.unwrap_or(0);
     }
 
     pub(crate) fn begin_authentication_connect(
@@ -1007,6 +1036,17 @@ impl MqttState {
             .as_ref()
             .and_then(|props| props.topic_alias);
 
+        // [MQTT-3.1.2-26] The Server MUST NOT send a Topic Alias greater
+        // than the Topic Alias Maximum the Client advertised in CONNECT.
+        // [MQTT-3.1.2-27] If Topic Alias Maximum is absent or zero, the
+        // Server MUST NOT send any Topic Aliases to the Client.
+        if let Some(alias) = topic_alias
+            && alias > self.client_topic_alias_max
+        {
+            let disconnect = Disconnect::new(DisconnectReasonCode::TopicAliasInvalid);
+            return Ok(Some(self.outgoing_disconnect(disconnect)));
+        }
+
         if !publish.topic.is_empty() {
             if let Some(alias) = topic_alias {
                 self.incoming_topic_aliases
@@ -1487,6 +1527,15 @@ impl MqttState {
         Packet::Disconnect(disconnect)
     }
 
+    pub(crate) fn discard_last_outgoing_disconnect_event(&mut self) {
+        if matches!(
+            self.events.back(),
+            Some(Event::Outgoing(Outgoing::Disconnect))
+        ) {
+            self.events.pop_back();
+        }
+    }
+
     fn outgoing_auth(
         &mut self,
         mut auth: Auth,
@@ -1786,15 +1835,15 @@ impl MqttState {
     }
 
     fn validate_outgoing_topic_alias(&self, publish: &Publish) -> Result<(), StateError> {
-        if let Some(alias) = Self::publish_topic_alias(publish)
-            && alias > self.broker_topic_alias_max
-        {
-            // We MUST NOT send a Topic Alias that is greater than the
-            // broker's Topic Alias Maximum.
-            return Err(StateError::InvalidAlias {
-                alias,
-                max: self.broker_topic_alias_max,
-            });
+        if let Some(alias) = Self::publish_topic_alias(publish) {
+            if alias == 0 || alias > self.broker_topic_alias_max {
+                // We MUST NOT send a Topic Alias of 0 or one greater than the
+                // broker's Topic Alias Maximum.
+                return Err(StateError::InvalidAlias {
+                    alias,
+                    max: self.broker_topic_alias_max,
+                });
+            }
         }
 
         Ok(())
@@ -1850,6 +1899,7 @@ impl Clone for MqttState {
             auto_topic_alias_policy: self.auto_topic_alias_policy,
             auto_topic_alias_lru: self.auto_topic_alias_lru.clone(),
             broker_topic_alias_max: self.broker_topic_alias_max,
+            client_topic_alias_max: self.client_topic_alias_max,
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
             authenticator: self.authenticator.clone(),
@@ -2796,7 +2846,9 @@ mod test {
 
     #[test]
     fn unknown_incoming_topic_alias_returns_protocol_error_disconnect() {
-        let mut mqtt = build_mqttstate();
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(10)
+            .build();
         let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
         publish.topic = Bytes::new();
         publish.properties = Some(publish_properties_with_alias(1));
@@ -2813,7 +2865,9 @@ mod test {
 
     #[test]
     fn handle_incoming_packet_does_not_surface_unknown_topic_alias_publish() {
-        let mut mqtt = build_mqttstate();
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(10)
+            .build();
         let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
         publish.topic = Bytes::new();
         publish.properties = Some(publish_properties_with_alias(1));
@@ -2838,6 +2892,181 @@ mod test {
             mqtt.events,
             VecDeque::from([Event::Outgoing(Outgoing::Disconnect)])
         );
+    }
+
+    /// [MQTT-3.1.2-27] If the client's Topic Alias Maximum is 0 (default),
+    /// any incoming topic alias from the server is a protocol error.
+    #[test]
+    fn incoming_topic_alias_rejected_when_client_topic_alias_max_is_zero() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(0)
+            .build();
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(1));
+
+        let packet = mqtt.handle_incoming_publish(&mut publish).unwrap().unwrap();
+
+        assert!(matches!(
+            packet,
+            Packet::Disconnect(disconnect)
+                if disconnect.reason_code == DisconnectReasonCode::TopicAliasInvalid
+        ));
+    }
+
+    /// [MQTT-3.1.2-27] When client_topic_alias_max is 0, the incoming
+    /// PUBLISH with a topic alias should not be surfaced to the user.
+    #[test]
+    fn handle_incoming_packet_does_not_surface_publish_with_alias_exceeding_client_max() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(0)
+            .build();
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(1));
+
+        let packet = mqtt
+            .handle_incoming_packet(Incoming::Publish(publish))
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            packet,
+            Packet::Disconnect(disconnect)
+                if disconnect.reason_code == DisconnectReasonCode::TopicAliasInvalid
+        ));
+        assert!(
+            !mqtt
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Incoming(Incoming::Publish(_))))
+        );
+        assert_eq!(
+            mqtt.events,
+            VecDeque::from([Event::Outgoing(Outgoing::Disconnect)])
+        );
+    }
+
+    /// [MQTT-3.1.2-26] An incoming topic alias greater than the client's
+    /// Topic Alias Maximum is a protocol error.
+    #[test]
+    fn incoming_topic_alias_greater_than_client_max_returns_topic_alias_invalid_disconnect() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(5)
+            .build();
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(6));
+
+        let packet = mqtt.handle_incoming_publish(&mut publish).unwrap().unwrap();
+
+        assert!(matches!(
+            packet,
+            Packet::Disconnect(disconnect)
+                if disconnect.reason_code == DisconnectReasonCode::TopicAliasInvalid
+        ));
+    }
+
+    /// [MQTT-3.1.2-26] An incoming topic alias equal to the client's
+    /// Topic Alias Maximum is valid and should be accepted.
+    #[test]
+    fn incoming_topic_alias_equal_to_client_max_is_accepted() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(5)
+            .build();
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(5));
+
+        let result = mqtt.handle_incoming_publish(&mut publish).unwrap();
+
+        assert!(result.is_none());
+        assert_eq!(
+            mqtt.incoming_topic_aliases.get(&5),
+            Some(&Bytes::from_static(b"hello/world"))
+        );
+    }
+
+    /// [MQTT-3.1.2-26] An incoming topic alias less than the client's
+    /// Topic Alias Maximum is valid and should be accepted.
+    #[test]
+    fn incoming_topic_alias_less_than_client_max_is_accepted() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(10)
+            .build();
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(3));
+
+        let result = mqtt.handle_incoming_publish(&mut publish).unwrap();
+
+        assert!(result.is_none());
+        assert_eq!(
+            mqtt.incoming_topic_aliases.get(&3),
+            Some(&Bytes::from_static(b"hello/world"))
+        );
+    }
+
+    /// [MQTT-3.3.2-9] An alias-only PUBLISH using a known alias in the
+    /// client's accepted range should resolve and be delivered.
+    #[test]
+    fn incoming_alias_only_publish_with_known_alias_is_accepted() {
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(10)
+            .build();
+        let mut first = build_incoming_publish(QoS::AtMostOnce, 0);
+        first.properties = Some(publish_properties_with_alias(3));
+        mqtt.handle_incoming_publish(&mut first).unwrap();
+
+        let mut second = build_incoming_publish(QoS::AtMostOnce, 0);
+        second.topic = Bytes::new();
+        second.properties = Some(publish_properties_with_alias(3));
+
+        let result = mqtt.handle_incoming_publish(&mut second).unwrap();
+
+        assert!(result.is_none());
+        assert_eq!(second.topic, Bytes::from_static(b"hello/world"));
+    }
+
+    /// Verify that set_client_topic_alias_max updates the validation limit.
+    #[test]
+    fn set_client_topic_alias_max_updates_incoming_validation() {
+        let mut mqtt = MqttState::builder(u16::MAX).build();
+        // Default client_topic_alias_max is 0, so any alias should be rejected.
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(1));
+
+        let packet = mqtt.handle_incoming_publish(&mut publish).unwrap().unwrap();
+        assert!(matches!(
+            packet,
+            Packet::Disconnect(disconnect)
+                if disconnect.reason_code == DisconnectReasonCode::TopicAliasInvalid
+        ));
+
+        // After updating the limit, the same alias should be accepted.
+        mqtt.set_client_topic_alias_max(Some(5));
+        let mut publish = build_incoming_publish(QoS::AtMostOnce, 0);
+        publish.properties = Some(publish_properties_with_alias(1));
+
+        let result = mqtt.handle_incoming_publish(&mut publish).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn outgoing_publish_with_alias_greater_than_broker_maximum_returns_error() {
+        let mut mqtt = build_mqttstate();
+        mqtt.broker_topic_alias_max = 5;
+        let publish = build_outgoing_publish_with_alias("hello/world", QoS::AtMostOnce, 6);
+
+        let err = mqtt.outgoing_publish(publish).unwrap_err();
+
+        assert!(matches!(err, StateError::InvalidAlias { alias: 6, max: 5 }));
+    }
+
+    #[test]
+    fn outgoing_publish_with_alias_zero_returns_error() {
+        let mut mqtt = build_mqttstate();
+        mqtt.broker_topic_alias_max = 5;
+        let publish = build_outgoing_publish_with_alias("hello/world", QoS::AtMostOnce, 0);
+
+        let err = mqtt.outgoing_publish(publish).unwrap_err();
+
+        assert!(matches!(err, StateError::InvalidAlias { alias: 0, max: 5 }));
     }
 
     #[test]
@@ -3311,7 +3540,9 @@ mod test {
 
     #[test]
     fn connection_scoped_alias_state_resets_incoming_aliases_and_broker_maximum() {
-        let mut mqtt = build_mqttstate();
+        let mut mqtt = MqttState::builder(u16::MAX)
+            .client_topic_alias_max(10)
+            .build();
         mqtt.broker_topic_alias_max = 10;
         let mut aliased = build_incoming_publish(QoS::AtMostOnce, 0);
         aliased.properties = Some(publish_properties_with_alias(1));

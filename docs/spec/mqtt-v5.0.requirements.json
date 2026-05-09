@@ -23,28 +23,52 @@
       "evidence": [
         {
           "path": "mqttbytes-core/src/primitives.rs",
-          "symbols": ["validate_mqtt_string", "read_mqtt_string", "write_mqtt_string"],
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
           "reason": "validate_mqtt_string uses std::str::from_utf8() to reject ill-formed UTF-8 including surrogates (U+D800-U+DFFF). read_mqtt_string delegates to it, and the v5 write_mqtt_string wrapper validates before serializing."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::read", "Publish::write"],
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
           "reason": "Publish.topic remains Bytes, but Publish::read validates the topic bytes immediately after read_mqtt_bytes and Publish::write validates them before write_mqtt_bytes."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read", "LastWill::write"],
+          "symbols": [
+            "LastWill::read",
+            "LastWill::write"
+          ],
           "reason": "LastWill.topic remains Bytes, but LastWill::read validates the will topic bytes immediately after read_mqtt_bytes and LastWill::write validates them before write_mqtt_bytes."
         },
         {
           "path": "rumqttc-v5/src/framed.rs",
-          "symbols": ["InboundDisconnect::classify"],
+          "symbols": [
+            "InboundDisconnect::classify"
+          ],
           "reason": "Runtime receiver handling maps TopicNotUtf8 decode errors to a Malformed Packet DISCONNECT reason."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["read_mqtt_string_rejects_surrogate_ud800", "read_mqtt_string_rejects_surrogate_udfff", "read_mqtt_string_rejects_surrogate_ud801", "read_mqtt_string_rejects_overlong_encoding", "read_mqtt_string_rejects_truncated_sequence", "read_mqtt_string_rejects_invalid_continuation_byte", "read_mqtt_string_accepts_valid_utf8", "read_mqtt_string_accepts_multibyte_valid_utf8", "read_rejects_topic_with_invalid_utf8", "last_will_read_rejects_topic_with_invalid_utf8", "read_sends_malformed_packet_disconnect_for_invalid_utf8"],
+        "tests": [
+          "read_mqtt_string_rejects_surrogate_ud800",
+          "read_mqtt_string_rejects_surrogate_udfff",
+          "read_mqtt_string_rejects_surrogate_ud801",
+          "read_mqtt_string_rejects_overlong_encoding",
+          "read_mqtt_string_rejects_truncated_sequence",
+          "read_mqtt_string_rejects_invalid_continuation_byte",
+          "read_mqtt_string_accepts_valid_utf8",
+          "read_mqtt_string_accepts_multibyte_valid_utf8",
+          "read_rejects_topic_with_invalid_utf8",
+          "last_will_read_rejects_topic_with_invalid_utf8",
+          "read_sends_malformed_packet_disconnect_for_invalid_utf8"
+        ],
         "notes": "Core string decoding tests cover malformed UTF-8 and surrogate encodings. v5 packet tests cover Bytes-backed Publish.topic and LastWill.topic validation. The framed runtime test verifies TopicNotUtf8 is handled as a Malformed Packet DISCONNECT."
       },
       "follow_up": null
@@ -68,23 +92,41 @@
       "evidence": [
         {
           "path": "mqttbytes-core/src/primitives.rs",
-          "symbols": ["validate_mqtt_string", "read_mqtt_string", "write_mqtt_string"],
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
           "reason": "validate_mqtt_string rejects literal U+0000 bytes with Error::MalformedPacket. read_mqtt_string delegates to it, and the v5 write_mqtt_string wrapper validates before serializing."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::read", "Publish::write"],
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
           "reason": "Publish.topic is validated after read_mqtt_bytes and before write_mqtt_bytes, so Bytes-backed topic storage cannot bypass the U+0000 check."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read", "Connect::write", "LastWill::read", "LastWill::write"],
+          "symbols": [
+            "Connect::read",
+            "Connect::write",
+            "LastWill::read",
+            "LastWill::write"
+          ],
           "reason": "client_id and other String-backed fields use read_mqtt_string/write_mqtt_string validation. LastWill.topic is validated on both read and write."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["read_mqtt_string_rejects_null_character", "read_rejects_topic_with_null_character", "write_rejects_topic_with_null_character", "last_will_read_rejects_topic_with_null_character", "last_will_write_rejects_topic_with_null_character"],
+        "tests": [
+          "read_mqtt_string_rejects_null_character",
+          "read_rejects_topic_with_null_character",
+          "write_rejects_topic_with_null_character",
+          "last_will_read_rejects_topic_with_null_character",
+          "last_will_write_rejects_topic_with_null_character"
+        ],
         "notes": "Tests cover literal U+0000 rejection in the shared string reader plus Bytes-backed Publish.topic and LastWill.topic read/write paths."
       },
       "follow_up": null
@@ -108,18 +150,26 @@
       "evidence": [
         {
           "path": "mqttbytes-core/src/primitives.rs",
-          "symbols": ["read_mqtt_string", "write_mqtt_string"],
+          "symbols": [
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
           "reason": "read_mqtt_string calls from_utf8() then to_owned() with no filtering or stripping. The BOM sequence 0xEF 0xBB 0xBF decodes to U+FEFF and is preserved. write_mqtt_string delegates to write_mqtt_bytes which writes raw bytes without modification."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
-          "symbols": ["read_mqtt_string", "write_mqtt_string"],
+          "symbols": [
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
           "reason": "v5 module re-exports core primitives directly with no wrapping or post-processing that could strip the BOM."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["read_mqtt_string_preserves_bom"],
+        "tests": [
+          "read_mqtt_string_preserves_bom"
+        ],
         "notes": "A targeted test verifies that read_mqtt_string preserves a leading U+FEFF character."
       },
       "follow_up": null
@@ -143,18 +193,29 @@
       "evidence": [
         {
           "path": "mqttbytes-core/src/primitives.rs",
-          "symbols": ["length", "write_remaining_length", "len_len"],
+          "symbols": [
+            "length",
+            "write_remaining_length",
+            "len_len"
+          ],
           "reason": "length() reads VBI using continuation bit at position 7, accumulates 7 bits per byte with shift increments of 7, rejects more than 4 bytes (shift > 21), and returns (byte_count, decoded_value). write_remaining_length() encodes using modulo 128 for 7 data bits, sets bit 7 as continuation flag, and rejects values > 268435455. len_len() correctly maps value ranges to 1-4 byte encodings."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
-          "symbols": ["length", "write_remaining_length", "len_len"],
+          "symbols": [
+            "length",
+            "write_remaining_length",
+            "len_len"
+          ],
           "reason": "v5 module re-exports core VBI primitives directly with no wrapping or modification that could alter the encoding scheme."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["len_len_matches_expected_thresholds", "write_remaining_length_round_trip"],
+        "tests": [
+          "len_len_matches_expected_thresholds",
+          "write_remaining_length_round_trip"
+        ],
         "notes": "Core primitive tests cover VBI threshold boundaries (0, 127, 128, 16384, 2097152) and round-trip encode/decode for representative values including 0, 127, 128, 321, 16384, and 268435455."
       },
       "follow_up": null
@@ -178,78 +239,129 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["PublishProperties::read", "PublishProperties::write"],
+          "symbols": [
+            "PublishProperties::read",
+            "PublishProperties::write"
+          ],
           "reason": "UserProperty read: two consecutive read_mqtt_string() calls (key then value), each validating UTF-8. UserProperty write: two consecutive write_mqtt_string() calls, each validating UTF-8 before serializing."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectProperties::read", "ConnectProperties::write", "LastWillProperties::read", "LastWillProperties::write"],
+          "symbols": [
+            "ConnectProperties::read",
+            "ConnectProperties::write",
+            "LastWillProperties::read",
+            "LastWillProperties::write"
+          ],
           "reason": "CONNECT and Will UserProperty pairs use two read_mqtt_string/write_mqtt_string calls, each enforcing UTF-8 validation."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/auth.rs",
-          "symbols": ["AuthProperties::read", "AuthProperties::write"],
+          "symbols": [
+            "AuthProperties::read",
+            "AuthProperties::write"
+          ],
           "reason": "AUTH UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnAckProperties", "read_connack_property"],
+          "symbols": [
+            "ConnAckProperties",
+            "read_connack_property"
+          ],
           "reason": "CONNACK UserProperty pairs use read_mqtt_string for key and value on decode and write_mqtt_string for key and value on encode."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
-          "symbols": ["DisconnectProperties::read", "DisconnectProperties::write"],
+          "symbols": [
+            "DisconnectProperties::read",
+            "DisconnectProperties::write"
+          ],
           "reason": "DISCONNECT UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
-          "symbols": ["PubAckProperties::read", "PubAckProperties::write"],
+          "symbols": [
+            "PubAckProperties::read",
+            "PubAckProperties::write"
+          ],
           "reason": "PUBACK UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
-          "symbols": ["PubRecProperties::read", "PubRecProperties::write"],
+          "symbols": [
+            "PubRecProperties::read",
+            "PubRecProperties::write"
+          ],
           "reason": "PUBREC UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
-          "symbols": ["PubRelProperties::read", "PubRelProperties::write"],
+          "symbols": [
+            "PubRelProperties::read",
+            "PubRelProperties::write"
+          ],
           "reason": "PUBREL UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
-          "symbols": ["PubCompProperties::read", "PubCompProperties::write"],
+          "symbols": [
+            "PubCompProperties::read",
+            "PubCompProperties::write"
+          ],
           "reason": "PUBCOMP UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
-          "symbols": ["SubAckProperties::read", "SubAckProperties::write"],
+          "symbols": [
+            "SubAckProperties::read",
+            "SubAckProperties::write"
+          ],
           "reason": "SUBACK UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
-          "symbols": ["UnsubAckProperties::read", "UnsubAckProperties::write"],
+          "symbols": [
+            "UnsubAckProperties::read",
+            "UnsubAckProperties::write"
+          ],
           "reason": "UNSUBACK UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
-          "symbols": ["SubscribeProperties::read", "SubscribeProperties::write"],
+          "symbols": [
+            "SubscribeProperties::read",
+            "SubscribeProperties::write"
+          ],
           "reason": "SUBSCRIBE UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
-          "symbols": ["UnsubscribeProperties::read", "UnsubscribeProperties::write"],
+          "symbols": [
+            "UnsubscribeProperties::read",
+            "UnsubscribeProperties::write"
+          ],
           "reason": "UNSUBSCRIBE UserProperty pairs use the same key-then-value read_mqtt_string/write_mqtt_string pattern."
         },
         {
           "path": "mqttbytes-core/src/primitives.rs",
-          "symbols": ["read_mqtt_string", "write_mqtt_string", "validate_mqtt_string"],
+          "symbols": [
+            "read_mqtt_string",
+            "write_mqtt_string",
+            "validate_mqtt_string"
+          ],
           "reason": "validate_mqtt_string rejects ill-formed UTF-8 (including surrogates) and U+0000. read_mqtt_string delegates to it. v5 write_mqtt_string validates before writing."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["read_subscription_identifier_and_user_property_parses_both", "read_user_property_rejects_invalid_utf8_key", "read_user_property_rejects_invalid_utf8_value", "read_user_property_rejects_null_character_key", "write_user_property_rejects_null_character_key_or_value"],
+        "tests": [
+          "read_subscription_identifier_and_user_property_parses_both",
+          "read_user_property_rejects_invalid_utf8_key",
+          "read_user_property_rejects_invalid_utf8_value",
+          "read_user_property_rejects_null_character_key",
+          "write_user_property_rejects_null_character_key_or_value"
+        ],
         "notes": "UserProperty tests cover valid string-pair parsing, malformed UTF-8 in either key or value, U+0000 rejection on read, and U+0000 rejection on write. Shared primitive tests cover surrogate and other malformed UTF-8 encodings."
       },
       "follow_up": null
@@ -273,23 +385,51 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
-          "symbols": ["validate_fixed_header_flags", "FixedHeader::flags", "Packet::read"],
+          "symbols": [
+            "validate_fixed_header_flags",
+            "FixedHeader::flags",
+            "Packet::read"
+          ],
           "reason": "validate_fixed_header_flags() checks byte1 & 0x0F against expected values per packet type (0 for most, 0b0010 for SUBSCRIBE/UNSUBSCRIBE/PUBREL, any for PUBLISH). Packet::read calls it after packet_type() and before dispatching to individual packet readers. FixedHeader::flags() provides a convenience accessor."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
-          "symbols": ["Disconnect::read"],
+          "symbols": [
+            "Disconnect::read"
+          ],
           "reason": "Disconnect::read validates packet type and reserved fixed-header flags itself, preserving correctness for direct callers of this public parser. Invalid DISCONNECT flags return IncorrectPacketFormat."
         },
         {
           "path": "rumqttc-v5/src/framed.rs",
-          "symbols": ["InboundDisconnect::classify"],
+          "symbols": [
+            "InboundDisconnect::classify"
+          ],
           "reason": "IncorrectPacketFormat is mapped to DisconnectReasonCode::MalformedPacket. MQTT v5 section 2.1.3 states that invalid fixed-header flags are a Malformed Packet; section 4.13 then uses reason code 0x81 for Malformed Packet."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["read_rejects_connect_with_nonzero_reserved_flags", "read_rejects_connack_with_nonzero_reserved_flags", "read_rejects_puback_with_nonzero_reserved_flags", "read_rejects_pubrec_with_nonzero_reserved_flags", "read_rejects_pubrel_with_wrong_reserved_flags", "read_rejects_pubcomp_with_nonzero_reserved_flags", "read_rejects_subscribe_with_wrong_reserved_flags", "read_rejects_suback_with_nonzero_reserved_flags", "read_rejects_unsubscribe_with_wrong_reserved_flags", "read_rejects_unsuback_with_nonzero_reserved_flags", "read_rejects_pingreq_with_nonzero_reserved_flags", "read_rejects_pingresp_with_nonzero_reserved_flags", "read_rejects_disconnect_with_nonzero_reserved_flags", "read_rejects_auth_with_nonzero_reserved_flags", "disconnect_read_rejects_invalid_fixed_header_flags", "read_accepts_publish_with_any_flag_combination", "validate_flags_const_fn_works_for_all_types", "read_sends_malformed_packet_disconnect_before_returning_error", "read_returns_decode_error_promptly_under_write_backpressure"],
+        "tests": [
+          "read_rejects_connect_with_nonzero_reserved_flags",
+          "read_rejects_connack_with_nonzero_reserved_flags",
+          "read_rejects_puback_with_nonzero_reserved_flags",
+          "read_rejects_pubrec_with_nonzero_reserved_flags",
+          "read_rejects_pubrel_with_wrong_reserved_flags",
+          "read_rejects_pubcomp_with_nonzero_reserved_flags",
+          "read_rejects_subscribe_with_wrong_reserved_flags",
+          "read_rejects_suback_with_nonzero_reserved_flags",
+          "read_rejects_unsubscribe_with_wrong_reserved_flags",
+          "read_rejects_unsuback_with_nonzero_reserved_flags",
+          "read_rejects_pingreq_with_nonzero_reserved_flags",
+          "read_rejects_pingresp_with_nonzero_reserved_flags",
+          "read_rejects_disconnect_with_nonzero_reserved_flags",
+          "read_rejects_auth_with_nonzero_reserved_flags",
+          "disconnect_read_rejects_invalid_fixed_header_flags",
+          "read_accepts_publish_with_any_flag_combination",
+          "validate_flags_const_fn_works_for_all_types",
+          "read_sends_malformed_packet_disconnect_before_returning_error",
+          "read_returns_decode_error_promptly_under_write_backpressure"
+        ],
         "notes": "Each non-PUBLISH packet type has a dedicated test for incorrect reserved fixed-header flags. PUBLISH is verified to accept any flag bits at the fixed-header level (QoS 3 is still rejected later by Publish::read). The const fn is smoke-tested for both valid and invalid inputs. Integration tests in framed.rs verify that IncorrectPacketFormat triggers a DISCONNECT with MalformedPacket reason code."
       },
       "follow_up": null
@@ -313,18 +453,27 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::write", "Publish::read", "Publish::len"],
+          "symbols": [
+            "Publish::write",
+            "Publish::read",
+            "Publish::len"
+          ],
           "reason": "Encode: write() skips pkid serialization for QoS::AtMostOnce. Decode: read() sets pkid=0 without reading from stream for QoS::AtMostOnce. Length: len() excludes pkid bytes for QoS 0."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["outgoing_publish_with_notice"],
+          "symbols": [
+            "outgoing_publish_with_notice"
+          ],
           "reason": "State layer does not assign or track a pkid for QoS 0 publishes (guarded by `if publish.qos != QoS::AtMostOnce`)."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["length_calculation", "qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid"],
+        "tests": [
+          "length_calculation",
+          "qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid"
+        ],
         "notes": "length_calculation verifies size/write consistency for QoS 0. qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid explicitly constructs a QoS 0 Publish with a non-zero struct pkid and verifies the encoded wire bytes omit the packet identifier."
       },
       "follow_up": null
@@ -348,33 +497,62 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::write", "Publish::read"],
+          "symbols": [
+            "Publish::write",
+            "Publish::read"
+          ],
           "reason": "Publish encode and decode reject pkid==0 for QoS > 0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
-          "symbols": ["Subscribe::write", "Subscribe::read"],
+          "symbols": [
+            "Subscribe::write",
+            "Subscribe::read"
+          ],
           "reason": "Subscribe encode and decode reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
-          "symbols": ["Unsubscribe::write", "Unsubscribe::read"],
+          "symbols": [
+            "Unsubscribe::write",
+            "Unsubscribe::read"
+          ],
           "reason": "Unsubscribe encode and decode reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["next_publish_pkid", "next_pkid", "next_control_pkid", "packet_identifier_in_use"],
+          "symbols": [
+            "next_publish_pkid",
+            "next_pkid",
+            "next_control_pkid",
+            "packet_identifier_in_use"
+          ],
           "reason": "Packet id assignment checks packet_identifier_in_use across outgoing_pub, outgoing_rel, tracked_subscribe, and tracked_unsubscribe. next_pkid returns None when no currently-unused publish pkid is available."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["outgoing_subscribe", "outgoing_unsubscribe", "outgoing_publish_with_notice"],
+          "symbols": [
+            "outgoing_subscribe",
+            "outgoing_unsubscribe",
+            "outgoing_publish_with_notice"
+          ],
           "reason": "Subscribe and unsubscribe requests receive pkids from next_control_pkid. Outgoing publish validates pkid bounds and rejects cross-type conflicts with pubrel, subscribe, and unsubscribe tracking before storing a new outgoing publish."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["next_pkid_increments_as_expected", "next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use", "outgoing_publish_should_set_pkid_and_add_publish_to_queue", "outgoing_publish_rejects_packet_identifier_used_by_non_publish_flow", "can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit", "outgoing_publish_with_max_inflight_is_ok", "subscribe_parsing_rejects_zero_packet_identifier", "subscribe_encoding_rejects_zero_packet_identifier", "unsubscribe_parsing_rejects_zero_packet_identifier", "unsubscribe_encoding_rejects_zero_packet_identifier"],
+        "tests": [
+          "next_pkid_increments_as_expected",
+          "next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use",
+          "outgoing_publish_should_set_pkid_and_add_publish_to_queue",
+          "outgoing_publish_rejects_packet_identifier_used_by_non_publish_flow",
+          "can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit",
+          "outgoing_publish_with_max_inflight_is_ok",
+          "subscribe_parsing_rejects_zero_packet_identifier",
+          "subscribe_encoding_rejects_zero_packet_identifier",
+          "unsubscribe_parsing_rejects_zero_packet_identifier",
+          "unsubscribe_encoding_rejects_zero_packet_identifier"
+        ],
         "notes": "State tests cover pkid increment, exhausted publish-id allocation, max-inflight behavior, and cross-type conflicts with subscribe, unsubscribe, and pubrel tracking. Packet codec tests cover zero-pkid rejection for PUBLISH QoS > 0, SUBSCRIBE, and UNSUBSCRIBE."
       },
       "follow_up": "No follow-up needed."
@@ -392,8 +570,33 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This is a server-only obligation: the server must assign unused packet identifiers for outgoing PUBLISH QoS>0. A client does not need to validate that server-assigned packet IDs are unique. The client does validate pkid!=0 on inbound PUBLISH QoS>0 (related to MQTT-2.2.1-3), and tracks incoming packet IDs for its own acknowledgment flow, but that is not this requirement.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::read"
+          ],
+          "reason": "Validates pkid!=0 for QoS>0 on inbound PUBLISH (MQTT-2.2.1-3, not this requirement). Does not validate uniqueness of server-assigned IDs."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "incoming_puback",
+            "incoming_pub"
+          ],
+          "reason": "Tracks incoming packet IDs in FixedBitSets for acknowledgment flow, not for validating server uniqueness compliance."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only requirement; no client-side test needed for this specific obligation."
+      },
+      "follow_up": "No follow-up needed. The client correctly validates pkid!=0 (MQTT-2.2.1-3) and tracks IDs for ack flow, which is all a client must do."
     },
     {
       "id": "MQTT-2.2.1-5",
@@ -414,58 +617,114 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_publish", "handle_incoming_pubrec", "handle_incoming_pubrel"],
+          "symbols": [
+            "handle_incoming_publish",
+            "handle_incoming_pubrec",
+            "handle_incoming_pubrel"
+          ],
           "reason": "Client-generated acks correctly echo pkid: PubAck::new(publish.pkid, None) for QoS1, PubRec::new(pkid, None) for QoS2, PubRel::new(pubrec.pkid, None) for PUBREL, PubComp::new(pubrel.pkid, None) for PUBCOMP."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["outgoing_puback", "outgoing_pubrec", "outgoing_publish_with_notice", "save_pubrel_with_notice"],
+          "symbols": [
+            "outgoing_puback",
+            "outgoing_pubrec",
+            "outgoing_publish_with_notice",
+            "save_pubrel_with_notice"
+          ],
           "reason": "Manual/outgoing PUBACK and PUBREC are rejected with StateError::Unsolicited unless their pkid matches a tracked incoming QoS1/QoS2 PUBLISH packet identifier. Explicit outbound PUBLISH pkids are rejected while reserved for PUBREL replay. Outgoing PUBREL is rejected unless the pkid is already in outgoing_rel or the reconnect replay set."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_puback", "handle_incoming_pubrec", "handle_incoming_pubrel", "handle_incoming_pubcomp"],
+          "symbols": [
+            "handle_incoming_puback",
+            "handle_incoming_pubrec",
+            "handle_incoming_pubrel",
+            "handle_incoming_pubcomp"
+          ],
           "reason": "Incoming PUBACK/PUBREC/PUBREL/PUBCOMP are validated by packet identifier: return StateError::Unsolicited if pkid doesn't match tracked outgoing/incoming packet-id state."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_suback", "handle_incoming_unsuback"],
+          "symbols": [
+            "handle_incoming_suback",
+            "handle_incoming_unsuback"
+          ],
           "reason": "Incoming SUBACK/UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. Returns StateError::Unsolicited if pkid doesn't match any tracked request. Notice is resolved on match."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
-          "symbols": ["SubAck::read"],
+          "symbols": [
+            "SubAck::read"
+          ],
           "reason": "SubAck::read rejects pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
-          "symbols": ["UnsubAck::read"],
+          "symbols": [
+            "UnsubAck::read"
+          ],
           "reason": "UnsubAck::read rejects pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
-          "symbols": ["PubAck::read", "PubAck::write"],
+          "symbols": [
+            "PubAck::read",
+            "PubAck::write"
+          ],
           "reason": "PubAck::read and PubAck::write reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
-          "symbols": ["PubRec::read", "PubRec::write"],
+          "symbols": [
+            "PubRec::read",
+            "PubRec::write"
+          ],
           "reason": "PubRec::read and PubRec::write reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
-          "symbols": ["PubRel::read", "PubRel::write"],
+          "symbols": [
+            "PubRel::read",
+            "PubRel::write"
+          ],
           "reason": "PubRel::read and PubRel::write reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
-          "symbols": ["PubComp::read", "PubComp::write"],
+          "symbols": [
+            "PubComp::read",
+            "PubComp::write"
+          ],
           "reason": "PubComp::read and PubComp::write reject pkid==0 with Error::PacketIdZero."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["tracked_suback_returns_ack_with_properties_and_preserves_incoming_event", "tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event", "manual_puback_must_match_received_qos1_publish", "manual_pubrec_must_match_received_qos2_publish", "outgoing_pubrel_without_original_publish_is_unsolicited", "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay", "incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully", "incoming_suback_with_untracked_pkid_is_unsolicited", "incoming_unsuback_with_untracked_pkid_is_unsolicited", "incoming_pubrec_with_untracked_pkid_is_unsolicited", "incoming_pubrel_with_untracked_pkid_is_unsolicited", "incoming_pubcomp_with_untracked_pkid_is_unsolicited", "suback_parsing_rejects_zero_packet_identifier", "unsuback_parsing_rejects_zero_packet_identifier", "puback_parsing_rejects_zero_packet_identifier", "pubrec_parsing_rejects_zero_packet_identifier", "pubrel_parsing_rejects_zero_packet_identifier", "pubcomp_parsing_rejects_zero_packet_identifier", "puback_encoding_rejects_zero_packet_identifier", "pubrec_encoding_rejects_zero_packet_identifier", "pubrel_encoding_rejects_zero_packet_identifier", "pubcomp_encoding_rejects_zero_packet_identifier"],
+        "tests": [
+          "tracked_suback_returns_ack_with_properties_and_preserves_incoming_event",
+          "tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event",
+          "manual_puback_must_match_received_qos1_publish",
+          "manual_pubrec_must_match_received_qos2_publish",
+          "outgoing_pubrel_without_original_publish_is_unsolicited",
+          "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay",
+          "incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully",
+          "incoming_suback_with_untracked_pkid_is_unsolicited",
+          "incoming_unsuback_with_untracked_pkid_is_unsolicited",
+          "incoming_pubrec_with_untracked_pkid_is_unsolicited",
+          "incoming_pubrel_with_untracked_pkid_is_unsolicited",
+          "incoming_pubcomp_with_untracked_pkid_is_unsolicited",
+          "suback_parsing_rejects_zero_packet_identifier",
+          "unsuback_parsing_rejects_zero_packet_identifier",
+          "puback_parsing_rejects_zero_packet_identifier",
+          "pubrec_parsing_rejects_zero_packet_identifier",
+          "pubrel_parsing_rejects_zero_packet_identifier",
+          "pubcomp_parsing_rejects_zero_packet_identifier",
+          "puback_encoding_rejects_zero_packet_identifier",
+          "pubrec_encoding_rejects_zero_packet_identifier",
+          "pubrel_encoding_rejects_zero_packet_identifier",
+          "pubcomp_encoding_rejects_zero_packet_identifier"
+        ],
         "notes": "Incoming ack types have direct unsolicited-pkid detection tests. Manual PUBACK/PUBREC, direct PUBREL mismatch, and PUBREL replay pkid reservation boundaries are covered. All v5 ack decode paths and PUBACK/PUBREC/PUBREL/PUBCOMP encode paths reject pkid==0 in tests."
       },
       "follow_up": null
@@ -489,58 +748,114 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_publish", "handle_incoming_pubrec", "handle_incoming_pubrel"],
+          "symbols": [
+            "handle_incoming_publish",
+            "handle_incoming_pubrec",
+            "handle_incoming_pubrel"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. Client-generated acks correctly echo pkid from received packets."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["outgoing_puback", "outgoing_pubrec", "outgoing_publish_with_notice", "save_pubrel_with_notice"],
+          "symbols": [
+            "outgoing_puback",
+            "outgoing_pubrec",
+            "outgoing_publish_with_notice",
+            "save_pubrel_with_notice"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. Manual/outgoing PUBACK/PUBREC/PUBREL pkids are validated against tracked packet-id state, and explicit outbound PUBLISH pkids cannot reuse ids reserved for PUBREL replay."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_puback", "handle_incoming_pubrec", "handle_incoming_pubrel", "handle_incoming_pubcomp"],
+          "symbols": [
+            "handle_incoming_puback",
+            "handle_incoming_pubrec",
+            "handle_incoming_pubrel",
+            "handle_incoming_pubcomp"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. Incoming PUBACK/PUBREC/PUBREL/PUBCOMP pkids validated against tracked packet-id state with StateError::Unsolicited."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_suback", "handle_incoming_unsuback"],
+          "symbols": [
+            "handle_incoming_suback",
+            "handle_incoming_unsuback"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. Incoming SUBACK/UNSUBACK pkids validated against tracked_subscribe/tracked_unsubscribe with StateError::Unsolicited."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
-          "symbols": ["SubAck::read"],
+          "symbols": [
+            "SubAck::read"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. SubAck::read rejects pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
-          "symbols": ["UnsubAck::read"],
+          "symbols": [
+            "UnsubAck::read"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. UnsubAck::read rejects pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
-          "symbols": ["PubAck::read", "PubAck::write"],
+          "symbols": [
+            "PubAck::read",
+            "PubAck::write"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. PubAck read/write reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
-          "symbols": ["PubRec::read", "PubRec::write"],
+          "symbols": [
+            "PubRec::read",
+            "PubRec::write"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. PubRec read/write reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
-          "symbols": ["PubRel::read", "PubRel::write"],
+          "symbols": [
+            "PubRel::read",
+            "PubRel::write"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. PubRel read/write reject pkid==0 with Error::PacketIdZero."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
-          "symbols": ["PubComp::read", "PubComp::write"],
+          "symbols": [
+            "PubComp::read",
+            "PubComp::write"
+          ],
           "reason": "Same evidence as MQTT-2.2.1-5. PubComp read/write reject pkid==0 with Error::PacketIdZero."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["tracked_suback_returns_ack_with_properties_and_preserves_incoming_event", "tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event", "manual_puback_must_match_received_qos1_publish", "manual_pubrec_must_match_received_qos2_publish", "outgoing_pubrel_without_original_publish_is_unsolicited", "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay", "incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully", "incoming_suback_with_untracked_pkid_is_unsolicited", "incoming_unsuback_with_untracked_pkid_is_unsolicited", "incoming_pubrec_with_untracked_pkid_is_unsolicited", "incoming_pubrel_with_untracked_pkid_is_unsolicited", "incoming_pubcomp_with_untracked_pkid_is_unsolicited", "suback_parsing_rejects_zero_packet_identifier", "unsuback_parsing_rejects_zero_packet_identifier", "puback_parsing_rejects_zero_packet_identifier", "pubrec_parsing_rejects_zero_packet_identifier", "pubrel_parsing_rejects_zero_packet_identifier", "pubcomp_parsing_rejects_zero_packet_identifier", "puback_encoding_rejects_zero_packet_identifier", "pubrec_encoding_rejects_zero_packet_identifier", "pubrel_encoding_rejects_zero_packet_identifier", "pubcomp_encoding_rejects_zero_packet_identifier"],
+        "tests": [
+          "tracked_suback_returns_ack_with_properties_and_preserves_incoming_event",
+          "tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event",
+          "manual_puback_must_match_received_qos1_publish",
+          "manual_pubrec_must_match_received_qos2_publish",
+          "outgoing_pubrel_without_original_publish_is_unsolicited",
+          "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay",
+          "incoming_puback_with_pkid_greater_than_max_inflight_should_be_handled_gracefully",
+          "incoming_suback_with_untracked_pkid_is_unsolicited",
+          "incoming_unsuback_with_untracked_pkid_is_unsolicited",
+          "incoming_pubrec_with_untracked_pkid_is_unsolicited",
+          "incoming_pubrel_with_untracked_pkid_is_unsolicited",
+          "incoming_pubcomp_with_untracked_pkid_is_unsolicited",
+          "suback_parsing_rejects_zero_packet_identifier",
+          "unsuback_parsing_rejects_zero_packet_identifier",
+          "puback_parsing_rejects_zero_packet_identifier",
+          "pubrec_parsing_rejects_zero_packet_identifier",
+          "pubrel_parsing_rejects_zero_packet_identifier",
+          "pubcomp_parsing_rejects_zero_packet_identifier",
+          "puback_encoding_rejects_zero_packet_identifier",
+          "pubrec_encoding_rejects_zero_packet_identifier",
+          "pubrel_encoding_rejects_zero_packet_identifier",
+          "pubcomp_encoding_rejects_zero_packet_identifier"
+        ],
         "notes": "Same as MQTT-2.2.1-5: incoming ack unsolicited-pkid detection, manual/outgoing ACK/PUBREL validation boundaries, PUBREL replay pkid reservation, and zero-pkid decode/encode rejection are tested."
       },
       "follow_up": null
@@ -558,8 +873,164 @@
         "rumqttc-v5/src/mqttbytes/v5/mod.rs",
         "rumqttc-v5/src/mqttbytes/v5/codec.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to core packet framing and codec modules."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Property Length is encoded as a Variable Byte Integer using write_remaining_length (the same VBI encoder used for remaining length). Packet property writers compute their property payload length and then call write_remaining_length(buffer, len). When a property section is present but contains no properties, writers encode Property Length 0. Some MQTT v5 packet forms, such as successful PUBACK without properties, legally omit the reason code and property length entirely; those compact forms are separate from explicit zero-length property sections. Property readers call length() before parsing property fields and return Ok(None) when properties_len == 0 for optional property structs.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "write_remaining_length",
+            "length"
+          ],
+          "reason": "write_remaining_length encodes a Variable Byte Integer; length() decodes one. Both are used for property length encoding/decoding."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::write",
+            "Publish::read",
+            "PublishProperties::write",
+            "PublishProperties::read"
+          ],
+          "reason": "Publish::write calls write_remaining_length(buffer, 0) when the PUBLISH property section is absent, and PublishProperties::write calls write_remaining_length(buffer, len) when present. PublishProperties::read uses length() to decode the VBI property length and returns Ok(None) when properties_len==0."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "ConnectProperties::len",
+            "ConnectProperties::read",
+            "ConnectProperties::write",
+            "LastWill::write",
+            "LastWillProperties::len",
+            "LastWillProperties::read",
+            "LastWillProperties::write"
+          ],
+          "reason": "CONNECT, Will, and their property structs encode property lengths with write_remaining_length(), including zero for absent/empty property sections where the packet format requires a property length field, and decode property lengths with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/auth.rs",
+          "symbols": [
+            "AuthProperties::len",
+            "AuthProperties::read",
+            "AuthProperties::write"
+          ],
+          "reason": "AUTH properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAckProperties::len",
+            "ConnAckProperties::read",
+            "ConnAckProperties::write",
+            "read_connack_property"
+          ],
+          "reason": "CONNACK properties compute the property payload length, emit it with write_remaining_length(), and decode the property section length with length() before parsing properties."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "DisconnectProperties::len",
+            "DisconnectProperties::extract",
+            "DisconnectProperties::write"
+          ],
+          "reason": "DISCONNECT properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+          "symbols": [
+            "PubAckProperties::len",
+            "PubAckProperties::read",
+            "PubAckProperties::write"
+          ],
+          "reason": "PUBACK properties compute the property payload length, emit it with write_remaining_length(), and decode it with length(). PUBACK also supports the MQTT v5 compact success form that omits reason code and property length when there are no properties."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+          "symbols": [
+            "PubRecProperties::len",
+            "PubRecProperties::read",
+            "PubRecProperties::write"
+          ],
+          "reason": "PUBREC properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": [
+            "PubRelProperties::len",
+            "PubRelProperties::read",
+            "PubRelProperties::write"
+          ],
+          "reason": "PUBREL properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
+          "symbols": [
+            "PubCompProperties::len",
+            "PubCompProperties::read",
+            "PubCompProperties::write"
+          ],
+          "reason": "PUBCOMP properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAckProperties::len",
+            "SubAckProperties::read",
+            "SubAckProperties::write"
+          ],
+          "reason": "SUBACK properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": [
+            "UnsubAckProperties::len",
+            "UnsubAckProperties::read",
+            "UnsubAckProperties::write"
+          ],
+          "reason": "UNSUBACK properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "SubscribeProperties::len",
+            "SubscribeProperties::read",
+            "SubscribeProperties::write"
+          ],
+          "reason": "SUBSCRIBE properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
+          "symbols": [
+            "UnsubscribeProperties::len",
+            "UnsubscribeProperties::read",
+            "UnsubscribeProperties::write"
+          ],
+          "reason": "UNSUBSCRIBE properties compute the property payload length, emit it with write_remaining_length(), and decode it with length()."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "check"
+          ],
+          "reason": "The check function uses core_primitives::parse_fixed_header which calls length() for VBI decoding of remaining length, the same primitive used for property lengths."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes_core::primitives::tests::write_remaining_length_round_trip",
+          "mqttbytes_core::primitives::tests::len_len_matches_expected_thresholds",
+          "mqttbytes::v5::publish::test::length_calculation",
+          "mqttbytes::v5::connect::test::length_calculation",
+          "mqttbytes::v5::connack::test::length_calculation",
+          "mqttbytes::v5::codec::test::outgoing_max_packet_size_check",
+          "mqttbytes::v5::codec::test::incoming_max_packet_size_check_happens_on_partial_frame"
+        ],
+        "notes": "Core VBI encoding/decoding is tested directly. Module-qualified length_calculation tests avoid ambiguity between repeated test names and verify packet/property size accounting for representative property-bearing packets. Packet-level property length encoding is exercised by packet read/write round-trip tests; compact no-property encodings and explicit zero property-length cases are distinct MQTT v5 forms."
+      },
+      "follow_up": "For stronger audit traceability, add dedicated explicit zero-property-length round-trip tests for each property-bearing packet type; existing evidence and representative tests support compliance."
     },
     {
       "id": "MQTT-3.1.0-1",
@@ -580,23 +1051,34 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["EventLoop::poll", "connect", "mqtt_connect"],
+          "symbols": [
+            "EventLoop::poll",
+            "connect",
+            "mqtt_connect"
+          ],
           "reason": "poll() calls connect() when network is None. connect() calls network_connect() then mqtt_connect(), which sends CONNECT as the very first MQTT packet on the new transport. No other packet path can execute before self.network is set."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner() constructs a Connect packet and writes it to the network, then awaits a ConnAck or AUTH response. ConnectionError::NotConnAck is returned if the first response is not ConnAck or AUTH."
         },
         {
           "path": "rumqttc-v5/src/lib.rs",
-          "symbols": ["Request"],
+          "symbols": [
+            "Request"
+          ],
           "reason": "The Request enum has no Connect variant, so users cannot submit a CONNECT packet through the request channel. CONNECT is only sent internally by mqtt_connect_inner()."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["mqtt_connect_sends_connect_as_first_packet_on_the_wire", "poll_sends_connect_before_queued_requests"],
+        "tests": [
+          "mqtt_connect_sends_connect_as_first_packet_on_the_wire",
+          "poll_sends_connect_before_queued_requests"
+        ],
         "notes": "Wire-level test verifies the first packet sent by mqtt_connect is CONNECT. Eventloop-level test queues a request before connection establishment and verifies CONNECT is sent before the queued request on the same socket."
       },
       "follow_up": null
@@ -620,23 +1102,35 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/lib.rs",
-          "symbols": ["Request"],
+          "symbols": [
+            "Request"
+          ],
           "reason": "The Request enum has no Connect variant (15 variants: Publish, PubAck, PubRec, PubComp, PubRel, PingReq, PingResp, Subscribe, SubAck, Unsubscribe, UnsubAck, Auth, Disconnect, DisconnectNow, DisconnectWithTimeout), making it impossible for users to submit a CONNECT packet through the request channel."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["EventLoop::poll", "connect", "mqtt_connect", "mqtt_connect_inner"],
+          "symbols": [
+            "EventLoop::poll",
+            "connect",
+            "mqtt_connect",
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner() is the function that writes the CONNECT packet, and it is reached only through mqtt_connect() during connect(). connect() only runs from poll() when self.network is None. After connect() succeeds, self.network is set and mqtt_connect_inner() is never called again on the same connection."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["EventLoop::clean"],
+          "symbols": [
+            "EventLoop::clean"
+          ],
           "reason": "When the connection is lost, clean() sets self.network = None, causing the next poll() to establish a completely new network connection before sending CONNECT again."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["request_enum_has_no_connect_variant", "eventloop_sends_only_one_connect_per_network_connection"],
+        "tests": [
+          "request_enum_has_no_connect_variant",
+          "eventloop_sends_only_one_connect_per_network_connection"
+        ],
         "notes": "Variant-enumeration test documents the current Request surface while the Request enum definition provides the compile-time evidence that no Connect variant exists. Eventloop-level wire test verifies that, after CONNECT succeeds, a later queued request on the same socket is sent as that request rather than as a second CONNECT."
       },
       "follow_up": null
@@ -658,18 +1152,24 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Encode path always writes 'MQTT' as the protocol name via write_mqtt_string(buffer, \"MQTT\"), guaranteeing the correct protocol name on the wire."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read"],
+          "symbols": [
+            "Connect::read"
+          ],
           "reason": "Decode path validates protocol_name != 'MQTT' and returns Error::InvalidProtocol, but this is only relevant if a client were to read a CONNECT packet, which it never does in normal operation."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["write_uses_mqtt_protocol_name"],
+        "tests": [
+          "write_uses_mqtt_protocol_name"
+        ],
         "notes": "Encode test serializes a v5 CONNECT and verifies the protocol-name field bytes are the MQTT UTF-8 string."
       },
       "follow_up": null
@@ -691,23 +1191,34 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "Connect::read"],
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
           "reason": "Connect::write() hardcodes 0x05 as the protocol version byte with no conditional. Connect::read() rejects protocol_level != 5 with Error::InvalidProtocolLevel."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner() constructs Connect directly without any protocol version field; the write method always emits 0x05."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnectReturnCode::UnsupportedProtocolVersion", "connect_return"],
+          "symbols": [
+            "ConnectReturnCode::UnsupportedProtocolVersion",
+            "connect_return"
+          ],
           "reason": "ConnAck decode maps reason code 132 (0x84) to UnsupportedProtocolVersion. The eventloop treats non-Success ConnAck as a connection error."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_parsing_rejects_invalid_protocol_level", "connect_encoding_emits_protocol_level_5"],
+        "tests": [
+          "connect_parsing_rejects_invalid_protocol_level",
+          "connect_encoding_emits_protocol_level_5"
+        ],
         "notes": "Dedicated tests cover Connect::read() rejecting invalid protocol level 4 and Connect::write() emitting 0x05."
       },
       "follow_up": "No follow-up needed. Dedicated tests added for protocol version encoding and decode rejection."
@@ -729,13 +1240,19 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "validate_connect_flags"],
+          "symbols": [
+            "Connect::write",
+            "validate_connect_flags"
+          ],
           "reason": "Connect::write() initializes connect_flags=0 and only sets defined flag bits, guaranteeing bit 0 is 0. validate_connect_flags() rejects inbound CONNECT packets with the reserved bit set."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["connect_parsing_rejects_reserved_connect_flag_bit", "connect_encoding_emits_zero_reserved_connect_flag_bit"],
+        "tests": [
+          "connect_parsing_rejects_reserved_connect_flag_bit",
+          "connect_encoding_emits_zero_reserved_connect_flag_bit"
+        ],
         "notes": "The server-side Malformed Packet handling obligation is not testable in this client crate. Related client codec tests explicitly cover decode rejection of reserved bit=1 and encoding bit 0=0."
       },
       "follow_up": "No follow-up needed for the client codec. The server-side Malformed Packet handling obligation remains outside this client crate."
@@ -757,18 +1274,28 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "Connect::read"],
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
           "reason": "Connect::write() encodes clean_start as bit 1 of connect flags. Connect::read() decodes the same bit."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["reconcile_connack_session", "reset_session_state", "mqtt_connect_inner"],
+          "symbols": [
+            "reconcile_connack_session",
+            "reset_session_state",
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner() sets connect.clean_start from MqttOptions. reconcile_connack_session() rejects clean_start=true with session_present=true and calls reset_session_state() when the server reports session_present=false, discarding local pending session state for the new clean session."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connack_reconcile_rejects_clean_start_with_session_present", "connack_reconcile_resets_pending_when_clean_start_gets_new_session"],
+        "tests": [
+          "connack_reconcile_rejects_clean_start_with_session_present",
+          "connack_reconcile_resets_pending_when_clean_start_gets_new_session"
+        ],
         "notes": "These client tests cover CONNACK validation and local pending-state discard for Clean Start=1. The server discard/start-new-session obligation itself is not testable in this client crate."
       },
       "follow_up": "No follow-up needed for the client behavior. The server-side session lifecycle obligation remains outside this client crate."
@@ -790,18 +1317,27 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "Connect::read"],
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
           "reason": "Connect::write() correctly encodes clean_start as bit 1 of connect flags, including leaving it clear for clean_start=false. Connect::read() correctly decodes it."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["reconcile_connack_session", "mqtt_connect_inner"],
+          "symbols": [
+            "reconcile_connack_session",
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner() sets connect.clean_start from MqttOptions. reconcile_connack_session() preserves pending state when a resumed session is present and resets it when the server reports no session."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["connack_reconcile_resets_pending_when_resumed_session_is_missing", "connack_reconcile_keeps_pending_when_resumed_session_exists"],
+        "tests": [
+          "connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "connack_reconcile_keeps_pending_when_resumed_session_exists"
+        ],
         "notes": "The client correctly encodes Clean Start=0 and preserves or resets pending state based on the server's session_present response, but the core requirement (server must resume/create session) is server-only and not testable from the client side."
       },
       "follow_up": "No follow-up needed. The requirement is server-only; the client correctly encodes and handles the related flags."
@@ -823,18 +1359,27 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "Connect::read"],
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
           "reason": "Connect::write() encodes clean_start as bit 1 of connect flags, including leaving it clear for clean_start=false. Connect::read() decodes the same bit."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["reconcile_connack_session", "mqtt_connect_inner"],
+          "symbols": [
+            "reconcile_connack_session",
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner() sets connect.clean_start from MqttOptions. reconcile_connack_session() preserves pending state when a resumed session is present and resets it when the server reports no session."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["connack_reconcile_resets_pending_when_resumed_session_is_missing", "connack_reconcile_keeps_pending_when_resumed_session_exists"],
+        "tests": [
+          "connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "connack_reconcile_keeps_pending_when_resumed_session_exists"
+        ],
         "notes": "These client tests cover handling of the server's session_present response for Clean Start=0. The server resume/create obligation itself is not testable in this client crate."
       },
       "follow_up": "No follow-up needed. This duplicate requirement is server-only; related client behavior is covered."
@@ -856,7 +1401,10 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "LastWill::write"],
+          "symbols": [
+            "Connect::write",
+            "LastWill::write"
+          ],
           "reason": "The client correctly encodes the Will Flag (bit 2) and Will Properties/Topic/Payload when will is Some, but the obligation to store the Will Message on the server rests entirely on the server."
         }
       ],
@@ -884,7 +1432,10 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "LastWill::write"],
+          "symbols": [
+            "Connect::write",
+            "LastWill::write"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-7. Client encodes Will Flag and Will data correctly; storage obligation is server-only."
         }
       ],
@@ -912,28 +1463,42 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "LastWill::write"],
+          "symbols": [
+            "Connect::write",
+            "LastWill::write"
+          ],
           "reason": "Connect::write conditionally sets Will Flag bit only when will is Some. LastWill::write always serializes properties (0-length if None), topic, and message, and sets the Will Flag + QoS + Retain bits."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read"],
+          "symbols": [
+            "LastWill::read"
+          ],
           "reason": "LastWill::read checks connect_flags & 0b100 for the Will Flag. When set, it reads Will Properties, will_topic, and will_message."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill"],
+          "symbols": [
+            "LastWill"
+          ],
           "reason": "LastWill struct requires topic: Bytes, message: Bytes, and properties: Option<LastWillProperties>, making it impossible to construct a LastWill without topic and payload. Properties can be None (encoded as 0-length property section per MQTT v5 spec)."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read"],
+          "symbols": [
+            "Connect::read"
+          ],
           "reason": "After decoding Client Identifier, optional Will fields, and optional authentication fields according to the CONNECT flags, rejects any remaining bytes with Error::IncorrectPacketFormat."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_roundtrips_last_will", "connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_set_without_will_topic", "last_will_encoding_writes_zero_length_properties_when_none"],
+        "tests": [
+          "connect_roundtrips_last_will",
+          "connect_encoding_without_last_will_emits_zero_will_bits",
+          "connect_parsing_rejects_will_flag_set_without_will_topic",
+          "last_will_encoding_writes_zero_length_properties_when_none"
+        ],
         "notes": "Tests cover: round-trip encoding/decoding with Will Flag set; encoding without will produces zero Will bits; decoding with Will Flag=1 but missing Will data is rejected; zero-length Will Properties encoding when None round-trips correctly."
       },
       "follow_up": null
@@ -955,13 +1520,23 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "LastWill::write", "LastWill::read", "LastWill"],
+          "symbols": [
+            "Connect::write",
+            "LastWill::write",
+            "LastWill::read",
+            "LastWill"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-9. Client correctly encodes/decodes Will Flag and Will data; server-side removal obligation is not applicable."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_roundtrips_last_will", "connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_set_without_will_topic", "last_will_encoding_writes_zero_length_properties_when_none"],
+        "tests": [
+          "connect_roundtrips_last_will",
+          "connect_encoding_without_last_will_emits_zero_will_bits",
+          "connect_parsing_rejects_will_flag_set_without_will_topic",
+          "last_will_encoding_writes_zero_length_properties_when_none"
+        ],
         "notes": "Duplicate of MQTT-3.1.2-9. Same focused tests cover the client-relevant Will data presence and encoding behavior."
       },
       "follow_up": null
@@ -983,18 +1558,25 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Encode: Will QoS bits are only set inside `if let Some(w) = will`, so when will is None the Will QoS bits in connect_flags remain 0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read"],
+          "symbols": [
+            "LastWill::read"
+          ],
           "reason": "Decode: when Will Flag=0 (connect_flags & 0b100 == 0), checks (connect_flags & 0b0011_1000) != 0 which includes Will QoS bits (0b11000). Returns Error::IncorrectPacketFormat if Will QoS is non-zero. Returns None without consuming Will data when all are 0."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_qos_1"],
+        "tests": [
+          "connect_encoding_without_last_will_emits_zero_will_bits",
+          "connect_parsing_rejects_will_flag_zero_with_will_qos_1"
+        ],
         "notes": "Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will QoS=1."
       },
       "follow_up": null
@@ -1016,23 +1598,32 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::write"],
-          "reason": "Encode: uses (self.qos as u8) << 3. QoS enum discriminants are 0, 1, 2 only — value 3 is impossible at the type level."
+          "symbols": [
+            "LastWill::write"
+          ],
+          "reason": "Encode: uses (self.qos as u8) << 3. QoS enum discriminants are 0, 1, 2 only \u2014 value 3 is impossible at the type level."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read"],
+          "symbols": [
+            "LastWill::read"
+          ],
           "reason": "Decode: extracts qos_num = (connect_flags & 0b11000) >> 3, then qos(qos_num).ok_or(Error::InvalidQoS(qos_num)). Value 3 maps to None, producing Error::InvalidQoS(3)."
         },
         {
           "path": "mqttbytes-core/src/qos.rs",
-          "symbols": ["qos", "QoS"],
+          "symbols": [
+            "qos",
+            "QoS"
+          ],
           "reason": "qos(3) returns None because QoS only defines AtMostOnce=0, AtLeastOnce=1, ExactlyOnce=2."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_parsing_rejects_will_qos_3"],
+        "tests": [
+          "connect_parsing_rejects_will_qos_3"
+        ],
         "notes": "Decode test verifies Will QoS=3 is rejected with Error::InvalidQoS(3). Encode-side coverage is implicit from the QoS enum having no variant for value 3."
       },
       "follow_up": null
@@ -1054,23 +1645,32 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Encode: Will Retain bit (0x20) is only set inside `if let Some(w) = will` via LastWill::write(), so when will is None the Will Retain bit stays 0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read"],
+          "symbols": [
+            "LastWill::read"
+          ],
           "reason": "Decode: when Will Flag=0, checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit (0b0010_0000). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::write"],
+          "symbols": [
+            "LastWill::write"
+          ],
           "reason": "Encode: sets connect_flags |= 0x20 only when self.retain is true, which is only reachable when will is Some. The client correctly encodes Will Retain for the server to act on."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_retain"],
+        "tests": [
+          "connect_encoding_without_last_will_emits_zero_will_bits",
+          "connect_parsing_rejects_will_flag_zero_with_will_retain"
+        ],
         "notes": "Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will Retain=1. Server-side Will Message publishing behavior (clauses 2-3) cannot be tested in a client crate."
       },
       "follow_up": null
@@ -1092,23 +1692,32 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Encode: Will Retain bit (0x20) is only set inside `if let Some(w) = will` via LastWill::write(), so when will is None the Will Retain bit stays 0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read"],
+          "symbols": [
+            "LastWill::read"
+          ],
           "reason": "Decode: when Will Flag=0 (connect_flags & 0b100 == 0), checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit (0x20). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::write"],
+          "symbols": [
+            "LastWill::write"
+          ],
           "reason": "Encode: sets connect_flags |= 0x20 only when self.retain is true, which is only reachable when will is Some. The client correctly encodes Will Retain for the server to act on."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_retain"],
+        "tests": [
+          "connect_encoding_without_last_will_emits_zero_will_bits",
+          "connect_parsing_rejects_will_flag_zero_with_will_retain"
+        ],
         "notes": "Same tests as MQTT-3.1.2-13. Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will Retain=1. Server-side Will Message publishing behavior (clauses 2-3) cannot be tested in a client crate."
       },
       "follow_up": null
@@ -1130,23 +1739,32 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-13. Encode: Will Retain bit (0x20) is only set inside `if let Some(w) = will`, so when will is None the Will Retain bit stays 0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::read"],
+          "symbols": [
+            "LastWill::read"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-13. Decode: when Will Flag=0, checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit (0x20). Returns Error::IncorrectPacketFormat if Will Retain is set when Will Flag=0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::write"],
+          "symbols": [
+            "LastWill::write"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-13. Encode: sets connect_flags |= 0x20 only when self.retain is true, which is only reachable when will is Some."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_encoding_without_last_will_emits_zero_will_bits", "connect_parsing_rejects_will_flag_zero_with_will_retain"],
+        "tests": [
+          "connect_encoding_without_last_will_emits_zero_will_bits",
+          "connect_parsing_rejects_will_flag_zero_with_will_retain"
+        ],
         "notes": "Same tests as MQTT-3.1.2-13 and MQTT-3.1.2-14. Encode test verifies all Will bits are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will Retain=1."
       },
       "follow_up": null
@@ -1164,27 +1782,39 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "This requirement combines two clauses: (1) username_flag=0 → username MUST NOT be present, and (2) username_flag=1 → username MUST be present. Encode path: ConnectAuth::None writes zero username bytes and returns flags=0 (no username flag), so no username appears in the payload. ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set the 0x80 flag bit. The Rust type system guarantees that when auth is Username or UsernamePassword, a username String is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None without reading any username bytes when username_flag=false. When username_flag=true, read_mqtt_string() is always called to consume a username; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a username present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username (ConnectAuth::Password variant), so validate_connect_flags() does not reject that combination.",
+      "mapping_reason": "This requirement combines two clauses: (1) username_flag=0 \u2192 username MUST NOT be present, and (2) username_flag=1 \u2192 username MUST be present. Encode path: ConnectAuth::None writes zero username bytes and returns flags=0 (no username flag), so no username appears in the payload. ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set the 0x80 flag bit. The Rust type system guarantees that when auth is Username or UsernamePassword, a username String is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None without reading any username bytes when username_flag=false. When username_flag=true, read_mqtt_string() is always called to consume a username; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a username present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username (ConnectAuth::Password variant), so validate_connect_flags() does not reject that combination.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::write"],
+          "symbols": [
+            "ConnectAuth::write"
+          ],
           "reason": "Encode: ConnectAuth::None writes 0 bytes and returns flags=0. ConnectAuth::Username writes the username string and returns 0x80. ConnectAuth::UsernamePassword writes both and returns 0xC0. ConnectAuth::Password writes only password bytes and returns 0x40 (no username flag, no username bytes)."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::read"],
+          "symbols": [
+            "ConnectAuth::read"
+          ],
           "reason": "Decode: when username_flag=false, returns ConnectAuth::None or ConnectAuth::Password without reading any username bytes. When username_flag=true, read_mqtt_string() is always called; truncation produces an error."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read"],
+          "symbols": [
+            "Connect::read"
+          ],
           "reason": "Decode: the bytes.has_remaining() check after reading all flag-indicated fields rejects any trailing payload data, including a username that should not be present when the flag is 0."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_parsing_rejects_username_when_username_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_encoding_with_password_and_empty_username_writes_zero_len_username", "connect_roundtrips_binary_password"],
+        "tests": [
+          "connect_parsing_rejects_username_when_username_flag_zero",
+          "connect_parsing_accepts_password_without_username_flag",
+          "connect_roundtrips_password_only_auth",
+          "connect_encoding_with_password_and_empty_username_writes_zero_len_username",
+          "connect_roundtrips_binary_password"
+        ],
         "notes": "connect_parsing_rejects_username_when_username_flag_zero directly tests that spurious username bytes in the payload are rejected when username_flag=0 via the has_remaining() check. connect_parsing_accepts_password_without_username_flag and connect_roundtrips_password_only_auth directly cover the v5-specific password-without-username boundary. Username+password roundtrip tests verify that username_flag=1 includes a length-prefixed username field, including the valid zero-length username case."
       },
       "follow_up": null
@@ -1206,23 +1836,35 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::write"],
+          "symbols": [
+            "ConnectAuth::write"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-16. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::read"],
+          "symbols": [
+            "ConnectAuth::read"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-16. Decode: flag-gated reads consume only the indicated fields; truncation produces an error."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read"],
+          "symbols": [
+            "Connect::read"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-16. The has_remaining() check rejects any trailing payload data not indicated by the flags."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_parsing_rejects_username_when_username_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_encoding_with_password_and_empty_username_writes_zero_len_username", "connect_roundtrips_binary_password"],
+        "tests": [
+          "connect_parsing_rejects_username_when_username_flag_zero",
+          "connect_parsing_accepts_password_without_username_flag",
+          "connect_roundtrips_password_only_auth",
+          "connect_encoding_with_password_and_empty_username_writes_zero_len_username",
+          "connect_roundtrips_binary_password"
+        ],
         "notes": "Same as MQTT-3.1.2-16. connect_parsing_rejects_username_when_username_flag_zero directly covers the spurious-username case; the remaining tests cover username-present and password-without-username boundary cases."
       },
       "follow_up": null
@@ -1240,27 +1882,41 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "This requirement combines two clauses: (1) password_flag=0 → password MUST NOT be present, and (2) password_flag=1 → password MUST be present. Encode path: ConnectAuth::None and ConnectAuth::Username write zero password bytes and do not set the 0x40 flag bit, so no password appears in the payload. ConnectAuth::Password and ConnectAuth::UsernamePassword both write a length-prefixed password and set the 0x40 flag bit. The Rust type system guarantees that when auth is Password or UsernamePassword, a password Bytes value is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes when password_flag=false. When password_flag=true, read_mqtt_bytes() is always called to consume a password; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a password present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username, so the (username_flag=false, password_flag=true) combination is valid and handled by ConnectAuth::Password.",
+      "mapping_reason": "This requirement combines two clauses: (1) password_flag=0 \u2192 password MUST NOT be present, and (2) password_flag=1 \u2192 password MUST be present. Encode path: ConnectAuth::None and ConnectAuth::Username write zero password bytes and do not set the 0x40 flag bit, so no password appears in the payload. ConnectAuth::Password and ConnectAuth::UsernamePassword both write a length-prefixed password and set the 0x40 flag bit. The Rust type system guarantees that when auth is Password or UsernamePassword, a password Bytes value is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes when password_flag=false. When password_flag=true, read_mqtt_bytes() is always called to consume a password; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a password present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username, so the (username_flag=false, password_flag=true) combination is valid and handled by ConnectAuth::Password.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::write"],
+          "symbols": [
+            "ConnectAuth::write"
+          ],
           "reason": "Encode: ConnectAuth::None returns flags=0. ConnectAuth::Username returns 0x80 (no password flag, no password bytes). ConnectAuth::Password writes password bytes and returns 0x40. ConnectAuth::UsernamePassword writes both and returns 0xC0. Password bytes are only written when the Password variant carries them."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::read"],
+          "symbols": [
+            "ConnectAuth::read"
+          ],
           "reason": "Decode: when password_flag=false, returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes. When password_flag=true, read_mqtt_bytes() is always called; truncation produces an error."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read"],
+          "symbols": [
+            "Connect::read"
+          ],
           "reason": "Decode: the bytes.has_remaining() check after reading all flag-indicated fields rejects any trailing payload data, including a password that should not be present when the flag is 0."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_parsing_rejects_password_flag_set_without_password", "connect_parsing_rejects_password_when_password_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_roundtrips_binary_password", "connect_roundtrips_explicitly_empty_password", "connect_encoding_with_password_and_empty_username_writes_zero_len_username"],
+        "tests": [
+          "connect_parsing_rejects_password_flag_set_without_password",
+          "connect_parsing_rejects_password_when_password_flag_zero",
+          "connect_parsing_accepts_password_without_username_flag",
+          "connect_roundtrips_password_only_auth",
+          "connect_roundtrips_binary_password",
+          "connect_roundtrips_explicitly_empty_password",
+          "connect_encoding_with_password_and_empty_username_writes_zero_len_username"
+        ],
         "notes": "connect_parsing_rejects_password_flag_set_without_password directly tests that a CONNECT with password_flag=1 but payload truncated before the password field is rejected. connect_parsing_rejects_password_when_password_flag_zero directly tests the spurious-password case. Password roundtrip tests verify a length-prefixed password field is present when password_flag=1, including password-only, empty, and binary password cases."
       },
       "follow_up": null
@@ -1278,27 +1934,40 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Duplicate of MQTT-3.1.2-18 (identical summary and obligation). Evidence is identical: encode path uses ConnectAuth enum variants that guarantee flag/payload consistency (None→flags=0, Username→0x80, Password→0x40, UsernamePassword→0xC0); decode path uses ConnectAuth::read() with flag-gated reads and the has_remaining() trailing-data check in Connect::read() to reject spurious payload bytes. Note: unlike v3.1.1, v5 allows password-without-username via ConnectAuth::Password, so validate_connect_flags() does not reject (username_flag=false, password_flag=true).",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-18 (identical summary and obligation). Evidence is identical: encode path uses ConnectAuth enum variants that guarantee flag/payload consistency (None\u2192flags=0, Username\u21920x80, Password\u21920x40, UsernamePassword\u21920xC0); decode path uses ConnectAuth::read() with flag-gated reads and the has_remaining() trailing-data check in Connect::read() to reject spurious payload bytes. Note: unlike v3.1.1, v5 allows password-without-username via ConnectAuth::Password, so validate_connect_flags() does not reject (username_flag=false, password_flag=true).",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::write"],
-          "reason": "Same evidence as MQTT-3.1.2-18. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate. None→0, Username→0x80, Password→0x40, UsernamePassword→0xC0."
+          "symbols": [
+            "ConnectAuth::write"
+          ],
+          "reason": "Same evidence as MQTT-3.1.2-18. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate. None\u21920, Username\u21920x80, Password\u21920x40, UsernamePassword\u21920xC0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::read"],
-          "reason": "Same evidence as MQTT-3.1.2-18. Decode: flag-gated reads consume only the indicated fields; (false,false)→None, (true,false)→Username, (false,true)→Password, (true,true)→UsernamePassword. Truncation produces an error."
+          "symbols": [
+            "ConnectAuth::read"
+          ],
+          "reason": "Same evidence as MQTT-3.1.2-18. Decode: flag-gated reads consume only the indicated fields; (false,false)\u2192None, (true,false)\u2192Username, (false,true)\u2192Password, (true,true)\u2192UsernamePassword. Truncation produces an error."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::read"],
+          "symbols": [
+            "Connect::read"
+          ],
           "reason": "Same evidence as MQTT-3.1.2-18. The has_remaining() check rejects any trailing payload data not indicated by the flags."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_parsing_rejects_password_flag_set_without_password", "connect_parsing_rejects_password_when_password_flag_zero", "connect_parsing_accepts_password_without_username_flag", "connect_roundtrips_password_only_auth", "connect_roundtrips_binary_password", "connect_roundtrips_explicitly_empty_password"],
+        "tests": [
+          "connect_parsing_rejects_password_flag_set_without_password",
+          "connect_parsing_rejects_password_when_password_flag_zero",
+          "connect_parsing_accepts_password_without_username_flag",
+          "connect_roundtrips_password_only_auth",
+          "connect_roundtrips_binary_password",
+          "connect_roundtrips_explicitly_empty_password"
+        ],
         "notes": "Same as MQTT-3.1.2-18. connect_parsing_rejects_password_flag_set_without_password directly tests the truncated-password case. connect_parsing_rejects_password_when_password_flag_zero directly covers the spurious-password case. Password roundtrip tests cover the password-present boundary, including the v5-specific password-without-username combination."
       },
       "follow_up": null
@@ -1320,23 +1989,41 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::keep_alive", "Connect::read", "Connect::write"],
+          "symbols": [
+            "Connect::keep_alive",
+            "Connect::read",
+            "Connect::write"
+          ],
           "reason": "keep_alive is u16, written with put_u16 and read with read_u16, ensuring Two Byte Integer wire representation."
         },
         {
           "path": "rumqttc-v5/src/lib.rs",
-          "symbols": ["MqttOptions::set_keep_alive", "MqttOptions::keep_alive"],
+          "symbols": [
+            "MqttOptions::set_keep_alive",
+            "MqttOptions::keep_alive"
+          ],
           "reason": "API accepts u16 seconds, stored as Duration. Conversion at connect time uses u16::try_from(duration.as_secs()).unwrap_or(u16::MAX)."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["EventLoop::select", "mqtt_connect_inner"],
+          "symbols": [
+            "EventLoop::select",
+            "mqtt_connect_inner"
+          ],
           "reason": "Eventloop schedules periodic PINGREQ packets when the keep_alive Duration elapses. mqtt_connect_inner converts Duration back to u16 for the CONNECT packet."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["length_calculation", "write_uses_mqtt_protocol_name", "connect_roundtrips_last_will", "connect_roundtrips_binary_password", "connect_roundtrips_max_keep_alive", "idle_connection_triggers_pings_on_time", "some_outgoing_and_no_incoming_should_trigger_pings_on_time"],
+        "tests": [
+          "length_calculation",
+          "write_uses_mqtt_protocol_name",
+          "connect_roundtrips_last_will",
+          "connect_roundtrips_binary_password",
+          "connect_roundtrips_max_keep_alive",
+          "idle_connection_triggers_pings_on_time",
+          "some_outgoing_and_no_incoming_should_trigger_pings_on_time"
+        ],
         "notes": "Unit tests verify CONNECT roundtrip with keep_alive=5 and keep_alive=u16::MAX. Integration tests verify keep-alive PINGREQ timing for idle connections and for connections with outgoing traffic. No explicit test for zero keep_alive."
       },
       "follow_up": null
@@ -1358,18 +2045,27 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "After receiving a successful CONNACK, if connack.properties.server_keep_alive is Some, options.keep_alive is overridden with Duration::from_secs(u64::from(keep_alive)). The keepalive_timeout is initialized after mqtt_connect_inner returns, so it uses the overridden value."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnAckProperties::server_keep_alive", "ConnAckProperties::read", "ConnAckProperties::write"],
+          "symbols": [
+            "ConnAckProperties::server_keep_alive",
+            "ConnAckProperties::read",
+            "ConnAckProperties::write"
+          ],
           "reason": "ConnAckProperties has server_keep_alive: Option<u16>, parsed from PropertyType::ServerKeepAlive (0x13) via read_u16, and written via put_u16. The property is correctly encoded/decoded."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["read_decodes_server_keep_alive", "client_uses_server_keep_alive_from_connack"],
+        "tests": [
+          "read_decodes_server_keep_alive",
+          "client_uses_server_keep_alive_from_connack"
+        ],
         "notes": "Unit test verifies CONNACK Server Keep Alive property decoding. Integration test verifies that the client overrides its keep_alive (originally 60s) with the server's Server Keep Alive value (1s) from CONNACK, and that subsequent PINGREQ intervals reflect the server-assigned value."
       },
       "follow_up": null
@@ -1391,7 +2087,9 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["EventLoop::select"],
+          "symbols": [
+            "EventLoop::select"
+          ],
           "reason": "The eventloop sends PINGREQ when the keep-alive interval expires, which is the client-side behavior that prevents the server from triggering this 1.5x timeout. The 1.5x enforcement itself is server-only."
         }
       ],
@@ -1419,28 +2117,50 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectProperties::session_expiry_interval", "ConnectProperties::read", "ConnectProperties::write"],
+          "symbols": [
+            "ConnectProperties::session_expiry_interval",
+            "ConnectProperties::read",
+            "ConnectProperties::write"
+          ],
           "reason": "CONNECT properties include session_expiry_interval: Option<u32>. The codec reads PropertyType::SessionExpiryInterval via read_u32 and writes it via put_u32, allowing the client to request a non-zero Session Expiry Interval."
         },
         {
           "path": "rumqttc-v5/src/lib.rs",
-          "symbols": ["MqttOptions::set_session_expiry_interval", "MqttOptions::session_expiry_interval"],
+          "symbols": [
+            "MqttOptions::set_session_expiry_interval",
+            "MqttOptions::session_expiry_interval"
+          ],
           "reason": "MqttOptions exposes the configured Session Expiry Interval and stores it in CONNECT properties used by mqtt_connect_inner()."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["EventLoop::reconcile_connack_session", "EventLoop::reset_session_state_if_client_id_changed", "EventLoop::clean"],
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::reset_session_state_if_client_id_changed",
+            "EventLoop::clean"
+          ],
           "reason": "reconcile_connack_session() preserves pending local state when clean_start=false and session_present=true, and resets state when the broker reports no resumed session. reset_session_state_if_client_id_changed() prevents retained local state from crossing ClientID boundaries. On connection loss, EventLoop::clean() moves unacknowledged outgoing state into the pending queue for replay on a resumed session."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["MqttState"],
+          "symbols": [
+            "MqttState"
+          ],
           "reason": "MqttState holds client-side session state, including outgoing QoS state that can be cleaned into pending requests for reconnect/replay when the session is resumed."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["mqtt_options_builder_matches_setter_configuration", "connack_reconcile_resets_pending_when_resumed_session_is_missing", "connack_reconcile_keeps_pending_when_resumed_session_exists", "client_id_guard_keeps_state_when_client_id_is_unchanged", "client_id_guard_resets_state_when_client_id_changes", "reconnection_resumes_from_the_previous_state", "reconnection_resends_unacked_packets_from_the_previous_connection_first", "reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"],
+        "tests": [
+          "mqtt_options_builder_matches_setter_configuration",
+          "connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "connack_reconcile_keeps_pending_when_resumed_session_exists",
+          "client_id_guard_keeps_state_when_client_id_is_unchanged",
+          "client_id_guard_resets_state_when_client_id_changes",
+          "reconnection_resumes_from_the_previous_state",
+          "reconnection_resends_unacked_packets_from_the_previous_connection_first",
+          "reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"
+        ],
         "notes": "Unit tests cover Session Expiry option plumbing and CONNACK session reconciliation. Reliability tests configure clean_start=false with a non-zero Session Expiry Interval, then verify pending QoS state is retained/replayed when the broker resumes the session. ClientID guard tests cover the identity boundary for retained local state."
       },
       "follow_up": null
@@ -1456,8 +2176,67 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "The client enforces the Maximum Packet Size limit on incoming packets using the total MQTT Control Packet size, including fixed-header bytes. When a packet exceeds the limit, the codec returns Error::PayloadSizeLimitExceeded, which InboundDisconnect::classify maps to DisconnectReasonCode::PacketTooLarge (0x95). The framed Network layer sends a DISCONNECT with that reason code before returning the error. The client also sends the Maximum Packet Size property in CONNECT and applies the server-returned limit to outgoing packets.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "check"
+          ],
+          "reason": "check() validates FixedHeader::frame_length() against max_packet_size and returns Error::PayloadSizeLimitExceeded when the total MQTT Control Packet size exceeds the configured limit."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/codec.rs",
+          "symbols": [
+            "Codec::decode"
+          ],
+          "reason": "Passes max_incoming_size to Packet::read which calls check(), triggering the size validation on every inbound packet."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error",
+            "Network::try_send_inbound_disconnect"
+          ],
+          "reason": "InboundDisconnect::classify maps PayloadSizeLimitExceeded to DisconnectReasonCode::PacketTooLarge (0x95). handle_incoming_decode_error calls try_send_inbound_disconnect which sends DISCONNECT with that reason code before returning the error."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "DisconnectReasonCode::PacketTooLarge"
+          ],
+          "reason": "PacketTooLarge is defined as 0x95, matching the spec-required reason code."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": [
+            "MqttOptions::set_max_packet_size",
+            "MqttOptions::max_incoming_packet_size"
+          ],
+          "reason": "The client configures Maximum Packet Size via MqttOptions and passes it to the codec as max_incoming_size."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "network_connect"
+          ],
+          "reason": "Uses options.max_incoming_packet_size() to configure the Network codec, and applies server-returned max_packet_size from CONNACK to outgoing packets via network.set_max_outgoing_size()."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "check_rejects_when_total_packet_size_exceeds_limit",
+          "readb_sends_packet_too_large_disconnect_before_returning_error",
+          "incoming_max_packet_size_check_happens_on_partial_frame",
+          "readb_returns_decode_error_promptly_under_write_backpressure"
+        ],
+        "notes": "The codec test check_rejects_when_total_packet_size_exceeds_limit verifies that the fixed-header bytes count toward Maximum Packet Size. The framed test readb_sends_packet_too_large_disconnect_before_returning_error verifies that a DISCONNECT with PacketTooLarge (0x95) is sent before returning the error."
+      },
+      "follow_up": "No follow-up needed. The client correctly sends DISCONNECT with reason code 0x95 when receiving a packet exceeding Maximum Packet Size."
     },
     {
       "id": "MQTT-3.1.2-25",
@@ -1470,8 +2249,31 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement obligates the Server to discard packets too large to send and behave as if it had completed sending. This is purely a server-side behavior with no client-side validation, encoding, decoding, or reaction responsibility. The client-side counterpart (not sending packets larger than the server's Maximum Packet Size) is covered by MQTT-3.2.2.3.6 / CONNACK handling, not by this requirement.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "handle_connack"
+          ],
+          "reason": "After CONNACK, the client sets max_outgoing_size from the server's Maximum Packet Size property, but this is the client's own obligation to not exceed the server's limit, not the server's obligation to discard oversized packets."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::write"
+          ],
+          "reason": "Packet::write enforces OutgoingPacketTooLarge when the outgoing packet exceeds max_size, but this is the client enforcing its own outgoing limit, not the server's discard behavior."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only requirement. The client's outgoing packet size enforcement is tested separately (outgoing_max_packet_size_check, readb_sends_packet_too_large_disconnect_before_returning_error)."
+      },
+      "follow_up": "No follow-up needed. Server-only requirement."
     },
     {
       "id": "MQTT-3.1.2-26",
@@ -1484,8 +2286,69 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "The Server MUST NOT send a Topic Alias in a PUBLISH packet to the Client greater than the Topic Alias Maximum the Client advertised in CONNECT. The client validates incoming topic alias values in handle_incoming_publish against client_topic_alias_max (populated from ConnectProperties.topic_alias_max via MqttOptions). An alias exceeding the limit triggers a DISCONNECT with TopicAliasInvalid (0x94), and the Network/EventLoop path treats that DISCONNECT as a terminal protocol error so the connection is closed rather than kept alive.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "handle_incoming_publish",
+            "client_topic_alias_max"
+          ],
+          "reason": "handle_incoming_publish checks alias > client_topic_alias_max before storing or resolving the alias, returning a TopicAliasInvalid disconnect on violation."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::new_internal",
+            "MqttStateBuilder::client_topic_alias_max"
+          ],
+          "reason": "client_topic_alias_max is initialized from MqttOptions.topic_alias_max() via the builder and new_internal, and synced before each CONNECT via set_client_topic_alias_max."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "mqtt_connect calls state.set_client_topic_alias_max(options.topic_alias_max()) before each connection attempt to keep state in sync with options."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectProperties::topic_alias_max"
+          ],
+          "reason": "ConnectProperties.topic_alias_max stores the value sent in the CONNECT packet, which is the source of client_topic_alias_max."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb",
+            "InboundDisconnect::error"
+          ],
+          "reason": "When state returns a DISCONNECT with an error reason code such as TopicAliasInvalid, readb sends the DISCONNECT and returns a deserialization error so the caller does not continue processing the same network connection."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll"
+          ],
+          "reason": "EventLoop::poll cleans the connection after the read path returns the terminal protocol error, dropping the active Network before returning the error to the caller."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "incoming_topic_alias_greater_than_client_max_returns_topic_alias_invalid_disconnect",
+          "incoming_topic_alias_equal_to_client_max_is_accepted",
+          "incoming_topic_alias_less_than_client_max_is_accepted",
+          "set_client_topic_alias_max_updates_incoming_validation",
+          "readb_sends_topic_alias_invalid_disconnect_and_returns_error",
+          "poll_closes_connection_after_incoming_topic_alias_exceeds_client_max"
+        ],
+        "notes": "State tests cover alias exceeding max (rejected), equal to max (accepted), less than max (accepted), and dynamic limit updates via set_client_topic_alias_max. Network and eventloop tests verify that the TopicAliasInvalid DISCONNECT is sent and the connection is closed after the violation."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-27",
@@ -1498,8 +2361,60 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "If Topic Alias Maximum is absent or zero in CONNECT, the Server MUST NOT send any Topic Aliases to the Client. The client validates this via client_topic_alias_max which defaults to 0 (matching the spec default when the property is absent). Any incoming topic alias when client_topic_alias_max is 0 triggers a DISCONNECT with TopicAliasInvalid (0x94), and the Network/EventLoop path treats that DISCONNECT as a terminal protocol error so the connection is closed rather than kept alive.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "handle_incoming_publish",
+            "client_topic_alias_max"
+          ],
+          "reason": "handle_incoming_publish checks alias > client_topic_alias_max. When client_topic_alias_max is 0 (default for absent/zero Topic Alias Maximum), any alias value (>= 1) exceeds 0 and triggers a TopicAliasInvalid disconnect."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttStateBuilder::new",
+            "MqttState::new_internal"
+          ],
+          "reason": "client_topic_alias_max defaults to 0 in the builder, matching the spec default for an absent Topic Alias Maximum property."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectProperties::topic_alias_max"
+          ],
+          "reason": "ConnectProperties.topic_alias_max defaults to None, which maps to 0 via options.topic_alias_max().unwrap_or(0), consistent with the spec."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb",
+            "InboundDisconnect::error"
+          ],
+          "reason": "When state returns a DISCONNECT with an error reason code such as TopicAliasInvalid, readb sends the DISCONNECT and returns a deserialization error so the caller does not continue processing the same network connection."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll"
+          ],
+          "reason": "EventLoop::poll cleans the connection after the read path returns the terminal protocol error, dropping the active Network before returning the error to the caller."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "incoming_topic_alias_rejected_when_client_topic_alias_max_is_zero",
+          "handle_incoming_packet_does_not_surface_publish_with_alias_exceeding_client_max",
+          "readb_sends_topic_alias_invalid_disconnect_and_returns_error",
+          "poll_closes_connection_after_incoming_topic_alias_exceeds_client_max"
+        ],
+        "notes": "Tests verify that when client_topic_alias_max is 0, any incoming topic alias is rejected with TopicAliasInvalid, and the offending PUBLISH is not surfaced to the user. Network/eventloop tests cover the same terminal DISCONNECT-and-close behavior for TopicAliasInvalid violations."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-28",
@@ -1560,23 +2475,39 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "Connect::read"],
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
           "reason": "write() emits client_id, then last_will, then auth. read() consumes client_id, then last_will, then auth. This matches the required order: Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::write", "LastWill::read"],
+          "symbols": [
+            "LastWill::write",
+            "LastWill::read"
+          ],
           "reason": "LastWill::write emits Will Properties, then Will Topic, then Will Payload. LastWill::read reads Will Properties, then Will Topic, then Will Payload. Correct v5 sub-ordering with Will Properties before Will Topic."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["ConnectAuth::write", "ConnectAuth::read"],
+          "symbols": [
+            "ConnectAuth::write",
+            "ConnectAuth::read"
+          ],
           "reason": "ConnectAuth::write emits Username then Password. ConnectAuth::read reads Username then Password. Correct sub-ordering within auth fields."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["connect_roundtrips_last_will", "connect_roundtrips_binary_password", "connect_roundtrips_explicitly_empty_password", "connect_roundtrips_password_only_auth", "last_will_encoding_writes_zero_length_properties_when_none", "connect_encoding_emits_payload_fields_in_spec_order"],
+        "tests": [
+          "connect_roundtrips_last_will",
+          "connect_roundtrips_binary_password",
+          "connect_roundtrips_explicitly_empty_password",
+          "connect_roundtrips_password_only_auth",
+          "last_will_encoding_writes_zero_length_properties_when_none",
+          "connect_encoding_emits_payload_fields_in_spec_order"
+        ],
         "notes": "connect_encoding_emits_payload_fields_in_spec_order verifies byte-level positions of each CONNECT payload field in the encoded output, confirming the spec-required v5 ordering: Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password."
       },
       "follow_up": null
@@ -1654,18 +2585,27 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/lib.rs",
-          "symbols": ["MqttOptions::new", "MqttOptions::set_clean_start", "MqttOptions::set_client_id"],
+          "symbols": [
+            "MqttOptions::new",
+            "MqttOptions::set_clean_start",
+            "MqttOptions::set_client_id"
+          ],
           "reason": "MqttOptions::new accepts any String client_id. set_clean_start is a simple setter with no assert against empty client_id. set_client_id is a simple setter with no assert against clean_start=false. Both are correct for v5 where zero-length ClientID is allowed with any Clean Start value."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Connect::write has no zero-byte ClientId + clean_start guard, correctly allowing v5 clients to send empty ClientId with clean_start=false."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["allow_empty_client_id", "allow_empty_client_id_with_clean_start_false"],
+        "tests": [
+          "allow_empty_client_id",
+          "allow_empty_client_id_with_clean_start_false"
+        ],
         "notes": "allow_empty_client_id tests that MqttOptions::new(\"\", ...) with clean_start=true works. allow_empty_client_id_with_clean_start_false verifies that v5 does not apply the MQTT 3.1.1 CleanSession restriction. No client enforcement test is required because the requirement is server-side."
       },
       "follow_up": "No follow-up needed. Server-side MAY/MUST requirements do not impose client obligations for this requirement."
@@ -1687,28 +2627,50 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnAckProperties::assigned_client_identifier", "read_connack_property"],
+          "symbols": [
+            "ConnAckProperties::assigned_client_identifier",
+            "read_connack_property"
+          ],
           "reason": "CONNACK decoder correctly parses PropertyType::AssignedClientIdentifier (0x12) into ConnAckProperties::assigned_client_identifier: Option<String>. The property is fully decoded and available to callers."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner records the ClientID sent in CONNECT. On successful CONNACK, it applies assigned_client_identifier to MqttOptions::client_id only if the sent ClientID was empty and the assigned value is non-empty; if the sent ClientID was empty and the property is missing or empty, or if the sent ClientID was explicit and non-empty and the property is present, it sends DISCONNECT with ProtocolError and returns a protocol error."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["reset_session_state_if_client_id_changed", "session_client_id"],
+          "symbols": [
+            "reset_session_state_if_client_id_changed",
+            "session_client_id"
+          ],
           "reason": "The eventloop stores session_client_id from options.client_id() after CONNACK. Because mqtt_connect_inner updates options.client_id() with the server-assigned value before returning, reconnect session-state checks compare against the effective ClientID."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write"],
+          "symbols": [
+            "Connect::write"
+          ],
           "reason": "Connect::write correctly allows zero-byte client_id with any clean_start value, which is valid v5 behavior (unlike v3.1.1)."
         }
       ],
       "test_coverage": {
         "status": "covered",
-        "tests": ["allow_empty_client_id", "allow_empty_client_id_with_clean_start_false", "read_decodes_assigned_client_identifier", "read_rejects_duplicate_assigned_client_identifier", "mqtt_connect_adopts_assigned_client_identifier", "mqtt_connect_reuses_assigned_client_identifier_on_reconnect", "poll_records_assigned_client_identifier_as_session_client_id", "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"],
+        "tests": [
+          "allow_empty_client_id",
+          "allow_empty_client_id_with_clean_start_false",
+          "read_decodes_assigned_client_identifier",
+          "read_rejects_duplicate_assigned_client_identifier",
+          "mqtt_connect_adopts_assigned_client_identifier",
+          "mqtt_connect_reuses_assigned_client_identifier_on_reconnect",
+          "poll_records_assigned_client_identifier_as_session_client_id",
+          "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"
+        ],
         "notes": "allow_empty_client_id and allow_empty_client_id_with_clean_start_false cover the valid empty ClientID setup. read_decodes_assigned_client_identifier covers CONNACK property decoding. read_rejects_duplicate_assigned_client_identifier covers the CONNACK property duplicate Protocol Error rule. mqtt_connect_adopts_assigned_client_identifier verifies eventloop adoption after an empty CONNECT ClientID. mqtt_connect_reuses_assigned_client_identifier_on_reconnect verifies the next CONNECT uses the assigned ID. poll_records_assigned_client_identifier_as_session_client_id verifies the public EventLoop::poll path stores the assigned ID as the session identity after CONNACK. mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id, mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id, and mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id verify that a successful CONNACK after an empty CONNECT ClientID must include a non-empty Assigned Client Identifier. mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id verifies that the property is not accepted for a non-empty CONNECT ClientID."
       },
       "follow_up": null
@@ -1730,18 +2692,26 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnectReturnCode::ClientIdentifierNotValid", "connect_return"],
+          "symbols": [
+            "ConnectReturnCode::ClientIdentifierNotValid",
+            "connect_return"
+          ],
           "reason": "connect_return maps reason code 133 (0x85) to ConnectReturnCode::ClientIdentifierNotValid. connect_code maps it back to 133 for encoding. The full round-trip is correct."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner handles non-Success CONNACK by returning ConnectionError::ConnectionRefused(connack.code), which includes ClientIdentifierNotValid. The connection is not continued after rejection."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["connack_decodes_client_identifier_not_valid_reason_code", "mqtt_connect_returns_client_identifier_not_valid_rejection"],
+        "tests": [
+          "connack_decodes_client_identifier_not_valid_reason_code",
+          "mqtt_connect_returns_client_identifier_not_valid_rejection"
+        ],
         "notes": "No server-conformance test is required in this client crate. connack_decodes_client_identifier_not_valid_reason_code verifies defensive decoding of CONNACK reason code 0x85. mqtt_connect_returns_client_identifier_not_valid_rejection verifies the eventloop returns ConnectionError::ConnectionRefused(ClientIdentifierNotValid) and does not continue the connection."
       },
       "follow_up": "No client-side follow-up needed. Broker/server tests would be required to prove that a server rejecting a ClientID sends the allowed CONNACK reason code when applicable and closes the Network Connection."
@@ -1903,18 +2873,28 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "During the initial handshake, mqtt_connect_inner loops over incoming AUTH packets, accepts a CONNACK as the terminal acknowledgement, returns ConnectionError::ConnectionRefused for non-Success CONNACK, and returns ConnectionError::NotConnAck for any other packet type."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_accepts_matching_connack_authentication_method", "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it", "mqtt_connect_sends_connect_as_first_packet_on_the_wire"],
+          "symbols": [
+            "mqtt_connect_accepts_matching_connack_authentication_method",
+            "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it",
+            "mqtt_connect_sends_connect_as_first_packet_on_the_wire"
+          ],
           "reason": "Tests cover the client's initial handshake sequencing: CONNECT is sent first, AUTH can precede CONNACK when expected, and successful CONNACK completes the connection."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["mqtt_connect_accepts_matching_connack_authentication_method", "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it", "mqtt_connect_sends_connect_as_first_packet_on_the_wire"],
+        "tests": [
+          "mqtt_connect_accepts_matching_connack_authentication_method",
+          "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it",
+          "mqtt_connect_sends_connect_as_first_packet_on_the_wire"
+        ],
         "notes": "No server-conformance test is required because the client does not send CONNACK packets. Existing eventloop tests cover the client handshake behavior around CONNECT, AUTH, and CONNACK."
       },
       "follow_up": "A broker/server implementation would need tests proving it sends exactly one CONNACK after CONNECT, allows only AUTH before successful CONNACK where enhanced authentication is in use, and closes the connection on violations."
@@ -2105,18 +3085,26 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["connect_return", "ConnectReturnCode::QoSNotSupported"],
+          "symbols": [
+            "connect_return",
+            "ConnectReturnCode::QoSNotSupported"
+          ],
           "reason": "The client can decode CONNACK reason code 0x9B (155) as ConnectReturnCode::QoSNotSupported. The server-side behavior is to reject and close; using this specific reason code is recommended by SHOULD."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["LastWill::write", "LastWill::read"],
+          "symbols": [
+            "LastWill::write",
+            "LastWill::read"
+          ],
           "reason": "The client correctly encodes and decodes Will QoS in the CONNECT packet (covered by MQTT-3.1.2-12). Will QoS=3 is rejected as Malformed Packet; valid Will QoS values 0-2 are correctly serialized."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["connack_decodes_qos_not_supported_reason_code"],
+        "tests": [
+          "connack_decodes_qos_not_supported_reason_code"
+        ],
         "notes": "Server-only rejection/close requirement. The client's Will QoS encoding is tested under MQTT-3.1.2-12. The listed test verifies that the client decodes a CONNACK reason code 0x9B when a server chooses to send it."
       },
       "follow_up": null
@@ -2180,23 +3168,41 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnAckProperties::assigned_client_identifier", "read_connack_property"],
+          "symbols": [
+            "ConnAckProperties::assigned_client_identifier",
+            "read_connack_property"
+          ],
           "reason": "CONNACK decoder parses PropertyType::AssignedClientIdentifier into ConnAckProperties::assigned_client_identifier and rejects duplicate Assigned Client Identifier properties with Error::ProtocolError."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["mqtt_connect_inner"],
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
           "reason": "mqtt_connect_inner records the ClientID sent in CONNECT. On successful CONNACK, it requires a non-empty Assigned Client Identifier when the sent ClientID was empty, stores it in MqttOptions::client_id, and sends DISCONNECT with ProtocolError if the property is missing or empty after an empty ClientID or present after a non-empty ClientID."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["reset_session_state_if_client_id_changed", "session_client_id"],
+          "symbols": [
+            "reset_session_state_if_client_id_changed",
+            "session_client_id"
+          ],
           "reason": "The eventloop stores session_client_id from options.client_id() after CONNACK. Because mqtt_connect_inner updates options.client_id() with the server-assigned value before returning, reconnect session-state checks use the effective ClientID."
         }
       ],
       "test_coverage": {
         "status": "partial",
-        "tests": ["read_decodes_assigned_client_identifier", "read_rejects_duplicate_assigned_client_identifier", "mqtt_connect_adopts_assigned_client_identifier", "mqtt_connect_reuses_assigned_client_identifier_on_reconnect", "poll_records_assigned_client_identifier_as_session_client_id", "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"],
+        "tests": [
+          "read_decodes_assigned_client_identifier",
+          "read_rejects_duplicate_assigned_client_identifier",
+          "mqtt_connect_adopts_assigned_client_identifier",
+          "mqtt_connect_reuses_assigned_client_identifier_on_reconnect",
+          "poll_records_assigned_client_identifier_as_session_client_id",
+          "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"
+        ],
         "notes": "Codec tests cover decoding the property and rejecting duplicate instances. Eventloop tests cover adopting the assigned ID after an empty CONNECT ClientID, using it on reconnect, storing it as the session identity through EventLoop::poll, rejecting successful CONNACK packets that omit the property or contain an empty property after an empty CONNECT ClientID, and rejecting the property when the CONNECT ClientID was explicit. These tests do not and cannot prove server-side uniqueness of the assigned Client Identifier."
       },
       "follow_up": "The client cannot verify the server-side uniqueness of the assigned Client Identifier; that remains a server-side obligation."
@@ -2576,8 +3582,45 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This sender/receiver topic-alias rule is client-applicable in both directions. The PUBLISH decoder rejects inbound Topic Alias 0 with TopicAliasInvalid. The direct PUBLISH property writer rejects Topic Alias 0, and MqttState::validate_outgoing_topic_alias rejects client API attempts to send a PUBLISH with alias 0 before serialization.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "PublishProperties::read",
+            "PublishProperties::write"
+          ],
+          "reason": "PublishProperties::read returns Error::ProtocolViolation(TopicAliasInvalid) when the wire Topic Alias property value is 0. PublishProperties::write returns the same error instead of serializing an outbound Topic Alias 0."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "validate_outgoing_topic_alias"
+          ],
+          "reason": "The runtime state rejects outgoing PUBLISH packets whose topic_alias is 0 before they are written to the network."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error"
+          ],
+          "reason": "Inbound ProtocolViolation(TopicAliasInvalid) decode errors are mapped to a TopicAliasInvalid DISCONNECT before returning the read error."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "read_rejects_topic_alias_zero",
+          "write_rejects_topic_alias_zero",
+          "outgoing_publish_with_alias_zero_returns_error",
+          "read_sends_topic_alias_invalid_disconnect_for_zero_topic_alias"
+        ],
+        "notes": "Codec tests cover read and direct write rejection for Topic Alias 0. State tests cover runtime rejection for outbound client publishes. Framed tests cover the network DISCONNECT reaction for an inbound zero alias."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-9",
@@ -2590,8 +3633,50 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement contains two client-applicable topic-alias obligations. For outgoing PUBLISH packets, validate_outgoing_topic_alias rejects aliases greater than broker_topic_alias_max, which is populated from the server's CONNACK Topic Alias Maximum. For incoming PUBLISH packets, handle_incoming_publish accepts and stores topic aliases greater than 0 and less than or equal to client_topic_alias_max, which is the value the client sent in CONNECT; aliases above that limit are handled under MQTT-3.1.2-26/27 and MQTT-3.3.2-11/12.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_connack",
+            "broker_topic_alias_max",
+            "validate_outgoing_topic_alias"
+          ],
+          "reason": "The state records ConnAckProperties.topic_alias_max as broker_topic_alias_max and rejects outgoing PUBLISH aliases greater than that maximum before serialization."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "handle_incoming_publish",
+            "client_topic_alias_max",
+            "incoming_topic_aliases"
+          ],
+          "reason": "Incoming aliases less than or equal to client_topic_alias_max are accepted and stored/resolved in incoming_topic_aliases; aliases greater than the advertised maximum are rejected before storage."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "Before each CONNECT, mqtt_connect synchronizes client_topic_alias_max from MqttOptions.topic_alias_max(), the value encoded in ConnectProperties.topic_alias_max."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "outgoing_publish_with_alias_greater_than_broker_maximum_returns_error",
+          "incoming_topic_alias_equal_to_client_max_is_accepted",
+          "incoming_topic_alias_less_than_client_max_is_accepted",
+          "incoming_alias_only_publish_with_known_alias_is_accepted",
+          "incoming_topic_alias_greater_than_client_max_returns_topic_alias_invalid_disconnect",
+          "readb_sends_topic_alias_invalid_disconnect_and_returns_error",
+          "poll_closes_connection_after_incoming_topic_alias_exceeds_client_max"
+        ],
+        "notes": "Tests cover the outgoing client limit from CONNACK and incoming acceptance/rejection boundaries for the client-advertised CONNECT maximum, including alias-only reuse of a known mapping and network/eventloop close behavior after violations."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-10",
@@ -2604,8 +3689,41 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Duplicate of MQTT-3.3.2-9 with the same client-applicable topic-alias obligations: outbound aliases must not exceed the server-returned CONNACK maximum, and inbound aliases in the range 1..=client_topic_alias_max must be accepted.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_connack",
+            "validate_outgoing_topic_alias",
+            "handle_incoming_publish"
+          ],
+          "reason": "Same evidence as MQTT-3.3.2-9: broker_topic_alias_max gates outgoing aliases, and client_topic_alias_max gates incoming aliases."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "Same evidence as MQTT-3.3.2-9: mqtt_connect synchronizes the state limit from the value encoded in CONNECT."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "outgoing_publish_with_alias_greater_than_broker_maximum_returns_error",
+          "incoming_topic_alias_equal_to_client_max_is_accepted",
+          "incoming_topic_alias_less_than_client_max_is_accepted",
+          "incoming_alias_only_publish_with_known_alias_is_accepted",
+          "incoming_topic_alias_greater_than_client_max_returns_topic_alias_invalid_disconnect",
+          "readb_sends_topic_alias_invalid_disconnect_and_returns_error",
+          "poll_closes_connection_after_incoming_topic_alias_exceeds_client_max"
+        ],
+        "notes": "Same coverage as MQTT-3.3.2-9, including alias-only reuse of a known incoming alias."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-11",
@@ -2618,8 +3736,46 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement combines a server-to-client obligation and a server receive-side obligation. The client-applicable part is validated: incoming PUBLISH aliases greater than the client's CONNECT Topic Alias Maximum are rejected with TopicAliasInvalid and the connection is closed. The client also constrains its own outgoing aliases to the Topic Alias Maximum returned by the server in CONNACK. The remaining acceptance guarantee is strictly server-side, so this mixed extracted requirement is marked partial per docs/spec/README.md even though the client-side responsibilities are met.",
+      "compliance_status": "partial",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "handle_incoming_publish",
+            "client_topic_alias_max"
+          ],
+          "reason": "Incoming aliases greater than client_topic_alias_max are rejected with a TopicAliasInvalid DISCONNECT before alias storage or delivery."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb",
+            "InboundDisconnect::error"
+          ],
+          "reason": "The Network read path sends the TopicAliasInvalid DISCONNECT and returns an error so the connection is not kept alive after the violation."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_connack",
+            "validate_outgoing_topic_alias"
+          ],
+          "reason": "The client records the server's CONNACK Topic Alias Maximum and prevents its own outgoing aliases from exceeding that returned value."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "incoming_topic_alias_greater_than_client_max_returns_topic_alias_invalid_disconnect",
+          "readb_sends_topic_alias_invalid_disconnect_and_returns_error",
+          "poll_closes_connection_after_incoming_topic_alias_exceeds_client_max",
+          "outgoing_publish_with_alias_greater_than_broker_maximum_returns_error"
+        ],
+        "notes": "Client tests cover all client-side responsibilities: detection/reaction for server aliases above the client maximum, terminal TopicAliasInvalid DISCONNECT handling, and client-side prevention of outgoing aliases above the server maximum. They cannot prove the embedded server-side acceptance guarantee."
+      },
+      "follow_up": "No known client-side follow-up remains. Broker/server tests would be required to prove the server accepts all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum it returned in CONNACK."
     },
     {
       "id": "MQTT-3.3.2-12",
@@ -2632,8 +3788,39 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Duplicate of MQTT-3.3.2-11. The client-applicable part is validated: incoming aliases greater than client_topic_alias_max are rejected with TopicAliasInvalid and the connection is closed, and outgoing aliases are bounded by the server-returned CONNACK maximum. The remaining acceptance guarantee is strictly server-side, so this mixed extracted requirement is marked partial per docs/spec/README.md even though the client-side responsibilities are met.",
+      "compliance_status": "partial",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "handle_incoming_publish",
+            "client_topic_alias_max",
+            "MqttState::handle_incoming_connack",
+            "validate_outgoing_topic_alias"
+          ],
+          "reason": "Same evidence as MQTT-3.3.2-11: incoming aliases above the client maximum are rejected, and outgoing aliases are bounded by the server-returned maximum."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb"
+          ],
+          "reason": "Same evidence as MQTT-3.3.2-11: TopicAliasInvalid DISCONNECTs from state are sent and treated as terminal read errors."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "incoming_topic_alias_greater_than_client_max_returns_topic_alias_invalid_disconnect",
+          "readb_sends_topic_alias_invalid_disconnect_and_returns_error",
+          "poll_closes_connection_after_incoming_topic_alias_exceeds_client_max",
+          "outgoing_publish_with_alias_greater_than_broker_maximum_returns_error"
+        ],
+        "notes": "Same coverage as MQTT-3.3.2-11: all client-side responsibilities are covered, while the embedded server-side acceptance guarantee cannot be proven in this client crate."
+      },
+      "follow_up": "No known client-side follow-up remains. Broker/server tests would be required to prove the server accepts all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum it returned in CONNACK."
     },
     {
       "id": "MQTT-3.3.2-13",

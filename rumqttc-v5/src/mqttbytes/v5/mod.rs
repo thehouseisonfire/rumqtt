@@ -450,11 +450,12 @@ pub fn check(stream: Iter<u8>, max_packet_size: Option<u32>) -> Result<FixedHead
 
     // Don't let rogue connections attack with huge payloads.
     // Disconnect them before reading all that data
+    let packet_size = fixed_header.frame_length();
     if let Some(max_size) = max_packet_size
-        && fixed_header.remaining_len > max_size as usize
+        && packet_size > max_size as usize
     {
         return Err(Error::PayloadSizeLimitExceeded {
-            pkt_size: fixed_header.remaining_len,
+            pkt_size: packet_size,
             max: max_size,
         });
     }
@@ -558,7 +559,21 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::PayloadSizeLimitExceeded {
-                pkt_size: 20,
+                pkt_size: 22,
+                max: 10,
+            })
+        ));
+    }
+
+    #[test]
+    fn check_rejects_when_total_packet_size_exceeds_limit() {
+        let stream = [0x30, 0x09];
+        let result = super::check(stream.iter(), Some(10));
+
+        assert!(matches!(
+            result,
+            Err(Error::PayloadSizeLimitExceeded {
+                pkt_size: 11,
                 max: 10,
             })
         ));

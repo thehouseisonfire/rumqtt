@@ -278,6 +278,11 @@ impl PublishProperties {
         }
 
         if let Some(topic_alias) = self.topic_alias {
+            if topic_alias == 0 {
+                return Err(Error::ProtocolViolation(
+                    DisconnectReasonCode::TopicAliasInvalid,
+                ));
+            }
             buffer.put_u8(PropertyType::TopicAlias as u8);
             buffer.put_u16(topic_alias);
         }
@@ -434,6 +439,23 @@ mod test {
             0x00, 0x00, // value = 0
         ]);
         let result = PublishProperties::read(&mut bytes);
+
+        assert!(matches!(
+            result,
+            Err(Error::ProtocolViolation(
+                DisconnectReasonCode::TopicAliasInvalid
+            ))
+        ));
+    }
+
+    #[test]
+    fn write_rejects_topic_alias_zero() {
+        let properties = PublishProperties {
+            topic_alias: Some(0),
+            ..Default::default()
+        };
+        let mut buffer = BytesMut::new();
+        let result = properties.write(&mut buffer);
 
         assert!(matches!(
             result,

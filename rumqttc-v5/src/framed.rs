@@ -30,6 +30,13 @@ impl InboundDisconnect {
 
         Some(Self { reason })
     }
+
+    const fn error(self) -> mqttbytes::Error {
+        match self.reason {
+            DisconnectReasonCode::ProtocolError => mqttbytes::Error::ProtocolError,
+            reason => mqttbytes::Error::ProtocolViolation(reason),
+        }
+    }
 }
 
 /// Network transforms packets <-> frames efficiently. It takes
@@ -116,6 +123,16 @@ impl Network {
             match res {
                 Some(Ok(packet)) => {
                     match state.handle_incoming_packet(packet) {
+                        Ok(Some(Packet::Disconnect(disconnect)))
+                            if disconnect.reason_code as u8 >= 0x80 =>
+                        {
+                            let disconnect = InboundDisconnect {
+                                reason: disconnect.reason_code,
+                            };
+                            state.discard_last_outgoing_disconnect_event();
+                            self.try_send_inbound_disconnect(disconnect).await;
+                            return Err(StateError::Deserialization(disconnect.error()));
+                        }
                         Ok(Some(outgoing)) => self.write(outgoing).await?,
                         Ok(None) => {}
                         Err(err @ StateError::Deserialization(mqttbytes::Error::ProtocolError)) => {
@@ -285,7 +302,7 @@ mod tests {
         assert!(matches!(
             err,
             StateError::Deserialization(mqttbytes::Error::PayloadSizeLimitExceeded {
-                pkt_size: 20,
+                pkt_size: 22,
                 max: 10,
             })
         ));
@@ -295,6 +312,32 @@ mod tests {
         assert_eq!(
             response,
             [0xE0, 0x01, DisconnectReasonCode::PacketTooLarge as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn readb_sends_topic_alias_invalid_disconnect_and_returns_error() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::builder(10).client_topic_alias_max(5).build();
+
+        peer.write_all(&[0x30, 0x07, 0x00, 0x01, b'a', 0x03, 0x23, 0x00, 0x06])
+            .await
+            .unwrap();
+
+        let err = network.readb(&mut state, 1).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::ProtocolViolation(
+                DisconnectReasonCode::TopicAliasInvalid
+            ))
+        ));
+
+        let mut response = [0; 3];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [0xE0, 0x01, DisconnectReasonCode::TopicAliasInvalid as u8]
         );
     }
 
@@ -488,7 +531,7 @@ mod tests {
         assert!(matches!(
             err,
             StateError::Deserialization(mqttbytes::Error::PayloadSizeLimitExceeded {
-                pkt_size: 20,
+                pkt_size: 22,
                 max: 10,
             })
         ));
