@@ -1835,8 +1835,8 @@ impl MqttState {
     }
 
     fn validate_outgoing_topic_alias(&self, publish: &Publish) -> Result<(), StateError> {
-        if let Some(alias) = Self::publish_topic_alias(publish) {
-            if alias == 0 || alias > self.broker_topic_alias_max {
+        if let Some(alias) = Self::publish_topic_alias(publish)
+            && (alias == 0 || alias > self.broker_topic_alias_max) {
                 // We MUST NOT send a Topic Alias of 0 or one greater than the
                 // broker's Topic Alias Maximum.
                 return Err(StateError::InvalidAlias {
@@ -1844,7 +1844,6 @@ impl MqttState {
                     max: self.broker_topic_alias_max,
                 });
             }
-        }
 
         Ok(())
     }
