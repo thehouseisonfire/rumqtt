@@ -2,9 +2,11 @@
 
 ### Added
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
+- `rumqttc` v5: Add `MqttStateBuilder::client_topic_alias_max(u16)` builder method and `MqttState::set_client_topic_alias_max(Option<u16>)` to configure the incoming Topic Alias Maximum, propagated from `MqttOptions::topic_alias_max()` at connect time.
 ### Changed
 - `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
 - `mqttbytes-core` (Breaking Change): Change `write_mqtt_bytes(...)` and `write_mqtt_string(...)` to return `Result<(), Error>` so oversized MQTT two-byte length-prefixed fields report `Error::PayloadTooLong` instead of panicking.
+- `rumqttc` v5 (Breaking Change): Validate incoming topic aliases against the client's advertised Topic Alias Maximum per [MQTT-3.1.2-26]/[MQTT-3.1.2-27]. Servers sending aliases exceeding the limit (or any alias when the maximum is 0/absent) now trigger a `DISCONNECT(TopicAliasInvalid)` and close the connection. Previously, any incoming alias was accepted without validation.
 ### Deprecated
 ### Removed
 ### Fixed
@@ -17,6 +19,8 @@
 - `rumqttc` v4: Return `Error::IncorrectPacketFormat` from `Connect::write(...)` when `client_id` is empty and `clean_session` is false (MQTT-3.1.3-7), instead of silently encoding a spec-invalid CONNECT packet.
 - `rumqttc` v5: Handle the CONNACK `AssignedClientIdentifier` property per MQTT-3.2.2-10. When the client sent an empty ClientId, adopt the server-assigned value into `MqttOptions::client_id` and reuse it on reconnect; reject successful CONNACK that omits or sends an empty assignment after an empty ClientId; reject the property when the client sent an explicit ClientId. Violations send `DISCONNECT(ProtocolError)` and return an error.
 - `rumqttc` v5: Reject duplicate `AssignedClientIdentifier` CONNACK properties as `ProtocolError` (MQTT-3.2.2-10), instead of silently overwriting the first value.
+- `rumqttc` v5: Reject outgoing `PublishProperties` with topic alias 0, returning `Error::ProtocolViolation(TopicAliasInvalid)` instead of silently encoding an invalid alias.
+- `rumqttc` v5: Fix `check()` to compare total packet size (including fixed header) against `max_packet_size` instead of only the remaining length, matching the MQTT v5 spec definition of Maximum Packet Size.
 - Spec generator: recover obligation keywords only from tightly local split clauses (adjacent unfinished paragraph fragments or the same table row), and only allow section `7` conformance duplicates to backfill earlier `UNSPECIFIED` requirements when the original occurrence is just a placeholder bare-ID reference. This preserves correct labels such as `MQTT-3.1.3-5 = MUST` and the v3 QoS 1/2 reference-only entries, without reintroducing wrapper bleed-through or appendix-driven mislabeling such as `MQTT-3.1.2-12` in v5.
 
 ### Security
