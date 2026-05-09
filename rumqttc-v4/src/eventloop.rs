@@ -1219,6 +1219,26 @@ mod tests {
         packet
     }
 
+    async fn run_mqtt_connect_with_connack(
+        options: MqttOptions,
+        connack: ConnAck,
+    ) -> Result<ConnAck, ConnectionError> {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, 1024, 1024);
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = bytes::BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut peer, &encoded_connack)
+                .await
+                .unwrap();
+        };
+
+        let (result, ()) = tokio::join!(mqtt_connect(&options, &mut network), broker);
+        result
+    }
+
     fn pending_front_request(eventloop: &EventLoop) -> Option<&Request> {
         eventloop.pending.front().map(|envelope| &envelope.request)
     }
@@ -1520,6 +1540,21 @@ mod tests {
         assert!(matches!(
             pending_front_request(&eventloop),
             Some(Request::PingReq(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_returns_bad_client_id_rejection() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let connack = ConnAck::new(ConnectReturnCode::BadClientId, false);
+
+        let result = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::ConnectionRefused(
+                ConnectReturnCode::BadClientId
+            ))
         ));
     }
 

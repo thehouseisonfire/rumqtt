@@ -118,6 +118,11 @@ impl Connect {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        // MQTT-3.1.3-7: zero-byte ClientId requires CleanSession=1
+        if self.client_id.is_empty() && !self.clean_session {
+            return Err(Error::IncorrectPacketFormat);
+        }
+
         let len = self.len();
         buffer.put_u8(0b0001_0000);
         let count = write_remaining_length(buffer, len)?;
@@ -1317,5 +1322,21 @@ mod test {
 
         // Nothing after password.
         assert_eq!(buf.len(), password_start + 4);
+    }
+
+    /// MQTT-3.1.3-7: zero-byte ClientId with CleanSession=0 must be rejected.
+    #[test]
+    fn connect_encoding_rejects_empty_client_id_with_clean_session_false() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: String::new(),
+            clean_session: false,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect.write(&mut buf);
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
     }
 }

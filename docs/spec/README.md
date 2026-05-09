@@ -57,10 +57,21 @@ Each `requirements[]` item includes:
 Audit passes may add these review fields to individual requirement entries:
 
 - `compliance_status`: reviewed implementation status for obligations applicable to this repository's client
-  crates. Use `not_applicable` for purely server-side obligations. When one spec requirement contains both
-  client-applicable and server-only clauses, `compliant` means the client-applicable clauses are implemented and
-  the server-only clauses are explicitly identified in `mapping_reason`.
+  crates.
 - `evidence`: concrete implementation paths and symbols that enforce the client-applicable behavior.
 - `test_coverage`: tests that assert the reviewed behavior, or an explanation when the requirement is not
   applicable to a client crate.
 - `follow_up`: remaining work or `null` when no known client-side follow-up remains.
+
+Use these `compliance_status` values consistently:
+
+- `compliant`: the client crate fully satisfies every normative obligation in the requirement that is applicable
+  to this repository.
+- `partial`: the client crate enforces the client-observable or client-applicable part of a requirement, but the
+  full requirement also contains obligations this client crate cannot satisfy or prove, such as broker-side
+  uniqueness or server state-management guarantees.
+- `non_compliant`: the requirement has a client-applicable obligation that is not currently enforced, or the
+  implementation contradicts the requirement.
+- `not_applicable`: the normative obligation is purely outside this client crate's role. Defensive client behavior,
+  such as decoding a server error or closing on a malformed server response, can still be recorded in `evidence`
+  and `test_coverage`, but it does not make a server-only requirement `compliant`.
