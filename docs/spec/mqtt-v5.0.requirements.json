@@ -1025,12 +1025,14 @@
           "mqttbytes::v5::publish::test::length_calculation",
           "mqttbytes::v5::connect::test::length_calculation",
           "mqttbytes::v5::connack::test::length_calculation",
+          "mqttbytes::v5::tests::property_bearing_packets_emit_and_read_explicit_zero_property_lengths",
+          "mqttbytes::v5::connect::test::last_will_encoding_writes_zero_length_properties_when_none",
           "mqttbytes::v5::codec::test::outgoing_max_packet_size_check",
           "mqttbytes::v5::codec::test::incoming_max_packet_size_check_happens_on_partial_frame"
         ],
-        "notes": "Core VBI encoding/decoding is tested directly. Module-qualified length_calculation tests avoid ambiguity between repeated test names and verify packet/property size accounting for representative property-bearing packets. Packet-level property length encoding is exercised by packet read/write round-trip tests; compact no-property encodings and explicit zero property-length cases are distinct MQTT v5 forms."
+        "notes": "Core VBI encoding/decoding is tested directly. Module-qualified length_calculation tests avoid ambiguity between repeated test names and verify packet/property size accounting for representative property-bearing packets. The explicit zero-property-length tests verify that every property-bearing packet form emits and decodes a zero Property Length where the packet format requires one, while preserving compact no-property encodings where MQTT v5 allows omission."
       },
-      "follow_up": "For stronger audit traceability, add dedicated explicit zero-property-length round-trip tests for each property-bearing packet type; existing evidence and representative tests support compliance."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.0-1",
@@ -2177,7 +2179,7 @@
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "The client enforces the Maximum Packet Size limit on incoming packets using the total MQTT Control Packet size, including fixed-header bytes. When a packet exceeds the limit, the codec returns Error::PayloadSizeLimitExceeded, which InboundDisconnect::classify maps to DisconnectReasonCode::PacketTooLarge (0x95). The framed Network layer sends a DISCONNECT with that reason code before returning the error. The client also sends the Maximum Packet Size property in CONNECT and applies the server-returned limit to outgoing packets.",
+      "mapping_reason": "The client enforces the Maximum Packet Size limit on incoming packets using the total MQTT Control Packet size, including fixed-header bytes. When a packet exceeds the limit, the codec returns Error::PayloadSizeLimitExceeded, which InboundDisconnect::classify maps to DisconnectReasonCode::PacketTooLarge (0x95). The framed Network layer sends a DISCONNECT with that reason code before returning the error. When configured, the client advertises the Maximum Packet Size property in CONNECT and applies the server-returned limit to outgoing packets.",
       "compliance_status": "compliant",
       "evidence": [
         {
@@ -2216,7 +2218,7 @@
             "MqttOptions::set_max_packet_size",
             "MqttOptions::max_incoming_packet_size"
           ],
-          "reason": "The client configures Maximum Packet Size via MqttOptions and passes it to the codec as max_incoming_size."
+          "reason": "When MqttOptions is configured with a Maximum Packet Size, the client advertises that value in CONNECT and passes the corresponding incoming limit to the codec as max_incoming_size."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",

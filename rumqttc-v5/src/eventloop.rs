@@ -1245,21 +1245,7 @@ async fn mqtt_connect_inner(
                         {
                             options.set_client_id(assigned_client_identifier.clone());
                         }
-                        (Some(_), true) => {
-                            send_protocol_error_disconnect(network).await?;
-                            return Err(StateError::Deserialization(
-                                super::mqttbytes::Error::ProtocolError,
-                            )
-                            .into());
-                        }
-                        (Some(_), false) => {
-                            send_protocol_error_disconnect(network).await?;
-                            return Err(StateError::Deserialization(
-                                super::mqttbytes::Error::ProtocolError,
-                            )
-                            .into());
-                        }
-                        (None, true) => {
+                        (Some(_) | None, true) | (Some(_), false) => {
                             send_protocol_error_disconnect(network).await?;
                             return Err(StateError::Deserialization(
                                 super::mqttbytes::Error::ProtocolError,
@@ -1716,7 +1702,7 @@ mod tests {
         assert_eq!(options.client_id(), "explicit-client");
         assert_eq!(
             disconnect_bytes,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -1739,7 +1725,7 @@ mod tests {
         ));
         assert_eq!(
             disconnect,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -1759,7 +1745,7 @@ mod tests {
         ));
         assert_eq!(
             disconnect,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -1783,7 +1769,7 @@ mod tests {
         ));
         assert_eq!(
             disconnect,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -1915,7 +1901,7 @@ mod tests {
         ));
         assert_eq!(
             disconnect,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -1997,7 +1983,7 @@ mod tests {
         ));
         assert_eq!(
             disconnect,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -2016,7 +2002,7 @@ mod tests {
         ));
         assert_eq!(
             disconnect,
-            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -2301,11 +2287,11 @@ mod tests {
         assert!(eventloop.network.is_none());
         assert!(eventloop.state.events.is_empty());
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::TopicAliasInvalid as u8]
+            [0xE0, 0x02, DisconnectReasonCode::TopicAliasInvalid as u8, 0x00]
         );
     }
 

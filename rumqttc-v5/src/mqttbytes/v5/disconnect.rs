@@ -275,9 +275,7 @@ impl Disconnect {
     }
 
     fn len(&self) -> usize {
-        if self.reason_code == DisconnectReasonCode::NormalDisconnection
-            && self.properties.is_none()
-        {
+        if self.can_use_compact_success_encoding() {
             return 2; // Packet type + 0x00
         }
 
@@ -287,15 +285,29 @@ impl Disconnect {
             let properties_len = properties.len();
             let properties_len_len = len_len(properties_len);
             length += properties_len_len + properties_len;
+        } else {
+            // MQTT v5 only permits omitting both the Disconnect Reason Code and
+            // Property Length for a normal disconnect with no properties. If a
+            // non-normal reason code is present, "no properties" is still
+            // encoded as a zero Property Length.
+            length += 1;
         }
 
         length
     }
 
+    // Compact DISCONNECT is E0 00. A reason-only packet such as E0 01 <reason>
+    // is not a valid MQTT v5 encoding for non-normal reasons; it must include
+    // a zero Property Length: E0 02 <reason> 00.
+    const fn can_use_compact_success_encoding(&self) -> bool {
+        self.reason_code as u8 == DisconnectReasonCode::NormalDisconnection as u8
+            && self.properties.is_none()
+    }
+
     #[must_use]
     pub fn size(&self) -> usize {
         let len = self.len();
-        if len == 2 {
+        if self.can_use_compact_success_encoding() {
             return len;
         }
 
@@ -335,7 +347,7 @@ impl Disconnect {
 
         let length = self.len();
 
-        if length == 2 {
+        if self.can_use_compact_success_encoding() {
             buffer.put_u8(0x00);
             return Ok(length);
         }
