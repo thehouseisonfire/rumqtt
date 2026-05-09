@@ -5,7 +5,7 @@ This directory contains generated, compliance-oriented references for MQTT 3.1.1
 ## Files
 
 - `mqtt-v3.1.1.md`: Markdown compliance digest for MQTT 3.1.1.
-- `mqtt-v5.0.md`: Markdown compliance digest for MQTT 5.0.
+- `markdown/mqtt-v5.0.md`: Markdown compliance digest for MQTT 5.0.
 - `mqtt-v3.1.1.requirements.json`: Machine-readable requirement index for MQTT 3.1.1.
 - `mqtt-v5.0.requirements.json`: Machine-readable requirement index for MQTT 5.0.
 - `generate_mqtt_specs.py`: Generator script.
