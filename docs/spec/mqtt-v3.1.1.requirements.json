@@ -1594,8 +1594,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is entirely server-side: the Server MAY accept ClientIds >23 bytes, with non-standard characters, or with zero length, and the Server MUST assign a unique ClientId for zero-length cases. None of these obligations fall on the client. The client correctly imposes no length or character restrictions on client_id beyond UTF-8 validity, which is appropriate since servers MAY accept broader ClientIds. The advisory helper is_mqtt_minimum_client_id() exists for application-level interoperability checks.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["MqttOptions::new", "is_mqtt_minimum_client_id"],
+          "reason": "MqttOptions::new accepts any String client_id with no length/character restrictions. is_mqtt_minimum_client_id() is advisory-only, checking the 1-23 byte ASCII alphanumeric profile that all compliant servers must accept."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect codec imposes no ClientId length or character restrictions beyond write_mqtt_string/read_mqtt_string UTF-8 validation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["minimum_client_id_helper_accepts_server_required_profile", "minimum_client_id_helper_rejects_values_outside_server_required_profile"],
+        "notes": "No client enforcement tests are required because the requirement is server-side. Helper tests cover the optional advisory predicate."
+      },
+      "follow_up": "No follow-up needed. Server-side MAY requirements do not impose client obligations."
     },
     {
       "id": "MQTT-3.1.3-7",
@@ -1608,8 +1627,37 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Per the spec, the full text of MQTT-3.1.3-7 is: 'If the Client supplies a zero-byte ClientId, the Client MUST also set CleanSession to 1.' This is a client-side MUST. Both directions of the constraint are now enforced: set_clean_session(false) panics if client_id is empty, and set_client_id(\"\") panics if clean_session is false. Connect::write also validates this at the packet encoding level, returning Error::IncorrectPacketFormat for zero-byte client_id with clean_session=false.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["MqttOptions::set_clean_session", "MqttOptions::set_client_id"],
+          "reason": "Both setters panic on the invalid combination: set_clean_session(false) panics if client_id is empty; set_client_id(\"\") panics if clean_session is false."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["MqttOptions::new"],
+          "reason": "Constructor defaults clean_session=true, so a freshly constructed MqttOptions with empty client_id is compliant."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Connect::write validates that client_id is non-empty or clean_session is true, returning Error::IncorrectPacketFormat otherwise."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["mqtt_connect"],
+          "reason": "mqtt_connect copies clean_session and client_id from MqttOptions into Connect; the Connect::write guard provides defense-in-depth."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["accept_empty_client_id", "MqttOptions::set_clean_session doctest", "set_client_id_panics_on_empty_with_clean_session_false", "connect_encoding_rejects_empty_client_id_with_clean_session_false"],
+        "notes": "accept_empty_client_id tests the valid path. The set_clean_session doctest covers set_clean_session(false) with an empty client_id. set_client_id_panics_on_empty_with_clean_session_false tests the inverse MqttOptions setter path. connect_encoding_rejects_empty_client_id_with_clean_session_false tests the Connect::write guard."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-8",
@@ -1622,8 +1670,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "Per the spec, the full text of MQTT-3.1.3-8 is: 'If the Client supplies a zero-byte ClientId with CleanSession set to 0, the Server MUST respond to the CONNECT Packet with a CONNACK return code 0x02 (Identifier rejected) and then close the Network Connection.' This is a server-side MUST. The client's responsibility is to not send a zero-byte ClientId with CleanSession=0 (covered by MQTT-3.1.3-7) and to handle the server's rejection if it occurs. The client correctly handles CONNACK with BadClientId (return code 0x02) by returning ConnectionError::ConnectionRefused(ConnectReturnCode::BadClientId).",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": ["ConnectReturnCode::BadClientId", "connect_return"],
+          "reason": "ConnAck decoder maps return code 0x02 to ConnectReturnCode::BadClientId, correctly parsing the server's rejection response."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["mqtt_connect"],
+          "reason": "mqtt_connect handles non-Success CONNACK return codes by returning ConnectionError::ConnectionRefused(connack.code), which includes BadClientId."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["mqtt_connect_returns_bad_client_id_rejection"],
+        "notes": "The requirement is server-side. mqtt_connect_returns_bad_client_id_rejection verifies the client-side reaction if a server sends CONNACK return code 0x02: mqtt_connect returns ConnectionError::ConnectionRefused(ConnectReturnCode::BadClientId) and does not continue the connection."
+      },
+      "follow_up": "No follow-up needed for this server-side requirement. The client-side obligation (not sending zero-byte ClientId with CleanSession=0) is tracked under MQTT-3.1.3-7."
     },
     {
       "id": "MQTT-3.1.3-9",

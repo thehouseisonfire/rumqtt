@@ -2709,6 +2709,11 @@ mod test {
     }
 
     #[test]
+    fn allow_empty_client_id_with_clean_start_false() {
+        let _mqtt_opts = MqttOptions::new("", "127.0.0.1").set_clean_start(false);
+    }
+
+    #[test]
     fn mqtt_options_builder_matches_setter_configuration() {
         let will = LastWill::new("hello/world", "good bye", QoS::AtLeastOnce, false, None);
         let mut expected = MqttOptions::new("client", ("localhost", 1884));

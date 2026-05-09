@@ -633,7 +633,23 @@ impl MqttOptions {
         self.last_will.clone()
     }
 
+    /// Set the client identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `client_id` is empty when `clean_session` is false.
+    ///
+    /// ```should_panic
+    /// # use rumqttc::MqttOptions;
+    /// let mut options = MqttOptions::new("id", "localhost");
+    /// options.set_clean_session(false);
+    /// options.set_client_id("".to_owned());
+    /// ```
     pub fn set_client_id(&mut self, client_id: String) -> &mut Self {
+        assert!(
+            !client_id.is_empty() || self.clean_session,
+            "Cannot set empty client id when clean session is false"
+        );
         self.client_id = client_id;
         self
     }
@@ -2134,5 +2150,14 @@ mod test {
         let mut options = MqttOptions::new("client_id", "127.0.0.1");
         options.set_read_batch_size(48);
         assert_eq!(options.read_batch_size(), 48);
+    }
+
+    /// MQTT-3.1.3-7: setting an empty client_id with clean_session=false must panic.
+    #[test]
+    #[should_panic(expected = "Cannot set empty client id when clean session is false")]
+    fn set_client_id_panics_on_empty_with_clean_session_false() {
+        let mut options = MqttOptions::new("id", "127.0.0.1");
+        options.set_clean_session(false);
+        options.set_client_id(String::new());
     }
 }

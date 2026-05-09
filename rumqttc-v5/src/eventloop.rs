@@ -1202,11 +1202,13 @@ async fn mqtt_connect_inner(
     state: &mut MqttState,
     connect_properties: Option<ConnectProperties>,
 ) -> Result<ConnAck, ConnectionError> {
+    let sent_client_id = options.client_id();
+
     // send mqtt connect packet
     network
         .write(Packet::Connect(
             Connect {
-                client_id: options.client_id(),
+                client_id: sent_client_id.clone(),
                 keep_alive: u16::try_from(options.keep_alive().as_secs()).unwrap_or(u16::MAX),
                 clean_start: options.clean_start(),
                 properties: connect_properties,
@@ -1234,12 +1236,48 @@ async fn mqtt_connect_inner(
                 }
 
                 if let Some(props) = &connack.properties {
+                    match (&props.assigned_client_identifier, sent_client_id.is_empty()) {
+                        (Some(assigned_client_identifier), true)
+                            if !assigned_client_identifier.is_empty() =>
+                        {
+                            options.set_client_id(assigned_client_identifier.clone());
+                        }
+                        (Some(_), true) => {
+                            send_protocol_error_disconnect(network).await?;
+                            return Err(StateError::Deserialization(
+                                super::mqttbytes::Error::ProtocolError,
+                            )
+                            .into());
+                        }
+                        (Some(_), false) => {
+                            send_protocol_error_disconnect(network).await?;
+                            return Err(StateError::Deserialization(
+                                super::mqttbytes::Error::ProtocolError,
+                            )
+                            .into());
+                        }
+                        (None, true) => {
+                            send_protocol_error_disconnect(network).await?;
+                            return Err(StateError::Deserialization(
+                                super::mqttbytes::Error::ProtocolError,
+                            )
+                            .into());
+                        }
+                        (None, false) => {}
+                    }
+
                     network.set_max_outgoing_size(props.max_packet_size);
 
                     // Override local session_expiry_interval value if set by server.
                     if props.session_expiry_interval.is_some() {
                         options.set_session_expiry_interval(props.session_expiry_interval);
                     }
+                } else if sent_client_id.is_empty() {
+                    send_protocol_error_disconnect(network).await?;
+                    return Err(StateError::Deserialization(
+                        super::mqttbytes::Error::ProtocolError,
+                    )
+                    .into());
                 }
                 return Ok(connack);
             }
@@ -1492,6 +1530,33 @@ mod tests {
         result
     }
 
+    async fn run_successful_mqtt_connect_with_connack_and_return_options(
+        mut options: MqttOptions,
+        connack: ConnAck,
+    ) -> (Result<ConnAck, ConnectionError>, MqttOptions) {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            false,
+            options.auto_topic_aliases(),
+            options.topic_alias_policy(),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        };
+
+        let (result, ()) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        (result, options)
+    }
+
     fn push_pending(eventloop: &mut EventLoop, request: Request) {
         eventloop.pending.push_back(RequestEnvelope::plain(request));
     }
@@ -1582,6 +1647,205 @@ mod tests {
             .unwrap();
 
         assert!(result.properties.is_none());
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_adopts_assigned_client_identifier() {
+        let options = MqttOptions::new("", "localhost");
+        let mut connack = build_connack_with_receive_max(10);
+        connack
+            .properties
+            .as_mut()
+            .unwrap()
+            .assigned_client_identifier = Some("server-assigned-client".to_owned());
+
+        let (result, options) =
+            run_successful_mqtt_connect_with_connack_and_return_options(options, connack).await;
+
+        result.unwrap();
+        assert_eq!(options.client_id(), "server-assigned-client");
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id() {
+        let options = MqttOptions::new("explicit-client", "localhost");
+        let mut connack = build_connack_with_receive_max(10);
+        connack
+            .properties
+            .as_mut()
+            .unwrap()
+            .assigned_client_identifier = Some("server-assigned-client".to_owned());
+
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            false,
+            options.auto_topic_aliases(),
+            options.topic_alias_policy(),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            read_packet_bytes(&mut peer).await
+        };
+
+        let mut options = options;
+        let (result, disconnect_bytes) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(options.client_id(), "explicit-client");
+        assert_eq!(
+            disconnect_bytes,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id() {
+        let options = MqttOptions::new("", "localhost");
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        };
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id()
+     {
+        let options = MqttOptions::new("", "localhost");
+        let connack = build_connack_with_receive_max(10);
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id() {
+        let options = MqttOptions::new("", "localhost");
+        let mut connack = build_connack_with_receive_max(10);
+        connack
+            .properties
+            .as_mut()
+            .unwrap()
+            .assigned_client_identifier = Some(String::new());
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_returns_client_identifier_not_valid_rejection() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::ClientIdentifierNotValid,
+            properties: None,
+        };
+
+        let result = run_successful_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::ConnectionRefused(
+                ConnectReturnCode::ClientIdentifierNotValid
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_reuses_assigned_client_identifier_on_reconnect() {
+        let options = MqttOptions::new("", "localhost");
+        let mut connack = build_connack_with_receive_max(10);
+        connack
+            .properties
+            .as_mut()
+            .unwrap()
+            .assigned_client_identifier = Some("server-assigned-client".to_owned());
+        let (result, mut options) =
+            run_successful_mqtt_connect_with_connack_and_return_options(options, connack).await;
+        result.unwrap();
+
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            false,
+            options.auto_topic_aliases(),
+            options.topic_alias_policy(),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        };
+
+        let broker = async {
+            let connect_bytes = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            connect_bytes
+        };
+
+        let (result, connect_bytes) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        result.unwrap();
+        let mut stream = BytesMut::from(&connect_bytes[..]);
+        let packet = Packet::read(&mut stream, Some(1024)).unwrap();
+
+        match packet {
+            Packet::Connect(connect, _, _) => {
+                assert_eq!(connect.client_id, "server-assigned-client");
+            }
+            packet => panic!("expected CONNECT packet, got {packet:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2916,6 +3180,48 @@ mod tests {
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
             Packet::PingReq(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn poll_records_assigned_client_identifier_as_session_client_id() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut connack = build_connack_with_receive_max(10);
+            connack
+                .properties
+                .as_mut()
+                .unwrap()
+                .assigned_client_identifier = Some("server-assigned-client".to_owned());
+
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+        broker.await.unwrap();
+
+        assert_eq!(eventloop.options.client_id(), "server-assigned-client");
+        assert_eq!(
+            eventloop.session_client_id.as_deref(),
+            Some("server-assigned-client")
+        );
     }
 
     // MQTT-3.1.0-2: A Client can only send the CONNECT packet once over a Network Connection.

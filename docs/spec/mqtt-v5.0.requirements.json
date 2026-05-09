@@ -1648,8 +1648,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "Per the spec, the full text of MQTT-3.1.3-6 is: 'A Server MAY allow a Client to supply a ClientID that has a length of zero bytes, however if it does so the Server MUST treat this as a special case and assign a unique ClientID to that Client.' This is entirely server-side: the Server MAY accept zero-length ClientIDs and the Server MUST assign a unique ID. Unlike v3.1.1, v5 does NOT require the client to set Clean Start=1 when sending a zero-length ClientID. The v5 client correctly imposes no such restriction: MqttOptions::set_clean_start has no assert against empty client_id, and Connect::write has no zero-byte ClientId guard. This is correct v5 behavior.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": ["MqttOptions::new", "MqttOptions::set_clean_start", "MqttOptions::set_client_id"],
+          "reason": "MqttOptions::new accepts any String client_id. set_clean_start is a simple setter with no assert against empty client_id. set_client_id is a simple setter with no assert against clean_start=false. Both are correct for v5 where zero-length ClientID is allowed with any Clean Start value."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Connect::write has no zero-byte ClientId + clean_start guard, correctly allowing v5 clients to send empty ClientId with clean_start=false."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["allow_empty_client_id", "allow_empty_client_id_with_clean_start_false"],
+        "notes": "allow_empty_client_id tests that MqttOptions::new(\"\", ...) with clean_start=true works. allow_empty_client_id_with_clean_start_false verifies that v5 does not apply the MQTT 3.1.1 CleanSession restriction. No client enforcement test is required because the requirement is server-side."
+      },
+      "follow_up": "No follow-up needed. Server-side MAY/MUST requirements do not impose client obligations for this requirement."
     },
     {
       "id": "MQTT-3.1.3-7",
@@ -1662,8 +1681,37 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Per the spec, the full text of MQTT-3.1.3-7 is: 'It [the Server] MUST then process the CONNECT packet as if the Client had provided that unique ClientID, and MUST return the Assigned Client Identifier in the CONNACK packet.' The server-side MUST obligations are not the client's responsibility. However, the client has a derived validation/reaction obligation to decode the Assigned Client Identifier from CONNACK properties and use it as its effective ClientID when it connected with a zero-length ClientID. The v5 client decodes the property, updates MqttOptions::client_id after a successful CONNACK only when the CONNECT ClientID was zero-length and the assigned value is non-empty, rejects a missing or empty Assigned Client Identifier after an empty CONNECT ClientID as a Protocol Error, rejects an Assigned Client Identifier on an explicit non-empty ClientID as a Protocol Error, and then reconnects using the assigned ClientID for session state management.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnAckProperties::assigned_client_identifier", "read_connack_property"],
+          "reason": "CONNACK decoder correctly parses PropertyType::AssignedClientIdentifier (0x12) into ConnAckProperties::assigned_client_identifier: Option<String>. The property is fully decoded and available to callers."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner records the ClientID sent in CONNECT. On successful CONNACK, it applies assigned_client_identifier to MqttOptions::client_id only if the sent ClientID was empty and the assigned value is non-empty; if the sent ClientID was empty and the property is missing or empty, or if the sent ClientID was explicit and non-empty and the property is present, it sends DISCONNECT with ProtocolError and returns a protocol error."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["reset_session_state_if_client_id_changed", "session_client_id"],
+          "reason": "The eventloop stores session_client_id from options.client_id() after CONNACK. Because mqtt_connect_inner updates options.client_id() with the server-assigned value before returning, reconnect session-state checks compare against the effective ClientID."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Connect::write correctly allows zero-byte client_id with any clean_start value, which is valid v5 behavior (unlike v3.1.1)."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["allow_empty_client_id", "allow_empty_client_id_with_clean_start_false", "read_decodes_assigned_client_identifier", "read_rejects_duplicate_assigned_client_identifier", "mqtt_connect_adopts_assigned_client_identifier", "mqtt_connect_reuses_assigned_client_identifier_on_reconnect", "poll_records_assigned_client_identifier_as_session_client_id", "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"],
+        "notes": "allow_empty_client_id and allow_empty_client_id_with_clean_start_false cover the valid empty ClientID setup. read_decodes_assigned_client_identifier covers CONNACK property decoding. read_rejects_duplicate_assigned_client_identifier covers the CONNACK property duplicate Protocol Error rule. mqtt_connect_adopts_assigned_client_identifier verifies eventloop adoption after an empty CONNECT ClientID. mqtt_connect_reuses_assigned_client_identifier_on_reconnect verifies the next CONNECT uses the assigned ID. poll_records_assigned_client_identifier_as_session_client_id verifies the public EventLoop::poll path stores the assigned ID as the session identity after CONNACK. mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id, mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id, and mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id verify that a successful CONNACK after an empty CONNECT ClientID must include a non-empty Assigned Client Identifier. mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id verifies that the property is not accepted for a non-empty CONNECT ClientID."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-8",
@@ -1676,8 +1724,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "Per the spec, the full text of MQTT-3.1.3-8 is: 'If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection.' This is a server-side MAY/MUST requirement: the Server may send the rejection and must close the Network Connection. The client cannot satisfy that server obligation. The v5 client still handles the observable response defensively: connect_return maps 133 (0x85) to ConnectReturnCode::ClientIdentifierNotValid, and mqtt_connect_inner returns ConnectionError::ConnectionRefused(connack.code) for any non-Success CONNACK.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnectReturnCode::ClientIdentifierNotValid", "connect_return"],
+          "reason": "connect_return maps reason code 133 (0x85) to ConnectReturnCode::ClientIdentifierNotValid. connect_code maps it back to 133 for encoding. The full round-trip is correct."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner handles non-Success CONNACK by returning ConnectionError::ConnectionRefused(connack.code), which includes ClientIdentifierNotValid. The connection is not continued after rejection."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["connack_decodes_client_identifier_not_valid_reason_code", "mqtt_connect_returns_client_identifier_not_valid_rejection"],
+        "notes": "No server-conformance test is required in this client crate. connack_decodes_client_identifier_not_valid_reason_code verifies defensive decoding of CONNACK reason code 0x85. mqtt_connect_returns_client_identifier_not_valid_rejection verifies the eventloop returns ConnectionError::ConnectionRefused(ClientIdentifierNotValid) and does not continue the connection."
+      },
+      "follow_up": "No client-side follow-up needed. Broker/server tests would be required to prove that a server rejecting a ClientID sends the allowed CONNACK reason code when applicable and closes the Network Connection."
     },
     {
       "id": "MQTT-3.1.3-9",
@@ -1830,8 +1897,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is server-side: after receiving CONNECT, the Server MUST send CONNACK with Success before sending any packet other than AUTH, and the Server MUST NOT send more than one CONNACK on a Network Connection. The client does not send CONNACK packets, so those server obligations are not directly applicable. The client-side handshake path still validates the observable ordering by accepting AUTH during enhanced authentication, returning ConnectionError::NotConnAck for non-CONNACK packets during the initial handshake, and treating non-Success CONNACK as connection refusal.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_inner"],
+          "reason": "During the initial handshake, mqtt_connect_inner loops over incoming AUTH packets, accepts a CONNACK as the terminal acknowledgement, returns ConnectionError::ConnectionRefused for non-Success CONNACK, and returns ConnectionError::NotConnAck for any other packet type."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_accepts_matching_connack_authentication_method", "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it", "mqtt_connect_sends_connect_as_first_packet_on_the_wire"],
+          "reason": "Tests cover the client's initial handshake sequencing: CONNECT is sent first, AUTH can precede CONNACK when expected, and successful CONNACK completes the connection."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["mqtt_connect_accepts_matching_connack_authentication_method", "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it", "mqtt_connect_sends_connect_as_first_packet_on_the_wire"],
+        "notes": "No server-conformance test is required because the client does not send CONNACK packets. Existing eventloop tests cover the client handshake behavior around CONNECT, AUTH, and CONNACK."
+      },
+      "follow_up": "A broker/server implementation would need tests proving it sends exactly one CONNACK after CONNECT, allows only AUTH before successful CONNACK where enhanced authentication is in use, and closes the connection on violations."
     },
     {
       "id": "MQTT-3.2.0-2",
@@ -2088,8 +2174,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "partial",
+      "mapping_reason": "This is a server-side MUST to include a non-empty Assigned Client Identifier in CONNACK after accepting a zero-length CONNECT ClientID, and to ensure that assigned value is unique. The client cannot prove server-side uniqueness or assignment state, so the full requirement is only partially covered by this client crate. The v5 client validates and reacts to the wire-visible part of the requirement: it decodes the Assigned Client Identifier CONNACK property, rejects duplicate Assigned Client Identifier properties as a Protocol Error, rejects a successful CONNACK that omits Assigned Client Identifier after the client sent a zero-length ClientID, rejects an empty Assigned Client Identifier after an empty CONNECT ClientID, adopts the assigned ClientID as the effective MqttOptions::client_id when it is non-empty and present for a zero-length CONNECT ClientID, and rejects the property as a Protocol Error when the CONNECT ClientID was non-empty.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnAckProperties::assigned_client_identifier", "read_connack_property"],
+          "reason": "CONNACK decoder parses PropertyType::AssignedClientIdentifier into ConnAckProperties::assigned_client_identifier and rejects duplicate Assigned Client Identifier properties with Error::ProtocolError."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["mqtt_connect_inner"],
+          "reason": "mqtt_connect_inner records the ClientID sent in CONNECT. On successful CONNACK, it requires a non-empty Assigned Client Identifier when the sent ClientID was empty, stores it in MqttOptions::client_id, and sends DISCONNECT with ProtocolError if the property is missing or empty after an empty ClientID or present after a non-empty ClientID."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["reset_session_state_if_client_id_changed", "session_client_id"],
+          "reason": "The eventloop stores session_client_id from options.client_id() after CONNACK. Because mqtt_connect_inner updates options.client_id() with the server-assigned value before returning, reconnect session-state checks use the effective ClientID."
+        }
+      ],
+      "test_coverage": {
+        "status": "partial",
+        "tests": ["read_decodes_assigned_client_identifier", "read_rejects_duplicate_assigned_client_identifier", "mqtt_connect_adopts_assigned_client_identifier", "mqtt_connect_reuses_assigned_client_identifier_on_reconnect", "poll_records_assigned_client_identifier_as_session_client_id", "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_properties_without_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id", "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"],
+        "notes": "Codec tests cover decoding the property and rejecting duplicate instances. Eventloop tests cover adopting the assigned ID after an empty CONNECT ClientID, using it on reconnect, storing it as the session identity through EventLoop::poll, rejecting successful CONNACK packets that omit the property or contain an empty property after an empty CONNECT ClientID, and rejecting the property when the CONNECT ClientID was explicit. These tests do not and cannot prove server-side uniqueness of the assigned Client Identifier."
+      },
+      "follow_up": "The client cannot verify the server-side uniqueness of the assigned Client Identifier; that remains a server-side obligation."
     },
     {
       "id": "MQTT-3.2.2-17",

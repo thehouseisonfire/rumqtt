@@ -359,6 +359,9 @@ fn read_connack_property(
             *cursor += 1;
         }
         PropertyType::AssignedClientIdentifier => {
+            if properties.assigned_client_identifier.is_some() {
+                return Err(Error::ProtocolError);
+            }
             let id = read_mqtt_string(bytes)?;
             *cursor += 2 + id.len();
             properties.assigned_client_identifier = Some(id);
@@ -557,6 +560,57 @@ mod test {
     }
 
     #[test]
+    fn read_decodes_assigned_client_identifier() {
+        let mut bytes = Bytes::from_static(&[
+            0x10, // properties length
+            PropertyType::AssignedClientIdentifier as u8,
+            0x00,
+            0x0d, // string length = 13
+            b's',
+            b'e',
+            b'r',
+            b'v',
+            b'e',
+            b'r',
+            b'-',
+            b'c',
+            b'l',
+            b'i',
+            b'e',
+            b'n',
+            b't',
+        ]);
+
+        let properties = ConnAckProperties::read(&mut bytes).unwrap().unwrap();
+
+        assert_eq!(
+            properties.assigned_client_identifier.as_deref(),
+            Some("server-client")
+        );
+    }
+
+    #[test]
+    fn read_rejects_duplicate_assigned_client_identifier() {
+        let mut bytes = Bytes::from_static(&[
+            0x0a, // properties length
+            PropertyType::AssignedClientIdentifier as u8,
+            0x00,
+            0x02,
+            b'i',
+            b'd',
+            PropertyType::AssignedClientIdentifier as u8,
+            0x00,
+            0x02,
+            b'i',
+            b'd',
+        ]);
+
+        let result = ConnAckProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
     fn connack_decodes_qos_not_supported_reason_code() {
         let mut bytes = BytesMut::from(
             &[
@@ -592,5 +646,24 @@ mod test {
         let connack = ConnAck::read(fixed_header, packet_bytes).unwrap();
 
         assert_eq!(connack.code, ConnectReturnCode::RetainNotSupported);
+    }
+
+    #[test]
+    fn connack_decodes_client_identifier_not_valid_reason_code() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x20, // CONNACK
+                0x03, // remaining length
+                0x00, // session present = false
+                0x85, // Client Identifier not valid
+                0x00, // properties length = 0
+            ][..],
+        );
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+        let connack = ConnAck::read(fixed_header, packet_bytes).unwrap();
+
+        assert_eq!(connack.code, ConnectReturnCode::ClientIdentifierNotValid);
     }
 }
