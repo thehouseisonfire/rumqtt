@@ -282,11 +282,11 @@ mod tests {
             StateError::Deserialization(mqttbytes::Error::IncorrectPacketFormat)
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::MalformedPacket as u8]
+            [0xE0, 0x02, DisconnectReasonCode::MalformedPacket as u8, 0x00]
         );
     }
 
@@ -307,11 +307,11 @@ mod tests {
             })
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::PacketTooLarge as u8]
+            [0xE0, 0x02, DisconnectReasonCode::PacketTooLarge as u8, 0x00]
         );
     }
 
@@ -333,11 +333,11 @@ mod tests {
             ))
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::TopicAliasInvalid as u8]
+            [0xE0, 0x02, DisconnectReasonCode::TopicAliasInvalid as u8, 0x00]
         );
     }
 
@@ -368,11 +368,11 @@ mod tests {
             StateError::Deserialization(mqttbytes::Error::ProtocolError)
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            [0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -391,11 +391,11 @@ mod tests {
             StateError::Deserialization(mqttbytes::Error::EmptySubscription)
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            [0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -416,11 +416,11 @@ mod tests {
             StateError::Deserialization(mqttbytes::Error::ProtocolError)
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::ProtocolError as u8]
+            [0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 
@@ -441,11 +441,11 @@ mod tests {
             ))
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::TopicAliasInvalid as u8]
+            [0xE0, 0x02, DisconnectReasonCode::TopicAliasInvalid as u8, 0x00]
         );
     }
 
@@ -462,11 +462,11 @@ mod tests {
             StateError::Deserialization(mqttbytes::Error::MalformedPacket)
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::MalformedPacket as u8]
+            [0xE0, 0x02, DisconnectReasonCode::MalformedPacket as u8, 0x00]
         );
     }
 
@@ -490,11 +490,11 @@ mod tests {
             StateError::Deserialization(mqttbytes::Error::TopicNotUtf8)
         ));
 
-        let mut response = [0; 3];
+        let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x01, DisconnectReasonCode::MalformedPacket as u8]
+            [0xE0, 0x02, DisconnectReasonCode::MalformedPacket as u8, 0x00]
         );
     }
 

@@ -547,9 +547,125 @@ mod test {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
 
-    use super::{Error, Packet, PacketType, validate_fixed_header_flags};
+    use super::{
+        Auth, AuthReasonCode, ConnAck, Connect, ConnectAuth, ConnectReturnCode, Disconnect,
+        DisconnectReasonCode, Error, Filter, Packet, PacketType, PubAck, PubAckReason, PubComp,
+        PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck, Subscribe,
+        SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe, validate_fixed_header_flags,
+    };
+
+    fn assert_packet_bytes_round_trip(packet: Packet, expected: &[u8]) {
+        let mut encoded = BytesMut::new();
+        packet.write(&mut encoded, None).unwrap();
+
+        assert_eq!(&encoded[..], expected);
+
+        let decoded = Packet::read(&mut encoded, None).unwrap();
+        assert_eq!(decoded, packet);
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn property_bearing_packets_emit_and_read_explicit_zero_property_lengths() {
+        assert_packet_bytes_round_trip(
+            Packet::Connect(
+                Connect {
+                    keep_alive: 60,
+                    client_id: "c".into(),
+                    clean_start: true,
+                    properties: None,
+                },
+                None,
+                ConnectAuth::None,
+            ),
+            &[
+                0x10, 0x0E, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, 0x02, 0x00, 0x3C, 0x00, 0x00,
+                0x01, b'c',
+            ],
+        );
+        assert_packet_bytes_round_trip(
+            Packet::ConnAck(ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            }),
+            &[0x20, 0x03, 0x00, 0x00, 0x00],
+        );
+        assert_packet_bytes_round_trip(
+            Packet::Publish(Publish::new("a", QoS::AtMostOnce, Bytes::new(), None)),
+            &[0x30, 0x04, 0x00, 0x01, b'a', 0x00],
+        );
+
+        let mut puback = PubAck::new(1, None);
+        puback.reason = PubAckReason::NoMatchingSubscribers;
+        assert_packet_bytes_round_trip(
+            Packet::PubAck(puback),
+            &[0x40, 0x04, 0x00, 0x01, 0x10, 0x00],
+        );
+
+        let mut pubrec = PubRec::new(1, None);
+        pubrec.reason = PubRecReason::NoMatchingSubscribers;
+        assert_packet_bytes_round_trip(
+            Packet::PubRec(pubrec),
+            &[0x50, 0x04, 0x00, 0x01, 0x10, 0x00],
+        );
+
+        let mut pubrel = PubRel::new(1, None);
+        pubrel.reason = PubRelReason::PacketIdentifierNotFound;
+        assert_packet_bytes_round_trip(
+            Packet::PubRel(pubrel),
+            &[0x62, 0x04, 0x00, 0x01, 0x92, 0x00],
+        );
+
+        let mut pubcomp = PubComp::new(1, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+        assert_packet_bytes_round_trip(
+            Packet::PubComp(pubcomp),
+            &[0x70, 0x04, 0x00, 0x01, 0x92, 0x00],
+        );
+
+        assert_packet_bytes_round_trip(
+            Packet::Subscribe(Subscribe {
+                pkid: 1,
+                filters: vec![Filter::new("a", QoS::AtMostOnce)],
+                properties: None,
+            }),
+            &[0x82, 0x07, 0x00, 0x01, 0x00, 0x00, 0x01, b'a', 0x00],
+        );
+        assert_packet_bytes_round_trip(
+            Packet::SubAck(SubAck {
+                pkid: 1,
+                return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+                properties: None,
+            }),
+            &[0x90, 0x04, 0x00, 0x01, 0x00, 0x00],
+        );
+        assert_packet_bytes_round_trip(
+            Packet::Unsubscribe(Unsubscribe {
+                pkid: 1,
+                ..Unsubscribe::new("a", None)
+            }),
+            &[0xA2, 0x06, 0x00, 0x01, 0x00, 0x00, 0x01, b'a'],
+        );
+        assert_packet_bytes_round_trip(
+            Packet::UnsubAck(UnsubAck {
+                pkid: 1,
+                reasons: vec![UnsubAckReason::Success],
+                properties: None,
+            }),
+            &[0xB0, 0x04, 0x00, 0x01, 0x00, 0x00],
+        );
+
+        let mut disconnect = Disconnect::new(DisconnectReasonCode::UnspecifiedError);
+        disconnect.properties = None;
+        assert_packet_bytes_round_trip(Packet::Disconnect(disconnect), &[0xE0, 0x02, 0x80, 0x00]);
+        assert_packet_bytes_round_trip(
+            Packet::Auth(Auth::new(AuthReasonCode::Continue, None)),
+            &[0xF0, 0x02, 0x18, 0x00],
+        );
+    }
 
     #[test]
     fn check_rejects_oversized_packet_on_partial_frame() {
