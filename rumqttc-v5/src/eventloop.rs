@@ -1225,7 +1225,18 @@ async fn mqtt_connect_inner(
     // validate connack
     loop {
         match network.read().await? {
-            Incoming::ConnAck(connack) if connack.code == ConnectReturnCode::Success => {
+            Incoming::ConnAck(connack) => {
+                if let Err(err) = validate_connack_response_information(options, &connack) {
+                    if connack.code == ConnectReturnCode::Success {
+                        send_protocol_error_disconnect(network).await?;
+                    }
+                    return Err(err.into());
+                }
+
+                if connack.code != ConnectReturnCode::Success {
+                    return Err(ConnectionError::ConnectionRefused(connack.code));
+                }
+
                 if let Err(err) = state.validate_successful_connack_authentication_method(&connack)
                 {
                     send_protocol_error_disconnect(network).await?;
@@ -1270,9 +1281,6 @@ async fn mqtt_connect_inner(
                 }
                 return Ok(connack);
             }
-            Incoming::ConnAck(connack) => {
-                return Err(ConnectionError::ConnectionRefused(connack.code));
-            }
             Incoming::Auth(auth) => match state.handle_incoming_packet(Incoming::Auth(auth)) {
                 Ok(Some(outgoing)) => {
                     network.write(outgoing).await?;
@@ -1288,6 +1296,26 @@ async fn mqtt_connect_inner(
             packet => return Err(ConnectionError::NotConnAck(Box::new(packet))),
         }
     }
+}
+
+fn validate_connack_response_information(
+    options: &MqttOptions,
+    connack: &ConnAck,
+) -> Result<(), StateError> {
+    // [MQTT-3.1.2-28] If Request Response Information was 0 (or absent, which
+    // defaults to 0), the Server MUST NOT return Response Information in the
+    // CONNACK.
+    let request_response_info = options.request_response_info().unwrap_or(0);
+    if request_response_info == 0
+        && let Some(props) = &connack.properties
+        && props.response_information.is_some()
+    {
+        return Err(StateError::Deserialization(
+            super::mqttbytes::Error::ProtocolError,
+        ));
+    }
+
+    Ok(())
 }
 
 async fn send_protocol_error_disconnect(network: &mut Network) -> Result<(), ConnectionError> {
@@ -1462,6 +1490,34 @@ mod tests {
         let (result, ()) =
             tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
         (result, state)
+    }
+
+    async fn run_mqtt_connect_with_connack_then_close(
+        mut options: MqttOptions,
+        connack: ConnAck,
+    ) -> Result<ConnAck, ConnectionError> {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            false,
+            options.auto_topic_aliases(),
+            options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        };
+
+        let (result, ()) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        result
     }
 
     async fn run_mqtt_connect_with_stale_state_auth_method(
@@ -2006,6 +2062,95 @@ mod tests {
         );
     }
 
+    /// [MQTT-3.1.2-28] Server MUST NOT return Response Information when
+    /// Request Response Information is absent (defaults to 0).
+    #[tokio::test]
+    async fn mqtt_connect_rejects_connack_response_information_when_request_response_info_is_absent()
+     {
+        let options = MqttOptions::new("test-client", "localhost");
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().response_information =
+            Some("response-data".to_owned());
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
+        );
+    }
+
+    /// [MQTT-3.1.2-28] Server MUST NOT return Response Information when
+    /// Request Response Information is 0.
+    #[tokio::test]
+    async fn mqtt_connect_rejects_connack_response_information_when_request_response_info_is_zero()
+    {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_request_response_info(Some(0));
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().response_information =
+            Some("response-data".to_owned());
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
+        );
+    }
+
+    /// [MQTT-3.1.2-28] Server MUST NOT return Response Information in any
+    /// CONNACK when Request Response Information is absent (defaults to 0).
+    #[tokio::test]
+    async fn refused_connack_rejects_response_information_when_request_response_info_is_absent() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let mut connack = build_connack_with_receive_max(10);
+        connack.code = ConnectReturnCode::BadUserNamePassword;
+        connack.properties.as_mut().unwrap().response_information =
+            Some("response-data".to_owned());
+
+        let result = run_mqtt_connect_with_connack_then_close(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+    }
+
+    /// [MQTT-3.1.2-28] Server MAY return Response Information when
+    /// Request Response Information is 1.
+    #[tokio::test]
+    async fn mqtt_connect_accepts_connack_response_information_when_request_response_info_is_one() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_request_response_info(Some(1));
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().response_information =
+            Some("response-data".to_owned());
+
+        let result = run_successful_mqtt_connect_with_connack(options, connack)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.properties.unwrap().response_information.as_deref(),
+            Some("response-data")
+        );
+    }
+
     fn build_eventloop_with_pending(clean_start: bool) -> EventLoop {
         let mut options = MqttOptions::new("test-client", "localhost");
         options.set_clean_start(clean_start);
@@ -2291,7 +2436,12 @@ mod tests {
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x02, DisconnectReasonCode::TopicAliasInvalid as u8, 0x00]
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::TopicAliasInvalid as u8,
+                0x00
+            ]
         );
     }
 

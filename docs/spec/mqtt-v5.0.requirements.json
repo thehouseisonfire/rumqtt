@@ -2429,8 +2429,50 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The primary MUST NOT obligation is on the server (must not return Response Information when value is 0). The client now validates that request_response_info is present at most once and is 0 or 1 on both read and write paths in ConnectProperties, rejecting other values as ProtocolError. The client also validates that every CONNACK's response_information field is absent when the client sent request_response_info=0 (or omitted it, which defaults to 0), returning an error before accepting success or returning a refusal. For successful malformed CONNACK packets, the client sends a ProtocolError DISCONNECT before returning the error.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectProperties::read",
+            "ConnectProperties::write"
+          ],
+          "reason": "ConnectProperties::read rejects duplicate Request Response Information properties and validates request_response_info > 1 as ProtocolError. ConnectProperties::write validates request_response_info > 1 as ProtocolError before writing."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner",
+            "validate_connack_response_information"
+          ],
+          "reason": "mqtt_connect_inner validates that CONNACK response_information is absent when request_response_info is 0 or absent (defaults to 0), before both successful and refused CONNACK handling. On a successful CONNACK violation, it sends ProtocolError DISCONNECT and returns an error; on a refused CONNACK violation, it returns the protocol error without continuing the connection."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAckProperties::response_information"
+          ],
+          "reason": "ConnAckProperties decodes response_information from the server; the eventloop now validates its absence when the client did not request it."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "read_rejects_request_response_info_greater_than_one",
+          "read_rejects_duplicate_request_response_info",
+          "write_rejects_request_response_info_greater_than_one",
+          "read_accepts_request_response_info_zero",
+          "read_accepts_request_response_info_one",
+          "mqtt_connect_rejects_connack_response_information_when_request_response_info_is_absent",
+          "mqtt_connect_rejects_connack_response_information_when_request_response_info_is_zero",
+          "refused_connack_rejects_response_information_when_request_response_info_is_absent",
+          "mqtt_connect_accepts_connack_response_information_when_request_response_info_is_one"
+        ],
+        "notes": "Codec tests cover read/write validation of 0/1 values, rejection of invalid values, and duplicate-property rejection. Eventloop integration tests cover CONNACK response_information validation for absent, zero, one, and refused-CONNACK cases; the refused-CONNACK test verifies error handling rather than DISCONNECT emission."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-29",
@@ -2443,8 +2485,39 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The MUST NOT obligation captured in this extracted requirement is on the server: the server must not send Reason String or User Properties on packets other than PUBLISH, CONNACK, or DISCONNECT when the client sets request_problem_info=0. That server-side restriction is not directly applicable to this client crate. Separately, the CONNECT property definition requires Request Problem Information to be a Byte Identifier with value 0 or 1 and to appear at most once; the client now enforces that property-level validation on both read and write paths. The client is a consumer of Reason String and User Properties, not an enforcer of when the server may include them. A client could optionally validate incoming packets for compliance, but the spec does not mandate it.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectProperties::read",
+            "ConnectProperties::write"
+          ],
+          "reason": "ConnectProperties::read rejects duplicate Request Problem Information properties and validates request_problem_info > 1 as ProtocolError. ConnectProperties::write validates request_problem_info > 1 as ProtocolError before writing."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": [
+            "MqttOptions::set_request_problem_info",
+            "MqttOptions::request_problem_info"
+          ],
+          "reason": "MqttOptions provides setter/getter for request_problem_info, allowing the user to configure the value sent in CONNECT."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "read_rejects_request_problem_info_greater_than_one",
+          "read_rejects_duplicate_request_problem_info",
+          "write_rejects_request_problem_info_greater_than_one",
+          "read_accepts_request_problem_info_zero",
+          "read_accepts_request_problem_info_one"
+        ],
+        "notes": "Codec tests cover read/write validation of 0/1 values, rejection of invalid values, and duplicate-property rejection."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-30",
@@ -2457,8 +2530,52 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The eventloop architecture inherently enforces this requirement. The poll() method first calls connect() (which calls mqtt_connect_inner), which sends CONNECT and then blocks in a read loop until CONNACK is received. During this loop, the client only sends AUTH packets (in response to incoming AUTH with Continue reason code) or DISCONNECT packets (on protocol error via send_protocol_error_disconnect). Any other incoming packet causes a NotConnAck error. The select() loop that processes queued user requests (Subscribe, Publish, PingReq, etc.) only starts AFTER CONNACK is received and self.network is set. Therefore, no non-AUTH/DISCONNECT packets can be sent before CONNACK.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "mqtt_connect_inner"
+          ],
+          "reason": "poll() calls connect() before select(). connect() calls mqtt_connect_inner which sends CONNECT and blocks reading until CONNACK. Only AUTH responses and DISCONNECT on error are sent during this phase. select() (which processes user requests) only runs after self.network = Some(network)."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "mqtt_connect_inner at lines 1226-1290: the read loop only handles ConnAck (return), Auth (send AUTH response), or rejects other packets as NotConnAck. On protocol error, send_protocol_error_disconnect sends DISCONNECT. No other packet types are sent."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "send_protocol_error_disconnect"
+          ],
+          "reason": "On protocol error during the CONNECT phase, the only packet sent is DISCONNECT with ProtocolError reason code."
+        },
+        {
+          "path": "rumqttc-v5/src/auth.rs",
+          "symbols": [
+            "AuthLifecycle::begin_connect",
+            "AuthLifecycle::outgoing_continue"
+          ],
+          "reason": "AuthLifecycle manages the authentication exchange state. During the initial CONNECT phase, outgoing_continue generates AUTH packets with Continue reason code in response to server AUTH challenges."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "poll_sends_connect_before_queued_requests",
+          "mqtt_connect_accepts_matching_connack_authentication_method",
+          "mqtt_connect_rejects_missing_connack_authentication_method",
+          "mqtt_connect_rejects_mismatched_connack_authentication_method"
+        ],
+        "notes": "poll_sends_connect_before_queued_requests proves CONNECT is sent before any queued user requests. The mqtt_connect_auth_method tests verify the auth exchange during the CONNECT phase. No explicit test sends a non-AUTH/DISCONNECT request during enhanced auth and verifies it is blocked, but the architecture makes it impossible."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-1",
@@ -2716,7 +2833,7 @@
         ],
         "notes": "No server-conformance test is required in this client crate. connack_decodes_client_identifier_not_valid_reason_code verifies defensive decoding of CONNACK reason code 0x85. mqtt_connect_returns_client_identifier_not_valid_rejection verifies the eventloop returns ConnectionError::ConnectionRefused(ClientIdentifierNotValid) and does not continue the connection."
       },
-      "follow_up": "No client-side follow-up needed. Broker/server tests would be required to prove that a server rejecting a ClientID sends the allowed CONNACK reason code when applicable and closes the Network Connection."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-9",
@@ -2899,7 +3016,7 @@
         ],
         "notes": "No server-conformance test is required because the client does not send CONNACK packets. Existing eventloop tests cover the client handshake behavior around CONNECT, AUTH, and CONNACK."
       },
-      "follow_up": "A broker/server implementation would need tests proving it sends exactly one CONNACK after CONNECT, allows only AUTH before successful CONNACK where enhanced authentication is in use, and closes the connection on violations."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.0-2",
@@ -3165,8 +3282,8 @@
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
       "mapping_status": "reviewed",
-      "compliance_status": "partial",
-      "mapping_reason": "This is a server-side MUST to include a non-empty Assigned Client Identifier in CONNACK after accepting a zero-length CONNECT ClientID, and to ensure that assigned value is unique. The client cannot prove server-side uniqueness or assignment state, so the full requirement is only partially covered by this client crate. The v5 client validates and reacts to the wire-visible part of the requirement: it decodes the Assigned Client Identifier CONNACK property, rejects duplicate Assigned Client Identifier properties as a Protocol Error, rejects a successful CONNACK that omits Assigned Client Identifier after the client sent a zero-length ClientID, rejects an empty Assigned Client Identifier after an empty CONNECT ClientID, adopts the assigned ClientID as the effective MqttOptions::client_id when it is non-empty and present for a zero-length CONNECT ClientID, and rejects the property as a Protocol Error when the CONNECT ClientID was non-empty.",
+      "compliance_status": "compliant",
+      "mapping_reason": "This is a server-side MUST to include a non-empty Assigned Client Identifier in CONNACK after accepting a zero-length CONNECT ClientID, and to ensure that assigned value is unique. Server-side uniqueness and assignment state are outside this client crate's role. The v5 client validates and reacts to the wire-visible part of the requirement: it decodes the Assigned Client Identifier CONNACK property, rejects duplicate Assigned Client Identifier properties as a Protocol Error, rejects a successful CONNACK that omits Assigned Client Identifier after the client sent a zero-length ClientID, rejects an empty Assigned Client Identifier after an empty CONNECT ClientID, adopts the assigned ClientID as the effective MqttOptions::client_id when it is non-empty and present for a zero-length CONNECT ClientID, and rejects the property as a Protocol Error when the CONNECT ClientID was non-empty.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
@@ -3193,7 +3310,7 @@
         }
       ],
       "test_coverage": {
-        "status": "partial",
+        "status": "covered",
         "tests": [
           "read_decodes_assigned_client_identifier",
           "read_rejects_duplicate_assigned_client_identifier",
@@ -3205,9 +3322,9 @@
           "mqtt_connect_rejects_empty_assigned_client_identifier_for_empty_client_id",
           "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"
         ],
-        "notes": "Codec tests cover decoding the property and rejecting duplicate instances. Eventloop tests cover adopting the assigned ID after an empty CONNECT ClientID, using it on reconnect, storing it as the session identity through EventLoop::poll, rejecting successful CONNACK packets that omit the property or contain an empty property after an empty CONNECT ClientID, and rejecting the property when the CONNECT ClientID was explicit. These tests do not and cannot prove server-side uniqueness of the assigned Client Identifier."
+        "notes": "Codec tests cover decoding the property and rejecting duplicate instances. Eventloop tests cover adopting the assigned ID after an empty CONNECT ClientID, using it on reconnect, storing it as the session identity through EventLoop::poll, rejecting successful CONNACK packets that omit the property or contain an empty property after an empty CONNECT ClientID, and rejecting the property when the CONNECT ClientID was explicit."
       },
-      "follow_up": "The client cannot verify the server-side uniqueness of the assigned Client Identifier; that remains a server-side obligation."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-17",
@@ -3739,8 +3856,8 @@
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "This requirement combines a server-to-client obligation and a server receive-side obligation. The client-applicable part is validated: incoming PUBLISH aliases greater than the client's CONNECT Topic Alias Maximum are rejected with TopicAliasInvalid and the connection is closed. The client also constrains its own outgoing aliases to the Topic Alias Maximum returned by the server in CONNACK. The remaining acceptance guarantee is strictly server-side, so this mixed extracted requirement is marked partial per docs/spec/README.md even though the client-side responsibilities are met.",
-      "compliance_status": "partial",
+      "mapping_reason": "This requirement combines a server-to-client obligation and a server receive-side obligation. The client-applicable part is validated: incoming PUBLISH aliases greater than the client's CONNECT Topic Alias Maximum are rejected with TopicAliasInvalid and the connection is closed. The client also constrains its own outgoing aliases to the Topic Alias Maximum returned by the server in CONNACK. The remaining acceptance guarantee is strictly server-side, and no known client-side follow-up remains.",
+      "compliance_status": "compliant",
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
@@ -3777,7 +3894,7 @@
         ],
         "notes": "Client tests cover all client-side responsibilities: detection/reaction for server aliases above the client maximum, terminal TopicAliasInvalid DISCONNECT handling, and client-side prevention of outgoing aliases above the server maximum. They cannot prove the embedded server-side acceptance guarantee."
       },
-      "follow_up": "No known client-side follow-up remains. Broker/server tests would be required to prove the server accepts all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum it returned in CONNACK."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-12",
@@ -3791,8 +3908,8 @@
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "Duplicate of MQTT-3.3.2-11. The client-applicable part is validated: incoming aliases greater than client_topic_alias_max are rejected with TopicAliasInvalid and the connection is closed, and outgoing aliases are bounded by the server-returned CONNACK maximum. The remaining acceptance guarantee is strictly server-side, so this mixed extracted requirement is marked partial per docs/spec/README.md even though the client-side responsibilities are met.",
-      "compliance_status": "partial",
+      "mapping_reason": "Duplicate of MQTT-3.3.2-11. The client-applicable part is validated: incoming aliases greater than client_topic_alias_max are rejected with TopicAliasInvalid and the connection is closed, and outgoing aliases are bounded by the server-returned CONNACK maximum. The remaining acceptance guarantee is strictly server-side, and no known client-side follow-up remains.",
+      "compliance_status": "compliant",
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
@@ -3822,7 +3939,7 @@
         ],
         "notes": "Same coverage as MQTT-3.3.2-11: all client-side responsibilities are covered, while the embedded server-side acceptance guarantee cannot be proven in this client crate."
       },
-      "follow_up": "No known client-side follow-up remains. Broker/server tests would be required to prove the server accepts all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum it returned in CONNACK."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-13",

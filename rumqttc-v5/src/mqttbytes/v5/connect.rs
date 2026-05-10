@@ -219,11 +219,29 @@ impl ConnectProperties {
                     cursor += 2;
                 }
                 PropertyType::RequestResponseInformation => {
-                    request_response_info = Some(read_u8(bytes)?);
+                    if request_response_info.is_some() {
+                        return Err(Error::ProtocolError);
+                    }
+                    let value = read_u8(bytes)?;
+                    // [MQTT-3.1.2-28] Request Response Information is a Byte
+                    // Identifier that MUST be 0 or 1.
+                    if value > 1 {
+                        return Err(Error::ProtocolError);
+                    }
+                    request_response_info = Some(value);
                     cursor += 1;
                 }
                 PropertyType::RequestProblemInformation => {
-                    request_problem_info = Some(read_u8(bytes)?);
+                    if request_problem_info.is_some() {
+                        return Err(Error::ProtocolError);
+                    }
+                    let value = read_u8(bytes)?;
+                    // [MQTT-3.1.2-29] Request Problem Information is a Byte
+                    // Identifier that MUST be 0 or 1.
+                    if value > 1 {
+                        return Err(Error::ProtocolError);
+                    }
+                    request_problem_info = Some(value);
                     cursor += 1;
                 }
                 PropertyType::UserProperty => {
@@ -326,11 +344,21 @@ impl ConnectProperties {
         }
 
         if let Some(request_response_info) = self.request_response_info {
+            // [MQTT-3.1.2-28] Request Response Information is a Byte
+            // Identifier that MUST be 0 or 1.
+            if request_response_info > 1 {
+                return Err(Error::ProtocolError);
+            }
             buffer.put_u8(PropertyType::RequestResponseInformation as u8);
             buffer.put_u8(request_response_info);
         }
 
         if let Some(request_problem_info) = self.request_problem_info {
+            // [MQTT-3.1.2-29] Request Problem Information is a Byte
+            // Identifier that MUST be 0 or 1.
+            if request_problem_info > 1 {
+                return Err(Error::ProtocolError);
+            }
             buffer.put_u8(PropertyType::RequestProblemInformation as u8);
             buffer.put_u8(request_problem_info);
         }
@@ -889,6 +917,140 @@ mod test {
         let result = ConnectProperties::read(&mut bytes);
 
         assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-28] Request Response Information MUST be 0 or 1.
+    #[test]
+    fn read_rejects_request_response_info_greater_than_one() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RequestResponseInformation as u8,
+            0x02, // value = 2 (invalid)
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-28] Request Response Information MUST NOT appear more than once.
+    #[test]
+    fn read_rejects_duplicate_request_response_info() {
+        let mut bytes = Bytes::from_static(&[
+            0x04, // properties length
+            PropertyType::RequestResponseInformation as u8,
+            0x00,
+            PropertyType::RequestResponseInformation as u8,
+            0x01,
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-28] Request Response Information MUST be 0 or 1.
+    #[test]
+    fn write_rejects_request_response_info_greater_than_one() {
+        let mut props = ConnectProperties::new();
+        props.request_response_info = Some(2);
+        let mut buffer = BytesMut::new();
+        let result = props.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-28] Request Response Information MUST be 0 or 1.
+    #[test]
+    fn read_accepts_request_response_info_zero() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RequestResponseInformation as u8,
+            0x00, // value = 0
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        let props = result.unwrap().unwrap();
+        assert_eq!(props.request_response_info, Some(0));
+    }
+
+    /// [MQTT-3.1.2-28] Request Response Information MUST be 0 or 1.
+    #[test]
+    fn read_accepts_request_response_info_one() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RequestResponseInformation as u8,
+            0x01, // value = 1
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        let props = result.unwrap().unwrap();
+        assert_eq!(props.request_response_info, Some(1));
+    }
+
+    /// [MQTT-3.1.2-29] Request Problem Information MUST be 0 or 1.
+    #[test]
+    fn read_rejects_request_problem_info_greater_than_one() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RequestProblemInformation as u8,
+            0x02, // value = 2 (invalid)
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-29] Request Problem Information MUST NOT appear more than once.
+    #[test]
+    fn read_rejects_duplicate_request_problem_info() {
+        let mut bytes = Bytes::from_static(&[
+            0x04, // properties length
+            PropertyType::RequestProblemInformation as u8,
+            0x00,
+            PropertyType::RequestProblemInformation as u8,
+            0x01,
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-29] Request Problem Information MUST be 0 or 1.
+    #[test]
+    fn write_rejects_request_problem_info_greater_than_one() {
+        let mut props = ConnectProperties::new();
+        props.request_problem_info = Some(2);
+        let mut buffer = BytesMut::new();
+        let result = props.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    /// [MQTT-3.1.2-29] Request Problem Information MUST be 0 or 1.
+    #[test]
+    fn read_accepts_request_problem_info_zero() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RequestProblemInformation as u8,
+            0x00, // value = 0
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        let props = result.unwrap().unwrap();
+        assert_eq!(props.request_problem_info, Some(0));
+    }
+
+    /// [MQTT-3.1.2-29] Request Problem Information MUST be 0 or 1.
+    #[test]
+    fn read_accepts_request_problem_info_one() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RequestProblemInformation as u8,
+            0x01, // value = 1
+        ]);
+        let result = ConnectProperties::read(&mut bytes);
+
+        let props = result.unwrap().unwrap();
+        assert_eq!(props.request_problem_info, Some(1));
     }
 
     #[test]
