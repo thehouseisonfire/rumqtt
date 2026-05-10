@@ -1095,6 +1095,282 @@ mod test {
     }
 
     #[test]
+    fn last_will_write_rejects_topic_with_invalid_utf8() {
+        let will = LastWill {
+            topic: Bytes::from_static(&[0xff]),
+            message: Bytes::new(),
+            qos: QoS::AtMostOnce,
+            retain: false,
+            properties: None,
+        };
+        let mut buffer = BytesMut::new();
+        let result = will.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
+    fn last_will_properties_roundtrips_delay_interval() {
+        let properties = LastWillProperties {
+            delay_interval: Some(30),
+            payload_format_indicator: None,
+            message_expiry_interval: None,
+            content_type: None,
+            response_topic: None,
+            correlation_data: None,
+            user_properties: Vec::new(),
+        };
+        let mut buffer = BytesMut::new();
+
+        properties.write(&mut buffer).unwrap();
+
+        assert_eq!(
+            &buffer[..],
+            &[
+                0x05,
+                PropertyType::WillDelayInterval as u8,
+                0x00,
+                0x00,
+                0x00,
+                0x1e
+            ]
+        );
+
+        let mut bytes = buffer.freeze();
+        let decoded = LastWillProperties::read(&mut bytes).unwrap().unwrap();
+
+        assert_eq!(decoded.delay_interval, Some(30));
+        assert!(decoded.user_properties.is_empty());
+    }
+
+    #[test]
+    fn last_will_properties_roundtrips_user_properties_in_order() {
+        let properties = LastWillProperties {
+            delay_interval: None,
+            payload_format_indicator: None,
+            message_expiry_interval: None,
+            content_type: None,
+            response_topic: None,
+            correlation_data: None,
+            user_properties: vec![
+                ("first".to_owned(), "1".to_owned()),
+                ("second".to_owned(), "2".to_owned()),
+            ],
+        };
+        let mut buffer = BytesMut::new();
+
+        properties.write(&mut buffer).unwrap();
+
+        let expected = [
+            0x17,
+            PropertyType::UserProperty as u8,
+            0x00,
+            0x05,
+            b'f',
+            b'i',
+            b'r',
+            b's',
+            b't',
+            0x00,
+            0x01,
+            b'1',
+            PropertyType::UserProperty as u8,
+            0x00,
+            0x06,
+            b's',
+            b'e',
+            b'c',
+            b'o',
+            b'n',
+            b'd',
+            0x00,
+            0x01,
+            b'2',
+        ];
+        assert_eq!(&buffer[..], &expected);
+
+        let mut bytes = buffer.freeze();
+        let decoded = LastWillProperties::read(&mut bytes).unwrap().unwrap();
+
+        assert_eq!(decoded.user_properties, properties.user_properties);
+    }
+
+    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-2]: The ClientID MUST be a UTF-8 Encoded
+    /// String. Verify that decoding a CONNECT with U+0000 in the client_id
+    /// is rejected.
+    #[test]
+    fn connect_parsing_rejects_null_character_in_client_id() {
+        // CONNECT with client_id containing U+0000
+        // remaining = var_header(10) + props_len(1) + client_id(2+3) = 16
+        let packetstream: Vec<u8> = [
+            0x10, 16, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, // protocol name + level
+            0x02, // connect flags: clean start only
+            0x00, 0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00, 0x03, // client_id length = 3
+            b'a', 0x00, b'b', // client_id = "a\0b"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::MalformedPacket)));
+    }
+
+    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-1]: The ClientID MUST be a UTF-8 Encoded
+    /// String. Verify that encoding a CONNECT with U+0000 in the client_id
+    /// is rejected.
+    #[test]
+    fn connect_encoding_rejects_null_character_in_client_id() {
+        let connect_pkt = Connect {
+            keep_alive: 10,
+            client_id: "a\0b".to_owned(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect_pkt.write(&None, &ConnectAuth::None, &mut buf);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-1]: The ClientID MUST be a UTF-8 Encoded
+    /// String. Verify that decoding a CONNECT with a surrogate code point
+    /// (U+D800) in the client_id is rejected.
+    #[test]
+    fn connect_parsing_rejects_surrogate_in_client_id() {
+        // CONNECT with client_id containing U+D800 (CESU-8: 0xED 0xA0 0x80)
+        // remaining = var_header(10) + props_len(1) + client_id(2+3) = 16
+        let packetstream: Vec<u8> = [
+            0x10, 16, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, // protocol name + level
+            0x02, // connect flags: clean start only
+            0x00, 0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00, 0x03, // client_id length = 3
+            0xED, 0xA0, 0x80, // client_id = U+D800 (surrogate)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    /// [MQTT-3.1.3-12] / [MQTT-1.5.4-2]: The User Name MUST be a UTF-8 Encoded
+    /// String. Verify that decoding a CONNECT with U+0000 in the username
+    /// is rejected.
+    #[test]
+    fn connect_parsing_rejects_null_character_in_username() {
+        // CONNECT with username containing U+0000
+        // remaining = var_header(10) + props_len(1) + client_id(2+1) + username(2+3) = 19
+        let packetstream: Vec<u8> = [
+            0x10,
+            19, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b1000_0010, // connect flags: username + clean start
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x01, // client_id length = 1
+            b'a', // client_id = "a"
+            0x00,
+            0x03, // username length = 3
+            b'a',
+            0x00,
+            b'b', // username = "a\0b"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::MalformedPacket)));
+    }
+
+    /// [MQTT-3.1.3-12] / [MQTT-1.5.4-2]: The User Name MUST be a UTF-8 Encoded
+    /// String. Verify that encoding a CONNECT with U+0000 in the username
+    /// is rejected.
+    #[test]
+    fn connect_encoding_rejects_null_character_in_username() {
+        let connect_pkt = Connect {
+            keep_alive: 10,
+            client_id: "test".into(),
+            clean_start: true,
+            properties: None,
+        };
+        let auth = ConnectAuth::Username {
+            username: "a\0b".to_owned(),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = connect_pkt.write(&None, &auth, &mut buf);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    /// [MQTT-3.1.3-12] / [MQTT-1.5.4-1]: The User Name MUST be a UTF-8 Encoded
+    /// String. Verify that decoding a CONNECT with a surrogate code point
+    /// (U+D801) in the username is rejected.
+    #[test]
+    fn connect_parsing_rejects_surrogate_in_username() {
+        // CONNECT with username containing U+D801 (CESU-8: 0xED 0xA0 0x81)
+        // remaining = var_header(10) + props_len(1) + client_id(2+1) + username(2+3) = 19
+        let packetstream: Vec<u8> = [
+            0x10,
+            19, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
+            0b1000_0010, // connect flags: username + clean start
+            0x00,
+            0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00,
+            0x01, // client_id length = 1
+            b'a', // client_id = "a"
+            0x00,
+            0x03, // username length = 3
+            0xED,
+            0xA0,
+            0x81, // username = U+D801 (surrogate)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+    }
+
+    #[test]
     fn connect_roundtrips_binary_password() {
         let connect_pkt = Connect {
             keep_alive: 5,

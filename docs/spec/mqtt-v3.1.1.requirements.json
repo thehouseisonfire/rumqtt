@@ -1703,8 +1703,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is entirely server-side: it grants the server permission (MAY) to accept ClientIds longer than 23 bytes, with non-standard characters, or zero-length. A client has no obligation to enforce these limits; it simply sends its ClientId. The client-side obligation for zero-byte ClientId (must set CleanSession=1) is tracked under MQTT-3.1.3-7. The v4 client does not need to react to a server-assigned ClientId because MQTT 3.1.1 CONNACK has no field for returning an assigned ClientId (unlike MQTT 5).",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write", "Connect::read"],
+          "reason": "Connect::write sends the client_id as-is via write_mqtt_string; no length or character restrictions beyond UTF-8/U+0000 validation. Connect::read decodes client_id via read_mqtt_string, which enforces UTF-8 validity and no U+0000."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": ["ConnAck"],
+          "reason": "MQTT 3.1.1 CONNACK contains only session_present and return_code; there is no assigned ClientId field, so the client cannot receive one."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["is_mqtt_minimum_client_id"],
+          "reason": "Advisory helper that checks the 1-23 byte ASCII alphanumeric interoperability profile. Not enforced as a requirement on the client side."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only MAY permission. No client-side obligation to enforce ClientId length/character limits or to handle server-assigned ClientIds (not possible in MQTT 3.1.1 CONNACK)."
+      },
+      "follow_up": "No follow-up needed. The zero-byte ClientId + CleanSession obligation is tracked under MQTT-3.1.3-7."
     },
     {
       "id": "MQTT-3.1.3-10",
@@ -1717,8 +1741,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The Will Topic MUST be a UTF-8 encoded string per Section 1.5.3 (well-formed UTF-8, no U+0000, no surrogates). On decode, LastWill::read calls read_mqtt_string which delegates to validate_mqtt_string (std::str::from_utf8 + null-byte check). On encode, LastWill::write calls write_mqtt_string which calls validate_mqtt_string before serializing. The LastWill.topic field is String, which is guaranteed valid UTF-8 by Rust's type system, and the v4 write_mqtt_string wrapper additionally validates for U+0000 before writing.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["LastWill::read", "LastWill::write"],
+          "reason": "LastWill::read decodes will_topic via read_mqtt_string (enforces well-formed UTF-8 + no U+0000). LastWill::write encodes will_topic via write_mqtt_string (validates UTF-8 + no U+0000 before serializing)."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["validate_mqtt_string", "read_mqtt_string"],
+          "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates) and checks for U+0000 bytes. read_mqtt_string delegates to it."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+          "symbols": ["write_mqtt_string"],
+          "reason": "v4 write_mqtt_string wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string, ensuring outbound strings are well-formed UTF-8 without U+0000."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_rejects_null_character_in_will_topic", "connect_parsing_rejects_surrogate_in_will_topic", "connect_parsing_rejects_will_flag_set_without_will_topic", "connect_parsing_rejects_will_flag_zero_with_will_qos_1", "connect_parsing_rejects_will_qos_3", "connect_parsing_rejects_will_flag_zero_with_will_retain", "connect_parsing_rejects_will_fields_when_will_flag_zero", "connect_encoding_emits_payload_fields_in_spec_order"],
+        "notes": "Direct v4 CONNECT tests cover will_topic U+0000 rejection on encode, surrogate rejection on decode, Will Flag presence/absence validation, and payload field order. Shared primitive tests cover additional malformed UTF-8 boundaries for read_mqtt_string."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.3-11",
@@ -1731,8 +1779,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The User Name MUST be a UTF-8 encoded string per Section 1.5.3 (well-formed UTF-8, no U+0000, no surrogates). On decode, ConnectAuth::read calls read_mqtt_string which delegates to validate_mqtt_string (std::str::from_utf8 + null-byte check). On encode, ConnectAuth::write calls write_mqtt_string which calls validate_mqtt_string before serializing. The ConnectAuth username field is String, which is guaranteed valid UTF-8 by Rust's type system, and the v4 write_mqtt_string wrapper additionally validates for U+0000 before writing.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["ConnectAuth::read", "ConnectAuth::write"],
+          "reason": "ConnectAuth::read decodes username via read_mqtt_string (enforces well-formed UTF-8 + no U+0000). ConnectAuth::write encodes username via write_mqtt_string (validates UTF-8 + no U+0000 before serializing)."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": ["validate_mqtt_string", "read_mqtt_string"],
+          "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates) and checks for U+0000 bytes. read_mqtt_string delegates to it."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+          "symbols": ["write_mqtt_string"],
+          "reason": "v4 write_mqtt_string wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string, ensuring outbound strings are well-formed UTF-8 without U+0000."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["connect_encoding_rejects_null_character_in_username", "connect_parsing_rejects_surrogate_in_username", "connect_parsing_rejects_username_when_username_flag_zero", "connect_parsing_rejects_password_when_password_flag_zero", "connect_parsing_rejects_password_flag_set_without_password", "connect_encoding_emits_payload_fields_in_spec_order"],
+        "notes": "Direct v4 CONNECT tests cover username U+0000 rejection on encode, surrogate rejection on decode, Username/Password flag consistency, and payload field order. Shared primitive tests cover additional malformed UTF-8 boundaries for read_mqtt_string."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.4-1",

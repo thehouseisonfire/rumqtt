@@ -2642,8 +2642,48 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "The client uses ClientID to identify session state. EventLoop tracks session_client_id and resets session state when the client_id changes between reconnections. The client_id is always sent in the CONNECT packet and the Assigned Client Identifier from CONNACK is adopted for empty client_ids.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::session_client_id",
+            "EventLoop::reset_session_state_if_client_id_changed",
+            "EventLoop::reconcile_connack_session",
+            "mqtt_connect_inner"
+          ],
+          "reason": "session_client_id tracks the ClientID tied to the current session state. reset_session_state_if_client_id_changed resets pending state when client_id changes between reconnections. mqtt_connect_inner adopts Assigned Client Identifier from CONNACK for empty client_ids."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": [
+            "MqttOptions::client_id",
+            "MqttOptions::set_client_id"
+          ],
+          "reason": "ClientID is stored in MqttOptions and used to construct the CONNECT packet. set_client_id is called when the server assigns a client identifier via CONNACK."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::client_id",
+            "Connect::write"
+          ],
+          "reason": "client_id field is always present in the Connect struct and written into the CONNECT packet payload."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "client_id_guard_keeps_state_when_client_id_is_unchanged",
+          "client_id_guard_resets_state_when_client_id_changes",
+          "mqtt_connect_adopts_assigned_client_identifier",
+          "poll_records_assigned_client_identifier_as_session_client_id"
+        ],
+        "notes": "Tests verify session state is preserved when client_id is unchanged, reset when it changes, and that Assigned Client Identifier from CONNACK is adopted for empty client_ids."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.3-3",
@@ -2656,8 +2696,45 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "The ClientID is always present in the CONNECT packet payload and is the first field. Connect::write emits client_id immediately after the Connect Properties length. write_mqtt_string always writes a 2-byte length prefix, so even an empty string is encoded as 0x00 0x00, satisfying 'MUST be present'. The byte-level encoding order is verified by a dedicated test.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "Connect::len"
+          ],
+          "reason": "In write(), after variable header and properties, client_id is the first payload field written via write_mqtt_string(buffer, &self.client_id). The encoding order is: protocol name, level, flags, keep alive, properties, then client_id (first payload field), then will, then auth."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "write_mqtt_string",
+            "write_mqtt_bytes"
+          ],
+          "reason": "write_mqtt_string delegates to write_mqtt_bytes which always writes a u16 length prefix followed by bytes. An empty string is encoded as 0x00 0x00, ensuring the ClientID field is always present on the wire."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "Always constructs Connect with client_id from options.client_id(), ensuring the field is populated even when empty (for server-assigned client identifier flows)."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "connect_encoding_emits_payload_fields_in_spec_order",
+          "mqtt_connect_adopts_assigned_client_identifier",
+          "mqtt_connect_rejects_missing_assigned_client_identifier_for_empty_client_id",
+          "mqtt_connect_rejects_assigned_client_identifier_for_explicit_client_id"
+        ],
+        "notes": "connect_encoding_emits_payload_fields_in_spec_order verifies byte-level positions: ClientID is the first payload field. Other tests verify empty/non-empty ClientID handling in the CONNACK exchange."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.3-4",
@@ -2670,8 +2747,45 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The ClientID MUST be a UTF-8 Encoded String per Section 1.5.4 (well-formed UTF-8, no U+0000, no surrogates). On decode, Connect::read calls read_mqtt_string which delegates to validate_mqtt_string (std::str::from_utf8 + null-byte check). On encode, Connect::write calls write_mqtt_string which calls validate_mqtt_string before serializing. The Connect.client_id field is String, which is guaranteed valid UTF-8 by Rust's type system, and the v5 write_mqtt_string wrapper additionally validates for U+0000 before writing.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::read",
+            "Connect::write"
+          ],
+          "reason": "Connect::read decodes client_id via read_mqtt_string (enforces well-formed UTF-8 + no U+0000). Connect::write encodes client_id via write_mqtt_string (validates UTF-8 + no U+0000 before serializing)."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates) and checks for U+0000 bytes. read_mqtt_string delegates to it."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "write_mqtt_string"
+          ],
+          "reason": "v5 write_mqtt_string wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string, ensuring outbound strings are well-formed UTF-8 without U+0000."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "connect_encoding_rejects_client_id_larger_than_u16",
+          "connect_parsing_rejects_null_character_in_client_id",
+          "connect_encoding_rejects_null_character_in_client_id",
+          "connect_parsing_rejects_surrogate_in_client_id"
+        ],
+        "notes": "Direct v5 CONNECT packet tests cover client_id U+0000 rejection on encode/decode, surrogate rejection on decode, and oversized string rejection on encode. Shared primitive tests cover additional malformed UTF-8 boundaries for validate_mqtt_string/read_mqtt_string."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-5",
@@ -2684,8 +2798,24 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement states the Server MUST allow ClientIds that are between 1 and 23 UTF-8 encoded bytes in length and contain only the characters '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'. This is a server-side MUST \u2014 the server must accept these ClientIds. The client has no obligation to restrict its ClientId to this interoperability profile; the server is required to accept them. The v5 client correctly does not enforce any length or character restrictions on the ClientId beyond the UTF-8 validation required by MQTT-3.1.3-4.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write"
+          ],
+          "reason": "Connect::write sends client_id as-is via write_mqtt_string; no length or character restrictions beyond UTF-8/U+0000 validation. This is correct client behavior."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side MUST requirement. No client-side obligation to restrict ClientId to the 62-character interoperability profile."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.3-6",
@@ -2846,8 +2976,29 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This is a server-only obligation: the server must delay the Will Message and must not send it if a new connection arrives before the interval expires. The client's only responsibility is to encode the Will Delay Interval property in the CONNECT packet, which it does correctly via LastWillProperties.delay_interval (Option<u32>) read/write. The client has no role in enforcing the delay or suppressing the Will Message.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "LastWillProperties",
+            "LastWillProperties::delay_interval",
+            "LastWillProperties::read",
+            "LastWillProperties::write"
+          ],
+          "reason": "LastWillProperties.delay_interval (Option<u32>) correctly encodes/decodes the Will Delay Interval property (PropertyType::WillDelayInterval = 0x18) in the CONNECT Will Properties. The client faithfully transmits the value; the obligation to act on it is entirely server-side."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "last_will_properties_roundtrips_delay_interval"
+        ],
+        "notes": "Server-side Will Message delay behavior remains not applicable to the client. The client-side Will Delay Interval property encode/decode path is covered by a round-trip test."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-10",
@@ -2860,8 +3011,29 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This is a server-only obligation: the server must maintain the order of User Properties when publishing the Will Message. The client's responsibility is to encode User Properties in the Will Properties section of the CONNECT packet in a deterministic order. The implementation uses Vec<(String, String)> for LastWillProperties.user_properties, which preserves insertion order. The write() method iterates with for (key, value) in &self.user_properties, writing them sequentially. The read() method uses user_properties.push(), preserving wire order. The client correctly preserves order, enabling the server to comply.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "LastWillProperties",
+            "LastWillProperties::user_properties",
+            "LastWillProperties::read",
+            "LastWillProperties::write"
+          ],
+          "reason": "LastWillProperties.user_properties is Vec<(String, String)>, which preserves insertion order. write() iterates with for (key, value) in &self.user_properties, emitting User Properties in order. read() uses user_properties.push(), preserving wire order. The client faithfully encodes and decodes User Property ordering; the obligation to maintain that order when publishing the Will Message is server-side."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "last_will_properties_roundtrips_user_properties_in_order"
+        ],
+        "notes": "Server-side publication ordering remains not applicable to the client. The client-side Will User Properties encode/decode path preserves insertion/wire order and is covered by a round-trip test."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-11",
@@ -2874,8 +3046,52 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The Will Topic MUST be a UTF-8 Encoded String per Section 1.5.4 (well-formed UTF-8, no U+0000, no surrogates). On decode, LastWill::read calls read_mqtt_bytes to get raw Bytes, then explicitly calls validate_mqtt_string on the result (because LastWill.topic is Bytes, not String). On encode, LastWill::write calls validate_mqtt_string on self.topic before write_mqtt_bytes. This is the correct pattern for Bytes-backed string fields where zero-copy storage is desired.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "LastWill::read",
+            "LastWill::write"
+          ],
+          "reason": "LastWill::read reads will_topic via read_mqtt_bytes then validates with validate_mqtt_string (enforces well-formed UTF-8 + no U+0000). LastWill::write validates with validate_mqtt_string before write_mqtt_bytes."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates) and checks for U+0000 bytes."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "write_mqtt_string"
+          ],
+          "reason": "v5 validate_mqtt_string delegates to core_primitives::validate_mqtt_string. write_mqtt_string calls validate_mqtt_string before core_primitives::write_mqtt_string."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "last_will_read_rejects_topic_with_invalid_utf8",
+          "last_will_read_rejects_topic_with_null_character",
+          "last_will_write_rejects_topic_with_null_character",
+          "last_will_write_rejects_topic_with_invalid_utf8",
+          "connect_parsing_rejects_will_flag_set_without_will_topic",
+          "connect_parsing_rejects_will_flag_zero_with_will_qos_1",
+          "connect_parsing_rejects_will_qos_3",
+          "connect_parsing_rejects_will_flag_zero_with_will_retain",
+          "connect_parsing_rejects_will_fields_when_will_flag_zero",
+          "connect_encoding_emits_payload_fields_in_spec_order"
+        ],
+        "notes": "Direct v5 CONNECT tests cover Will Topic invalid UTF-8 and U+0000 rejection on read, invalid UTF-8 and U+0000 rejection on write, Will Flag presence/absence validation, and payload field order. Shared primitive tests cover additional malformed UTF-8 boundaries for validate_mqtt_string."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.3-12",
@@ -2888,8 +3104,46 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The User Name MUST be a UTF-8 Encoded String per Section 1.5.4 (well-formed UTF-8, no U+0000, no surrogates). On decode, ConnectAuth::read calls read_mqtt_string which delegates to validate_mqtt_string (std::str::from_utf8 + null-byte check). On encode, ConnectAuth::write calls write_mqtt_string which calls validate_mqtt_string before serializing. The ConnectAuth username field is String, which is guaranteed valid UTF-8 by Rust's type system, and the v5 write_mqtt_string wrapper additionally validates for U+0000 before writing.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectAuth::read",
+            "ConnectAuth::write"
+          ],
+          "reason": "ConnectAuth::read decodes username via read_mqtt_string (enforces well-formed UTF-8 + no U+0000). ConnectAuth::write encodes username via write_mqtt_string (validates UTF-8 + no U+0000 before serializing)."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates) and checks for U+0000 bytes. read_mqtt_string delegates to it."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "write_mqtt_string"
+          ],
+          "reason": "v5 write_mqtt_string wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string, ensuring outbound strings are well-formed UTF-8 without U+0000."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "connect_parsing_rejects_username_when_username_flag_zero",
+          "connect_encoding_emits_payload_fields_in_spec_order",
+          "connect_parsing_rejects_null_character_in_username",
+          "connect_encoding_rejects_null_character_in_username",
+          "connect_parsing_rejects_surrogate_in_username"
+        ],
+        "notes": "Direct v5 CONNECT tests cover User Name flag/payload consistency, payload field order, U+0000 rejection on encode/decode, and malformed UTF-8/surrogate rejection on decode. Shared primitive tests cover additional malformed UTF-8 boundaries for read_mqtt_string."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-1",
