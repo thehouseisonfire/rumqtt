@@ -286,7 +286,12 @@ mod tests {
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x02, DisconnectReasonCode::MalformedPacket as u8, 0x00]
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::MalformedPacket as u8,
+                0x00
+            ]
         );
     }
 
@@ -337,7 +342,12 @@ mod tests {
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x02, DisconnectReasonCode::TopicAliasInvalid as u8, 0x00]
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::TopicAliasInvalid as u8,
+                0x00
+            ]
         );
     }
 
@@ -445,7 +455,12 @@ mod tests {
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x02, DisconnectReasonCode::TopicAliasInvalid as u8, 0x00]
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::TopicAliasInvalid as u8,
+                0x00
+            ]
         );
     }
 
@@ -466,7 +481,12 @@ mod tests {
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x02, DisconnectReasonCode::MalformedPacket as u8, 0x00]
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::MalformedPacket as u8,
+                0x00
+            ]
         );
     }
 
@@ -494,7 +514,12 @@ mod tests {
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(
             response,
-            [0xE0, 0x02, DisconnectReasonCode::MalformedPacket as u8, 0x00]
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::MalformedPacket as u8,
+                0x00
+            ]
         );
     }
 
