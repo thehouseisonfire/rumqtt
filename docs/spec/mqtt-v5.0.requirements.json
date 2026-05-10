@@ -371,7 +371,7 @@
       "section_number": "2.1.3",
       "section_title": "Flags",
       "obligation": "MUST",
-      "summary": "The remaining bits of byte 1 in the Fixed Header contain flags specific to each MQTT Control Packet type as shown below. Where a flag bit is marked as \u201cReserved\u201d, it is reserved for future use and MUST be set to the value listed .",
+      "summary": "The remaining bits of byte 1 in the Fixed Header contain flags specific to each MQTT Control Packet type as shown below. Where a flag bit is marked as “Reserved”, it is reserved for future use and MUST be set to the value listed .",
       "source_anchor": "_Toc353481062",
       "occurrences": 3,
       "candidate_paths": [
@@ -1037,10 +1037,10 @@
     {
       "id": "MQTT-3.1.0-1",
       "section_number": "3.1",
-      "section_title": "CONNECT \u2013 Connection Request",
+      "section_title": "CONNECT – Connection Request",
       "obligation": "MUST",
       "summary": "After a Network Connection is established by a Client to a Server, the first packet sent from the Client to the Server MUST be a CONNECT packet .",
-      "source_anchor": "_CONNECT_\u2013_Connection",
+      "source_anchor": "_CONNECT_–_Connection",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/eventloop.rs",
@@ -1088,10 +1088,10 @@
     {
       "id": "MQTT-3.1.0-2",
       "section_number": "3.1",
-      "section_title": "CONNECT \u2013 Connection Request",
+      "section_title": "CONNECT – Connection Request",
       "obligation": "MUST",
       "summary": "A Client can only send the CONNECT packet once over a Network Connection. The Server MUST process a second CONNECT packet sent from a Client as a Protocol Error and close the Network Connection . Refer to section 4.13 for information about handling errors.",
-      "source_anchor": "_CONNECT_\u2013_Connection",
+      "source_anchor": "_CONNECT_–_Connection",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/eventloop.rs",
@@ -1603,7 +1603,7 @@
           "symbols": [
             "LastWill::write"
           ],
-          "reason": "Encode: uses (self.qos as u8) << 3. QoS enum discriminants are 0, 1, 2 only \u2014 value 3 is impossible at the type level."
+          "reason": "Encode: uses (self.qos as u8) << 3. QoS enum discriminants are 0, 1, 2 only — value 3 is impossible at the type level."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
@@ -1784,7 +1784,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "This requirement combines two clauses: (1) username_flag=0 \u2192 username MUST NOT be present, and (2) username_flag=1 \u2192 username MUST be present. Encode path: ConnectAuth::None writes zero username bytes and returns flags=0 (no username flag), so no username appears in the payload. ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set the 0x80 flag bit. The Rust type system guarantees that when auth is Username or UsernamePassword, a username String is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None without reading any username bytes when username_flag=false. When username_flag=true, read_mqtt_string() is always called to consume a username; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a username present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username (ConnectAuth::Password variant), so validate_connect_flags() does not reject that combination.",
+      "mapping_reason": "This requirement combines two clauses: (1) username_flag=0 → username MUST NOT be present, and (2) username_flag=1 → username MUST be present. Encode path: ConnectAuth::None writes zero username bytes and returns flags=0 (no username flag), so no username appears in the payload. ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set the 0x80 flag bit. The Rust type system guarantees that when auth is Username or UsernamePassword, a username String is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None without reading any username bytes when username_flag=false. When username_flag=true, read_mqtt_string() is always called to consume a username; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a username present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username (ConnectAuth::Password variant), so validate_connect_flags() does not reject that combination.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
@@ -1884,7 +1884,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "This requirement combines two clauses: (1) password_flag=0 \u2192 password MUST NOT be present, and (2) password_flag=1 \u2192 password MUST be present. Encode path: ConnectAuth::None and ConnectAuth::Username write zero password bytes and do not set the 0x40 flag bit, so no password appears in the payload. ConnectAuth::Password and ConnectAuth::UsernamePassword both write a length-prefixed password and set the 0x40 flag bit. The Rust type system guarantees that when auth is Password or UsernamePassword, a password Bytes value is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes when password_flag=false. When password_flag=true, read_mqtt_bytes() is always called to consume a password; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a password present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username, so the (username_flag=false, password_flag=true) combination is valid and handled by ConnectAuth::Password.",
+      "mapping_reason": "This requirement combines two clauses: (1) password_flag=0 → password MUST NOT be present, and (2) password_flag=1 → password MUST be present. Encode path: ConnectAuth::None and ConnectAuth::Username write zero password bytes and do not set the 0x40 flag bit, so no password appears in the payload. ConnectAuth::Password and ConnectAuth::UsernamePassword both write a length-prefixed password and set the 0x40 flag bit. The Rust type system guarantees that when auth is Password or UsernamePassword, a password Bytes value is always present. Decode path: ConnectAuth::read() returns ConnectAuth::None or ConnectAuth::Username without reading any password bytes when password_flag=false. When password_flag=true, read_mqtt_bytes() is always called to consume a password; truncation produces an error. The trailing-data check (bytes.has_remaining()) in Connect::read() rejects any extra payload bytes beyond what the flags indicate, which catches a password present when the flag is 0. Note: unlike v3.1.1, v5 allows password-without-username, so the (username_flag=false, password_flag=true) combination is valid and handled by ConnectAuth::Password.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
@@ -1936,21 +1936,21 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Duplicate of MQTT-3.1.2-18 (identical summary and obligation). Evidence is identical: encode path uses ConnectAuth enum variants that guarantee flag/payload consistency (None\u2192flags=0, Username\u21920x80, Password\u21920x40, UsernamePassword\u21920xC0); decode path uses ConnectAuth::read() with flag-gated reads and the has_remaining() trailing-data check in Connect::read() to reject spurious payload bytes. Note: unlike v3.1.1, v5 allows password-without-username via ConnectAuth::Password, so validate_connect_flags() does not reject (username_flag=false, password_flag=true).",
+      "mapping_reason": "Duplicate of MQTT-3.1.2-18 (identical summary and obligation). Evidence is identical: encode path uses ConnectAuth enum variants that guarantee flag/payload consistency (None→flags=0, Username→0x80, Password→0x40, UsernamePassword→0xC0); decode path uses ConnectAuth::read() with flag-gated reads and the has_remaining() trailing-data check in Connect::read() to reject spurious payload bytes. Note: unlike v3.1.1, v5 allows password-without-username via ConnectAuth::Password, so validate_connect_flags() does not reject (username_flag=false, password_flag=true).",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
           "symbols": [
             "ConnectAuth::write"
           ],
-          "reason": "Same evidence as MQTT-3.1.2-18. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate. None\u21920, Username\u21920x80, Password\u21920x40, UsernamePassword\u21920xC0."
+          "reason": "Same evidence as MQTT-3.1.2-18. Encode: each ConnectAuth variant writes exactly the payload fields its flag bits indicate. None→0, Username→0x80, Password→0x40, UsernamePassword→0xC0."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
           "symbols": [
             "ConnectAuth::read"
           ],
-          "reason": "Same evidence as MQTT-3.1.2-18. Decode: flag-gated reads consume only the indicated fields; (false,false)\u2192None, (true,false)\u2192Username, (false,true)\u2192Password, (true,true)\u2192UsernamePassword. Truncation produces an error."
+          "reason": "Same evidence as MQTT-3.1.2-18. Decode: flag-gated reads consume only the indicated fields; (false,false)→None, (true,false)→Username, (false,true)→Password, (true,true)→UsernamePassword. Truncation produces an error."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
@@ -2800,7 +2800,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "not_applicable",
-      "mapping_reason": "This requirement states the Server MUST allow ClientIds that are between 1 and 23 UTF-8 encoded bytes in length and contain only the characters '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'. This is a server-side MUST \u2014 the server must accept these ClientIds. The client has no obligation to restrict its ClientId to this interoperability profile; the server is required to accept them. The v5 client correctly does not enforce any length or character restrictions on the ClientId beyond the UTF-8 validation required by MQTT-3.1.3-4.",
+      "mapping_reason": "This requirement states the Server MUST allow ClientIds that are between 1 and 23 UTF-8 encoded bytes in length and contain only the characters '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'. This is a server-side MUST — the server must accept these ClientIds. The client has no obligation to restrict its ClientId to this interoperability profile; the server is required to accept them. The v5 client correctly does not enforce any length or character restrictions on the ClientId beyond the UTF-8 validation required by MQTT-3.1.3-4.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
@@ -2970,7 +2970,7 @@
       "section_number": "3.1.3.2.2",
       "section_title": "Will Delay Interval",
       "obligation": "MUST NOT",
-      "summary": "The Server delays publishing the Client\u2019s Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message .",
+      "summary": "The Server delays publishing the Client’s Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message .",
       "source_anchor": "_Will_Delay_Interval_1",
       "occurrences": 3,
       "candidate_paths": [
@@ -3232,10 +3232,10 @@
     {
       "id": "MQTT-3.2.0-1",
       "section_number": "3.2",
-      "section_title": "CONNACK \u2013 Connect acknowledgement",
+      "section_title": "CONNACK – Connect acknowledgement",
       "obligation": "MUST",
       "summary": "The CONNACK packet is the packet sent by the Server in response to a CONNECT packet received from a Client. The Server MUST send a CONNACK with a 0x00 (Success) Reason Code before sending any Packet other than AUTH . The Server MUST NOT send more than one CONNACK in a Network...",
-      "source_anchor": "_CONNACK_\u2013_Connect",
+      "source_anchor": "_CONNACK_–_Connect",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
@@ -3275,10 +3275,10 @@
     {
       "id": "MQTT-3.2.0-2",
       "section_number": "3.2",
-      "section_title": "CONNACK \u2013 Connect acknowledgement",
+      "section_title": "CONNACK – Connect acknowledgement",
       "obligation": "MUST",
       "summary": "The CONNACK packet is the packet sent by the Server in response to a CONNECT packet received from a Client. The Server MUST send a CONNACK with a 0x00 (Success) Reason Code before sending any Packet other than AUTH . The Server MUST NOT send more than one CONNACK in a Network...",
-      "source_anchor": "_CONNACK_\u2013_Connect",
+      "source_anchor": "_CONNACK_–_Connect",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
@@ -3292,7 +3292,7 @@
       "section_title": "Connect Acknowledge Flags",
       "obligation": "MUST",
       "summary": "Byte 1 is the \"Connect Acknowledge Flags\". Bits 7-1 are reserved and MUST be set to 0 .",
-      "source_anchor": "_Figure_3.9_\u2013",
+      "source_anchor": "_Figure_3.9_–",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
@@ -3333,7 +3333,7 @@
       "section_number": "3.2.2.1.1",
       "section_title": "Session Present",
       "obligation": "MUST",
-      "summary": "\u00b7 If the Client does not have Session State and receives Session Present set to 1 it MUST close the Network Connection . If it wishes to restart with a new Session the Client can reconnect using Clean Start set to 1.",
+      "summary": "· If the Client does not have Session State and receives Session Present set to 1 it MUST close the Network Connection . If it wishes to restart with a new Session the Client can reconnect using Clean Start set to 1.",
       "source_anchor": "_Toc385349255",
       "occurrences": 3,
       "candidate_paths": [
@@ -3347,7 +3347,7 @@
       "section_number": "3.2.2.1.1",
       "section_title": "Session Present",
       "obligation": "MUST",
-      "summary": "\u00b7 If the Client does have Session State and receives Session Present set to 0 it MUST discard its Session State if it continues with the Network Connection .",
+      "summary": "· If the Client does have Session State and receives Session Present set to 0 it MUST discard its Session State if it continues with the Network Connection .",
       "source_anchor": "_Toc385349255",
       "occurrences": 3,
       "candidate_paths": [
@@ -3781,7 +3781,7 @@
       "section_number": "3.3.1.3",
       "section_title": "RETAIN",
       "obligation": "MUST",
-      "summary": "\u00b7 If Retain Handling is set to 0 the Server MUST send the retained messages matching the Topic Filter of the subscription to the Client .",
+      "summary": "· If Retain Handling is set to 0 the Server MUST send the retained messages matching the Topic Filter of the subscription to the Client .",
       "source_anchor": "_Toc385349265",
       "occurrences": 3,
       "candidate_paths": [
@@ -3795,7 +3795,7 @@
       "section_number": "3.3.1.3",
       "section_title": "RETAIN",
       "obligation": "MUST",
-      "summary": "\u00b7 If Retain Handling is set to 1 then if the subscription did not already exist, the Server MUST send all retained message matching the Topic Filter of the subscription to the Client, and if the subscription did exist the Server MUST NOT send the retained messages.",
+      "summary": "· If Retain Handling is set to 1 then if the subscription did not already exist, the Server MUST send all retained message matching the Topic Filter of the subscription to the Client, and if the subscription did exist the Server MUST NOT send the retained messages.",
       "source_anchor": "_Toc385349265",
       "occurrences": 3,
       "candidate_paths": [
@@ -3809,7 +3809,7 @@
       "section_number": "3.3.1.3",
       "section_title": "RETAIN",
       "obligation": "MUST NOT",
-      "summary": "\u00b7 If Retain Handling is set to 2, the Server MUST NOT send the retained messages .",
+      "summary": "· If Retain Handling is set to 2, the Server MUST NOT send the retained messages .",
       "source_anchor": "_Toc385349265",
       "occurrences": 3,
       "candidate_paths": [
@@ -3823,7 +3823,7 @@
       "section_number": "3.3.1.3",
       "section_title": "RETAIN",
       "obligation": "MUST",
-      "summary": "\u00b7 If the value of Retain As Published subscription option is set to 0, the Server MUST set the RETAIN flag to 0 when forwarding an Application Message regardless of how the RETAIN flag was set in the received PUBLISH packet .",
+      "summary": "· If the value of Retain As Published subscription option is set to 0, the Server MUST set the RETAIN flag to 0 when forwarding an Application Message regardless of how the RETAIN flag was set in the received PUBLISH packet .",
       "source_anchor": "_Toc385349265",
       "occurrences": 3,
       "candidate_paths": [
@@ -3837,7 +3837,7 @@
       "section_number": "3.3.1.3",
       "section_title": "RETAIN",
       "obligation": "MUST",
-      "summary": "\u00b7 If the value of Retain As Published subscription option is set to 1, the Server MUST set the RETAIN flag equal to the RETAIN flag in the received PUBLISH packet .",
+      "summary": "· If the value of Retain As Published subscription option is set to 1, the Server MUST set the RETAIN flag equal to the RETAIN flag in the received PUBLISH packet .",
       "source_anchor": "_Toc385349265",
       "occurrences": 3,
       "candidate_paths": [
@@ -3879,7 +3879,7 @@
       "section_number": "3.3.2.1",
       "section_title": "Topic Name",
       "obligation": "MUST",
-      "summary": "The Topic Name in a PUBLISH packet sent by a Server to a subscribing Client MUST match the Subscription\u2019s Topic Filter according to the matching process defined in section 4.7 . However, as the Server is permitted to map the Topic Name to another name, it might not be the same...",
+      "summary": "The Topic Name in a PUBLISH packet sent by a Server to a subscribing Client MUST match the Subscription’s Topic Filter according to the matching process defined in section 4.7 . However, as the Server is permitted to map the Topic Name to another name, it might not be the same...",
       "source_anchor": "_Toc473620093",
       "occurrences": 3,
       "candidate_paths": [
@@ -4326,7 +4326,7 @@
       "section_number": "3.3.4",
       "section_title": "PUBLISH Actions",
       "obligation": "MUST",
-      "summary": "When Clients make subscriptions with Topic Filters that include wildcards, it is possible for a Client\u2019s subscriptions to overlap so that a published message might match multiple filters. In this case the Server MUST deliver the message to the Client respecting the maximum QoS...",
+      "summary": "When Clients make subscriptions with Topic Filters that include wildcards, it is possible for a Client’s subscriptions to overlap so that a published message might match multiple filters. In this case the Server MUST deliver the message to the Client respecting the maximum QoS...",
       "source_anchor": "_PUBLISH_Actions",
       "occurrences": 3,
       "candidate_paths": [
@@ -4537,7 +4537,7 @@
       "section_title": "PUBREL Fixed Header",
       "obligation": "MUST",
       "summary": "Bits 3,2,1 and 0 of the Fixed Header in the PUBREL packet are reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat any other value as malformed and close the Network Connection .",
-      "source_anchor": "_Figure_3.16_\u2013",
+      "source_anchor": "_Figure_3.16_–",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/pubrel.rs"
@@ -4635,7 +4635,7 @@
       "section_title": "SUBSCRIBE Fixed Header",
       "obligation": "MUST",
       "summary": "Bits 3,2,1 and 0 of the Fixed Header of the SUBSCRIBE packet are reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat any other value as malformed and close the Network Connection .",
-      "source_anchor": "_Figure_3.20_\u2013",
+      "source_anchor": "_Figure_3.20_–",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
@@ -4746,7 +4746,7 @@
       "section_number": "3.8.4",
       "section_title": "SUBSCRIBE Actions",
       "obligation": "MUST",
-      "summary": "If a Server receives a SUBSCRIBE packet containing a Topic Filter that is identical to a Non\u2011shared Subscription\u2019s Topic Filter for the current Session, then it MUST replace that existing Subscription with a new Subscription .",
+      "summary": "If a Server receives a SUBSCRIBE packet containing a Topic Filter that is identical to a Non‑shared Subscription’s Topic Filter for the current Session, then it MUST replace that existing Subscription with a new Subscription .",
       "source_anchor": "_Toc384800440",
       "occurrences": 3,
       "candidate_paths": [
@@ -4760,7 +4760,7 @@
       "section_number": "3.8.4",
       "section_title": "SUBSCRIBE Actions",
       "obligation": "MUST",
-      "summary": "If a Server receives a SUBSCRIBE packet containing a Topic Filter that is identical to a Non\u2011shared Subscription\u2019s Topic Filter for the current Session, then it MUST replace that existing Subscription with a new Subscription .",
+      "summary": "If a Server receives a SUBSCRIBE packet containing a Topic Filter that is identical to a Non‑shared Subscription’s Topic Filter for the current Session, then it MUST replace that existing Subscription with a new Subscription .",
       "source_anchor": "_Toc384800440",
       "occurrences": 3,
       "candidate_paths": [
@@ -4887,7 +4887,7 @@
       "section_title": "UNSUBSCRIBE Fixed Header",
       "obligation": "MUST",
       "summary": "Bits 3,2,1 and 0 of the Fixed Header of the UNSUBSCRIBE packet are reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat any other value as malformed and close the Network Connection .",
-      "source_anchor": "_Figure_3.28_\u2013",
+      "source_anchor": "_Figure_3.28_–",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs"
@@ -5080,7 +5080,7 @@
     {
       "id": "MQTT-3.14.0-1",
       "section_number": "3.14",
-      "section_title": "DISCONNECT \u2013 Disconnect notification",
+      "section_title": "DISCONNECT – Disconnect notification",
       "obligation": "MUST NOT",
       "summary": "A Server MUST NOT send a DISCONNECT until after it has sent a CONNACK with Reason Code of less than 0x80 .",
       "source_anchor": "_Toc384800463",
@@ -5097,7 +5097,7 @@
       "section_title": "DISCONNECT Fixed Header",
       "obligation": "MUST",
       "summary": "The Client or Server MUST validate that reserved bits are set to 0. If they are not zero it sends a DISCONNECT packet with a Reason code of 0x81 (Malformed Packet) as described in section 4.13 .",
-      "source_anchor": "_Figure_3.35_\u2013",
+      "source_anchor": "_Figure_3.35_–",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
@@ -5330,7 +5330,7 @@
       "section_number": "4.3.1",
       "section_title": "QoS 0: At most once delivery",
       "obligation": "MUST",
-      "summary": "\u00b7 MUST send a PUBLISH packet with QoS 0 and DUP flag set to 0 .",
+      "summary": "· MUST send a PUBLISH packet with QoS 0 and DUP flag set to 0 .",
       "source_anchor": "_Toc473620274",
       "occurrences": 3,
       "candidate_paths": [
@@ -5347,7 +5347,7 @@
       "section_number": "4.3.2",
       "section_title": "QoS 1: At least once delivery",
       "obligation": "MUST",
-      "summary": "\u00b7 MUST assign an unused Packet Identifier each time it has a new Application Message to publish .",
+      "summary": "· MUST assign an unused Packet Identifier each time it has a new Application Message to publish .",
       "source_anchor": "_Toc473620277",
       "occurrences": 3,
       "candidate_paths": [
@@ -5364,7 +5364,7 @@
       "section_number": "4.3.2",
       "section_title": "QoS 1: At least once delivery",
       "obligation": "MUST",
-      "summary": "\u00b7 MUST send a PUBLISH packet containing this Packet Identifier with QoS 1 and DUP flag set to 0 .",
+      "summary": "· MUST send a PUBLISH packet containing this Packet Identifier with QoS 1 and DUP flag set to 0 .",
       "source_anchor": "_Toc473620277",
       "occurrences": 3,
       "candidate_paths": [
@@ -5381,7 +5381,7 @@
       "section_number": "4.3.2",
       "section_title": "QoS 1: At least once delivery",
       "obligation": "MUST",
-      "summary": "\u00b7 MUST treat the PUBLISH packet as \u201cunacknowledged\u201d until it has received the corresponding PUBACK packet from the receiver. Refer to section 4.4 for a discussion of unacknowledged messages .",
+      "summary": "· MUST treat the PUBLISH packet as “unacknowledged” until it has received the corresponding PUBACK packet from the receiver. Refer to section 4.4 for a discussion of unacknowledged messages .",
       "source_anchor": "_Toc473620277",
       "occurrences": 3,
       "candidate_paths": [
@@ -5466,7 +5466,7 @@
       "section_number": "4.3.3",
       "section_title": "QoS 2: Exactly once delivery",
       "obligation": "MUST",
-      "summary": "MUST treat the PUBLISH packet as \u201cunacknowledged\u201d until it has received the corresponding PUBREC packet from the receiver . Refer to section 4.4 for a discussion of unacknowledged messages.",
+      "summary": "MUST treat the PUBLISH packet as “unacknowledged” until it has received the corresponding PUBREC packet from the receiver . Refer to section 4.4 for a discussion of unacknowledged messages.",
       "source_anchor": "_Toc473620281",
       "occurrences": 3,
       "candidate_paths": [
@@ -5500,7 +5500,7 @@
       "section_number": "4.3.3",
       "section_title": "QoS 2: Exactly once delivery",
       "obligation": "MUST",
-      "summary": "MUST treat the PUBREL packet as \u201cunacknowledged\u201d until it has received the corresponding PUBCOMP packet from the receiver .",
+      "summary": "MUST treat the PUBREL packet as “unacknowledged” until it has received the corresponding PUBCOMP packet from the receiver .",
       "source_anchor": "_Toc473620281",
       "occurrences": 3,
       "candidate_paths": [
@@ -5806,7 +5806,7 @@
       "section_number": "4.6",
       "section_title": "Message ordering",
       "obligation": "MUST",
-      "summary": "By default, a Server MUST treat every Topic as an Ordered Topic when it is forwarding messages on Non\u2011shared Subscriptions. . A Server MAY provide an administrative or other mechanism to allow one or more Topics to not be treated as an Ordered Topic.",
+      "summary": "By default, a Server MUST treat every Topic as an Ordered Topic when it is forwarding messages on Non‑shared Subscriptions. . A Server MAY provide an administrative or other mechanism to allow one or more Topics to not be treated as an Ordered Topic.",
       "source_anchor": "_Toc384800478",
       "occurrences": 3,
       "candidate_paths": [
@@ -5840,7 +5840,7 @@
       "section_number": "4.7.1.2",
       "section_title": "Multi-level wildcard",
       "obligation": "MUST",
-      "summary": "The number sign (\u2018#\u2019 U+0023) is a wildcard character that matches any number of levels within a topic. The multi-level wildcard represents the parent and any number of child levels. The multi-level wildcard character MUST be specified either on its own or following a topic lev...",
+      "summary": "The number sign (‘#’ U+0023) is a wildcard character that matches any number of levels within a topic. The multi-level wildcard represents the parent and any number of child levels. The multi-level wildcard character MUST be specified either on its own or following a topic lev...",
       "source_anchor": "_Toc385349376",
       "occurrences": 3,
       "candidate_paths": [
@@ -5891,7 +5891,7 @@
       "section_number": "4.7.3",
       "section_title": "Topic semantic and usage",
       "obligation": "MUST",
-      "summary": "\u00b7 All Topic Names and Topic Filters MUST be at least one character long",
+      "summary": "· All Topic Names and Topic Filters MUST be at least one character long",
       "source_anchor": "_Toc384800482",
       "occurrences": 3,
       "candidate_paths": [
@@ -5908,7 +5908,7 @@
       "section_number": "4.7.3",
       "section_title": "Topic semantic and usage",
       "obligation": "MUST NOT",
-      "summary": "\u00b7 Topic Names and Topic Filters MUST NOT include the null character (Unicode U+0000)",
+      "summary": "· Topic Names and Topic Filters MUST NOT include the null character (Unicode U+0000)",
       "source_anchor": "_Toc384800482",
       "occurrences": 3,
       "candidate_paths": [
@@ -5925,7 +5925,7 @@
       "section_number": "4.7.3",
       "section_title": "Topic semantic and usage",
       "obligation": "MUST NOT",
-      "summary": "\u00b7 Topic Names and Topic Filters are UTF-8 Encoded Strings; they MUST NOT encode to more than 65,535 bytes . Refer to section 1.5.4.",
+      "summary": "· Topic Names and Topic Filters are UTF-8 Encoded Strings; they MUST NOT encode to more than 65,535 bytes . Refer to section 1.5.4.",
       "source_anchor": "_Toc384800482",
       "occurrences": 3,
       "candidate_paths": [
@@ -5993,7 +5993,7 @@
       "section_number": "4.8.2",
       "section_title": "Shared Subscriptions",
       "obligation": "MUST",
-      "summary": "\u00b7 Different subscribing Clients are permitted to ask for different Requested QoS levels in their SUBSCRIBE packets. The Server decides which Maximum QoS to grant to each Client, and it is permitted to grant different Maximum QoS levels to different subscribers.",
+      "summary": "· Different subscribing Clients are permitted to ask for different Requested QoS levels in their SUBSCRIBE packets. The Server decides which Maximum QoS to grant to each Client, and it is permitted to grant different Maximum QoS levels to different subscribers.",
       "source_anchor": "_Toc473620306",
       "occurrences": 3,
       "candidate_paths": [
@@ -6010,7 +6010,7 @@
       "section_number": "4.8.2",
       "section_title": "Shared Subscriptions",
       "obligation": "MUST",
-      "summary": "\u00b7 If the Server is in the process of sending a QoS 2 message to its chosen subscribing Client and the connection to the Client breaks before delivery is complete, the Server MUST complete the delivery of the message to that Client when it reconnects as described in section 4.3.3.",
+      "summary": "· If the Server is in the process of sending a QoS 2 message to its chosen subscribing Client and the connection to the Client breaks before delivery is complete, the Server MUST complete the delivery of the message to that Client when it reconnects as described in section 4.3.3.",
       "source_anchor": "_Toc473620306",
       "occurrences": 3,
       "candidate_paths": [
@@ -6027,7 +6027,7 @@
       "section_number": "4.8.2",
       "section_title": "Shared Subscriptions",
       "obligation": "MUST",
-      "summary": "\u00b7 If the Server is in the process of sending a QoS 2 message to its chosen subscribing Client and the connection to the Client breaks before delivery is complete, the Server MUST complete the delivery of the message to that Client when it reconnects as described in section 4.3.3.",
+      "summary": "· If the Server is in the process of sending a QoS 2 message to its chosen subscribing Client and the connection to the Client breaks before delivery is complete, the Server MUST complete the delivery of the message to that Client when it reconnects as described in section 4.3.3.",
       "source_anchor": "_Toc473620306",
       "occurrences": 3,
       "candidate_paths": [
@@ -6044,7 +6044,7 @@
       "section_number": "4.8.2",
       "section_title": "Shared Subscriptions",
       "obligation": "MUST",
-      "summary": "\u00b7 If a Client responds with a PUBACK or PUBREC containing a Reason Code of 0x80 or greater to a PUBLISH packet from the Server, the Server MUST discard the Application Message and not attempt to send it to any other Subscriber .",
+      "summary": "· If a Client responds with a PUBACK or PUBREC containing a Reason Code of 0x80 or greater to a PUBLISH packet from the Server, the Server MUST discard the Application Message and not attempt to send it to any other Subscriber .",
       "source_anchor": "_Toc473620306",
       "occurrences": 3,
       "candidate_paths": [
@@ -6299,7 +6299,7 @@
       "section_number": "6",
       "section_title": "Using WebSocket as a network transport",
       "obligation": "MUST",
-      "summary": "\u00b7 MQTT Control Packets MUST be sent in WebSocket binary data frames. If any other type of data frame is received the recipient MUST close the Network Connection .",
+      "summary": "· MQTT Control Packets MUST be sent in WebSocket binary data frames. If any other type of data frame is received the recipient MUST close the Network Connection .",
       "source_anchor": "_Using_WebSocket_as",
       "occurrences": 3,
       "candidate_paths": [
@@ -6313,7 +6313,7 @@
       "section_number": "6",
       "section_title": "Using WebSocket as a network transport",
       "obligation": "MUST NOT",
-      "summary": "\u00b7 A single WebSocket data frame can contain multiple or partial MQTT Control Packets. The receiver MUST NOT assume that MQTT Control Packets are aligned on WebSocket frame boundaries .",
+      "summary": "· A single WebSocket data frame can contain multiple or partial MQTT Control Packets. The receiver MUST NOT assume that MQTT Control Packets are aligned on WebSocket frame boundaries .",
       "source_anchor": "_Using_WebSocket_as",
       "occurrences": 3,
       "candidate_paths": [
@@ -6327,7 +6327,7 @@
       "section_number": "6",
       "section_title": "Using WebSocket as a network transport",
       "obligation": "MUST",
-      "summary": "\u00b7 The Client MUST include \u201cmqtt\u201d in the list of WebSocket Sub Protocols it offers .",
+      "summary": "· The Client MUST include “mqtt” in the list of WebSocket Sub Protocols it offers .",
       "source_anchor": "_Using_WebSocket_as",
       "occurrences": 3,
       "candidate_paths": [
@@ -6341,7 +6341,7 @@
       "section_number": "6",
       "section_title": "Using WebSocket as a network transport",
       "obligation": "MUST",
-      "summary": "\u00b7 The WebSocket Subprotocol name selected and returned by the Server MUST be \u201cmqtt\u201d .",
+      "summary": "· The WebSocket Subprotocol name selected and returned by the Server MUST be “mqtt” .",
       "source_anchor": "_Using_WebSocket_as",
       "occurrences": 3,
       "candidate_paths": [
