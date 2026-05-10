@@ -10,6 +10,11 @@ This repo is a Rust workspace. Main members are:
 
 Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.
 
+The explicit MQTT version crates are published as Cargo packages `rumqttc-v4-next` and `rumqttc-v5-next`
+because the un-suffixed package names are not owned in crates.io. Their library target is still named
+`rumqttc`, so users can import them with clean Rust paths such as `use rumqttc::MqttOptions;`. Use the
+`*-next` package names in Cargo commands (`-p`, dependency declarations, and package-qualified features).
+
 ## Spec Compliance References
 - For MQTT spec-compliance tasks, agents should consult `docs/spec/` first.
 - Primary documents are `docs/spec/mqtt-v3.1.1.md` and `docs/spec/mqtt-v5.0.md`.
@@ -18,12 +23,12 @@ Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol cod
 
 ## Build, Test, and Development Commands
 - `cargo check --workspace`: fast compile check across all workspace crates.
-- `cargo test -p rumqttc-v4`: run MQTT 3.1.1 crate tests.
-- `cargo test -p rumqttc-v5`: run MQTT 5 crate tests.
-- `cargo test -p rumqttc-v4 --test reliability -- --nocapture`: run v4 reliability integration tests with logs.
+- `cargo test -p rumqttc-v4-next`: run MQTT 3.1.1 crate tests.
+- `cargo test -p rumqttc-v5-next`: run MQTT 5 crate tests.
+- `cargo test -p rumqttc-v4-next --test reliability -- --nocapture`: run v4 reliability integration tests with logs.
 - `cargo fmt --all`: format Rust code.
-- `cargo hack --each-feature --exclude-all-features --optional-deps url test -p rumqttc-v4 -p rumqttc-v5`: CI-style feature matrix test (requires `cargo-hack`).
-- `cargo hack clippy --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4 -p rumqttc-v5`: lint parity with pre-commit/CI.
+- `cargo hack --each-feature --exclude-all-features --optional-deps url test -p rumqttc-v4-next -p rumqttc-v5-next`: CI-style feature matrix test (requires `cargo-hack`).
+- `cargo hack clippy --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next`: lint parity with pre-commit/CI.
 
 ## Coding Style & Naming Conventions
 Rust edition is `2024` (workspace-level). Follow `.editorconfig`: LF endings, spaces (4), trimmed trailing whitespace, and 120-char max line length for general files. Prefer idiomatic Rust naming:
