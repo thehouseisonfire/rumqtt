@@ -190,6 +190,8 @@ pub struct MqttState {
     auto_topic_aliases: bool,
     auto_topic_alias_policy: TopicAliasPolicy,
     auto_topic_alias_lru: VecDeque<u16>,
+    /// Whether the current network connection has already completed its initial CONNACK.
+    connack_received: bool,
     /// `topic_alias_maximum` RECEIVED via connack packet
     pub broker_topic_alias_max: u16,
     /// `topic_alias_maximum` SENT in the CONNECT packet.
@@ -428,6 +430,7 @@ impl MqttState {
             auto_topic_aliases,
             auto_topic_alias_policy,
             auto_topic_alias_lru: VecDeque::new(),
+            connack_received: false,
             // Set via CONNACK
             broker_topic_alias_max: 0,
             // Set from CONNECT properties
@@ -555,6 +558,7 @@ impl MqttState {
         self.auto_outgoing_topic_aliases.clear();
         self.next_auto_topic_alias = Some(1);
         self.auto_topic_alias_lru.clear();
+        self.connack_received = false;
         self.broker_topic_alias_max = 0;
     }
 
@@ -984,6 +988,10 @@ impl MqttState {
     }
 
     fn handle_incoming_connack(&mut self, connack: &ConnAck) -> Result<Option<Packet>, StateError> {
+        if self.connack_received {
+            return Err(StateError::Deserialization(MqttError::ProtocolError));
+        }
+
         if connack.code != ConnectReturnCode::Success {
             return Err(StateError::ConnFail {
                 reason: connack.code,
@@ -1008,6 +1016,7 @@ impl MqttState {
             // Grow immediately so incoming/outgoing packet-id indexed tracking stays valid.
             self.reconcile_outgoing_tracking_capacity(false);
         }
+        self.connack_received = true;
         Ok(None)
     }
 
@@ -1898,6 +1907,7 @@ impl Clone for MqttState {
             auto_topic_aliases: self.auto_topic_aliases,
             auto_topic_alias_policy: self.auto_topic_alias_policy,
             auto_topic_alias_lru: self.auto_topic_alias_lru.clone(),
+            connack_received: self.connack_received,
             broker_topic_alias_max: self.broker_topic_alias_max,
             client_topic_alias_max: self.client_topic_alias_max,
             max_outgoing_inflight: self.max_outgoing_inflight,
@@ -2391,6 +2401,7 @@ mod test {
         mqtt.reconcile_outgoing_tracking_capacity(true);
         assert_eq!(mqtt.outgoing_pub.len(), 5);
 
+        mqtt.reset_connection_scoped_state();
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(9)))
             .unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 10);
@@ -2461,6 +2472,23 @@ mod test {
 
         assert_eq!(mqtt.outgoing_pub.len(), 11);
         assert_eq!(mqtt.outgoing_rel_notice.len(), 11);
+    }
+
+    #[test]
+    fn duplicate_connack_after_connection_establishment_is_protocol_error() {
+        let mut mqtt = MqttState::builder(10).build();
+
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(4)))
+            .unwrap();
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(4)))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
     }
 
     #[test]

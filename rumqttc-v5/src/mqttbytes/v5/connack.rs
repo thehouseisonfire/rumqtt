@@ -71,6 +71,9 @@ impl ConnAck {
         bytes.advance(variable_header_index);
 
         let flags = read_u8(&mut bytes)?;
+        if flags & 0xFE != 0 {
+            return Err(Error::IncorrectPacketFormat);
+        }
         let return_code = read_u8(&mut bytes)?;
         let properties = ConnAckProperties::read(&mut bytes)?;
 
@@ -627,6 +630,25 @@ mod test {
         let connack = ConnAck::read(fixed_header, packet_bytes).unwrap();
 
         assert_eq!(connack.code, ConnectReturnCode::QoSNotSupported);
+    }
+
+    #[test]
+    fn connack_rejects_nonzero_reserved_acknowledge_flag_bits() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x20, // CONNACK fixed header with valid flags
+                0x03, // remaining length
+                0x02, // invalid acknowledge flags: reserved bit 1 set
+                0x00, // Success
+                0x00, // properties length = 0
+            ][..],
+        );
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+        let err = ConnAck::read(fixed_header, packet_bytes).unwrap_err();
+
+        assert!(matches!(err, Error::IncorrectPacketFormat));
     }
 
     #[test]

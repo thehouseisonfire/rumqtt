@@ -3436,12 +3436,10 @@ mod tests {
         let broker = tokio::spawn(async move {
             let mut peer = peer_rx.recv_async().await.unwrap();
             let first_packet = read_packet_bytes(&mut peer).await;
-            let no_second_before_connack = time::timeout(
-                Duration::from_millis(50),
-                read_packet_bytes(&mut peer),
-            )
-            .await
-            .is_err();
+            let no_second_before_connack =
+                time::timeout(Duration::from_millis(50), read_packet_bytes(&mut peer))
+                    .await
+                    .is_err();
 
             let mut encoded_connack = BytesMut::new();
             ConnAck {
@@ -3481,6 +3479,62 @@ mod tests {
         assert!(matches!(
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
             Packet::PingReq(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn duplicate_connack_after_connection_establishment_sends_protocol_error_disconnect() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+
+            let mut encoded_connack = BytesMut::new();
+            ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            }
+            .write(&mut encoded_connack)
+            .unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+
+            read_packet_bytes(&mut peer).await
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(
+                super::super::mqttbytes::Error::ProtocolError
+            ))
+        ));
+
+        let disconnect_bytes = broker.await.unwrap();
+        let mut stream = BytesMut::from(&disconnect_bytes[..]);
+        assert!(matches!(
+            Packet::read(&mut stream, Some(1024)).unwrap(),
+            Packet::Disconnect(Disconnect {
+                reason_code: DisconnectReasonCode::ProtocolError,
+                ..
+            })
         ));
     }
 
