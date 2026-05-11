@@ -407,6 +407,26 @@ mod test {
     }
 
     #[test]
+    fn disconnect_read_accepts_session_taken_over() {
+        let mut buffer = bytes::BytesMut::new();
+        buffer.extend_from_slice(&[
+            0xE0, // DISCONNECT packet type
+            0x02, // Remaining length: reason code + property length
+            0x8E, // SessionTakenOver
+            0x00, // Property length
+        ]);
+
+        let fixed_header = parse_fixed_header(buffer.iter()).unwrap();
+        let disconnect_bytes = buffer.split_to(fixed_header.frame_length()).freeze();
+        let disconnect = Disconnect::read(fixed_header, disconnect_bytes).unwrap();
+
+        assert_eq!(
+            disconnect,
+            Disconnect::new(DisconnectReasonCode::SessionTakenOver)
+        );
+    }
+
+    #[test]
     fn disconnect1_encoding_works() {
         let mut buffer = BytesMut::new();
         let disconnect = Disconnect::new(DisconnectReasonCode::NormalDisconnection);

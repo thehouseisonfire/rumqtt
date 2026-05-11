@@ -1817,8 +1817,22 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: the server must validate incoming CONNECT packets and close the connection without CONNACK on failure. A client never receives CONNECT packets and cannot enforce this. The client does defensively validate its own outgoing CONNECT via Connect::write() (e.g., rejects empty client_id with clean_session=false, validates UTF-8 strings, validates connect flags), but that is a separate concern from this server obligation.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": ["Connect::write"],
+          "reason": "Client-side CONNECT encoding validates outgoing packet integrity (e.g., MQTT-3.1.3-7 empty-client-id check), but this is the client's own conformance, not the server's validation obligation described in this requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side test for server CONNECT validation is possible or expected."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-2",
@@ -1831,8 +1845,16 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: the server must disconnect an existing client when the same ClientId reconnects. The client has no role in enforcing this behavior and cannot require the server to take over an existing session.",
+      "evidence": [],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side session management obligation. No client-side enforcement is possible or required."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-3",
@@ -1845,8 +1867,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: the server must process CleanSession per section 3.1.2.4. The client's related responsibilities are covered by other requirements: the client correctly encodes clean_session in the CONNECT packet (Connect::write), correctly handles the CONNACK session_present flag (reconcile_connack_session rejects clean_session=true with session_present=true per MQTT-3.2.2-3, and resets state when session_present=false), and ConnAck::read validates the session_present flag against non-success return codes. Those are distinct client obligations, not this server obligation.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["reconcile_connack_session"],
+          "reason": "Client correctly handles CONNACK session_present in relation to clean_session, but this is a client-side obligation separate from the server's CleanSession processing duty."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": ["ConnAck::read"],
+          "reason": "ConnAck decode rejects session_present=true on non-success return codes and validates reserved flag bits, but this is defensive client decoding, not the server's CleanSession processing."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side CleanSession processing obligation. Client-side session reconciliation is tested separately (connack_reconcile_rejects_clean_session_with_session_present, connack_reconcile_resets_pending_when_clean_session_gets_new_session, etc.) under MQTT-3.2.2-3."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-4",
@@ -1859,8 +1900,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This is a server-side obligation, but the client must validate the CONNACK return code to detect connection acceptance vs rejection. The v4 client fully validates this: mqtt_connect() checks that the first response is a CONNACK with ConnectReturnCode::Success; non-zero return codes produce ConnectionError::ConnectionRefused. The ConnAck::read() decoder also validates that session_present is only set when the return code is Success (Error::IncorrectPacketFormat otherwise).",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["mqtt_connect"],
+          "reason": "mqtt_connect() reads the first packet after sending CONNECT and matches on Incoming::ConnAck(connack) if connack.code == ConnectReturnCode::Success => Ok(connack), Incoming::ConnAck(connack) => Err(ConnectionError::ConnectionRefused(connack.code)), and packet => Err(ConnectionError::NotConnAck(...)). This validates the zero return code requirement from the client side."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": ["ConnAck::read", "ConnectReturnCode"],
+          "reason": "ConnAck::read() decodes the return code via connect_return() which maps 0 to Success and 1-5 to specific refusal codes, rejecting anything else with Error::InvalidConnectReturnCode. It also rejects session_present=true when code!=Success with Error::IncorrectPacketFormat."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": ["mqtt_connect_returns_bad_client_id_rejection", "connack_parsing_works", "connack_parsing_rejects_session_present_on_error", "connack_parsing_rejects_reserved_flag_bits", "connack_parsing_rejects_invalid_remaining_len"],
+        "notes": "Unit tests in connack.rs cover decode validation. The eventloop test mqtt_connect_returns_bad_client_id_rejection covers the client-side rejection path for non-zero return codes. Integration test in reliability.rs covers ConnectionRefused(BadUserNamePassword) end-to-end."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-5",
@@ -1873,8 +1933,22 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: after rejecting a CONNECT packet, the server must not process any later client data sent on that network connection. Although the client is allowed by the same sentence to pipeline additional control packets before receiving CONNACK, the MUST NOT obligation belongs to the server. The v4 client has no code path that can enforce whether a server processes post-CONNECT bytes after rejection; it can only observe the non-success CONNACK or connection close.",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": ["mqtt_connect"],
+          "reason": "Client-side connection setup reads the server response to CONNECT and treats non-success CONNACK return codes as ConnectionError::ConnectionRefused, but this does not and cannot prove the server avoided processing any later pipelined client data."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side post-rejection processing behavior is not testable in this client crate. Client-side CONNACK rejection handling is covered separately under MQTT-3.1.4-4."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.0-1",

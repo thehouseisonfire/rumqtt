@@ -2445,6 +2445,37 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn poll_surfaces_incoming_session_taken_over_disconnect() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let mut eventloop = EventLoop::new(options, 1);
+        let (client, mut peer) = tokio::io::duplex(64);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        peer.write_all(&[
+            0xE0,
+            0x02,
+            DisconnectReasonCode::SessionTakenOver as u8,
+            0x00,
+        ])
+        .await
+        .unwrap();
+
+        let err = time::timeout(Duration::from_secs(1), eventloop.poll())
+            .await
+            .expect("poll should return after inbound disconnect")
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::ServerDisconnect {
+                reason_code: DisconnectReasonCode::SessionTakenOver,
+                reason_string: None,
+            })
+        ));
+        assert!(eventloop.network.is_none());
+    }
+
     #[test]
     fn eventloop_new_keeps_internal_sender_alive() {
         let options = MqttOptions::new("test-client", "localhost");
