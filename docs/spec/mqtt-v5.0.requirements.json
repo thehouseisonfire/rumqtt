@@ -3184,8 +3184,37 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is primarily server-side: the server may apply extra CONNECT restrictions, should authenticate/authorize, and must close the network connection on failure, optionally after sending an error CONNACK. A rumqttc client cannot enforce those checks on the server. The client-side behavior that is relevant here is limited to reacting to server handshake packets: it decodes CONNACK reason codes, accepts AUTH during enhanced authentication, and fails the handshake on non-success CONNACK.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner",
+            "ConnectionError::ConnectionRefused"
+          ],
+          "reason": "The v5 handshake loop accepts incoming AUTH packets during connection setup and returns ConnectionRefused when the server sends a non-Success CONNACK, which is the client's observable reaction to server-side CONNECT rejection."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAck::read",
+            "connect_return"
+          ],
+          "reason": "CONNACK decoding maps wire reason codes, including error codes >= 0x80, into typed ConnectReturnCode values so the client can distinguish server rejection reasons."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_returns_client_identifier_not_valid_rejection",
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_failure_resets_initial_auth_exchange",
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_accepts_matching_connack_authentication_method"
+        ],
+        "notes": "Coverage exists for refused CONNACK handling and AUTH/CONNACK handshake behavior. The server's own restriction/auth/close logic is outside this client crate."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.4-3",
@@ -3264,8 +3293,39 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The MUST in this requirement is on the server: after accepting CONNECT, the server must acknowledge it with a Success CONNACK. The client does not send CONNACK and cannot enforce that server duty. The relevant client-side behavior is that rumqttc does not treat the connection as established until it receives a Success CONNACK, while still permitting AUTH packets during enhanced authentication.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner",
+            "ConnectionError::NotConnAck",
+            "ConnectionError::ConnectionRefused"
+          ],
+          "reason": "The connection handshake returns success only after an incoming CONNACK with Success, rejects non-Success CONNACK with ConnectionRefused, and rejects any non-AUTH/non-CONNACK packet with NotConnAck."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAck::read",
+            "connect_return"
+          ],
+          "reason": "Wire-format CONNACK packets are decoded into ConnAck plus a typed reason code, which is necessary for the handshake logic to distinguish Success from server rejection."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_rejects_unexpected_packet_before_connack",
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it",
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_returns_client_identifier_not_valid_rejection",
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_accepts_matching_connack_authentication_method"
+        ],
+        "notes": "Success CONNACK, non-Success CONNACK, AUTH-before-CONNACK, and unexpected non-AUTH/non-CONNACK packet handling are all covered."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.1.4-6",
@@ -3278,8 +3338,35 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The normative MUST NOT here is server-side: if the server rejects CONNECT, it must not process data sent after that CONNECT. The earlier sentence merely allows clients to pipeline packets before CONNACK; it does not require them to do so. rumqttc-v5 waits for the CONNECT handshake to finish before admitting queued requests onto the network, which is permitted and does not violate this requirement.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "connect"
+          ],
+          "reason": "When no network connection exists, poll() completes connect(), reconciles the returned CONNACK, and only then enters the request-processing select loop; queued client requests are not written before the handshake completes."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "mqtt_connect_inner writes CONNECT and then waits for AUTH/CONNACK responses from the server instead of sending further MQTT control packets during handshake establishment."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::poll_sends_connect_before_queued_requests",
+          "rumqttc-v5/src/eventloop.rs::queued_requests_are_withheld_until_successful_connack"
+        ],
+        "notes": "Existing eventloop coverage shows a queued request results in CONNECT as the first wire packet and the queued request as the next packet after a successful CONNACK. A separate direct withholding check before CONNACK is covered by a dedicated eventloop test."
+      },
+      "follow_up": "Open optional design follow-up: evaluate opt-in pre-CONNACK pipelining only if a concrete latency use case justifies the added state complexity. Current behavior is spec-compliant and intentionally waits for CONNACK before admitting queued outbound requests. Any staged implementation should start with only handshake-safe packets such as PINGREQ or client-initiated abort DISCONNECT, explicitly exclude re-auth AUTH before CONNACK, and keep PUBLISH/SUBSCRIBE/UNSUBSCRIBE/PUBREL blocked until broker CONNACK properties and session state are reconciled. Before broader pipelining, design separate pre-CONNACK tracking that can be committed or failed after CONNACK without corrupting session reset, topic alias, QoS inflight, notice, ordering, or reconnect replay state. Required tests: broker CONNECT rejection after pipelined bytes, enhanced AUTH interleaving, session_present=false cleanup, topic alias maximum handling, receive maximum handling, QoS inflight replay, ordering across reconnect, and wire-level proof that the feature remains disabled by default."
     },
     {
       "id": "MQTT-3.2.0-1",

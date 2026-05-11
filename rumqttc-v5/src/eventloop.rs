@@ -1700,6 +1700,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mqtt_connect_rejects_unexpected_packet_before_connack() {
+        let options = MqttOptions::new("test-client", "localhost");
+
+        let result = run_mqtt_connect_with_stale_state_auth_method(
+            options,
+            None,
+            vec![Packet::PingReq(super::super::mqttbytes::v5::PingReq)],
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::NotConnAck(packet))
+                if matches!(
+                    &*packet,
+                    Packet::PingReq(super::super::mqttbytes::v5::PingReq)
+                )
+        ));
+    }
+
+    #[tokio::test]
     async fn mqtt_connect_adopts_assigned_client_identifier() {
         let options = MqttOptions::new("", "localhost");
         let mut connack = build_connack_with_receive_max(10);
@@ -3388,6 +3409,75 @@ mod tests {
             Packet::read(&mut first_stream, Some(1024)).unwrap(),
             Packet::Connect(..)
         ));
+        assert!(matches!(
+            Packet::read(&mut second_stream, Some(1024)).unwrap(),
+            Packet::PingReq(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn queued_requests_are_withheld_until_successful_connack() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let first_packet = read_packet_bytes(&mut peer).await;
+            let no_second_before_connack = time::timeout(
+                Duration::from_millis(50),
+                read_packet_bytes(&mut peer),
+            )
+            .await
+            .is_err();
+
+            let mut encoded_connack = BytesMut::new();
+            ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            }
+            .write(&mut encoded_connack)
+            .unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+
+            let second_packet = read_packet_bytes(&mut peer).await;
+            (first_packet, no_second_before_connack, second_packet)
+        });
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Packet::ConnAck(_))
+        ));
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        ));
+
+        let (first_packet, no_second_before_connack, second_packet) = broker.await.unwrap();
+        let mut first_stream = BytesMut::from(&first_packet[..]);
+        let mut second_stream = BytesMut::from(&second_packet[..]);
+
+        assert!(matches!(
+            Packet::read(&mut first_stream, Some(1024)).unwrap(),
+            Packet::Connect(..)
+        ));
+        assert!(
+            no_second_before_connack,
+            "queued request was observable on the wire before CONNACK"
+        );
         assert!(matches!(
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
             Packet::PingReq(_)
