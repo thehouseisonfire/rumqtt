@@ -526,6 +526,11 @@ impl MqttState {
             Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec),
             Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel),
             Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp),
+            Incoming::ConnAck(_) => {
+                Err(StateError::Deserialization(
+                    mqttbytes::Error::IncorrectPacketFormat,
+                ))
+            }
             _ => {
                 error!("Invalid incoming packet = {packet:?}");
                 Err(StateError::WrongPacket)
@@ -2024,6 +2029,23 @@ mod test {
 
         // should ping
         mqtt.outgoing_ping().unwrap();
+    }
+
+    #[test]
+    fn duplicate_connack_after_connection_establishment_is_protocol_error() {
+        let mut mqtt = build_mqttstate();
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::ConnAck(crate::mqttbytes::v4::ConnAck::new(
+                crate::mqttbytes::v4::ConnectReturnCode::Success,
+                false,
+            )))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::Deserialization(crate::mqttbytes::Error::IncorrectPacketFormat)
+        ));
     }
 
     #[test]
