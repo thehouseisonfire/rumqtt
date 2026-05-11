@@ -117,6 +117,7 @@ impl PendingDisconnect {
 }
 
 /// Critical errors during eventloop polling
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
     #[error("Mqtt state: {0}")]
@@ -392,6 +393,7 @@ impl EventLoop {
 
         self.state.fail_auth_exchange_due_to_session_reset();
         self.state.reset_connection_scoped_state();
+        self.state.events.clear();
     }
 
     fn push_replay_envelope(
@@ -2495,6 +2497,7 @@ mod tests {
             })
         ));
         assert!(eventloop.network.is_none());
+        assert!(eventloop.state.events.is_empty());
     }
 
     #[test]
@@ -3522,8 +3525,8 @@ mod tests {
         let err = eventloop.poll().await.unwrap_err();
         assert!(matches!(
             err,
-            ConnectionError::MqttState(StateError::Deserialization(
-                super::super::mqttbytes::Error::ProtocolError
+            ConnectionError::MqttState(StateError::ProtocolViolation(
+                crate::ProtocolViolation::DuplicateConnAck
             ))
         ));
 

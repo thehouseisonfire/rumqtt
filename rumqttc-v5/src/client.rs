@@ -113,6 +113,7 @@ impl From<Cow<'_, str>> for PublishTopic {
 }
 
 /// Client Error
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("Failed to send mqtt requests to eventloop")]

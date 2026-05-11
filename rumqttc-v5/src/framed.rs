@@ -142,6 +142,13 @@ impl Network {
                             .await;
                             return Err(err);
                         }
+                        Err(err @ StateError::ProtocolViolation(_)) => {
+                            self.try_send_inbound_disconnect(InboundDisconnect {
+                                reason: DisconnectReasonCode::ProtocolError,
+                            })
+                            .await;
+                            return Err(err);
+                        }
                         Err(err) => return Err(err),
                     }
 

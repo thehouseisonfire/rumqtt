@@ -1,8 +1,8 @@
 use super::mqttbytes::v5::{
-    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PingReq, PubAck,
-    PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish,
-    PublishProperties, SubAck, Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason,
-    Unsubscribe,
+    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType,
+    PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel,
+    PubRelReason, Publish, PublishProperties, SubAck, Subscribe, SubscribeReasonCode, UnsubAck,
+    UnsubAckReason, Unsubscribe,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::auth::{AuthLifecycle, IncomingAuthEffect};
@@ -65,6 +65,7 @@ impl AutoTopicAliasAction {
 }
 
 /// Errors during state handling
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     /// Io Error while state is passed to network
@@ -81,15 +82,14 @@ pub enum StateError {
     /// Last pingreq isn't acked
     #[error("Last pingreq isn't acked")]
     AwaitPingResp,
-    /// Received a wrong packet while waiting for another packet
-    #[error("Received a wrong packet while waiting for another packet")]
-    WrongPacket,
     #[error("Timeout while waiting to resolve collision")]
     CollisionTimeout,
     #[error("A Subscribe packet must contain atleast one filter")]
     EmptySubscription,
     #[error("Mqtt serialization/deserialization error: {0}")]
     Deserialization(MqttError),
+    #[error("MQTT protocol violation: {0}")]
+    ProtocolViolation(ProtocolViolation),
     #[error(
         "Cannot use topic alias '{alias:?}'. It's greater than the broker's maximum of '{max:?}'."
     )]
@@ -115,6 +115,16 @@ pub enum StateError {
     AuthError(String),
     #[error("Authenticator not set")]
     AuthenticatorNotSet,
+}
+
+/// MQTT protocol-state violations detected by the client state machine.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ProtocolViolation {
+    #[error("server sent a second CONNACK after the connection was established")]
+    DuplicateConnAck,
+    #[error("server sent packet type {0:?}, which is invalid in the current client state")]
+    UnexpectedIncomingPacket(PacketType),
 }
 
 impl From<mqttbytes::Error> for StateError {
@@ -910,7 +920,9 @@ impl MqttState {
             Incoming::Auth(auth) => self.handle_incoming_auth(auth),
             _ => {
                 error!("Invalid incoming packet = {packet:?}");
-                Err(StateError::WrongPacket)
+                Err(StateError::ProtocolViolation(
+                    ProtocolViolation::UnexpectedIncomingPacket(packet.packet_type()),
+                ))
             }
         };
 
@@ -919,16 +931,34 @@ impl MqttState {
             (Incoming::Publish(_), Ok(Some(Packet::Disconnect(_))))
         );
 
+        let queue_incoming_event_on_error = matches!(
+            (&packet, &outgoing),
+            (Incoming::ConnAck(_), Err(StateError::ConnFail { .. }))
+                | (
+                    Incoming::Disconnect(_),
+                    Err(StateError::ServerDisconnect { .. })
+                )
+        );
+
         // Preserve original event ordering (Incoming first, derived Outgoing next)
         // without cloning the incoming packet.
-        if !skip_incoming_event {
-            self.events
-                .insert(events_len_before, Event::Incoming(packet));
+        match outgoing {
+            Ok(outgoing) => {
+                if !skip_incoming_event {
+                    self.events
+                        .insert(events_len_before, Event::Incoming(packet));
+                }
+                self.last_incoming = Instant::now();
+                Ok(outgoing)
+            }
+            Err(err) => {
+                if queue_incoming_event_on_error {
+                    self.events
+                        .insert(events_len_before, Event::Incoming(packet));
+                }
+                Err(err)
+            }
         }
-
-        let outgoing = outgoing?;
-        self.last_incoming = Instant::now();
-        Ok(outgoing)
     }
 
     /// Builds the protocol-error disconnect response for the current state.
@@ -989,7 +1019,9 @@ impl MqttState {
 
     fn handle_incoming_connack(&mut self, connack: &ConnAck) -> Result<Option<Packet>, StateError> {
         if self.connack_received {
-            return Err(StateError::Deserialization(MqttError::ProtocolError));
+            return Err(StateError::ProtocolViolation(
+                ProtocolViolation::DuplicateConnAck,
+            ));
         }
 
         if connack.code != ConnectReturnCode::Success {
@@ -1923,7 +1955,7 @@ mod test {
     use super::mqttbytes::v5::*;
     use super::mqttbytes::*;
     use super::{Event, Incoming, Outgoing, Request};
-    use super::{MqttState, StateError};
+    use super::{MqttState, ProtocolViolation, StateError};
     use crate::notice::{
         AuthNoticeError, AuthNoticeTx, PublishNotice, PublishNoticeError, PublishNoticeTx,
         PublishResult, SubscribeNoticeError, SubscribeNoticeTx, UnsubscribeNoticeError,
@@ -2480,6 +2512,7 @@ mod test {
 
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(4)))
             .unwrap();
+        mqtt.events.clear();
 
         let err = mqtt
             .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(4)))
@@ -2487,8 +2520,112 @@ mod test {
 
         assert!(matches!(
             err,
-            StateError::Deserialization(Error::ProtocolError)
+            StateError::ProtocolViolation(ProtocolViolation::DuplicateConnAck)
         ));
+        assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn refused_connack_is_terminal_error_and_preserves_incoming_event() {
+        let mut mqtt = MqttState::builder(10).build();
+        let connack = ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::BadUserNamePassword,
+            properties: None,
+        };
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::ConnAck(connack.clone()))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ConnFail {
+                reason: ConnectReturnCode::BadUserNamePassword
+            }
+        ));
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Incoming::ConnAck(connack)))
+        );
+    }
+
+    #[test]
+    fn inbound_connect_after_connection_establishment_is_protocol_error() {
+        let mut mqtt = build_mqttstate();
+        let connect = Connect {
+            keep_alive: 30,
+            client_id: "client".to_owned(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Connect(connect, None, ConnectAuth::None))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ProtocolViolation(ProtocolViolation::UnexpectedIncomingPacket(
+                PacketType::Connect
+            ))
+        ));
+        assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn inbound_pingreq_after_connection_establishment_is_protocol_error() {
+        let mut mqtt = build_mqttstate();
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::PingReq(PingReq))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ProtocolViolation(ProtocolViolation::UnexpectedIncomingPacket(
+                PacketType::PingReq
+            ))
+        ));
+        assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn inbound_subscribe_after_connection_establishment_is_protocol_error() {
+        let mut mqtt = build_mqttstate();
+        let mut subscribe = Subscribe::new(Filter::new("topic/one", QoS::AtLeastOnce), None);
+        subscribe.pkid = 1;
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Subscribe(subscribe))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ProtocolViolation(ProtocolViolation::UnexpectedIncomingPacket(
+                PacketType::Subscribe
+            ))
+        ));
+        assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn inbound_unsubscribe_after_connection_establishment_is_protocol_error() {
+        let mut mqtt = build_mqttstate();
+        let mut unsubscribe = Unsubscribe::new("topic/one", None);
+        unsubscribe.pkid = 1;
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Unsubscribe(unsubscribe))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ProtocolViolation(ProtocolViolation::UnexpectedIncomingPacket(
+                PacketType::Unsubscribe
+            ))
+        ));
+        assert!(mqtt.events.is_empty());
     }
 
     #[test]
@@ -4849,7 +4986,7 @@ mod test {
         let disconnect = Disconnect::new(DisconnectReasonCode::SessionTakenOver);
 
         let err = mqtt
-            .handle_incoming_packet(Incoming::Disconnect(disconnect))
+            .handle_incoming_packet(Incoming::Disconnect(disconnect.clone()))
             .unwrap_err();
 
         assert!(matches!(
@@ -4859,6 +4996,10 @@ mod test {
                 reason_string: None,
             }
         ));
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Incoming::Disconnect(disconnect)))
+        );
     }
 
     // Preserve the server-provided reason_string alongside SessionTakenOver.
@@ -4876,7 +5017,7 @@ mod test {
         );
 
         let err = mqtt
-            .handle_incoming_packet(Incoming::Disconnect(disconnect))
+            .handle_incoming_packet(Incoming::Disconnect(disconnect.clone()))
             .unwrap_err();
 
         assert!(matches!(
@@ -4885,6 +5026,10 @@ mod test {
                 reason_code: DisconnectReasonCode::SessionTakenOver,
                 reason_string: Some(ref s),
             } if s == "another client connected"
+        ));
+        assert!(matches!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Incoming::Disconnect(_)))
         ));
     }
 
@@ -4897,7 +5042,7 @@ mod test {
         let disconnect = Disconnect::new(DisconnectReasonCode::ServerShuttingDown);
 
         let err = mqtt
-            .handle_incoming_packet(Incoming::Disconnect(disconnect))
+            .handle_incoming_packet(Incoming::Disconnect(disconnect.clone()))
             .unwrap_err();
 
         assert!(matches!(
@@ -4907,5 +5052,9 @@ mod test {
                 reason_string: None,
             }
         ));
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Incoming::Disconnect(disconnect)))
+        );
     }
 }

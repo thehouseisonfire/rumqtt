@@ -65,7 +65,7 @@ pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::TlsConfiguration;
 pub use rumqttc_core::default_socket_connect;
-pub use state::{MqttState, MqttStateBuilder, StateError};
+pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
 pub use transport::Transport;
 
 /// Policy used for automatic MQTT 5 client-side topic alias assignment.
@@ -463,6 +463,7 @@ pub enum AuthAction {
 }
 
 /// Errors returned by MQTT 5 enhanced-authentication callbacks.
+#[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AuthError {
     #[error("authentication failed: {0}")]
@@ -1845,6 +1846,7 @@ impl MqttOptionsBuilder {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OptionError {
     #[error("Unsupported URL scheme.")]

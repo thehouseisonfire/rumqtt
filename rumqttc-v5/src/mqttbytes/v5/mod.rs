@@ -86,6 +86,27 @@ impl From<PrimitiveError> for Error {
 }
 
 impl Packet {
+    #[must_use]
+    pub const fn packet_type(&self) -> PacketType {
+        match self {
+            Self::Auth(_) => PacketType::Auth,
+            Self::Connect(_, _, _) => PacketType::Connect,
+            Self::ConnAck(_) => PacketType::ConnAck,
+            Self::Publish(_) => PacketType::Publish,
+            Self::PubAck(_) => PacketType::PubAck,
+            Self::PingReq(_) => PacketType::PingReq,
+            Self::PingResp(_) => PacketType::PingResp,
+            Self::Subscribe(_) => PacketType::Subscribe,
+            Self::SubAck(_) => PacketType::SubAck,
+            Self::PubRec(_) => PacketType::PubRec,
+            Self::PubRel(_) => PacketType::PubRel,
+            Self::PubComp(_) => PacketType::PubComp,
+            Self::Unsubscribe(_) => PacketType::Unsubscribe,
+            Self::UnsubAck(_) => PacketType::UnsubAck,
+            Self::Disconnect(_) => PacketType::Disconnect,
+        }
+    }
+
     /// Reads the next MQTT v5 packet from the buffered stream.
     ///
     /// # Errors
