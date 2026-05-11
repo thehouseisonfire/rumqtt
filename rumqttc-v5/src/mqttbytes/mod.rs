@@ -7,6 +7,7 @@ pub mod v5;
 pub use mqttbytes_core::{QoS, has_wildcards, matches, qos, valid_filter, valid_topic};
 
 /// Error during serialization and deserialization
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Invalid return code received as response for connect = {0}")]
