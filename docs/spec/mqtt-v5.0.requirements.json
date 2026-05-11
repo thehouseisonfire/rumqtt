@@ -3381,7 +3381,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "not_applicable",
-      "mapping_reason": "This requirement is server-side: after receiving CONNECT, the Server MUST send CONNACK with Success before sending any packet other than AUTH, and the Server MUST NOT send more than one CONNACK on a Network Connection. The client does not send CONNACK packets, so those server obligations are not directly applicable. The client-side handshake path still validates the observable ordering by accepting AUTH during enhanced authentication, returning ConnectionError::NotConnAck for non-CONNACK packets during the initial handshake, and treating non-Success CONNACK as connection refusal.",
+      "mapping_reason": "This requirement is server-side: after receiving CONNECT, the Server MUST send CONNACK with Success before sending any packet other than AUTH, and the Server MUST NOT send more than one CONNACK on a Network Connection. The client does not send CONNACK packets, so those server obligations are not directly applicable. The client still implements defensive handling for the observable server behavior by accepting only AUTH before the initial CONNACK, treating non-Success CONNACK as connection refusal, and rejecting a later CONNACK on the same network connection as a protocol error.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
@@ -3391,13 +3391,18 @@
           "reason": "During the initial handshake, mqtt_connect_inner loops over incoming AUTH packets, accepts a CONNACK as the terminal acknowledgement, returns ConnectionError::ConnectionRefused for non-Success CONNACK, and returns ConnectionError::NotConnAck for any other packet type."
         },
         {
-          "path": "rumqttc-v5/src/eventloop.rs",
+          "path": "rumqttc-v5/src/state.rs",
           "symbols": [
-            "mqtt_connect_accepts_matching_connack_authentication_method",
-            "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it",
-            "mqtt_connect_sends_connect_as_first_packet_on_the_wire"
+            "MqttState::handle_incoming_connack"
           ],
-          "reason": "Tests cover the client's initial handshake sequencing: CONNECT is sent first, AUTH can precede CONNACK when expected, and successful CONNACK completes the connection."
+          "reason": "After a successful CONNACK sets the connection-scoped flag, a second CONNACK on the same network connection is rejected as ProtocolError."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb"
+          ],
+          "reason": "When post-connect packet handling returns ProtocolError, Network::readb sends a DISCONNECT with reason ProtocolError before surfacing the error."
         }
       ],
       "test_coverage": {
@@ -3405,9 +3410,12 @@
         "tests": [
           "mqtt_connect_accepts_matching_connack_authentication_method",
           "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it",
-          "mqtt_connect_sends_connect_as_first_packet_on_the_wire"
+          "mqtt_connect_sends_connect_as_first_packet_on_the_wire",
+          "mqtt_connect_rejects_unexpected_packet_before_connack",
+          "duplicate_connack_after_connection_establishment_is_protocol_error",
+          "duplicate_connack_after_connection_establishment_sends_protocol_error_disconnect"
         ],
-        "notes": "No server-conformance test is required because the client does not send CONNACK packets. Existing eventloop tests cover the client handshake behavior around CONNECT, AUTH, and CONNACK."
+        "notes": "No server-conformance test is required because the client does not send CONNACK packets. Existing tests cover client defensive behavior around initial handshake ordering and duplicate CONNACK rejection."
       },
       "follow_up": null
     },
@@ -3422,8 +3430,45 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is server-side: after receiving CONNECT, the Server MUST send CONNACK with Success before sending any packet other than AUTH, and the Server MUST NOT send more than one CONNACK on a Network Connection. The client does not send CONNACK packets, so those server obligations are not directly applicable. The client still implements defensive handling for the observable server behavior by accepting only AUTH before the initial CONNACK, treating non-Success CONNACK as connection refusal, and rejecting a later CONNACK on the same network connection as a protocol error.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "During the initial handshake, mqtt_connect_inner loops over incoming AUTH packets, accepts a CONNACK as the terminal acknowledgement, returns ConnectionError::ConnectionRefused for non-Success CONNACK, and returns ConnectionError::NotConnAck for any other packet type."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_connack"
+          ],
+          "reason": "After a successful CONNACK sets the connection-scoped flag, a second CONNACK on the same network connection is rejected as ProtocolError."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb"
+          ],
+          "reason": "When post-connect packet handling returns ProtocolError, Network::readb sends a DISCONNECT with reason ProtocolError before surfacing the error."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "mqtt_connect_accepts_matching_connack_authentication_method",
+          "mqtt_connect_accepts_connack_without_authentication_method_when_connect_omits_it",
+          "mqtt_connect_sends_connect_as_first_packet_on_the_wire",
+          "mqtt_connect_rejects_unexpected_packet_before_connack",
+          "duplicate_connack_after_connection_establishment_is_protocol_error",
+          "duplicate_connack_after_connection_establishment_sends_protocol_error_disconnect"
+        ],
+        "notes": "No server-conformance test is required because the client does not send CONNACK packets. Existing tests cover client defensive behavior around initial handshake ordering and duplicate CONNACK rejection."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-1",
@@ -3436,8 +3481,35 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "ConnAck::read now validates the variable-header Connect Acknowledge Flags byte and rejects malformed CONNACK packets when any reserved bit 7-1 is non-zero.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAck::read"
+          ],
+          "reason": "The decoder rejects acknowledge-flag bytes where `(flags & 0xFE) != 0` before decoding Session Present."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "validate_fixed_header_flags"
+          ],
+          "reason": "Packet::read still validates the fixed header separately; the CONNACK decoder now also covers the variable-header acknowledge flags required by this rule."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "read_rejects_connack_with_nonzero_reserved_flags",
+          "connack_rejects_nonzero_reserved_acknowledge_flag_bits"
+        ],
+        "notes": "Coverage now includes both fixed-header flag validation and a targeted malformed CONNACK decode with a valid fixed header but non-zero reserved acknowledge bits."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-2",
@@ -3450,8 +3522,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is server-side: when accepting a CONNECT with Clean Start set to 1, the Server MUST set Session Present to 0 in a successful CONNACK. The client cannot enforce what a conforming server sends, so the server obligation is not directly applicable. The client still implements defensive handling for the observable violation by rejecting a successful CONNACK whose session_present flag is true when the client connected with clean_start=true.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::poll"
+          ],
+          "reason": "After connect() returns a CONNACK, poll() calls reconcile_connack_session(); when clean_start is true and session_present is true it returns ConnectionError::SessionStateMismatch and does not establish the connection."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "connack_reconcile_rejects_clean_start_with_session_present"
+        ],
+        "notes": "No server-conformance test is required because the client does not send CONNACK packets. A targeted unit test verifies defensive client handling by rejecting clean_start=true with session_present=true."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-3",
