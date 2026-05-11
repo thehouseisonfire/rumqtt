@@ -68,6 +68,26 @@ pub enum Packet {
 }
 
 impl Packet {
+    #[must_use]
+    pub const fn packet_type(&self) -> PacketType {
+        match self {
+            Self::Connect(_) => PacketType::Connect,
+            Self::ConnAck(_) => PacketType::ConnAck,
+            Self::Publish(_) => PacketType::Publish,
+            Self::PubAck(_) => PacketType::PubAck,
+            Self::PubRec(_) => PacketType::PubRec,
+            Self::PubRel(_) => PacketType::PubRel,
+            Self::PubComp(_) => PacketType::PubComp,
+            Self::Subscribe(_) => PacketType::Subscribe,
+            Self::SubAck(_) => PacketType::SubAck,
+            Self::Unsubscribe(_) => PacketType::Unsubscribe,
+            Self::UnsubAck(_) => PacketType::UnsubAck,
+            Self::PingReq => PacketType::PingReq,
+            Self::PingResp => PacketType::PingResp,
+            Self::Disconnect => PacketType::Disconnect,
+        }
+    }
+
     pub fn size(&self) -> usize {
         match self {
             Self::Publish(publish) => publish.size(),
