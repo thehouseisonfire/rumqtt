@@ -49,6 +49,7 @@ impl PublishResult {
     }
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PublishNoticeError {
     #[error("event loop dropped notice sender")]
@@ -156,6 +157,7 @@ impl PublishNotice {
     }
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SubscribeNoticeError {
     #[error("event loop dropped notice sender")]
@@ -228,6 +230,7 @@ impl SubscribeNotice {
     }
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UnsubscribeNoticeError {
     #[error("event loop dropped notice sender")]

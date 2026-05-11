@@ -5,6 +5,7 @@
 - `rumqttc` v5: Add `MqttStateBuilder::client_topic_alias_max(u16)` builder method and `MqttState::set_client_topic_alias_max(Option<u16>)` to configure the incoming Topic Alias Maximum, propagated from `MqttOptions::topic_alias_max()` at connect time.
 ### Changed
 - `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
+- `rumqttc` v4 (Breaking Change): Add state-level `ProtocolViolation`, remove `StateError::WrongPacket`, and report duplicate or post-handshake invalid inbound packets as protocol-state errors instead of codec format errors.
 - `mqttbytes-core` (Breaking Change): Change `write_mqtt_bytes(...)` and `write_mqtt_string(...)` to return `Result<(), Error>` so oversized MQTT two-byte length-prefixed fields report `Error::PayloadTooLong` instead of panicking.
 - `rumqttc` v5 (Breaking Change): Validate incoming topic aliases against the client's advertised Topic Alias Maximum per [MQTT-3.1.2-26]/[MQTT-3.1.2-27]. Servers sending aliases exceeding the limit (or any alias when the maximum is 0/absent) now trigger a `DISCONNECT(TopicAliasInvalid)` and close the connection. Previously, any incoming alias was accepted without validation.
 ### Deprecated

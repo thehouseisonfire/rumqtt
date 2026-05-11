@@ -83,7 +83,7 @@ pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::TlsConfiguration;
 pub use rumqttc_core::default_socket_connect;
-pub use state::{MqttState, MqttStateBuilder, StateError};
+pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::Error as TlsError;
 #[cfg(feature = "use-native-tls")]
@@ -1221,6 +1221,7 @@ impl MqttOptionsBuilder {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OptionError {
     #[error("Unsupported URL scheme.")]

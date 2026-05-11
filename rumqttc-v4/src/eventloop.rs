@@ -102,6 +102,7 @@ impl PendingDisconnect {
 }
 
 /// Critical errors during eventloop polling
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
     #[error("Mqtt state: {0}")]
