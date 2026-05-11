@@ -3156,8 +3156,22 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: the server must validate incoming CONNECT packets and close the connection (optionally sending an error CONNACK) on failure. A client never receives CONNECT packets and cannot enforce this. The client does defensively validate its own outgoing CONNECT via Connect::write() (e.g., validates UTF-8 strings, validates connect flags with reserved bit 0 check, validates will topic via validate_mqtt_string, validates property values like request_response_info and request_problem_info being 0 or 1), but that is a separate concern from this server obligation. Note: unlike v3.1.1 where the server closes without CONNACK, v5 allows the server to send an error CONNACK before closing, but this difference does not create any new client-side obligation.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": ["Connect::write", "validate_connect_flags"],
+          "reason": "Client-side CONNECT encoding validates outgoing packet integrity (reserved bit 0, connect flag consistency, property value ranges), but this is the client's own conformance, not the server's validation obligation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side test for server CONNECT validation is possible or expected."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-2",
@@ -3184,8 +3198,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: the server must send DISCONNECT with reason code 0x8E (SessionTakenOver) to the existing client and close that connection. If the existing client had a Will Message, publishing that Will is also a server-side action. The client cannot enforce those server duties, but it does defensively decode and surface an incoming SessionTakenOver DISCONNECT through the normal v5 DISCONNECT handling path.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": ["Disconnect::read", "DisconnectReasonCode::SessionTakenOver", "TryFrom<u8>"],
+          "reason": "Disconnect::read() reads the DISCONNECT reason code from the wire, and DisconnectReasonCode::try_from() maps 0x8E to SessionTakenOver so the client can identify the takeover reason in an incoming packet."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": ["handle_incoming_disconn"],
+          "reason": "handle_incoming_disconn() extracts the decoded reason_code and optional reason_string, returning StateError::ServerDisconnect. This handles SessionTakenOver through the same server-initiated DISCONNECT path as other server reasons."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": ["disconnect_read_accepts_session_taken_over", "incoming_disconnect_with_session_taken_over_surfaces_reason_code", "incoming_disconnect_with_session_taken_over_extracts_reason_string", "incoming_disconnect_with_other_reason_code_surfaces_reason_code", "poll_surfaces_incoming_session_taken_over_disconnect"],
+        "notes": "Server-side client-takeover behavior is not enforceable in this client crate. Defensive client coverage exists at packet, state, and eventloop levels: E0 02 8E 00 decodes as DisconnectReasonCode::SessionTakenOver, MqttState surfaces StateError::ServerDisconnect, and EventLoop::poll returns ConnectionError::MqttState(StateError::ServerDisconnect { .. }) for an inbound SessionTakenOver DISCONNECT."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-4",
@@ -3198,8 +3231,27 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connect.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.1 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This obligation is server-only: the server must process Clean Start per section 3.1.2.4. The client's related responsibilities are covered by other requirements: the client correctly encodes clean_start in the CONNECT packet (Connect::write), correctly handles the CONNACK session_present flag (reconcile_connack_session rejects clean_start=true with session_present=true per MQTT-3.2.2-2, and resets state when session_present=false), and the eventloop's mqtt_connect_inner validates CONNACK properties including assigned_client_identifier. Those are distinct client obligations, not this server obligation. The client-side Clean Start behavior is already reviewed under MQTT-3.1.2-4 (compliant) and MQTT-3.1.2-5 (not_applicable).",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": ["reconcile_connack_session", "mqtt_connect_inner"],
+          "reason": "Client correctly handles CONNACK session_present in relation to clean_start, but this is a client-side obligation separate from the server's Clean Start processing duty."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": ["ConnAck::read"],
+          "reason": "ConnAck decode extracts session_present flag, but does not validate reserved flag bits (bits 7-1 must be 0 per MQTT-3.2.2-1) or reject session_present=1 on non-Success reason codes. These are separate CONNACK validation gaps, not the server's Clean Start processing obligation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side Clean Start processing obligation. Client-side session reconciliation is tested separately (connack_reconcile_rejects_clean_start_with_session_present, connack_reconcile_resets_pending_when_clean_start_gets_new_session, etc.) under MQTT-3.1.2-4 and MQTT-3.2.2-2."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-5",

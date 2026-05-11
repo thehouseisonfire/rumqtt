@@ -4811,4 +4811,73 @@ mod test {
         // should ping
         mqtt.outgoing_ping().unwrap();
     }
+
+    // Defensive handling for MQTT-3.1.4-3 server takeover: if the broker sends
+    // DISCONNECT with reason code 0x8E (SessionTakenOver), surface that reason
+    // through StateError::ServerDisconnect.
+    #[test]
+    fn incoming_disconnect_with_session_taken_over_surfaces_reason_code() {
+        let mut mqtt = build_mqttstate();
+        let disconnect = Disconnect::new(DisconnectReasonCode::SessionTakenOver);
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Disconnect(disconnect))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ServerDisconnect {
+                reason_code: DisconnectReasonCode::SessionTakenOver,
+                reason_string: None,
+            }
+        ));
+    }
+
+    // Preserve the server-provided reason_string alongside SessionTakenOver.
+    #[test]
+    fn incoming_disconnect_with_session_taken_over_extracts_reason_string() {
+        let mut mqtt = build_mqttstate();
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::SessionTakenOver,
+            DisconnectProperties {
+                session_expiry_interval: None,
+                reason_string: Some("another client connected".to_owned()),
+                user_properties: vec![],
+                server_reference: None,
+            },
+        );
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Disconnect(disconnect))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ServerDisconnect {
+                reason_code: DisconnectReasonCode::SessionTakenOver,
+                reason_string: Some(ref s),
+            } if s == "another client connected"
+        ));
+    }
+
+    // Verify that a generic server DISCONNECT (e.g., ServerShuttingDown) is
+    // also correctly surfaced, confirming the handling path works for all
+    // reason codes — not just SessionTakenOver.
+    #[test]
+    fn incoming_disconnect_with_other_reason_code_surfaces_reason_code() {
+        let mut mqtt = build_mqttstate();
+        let disconnect = Disconnect::new(DisconnectReasonCode::ServerShuttingDown);
+
+        let err = mqtt
+            .handle_incoming_packet(Incoming::Disconnect(disconnect))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StateError::ServerDisconnect {
+                reason_code: DisconnectReasonCode::ServerShuttingDown,
+                reason_string: None,
+            }
+        ));
+    }
 }
