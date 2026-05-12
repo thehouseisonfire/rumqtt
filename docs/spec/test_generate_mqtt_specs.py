@@ -124,8 +124,69 @@ class FindObligationWithLookbackTests(unittest.TestCase):
         requirements = extract_requirements(doc, sections, config)
         req = next(item for item in requirements if item["id"] == "MQTT-4.3.2-99")
 
-        self.assertEqual(req["summary"], ".")
+        self.assertEqual(req["summary"], "The sender MUST assign an unused Packet Identifier.")
         self.assertEqual(req["obligation"], "MUST")
+
+    def test_appendix_row_recovers_missing_requirement_summary_and_section(self) -> None:
+        doc = html.fromstring(
+            """
+            <div>
+              <h4><a name="dup"></a>3.3.1.1 DUP</h4>
+              <p>Context without requirement id.</p>
+              <h3><a name="client"></a>7.1.2 MQTT Client</h3>
+              <table>
+                <tr>
+                  <td><p>[MQTT-3.3.1-1]</p></td>
+                  <td><p>The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH Packet.</p></td>
+                </tr>
+              </table>
+            </div>
+            """
+        )
+        all_nodes = list(doc.iter())
+        node_index = {id(node): i for i, node in enumerate(all_nodes)}
+        sections = parse_sections(doc, node_index)
+
+        config = replace(SPEC_CONFIGS["v3.1.1"], min_requirements=1)
+        requirements = extract_requirements(doc, sections, config)
+        req = next(item for item in requirements if item["id"] == "MQTT-3.3.1-1")
+
+        self.assertEqual(req["section_number"], "3.3.1.1")
+        self.assertEqual(req["section_title"], "DUP")
+        self.assertEqual(req["source_anchor"], "dup")
+        self.assertEqual(
+            req["summary"],
+            "The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH Packet.",
+        )
+
+    def test_appendix_row_refines_split_body_summary_for_duplicate_requirement(self) -> None:
+        doc = html.fromstring(
+            """
+            <div>
+              <h4><a name="dup"></a>3.3.1.1 DUP</h4>
+              <p>The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH Packet. The DUP flag MUST be set to 0 for all QoS 0 messages [MQTT-3.3.1-2].</p>
+              <h3><a name="client"></a>7.1.2 MQTT Client</h3>
+              <table>
+                <tr>
+                  <td><p>[MQTT-3.3.1-2]</p></td>
+                  <td><p>The DUP flag MUST be set to 0 for all QoS 0 messages.</p></td>
+                </tr>
+              </table>
+            </div>
+            """
+        )
+        all_nodes = list(doc.iter())
+        node_index = {id(node): i for i, node in enumerate(all_nodes)}
+        sections = parse_sections(doc, node_index)
+
+        config = replace(SPEC_CONFIGS["v3.1.1"], min_requirements=1)
+        requirements = extract_requirements(doc, sections, config)
+        req = next(item for item in requirements if item["id"] == "MQTT-3.3.1-2")
+
+        self.assertEqual(req["section_number"], "3.3.1.1")
+        self.assertEqual(req["section_title"], "DUP")
+        self.assertEqual(req["source_anchor"], "dup")
+        self.assertEqual(req["summary"], "The DUP flag MUST be set to 0 for all QoS 0 messages.")
 
 
 if __name__ == "__main__":
