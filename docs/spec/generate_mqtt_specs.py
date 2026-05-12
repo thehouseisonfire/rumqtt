@@ -142,6 +142,10 @@ def clean_summary(clause: str) -> str:
     return summary
 
 
+def summary_compare_key(summary: str) -> str:
+    return normalize_text(summary).replace(" .", ".")
+
+
 def find_first_anchor(node: Any) -> str | None:
     if not hasattr(node, "xpath"):
         return None
@@ -293,6 +297,23 @@ def is_placeholder_summary(summary: str) -> bool:
     return not summary or summary == "."
 
 
+def requirement_context_text(node: Any, text: str) -> str:
+    row = node.xpath("ancestor::tr[1]")
+    if not row:
+        return text
+
+    row_text = normalize_text(row[0].text_content())
+    if not row_text:
+        return text
+
+    text_without_ids = normalize_text(REQUIREMENT_RE.sub("", text))
+    row_without_ids = normalize_text(REQUIREMENT_RE.sub("", row_text))
+    if is_placeholder_summary(clean_summary(text_without_ids)) or len(row_without_ids) > len(text_without_ids):
+        return row_text
+
+    return text
+
+
 def find_obligation_with_lookback(node: Any, text: str) -> str:
     """Find the obligation keyword for a requirement-bearing node.
 
@@ -335,6 +356,45 @@ def find_obligation_with_lookback(node: Any, text: str) -> str:
     return "UNSPECIFIED"
 
 
+def resolve_requirement_section(
+    req_id: str,
+    current_section: Section,
+    sections: list[Section],
+    summary: str,
+) -> Section:
+    if not is_conformance_section(current_section.number):
+        return current_section
+
+    match = re.match(r"MQTT-((?:\d+\.)+\d+)-\d+$", req_id)
+    if not match:
+        return current_section
+
+    prefix = match.group(1)
+    candidates = [
+        section
+        for section in sections
+        if not is_conformance_section(section.number)
+        and (section.number == prefix or section.number.startswith(f"{prefix}."))
+    ]
+    if not candidates:
+        return current_section
+
+    summary_lower = summary.lower()
+    title_matches = [
+        section
+        for section in candidates
+        if section.title and section.title.lower() in summary_lower
+    ]
+    if title_matches:
+        return max(title_matches, key=lambda section: (section.number.count("."), len(section.number)))
+
+    exact = [section for section in candidates if section.number == prefix]
+    if exact:
+        return exact[0]
+
+    return max(candidates, key=lambda section: (section.number.count("."), len(section.number)))
+
+
 def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) -> list[dict[str, Any]]:
     all_nodes = list(doc.iter())
     node_index = {id(node): i for i, node in enumerate(all_nodes)}
@@ -349,7 +409,10 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
 
     anchor_positions = [item[0] for item in anchors]
 
-    for node in doc.xpath("//p|//li|//td"):
+    for node in all_nodes:
+        if node.tag not in {"p", "li", "td"}:
+            continue
+
         text = normalize_text(node.text_content())
         if not text:
             continue
@@ -371,21 +434,27 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
         if not local_anchor:
             local_anchor = section.anchor
 
-        obligation = find_obligation_with_lookback(node, text)
-        summary = clean_summary(text)
+        context_text = requirement_context_text(node, text)
+        obligation = find_obligation_with_lookback(node, context_text)
+        summary = clean_summary(context_text)
 
         for req_id in req_ids:
-            mapping_paths, mapping_reason = mapping_for_section(config.version, section.number, section.title)
+            resolved_section = resolve_requirement_section(req_id, section, sections, summary)
+            mapping_paths, mapping_reason = mapping_for_section(
+                config.version,
+                resolved_section.number,
+                resolved_section.title,
+            )
 
             req = requirement_items.get(req_id)
             if req is None:
                 req = {
                     "id": req_id,
-                    "section_number": section.number,
-                    "section_title": section.title,
+                    "section_number": resolved_section.number,
+                    "section_title": resolved_section.title,
                     "obligation": obligation,
                     "summary": summary,
-                    "source_anchor": local_anchor,
+                    "source_anchor": resolved_section.anchor or local_anchor,
                     "occurrences": 1,
                     "candidate_paths": mapping_paths,
                     "mapping_status": "unreviewed",
@@ -398,11 +467,25 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
                     req["obligation"] == "UNSPECIFIED"
                     and obligation != "UNSPECIFIED"
                     and (
-                        not is_conformance_section(section.number)
+                        not is_conformance_section(resolved_section.number)
                         or is_placeholder_summary(req["summary"])
                     )
                 ):
                     req["obligation"] = obligation
+                if is_placeholder_summary(req["summary"]) and not is_placeholder_summary(summary):
+                    req["summary"] = summary
+                    req["source_anchor"] = resolved_section.anchor or local_anchor
+                    req["section_number"] = resolved_section.number
+                    req["section_title"] = resolved_section.title
+                    req["candidate_paths"] = mapping_paths
+                    req["mapping_reason"] = mapping_reason
+                elif (
+                    is_conformance_section(section.number)
+                    and not is_placeholder_summary(summary)
+                    and summary != req["summary"]
+                    and summary_compare_key(summary) in summary_compare_key(req["summary"])
+                ):
+                    req["summary"] = summary
 
     requirements = sorted(requirement_items.values(), key=lambda item: requirement_sort_key(item["id"]))
     if len(requirements) < config.min_requirements:
