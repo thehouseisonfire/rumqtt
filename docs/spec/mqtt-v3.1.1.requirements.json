@@ -2554,6 +2554,230 @@
       "follow_up": null
     },
     {
+      "id": "MQTT-3.2.0-1",
+      "section_number": "3.2",
+      "section_title": "CONNACK – Acknowledge connection request",
+      "obligation": "MUST",
+      "summary": "The CONNACK Packet is the packet sent by the Server in response to a CONNECT Packet received from a Client. The first packet sent from the Server to the Client MUST be a CONNACK Packet .",
+      "source_anchor": "_Ref362964779",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-applicable as a server-response validation rule. The v4 connect handshake sends CONNECT, then reads exactly one incoming packet and rejects the connection unless that first packet is CONNACK.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "After sending CONNECT, the handshake reads one incoming packet and returns ConnectionError::NotConnAck unless it is Incoming::ConnAck, so a server that sends any other first packet is rejected."
+        },
+        {
+          "path": "rumqttc-v4/src/framed.rs",
+          "symbols": [
+            "Network::read"
+          ],
+          "reason": "The first server frame is decoded as exactly one MQTT packet before mqtt_connect applies the ConnAck-only check."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs:mqtt_connect_rejects_non_connack_first_server_packet"
+        ],
+        "notes": "The eventloop test sends a non-CONNACK first server packet and verifies mqtt_connect rejects it with ConnectionError::NotConnAck."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.2.2-1",
+      "section_number": "3.2.2.2",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "Position: bit 0 of the Connect Acknowledge Flags. If the Server accepts a connection with CleanSession set to 1, the Server MUST set Session Present to 0 in the CONNACK packet in addition to setting a zero return code in the CONNACK packet .",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "mapping_reason": "Primarily a server obligation, but client-side validation is applicable because this v4 client defensively rejects an accepted CONNACK that reports session_present=1 after connecting with clean_session=true.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::poll"
+          ],
+          "reason": "On successful connection establishment, the event loop compares the received ConnAck.session_present bit against the client's clean_session setting and fails with SessionStateMismatch when clean_session=true and session_present=true."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": [
+            "ConnAck::read"
+          ],
+          "reason": "The CONNACK decoder rejects any non-success return code combined with session_present=true, enforcing the related MQTT-3.2.2-4 packet-format constraint on error responses."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs:connack_reconcile_rejects_clean_session_with_session_present",
+          "rumqttc-v4/src/eventloop.rs:poll_rejects_clean_session_with_session_present_connack",
+          "rumqttc-v4/src/mqttbytes/v4/connack.rs:connack_parsing_rejects_session_present_on_error"
+        ],
+        "notes": "Tests cover both the session reconciliation helper and the full EventLoop::poll connection path for clean_session=true with session_present=true. They also cover the related parser rejection for session_present=true on non-success return codes."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.2.2-2",
+      "section_number": "3.2.2.2",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "If the Server accepts a connection with CleanSession set to 0 and the Server has stored Session state, it MUST set Session Present to 1 in the CONNACK packet.",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "mapping_reason": "Server-side session-state reporting obligation. The client cannot prove whether the server actually had stored Session state, but the v4 client preserves its local pending session state when it reconnects with clean_session=false and receives session_present=true.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::poll"
+          ],
+          "reason": "On successful connection establishment, the event loop accepts session_present=true for clean_session=false and keeps retained local pending state, matching the client-side reaction expected when the server reports an existing session."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs:connack_reconcile_keeps_pending_when_resumed_session_exists"
+        ],
+        "notes": "The test covers only the v4 client's reaction when a clean_session=false reconnect receives session_present=true: it preserves retained local pending state. The server-side truth of stored Session state is not directly testable in this client crate."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.2.2-3",
+      "section_number": "3.2.2.2",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "If the Server does not have stored Session state, it MUST set Session Present to 0 in the CONNACK packet in addition to setting a zero return code in the CONNACK packet.",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "mapping_reason": "Server-side session-state reporting obligation. The client cannot prove whether the server lacks stored Session state, but the v4 client discards retained local pending state when it reconnects and receives session_present=false.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::poll"
+          ],
+          "reason": "On successful connection establishment, the event loop resets local pending session state when session_present=false, matching the client-side reaction expected when the server reports no stored session."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs:connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "rumqttc-v4/src/eventloop.rs:connack_reconcile_resets_pending_when_clean_session_gets_new_session"
+        ],
+        "notes": "Tests cover only the v4 client's reaction when a connection receives session_present=false: it discards retained local pending state. The server-side truth of missing stored Session state is not directly testable in this client crate."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.2.2-4",
+      "section_number": "3.2.2.2",
+      "section_title": "Session Present",
+      "obligation": "MUST",
+      "summary": "If a server sends a CONNACK packet containing a non-zero return code it MUST set Session Present to 0.",
+      "source_anchor": "_Toc385349255",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "mapping_reason": "Server-side packet-format obligation with direct client-side validation. The v4 CONNACK decoder rejects incoming non-success CONNACK packets that set session_present=true. ConnAck::write can encode arbitrary ConnAck values for test/server-side construction and is not evidence for client-side enforcement.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": [
+            "ConnAck::read"
+          ],
+          "reason": "The decoder maps the CONNACK return code before accepting the packet and returns IncorrectPacketFormat when the return code is non-success and the Session Present flag is set."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/connack.rs:connack_parsing_rejects_session_present_on_error"
+        ],
+        "notes": "The codec test decodes a non-success CONNACK with session_present=true and asserts parser rejection."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.2.2-5",
+      "section_number": "3.2.2.3",
+      "section_title": "Connect Return code",
+      "obligation": "SHOULD",
+      "summary": "The values for the one byte unsigned Connect Return code field are listed in Table 3.1 – Connect Return code values. If a well formed CONNECT Packet is received by the Server, but the Server is unable to process it for some reason, then the Server SHOULD attempt to send a CONN...",
+      "source_anchor": "_Toc385349256",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "mapping_reason": "The server-side SHOULD to send a CONNACK on processable CONNECT failures is not enforceable by this client crate. The reviewed client-applicable behavior is limited to decoding the listed CONNACK return code values and reacting to non-success codes.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": [
+            "ConnectReturnCode",
+            "connect_return",
+            "ConnAck::read"
+          ],
+          "reason": "The CONNACK decoder maps return codes 0 through 5 to the MQTT 3.1.1 ConnectReturnCode variants and rejects any other value with InvalidConnectReturnCode."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "After CONNECT, mqtt_connect returns the successful ConnAck only for Success and reports all other decoded CONNACK return codes as ConnectionError::ConnectionRefused."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/connack.rs:connack_parsing_accepts_all_valid_return_codes",
+          "rumqttc-v4/src/mqttbytes/v4/connack.rs:connack_parsing_rejects_invalid_return_code",
+          "rumqttc-v4/src/eventloop.rs:mqtt_connect_returns_bad_client_id_rejection",
+          "rumqttc-v4/tests/reliability.rs:next_poll_after_connect_failure_reconnects"
+        ],
+        "notes": "Focused codec tests cover every valid MQTT 3.1.1 CONNACK return code and one invalid return code; eventloop tests cover client reaction to selected non-success return codes. The server-side SHOULD to send CONNACK on processable failures is out of scope for this client crate."
+      },
+      "follow_up": null
+    },
+    {
       "id": "MQTT-3.2.2-6",
       "section_number": "3.2.2.3",
       "section_title": "Connect Return code",
