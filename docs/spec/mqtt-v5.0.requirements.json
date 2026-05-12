@@ -555,7 +555,7 @@
         ],
         "notes": "State tests cover pkid increment, exhausted publish-id allocation, max-inflight behavior, and cross-type conflicts with subscribe, unsubscribe, and pubrel tracking. Packet codec tests cover zero-pkid rejection for PUBLISH QoS > 0, SUBSCRIBE, and UNSUBSCRIBE."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-2.2.1-4",
@@ -596,7 +596,7 @@
         "tests": [],
         "notes": "Server-only requirement; no client-side test needed for this specific obligation."
       },
-      "follow_up": "No follow-up needed. The client correctly validates pkid!=0 (MQTT-2.2.1-3) and tracks IDs for ack flow, which is all a client must do."
+      "follow_up": null
     },
     {
       "id": "MQTT-2.2.1-5",
@@ -1223,7 +1223,7 @@
         ],
         "notes": "Dedicated tests cover Connect::read() rejecting invalid protocol level 4 and Connect::write() emitting 0x05."
       },
-      "follow_up": "No follow-up needed. Dedicated tests added for protocol version encoding and decode rejection."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-3",
@@ -1257,7 +1257,7 @@
         ],
         "notes": "The server-side Malformed Packet handling obligation is not testable in this client crate. Related client codec tests explicitly cover decode rejection of reserved bit=1 and encoding bit 0=0."
       },
-      "follow_up": "No follow-up needed for the client codec. The server-side Malformed Packet handling obligation remains outside this client crate."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-4",
@@ -1300,7 +1300,7 @@
         ],
         "notes": "These client tests cover CONNACK validation and local pending-state discard for Clean Start=1. The server discard/start-new-session obligation itself is not testable in this client crate."
       },
-      "follow_up": "No follow-up needed for the client behavior. The server-side session lifecycle obligation remains outside this client crate."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-5",
@@ -1342,7 +1342,7 @@
         ],
         "notes": "The client correctly encodes Clean Start=0 and preserves or resets pending state based on the server's session_present response, but the core requirement (server must resume/create session) is server-only and not testable from the client side."
       },
-      "follow_up": "No follow-up needed. The requirement is server-only; the client correctly encodes and handles the related flags."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-6",
@@ -1384,7 +1384,7 @@
         ],
         "notes": "These client tests cover handling of the server's session_present response for Clean Start=0. The server resume/create obligation itself is not testable in this client crate."
       },
-      "follow_up": "No follow-up needed. This duplicate requirement is server-only; related client behavior is covered."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-7",
@@ -1415,7 +1415,7 @@
         "tests": [],
         "notes": "Server-side Will Message storage cannot be tested in a client crate."
       },
-      "follow_up": "No follow-up needed. The client-side encoding is covered by MQTT-3.1.2-9."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-8",
@@ -1446,7 +1446,7 @@
         "tests": [],
         "notes": "Duplicate of MQTT-3.1.2-7. Server-side obligation."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-9",
@@ -2238,7 +2238,7 @@
         ],
         "notes": "The codec test check_rejects_when_total_packet_size_exceeds_limit verifies that the fixed-header bytes count toward Maximum Packet Size. The framed test readb_sends_packet_too_large_disconnect_before_returning_error verifies that a DISCONNECT with PacketTooLarge (0x95) is sent before returning the error."
       },
-      "follow_up": "No follow-up needed. The client correctly sends DISCONNECT with reason code 0x95 when receiving a packet exceeding Maximum Packet Size."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-25",
@@ -2275,7 +2275,7 @@
         "tests": [],
         "notes": "Server-only requirement. The client's outgoing packet size enforcement is tested separately (outgoing_max_packet_size_check, readb_sends_packet_too_large_disconnect_before_returning_error)."
       },
-      "follow_up": "No follow-up needed. Server-only requirement."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.2-26",
@@ -2683,7 +2683,7 @@
         ],
         "notes": "Tests verify session state is preserved when client_id is unchanged, reset when it changes, and that Assigned Client Identifier from CONNACK is adopted for empty client_ids."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-3",
@@ -2734,7 +2734,7 @@
         ],
         "notes": "connect_encoding_emits_payload_fields_in_spec_order verifies byte-level positions: ClientID is the first payload field. Other tests verify empty/non-empty ClientID handling in the CONNACK exchange."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-4",
@@ -2815,7 +2815,7 @@
         "tests": [],
         "notes": "Server-side MUST requirement. No client-side obligation to restrict ClientId to the 62-character interoperability profile."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-6",
@@ -2857,7 +2857,7 @@
         ],
         "notes": "allow_empty_client_id tests that MqttOptions::new(\"\", ...) with clean_start=true works. allow_empty_client_id_with_clean_start_false verifies that v5 does not apply the MQTT 3.1.1 CleanSession restriction. No client enforcement test is required because the requirement is server-side."
       },
-      "follow_up": "No follow-up needed. Server-side MAY/MUST requirements do not impose client obligations for this requirement."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-7",
@@ -3091,7 +3091,7 @@
         ],
         "notes": "Direct v5 CONNECT tests cover Will Topic invalid UTF-8 and U+0000 rejection on read, invalid UTF-8 and U+0000 rejection on write, Will Flag presence/absence validation, and payload field order. Shared primitive tests cover additional malformed UTF-8 boundaries for validate_mqtt_string."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.3-12",
@@ -3162,7 +3162,10 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
-          "symbols": ["Connect::write", "validate_connect_flags"],
+          "symbols": [
+            "Connect::write",
+            "validate_connect_flags"
+          ],
           "reason": "Client-side CONNECT encoding validates outgoing packet integrity (reserved bit 0, connect flag consistency, property value ranges), but this is the client's own conformance, not the server's validation obligation."
         }
       ],
@@ -3214,7 +3217,7 @@
         ],
         "notes": "Coverage exists for refused CONNACK handling and AUTH/CONNACK handshake behavior. The server's own restriction/auth/close logic is outside this client crate."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-3",
@@ -3233,18 +3236,30 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
-          "symbols": ["Disconnect::read", "DisconnectReasonCode::SessionTakenOver", "TryFrom<u8>"],
+          "symbols": [
+            "Disconnect::read",
+            "DisconnectReasonCode::SessionTakenOver",
+            "TryFrom<u8>"
+          ],
           "reason": "Disconnect::read() reads the DISCONNECT reason code from the wire, and DisconnectReasonCode::try_from() maps 0x8E to SessionTakenOver so the client can identify the takeover reason in an incoming packet."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["handle_incoming_disconn"],
+          "symbols": [
+            "handle_incoming_disconn"
+          ],
           "reason": "handle_incoming_disconn() extracts the decoded reason_code and optional reason_string, returning StateError::ServerDisconnect. This handles SessionTakenOver through the same server-initiated DISCONNECT path as other server reasons."
         }
       ],
       "test_coverage": {
         "status": "not_applicable",
-        "tests": ["disconnect_read_accepts_session_taken_over", "incoming_disconnect_with_session_taken_over_surfaces_reason_code", "incoming_disconnect_with_session_taken_over_extracts_reason_string", "incoming_disconnect_with_other_reason_code_surfaces_reason_code", "poll_surfaces_incoming_session_taken_over_disconnect"],
+        "tests": [
+          "disconnect_read_accepts_session_taken_over",
+          "incoming_disconnect_with_session_taken_over_surfaces_reason_code",
+          "incoming_disconnect_with_session_taken_over_extracts_reason_string",
+          "incoming_disconnect_with_other_reason_code_surfaces_reason_code",
+          "poll_surfaces_incoming_session_taken_over_disconnect"
+        ],
         "notes": "Server-side client-takeover behavior is not enforceable in this client crate. Defensive client coverage exists at packet, state, and eventloop levels: E0 02 8E 00 decodes as DisconnectReasonCode::SessionTakenOver, MqttState surfaces StateError::ServerDisconnect, and EventLoop::poll returns ConnectionError::MqttState(StateError::ServerDisconnect { .. }) for an inbound SessionTakenOver DISCONNECT."
       },
       "follow_up": null
@@ -3266,12 +3281,17 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": ["reconcile_connack_session", "mqtt_connect_inner"],
+          "symbols": [
+            "reconcile_connack_session",
+            "mqtt_connect_inner"
+          ],
           "reason": "Client correctly handles CONNACK session_present in relation to clean_start, but this is a client-side obligation separate from the server's Clean Start processing duty."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
-          "symbols": ["ConnAck::read"],
+          "symbols": [
+            "ConnAck::read"
+          ],
           "reason": "ConnAck decode extracts session_present flag, but does not validate reserved flag bits (bits 7-1 must be 0 per MQTT-3.2.2-1) or reject session_present=1 on non-Success reason codes. These are separate CONNACK validation gaps, not the server's Clean Start processing obligation."
         }
       ],
@@ -3325,7 +3345,7 @@
         ],
         "notes": "Success CONNACK, non-Success CONNACK, AUTH-before-CONNACK, and unexpected non-AUTH/non-CONNACK packet handling are all covered."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.1.4-6",
