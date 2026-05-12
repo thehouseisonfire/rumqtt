@@ -7,9 +7,9 @@ use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Tra
 use crate::framed::AsyncReadWrite;
 use crate::notice::{
     AuthNoticeTx, PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx,
-    UnsubscribeNoticeTx,
+    UnsubscribeNoticeError, UnsubscribeNoticeTx,
 };
-use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError};
+use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError, SubscribeNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use rumqttc_core::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
@@ -198,6 +198,8 @@ pub struct EventLoop {
     no_sleep: Option<Pin<Box<Sleep>>>,
     /// `ClientId` associated with the currently retained local session state.
     session_client_id: Option<String>,
+    /// Current connection resumed broker state without matching local packet-id ownership.
+    broker_only_session_resume: bool,
     pending_disconnect: Option<PendingDisconnect>,
     disconnect_complete: bool,
 }
@@ -212,9 +214,18 @@ pub enum Event {
 }
 
 impl EventLoop {
+    fn has_local_session_state(&self) -> bool {
+        self.session_client_id.as_deref() == Some(self.options.client_id().as_str())
+    }
+
     fn reconcile_connack_session(&mut self, session_present: bool) -> Result<(), ConnectionError> {
         let clean_start = self.options.clean_start();
-        if clean_start && session_present {
+        let has_local_state = self.has_local_session_state();
+        let missing_local_state = !has_local_state;
+        let allow_broker_only_resume = self
+            .options
+            .allow_broker_session_resume_without_local_state();
+        if session_present && (clean_start || (missing_local_state && !allow_broker_only_resume)) {
             return Err(ConnectionError::SessionStateMismatch {
                 clean_start,
                 session_present,
@@ -224,6 +235,9 @@ impl EventLoop {
         if !session_present {
             self.reset_session_state();
         }
+
+        self.broker_only_session_resume =
+            session_present && missing_local_state && allow_broker_only_resume;
 
         Ok(())
     }
@@ -339,6 +353,7 @@ impl EventLoop {
             keepalive_timeout: None,
             no_sleep: None,
             session_client_id: None,
+            broker_only_session_resume: false,
             pending_disconnect: None,
             disconnect_complete: false,
         }
@@ -477,6 +492,8 @@ impl EventLoop {
         self.state.fail_pending_notices();
         self.state.fail_reauth_exchange_due_to_session_reset();
         self.state.reset_connection_scoped_state();
+        self.session_client_id = None;
+        self.broker_only_session_resume = false;
     }
 
     fn reset_session_state_if_client_id_changed(&mut self) {
@@ -527,7 +544,9 @@ impl EventLoop {
             )
             .await??;
             self.reconcile_connack_session(connack.session_present)?;
-            self.session_client_id = Some(self.options.client_id());
+            if !self.broker_only_session_resume {
+                self.session_client_id = Some(self.options.client_id());
+            }
             self.network = Some(network);
 
             if self.keepalive_timeout.is_none() && !self.options.keep_alive.is_zero() {
@@ -784,6 +803,11 @@ impl EventLoop {
         should_flush: &mut bool,
         qos0_notices: &mut Vec<PublishNoticeTx>,
     ) -> Result<bool, ConnectionError> {
+        if self.broker_only_session_resume && request_allocates_client_packet_id(&request) {
+            reject_broker_only_session_request(&request, notice);
+            return Ok(true);
+        }
+
         match request {
             Request::Disconnect(disconnect) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
@@ -1009,6 +1033,36 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
             class: RequestClass::Control,
             readiness: RequestReadiness::Ready,
         },
+    }
+}
+
+fn request_allocates_client_packet_id(request: &Request) -> bool {
+    match request {
+        Request::Publish(publish) => publish.qos != crate::mqttbytes::QoS::AtMostOnce,
+        Request::Subscribe(_) | Request::Unsubscribe(_) => true,
+        _ => false,
+    }
+}
+
+fn reject_broker_only_session_request(request: &Request, notice: Option<TrackedNoticeTx>) {
+    warn!(
+        "rejecting outbound request that needs a client packet identifier after broker-only session resume: {request:?}"
+    );
+
+    match notice {
+        Some(TrackedNoticeTx::Publish(notice)) => {
+            notice.error(PublishNoticeError::BrokerOnlySessionResume);
+        }
+        Some(TrackedNoticeTx::Subscribe(notice)) => {
+            notice.error(SubscribeNoticeError::BrokerOnlySessionResume);
+        }
+        Some(TrackedNoticeTx::Unsubscribe(notice)) => {
+            notice.error(UnsubscribeNoticeError::BrokerOnlySessionResume);
+        }
+        Some(TrackedNoticeTx::Auth(notice)) => {
+            drop(notice);
+        }
+        None => {}
     }
 }
 
@@ -2174,11 +2228,16 @@ mod tests {
         );
     }
 
-    fn build_eventloop_with_pending(clean_start: bool) -> EventLoop {
+    fn build_eventloop(clean_start: bool) -> EventLoop {
         let mut options = MqttOptions::new("test-client", "localhost");
         options.set_clean_start(clean_start);
 
-        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop
+    }
+
+    fn build_eventloop_with_pending(clean_start: bool) -> EventLoop {
+        let mut eventloop = build_eventloop(clean_start);
         push_pending(&mut eventloop, Request::PingReq);
         eventloop
     }
@@ -3252,6 +3311,7 @@ mod tests {
     #[test]
     fn connack_reconcile_rejects_clean_start_with_session_present() {
         let mut eventloop = build_eventloop_with_pending(true);
+        eventloop.session_client_id = Some("test-client".to_owned());
 
         let err = eventloop.reconcile_connack_session(true).unwrap_err();
 
@@ -3263,6 +3323,106 @@ mod tests {
             }
         ));
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[test]
+    fn connack_reconcile_rejects_session_present_without_local_state() {
+        let mut eventloop = build_eventloop(false);
+
+        let err = eventloop.reconcile_connack_session(true).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::SessionStateMismatch {
+                clean_start: false,
+                session_present: true
+            }
+        ));
+    }
+
+    #[test]
+    fn connack_reconcile_allows_broker_session_present_without_local_state_when_opted_in() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_allow_broker_session_resume_without_local_state(true);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        eventloop.reconcile_connack_session(true).unwrap();
+
+        assert!(eventloop.pending_is_empty());
+        assert!(eventloop.broker_only_session_resume);
+        assert_eq!(eventloop.session_client_id, None);
+    }
+
+    #[tokio::test]
+    async fn broker_only_session_resume_rejects_outbound_packet_id_allocation() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_allow_broker_session_resume_without_local_state(true);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.reconcile_connack_session(true).unwrap();
+
+        let (publish_tx, publish_notice) = PublishNoticeTx::new();
+        let (subscribe_tx, subscribe_notice) = SubscribeNoticeTx::new();
+        let (unsubscribe_tx, unsubscribe_notice) = UnsubscribeNoticeTx::new();
+        let requests = [
+            (
+                Request::Publish(publish(QoS::AtLeastOnce)),
+                Some(TrackedNoticeTx::Publish(publish_tx)),
+            ),
+            (
+                Request::Subscribe(subscribe()),
+                Some(TrackedNoticeTx::Subscribe(subscribe_tx)),
+            ),
+            (
+                Request::Unsubscribe(Unsubscribe::new("hello/world", None)),
+                Some(TrackedNoticeTx::Unsubscribe(unsubscribe_tx)),
+            ),
+            (Request::Publish(publish(QoS::ExactlyOnce)), None),
+        ];
+
+        for (request, notice) in requests {
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let keep_batching = eventloop
+                .handle_request(request, notice, &mut should_flush, &mut qos0_notices)
+                .await
+                .unwrap();
+
+            assert!(keep_batching);
+            assert!(!should_flush);
+            assert!(qos0_notices.is_empty());
+        }
+
+        assert_eq!(
+            publish_notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::BrokerOnlySessionResume
+        );
+        assert_eq!(
+            subscribe_notice.wait_async().await.unwrap_err(),
+            SubscribeNoticeError::BrokerOnlySessionResume
+        );
+        assert_eq!(
+            unsubscribe_notice.wait_async().await.unwrap_err(),
+            UnsubscribeNoticeError::BrokerOnlySessionResume
+        );
+        assert!(eventloop.broker_only_session_resume);
+    }
+
+    #[test]
+    fn connack_reconcile_clears_broker_only_resume_on_new_session() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_allow_broker_session_resume_without_local_state(true);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.reconcile_connack_session(true).unwrap();
+
+        eventloop.reconcile_connack_session(false).unwrap();
+
+        assert!(!eventloop.broker_only_session_resume);
     }
 
     #[test]
@@ -3286,10 +3446,21 @@ mod tests {
     #[test]
     fn connack_reconcile_keeps_pending_when_resumed_session_exists() {
         let mut eventloop = build_eventloop_with_pending(false);
+        eventloop.session_client_id = Some("test-client".to_owned());
 
         eventloop.reconcile_connack_session(true).unwrap();
 
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[test]
+    fn reset_session_state_clears_local_session_marker() {
+        let mut eventloop = build_eventloop(false);
+        eventloop.session_client_id = Some("test-client".to_owned());
+
+        eventloop.reset_session_state();
+
+        assert_eq!(eventloop.session_client_id, None);
     }
 
     #[test]

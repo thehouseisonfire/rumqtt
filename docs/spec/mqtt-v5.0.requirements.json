@@ -3575,8 +3575,36 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement constrains how a server sets the Session Present flag based on its own stored session state for a Clean Start 0 connection. A rumqttc MQTT v5 client can decode and react to the flag, but it cannot determine whether the broker actually had stored session state and therefore cannot directly enforce this server-side MUST.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAck",
+            "ConnAck::read"
+          ],
+          "reason": "The client decodes the CONNACK Session Present bit, but this code only parses the broker response and does not let the client verify whether the broker truly had prior session state."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::poll"
+          ],
+          "reason": "The event loop consumes the decoded Session Present flag to decide whether to keep or reset local state, but it has no visibility into the broker's internal session store and therefore cannot enforce this broker-only requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_keeps_pending_when_resumed_session_exists",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_resets_pending_when_resumed_session_is_missing"
+        ],
+        "notes": "These tests only cover client reactions to the received Session Present flag. No client-side test can prove whether the broker correctly chose that flag from its own stored session state."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.2.2-4",
@@ -3589,8 +3617,58 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This client requirement applies because rumqttc must close or reject a connection when the broker claims a prior session exists but the client does not have matching local session state. In strict default mode, the implementation tracks the ClientID associated with retained local session state independently of the Clean Start flag and rejects Session Present set to 1 when that marker is absent. A documented opt-in compatibility mode can accept broker-only session reuse after local state loss and is explicitly labeled non-strict MQTT 5 behavior.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "ConnectionError::SessionStateMismatch",
+            "EventLoop::has_local_session_state",
+            "EventLoop::reconcile_connack_session"
+          ],
+          "reason": "By default, the client rejects a CONNACK with session_present=true when Clean Start is true or when the current ClientID does not match retained local session state, causing the connection attempt to fail before the network is accepted. The only exception is the explicit non-strict compatibility option for broker-only session reuse."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": [
+            "MqttOptions::set_allow_broker_session_resume_without_local_state",
+            "MqttOptions::allow_broker_session_resume_without_local_state",
+            "MqttOptionsBuilder::allow_broker_session_resume_without_local_state"
+          ],
+          "reason": "The compatibility option defaults to strict behavior and requires an explicit setter or builder call to accept broker-only session reuse without matching local client state."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reset_session_state",
+            "EventLoop::reset_session_state_if_client_id_changed",
+            "EventLoop::poll"
+          ],
+          "reason": "The event loop clears the retained-session marker when local session state is reset or the ClientID changes, and records the current ClientID only after a successful accepted CONNACK."
+        },
+        {
+          "path": "rumqttc-v5/README.md",
+          "symbols": [
+            "MqttOptions::set_allow_broker_session_resume_without_local_state"
+          ],
+          "reason": "The README documents that same-EventLoop reconnects retain in-memory session state, while accepting broker-only session reuse after process or EventLoop replacement is a non-strict compatibility mode."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_clean_start_with_session_present",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_session_present_without_local_state",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_allows_broker_session_present_without_local_state_when_opted_in",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_keeps_pending_when_resumed_session_exists",
+          "rumqttc-v5/tests/reliability.rs::clean_start_false_rejects_session_present_without_local_state",
+          "rumqttc-v5/tests/reliability.rs::broker_only_session_resume_compatibility_mode_accepts_session_present"
+        ],
+        "notes": "Unit tests cover strict mismatch cases, the valid in-memory resumed-session case, and the explicit non-strict opt-in. Reliability tests cover both strict rejection and compatibility-mode acceptance on the network handshake path."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.2.2-5",
@@ -3603,8 +3681,36 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This client requirement applies because rumqttc must discard any locally retained session state when the broker resumes the network connection with Session Present set to 0. The event loop unconditionally resets retained session state whenever CONNACK reports session_present=false before continuing normal processing.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::reset_session_state"
+          ],
+          "reason": "When session_present is false, reconcile_connack_session() calls reset_session_state(), which drops pending replay requests, fails retained notices, and clears local session-bound state before the connection proceeds."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::fail_pending_notices",
+            "MqttState::reset_connection_scoped_state"
+          ],
+          "reason": "State cleanup clears outstanding tracked notices and connection-scoped MQTT v5 state, ensuring the client does not continue using stale session data after a CONNACK indicates no resumed session."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "rumqttc-v5/tests/reliability.rs::reconnection_clean_start_drops_pending_packets_after_reconnect"
+        ],
+        "notes": "Unit coverage verifies the clean_start=false and session_present=false path clears pending state. Integration coverage shows pending retransmissions are dropped on a new session after reconnect."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.2.2-6",

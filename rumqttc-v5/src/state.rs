@@ -145,6 +145,7 @@ impl From<mqttbytes::Error> for StateError {
 // Bad acks or out of order acks aren't O(n) causing cpu spikes
 // Any missing acks from the broker are detected during the next recycled use of packet ids
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MqttState {
     /// Status of last ping
     pub await_pingresp: bool,

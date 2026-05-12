@@ -2788,37 +2788,102 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is directed at server behavior when no listed CONNACK return code applies. A rumqttc v3.1.1 client does not decide whether to send CONNACK or close the connection, so the normative obligation is outside the client's responsibility. The client only decodes legal CONNACK return codes if one is received.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+          "symbols": [
+            "ConnAck::read",
+            "connect_return"
+          ],
+          "reason": "The v4 client only parses incoming CONNACK packets and rejects unknown return-code bytes; it does not choose whether a server sends CONNACK or closes the network connection."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "connack_parsing_accepts_all_valid_return_codes",
+          "connack_parsing_rejects_invalid_return_code"
+        ],
+        "notes": "Tests cover client-side CONNACK decoding, but the reviewed MUST is a server-only connection-handling rule."
+      },
+      "follow_up": "No client-side follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-1",
-      "section_number": "7.1.2",
-      "section_title": "MQTT Client",
+      "section_number": "3.3.1.1",
+      "section_title": "DUP",
       "obligation": "MUST",
-      "summary": "",
-      "source_anchor": "_Toc384800507",
+      "summary": "The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH Packet.",
+      "source_anchor": "_Toc385349262",
       "occurrences": 2,
       "candidate_paths": [
-        "rumqttc-v4/tests",
-        "rumqttc-v4/src/mqttbytes/v4"
+        "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to tests and protocol modules for conformance coverage."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-side resend handling now marks unacknowledged QoS 1/2 PUBLISH packets as duplicates before they are queued for reconnect replay, which matches the client-applicable DUP requirement for re-delivery. First-send packets still start with dup=false, and QoS 0 sends remain covered separately by MQTT-3.3.1-2.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "clean_with_notices"
+          ],
+          "reason": "Reconnect replay now sets publish.dup = true for unacknowledged QoS 1/2 publishes before they are re-enqueued."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::write"
+          ],
+          "reason": "The DUP bit serialized on outbound PUBLISH packets is taken directly from publish.dup, so replayed packets are encoded with DUP=1."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
+          "reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"
+        ],
+        "notes": "State-level and integration coverage now assert that replayed QoS 1 publishes are marked duplicate before resend."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-2",
       "section_number": "3.3.1.1",
       "section_title": "DUP",
       "obligation": "MUST",
-      "summary": "The DUP flag MUST be set to 1 by the Client or Server when it attempts to re-deliver a PUBLISH Packet . The DUP flag MUST be set to 0 for all QoS 0 messages .",
+      "summary": "The DUP flag MUST be set to 0 for all QoS 0 messages .",
       "source_anchor": "_Toc385349262",
       "occurrences": 3,
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "rumqttc-v4 enforces this requirement directly in the PUBLISH codec by rejecting DUP=1 for QoS 0 packets on both decode and encode paths.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "The codec rejects a QoS 0 PUBLISH if dup is set on read or write, preventing non-compliant QoS 0 packets in either direction."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "publish_parsing_rejects_dup_set_for_qos0",
+          "publish_encoding_rejects_dup_set_for_qos0"
+        ],
+        "notes": "Codec tests cover both inbound and outbound QoS 0 DUP rejection."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-3",
@@ -2831,8 +2896,25 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement governs how a broker republishes inbound PUBLISH packets to subscribers. rumqttc-v4 is a client library and does not implement broker-side subscription fan-out or DUP rewriting for outgoing subscriber deliveries.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "The client codec only parses and serializes individual PUBLISH packets. It contains no broker-side logic for forwarding inbound publishes to other subscribers."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No broker fan-out implementation exists in the v4 client crate, so there is no client-side behavior to test for this server-only routing rule."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-4",
@@ -2845,8 +2927,57 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "rumqttc-v4 enforces both client-applicable parts of this requirement. Outbound PUBLISH packets cannot encode QoS 3 because the encoder uses the constrained QoS enum. Inbound PUBLISH packets with QoS bits 11 are rejected during decode, and EventLoop::poll then calls clean(), which drops the network connection before surfacing the error.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/qos.rs",
+          "symbols": [
+            "QoS",
+            "qos"
+          ],
+          "reason": "The QoS enum only defines wire values 0, 1, and 2, and qos() returns None for any other value including 3."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "Publish::read decodes the QoS bits via qos((fixed_header.byte1 & 0b0110) >> 1)? and therefore rejects 0b11 as Error::InvalidQoS(3). Publish::write encodes QoS from the constrained QoS enum, so it cannot emit QoS 3."
+        },
+        {
+          "path": "rumqttc-v4/src/framed.rs",
+          "symbols": [
+            "Network::read",
+            "Network::readb"
+          ],
+          "reason": "Inbound decode failures are converted into StateError::Deserialization, which propagates out of the framed network read path."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::clean",
+            "EventLoop::poll",
+            "EventLoop::select"
+          ],
+          "reason": "EventLoop::select propagates inbound decode errors, and EventLoop::poll handles the error path by calling clean(), which sets network=None and clears connection-bound timers before returning the error."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes::v4::publish::test::publish_parsing_rejects_qos_bits_11",
+          "mqttbytes::v4::publish::test::qos0_publish_parsing_works",
+          "mqttbytes::v4::publish::test::qos1_publish_parsing_works",
+          "mqttbytes::v4::publish::test::qos0_publish_encoding_works",
+          "mqttbytes::v4::publish::test::qos1_publish_encoding_works",
+          "eventloop::tests::poll_drops_network_after_incoming_publish_with_invalid_qos_bits"
+        ],
+        "notes": "Codec tests cover valid QoS 0/1 paths and explicit rejection of inbound PUBLISH QoS bits 11. Eventloop coverage proves poll() drops the active network connection after that protocol error."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-5",
@@ -2859,8 +2990,32 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement assigns retained-message storage semantics to the server after receiving a retained client PUBLISH. rumqttc-v4 can set the retain flag on outbound publishes, but it does not implement broker-side retained storage or delivery.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": [
+            "AsyncClient::publish",
+            "Client::try_publish"
+          ],
+          "reason": "The client API accepts a retain boolean and passes it into outbound Publish requests, showing the crate only originates retained publishes rather than storing them."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::write"
+          ],
+          "reason": "Publish::write serializes the retain bit into the fixed header, but there is no broker-side retained-message store or subscription delivery logic in the v4 client crate."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "The requirement concerns server persistence behavior after receiving a retained PUBLISH, which is outside this client crate's responsibility."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-6",
@@ -2873,8 +3028,33 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is a broker-side retained-message storage obligation. The v4 client only exposes a retain flag on outbound PUBLISH packets and serializes it into the fixed header; it does not implement retained-message persistence or subscription delivery.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": [
+            "AsyncClient::handle_publish",
+            "AsyncClient::handle_publish_tracked"
+          ],
+          "reason": "The client API accepts a retain boolean and places it on outbound Publish requests, showing the client can request retained delivery semantics but does not implement broker storage behavior."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish",
+            "Publish::write"
+          ],
+          "reason": "Publish::write serializes the retain bit into the outbound PUBLISH fixed header, but this module contains no retained-message store or subscriber matching logic."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "The normative action is server persistence after receiving a retained publish, which is outside this client crate's role."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-7",
@@ -2887,8 +3067,33 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This duplicated requirement is also a broker-side retained-message storage obligation. The same v4 client evidence as MQTT-3.3.1-6 applies: the client can set and encode RETAIN on outbound publishes but does not store retained messages for future subscribers.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": [
+            "AsyncClient::handle_publish",
+            "AsyncClient::handle_publish_tracked"
+          ],
+          "reason": "The client API forwards the retain flag onto outbound Publish requests only; it does not implement server-side retained storage."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish",
+            "Publish::write"
+          ],
+          "reason": "The encoder sets the RETAIN bit on outbound packets, which is the client-applicable portion of this duplicated broker requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Same rationale as MQTT-3.3.1-6: retained-message storage is not a client responsibility."
+      },
+      "follow_up": "No follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-8",
@@ -2901,8 +3106,36 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement governs broker-side RETAIN flag selection when delivering retained or non-retained messages to clients. rumqttc-v4 is a client library and cannot verify why the broker set RETAIN on an incoming PUBLISH. The client defensively decodes and surfaces the received RETAIN bit unchanged, but that does not make the server-only obligation client-applicable.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read"
+          ],
+          "reason": "Publish::read decodes bit 0 of the fixed header into Publish.retain, preserving the server-sent RETAIN state on inbound PUBLISH packets."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_packet"
+          ],
+          "reason": "The state machine inserts the original incoming Publish packet into the event queue, so the decoded retain flag is exposed to client code without being recomputed or discarded."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_preserves_retain_flag",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_preserves_publish_retain_flag",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_should_emit_incoming_before_derived_qos1_ack",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_should_emit_incoming_before_derived_qos2_ack"
+        ],
+        "notes": "The listed tests are regression coverage for client-side RETAIN bit preservation only. They do not prove the broker-side rule for choosing RETAIN on deliveries, which is outside this client crate."
+      },
+      "follow_up": "No client-side follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-9",
@@ -2915,8 +3148,34 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This duplicate of MQTT-3.3.1-8 is also a broker-side RETAIN flag selection rule for PUBLISH packets delivered to clients. The v4 client cannot validate the broker's reason for setting or clearing RETAIN; it only preserves the received flag for application code.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read"
+          ],
+          "reason": "Publish::read decodes fixed-header bit 0 into Publish.retain for inbound PUBLISH packets, preserving the RETAIN value sent by the server."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_packet"
+          ],
+          "reason": "The state machine queues the original incoming Publish packet as an Event::Incoming, so client code observes the decoded retain flag without recomputation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_preserves_retain_flag",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_preserves_publish_retain_flag"
+        ],
+        "notes": "Same rationale as MQTT-3.3.1-8: the listed tests cover client-side RETAIN preservation, not the broker-only delivery rule."
+      },
+      "follow_up": "No client-side follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-10",
@@ -2929,8 +3188,49 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "The retained-message deletion, storage, and future delivery semantics for a zero-byte retained PUBLISH are broker responsibilities. rumqttc-v4 can originate, decode, and surface retained PUBLISH packets with an empty payload, but it does not implement broker retained-message storage or deletion.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": [
+            "AsyncClient::handle_publish",
+            "AsyncClient::handle_publish_bytes"
+          ],
+          "reason": "The client API accepts a retain boolean and payload values including empty Vec/Bytes, then forwards them into outbound Publish requests without rejecting zero-length payloads."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "Publish::read treats the remaining bytes after the topic and optional packet identifier as payload, so an empty remainder is valid. Publish::write serializes the retain bit and appends the payload slice, allowing an empty retained payload."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::handle_incoming_packet"
+          ],
+          "reason": "Incoming Publish handling has no payload-length special case; empty-payload retained publishes are forwarded through the same event path and QoS acknowledgement logic as other publishes."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_preserves_retain_flag",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_accepts_retained_empty_payload",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_encoding_accepts_retained_empty_payload",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_encoding_works",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_preserves_publish_retain_flag",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_preserves_retained_empty_payload_publish"
+        ],
+        "notes": "The listed tests are regression coverage for client codec/state handling of retained empty-payload publishes. They do not prove the broker-side retained-message deletion and delivery semantics."
+      },
+      "follow_up": "No client-side follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-11",
@@ -2943,8 +3243,49 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This duplicate of MQTT-3.3.1-10 is primarily a broker retained-message deletion and delivery rule. The v4 client has no retained-message store; it only supports sending and receiving retained PUBLISH packets with zero-byte payloads as ordinary PUBLISH packets.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": [
+            "AsyncClient::handle_publish",
+            "AsyncClient::handle_publish_bytes"
+          ],
+          "reason": "The outbound publish helpers copy the caller-supplied retain flag into Publish.retain and do not reject empty payloads, so the client can originate a retained zero-byte PUBLISH."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "The decoder accepts an empty payload remainder and preserves the retain flag. The encoder writes the retain bit and appends the payload bytes, which can be empty."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::handle_incoming_packet"
+          ],
+          "reason": "The incoming publish state path does not branch on payload length, so zero-byte retained messages are exposed to the application and acknowledged by QoS in the normal way."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_preserves_retain_flag",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_accepts_retained_empty_payload",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_encoding_accepts_retained_empty_payload",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_encoding_works",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_preserves_publish_retain_flag",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_preserves_retained_empty_payload_publish"
+        ],
+        "notes": "Same rationale as MQTT-3.3.1-10: the listed tests cover client-side packet handling, not broker retained-message deletion or future delivery behavior."
+      },
+      "follow_up": "No client-side follow-up needed."
     },
     {
       "id": "MQTT-3.3.1-12",

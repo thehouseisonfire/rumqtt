@@ -750,6 +750,77 @@ async fn next_poll_after_connect_failure_reconnects() {
 }
 
 #[tokio::test]
+async fn clean_start_false_rejects_session_present_without_local_state() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY));
+
+    let broker = task::spawn(async move {
+        let _broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: true,
+            },
+        )
+        .await;
+    });
+
+    let (_client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+    let err = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("timed out waiting for CONNACK mismatch")
+        .unwrap_err();
+
+    assert_matches!(
+        err,
+        ConnectionError::SessionStateMismatch {
+            clean_start: false,
+            session_present: true
+        }
+    );
+    broker.await.unwrap();
+}
+
+#[tokio::test]
+async fn broker_only_session_resume_compatibility_mode_accepts_session_present() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
+        .set_allow_broker_session_resume_without_local_state(true);
+
+    let broker = task::spawn(async move {
+        let _broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: true,
+            },
+        )
+        .await;
+        time::sleep(Duration::from_secs(1)).await;
+    });
+
+    let (_client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+    let event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("timed out waiting for CONNACK")
+        .unwrap();
+
+    assert_matches!(
+        event,
+        Event::Incoming(Packet::ConnAck(ConnAck {
+            code: ConnectReturnCode::Success,
+            session_present: true,
+            properties: None,
+        }))
+    );
+    broker.await.unwrap();
+}
+
+#[tokio::test]
 async fn reconnection_resumes_from_the_previous_state() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
