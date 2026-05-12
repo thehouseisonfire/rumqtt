@@ -240,6 +240,68 @@ mod test {
     }
 
     #[test]
+    fn publish_parsing_preserves_retain_flag() {
+        let stream = &[
+            0b0011_0001,
+            7, // packet type, flags and remaining len
+            0x00,
+            0x03,
+            b'a',
+            b'/',
+            b'b', // variable header. topic name = 'a/b'
+            0x01,
+            0x02, // payload
+        ];
+
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes).unwrap();
+
+        assert_eq!(
+            packet,
+            Publish {
+                dup: false,
+                qos: QoS::AtMostOnce,
+                retain: true,
+                topic: Bytes::from_static(b"a/b"),
+                pkid: 0,
+                payload: Bytes::from(&[0x01, 0x02][..]),
+            }
+        );
+    }
+
+    #[test]
+    fn publish_parsing_accepts_retained_empty_payload() {
+        let stream = &[
+            0b0011_0001,
+            5, // packet type, flags and remaining len
+            0x00,
+            0x03,
+            b'a',
+            b'/',
+            b'b', // variable header. topic name = 'a/b'
+        ];
+
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes).unwrap();
+
+        assert_eq!(
+            packet,
+            Publish {
+                dup: false,
+                qos: QoS::AtMostOnce,
+                retain: true,
+                topic: Bytes::from_static(b"a/b"),
+                pkid: 0,
+                payload: Bytes::new(),
+            }
+        );
+    }
+
+    #[test]
     fn qos1_publish_encoding_works() {
         let publish = Publish {
             dup: false,
@@ -303,6 +365,23 @@ mod test {
                 0xE4
             ]
         );
+    }
+
+    #[test]
+    fn publish_encoding_accepts_retained_empty_payload() {
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: true,
+            topic: Bytes::from_static(b"a/b"),
+            pkid: 0,
+            payload: Bytes::new(),
+        };
+
+        let mut buf = BytesMut::new();
+        publish.write(&mut buf).unwrap();
+
+        assert_eq!(buf, vec![0b0011_0001, 5, 0x00, 0x03, b'a', b'/', b'b']);
     }
 
     #[test]
@@ -379,6 +458,28 @@ mod test {
         let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Publish::read(fixed_header, publish_bytes);
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn publish_parsing_rejects_qos_bits_11() {
+        let stream = &[
+            0b0011_0110,
+            9, // packet type, flags and remaining len
+            0x00,
+            0x03,
+            b'a',
+            b'/',
+            b'b', // topic name = 'a/b'
+            0x00,
+            0x0a, // packet identifier
+            0x01,
+            0x02, // payload
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Publish::read(fixed_header, publish_bytes);
+        assert!(matches!(packet, Err(Error::InvalidQoS(3))));
     }
 
     #[test]

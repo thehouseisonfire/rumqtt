@@ -120,6 +120,22 @@ out side the library and `Eventloop` is accessible, users can
 - Blocking inside the `connection.iter()`/`eventloop.poll()` loop will block
   connection progress.
 
+- With `clean_start(false)`, rumqttc keeps MQTT session state in memory across
+  automatic reconnects made by the same `EventLoop`. This lets a transient
+  network reconnect resume in-flight `QoS` 1/2 packets and pending operations when
+  the broker returns `Session Present = 1`. A new process or newly constructed
+  `EventLoop` does not have that local state; in strict MQTT 5 mode, rumqttc
+  rejects `Session Present = 1` in that case with
+  `ConnectionError::SessionStateMismatch`.
+
+- Applications that intentionally rely on broker-retained messages after local
+  state loss can opt into non-strict MQTT 5 compatibility mode with
+  `MqttOptions::set_allow_broker_session_resume_without_local_state(true)` or
+  `MqttOptions::builder(...).allow_broker_session_resume_without_local_state(true)`.
+  This accepts broker-only session reuse for a stable `ClientID`, but the client
+  cannot reconcile `QoS` 1/2 packets or other in-flight operations that were lost
+  with the previous process or `EventLoop`.
+
 - Bounded clients apply backpressure through the client request channel. If the
   same task that drives `eventloop.poll()` awaits `publish()`, `subscribe()`,
   `unsubscribe()`, `ack()`, or another request-sending API while that bounded

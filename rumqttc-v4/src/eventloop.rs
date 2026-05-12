@@ -771,34 +771,24 @@ impl EventLoop {
             return Ok(());
         }
 
-        match time::timeout(
-            Duration::from_secs(self.network_options.connection_timeout()),
-            self.network.as_mut().unwrap().flush(),
-        )
-        .await
-        {
-            Ok(Ok(())) => {
+        match self.flush_network().await {
+            Ok(()) => {
                 for notice in qos0_notices {
                     notice.success(PublishResult::Qos0Flushed);
                 }
                 Ok(())
             }
-            Ok(Err(err)) => {
+            Err(err) => {
                 for notice in qos0_notices {
                     notice.error(PublishNoticeError::Qos0NotFlushed);
                 }
-                Err(ConnectionError::MqttState(err))
-            }
-            Err(_) => {
-                for notice in qos0_notices {
-                    notice.error(PublishNoticeError::Qos0NotFlushed);
-                }
-                Err(ConnectionError::FlushTimeout)
+                Err(err)
             }
         }
     }
 
     async fn flush_network(&mut self) -> Result<(), ConnectionError> {
+        self.state.mark_outgoing_publishes_flush_attempted();
         time::timeout(
             Duration::from_secs(self.network_options.connection_timeout()),
             self.network.as_mut().unwrap().flush(),
@@ -1883,6 +1873,119 @@ mod tests {
         assert_eq!(
             second_notice.wait_async().await.unwrap_err(),
             PublishNoticeError::Qos0NotFlushed
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_requeues_qos1_publish_with_dup_after_partial_flush_failure() {
+        use std::{
+            io,
+            pin::Pin,
+            task::{Context, Poll},
+        };
+        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+        #[derive(Default)]
+        struct PartialFlushFailure {
+            wrote_once: bool,
+        }
+
+        impl AsyncRead for PartialFlushFailure {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        impl AsyncWrite for PartialFlushFailure {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                if !self.wrote_once {
+                    self.wrote_once = true;
+                    return Poll::Ready(Ok(buf.len().min(1)));
+                }
+
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "partial flush failure",
+                )))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+        eventloop.network = Some(Network::new(PartialFlushFailure::default(), 1024, 1024));
+
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::Publish(Publish::new(
+                "hello/world",
+                crate::mqttbytes::QoS::AtLeastOnce,
+                "payload",
+            ))))
+            .await
+            .unwrap();
+
+        let err = eventloop.poll().await.unwrap_err();
+
+        assert!(matches!(err, ConnectionError::MqttState(_)));
+        assert!(
+            matches!(
+                pending_front_request(&eventloop),
+                Some(Request::Publish(publish))
+                    if publish.dup && publish.qos == crate::mqttbytes::QoS::AtLeastOnce
+            ),
+            "QoS 1 publish partially written during flush must replay with DUP=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_drops_network_after_incoming_publish_with_invalid_qos_bits() {
+        use crate::mqttbytes::Error as MqttError;
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, mut peer) = duplex(1024);
+        eventloop.network = Some(Network::new(client, 1024, 1024));
+
+        peer.write_all(&[
+            0b0011_0110,
+            9, // packet type, flags and remaining len
+            0x00,
+            0x03,
+            b'a',
+            b'/',
+            b'b', // topic name = 'a/b'
+            0x00,
+            0x0a, // packet identifier
+            0x01,
+            0x02, // payload
+        ])
+        .await
+        .unwrap();
+
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(MqttError::InvalidQoS(3)))
+        ));
+        assert!(
+            eventloop.network.is_none(),
+            "poll() must drop the network after an incoming malformed PUBLISH"
         );
     }
 

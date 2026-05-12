@@ -65,6 +65,8 @@ pub enum PublishNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("publish rejected because broker-only session resume has no local packet-id state")]
+    BrokerOnlySessionResume,
     #[error("publish with topic alias {0} cannot be replayed after reconnect")]
     TopicAliasReplayUnavailable(u16),
     #[error("qos0 publish was not flushed to the network")]
@@ -185,6 +187,8 @@ pub enum SubscribeNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("subscribe rejected because broker-only session resume has no local packet-id state")]
+    BrokerOnlySessionResume,
     #[error("v5 suback returned failing reason codes: {0:?}")]
     V5SubAckFailure(Vec<V5SubscribeReasonCode>),
 }
@@ -258,6 +262,8 @@ pub enum UnsubscribeNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("unsubscribe rejected because broker-only session resume has no local packet-id state")]
+    BrokerOnlySessionResume,
     #[error("v5 unsuback returned failing reason codes: {0:?}")]
     V5UnsubAckFailure(Vec<V5UnsubAckReason>),
 }

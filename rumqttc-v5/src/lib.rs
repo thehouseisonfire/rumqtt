@@ -607,6 +607,7 @@ type FallibleRequestModifierFn = Arc<
 
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MqttOptions {
     /// broker target that you want to connect to
     broker: Broker,
@@ -615,6 +616,9 @@ pub struct MqttOptions {
     keep_alive: Duration,
     /// clean (or) persistent session
     clean_start: bool,
+    /// Non-strict compatibility mode for accepting broker-retained session state
+    /// when this client instance has no matching local session state.
+    allow_broker_session_resume_without_local_state: bool,
     /// client identifier
     client_id: String,
     /// CONNECT authentication fields
@@ -680,6 +684,7 @@ impl MqttOptions {
             broker,
             keep_alive: Duration::from_secs(60),
             clean_start: true,
+            allow_broker_session_resume_without_local_state: false,
             client_id: id.into(),
             auth: ConnectAuth::None,
             request_channel_capacity: 10,
@@ -966,6 +971,28 @@ impl MqttOptions {
     /// Clean session
     pub const fn clean_start(&self) -> bool {
         self.clean_start
+    }
+
+    /// Accept `Session Present = 1` from the broker even when this client instance
+    /// has no matching local session state.
+    ///
+    /// This is a non-strict MQTT 5 compatibility mode. The strict default follows
+    /// MQTT-3.2.2-4 and rejects broker-only session reuse because the client cannot
+    /// reconcile in-flight `QoS` 1/2 state that was lost across process restart or a
+    /// newly constructed [`EventLoop`]. Enabling this can be useful for applications
+    /// that intentionally prefer receiving broker-queued messages for a stable
+    /// `ClientID` over strict local session reconciliation.
+    pub const fn set_allow_broker_session_resume_without_local_state(
+        &mut self,
+        allow: bool,
+    ) -> &mut Self {
+        self.allow_broker_session_resume_without_local_state = allow;
+        self
+    }
+
+    /// Returns whether non-strict broker-only session resume is enabled.
+    pub const fn allow_broker_session_resume_without_local_state(&self) -> bool {
+        self.allow_broker_session_resume_without_local_state
     }
 
     /// Replace the current CONNECT authentication state.
@@ -1628,6 +1655,18 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Accept broker-retained session state even when this client instance has no
+    /// matching local session state.
+    ///
+    /// This is a non-strict MQTT 5 compatibility mode; see
+    /// [`MqttOptions::set_allow_broker_session_resume_without_local_state`].
+    #[must_use]
+    pub const fn allow_broker_session_resume_without_local_state(mut self, allow: bool) -> Self {
+        self.options
+            .set_allow_broker_session_resume_without_local_state(allow);
+        self
+    }
+
     /// Replace the current CONNECT authentication state.
     #[must_use]
     pub fn auth(mut self, auth: ConnectAuth) -> Self {
@@ -2053,6 +2092,10 @@ impl Debug for MqttOptions {
             .field("broker", &self.broker)
             .field("keep_alive", &self.keep_alive)
             .field("clean_start", &self.clean_start)
+            .field(
+                "allow_broker_session_resume_without_local_state",
+                &self.allow_broker_session_resume_without_local_state,
+            )
             .field("client_id", &self.client_id)
             .field("auth", &self.auth)
             .field("request_channel_capacity", &self.request_channel_capacity)
@@ -2740,6 +2783,7 @@ mod test {
             .set_auto_topic_aliases(true)
             .set_topic_alias_policy(TopicAliasPolicy::Lru)
             .set_manual_acks(true)
+            .set_allow_broker_session_resume_without_local_state(true)
             .set_outgoing_inflight_upper_limit(4);
 
         let actual = MqttOptions::builder("client", ("localhost", 1884))
@@ -2763,6 +2807,7 @@ mod test {
             .auto_topic_aliases(true)
             .topic_alias_policy(TopicAliasPolicy::Lru)
             .manual_acks(true)
+            .allow_broker_session_resume_without_local_state(true)
             .outgoing_inflight_upper_limit(4)
             .build();
 
@@ -2787,9 +2832,20 @@ mod test {
         assert_eq!(actual.topic_alias_policy(), expected.topic_alias_policy());
         assert_eq!(actual.manual_acks(), expected.manual_acks());
         assert_eq!(
+            actual.allow_broker_session_resume_without_local_state(),
+            expected.allow_broker_session_resume_without_local_state()
+        );
+        assert_eq!(
             actual.get_outgoing_inflight_upper_limit(),
             expected.get_outgoing_inflight_upper_limit()
         );
+    }
+
+    #[test]
+    fn broker_only_session_resume_compatibility_mode_defaults_to_strict() {
+        let options = MqttOptions::new("client", "localhost");
+
+        assert!(!options.allow_broker_session_resume_without_local_state());
     }
 
     #[test]

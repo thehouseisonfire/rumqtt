@@ -135,14 +135,10 @@ impl Network {
                         }
                         Ok(Some(outgoing)) => self.write(outgoing).await?,
                         Ok(None) => {}
-                        Err(err @ StateError::Deserialization(mqttbytes::Error::ProtocolError)) => {
-                            self.try_send_inbound_disconnect(InboundDisconnect {
-                                reason: DisconnectReasonCode::ProtocolError,
-                            })
-                            .await;
-                            return Err(err);
-                        }
-                        Err(err @ StateError::ProtocolViolation(_)) => {
+                        Err(
+                            err @ (StateError::Deserialization(mqttbytes::Error::ProtocolError)
+                            | StateError::ProtocolViolation(_)),
+                        ) => {
                             self.try_send_inbound_disconnect(InboundDisconnect {
                                 reason: DisconnectReasonCode::ProtocolError,
                             })

@@ -875,6 +875,7 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
         .read_publish_with_timeout(PHASE_TIMEOUT)
         .await
         .expect("missing first replayed publish after reconnect");
+    assert!(first_replayed.dup, "replayed QoS1 publish must set DUP=1");
     assert_eq!(first_replayed.payload[0], 1);
     broker.ack(first_replayed.pkid).await;
 }
