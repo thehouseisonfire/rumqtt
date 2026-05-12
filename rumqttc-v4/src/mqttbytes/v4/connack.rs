@@ -104,9 +104,16 @@ mod test {
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
 
+    fn read_connack(packetstream: &[u8]) -> Result<ConnAck, Error> {
+        let mut stream = bytes::BytesMut::new();
+        stream.extend_from_slice(packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        ConnAck::read(fixed_header, connack_bytes)
+    }
+
     #[test]
     fn connack_parsing_works() {
-        let mut stream = bytes::BytesMut::new();
         let packetstream = &[
             0b0010_0000,
             0x02, // packet type, flags and remaining len
@@ -118,10 +125,7 @@ mod test {
             0xEF, // extra packets in the stream
         ];
 
-        stream.extend_from_slice(&packetstream[..]);
-        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
-        let connack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
-        let connack = ConnAck::read(fixed_header, connack_bytes).unwrap();
+        let connack = read_connack(packetstream).unwrap();
 
         assert_eq!(
             connack,
@@ -146,34 +150,50 @@ mod test {
 
     #[test]
     fn connack_parsing_rejects_invalid_remaining_len() {
-        let mut stream = bytes::BytesMut::new();
         let packetstream = &[0b0010_0000, 0x03, 0x00, 0x00, 0x00];
-        stream.extend_from_slice(packetstream);
-        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
-        let connack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
-        let connack = ConnAck::read(fixed_header, connack_bytes);
+        let connack = read_connack(packetstream);
         assert!(matches!(connack, Err(Error::PayloadSizeIncorrect)));
     }
 
     #[test]
     fn connack_parsing_rejects_reserved_flag_bits() {
-        let mut stream = bytes::BytesMut::new();
         let packetstream = &[0b0010_0000, 0x02, 0x02, 0x00];
-        stream.extend_from_slice(packetstream);
-        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
-        let connack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
-        let connack = ConnAck::read(fixed_header, connack_bytes);
+        let connack = read_connack(packetstream);
         assert!(matches!(connack, Err(Error::IncorrectPacketFormat)));
     }
 
     #[test]
     fn connack_parsing_rejects_session_present_on_error() {
-        let mut stream = bytes::BytesMut::new();
         let packetstream = &[0b0010_0000, 0x02, 0x01, 0x01];
-        stream.extend_from_slice(packetstream);
-        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
-        let connack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
-        let connack = ConnAck::read(fixed_header, connack_bytes);
+        let connack = read_connack(packetstream);
         assert!(matches!(connack, Err(Error::IncorrectPacketFormat)));
+    }
+
+    #[test]
+    fn connack_parsing_accepts_all_valid_return_codes() {
+        let cases = [
+            (0x00, ConnectReturnCode::Success),
+            (0x01, ConnectReturnCode::RefusedProtocolVersion),
+            (0x02, ConnectReturnCode::BadClientId),
+            (0x03, ConnectReturnCode::ServiceUnavailable),
+            (0x04, ConnectReturnCode::BadUserNamePassword),
+            (0x05, ConnectReturnCode::NotAuthorized),
+        ];
+
+        for (raw, code) in cases {
+            let packetstream = &[0b0010_0000, 0x02, 0x00, raw];
+            let connack = read_connack(packetstream).unwrap();
+            assert_eq!(connack, ConnAck::new(code, false));
+        }
+    }
+
+    #[test]
+    fn connack_parsing_rejects_invalid_return_code() {
+        let packetstream = &[0b0010_0000, 0x02, 0x00, 0x06];
+        let connack = read_connack(packetstream);
+        assert!(matches!(
+            connack,
+            Err(Error::InvalidConnectReturnCode(0x06))
+        ));
     }
 }

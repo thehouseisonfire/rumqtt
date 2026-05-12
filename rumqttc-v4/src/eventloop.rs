@@ -1240,6 +1240,26 @@ mod tests {
         result
     }
 
+    async fn run_mqtt_connect_with_first_server_packet(
+        options: MqttOptions,
+        packet: Packet,
+    ) -> Result<ConnAck, ConnectionError> {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, 1024, 1024);
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_packet = bytes::BytesMut::new();
+            packet.write(&mut encoded_packet, 1024).unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut peer, &encoded_packet)
+                .await
+                .unwrap();
+        };
+
+        let (result, ()) = tokio::join!(mqtt_connect(&options, &mut network), broker);
+        result
+    }
+
     fn pending_front_request(eventloop: &EventLoop) -> Option<&Request> {
         eventloop.pending.front().map(|envelope| &envelope.request)
     }
@@ -1556,6 +1576,18 @@ mod tests {
             Err(ConnectionError::ConnectionRefused(
                 ConnectReturnCode::BadClientId
             ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_non_connack_first_server_packet() {
+        let options = MqttOptions::new("test-client", "localhost");
+
+        let result = run_mqtt_connect_with_first_server_packet(options, Packet::PingResp).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::NotConnAck(packet)) if matches!(*packet, Packet::PingResp)
         ));
     }
 
@@ -1941,6 +1973,42 @@ mod tests {
             }
         ));
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn poll_rejects_clean_session_with_session_present_connack() {
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_clean_session(true);
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            peer.write_all(&[0x20, 0x02, 0x01, 0x00]).await.unwrap();
+        });
+
+        let err = eventloop.poll().await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::SessionStateMismatch {
+                clean_session: true,
+                session_present: true
+            }
+        ));
+        broker.await.unwrap();
     }
 
     #[test]
