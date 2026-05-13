@@ -4,7 +4,7 @@ use rumqttc::mqttbytes::v5::{
 };
 use tokio::{task, time};
 
-use rumqttc::{AsyncClient, Event, EventLoop, ManualAck, MqttOptions};
+use rumqttc::{AckMode, AsyncClient, Event, EventLoop, ManualAck, MqttOptions};
 use std::error::Error;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ fn create_conn() -> (AsyncClient, EventLoop) {
     mqttoptions
         .set_keep_alive(5)
         .set_session_expiry_interval(u32::MAX.into())
-        .set_manual_acks(true)
+        .set_ack_mode(AckMode::Manual)
         .set_clean_start(false);
 
     AsyncClient::builder(mqttoptions).capacity(10).build()
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Spawn work that uses cloned clients so the event loop can keep polling.
     pretty_env_logger::init();
 
-    // create mqtt connection with clean_session = false and manual_acks = true
+    // create mqtt connection with clean_session = false and AckMode::Manual
     let (client, mut eventloop) = create_conn();
 
     // subscribe example topic

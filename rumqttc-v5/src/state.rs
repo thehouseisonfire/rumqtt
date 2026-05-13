@@ -11,7 +11,7 @@ use crate::notice::{
     UnsubscribeNoticeTx,
 };
 use crate::{
-    AuthContext, AuthError, AuthExchangeKind, Authenticator, NoticeFailureReason,
+    AckMode, AuthContext, AuthError, AuthExchangeKind, Authenticator, NoticeFailureReason,
     PublishNoticeError, TopicAliasPolicy,
 };
 
@@ -280,6 +280,8 @@ pub struct MqttState {
     pub(crate) incoming_puback: FixedBitSet,
     /// Packet ids on incoming `QoS` 2 publishes
     pub(crate) incoming_pub: FixedBitSet,
+    /// Packet ids on incoming `QoS` 2 publishes for which PUBREC has been sent
+    pub(crate) incoming_pubrec: FixedBitSet,
     /// Last collision due to broker not acking in order
     pub collision: Option<Publish>,
     /// Notice handle for the collision publish
@@ -290,8 +292,8 @@ pub struct MqttState {
     pub(crate) tracked_unsubscribe: BTreeMap<u16, (Unsubscribe, UnsubscribeNoticeTx)>,
     /// Buffered incoming packets
     pub events: VecDeque<Event>,
-    /// Indicates if acknowledgements should be send immediately
-    pub manual_acks: bool,
+    /// Controls how incoming publish acknowledgements are handled.
+    pub ack_mode: AckMode,
     topic_aliases: TopicAliasState,
     /// Whether the current network connection has already completed its initial CONNACK.
     connack_received: bool,
@@ -313,7 +315,7 @@ pub struct MqttState {
 #[derive(Debug)]
 pub struct MqttStateBuilder {
     max_inflight: u16,
-    manual_acks: bool,
+    ack_mode: AckMode,
     auto_topic_aliases: bool,
     auto_topic_alias_policy: TopicAliasPolicy,
     client_topic_alias_max: u16,
@@ -327,7 +329,7 @@ impl MqttStateBuilder {
     pub const fn new(max_inflight: u16) -> Self {
         Self {
             max_inflight,
-            manual_acks: false,
+            ack_mode: AckMode::Automatic,
             auto_topic_aliases: false,
             auto_topic_alias_policy: TopicAliasPolicy::Monotonic,
             client_topic_alias_max: 0,
@@ -336,10 +338,10 @@ impl MqttStateBuilder {
         }
     }
 
-    /// Set whether incoming publish acknowledgements should be sent manually.
+    /// Set how incoming publish acknowledgements are handled.
     #[must_use]
-    pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
-        self.manual_acks = manual_acks;
+    pub const fn ack_mode(mut self, ack_mode: AckMode) -> Self {
+        self.ack_mode = ack_mode;
         self
     }
 
@@ -394,7 +396,7 @@ impl MqttStateBuilder {
     pub fn build(self) -> MqttState {
         MqttState::new_internal(
             self.max_inflight,
-            self.manual_acks,
+            self.ack_mode,
             self.auto_topic_aliases,
             self.auto_topic_alias_policy,
             self.client_topic_alias_max,
@@ -490,7 +492,7 @@ impl MqttState {
     #[must_use]
     pub(crate) fn new_internal(
         max_inflight: u16,
-        manual_acks: bool,
+        ack_mode: AckMode,
         auto_topic_aliases: bool,
         auto_topic_alias_policy: TopicAliasPolicy,
         client_topic_alias_max: u16,
@@ -514,12 +516,13 @@ impl MqttState {
             outgoing_rel_notice: Self::new_notice_slots(max_inflight),
             incoming_puback: FixedBitSet::with_capacity(u16::MAX as usize + 1),
             incoming_pub: FixedBitSet::with_capacity(u16::MAX as usize + 1),
+            incoming_pubrec: FixedBitSet::with_capacity(u16::MAX as usize + 1),
             collision: None,
             collision_notice: None,
             tracked_subscribe: BTreeMap::new(),
             tracked_unsubscribe: BTreeMap::new(),
             events: VecDeque::with_capacity(Self::initial_events_capacity()),
-            manual_acks,
+            ack_mode,
             topic_aliases: TopicAliasState::new(
                 auto_topic_aliases,
                 auto_topic_alias_policy,
@@ -779,6 +782,7 @@ impl MqttState {
         // remove packet ids of incoming publishes
         self.incoming_puback.clear();
         self.incoming_pub.clear();
+        self.incoming_pubrec.clear();
 
         self.ping.reset();
         self.inflight = 0;
@@ -1236,7 +1240,7 @@ impl MqttState {
                 let pkid = publish.pkid;
                 self.incoming_puback.insert(pkid as usize);
 
-                if !self.manual_acks {
+                if self.ack_mode == AckMode::Automatic {
                     let puback = PubAck::new(pkid, None);
                     return Ok(Some(self.outgoing_puback(puback)?));
                 }
@@ -1246,9 +1250,9 @@ impl MqttState {
                 let pkid = publish.pkid;
                 self.incoming_pub.insert(pkid as usize);
 
-                if !self.manual_acks {
+                if self.ack_mode == AckMode::Automatic {
                     let pubrec = PubRec::new(pkid, None);
-                    return Ok(Some(self.outgoing_pubrec(pubrec)?));
+                    return Ok(Some(self.outgoing_pubrec_for_incoming_publish(pubrec)?));
                 }
                 Ok(None)
             }
@@ -1330,7 +1334,15 @@ impl MqttState {
             error!("Unsolicited pubrel packet: {:?}", pubrel.pkid);
             return Err(StateError::Unsolicited(pubrel.pkid));
         }
+        if !self.incoming_pubrec.contains(pubrel.pkid as usize) {
+            error!(
+                "Pubrel packet received before pubrec was sent: {:?}",
+                pubrel.pkid
+            );
+            return Err(StateError::Unsolicited(pubrel.pkid));
+        }
         self.incoming_pub.set(pubrel.pkid as usize, false);
+        self.incoming_pubrec.set(pubrel.pkid as usize, false);
 
         if pubrel.reason != PubRelReason::Success {
             warn!(
@@ -1598,11 +1610,39 @@ impl MqttState {
     }
 
     fn outgoing_pubrec(&mut self, pubrec: PubRec) -> Result<Packet, StateError> {
+        self.outgoing_pubrec_internal(pubrec, false)
+    }
+
+    fn outgoing_pubrec_for_incoming_publish(
+        &mut self,
+        pubrec: PubRec,
+    ) -> Result<Packet, StateError> {
+        self.outgoing_pubrec_internal(pubrec, true)
+    }
+
+    fn outgoing_pubrec_internal(
+        &mut self,
+        pubrec: PubRec,
+        allow_duplicate: bool,
+    ) -> Result<Packet, StateError> {
         if !self.incoming_pub.contains(pubrec.pkid as usize) {
             error!("Unsolicited pubrec request: {:?}", pubrec.pkid);
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
+        if self.incoming_pubrec.contains(pubrec.pkid as usize) {
+            if allow_duplicate {
+                let pkid = pubrec.pkid;
+                let event = Event::Outgoing(Outgoing::PubRec(pkid));
+                self.events.push_back(event);
 
+                return Ok(Packet::PubRec(pubrec));
+            }
+
+            error!("Duplicate pubrec request: {:?}", pubrec.pkid);
+            return Err(StateError::Unsolicited(pubrec.pkid));
+        }
+
+        self.incoming_pubrec.insert(pubrec.pkid as usize);
         let pkid = pubrec.pkid;
         let event = Event::Outgoing(Outgoing::PubRec(pkid));
         self.events.push_back(event);
@@ -2066,12 +2106,13 @@ impl Clone for MqttState {
             outgoing_rel_notice: Self::new_notice_slots_with_len(self.outgoing_rel_notice.len()),
             incoming_puback: self.incoming_puback.clone(),
             incoming_pub: self.incoming_pub.clone(),
+            incoming_pubrec: self.incoming_pubrec.clone(),
             collision: self.collision.clone(),
             collision_notice: None,
             tracked_subscribe: BTreeMap::new(),
             tracked_unsubscribe: BTreeMap::new(),
             events: self.events.clone(),
-            manual_acks: self.manual_acks,
+            ack_mode: self.ack_mode,
             topic_aliases: self.topic_aliases.clone(),
             connack_received: self.connack_received,
             max_outgoing_inflight: self.max_outgoing_inflight,
@@ -2093,7 +2134,7 @@ mod test {
         PublishResult, SubscribeNoticeError, SubscribeNoticeTx, TrackedNoticeTx,
         UnsubscribeNoticeError, UnsubscribeNoticeTx,
     };
-    use crate::{NoticeFailureReason, TopicAliasPolicy};
+    use crate::{AckMode, NoticeFailureReason, TopicAliasPolicy};
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
@@ -3080,9 +3121,9 @@ mod test {
     }
 
     #[test]
-    fn incoming_publish_should_not_be_acked_with_manual_acks() {
+    fn incoming_publish_should_not_be_acked_with_manual_ack_mode() {
         let mut mqtt = build_mqttstate();
-        mqtt.manual_acks = true;
+        mqtt.ack_mode = AckMode::Manual;
 
         // QoS0, 1, 2 Publishes
         let mut publish1 = build_incoming_publish(QoS::AtMostOnce, 1);
@@ -3101,7 +3142,7 @@ mod test {
     #[test]
     fn manual_puback_must_match_received_qos1_publish() {
         let mut mqtt = build_mqttstate();
-        mqtt.manual_acks = true;
+        mqtt.ack_mode = AckMode::Manual;
         let mut publish = build_incoming_publish(QoS::AtLeastOnce, 10);
 
         assert!(
@@ -3132,7 +3173,7 @@ mod test {
     #[test]
     fn manual_pubrec_must_match_received_qos2_publish() {
         let mut mqtt = build_mqttstate();
-        mqtt.manual_acks = true;
+        mqtt.ack_mode = AckMode::Manual;
         let mut publish = build_incoming_publish(QoS::ExactlyOnce, 10);
 
         assert!(
@@ -3158,6 +3199,51 @@ mod test {
             packet => panic!("Invalid network request: {packet:?}"),
         }
         assert!(mqtt.incoming_pub.contains(10));
+    }
+
+    #[test]
+    fn manual_ack_rejects_duplicate_ack() {
+        let mut mqtt = build_mqttstate();
+        mqtt.ack_mode = AckMode::Manual;
+        let mut qos1 = build_incoming_publish(QoS::AtLeastOnce, 10);
+        let mut qos2 = build_incoming_publish(QoS::ExactlyOnce, 11);
+
+        mqtt.handle_incoming_publish(&mut qos1).unwrap();
+        mqtt.handle_incoming_publish(&mut qos2).unwrap();
+
+        mqtt.handle_outgoing_packet(Request::PubAck(PubAck::new(10, None)))
+            .unwrap();
+        assert!(matches!(
+            mqtt.handle_outgoing_packet(Request::PubAck(PubAck::new(10, None))),
+            Err(StateError::Unsolicited(10))
+        ));
+
+        mqtt.handle_outgoing_packet(Request::PubRec(PubRec::new(11, None)))
+            .unwrap();
+        assert!(matches!(
+            mqtt.handle_outgoing_packet(Request::PubRec(PubRec::new(11, None))),
+            Err(StateError::Unsolicited(11))
+        ));
+    }
+
+    #[test]
+    fn manual_ack_rejects_qos_mismatch() {
+        let mut mqtt = build_mqttstate();
+        mqtt.ack_mode = AckMode::Manual;
+        let mut qos1 = build_incoming_publish(QoS::AtLeastOnce, 10);
+        let mut qos2 = build_incoming_publish(QoS::ExactlyOnce, 11);
+
+        mqtt.handle_incoming_publish(&mut qos1).unwrap();
+        mqtt.handle_incoming_publish(&mut qos2).unwrap();
+
+        assert!(matches!(
+            mqtt.handle_outgoing_packet(Request::PubRec(PubRec::new(10, None))),
+            Err(StateError::Unsolicited(10))
+        ));
+        assert!(matches!(
+            mqtt.handle_outgoing_packet(Request::PubAck(PubAck::new(11, None))),
+            Err(StateError::Unsolicited(11))
+        ));
     }
 
     #[test]

@@ -3135,7 +3135,7 @@
         ],
         "notes": "The listed tests are regression coverage for client-side RETAIN bit preservation only. They do not prove the broker-side rule for choosing RETAIN on deliveries, which is outside this client crate."
       },
-      "follow_up": null,
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-9",
@@ -3175,7 +3175,7 @@
         ],
         "notes": "Same rationale as MQTT-3.3.1-8: the listed tests cover client-side RETAIN preservation, not the broker-only delivery rule."
       },
-      "follow_up": null,
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-10",
@@ -3230,7 +3230,7 @@
         ],
         "notes": "The listed tests are regression coverage for client codec/state handling of retained empty-payload publishes. They do not prove the broker-side retained-message deletion and delivery semantics."
       },
-      "follow_up": null,
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-11",
@@ -3285,7 +3285,7 @@
         ],
         "notes": "Same rationale as MQTT-3.3.1-10: the listed tests cover client-side packet handling, not broker retained-message deletion or future delivery behavior."
       },
-      "follow_up": null,
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-12",
@@ -3298,8 +3298,30 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This MUST NOT is a broker-side retained-message storage rule. rumqttc-v4 can set or clear the outbound RETAIN bit, but it does not control or observe whether the server stores, replaces, or removes retained state when RETAIN=0.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": ["Publish", "Publish::write", "Publish::read"],
+          "reason": "The v4 PUBLISH codec preserves the RETAIN bit on encode/decode, but there is no client-side logic here for broker retained-message storage semantics."
+        },
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": ["Client::handle_publish"],
+          "reason": "The client API only forwards the caller-provided retain flag into the outbound Publish packet; it does not enforce server-side retained-message behavior."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_preserves_retain_flag",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_encoding_accepts_retained_empty_payload"
+        ],
+        "notes": "Existing tests cover RETAIN-bit transport only. The normative behavior here belongs to the server after it receives the packet."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-1",
@@ -3312,8 +3334,31 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Publish::write serializes Topic Name first in the variable header, before any packet identifier or payload bytes. Publish::read consumes that first variable-header field with read_mqtt_bytes and then validates it as a non-empty MQTT UTF-8 topic name via validate_publish_topic_name.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": ["Publish::write", "Publish::read", "validate_publish_topic_name"],
+          "reason": "Encoding writes the topic immediately after the remaining length and before any optional pkid. Decoding reads the topic first from the variable header, then enforces MQTT topic-name validity including UTF-8 and U+0000 rejection."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos1_publish_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_encoding_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos1_publish_encoding_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_rejects_surrogate_in_topic_name",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_rejects_null_character_in_topic_name",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_encoding_rejects_surrogate_in_topic_name",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_encoding_rejects_null_character_in_topic_name"
+        ],
+        "notes": "Tests cover byte-level placement of the topic before pkid/payload and both decode/encode UTF-8 validation boundaries for PUBLISH topic names."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-2",
@@ -3326,8 +3371,33 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "PUBLISH topic names with '+' or '#' are rejected at the packet codec boundary by validate_publish_topic_name on both read and write. The public client publish APIs also reject wildcard-containing raw topic strings before they are queued.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": ["Publish::write", "Publish::read", "validate_publish_topic_name"],
+          "reason": "validate_publish_topic_name returns IncorrectPacketFormat if the Topic Name contains '+' or '#', and both Publish::read and Publish::write call it."
+        },
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": ["valid_publish_topic", "Client::handle_publish", "ValidatedTopic::new"],
+          "reason": "High-level publish APIs reject wildcard-containing topics before enqueueing outbound requests, reinforcing the packet-level check."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::publish_parsing_rejects_wildcards_in_topic_name",
+          "rumqttc-v4/src/client.rs::publishing_invalid_raw_topic_fails",
+          "rumqttc-v4/src/client.rs::publishing_invalid_cow_topic_fails",
+          "rumqttc-v4/src/client.rs::creating_invalid_validated_topic_fails",
+          "rumqttc-v4/src/client.rs::async_publishing_invalid_raw_topic_fails"
+        ],
+        "notes": "Coverage exists at both the raw packet codec layer and the public client API layer."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.2-3",
@@ -3340,8 +3410,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement applies to server-side subscription matching for outbound deliveries to a client. The v4 client decodes the Topic Name carried in an incoming PUBLISH and surfaces it to the application, but it does not own the broker's obligation to decide whether that topic matched any subscribed filter.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": ["MqttState::handle_incoming_packet", "MqttState::handle_incoming_publish"],
+          "reason": "Incoming PUBLISH packets are accepted as broker-delivered messages and forwarded/acked based on QoS only; there is no client-side subscription-filter matching step because the matching obligation belongs to the server."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": ["Publish::read"],
+          "reason": "The codec decodes the Topic Name from the wire and validates its format, but does not compare it against locally tracked subscription filters."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side test is expected for a broker-only topic-filter matching obligation."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.4-1",
@@ -3354,8 +3443,41 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "For the normal v4 client path, incoming QoS 0/1/2 PUBLISH packets are handled according to MQTT 3.1.1: QoS 0 yields no response, QoS 1 yields PUBACK, and QoS 2 yields PUBREC. However, `AckMode::Manual` disables the automatic responses and leaves protocol completion to application code, so the library does not strictly enforce the MUST in every supported configuration.",
+      "compliance_status": "partial",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": ["MqttState::handle_incoming_publish", "MqttState::outgoing_puback", "MqttState::outgoing_pubrec"],
+          "reason": "Default incoming publish handling maps QoS 1 to PUBACK and QoS 2 to PUBREC, while QoS 0 returns no response."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": ["AckMode", "MqttOptions::set_ack_mode", "MqttOptions::ack_mode"],
+          "reason": "The public configuration allows disabling automatic acknowledgements entirely, shifting the required PUBLISH response to the embedding application."
+        },
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": ["prepare_ack", "AsyncClient::manual_ack", "AsyncClient::ack"],
+          "reason": "Manual-ack APIs expose the correct PUBACK/PUBREC packet generation when applications opt into manual acknowledgement mode."
+        }
+      ],
+      "test_coverage": {
+        "status": "partial",
+        "tests": [
+          "rumqttc-v4/src/state.rs::incoming_publish_should_be_acked_automatically",
+          "rumqttc-v4/src/state.rs::incoming_publish_should_not_be_acked_with_manual_ack_mode",
+          "rumqttc-v4/src/state.rs::manual_puback_must_match_received_qos1_publish",
+          "rumqttc-v4/src/state.rs::manual_pubrec_must_match_received_qos2_publish",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_should_emit_incoming_before_derived_qos1_ack",
+          "rumqttc-v4/src/state.rs::handle_incoming_packet_should_emit_incoming_before_derived_qos2_ack",
+          "rumqttc-v4/src/client.rs::prepare_ack_maps_qos_to_manual_ack_packets_v4",
+          "rumqttc-v4/src/client.rs::ack_and_try_ack_use_manual_ack_flow_v4"
+        ],
+        "notes": "Tests cover the automatic QoS response mapping and the manual-ack API, but they also show that a supported configuration suppresses the automatic MUST-level response."
+      },
+      "follow_up": "Consider enforcing bounded/manual acknowledgement completion or documenting manual-ack mode as intentionally application-managed and non-strict for protocol compliance audits."
     },
     {
       "id": "MQTT-3.3.5-1",
@@ -3368,8 +3490,27 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement governs how a server delivers a published message when a subscribing client has overlapping topic filters. The v4 client can send subscriptions and receive whatever PUBLISH packets the broker chooses to deliver, but max-QoS selection and duplicate delivery policy are broker responsibilities rather than client-side enforcement.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/subscribe.rs",
+          "symbols": ["Subscribe", "Subscribe::write", "Subscribe::read"],
+          "reason": "The client only serializes/deserializes subscription requests and requested QoS values; it does not evaluate overlapping subscriptions locally."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": ["MqttState::handle_incoming_publish"],
+          "reason": "Incoming PUBLISH handling reacts to the broker-delivered packet's own QoS and packet identifier, not to any local overlap-resolution logic across subscription filters."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side test is expected because overlap resolution and delivery choice are server behavior."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.5-2",

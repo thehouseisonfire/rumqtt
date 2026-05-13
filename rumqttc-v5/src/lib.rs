@@ -87,6 +87,28 @@ pub enum SessionMode {
     Persistent,
 }
 
+/// Controls how incoming publish acknowledgements are handled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AckMode {
+    /// Automatically send the MQTT-required response for incoming publishes.
+    ///
+    /// This is the fully protocol-managed path. Incoming `QoS` 0 publishes get
+    /// no response, incoming `QoS` 1 publishes get `PUBACK`, and incoming
+    /// `QoS` 2 publishes get `PUBREC`.
+    #[default]
+    Automatic,
+    /// Leave incoming publish acknowledgement completion to the application.
+    ///
+    /// This is an advanced, application-managed mode. The client suppresses
+    /// automatic `PUBACK`/`PUBREC` for incoming `QoS` 1/`QoS` 2 publishes.
+    /// Applications must acknowledge every such publish with [`Client::ack`],
+    /// [`AsyncClient::ack`], or `prepare_ack(...)` plus `manual_ack(...)` to
+    /// remain MQTT-compliant. The library validates manual ACK packet IDs and
+    /// rejects invalid or duplicate ACKs, but it cannot guarantee eventual ACK
+    /// completion by the application.
+    Manual,
+}
+
 const PERSISTENT_SESSION_EXPIRY_INTERVAL: u32 = u32::MAX;
 
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -659,10 +681,8 @@ pub struct MqttOptions {
     auto_topic_aliases: bool,
     /// Policy used when automatically assigning outgoing MQTT 5 topic aliases.
     topic_alias_policy: TopicAliasPolicy,
-    /// If set to `true` MQTT acknowledgements are not sent automatically.
-    /// Every incoming publish packet must be acknowledged manually with either
-    /// `client.ack(...)` or the `prepare_ack(...)` + `manual_ack(...)` flow.
-    manual_acks: bool,
+    /// Controls how incoming publish acknowledgements are handled.
+    ack_mode: AckMode,
     network_options: NetworkOptions,
     #[cfg(feature = "proxy")]
     /// Proxy configuration.
@@ -709,7 +729,7 @@ impl MqttOptions {
             connect_properties: None,
             auto_topic_aliases: false,
             topic_alias_policy: TopicAliasPolicy::default(),
-            manual_acks: false,
+            ack_mode: AckMode::Automatic,
             network_options: NetworkOptions::new(),
             #[cfg(feature = "proxy")]
             proxy: None,
@@ -1490,21 +1510,15 @@ impl MqttOptions {
             .map_or_else(|| None, |conn_props| conn_props.authentication_data.clone())
     }
 
-    /// Enables or disables manual acknowledgements for incoming publishes.
-    ///
-    /// When enabled, incoming `QoS1` and `QoS2` publishes are not acknowledged
-    /// automatically. The application must acknowledge them explicitly with
-    /// [`Client::ack`](`crate::Client::ack`), [`AsyncClient::ack`](`crate::AsyncClient::ack`),
-    /// or by preparing a packet with `prepare_ack(...)` and sending it later
-    /// with `manual_ack(...)`.
-    pub const fn set_manual_acks(&mut self, manual_acks: bool) -> &mut Self {
-        self.manual_acks = manual_acks;
+    /// Set how incoming publish acknowledgements are handled.
+    pub const fn set_ack_mode(&mut self, ack_mode: AckMode) -> &mut Self {
+        self.ack_mode = ack_mode;
         self
     }
 
-    /// get manual acknowledgements
-    pub const fn manual_acks(&self) -> bool {
-        self.manual_acks
+    /// Returns how incoming publish acknowledgements are handled.
+    pub const fn ack_mode(&self) -> AckMode {
+        self.ack_mode
     }
 
     pub fn network_options(&self) -> NetworkOptions {
@@ -1885,10 +1899,10 @@ impl MqttOptionsBuilder {
         self
     }
 
-    /// Enable or disable manual acknowledgements.
+    /// Set how incoming publish acknowledgements are handled.
     #[must_use]
-    pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
-        self.options.set_manual_acks(manual_acks);
+    pub const fn ack_mode(mut self, ack_mode: AckMode) -> Self {
+        self.options.set_ack_mode(ack_mode);
         self
     }
 
@@ -2150,7 +2164,7 @@ impl Debug for MqttOptions {
             .field("connect_timeout", &self.connect_timeout)
             .field("auto_topic_aliases", &self.auto_topic_aliases)
             .field("topic_alias_policy", &self.topic_alias_policy)
-            .field("manual_acks", &self.manual_acks)
+            .field("ack_mode", &self.ack_mode)
             .field("connect properties", &self.connect_properties)
             .finish_non_exhaustive()
     }
@@ -2726,7 +2740,7 @@ mod test {
             options.incoming_packet_size_limit,
             baseline.incoming_packet_size_limit
         );
-        assert_eq!(options.manual_acks, baseline.manual_acks);
+        assert_eq!(options.ack_mode, baseline.ack_mode);
         assert_eq!(
             options.outgoing_inflight_upper_limit,
             baseline.outgoing_inflight_upper_limit
@@ -2865,7 +2879,7 @@ mod test {
             .set_authentication_data(Some(Bytes::from_static(b"auth")))
             .set_auto_topic_aliases(true)
             .set_topic_alias_policy(TopicAliasPolicy::Lru)
-            .set_manual_acks(true)
+            .set_ack_mode(AckMode::Manual)
             .set_allow_broker_session_resume_without_local_state(true)
             .set_outgoing_inflight_upper_limit(4);
 
@@ -2889,7 +2903,7 @@ mod test {
             .authentication_data(Some(Bytes::from_static(b"auth")))
             .auto_topic_aliases(true)
             .topic_alias_policy(TopicAliasPolicy::Lru)
-            .manual_acks(true)
+            .ack_mode(AckMode::Manual)
             .allow_broker_session_resume_without_local_state(true)
             .outgoing_inflight_upper_limit(4)
             .build();
@@ -2913,7 +2927,7 @@ mod test {
         assert_eq!(actual.connect_properties(), expected.connect_properties());
         assert_eq!(actual.auto_topic_aliases(), expected.auto_topic_aliases());
         assert_eq!(actual.topic_alias_policy(), expected.topic_alias_policy());
-        assert_eq!(actual.manual_acks(), expected.manual_acks());
+        assert_eq!(actual.ack_mode(), expected.ack_mode());
         assert_eq!(
             actual.allow_broker_session_resume_without_local_state(),
             expected.allow_broker_session_resume_without_local_state()

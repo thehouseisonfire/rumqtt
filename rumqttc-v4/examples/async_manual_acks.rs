@@ -1,6 +1,6 @@
 use tokio::{task, time};
 
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
+use rumqttc::{AckMode, AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::error::Error;
 use std::time::Duration;
 
@@ -8,7 +8,7 @@ fn create_conn() -> (AsyncClient, EventLoop) {
     let mut mqttoptions = MqttOptions::new("test-1", "localhost");
     mqttoptions
         .set_keep_alive(5)
-        .set_manual_acks(true)
+        .set_ack_mode(AckMode::Manual)
         .set_clean_session(false);
 
     AsyncClient::builder(mqttoptions).capacity(10).build()
@@ -18,7 +18,7 @@ fn create_conn() -> (AsyncClient, EventLoop) {
 async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
 
-    // create mqtt connection with clean_session = false and manual_acks = true
+    // create mqtt connection with clean_session = false and AckMode::Manual
     let (client, mut eventloop) = create_conn();
 
     // subscribe example topic

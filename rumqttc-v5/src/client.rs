@@ -909,8 +909,13 @@ impl AsyncClient {
     /// Returns `None` for `QoS0` publishes, which do not require acknowledgement.
     ///
     /// This is typically used together with
-    /// [`MqttOptions::set_manual_acks`](`crate::MqttOptions::set_manual_acks`)
-    /// when acknowledgement must be deferred or customized.
+    /// [`MqttOptions::set_ack_mode`](`crate::MqttOptions::set_ack_mode`)
+    /// with [`AckMode::Manual`](crate::AckMode::Manual) when acknowledgement must be deferred
+    /// or customized.
+    ///
+    /// Manual ACK mode is advanced and application-managed. Applications must acknowledge
+    /// every incoming `QoS` 1/`QoS` 2 publish to remain MQTT-compliant. The library rejects
+    /// invalid or duplicate manual ACKs, but it cannot guarantee eventual ACK completion.
     ///
     /// # Examples
     ///
@@ -941,7 +946,12 @@ impl AsyncClient {
 
     /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
     ///
-    /// This is useful when `manual_acks` is enabled and acknowledgement must be deferred.
+    /// This is useful when [`AckMode::Manual`](crate::AckMode::Manual) is enabled and
+    /// acknowledgement must be deferred.
+    ///
+    /// Manual ACK mode is advanced and application-managed. Applications must acknowledge
+    /// every incoming `QoS` 1/`QoS` 2 publish to remain MQTT-compliant. The library rejects
+    /// invalid or duplicate manual ACKs, but it cannot guarantee eventual ACK completion.
     ///
     /// # Errors
     ///
@@ -964,7 +974,10 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
-    /// Only needed if the `manual_acks` flag is set.
+    /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
+    ///
+    /// Applications using manual ACK mode must acknowledge every incoming `QoS` 1/`QoS` 2
+    /// publish to remain MQTT-compliant.
     ///
     /// # Errors
     ///
@@ -978,7 +991,7 @@ impl AsyncClient {
     }
 
     /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
-    /// Only needed if the `manual_acks` flag is set.
+    /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
     ///
     /// # Errors
     ///
@@ -2239,7 +2252,10 @@ impl Client {
     }
 
     /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
-    /// Only needed if the `manual_acks` flag is set.
+    /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
+    ///
+    /// Applications using manual ACK mode must acknowledge every incoming `QoS` 1/`QoS` 2
+    /// publish to remain MQTT-compliant.
     ///
     /// # Errors
     ///
@@ -2253,7 +2269,7 @@ impl Client {
     }
 
     /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
-    /// Only needed if the `manual_acks` flag is set.
+    /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
     ///
     /// # Errors
     ///

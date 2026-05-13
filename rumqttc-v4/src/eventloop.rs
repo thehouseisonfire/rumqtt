@@ -297,11 +297,11 @@ impl EventLoop {
     ) -> Self {
         let pending = VecDeque::new();
         let max_inflight = mqtt_options.inflight;
-        let manual_acks = mqtt_options.manual_acks;
+        let ack_mode = mqtt_options.ack_mode;
 
         Self {
             mqtt_options,
-            state: MqttState::new_internal(max_inflight, manual_acks),
+            state: MqttState::new_internal(max_inflight, ack_mode),
             requests_rx,
             control_requests_rx,
             immediate_disconnect_rx,
