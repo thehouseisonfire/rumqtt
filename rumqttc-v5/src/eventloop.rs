@@ -322,7 +322,7 @@ impl EventLoop {
     ) -> Self {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
-        let manual_acks = options.manual_acks;
+        let ack_mode = options.ack_mode;
         let auto_topic_aliases = options.auto_topic_aliases();
         let topic_alias_policy = options.topic_alias_policy();
         let client_topic_alias_max = options.topic_alias_max().unwrap_or(0);
@@ -334,7 +334,7 @@ impl EventLoop {
             options,
             state: MqttState::new_internal(
                 inflight_limit,
-                manual_acks,
+                ack_mode,
                 auto_topic_aliases,
                 topic_alias_policy,
                 client_topic_alias_max,
@@ -1414,6 +1414,7 @@ const fn should_replay_after_reconnect(request: &Request) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AckMode;
     use crate::mqttbytes::{Error as MqttError, QoS};
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{ConnAckProperties, Filter, PubAck, PubComp, PubRec, PubRel, PublishProperties};
@@ -1550,7 +1551,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -1577,7 +1578,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -1605,7 +1606,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -1634,7 +1635,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -1664,7 +1665,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -1692,7 +1693,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -1856,7 +1857,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -2065,7 +2066,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
@@ -3624,7 +3625,7 @@ mod tests {
         let mut network = Network::new(client, Some(1024));
         let mut state = MqttState::new_internal(
             10,
-            false,
+            AckMode::Automatic,
             options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),

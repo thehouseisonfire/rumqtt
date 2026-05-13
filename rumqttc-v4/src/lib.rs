@@ -106,6 +106,28 @@ pub enum SessionMode {
     Persistent,
 }
 
+/// Controls how incoming publish acknowledgements are handled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AckMode {
+    /// Automatically send the MQTT-required response for incoming publishes.
+    ///
+    /// This is the fully protocol-managed path. Incoming `QoS` 0 publishes get
+    /// no response, incoming `QoS` 1 publishes get `PUBACK`, and incoming
+    /// `QoS` 2 publishes get `PUBREC`.
+    #[default]
+    Automatic,
+    /// Leave incoming publish acknowledgement completion to the application.
+    ///
+    /// This is an advanced, application-managed mode. The client suppresses
+    /// automatic `PUBACK`/`PUBREC` for incoming `QoS` 1/`QoS` 2 publishes.
+    /// Applications must acknowledge every such publish with [`Client::ack`],
+    /// [`AsyncClient::ack`], or `prepare_ack(...)` plus `manual_ack(...)` to
+    /// remain MQTT-compliant. The library validates manual ACK packet IDs and
+    /// rejects invalid or duplicate ACKs, but it cannot guarantee eventual ACK
+    /// completion by the application.
+    Manual,
+}
+
 /// Current outgoing activity on the eventloop
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outgoing {
@@ -511,10 +533,8 @@ pub struct MqttOptions {
     inflight: u16,
     /// Last will that will be issued on unexpected disconnect
     last_will: Option<LastWill>,
-    /// If set to `true` MQTT acknowledgements are not sent automatically.
-    /// Every incoming publish packet must be acknowledged manually with either
-    /// `client.ack(...)` or the `prepare_ack(...)` + `manual_ack(...)` flow.
-    manual_acks: bool,
+    /// Controls how incoming publish acknowledgements are handled.
+    ack_mode: AckMode,
     #[cfg(feature = "proxy")]
     /// Proxy configuration.
     proxy: Option<Proxy>,
@@ -562,7 +582,7 @@ impl MqttOptions {
             pending_throttle: Duration::from_micros(0),
             inflight: 100,
             last_will: None,
-            manual_acks: false,
+            ack_mode: AckMode::Automatic,
             #[cfg(feature = "proxy")]
             proxy: None,
             #[cfg(feature = "websocket")]
@@ -904,15 +924,15 @@ impl MqttOptions {
         self.inflight
     }
 
-    /// set manual acknowledgements
-    pub const fn set_manual_acks(&mut self, manual_acks: bool) -> &mut Self {
-        self.manual_acks = manual_acks;
+    /// Set how incoming publish acknowledgements are handled.
+    pub const fn set_ack_mode(&mut self, ack_mode: AckMode) -> &mut Self {
+        self.ack_mode = ack_mode;
         self
     }
 
-    /// get manual acknowledgements
-    pub const fn manual_acks(&self) -> bool {
-        self.manual_acks
+    /// Returns how incoming publish acknowledgements are handled.
+    pub const fn ack_mode(&self) -> AckMode {
+        self.ack_mode
     }
 
     #[cfg(feature = "proxy")]
@@ -1195,10 +1215,10 @@ impl MqttOptionsBuilder {
         self
     }
 
-    /// Enable or disable manual acknowledgements.
+    /// Set how incoming publish acknowledgements are handled.
     #[must_use]
-    pub const fn manual_acks(mut self, manual_acks: bool) -> Self {
-        self.options.set_manual_acks(manual_acks);
+    pub const fn ack_mode(mut self, ack_mode: AckMode) -> Self {
+        self.options.set_ack_mode(ack_mode);
         self
     }
 
@@ -1472,7 +1492,7 @@ impl Debug for MqttOptions {
             .field("pending_throttle", &self.pending_throttle)
             .field("inflight", &self.inflight)
             .field("last_will", &self.last_will)
-            .field("manual_acks", &self.manual_acks)
+            .field("ack_mode", &self.ack_mode)
             .finish_non_exhaustive()
     }
 }
@@ -1991,7 +2011,7 @@ mod test {
         assert_eq!(options.read_batch_size, baseline.read_batch_size);
         assert_eq!(options.pending_throttle, baseline.pending_throttle);
         assert_eq!(options.inflight, baseline.inflight);
-        assert_eq!(options.manual_acks, baseline.manual_acks);
+        assert_eq!(options.ack_mode, baseline.ack_mode);
     }
 
     #[test]
@@ -2084,7 +2104,7 @@ mod test {
             .set_read_batch_size(32)
             .set_pending_throttle(Duration::from_micros(250))
             .set_inflight(4)
-            .set_manual_acks(true)
+            .set_ack_mode(AckMode::Manual)
             .set_max_packet_size(4096, 2048);
 
         let actual = MqttOptions::builder("client", ("localhost", 1884))
@@ -2097,7 +2117,7 @@ mod test {
             .read_batch_size(32)
             .pending_throttle(Duration::from_micros(250))
             .inflight(4)
-            .manual_acks(true)
+            .ack_mode(AckMode::Manual)
             .max_packet_size(4096, 2048)
             .build();
 
@@ -2117,7 +2137,7 @@ mod test {
         assert_eq!(actual.read_batch_size(), expected.read_batch_size());
         assert_eq!(actual.pending_throttle(), expected.pending_throttle());
         assert_eq!(actual.inflight(), expected.inflight());
-        assert_eq!(actual.manual_acks(), expected.manual_acks());
+        assert_eq!(actual.ack_mode(), expected.ack_mode());
         assert_eq!(
             actual.max_incoming_packet_size,
             expected.max_incoming_packet_size

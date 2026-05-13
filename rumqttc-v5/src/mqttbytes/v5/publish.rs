@@ -72,7 +72,7 @@ impl Publish {
         let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
         let topic = read_mqtt_bytes(&mut bytes)?;
-        validate_mqtt_string(&topic)?;
+        validate_publish_topic_name(&topic)?;
 
         // Packet identifier exists where QoS > 0
         let pkid = match qos {
@@ -111,7 +111,7 @@ impl Publish {
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
         let count = write_remaining_length(buffer, len)?;
-        validate_mqtt_string(&self.topic)?;
+        validate_publish_topic_name(&self.topic)?;
         write_mqtt_bytes(buffer, &self.topic)?;
 
         if self.qos != QoS::AtMostOnce {
@@ -133,6 +133,15 @@ impl Publish {
 
         Ok(1 + count + len)
     }
+}
+
+fn validate_publish_topic_name(topic: &[u8]) -> Result<(), Error> {
+    let topic = validate_mqtt_string(topic)?;
+    if topic.contains('+') || topic.contains('#') {
+        return Err(Error::MalformedPacket);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -457,6 +466,33 @@ mod test {
     fn write_rejects_topic_with_null_character() {
         let publish = Publish {
             topic: Bytes::from_static(b"a\0b"),
+            ..Default::default()
+        };
+        let mut buffer = BytesMut::new();
+        let result = publish.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn read_rejects_topic_with_wildcard() {
+        let mut frame = BytesMut::from(
+            &[
+                0x30, 0x06, // PUBLISH, remaining length
+                0x00, 0x03, // topic length
+                b'a', b'/', b'#', // topic
+                0x00, // properties length
+            ][..],
+        );
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn write_rejects_topic_with_wildcard() {
+        let publish = Publish {
+            topic: Bytes::from_static(b"a/+"),
             ..Default::default()
         };
         let mut buffer = BytesMut::new();
