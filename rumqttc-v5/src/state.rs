@@ -87,7 +87,7 @@ impl PingState {
         }
     }
 
-    fn increment_collision_count(&mut self) -> usize {
+    const fn increment_collision_count(&mut self) -> usize {
         let collision_count = self.collision_count() + 1;
         *self = match self {
             Self::Idle { .. } => Self::Idle { collision_count },
@@ -96,17 +96,17 @@ impl PingState {
         collision_count
     }
 
-    fn begin_waiting_for_resp(&mut self) {
+    const fn begin_waiting_for_resp(&mut self) {
         let collision_count = self.collision_count();
         *self = Self::AwaitingResp { collision_count };
     }
 
-    fn finish_waiting_for_resp(&mut self) {
+    const fn finish_waiting_for_resp(&mut self) {
         let collision_count = self.collision_count();
         *self = Self::Idle { collision_count };
     }
 
-    fn reset_collision_count(&mut self) {
+    const fn reset_collision_count(&mut self) {
         *self = if self.await_pingresp() {
             Self::AwaitingResp { collision_count: 0 }
         } else {
@@ -114,7 +114,7 @@ impl PingState {
         };
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         *self = Self::new();
     }
 }
@@ -128,7 +128,6 @@ struct TopicAliasState {
     /// Automatically assigned client-to-server topic aliases for the current network connection.
     auto_outgoing: HashMap<Bytes, u16>,
     next_auto: Option<u16>,
-    auto_enabled: bool,
     auto_policy: TopicAliasPolicy,
     auto_lru: VecDeque<u16>,
     /// `topic_alias_maximum` RECEIVED via connack packet
@@ -140,13 +139,12 @@ struct TopicAliasState {
 }
 
 impl TopicAliasState {
-    fn new(auto_enabled: bool, auto_policy: TopicAliasPolicy, client_max: u16) -> Self {
+    fn new(auto_policy: TopicAliasPolicy, client_max: u16) -> Self {
         Self {
             incoming: HashMap::new(),
             outgoing: HashMap::new(),
             auto_outgoing: HashMap::new(),
             next_auto: Some(1),
-            auto_enabled,
             auto_policy,
             auto_lru: VecDeque::new(),
             broker_max: 0,
@@ -316,7 +314,6 @@ pub struct MqttState {
 pub struct MqttStateBuilder {
     max_inflight: u16,
     ack_mode: AckMode,
-    auto_topic_aliases: bool,
     auto_topic_alias_policy: TopicAliasPolicy,
     client_topic_alias_max: u16,
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
@@ -330,8 +327,7 @@ impl MqttStateBuilder {
         Self {
             max_inflight,
             ack_mode: AckMode::Automatic,
-            auto_topic_aliases: false,
-            auto_topic_alias_policy: TopicAliasPolicy::Monotonic,
+            auto_topic_alias_policy: TopicAliasPolicy::Disabled,
             client_topic_alias_max: 0,
             authenticator: None,
             authentication_method: None,
@@ -345,14 +341,7 @@ impl MqttStateBuilder {
         self
     }
 
-    /// Enable or disable automatic outgoing topic alias assignment.
-    #[must_use]
-    pub const fn auto_topic_aliases(mut self, auto_topic_aliases: bool) -> Self {
-        self.auto_topic_aliases = auto_topic_aliases;
-        self
-    }
-
-    /// Set the policy used for automatic outgoing topic alias assignment.
+    /// Set the policy used for outgoing topic alias assignment.
     #[must_use]
     pub const fn topic_alias_policy(mut self, auto_topic_alias_policy: TopicAliasPolicy) -> Self {
         self.auto_topic_alias_policy = auto_topic_alias_policy;
@@ -397,7 +386,6 @@ impl MqttStateBuilder {
         MqttState::new_internal(
             self.max_inflight,
             self.ack_mode,
-            self.auto_topic_aliases,
             self.auto_topic_alias_policy,
             self.client_topic_alias_max,
             self.authentication_method,
@@ -493,7 +481,6 @@ impl MqttState {
     pub(crate) fn new_internal(
         max_inflight: u16,
         ack_mode: AckMode,
-        auto_topic_aliases: bool,
         auto_topic_alias_policy: TopicAliasPolicy,
         client_topic_alias_max: u16,
         authentication_method: Option<String>,
@@ -523,11 +510,7 @@ impl MqttState {
             tracked_unsubscribe: BTreeMap::new(),
             events: VecDeque::with_capacity(Self::initial_events_capacity()),
             ack_mode,
-            topic_aliases: TopicAliasState::new(
-                auto_topic_aliases,
-                auto_topic_alias_policy,
-                client_topic_alias_max,
-            ),
+            topic_aliases: TopicAliasState::new(auto_topic_alias_policy, client_topic_alias_max),
             connack_received: false,
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
@@ -573,7 +556,7 @@ impl MqttState {
     ///
     /// Low-level callers normally let [`MqttState`] update this from `CONNACK`,
     /// but tests and direct protocol drivers may need to seed it explicitly.
-    pub fn set_broker_topic_alias_max(&mut self, max: u16) {
+    pub const fn set_broker_topic_alias_max(&mut self, max: u16) {
         self.topic_aliases.broker_max = max;
     }
 
@@ -1398,7 +1381,7 @@ impl MqttState {
         })
     }
 
-    fn handle_incoming_pingresp(&mut self) -> Option<Packet> {
+    const fn handle_incoming_pingresp(&mut self) -> Option<Packet> {
         self.ping.finish_waiting_for_resp();
         None
     }
@@ -1657,11 +1640,10 @@ impl MqttState {
         let elapsed_in = self.last_incoming.elapsed();
         let elapsed_out = self.last_outgoing.elapsed();
 
-        if self.collision.is_some() {
-            if self.ping.increment_collision_count() >= 2 {
+        if self.collision.is_some()
+            && self.ping.increment_collision_count() >= 2 {
                 return Err(StateError::CollisionTimeout);
             }
-        }
 
         // raise error if last ping didn't receive ack
         if self.ping.await_pingresp() {
@@ -1919,7 +1901,7 @@ impl MqttState {
     }
 
     fn apply_auto_topic_alias(&self, publish: &mut Publish) -> Option<AutoTopicAliasAction> {
-        if !self.topic_aliases.auto_enabled
+        if self.topic_aliases.auto_policy == TopicAliasPolicy::Disabled
             || self.topic_aliases.broker_max == 0
             || publish.topic.is_empty()
             || Self::publish_topic_alias(publish).is_some()
@@ -2182,7 +2164,6 @@ mod test {
 
     fn build_lru_auto_alias_mqttstate(max_inflight: u16, broker_topic_alias_max: u16) -> MqttState {
         let mut mqtt = MqttState::builder(max_inflight)
-            .auto_topic_aliases(true)
             .topic_alias_policy(TopicAliasPolicy::Lru)
             .build();
         mqtt.set_broker_topic_alias_max(broker_topic_alias_max);
@@ -4091,7 +4072,7 @@ mod test {
     #[test]
     fn auto_topic_aliases_send_topic_and_alias_before_alias_only_publish() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
         mqtt.set_broker_topic_alias_max(10);
 
@@ -4135,7 +4116,7 @@ mod test {
     #[test]
     fn auto_topic_aliases_do_nothing_when_broker_allows_no_aliases() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
 
         let packet = mqtt
@@ -4161,7 +4142,7 @@ mod test {
     #[test]
     fn auto_topic_aliases_stop_allocating_when_capacity_is_exhausted() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
         mqtt.set_broker_topic_alias_max(1);
         mqtt.outgoing_publish(Publish::new("topic/one", QoS::AtMostOnce, vec![], None))
@@ -4190,7 +4171,7 @@ mod test {
     #[test]
     fn auto_topic_aliases_preserve_manual_aliases_and_skip_used_aliases() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
         mqtt.set_broker_topic_alias_max(2);
         mqtt.outgoing_publish(build_outgoing_publish_with_alias(
@@ -4223,7 +4204,7 @@ mod test {
     #[test]
     fn manual_rebind_clears_stale_auto_topic_alias_mapping() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
         mqtt.set_broker_topic_alias_max(2);
         mqtt.outgoing_publish(Publish::new("auto/topic", QoS::AtMostOnce, vec![], None))
@@ -4258,7 +4239,7 @@ mod test {
     #[test]
     fn auto_topic_alias_qos_replay_uses_full_topic_after_clean() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
         mqtt.set_broker_topic_alias_max(10);
         mqtt.outgoing_publish(build_outgoing_publish(QoS::AtMostOnce))
@@ -4286,7 +4267,9 @@ mod test {
 
     #[test]
     fn auto_topic_alias_collision_does_not_register_unsent_alias() {
-        let mut mqtt = MqttState::builder(2).auto_topic_aliases(true).build();
+        let mut mqtt = MqttState::builder(2)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
+            .build();
         mqtt.set_broker_topic_alias_max(10);
         mqtt.outgoing_publish(Publish::new(
             "inflight/topic",
@@ -4330,7 +4313,9 @@ mod test {
 
     #[test]
     fn auto_topic_alias_collision_replay_does_not_send_uncommitted_alias() {
-        let mut mqtt = MqttState::builder(2).auto_topic_aliases(true).build();
+        let mut mqtt = MqttState::builder(2)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
+            .build();
         mqtt.set_broker_topic_alias_max(10);
         let first_notice = queue_publish_with_notice(
             &mut mqtt,
@@ -4364,7 +4349,9 @@ mod test {
 
     #[test]
     fn auto_topic_alias_collision_replay_restores_reused_alias_topic_after_rebind() {
-        let mut mqtt = MqttState::builder(2).auto_topic_aliases(true).build();
+        let mut mqtt = MqttState::builder(2)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
+            .build();
         mqtt.set_broker_topic_alias_max(10);
         let first_notice = queue_publish_with_notice(
             &mut mqtt,
@@ -4406,7 +4393,7 @@ mod test {
     #[test]
     fn auto_topic_aliases_exhaust_without_wrapping_at_u16_max() {
         let mut mqtt = MqttState::builder(u16::MAX)
-            .auto_topic_aliases(true)
+            .topic_alias_policy(TopicAliasPolicy::Monotonic)
             .build();
         mqtt.set_broker_topic_alias_max(u16::MAX);
         mqtt.topic_aliases.next_auto = Some(u16::MAX);

@@ -818,7 +818,7 @@ async fn broker_only_session_resume_compatibility_mode_accepts_session_present()
     options
         .set_clean_start(false)
         .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
-        .set_allow_broker_session_resume_without_local_state(true);
+        .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
 
     let broker = task::spawn(async move {
         let _broker = TestBroker::from_listener(
