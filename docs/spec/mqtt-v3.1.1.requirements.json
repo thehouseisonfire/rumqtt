@@ -2914,7 +2914,7 @@
         "tests": [],
         "notes": "No broker fan-out implementation exists in the v4 client crate, so there is no client-side behavior to test for this server-only routing rule."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-4",
@@ -2977,7 +2977,7 @@
         ],
         "notes": "Codec tests cover valid QoS 0/1 paths and explicit rejection of inbound PUBLISH QoS bits 11. Eventloop coverage proves poll() drops the active network connection after that protocol error."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-5",
@@ -3015,7 +3015,7 @@
         "tests": [],
         "notes": "The requirement concerns server persistence behavior after receiving a retained PUBLISH, which is outside this client crate's responsibility."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-6",
@@ -3054,7 +3054,7 @@
         "tests": [],
         "notes": "The normative action is server persistence after receiving a retained publish, which is outside this client crate's role."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-7",
@@ -3093,7 +3093,7 @@
         "tests": [],
         "notes": "Same rationale as MQTT-3.3.1-6: retained-message storage is not a client responsibility."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-8",
