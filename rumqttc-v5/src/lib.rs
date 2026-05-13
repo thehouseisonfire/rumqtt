@@ -78,6 +78,17 @@ pub enum TopicAliasPolicy {
     Lru,
 }
 
+/// Session lifetime mode for MQTT client state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMode {
+    /// Start with a clean broker session on each connection.
+    Clean,
+    /// Request a broker-retained session that survives network reconnects.
+    Persistent,
+}
+
+const PERSISTENT_SESSION_EXPIRY_INTERVAL: u32 = u32::MAX;
+
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use crate::tls::Error as TlsError;
 
@@ -957,14 +968,40 @@ impl MqttOptions {
         self.client_id.clone()
     }
 
-    /// `clean_start = true` removes all the state from queues & instructs the broker
-    /// to clean all the client state when client disconnects.
+    /// `clean_start = true` removes previously retained session state and starts a fresh session.
     ///
-    /// When set `false`, broker will hold the client state and performs pending
-    /// operations on the client when reconnection with same `client_id`
-    /// happens. Local queue state is also held to retransmit packets after reconnection.
+    /// When set to `false`, the broker can resume an existing session for the same `client_id`.
+    /// To request that the broker retains this connection's session after disconnect, configure
+    /// a non-zero session expiry interval or use [`SessionMode::Persistent`].
     pub const fn set_clean_start(&mut self, clean_start: bool) -> &mut Self {
         self.clean_start = clean_start;
+        self
+    }
+
+    /// Set whether this client uses a clean or persistent session.
+    pub fn set_session_mode(&mut self, mode: SessionMode) -> &mut Self {
+        match mode {
+            SessionMode::Clean => {
+                self.clean_start = true;
+                if let Some(properties) = &mut self.connect_properties {
+                    properties.session_expiry_interval = None;
+                }
+            }
+            SessionMode::Persistent => {
+                self.clean_start = false;
+                if let Some(properties) = &mut self.connect_properties {
+                    if matches!(properties.session_expiry_interval, None | Some(0)) {
+                        properties.session_expiry_interval =
+                            Some(PERSISTENT_SESSION_EXPIRY_INTERVAL);
+                    }
+                } else {
+                    let mut properties = ConnectProperties::new();
+                    properties.session_expiry_interval = Some(PERSISTENT_SESSION_EXPIRY_INTERVAL);
+                    self.connect_properties = Some(properties);
+                }
+            }
+        }
+
         self
     }
 
@@ -1652,6 +1689,13 @@ impl MqttOptionsBuilder {
     #[must_use]
     pub const fn clean_start(mut self, clean_start: bool) -> Self {
         self.options.set_clean_start(clean_start);
+        self
+    }
+
+    /// Set whether this client uses a clean or persistent session.
+    #[must_use]
+    pub fn session_mode(mut self, mode: SessionMode) -> Self {
+        self.options.set_session_mode(mode);
         self
     }
 
@@ -2756,6 +2800,45 @@ mod test {
     #[test]
     fn allow_empty_client_id_with_clean_start_false() {
         let _mqtt_opts = MqttOptions::new("", "127.0.0.1").set_clean_start(false);
+    }
+
+    #[test]
+    fn set_session_mode_updates_clean_start_and_session_expiry() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_session_mode(SessionMode::Persistent);
+        assert!(!options.clean_start());
+        assert_eq!(
+            options.session_expiry_interval(),
+            Some(PERSISTENT_SESSION_EXPIRY_INTERVAL)
+        );
+
+        options.set_session_mode(SessionMode::Clean);
+        assert!(options.clean_start());
+        assert_eq!(options.session_expiry_interval(), None);
+    }
+
+    #[test]
+    fn builder_session_mode_updates_clean_start_and_session_expiry() {
+        let options = MqttOptions::builder("client_id", "127.0.0.1")
+            .session_mode(SessionMode::Persistent)
+            .build();
+
+        assert!(!options.clean_start());
+        assert_eq!(
+            options.session_expiry_interval(),
+            Some(PERSISTENT_SESSION_EXPIRY_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn persistent_session_mode_preserves_explicit_nonzero_session_expiry() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_session_expiry_interval(Some(120));
+
+        options.set_session_mode(SessionMode::Persistent);
+
+        assert!(!options.clean_start());
+        assert_eq!(options.session_expiry_interval(), Some(120));
     }
 
     #[test]

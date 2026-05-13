@@ -97,6 +97,15 @@ pub use proxy::{Proxy, ProxyAuth, ProxyType};
 
 pub type Incoming = Packet;
 
+/// Session lifetime mode for MQTT client state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMode {
+    /// Start with a clean broker session on each connection.
+    Clean,
+    /// Reuse broker-retained session state across reconnects.
+    Persistent,
+}
+
 /// Current outgoing activity on the eventloop
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outgoing {
@@ -725,6 +734,15 @@ impl MqttOptions {
         self
     }
 
+    /// Set whether this client uses a clean or persistent session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if mode is [`SessionMode::Persistent`] when `client_id` is empty.
+    pub fn set_session_mode(&mut self, mode: SessionMode) -> &mut Self {
+        self.set_clean_session(matches!(mode, SessionMode::Clean))
+    }
+
     /// Clean session
     pub const fn clean_session(&self) -> bool {
         self.clean_session
@@ -1092,6 +1110,17 @@ impl MqttOptionsBuilder {
     #[must_use]
     pub fn clean_session(mut self, clean_session: bool) -> Self {
         self.options.set_clean_session(clean_session);
+        self
+    }
+
+    /// Set whether this client uses a clean or persistent session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if mode is [`SessionMode::Persistent`] when `client_id` is empty.
+    #[must_use]
+    pub fn session_mode(mut self, mode: SessionMode) -> Self {
+        self.options.set_session_mode(mode);
         self
     }
 
@@ -2138,6 +2167,15 @@ mod test {
         let mut options = MqttOptions::new("client_id", "127.0.0.1");
         options.set_clean_session(false);
         options.set_clean_session(true);
+    }
+
+    #[test]
+    fn set_session_mode_when_client_id_present() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_session_mode(SessionMode::Persistent);
+        assert!(!options.clean_session());
+        options.set_session_mode(SessionMode::Clean);
+        assert!(options.clean_session());
     }
 
     #[test]

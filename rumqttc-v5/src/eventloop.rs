@@ -2646,7 +2646,7 @@ mod tests {
     fn clean_rewrites_alias_only_pending_publish_when_mapping_is_known() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
-        eventloop.state.broker_topic_alias_max = 10;
+        eventloop.state.set_broker_topic_alias_max(10);
         eventloop
             .state
             .handle_outgoing_packet(Request::Publish(publish_with_alias(
@@ -2678,7 +2678,7 @@ mod tests {
             }
             request => panic!("expected replay publish, got {request:?}"),
         }
-        assert_eq!(eventloop.state.broker_topic_alias_max, 0);
+        assert_eq!(eventloop.state.broker_topic_alias_max(), 0);
     }
 
     #[test]
@@ -2714,7 +2714,7 @@ mod tests {
     fn clean_prefers_earlier_replay_alias_mapping_over_stale_previous_mapping() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
-        eventloop.state.broker_topic_alias_max = 10;
+        eventloop.state.set_broker_topic_alias_max(10);
         eventloop
             .state
             .handle_outgoing_packet(Request::Publish(publish_with_alias(
