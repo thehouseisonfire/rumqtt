@@ -1288,9 +1288,14 @@ async fn mqtt_connect_inner(
     loop {
         match network.read().await? {
             Incoming::ConnAck(connack) => {
+                if let Err(err) = validate_connack_session_present_for_reason_code(&connack) {
+                    send_protocol_error_disconnect(network).await;
+                    return Err(err.into());
+                }
+
                 if let Err(err) = validate_connack_response_information(options, &connack) {
                     if connack.code == ConnectReturnCode::Success {
-                        send_protocol_error_disconnect(network).await?;
+                        send_protocol_error_disconnect(network).await;
                     }
                     return Err(err.into());
                 }
@@ -1301,7 +1306,7 @@ async fn mqtt_connect_inner(
 
                 if let Err(err) = state.validate_successful_connack_authentication_method(&connack)
                 {
-                    send_protocol_error_disconnect(network).await?;
+                    send_protocol_error_disconnect(network).await;
                     return Err(err.into());
                 }
 
@@ -1319,7 +1324,7 @@ async fn mqtt_connect_inner(
                             options.set_client_id(assigned_client_identifier.clone());
                         }
                         (Some(_) | None, true) | (Some(_), false) => {
-                            send_protocol_error_disconnect(network).await?;
+                            send_protocol_error_disconnect(network).await;
                             return Err(StateError::Deserialization(
                                 super::mqttbytes::Error::ProtocolError,
                             )
@@ -1335,7 +1340,7 @@ async fn mqtt_connect_inner(
                         options.set_session_expiry_interval(props.session_expiry_interval);
                     }
                 } else if sent_client_id.is_empty() {
-                    send_protocol_error_disconnect(network).await?;
+                    send_protocol_error_disconnect(network).await;
                     return Err(StateError::Deserialization(
                         super::mqttbytes::Error::ProtocolError,
                     )
@@ -1350,7 +1355,7 @@ async fn mqtt_connect_inner(
                 }
                 Ok(None) => return Err(ConnectionError::AuthProcessingError),
                 Err(err @ StateError::Deserialization(super::mqttbytes::Error::ProtocolError)) => {
-                    send_protocol_error_disconnect(network).await?;
+                    send_protocol_error_disconnect(network).await;
                     return Err(err.into());
                 }
                 Err(err) => return Err(err.into()),
@@ -1380,14 +1385,26 @@ fn validate_connack_response_information(
     Ok(())
 }
 
-async fn send_protocol_error_disconnect(network: &mut Network) -> Result<(), ConnectionError> {
-    network
+fn validate_connack_session_present_for_reason_code(connack: &ConnAck) -> Result<(), StateError> {
+    if connack.code != ConnectReturnCode::Success && connack.session_present {
+        return Err(StateError::Deserialization(
+            super::mqttbytes::Error::ProtocolError,
+        ));
+    }
+
+    Ok(())
+}
+
+async fn send_protocol_error_disconnect(network: &mut Network) {
+    if network
         .write(Packet::Disconnect(Disconnect::new(
             DisconnectReasonCode::ProtocolError,
         )))
-        .await?;
-    network.flush().await?;
-    Ok(())
+        .await
+        .is_ok()
+    {
+        let _ = network.flush().await;
+    }
 }
 
 const fn should_replay_after_reconnect(request: &Request) -> bool {
@@ -1928,6 +1945,48 @@ mod tests {
             Err(ConnectionError::ConnectionRefused(
                 ConnectReturnCode::ClientIdentifierNotValid
             ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_refused_connack_with_session_present() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let connack = ConnAck {
+            session_present: true,
+            code: ConnectReturnCode::BadUserNamePassword,
+            properties: None,
+        };
+
+        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
+        ));
+        assert_eq!(
+            disconnect,
+            vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_connack_with_session_present_preserves_protocol_error_after_peer_close() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let connack = ConnAck {
+            session_present: true,
+            code: ConnectReturnCode::BadUserNamePassword,
+            properties: None,
+        };
+
+        let result = run_mqtt_connect_with_connack_then_close(options, connack).await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::ProtocolError
+            )))
         ));
     }
 

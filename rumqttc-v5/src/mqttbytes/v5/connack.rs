@@ -688,4 +688,23 @@ mod test {
 
         assert_eq!(connack.code, ConnectReturnCode::ClientIdentifierNotValid);
     }
+
+    #[test]
+    fn connack_rejects_invalid_reason_code() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x20, // CONNACK
+                0x03, // remaining length
+                0x00, // session present = false
+                0xFF, // invalid reason code
+                0x00, // properties length = 0
+            ][..],
+        );
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+        let err = ConnAck::read(fixed_header, packet_bytes).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidConnectReturnCode(0xFF)));
+    }
 }

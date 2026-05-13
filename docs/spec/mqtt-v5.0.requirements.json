@@ -3723,8 +3723,35 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-applicable because the client must validate server-sent CONNACK semantics before accepting or classifying the response. The current v5 connect path accepts any non-success CONNACK as ConnectionRefused without enforcing the required Session Present=0 invariant for non-zero reason codes.",
+      "compliance_status": "non_compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "When Incoming::ConnAck is read, any connack.code != Success is returned as ConnectionRefused immediately. There is no check that session_present is false on refused CONNACK packets."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session"
+          ],
+          "reason": "Session Present validation exists only on the successful connection-establishment path after connect() returns a CONNACK. Refused CONNACK packets bypass this validation entirely."
+        }
+      ],
+      "test_coverage": {
+        "status": "partial",
+        "tests": [
+          "rumqttc-v5/tests/reliability.rs",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_clean_start_with_session_present",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_session_present_without_local_state"
+        ],
+        "notes": "Tests cover ordinary refusal handling and successful-CONNACK Session Present reconciliation, but no test covers a refused CONNACK with session_present=1."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-7",
@@ -3737,8 +3764,32 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.2 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This is a server-side MAY about whether the server chooses to send a CONNACK with a Connect Reason Code when it cannot complete CONNECT. The rumqttc v5 client is not responsible for deciding whether a server emits CONNACK versus closing the connection.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAck::read",
+            "connect_return"
+          ],
+          "reason": "The client can decode valid Connect Reason Codes if a server sends them, but that decoder support does not make the server-side MAY a client compliance obligation."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "The connection path surfaces non-success CONNACK reason codes as ConnectionRefused when present, which is relevant reaction behavior but not the normative MAY itself."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side conformance obligation to test; related refusal decoding behavior is exercised elsewhere."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-8",
@@ -3752,8 +3803,37 @@
         "rumqttc-v5/tests",
         "rumqttc-v5/src/mqttbytes/v5"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to tests and protocol modules for conformance coverage."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Appendix B text for MQTT-3.2.2-8 is: \"The Server sending the CONNACK packet MUST use one of the Connect Reason Code values.\" The client-applicable part is validating received CONNACK reason codes. The v5 decoder accepts only the defined MQTT 5 Connect Reason Code values and rejects any other byte as InvalidConnectReturnCode before the packet is accepted.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+          "symbols": [
+            "ConnAck::read",
+            "connect_return"
+          ],
+          "reason": "ConnAck::read parses the reason code through connect_return(), which enumerates the allowed MQTT 5 Connect Reason Codes and returns Error::InvalidConnectReturnCode for any other value."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "Once decoding succeeds, valid non-success CONNACK reason codes are surfaced as ConnectionRefused and valid success CONNACKs continue through connection setup. Invalid reason codes cannot reach this stage."
+        }
+      ],
+      "test_coverage": {
+        "status": "partial",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_qos_not_supported_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_retain_not_supported_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_client_identifier_not_valid_reason_code",
+          "rumqttc-v5/tests/reliability.rs"
+        ],
+        "notes": "Tests cover decoding several valid CONNACK reason codes and surfacing refusal behavior, but there is no direct test that an invalid CONNACK reason code byte is rejected."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-9",

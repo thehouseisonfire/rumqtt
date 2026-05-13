@@ -750,6 +750,34 @@ async fn next_poll_after_connect_failure_reconnects() {
 }
 
 #[tokio::test]
+async fn refused_connack_with_session_present_is_protocol_error() {
+    let (listener, port) = reserve_listener().await;
+    let options = MqttOptions::new("dummy", ("127.0.0.1", port));
+
+    let broker = task::spawn(async move {
+        let _broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::RefuseBadUserNamePasswordWithSessionPresent,
+        )
+        .await;
+    });
+
+    let (_client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+    let err = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("timed out waiting for malformed refused CONNACK")
+        .unwrap_err();
+
+    assert_matches!(
+        err,
+        ConnectionError::MqttState(StateError::Deserialization(
+            rumqttc::mqttbytes::Error::ProtocolError
+        ))
+    );
+    broker.await.unwrap();
+}
+
+#[tokio::test]
 async fn clean_start_false_rejects_session_present_without_local_state() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
