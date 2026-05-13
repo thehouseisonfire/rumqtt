@@ -68,14 +68,34 @@ pub use rumqttc_core::default_socket_connect;
 pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
 pub use transport::Transport;
 
-/// Policy used for automatic MQTT 5 client-side topic alias assignment.
+/// Policy used for MQTT 5 client-side topic alias assignment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TopicAliasPolicy {
-    /// Assign aliases monotonically until the broker's Topic Alias Maximum is reached.
+    /// Do not automatically assign topic aliases.
     #[default]
+    Disabled,
+    /// Assign aliases monotonically until the broker's Topic Alias Maximum is reached.
     Monotonic,
     /// Recycle automatically assigned aliases using least-recently-used eviction.
     Lru,
+}
+
+/// Policy for handling broker-retained sessions when this client has no local session state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BrokerSessionResumePolicy {
+    /// Reject broker-only session resume.
+    ///
+    /// This is the strict default. It follows MQTT-3.2.2-4 by rejecting
+    /// `Session Present = 1` when the client cannot reconcile local in-flight
+    /// `QoS` 1/2 state.
+    #[default]
+    Strict,
+    /// Accept broker-only session resume even without matching local state.
+    ///
+    /// This is a non-strict compatibility mode for applications that prefer
+    /// receiving broker-queued messages for a stable `ClientID` over strict
+    /// local session reconciliation.
+    AllowBrokerOnly,
 }
 
 /// Session lifetime mode for MQTT client state.
@@ -649,9 +669,8 @@ pub struct MqttOptions {
     keep_alive: Duration,
     /// clean (or) persistent session
     clean_start: bool,
-    /// Non-strict compatibility mode for accepting broker-retained session state
-    /// when this client instance has no matching local session state.
-    allow_broker_session_resume_without_local_state: bool,
+    /// Policy for broker-retained session state when local session state is missing.
+    broker_session_resume_policy: BrokerSessionResumePolicy,
     /// client identifier
     client_id: String,
     /// CONNECT authentication fields
@@ -677,9 +696,7 @@ pub struct MqttOptions {
     incoming_packet_size_limit: IncomingPacketSizeLimit,
     /// Connect Properties
     connect_properties: Option<ConnectProperties>,
-    /// Automatically assign outgoing MQTT 5 topic aliases when the broker supports them.
-    auto_topic_aliases: bool,
-    /// Policy used when automatically assigning outgoing MQTT 5 topic aliases.
+    /// Policy used when assigning outgoing MQTT 5 topic aliases.
     topic_alias_policy: TopicAliasPolicy,
     /// Controls how incoming publish acknowledgements are handled.
     ack_mode: AckMode,
@@ -715,7 +732,7 @@ impl MqttOptions {
             broker,
             keep_alive: Duration::from_secs(60),
             clean_start: true,
-            allow_broker_session_resume_without_local_state: false,
+            broker_session_resume_policy: BrokerSessionResumePolicy::Strict,
             client_id: id.into(),
             auth: ConnectAuth::None,
             request_channel_capacity: 10,
@@ -727,8 +744,7 @@ impl MqttOptions {
             default_max_incoming_size: 10 * 1024,
             incoming_packet_size_limit: IncomingPacketSizeLimit::Default,
             connect_properties: None,
-            auto_topic_aliases: false,
-            topic_alias_policy: TopicAliasPolicy::default(),
+            topic_alias_policy: TopicAliasPolicy::Disabled,
             ack_mode: AckMode::Automatic,
             network_options: NetworkOptions::new(),
             #[cfg(feature = "proxy")]
@@ -1030,26 +1046,18 @@ impl MqttOptions {
         self.clean_start
     }
 
-    /// Accept `Session Present = 1` from the broker even when this client instance
-    /// has no matching local session state.
-    ///
-    /// This is a non-strict MQTT 5 compatibility mode. The strict default follows
-    /// MQTT-3.2.2-4 and rejects broker-only session reuse because the client cannot
-    /// reconcile in-flight `QoS` 1/2 state that was lost across process restart or a
-    /// newly constructed [`EventLoop`]. Enabling this can be useful for applications
-    /// that intentionally prefer receiving broker-queued messages for a stable
-    /// `ClientID` over strict local session reconciliation.
-    pub const fn set_allow_broker_session_resume_without_local_state(
+    /// Set how broker-retained session state is handled when local session state is missing.
+    pub const fn set_broker_session_resume_policy(
         &mut self,
-        allow: bool,
+        policy: BrokerSessionResumePolicy,
     ) -> &mut Self {
-        self.allow_broker_session_resume_without_local_state = allow;
+        self.broker_session_resume_policy = policy;
         self
     }
 
-    /// Returns whether non-strict broker-only session resume is enabled.
-    pub const fn allow_broker_session_resume_without_local_state(&self) -> bool {
-        self.allow_broker_session_resume_without_local_state
+    /// Returns how broker-retained session state is handled when local session state is missing.
+    pub const fn broker_session_resume_policy(&self) -> BrokerSessionResumePolicy {
+        self.broker_session_resume_policy
     }
 
     /// Replace the current CONNECT authentication state.
@@ -1375,26 +1383,13 @@ impl MqttOptions {
         }
     }
 
-    /// Enable or disable automatic outgoing topic alias assignment.
+    /// Set the policy used for outgoing topic alias assignment.
     ///
-    /// When enabled, the event loop assigns topic aliases immediately before
-    /// sending publishes on connections where the broker advertises a non-zero
-    /// Topic Alias Maximum. Publishes that already contain a topic alias are
-    /// left unchanged.
-    pub const fn set_auto_topic_aliases(&mut self, auto_topic_aliases: bool) -> &mut Self {
-        self.auto_topic_aliases = auto_topic_aliases;
-        self
-    }
-
-    /// Returns whether automatic outgoing topic alias assignment is enabled.
-    pub const fn auto_topic_aliases(&self) -> bool {
-        self.auto_topic_aliases
-    }
-
-    /// Set the policy used for automatic outgoing topic alias assignment.
-    ///
-    /// This only has an effect when automatic topic aliases are enabled with
-    /// [`MqttOptions::set_auto_topic_aliases`].
+    /// [`TopicAliasPolicy::Disabled`] turns automatic assignment off. The
+    /// automatic policies assign topic aliases immediately before sending
+    /// publishes on connections where the broker advertises a non-zero Topic
+    /// Alias Maximum. Publishes that already contain a topic alias are left
+    /// unchanged.
     pub const fn set_topic_alias_policy(
         &mut self,
         topic_alias_policy: TopicAliasPolicy,
@@ -1403,7 +1398,7 @@ impl MqttOptions {
         self
     }
 
-    /// Returns the policy used for automatic outgoing topic alias assignment.
+    /// Returns the policy used for outgoing topic alias assignment.
     pub const fn topic_alias_policy(&self) -> TopicAliasPolicy {
         self.topic_alias_policy
     }
@@ -1713,15 +1708,10 @@ impl MqttOptionsBuilder {
         self
     }
 
-    /// Accept broker-retained session state even when this client instance has no
-    /// matching local session state.
-    ///
-    /// This is a non-strict MQTT 5 compatibility mode; see
-    /// [`MqttOptions::set_allow_broker_session_resume_without_local_state`].
+    /// Set how broker-retained session state is handled when local session state is missing.
     #[must_use]
-    pub const fn allow_broker_session_resume_without_local_state(mut self, allow: bool) -> Self {
-        self.options
-            .set_allow_broker_session_resume_without_local_state(allow);
+    pub const fn broker_session_resume_policy(mut self, policy: BrokerSessionResumePolicy) -> Self {
+        self.options.set_broker_session_resume_policy(policy);
         self
     }
 
@@ -1848,14 +1838,7 @@ impl MqttOptionsBuilder {
         self
     }
 
-    /// Enable or disable automatic outgoing topic alias assignment.
-    #[must_use]
-    pub const fn auto_topic_aliases(mut self, auto_topic_aliases: bool) -> Self {
-        self.options.set_auto_topic_aliases(auto_topic_aliases);
-        self
-    }
-
-    /// Set the policy used for automatic outgoing topic alias assignment.
+    /// Set the policy used for outgoing topic alias assignment.
     #[must_use]
     pub const fn topic_alias_policy(mut self, topic_alias_policy: TopicAliasPolicy) -> Self {
         self.options.set_topic_alias_policy(topic_alias_policy);
@@ -2151,8 +2134,8 @@ impl Debug for MqttOptions {
             .field("keep_alive", &self.keep_alive)
             .field("clean_start", &self.clean_start)
             .field(
-                "allow_broker_session_resume_without_local_state",
-                &self.allow_broker_session_resume_without_local_state,
+                "broker_session_resume_policy",
+                &self.broker_session_resume_policy,
             )
             .field("client_id", &self.client_id)
             .field("auth", &self.auth)
@@ -2162,7 +2145,6 @@ impl Debug for MqttOptions {
             .field("pending_throttle", &self.pending_throttle)
             .field("last_will", &self.last_will)
             .field("connect_timeout", &self.connect_timeout)
-            .field("auto_topic_aliases", &self.auto_topic_aliases)
             .field("topic_alias_policy", &self.topic_alias_policy)
             .field("ack_mode", &self.ack_mode)
             .field("connect properties", &self.connect_properties)
@@ -2877,10 +2859,9 @@ mod test {
             .set_user_properties(vec![("k".to_owned(), "v".to_owned())])
             .set_authentication_method(Some("SCRAM-SHA-256".to_owned()))
             .set_authentication_data(Some(Bytes::from_static(b"auth")))
-            .set_auto_topic_aliases(true)
             .set_topic_alias_policy(TopicAliasPolicy::Lru)
             .set_ack_mode(AckMode::Manual)
-            .set_allow_broker_session_resume_without_local_state(true)
+            .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)
             .set_outgoing_inflight_upper_limit(4);
 
         let actual = MqttOptions::builder("client", ("localhost", 1884))
@@ -2901,10 +2882,9 @@ mod test {
             .user_properties(vec![("k".to_owned(), "v".to_owned())])
             .authentication_method(Some("SCRAM-SHA-256".to_owned()))
             .authentication_data(Some(Bytes::from_static(b"auth")))
-            .auto_topic_aliases(true)
             .topic_alias_policy(TopicAliasPolicy::Lru)
             .ack_mode(AckMode::Manual)
-            .allow_broker_session_resume_without_local_state(true)
+            .broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)
             .outgoing_inflight_upper_limit(4)
             .build();
 
@@ -2925,12 +2905,11 @@ mod test {
         assert_eq!(actual.pending_throttle(), expected.pending_throttle());
         assert_eq!(actual.connect_timeout(), expected.connect_timeout());
         assert_eq!(actual.connect_properties(), expected.connect_properties());
-        assert_eq!(actual.auto_topic_aliases(), expected.auto_topic_aliases());
         assert_eq!(actual.topic_alias_policy(), expected.topic_alias_policy());
         assert_eq!(actual.ack_mode(), expected.ack_mode());
         assert_eq!(
-            actual.allow_broker_session_resume_without_local_state(),
-            expected.allow_broker_session_resume_without_local_state()
+            actual.broker_session_resume_policy(),
+            expected.broker_session_resume_policy()
         );
         assert_eq!(
             actual.get_outgoing_inflight_upper_limit(),
@@ -2942,7 +2921,10 @@ mod test {
     fn broker_only_session_resume_compatibility_mode_defaults_to_strict() {
         let options = MqttOptions::new("client", "localhost");
 
-        assert!(!options.allow_broker_session_resume_without_local_state());
+        assert_eq!(
+            options.broker_session_resume_policy(),
+            BrokerSessionResumePolicy::Strict
+        );
     }
 
     #[test]

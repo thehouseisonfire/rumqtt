@@ -222,9 +222,8 @@ impl EventLoop {
         let clean_start = self.options.clean_start();
         let has_local_state = self.has_local_session_state();
         let missing_local_state = !has_local_state;
-        let allow_broker_only_resume = self
-            .options
-            .allow_broker_session_resume_without_local_state();
+        let allow_broker_only_resume = self.options.broker_session_resume_policy()
+            == crate::BrokerSessionResumePolicy::AllowBrokerOnly;
         if session_present && (clean_start || (missing_local_state && !allow_broker_only_resume)) {
             return Err(ConnectionError::SessionStateMismatch {
                 clean_start,
@@ -323,7 +322,6 @@ impl EventLoop {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
         let ack_mode = options.ack_mode;
-        let auto_topic_aliases = options.auto_topic_aliases();
         let topic_alias_policy = options.topic_alias_policy();
         let client_topic_alias_max = options.topic_alias_max().unwrap_or(0);
 
@@ -335,7 +333,6 @@ impl EventLoop {
             state: MqttState::new_internal(
                 inflight_limit,
                 ack_mode,
-                auto_topic_aliases,
                 topic_alias_policy,
                 client_topic_alias_max,
                 authentication_method,
@@ -1414,8 +1411,8 @@ const fn should_replay_after_reconnect(request: &Request) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AckMode;
     use crate::mqttbytes::{Error as MqttError, QoS};
+    use crate::{AckMode, BrokerSessionResumePolicy};
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{ConnAckProperties, Filter, PubAck, PubComp, PubRec, PubRel, PublishProperties};
     use bytes::{Bytes, BytesMut};
@@ -1552,7 +1549,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -1579,7 +1575,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -1607,7 +1602,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -1636,7 +1630,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             stale_authentication_method.map(str::to_owned),
@@ -1666,7 +1659,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -1694,7 +1686,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -1858,7 +1849,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -2067,7 +2057,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),
@@ -3469,7 +3458,7 @@ mod tests {
         let mut options = MqttOptions::new("test-client", "localhost");
         options
             .set_clean_start(false)
-            .set_allow_broker_session_resume_without_local_state(true);
+            .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
 
         eventloop.reconcile_connack_session(true).unwrap();
@@ -3484,7 +3473,7 @@ mod tests {
         let mut options = MqttOptions::new("test-client", "localhost");
         options
             .set_clean_start(false)
-            .set_allow_broker_session_resume_without_local_state(true);
+            .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         eventloop.reconcile_connack_session(true).unwrap();
 
@@ -3540,7 +3529,7 @@ mod tests {
         let mut options = MqttOptions::new("test-client", "localhost");
         options
             .set_clean_start(false)
-            .set_allow_broker_session_resume_without_local_state(true);
+            .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         eventloop.reconcile_connack_session(true).unwrap();
 
@@ -3626,7 +3615,6 @@ mod tests {
         let mut state = MqttState::new_internal(
             10,
             AckMode::Automatic,
-            options.auto_topic_aliases(),
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
             options.authentication_method(),

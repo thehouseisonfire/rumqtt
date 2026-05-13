@@ -130,8 +130,8 @@ out side the library and `Eventloop` is accessible, users can
 
 - Applications that intentionally rely on broker-retained messages after local
   state loss can opt into non-strict MQTT 5 compatibility mode with
-  `MqttOptions::set_allow_broker_session_resume_without_local_state(true)` or
-  `MqttOptions::builder(...).allow_broker_session_resume_without_local_state(true)`.
+  `MqttOptions::set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`
+  or `MqttOptions::builder(...).broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`.
   This accepts broker-only session reuse for a stable `ClientID`, but the client
   cannot reconcile `QoS` 1/2 packets or other in-flight operations that were lost
   with the previous process or `EventLoop`.

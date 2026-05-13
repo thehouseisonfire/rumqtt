@@ -3633,9 +3633,10 @@
         {
           "path": "rumqttc-v5/src/lib.rs",
           "symbols": [
-            "MqttOptions::set_allow_broker_session_resume_without_local_state",
-            "MqttOptions::allow_broker_session_resume_without_local_state",
-            "MqttOptionsBuilder::allow_broker_session_resume_without_local_state"
+            "BrokerSessionResumePolicy",
+            "MqttOptions::set_broker_session_resume_policy",
+            "MqttOptions::broker_session_resume_policy",
+            "MqttOptionsBuilder::broker_session_resume_policy"
           ],
           "reason": "The compatibility option defaults to strict behavior and requires an explicit setter or builder call to accept broker-only session reuse without matching local client state."
         },
@@ -3651,7 +3652,7 @@
         {
           "path": "rumqttc-v5/README.md",
           "symbols": [
-            "MqttOptions::set_allow_broker_session_resume_without_local_state"
+            "MqttOptions::set_broker_session_resume_policy"
           ],
           "reason": "The README documents that same-EventLoop reconnects retain in-memory session state, while accepting broker-only session reuse after process or EventLoop replacement is a non-strict compatibility mode."
         }

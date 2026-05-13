@@ -10,6 +10,7 @@
 - `mqttbytes-core` (Breaking Change): Change `write_mqtt_bytes(...)` and `write_mqtt_string(...)` to return `Result<(), Error>` so oversized MQTT two-byte length-prefixed fields report `Error::PayloadTooLong` instead of panicking.
 - `rumqttc` v5 (Breaking Change): Validate incoming topic aliases against the client's advertised Topic Alias Maximum per [MQTT-3.1.2-26]/[MQTT-3.1.2-27]. Servers sending aliases exceeding the limit (or any alias when the maximum is 0/absent) now trigger a `DISCONNECT(TopicAliasInvalid)` and close the connection. Previously, any incoming alias was accepted without validation.
 - `rumqttc` v4/v5 (Breaking Change): Replace boolean manual acknowledgement configuration with `AckMode::{Automatic, Manual}` via `MqttOptions::set_ack_mode(...)`, `MqttOptions::ack_mode()`, and builder `.ack_mode(...)`.
+- `rumqttc` v5 (Breaking Change): Replace broker-only session resume and automatic topic-alias booleans with explicit policies: `BrokerSessionResumePolicy::{Strict, AllowBrokerOnly}` and `TopicAliasPolicy::{Disabled, Monotonic, Lru}`.
 ### Deprecated
 ### Removed
 ### Fixed

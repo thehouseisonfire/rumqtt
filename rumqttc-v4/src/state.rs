@@ -72,7 +72,7 @@ impl PingState {
         }
     }
 
-    fn increment_collision_count(&mut self) -> usize {
+    const fn increment_collision_count(&mut self) -> usize {
         let collision_count = self.collision_count() + 1;
         *self = match self {
             Self::Idle { .. } => Self::Idle { collision_count },
@@ -81,17 +81,17 @@ impl PingState {
         collision_count
     }
 
-    fn begin_waiting_for_resp(&mut self) {
+    const fn begin_waiting_for_resp(&mut self) {
         let collision_count = self.collision_count();
         *self = Self::AwaitingResp { collision_count };
     }
 
-    fn finish_waiting_for_resp(&mut self) {
+    const fn finish_waiting_for_resp(&mut self) {
         let collision_count = self.collision_count();
         *self = Self::Idle { collision_count };
     }
 
-    fn reset_collision_count(&mut self) {
+    const fn reset_collision_count(&mut self) {
         *self = if self.await_pingresp() {
             Self::AwaitingResp { collision_count: 0 }
         } else {
@@ -99,7 +99,7 @@ impl PingState {
         };
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         *self = Self::new();
     }
 }
@@ -798,7 +798,7 @@ impl MqttState {
         Ok(packet)
     }
 
-    fn handle_incoming_pingresp(&mut self) -> Option<Packet> {
+    const fn handle_incoming_pingresp(&mut self) -> Option<Packet> {
         self.ping.finish_waiting_for_resp();
 
         None
@@ -949,11 +949,10 @@ impl MqttState {
         let elapsed_in = self.last_incoming.elapsed();
         let elapsed_out = self.last_outgoing.elapsed();
 
-        if self.collision.is_some() {
-            if self.ping.increment_collision_count() >= 2 {
+        if self.collision.is_some()
+            && self.ping.increment_collision_count() >= 2 {
                 return Err(StateError::CollisionTimeout);
             }
-        }
 
         // raise error if last ping didn't receive ack
         if self.ping.await_pingresp() {
