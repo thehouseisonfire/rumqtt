@@ -3604,7 +3604,7 @@
         ],
         "notes": "These tests only cover client reactions to the received Session Present flag. No client-side test can prove whether the broker correctly chose that flag from its own stored session state."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-4",
@@ -3668,7 +3668,7 @@
         ],
         "notes": "Unit tests cover strict mismatch cases, the valid in-memory resumed-session case, and the explicit non-strict opt-in. Reliability tests cover both strict rejection and compatibility-mode acceptance on the network handshake path."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-5",
@@ -3710,7 +3710,7 @@
         ],
         "notes": "Unit coverage verifies the clean_start=false and session_present=false path clears pending state. Integration coverage shows pending retransmissions are dropped on a new session after reconnect."
       },
-      "follow_up": "No follow-up needed."
+      "follow_up": null
     },
     {
       "id": "MQTT-3.2.2-6",
