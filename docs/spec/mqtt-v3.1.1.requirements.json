@@ -2809,7 +2809,7 @@
         ],
         "notes": "Tests cover client-side CONNACK decoding, but the reviewed MUST is a server-only connection-handling rule."
       },
-      "follow_up": "No client-side follow-up needed."
+      "follow_up": null,
     },
     {
       "id": "MQTT-3.3.1-1",
@@ -3135,7 +3135,7 @@
         ],
         "notes": "The listed tests are regression coverage for client-side RETAIN bit preservation only. They do not prove the broker-side rule for choosing RETAIN on deliveries, which is outside this client crate."
       },
-      "follow_up": "No client-side follow-up needed."
+      "follow_up": null,
     },
     {
       "id": "MQTT-3.3.1-9",
@@ -3175,7 +3175,7 @@
         ],
         "notes": "Same rationale as MQTT-3.3.1-8: the listed tests cover client-side RETAIN preservation, not the broker-only delivery rule."
       },
-      "follow_up": "No client-side follow-up needed."
+      "follow_up": null,
     },
     {
       "id": "MQTT-3.3.1-10",
@@ -3230,7 +3230,7 @@
         ],
         "notes": "The listed tests are regression coverage for client codec/state handling of retained empty-payload publishes. They do not prove the broker-side retained-message deletion and delivery semantics."
       },
-      "follow_up": "No client-side follow-up needed."
+      "follow_up": null,
     },
     {
       "id": "MQTT-3.3.1-11",
@@ -3285,7 +3285,7 @@
         ],
         "notes": "Same rationale as MQTT-3.3.1-10: the listed tests cover client-side packet handling, not broker retained-message deletion or future delivery behavior."
       },
-      "follow_up": "No client-side follow-up needed."
+      "follow_up": null,
     },
     {
       "id": "MQTT-3.3.1-12",
