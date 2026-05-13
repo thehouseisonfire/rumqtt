@@ -27,6 +27,7 @@ pub enum ConnectBehavior {
         keep_alive_secs: u16,
     },
     RefuseBadUserNamePassword,
+    RefuseBadUserNamePasswordWithSessionPresent,
     StallAfterConnect,
 }
 
@@ -108,6 +109,14 @@ impl Broker {
                     let connack = ConnAck {
                         code: ConnectReturnCode::BadUserNamePassword,
                         session_present: false,
+                        properties: None,
+                    };
+                    framed.connack(connack).await.unwrap();
+                }
+                ConnectBehavior::RefuseBadUserNamePasswordWithSessionPresent => {
+                    let connack = ConnAck {
+                        code: ConnectReturnCode::BadUserNamePassword,
+                        session_present: true,
                         properties: None,
                     };
                     framed.connack(connack).await.unwrap();
