@@ -659,7 +659,7 @@ impl EventLoop {
                 },
                 o = self.network.as_mut().unwrap().readb(&mut self.state, read_batch_size) => {
                     o?;
-                    self.network.as_mut().unwrap().flush().await?;
+                    self.flush_network().await?;
                     Ok(self.state.events.pop_front().unwrap())
                 },
                 () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
@@ -673,7 +673,7 @@ impl EventLoop {
                     if let Some(outgoing) = outgoing {
                         self.network.as_mut().unwrap().write(outgoing).await?;
                     }
-                    self.network.as_mut().unwrap().flush().await?;
+                    self.flush_network().await?;
                     Ok(self.state.events.pop_front().unwrap())
                 }
             };
@@ -863,7 +863,7 @@ impl EventLoop {
             return Ok(());
         }
 
-        match self.network.as_mut().unwrap().flush().await {
+        match self.flush_network().await {
             Ok(()) => {
                 for notice in qos0_notices {
                     notice.success(PublishResult::Qos0Flushed);
@@ -874,9 +874,15 @@ impl EventLoop {
                 for notice in qos0_notices {
                     notice.error(PublishNoticeError::Qos0NotFlushed);
                 }
-                Err(ConnectionError::MqttState(err))
+                Err(err)
             }
         }
+    }
+
+    async fn flush_network(&mut self) -> Result<(), ConnectionError> {
+        self.state.mark_outgoing_publishes_flush_attempted();
+        self.network.as_mut().unwrap().flush().await?;
+        Ok(())
     }
 
     async fn poll_disconnect_drain(&mut self) -> Result<Option<Event>, ConnectionError> {
@@ -910,7 +916,7 @@ impl EventLoop {
             }
         }
 
-        self.network.as_mut().unwrap().flush().await?;
+        self.flush_network().await?;
         Ok(None)
     }
 
@@ -926,7 +932,7 @@ impl EventLoop {
 
         if let Some(outgoing) = outgoing {
             self.network.as_mut().unwrap().write(outgoing).await?;
-            self.network.as_mut().unwrap().flush().await?;
+            self.flush_network().await?;
         }
 
         self.disconnect_complete = true;
