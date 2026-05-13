@@ -4031,8 +4031,47 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-side resend handling marks unacknowledged QoS 1/2 PUBLISH packets as duplicates before reconnect replay. First-send packets still start with dup=false, and QoS 0 DUP handling is covered separately by MQTT-3.3.1-2.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::flush_network",
+            "EventLoop::clean"
+          ],
+          "reason": "The event loop records outgoing publishes as having reached a network flush attempt before cleanup moves unacknowledged state into the reconnect replay queue."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::mark_outgoing_publishes_flush_attempted",
+            "MqttState::clean_with_notices"
+          ],
+          "reason": "Reconnect cleanup sets publish.dup = true for unacknowledged QoS 1/2 publishes whose packet ids were included in a flush attempt before re-enqueuing them for replay."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::write"
+          ],
+          "reason": "The DUP bit serialized on outbound PUBLISH packets is taken from Publish.dup, so replayed packets are encoded with DUP=1."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/state.rs::clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
+          "rumqttc-v5/src/state.rs::clean_does_not_mark_unflushed_qos1_publish_dup_for_reconnect_replay",
+          "rumqttc-v5/tests/state.rs::direct_state_users_can_mark_flushed_qos1_publish_for_dup_replay",
+          "rumqttc-v5/tests/state.rs::direct_state_users_can_mark_flushed_qos2_publish_for_dup_replay",
+          "rumqttc-v5/tests/state.rs::direct_state_clean_leaves_unflushed_qos1_publish_without_dup",
+          "rumqttc-v5/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"
+        ],
+        "notes": "State-level coverage verifies DUP is applied only after a flush attempt, including public MqttState usage for QoS 1 and QoS 2 replay. Reliability coverage verifies a replayed QoS 1 publish is sent with DUP=1 after reconnect."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-2",
@@ -4045,8 +4084,29 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "rumqttc-v5 enforces the QoS 0 DUP prohibition in the PUBLISH codec by rejecting DUP=1 for QoS 0 packets on both decode and encode paths.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "The codec returns Error::MalformedPacket if a QoS 0 PUBLISH has dup=true on read or write, preventing non-compliant QoS 0 packets in either direction."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::publish_parsing_rejects_dup_set_for_qos0",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::publish_encoding_rejects_dup_set_for_qos0",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid"
+        ],
+        "notes": "Codec tests cover inbound and outbound QoS 0 DUP rejection plus the valid QoS 0 encoding boundary."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-3",
@@ -4073,8 +4133,53 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "rumqttc-v5 enforces both client-applicable parts of this requirement. Outbound PUBLISH packets cannot encode QoS 3 because the encoder uses the constrained QoS enum. Inbound PUBLISH packets with QoS bits 11 are rejected as malformed, and the framed network path sends a best-effort MQTT 5 DISCONNECT with reason code Malformed Packet before surfacing the error.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/qos.rs",
+          "symbols": [
+            "QoS",
+            "qos"
+          ],
+          "reason": "The QoS enum only defines wire values 0, 1, and 2, and qos() returns None for any other value including 3."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "Publish::read decodes the QoS bits through qos(qos_num).ok_or(Error::MalformedPacket), rejecting 0b11. Publish::write encodes QoS from the constrained QoS enum, so it cannot emit QoS 3."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::read",
+            "Network::readb"
+          ],
+          "reason": "Inbound malformed packet decode errors are classified as DISCONNECT reason MalformedPacket and the network read path sends that best-effort DISCONNECT before returning StateError::Deserialization."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "EventLoop::clean"
+          ],
+          "reason": "EventLoop::poll cleans and drops the network after the framed read path returns the malformed packet error."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::invalid_qos_bits_are_reported_as_malformed_packet",
+          "rumqttc-v5/src/framed.rs::read_sends_malformed_packet_disconnect_for_invalid_publish_qos_bits"
+        ],
+        "notes": "Codec coverage verifies QoS bits 11 are malformed. Framed network coverage verifies the MQTT 5 Malformed Packet DISCONNECT reason is sent for the invalid PUBLISH."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-5",

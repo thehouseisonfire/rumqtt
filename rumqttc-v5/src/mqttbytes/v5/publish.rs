@@ -65,6 +65,9 @@ impl Publish {
         let qos = qos(qos_num).ok_or(Error::MalformedPacket)?;
         let dup = (fixed_header.byte1 & 0b1000) != 0;
         let retain = (fixed_header.byte1 & 0b0001) != 0;
+        if qos == QoS::AtMostOnce && dup {
+            return Err(Error::MalformedPacket);
+        }
 
         let variable_header_index = fixed_header.header_len;
         bytes.advance(variable_header_index);
@@ -96,6 +99,10 @@ impl Publish {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.qos == QoS::AtMostOnce && self.dup {
+            return Err(Error::MalformedPacket);
+        }
+
         let len = self.len();
 
         let dup = u8::from(self.dup);
@@ -385,6 +392,33 @@ mod test {
     fn invalid_qos_bits_are_reported_as_malformed_packet() {
         let mut frame = BytesMut::from(&[0x36, 0x02, 0x00, 0x00][..]);
         let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn publish_parsing_rejects_dup_set_for_qos0() {
+        let mut frame = BytesMut::from(
+            &[
+                0x38, // PUBLISH, DUP=1, QoS=0
+                0x08, // remaining length
+                0x00, 0x03, b'a', b'/', b'b', // topic
+                0x00, // properties length
+                0x01, 0x02, // payload
+            ][..],
+        );
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn publish_encoding_rejects_dup_set_for_qos0() {
+        let mut publish = Publish::new("a/b", QoS::AtMostOnce, vec![0xE1, 0xE2], None);
+        publish.dup = true;
+
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
     }
