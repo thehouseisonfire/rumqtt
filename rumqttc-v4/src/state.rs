@@ -49,6 +49,61 @@ pub enum ProtocolViolation {
     UnexpectedIncomingPacket(PacketType),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PingState {
+    Idle { collision_count: usize },
+    AwaitingResp { collision_count: usize },
+}
+
+impl PingState {
+    const fn new() -> Self {
+        Self::Idle { collision_count: 0 }
+    }
+
+    const fn await_pingresp(self) -> bool {
+        matches!(self, Self::AwaitingResp { .. })
+    }
+
+    const fn collision_count(self) -> usize {
+        match self {
+            Self::Idle { collision_count } | Self::AwaitingResp { collision_count } => {
+                collision_count
+            }
+        }
+    }
+
+    fn increment_collision_count(&mut self) -> usize {
+        let collision_count = self.collision_count() + 1;
+        *self = match self {
+            Self::Idle { .. } => Self::Idle { collision_count },
+            Self::AwaitingResp { .. } => Self::AwaitingResp { collision_count },
+        };
+        collision_count
+    }
+
+    fn begin_waiting_for_resp(&mut self) {
+        let collision_count = self.collision_count();
+        *self = Self::AwaitingResp { collision_count };
+    }
+
+    fn finish_waiting_for_resp(&mut self) {
+        let collision_count = self.collision_count();
+        *self = Self::Idle { collision_count };
+    }
+
+    fn reset_collision_count(&mut self) {
+        *self = if self.await_pingresp() {
+            Self::AwaitingResp { collision_count: 0 }
+        } else {
+            Self::Idle { collision_count: 0 }
+        };
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
 /// State of the mqtt connection.
 // Design: Methods will just modify the state of the object without doing any network operations
 // Design: All inflight queues are maintained in a pkid-indexed vec/bitset structure.
@@ -57,12 +112,7 @@ pub enum ProtocolViolation {
 // Any missing acks from the broker are detected during the next recycled use of packet ids
 #[derive(Debug)]
 pub struct MqttState {
-    /// Status of last ping
-    pub await_pingresp: bool,
-    /// Collision ping count. Collisions stop user requests
-    /// which inturn trigger pings. Multiple pings without
-    /// resolving collisions will result in error
-    pub collision_ping_count: usize,
+    ping: PingState,
     /// Last incoming packet time
     last_incoming: Instant,
     /// Last outgoing packet time
@@ -292,8 +342,7 @@ impl MqttState {
     pub(crate) fn new_internal(max_inflight: u16, manual_acks: bool) -> Self {
         let tracking_len = Self::warm_tracking_len(max_inflight);
         Self {
-            await_pingresp: false,
-            collision_ping_count: 0,
+            ping: PingState::new(),
             last_incoming: Instant::now(),
             last_outgoing: Instant::now(),
             last_pkid: 0,
@@ -317,6 +366,16 @@ impl MqttState {
             events: VecDeque::with_capacity(Self::initial_events_capacity()),
             manual_acks,
         }
+    }
+
+    /// Returns whether the current connection is waiting for a `PINGRESP`.
+    pub const fn await_pingresp(&self) -> bool {
+        self.ping.await_pingresp()
+    }
+
+    /// Returns the number of consecutive collision pings observed.
+    pub const fn collision_ping_count(&self) -> usize {
+        self.ping.collision_count()
     }
 
     pub(crate) fn clean_with_notices(&mut self) -> Vec<(Request, Option<TrackedNoticeTx>)> {
@@ -384,8 +443,7 @@ impl MqttState {
         self.incoming_puback.clear();
         self.incoming_pub.clear();
 
-        self.await_pingresp = false;
-        self.collision_ping_count = 0;
+        self.ping.reset();
         self.inflight = 0;
         if pending.is_empty() {
             self.maybe_shrink_outgoing_tracking_capacity();
@@ -585,7 +643,7 @@ impl MqttState {
     pub fn clear_collision(&mut self) {
         self.collision = None;
         self.collision_notice = None;
-        self.collision_ping_count = 0;
+        self.ping.reset_collision_count();
     }
 
     fn handle_incoming_suback(&mut self, suback: &SubAck) -> Result<Option<Packet>, StateError> {
@@ -728,8 +786,8 @@ impl MqttState {
         Ok(packet)
     }
 
-    const fn handle_incoming_pingresp(&mut self) -> Option<Packet> {
-        self.await_pingresp = false;
+    fn handle_incoming_pingresp(&mut self) -> Option<Packet> {
+        self.ping.finish_waiting_for_resp();
 
         None
     }
@@ -854,18 +912,17 @@ impl MqttState {
         let elapsed_out = self.last_outgoing.elapsed();
 
         if self.collision.is_some() {
-            self.collision_ping_count += 1;
-            if self.collision_ping_count >= 2 {
+            if self.ping.increment_collision_count() >= 2 {
                 return Err(StateError::CollisionTimeout);
             }
         }
 
         // raise error if last ping didn't receive ack
-        if self.await_pingresp {
+        if self.ping.await_pingresp() {
             return Err(StateError::AwaitPingResp);
         }
 
-        self.await_pingresp = true;
+        self.ping.begin_waiting_for_resp();
 
         debug!(
             "Pingreq,
@@ -988,7 +1045,7 @@ impl MqttState {
 
             let event = Event::Outgoing(Outgoing::Publish(publish_pkid));
             self.events.push_back(event);
-            self.collision_ping_count = 0;
+            self.ping.reset_collision_count();
 
             Packet::Publish(publish)
         })
@@ -1058,8 +1115,7 @@ impl Clone for MqttState {
     fn clone(&self) -> Self {
         let tracking_len = self.outgoing_pub_notice.len();
         Self {
-            await_pingresp: self.await_pingresp,
-            collision_ping_count: self.collision_ping_count,
+            ping: self.ping,
             last_incoming: self.last_incoming,
             last_outgoing: self.last_outgoing,
             last_pkid: self.last_pkid,
