@@ -2809,7 +2809,7 @@
         ],
         "notes": "Tests cover client-side CONNACK decoding, but the reviewed MUST is a server-only connection-handling rule."
       },
-      "follow_up": null,
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.1-1",
