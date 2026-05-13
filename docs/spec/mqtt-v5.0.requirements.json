@@ -3724,32 +3724,35 @@
         "rumqttc-v5/src/mqttbytes/v5/connack.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "Client-applicable because the client must validate server-sent CONNACK semantics before accepting or classifying the response. The current v5 connect path accepts any non-success CONNACK as ConnectionRefused without enforcing the required Session Present=0 invariant for non-zero reason codes.",
-      "compliance_status": "non_compliant",
+      "mapping_reason": "Client-applicable because the client must validate server-sent CONNACK semantics before accepting or classifying the response. The v5 connect path validates that every non-success CONNACK has Session Present set to 0 before classifying it as ConnectionRefused, and treats Session Present=1 on a refused CONNACK as a protocol error.",
+      "compliance_status": "compliant",
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
           "symbols": [
-            "mqtt_connect_inner"
+            "mqtt_connect_inner",
+            "validate_connack_session_present_for_reason_code"
           ],
-          "reason": "When Incoming::ConnAck is read, any connack.code != Success is returned as ConnectionRefused immediately. There is no check that session_present is false on refused CONNACK packets."
+          "reason": "When Incoming::ConnAck is read, mqtt_connect_inner() calls validate_connack_session_present_for_reason_code() before returning ConnectionRefused. That validator rejects connack.code != Success when session_present is true."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
           "symbols": [
-            "EventLoop::reconcile_connack_session"
+            "send_protocol_error_disconnect"
           ],
-          "reason": "Session Present validation exists only on the successful connection-establishment path after connect() returns a CONNACK. Refused CONNACK packets bypass this validation entirely."
+          "reason": "The connect path sends a Protocol Error DISCONNECT before failing the connection when a malformed refused CONNACK has Session Present set to 1."
         }
       ],
       "test_coverage": {
-        "status": "partial",
+        "status": "covered",
         "tests": [
-          "rumqttc-v5/tests/reliability.rs",
-          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_clean_start_with_session_present",
-          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_session_present_without_local_state"
+          "rumqttc-v5/src/eventloop.rs::refused_connack_validation_rejects_session_present_for_every_non_success_reason_code",
+          "rumqttc-v5/src/eventloop.rs::refused_connack_validation_accepts_session_absent_for_every_non_success_reason_code",
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_rejects_refused_connack_with_session_present",
+          "rumqttc-v5/src/eventloop.rs::refused_connack_with_session_present_preserves_protocol_error_after_peer_close",
+          "rumqttc-v5/tests/reliability.rs::refused_connack_with_session_present_is_protocol_error"
         ],
-        "notes": "Tests cover ordinary refusal handling and successful-CONNACK Session Present reconciliation, but no test covers a refused CONNACK with session_present=1."
+        "notes": "Coverage includes table-driven validation for every MQTT 5 non-success Connect Reason Code, a positive check that refused CONNACK packets with Session Present=0 remain valid, unit coverage that the connect path sends Protocol Error DISCONNECT, and an integration handshake test for a malformed refused CONNACK."
       },
       "follow_up": null
     },
@@ -3824,14 +3827,17 @@
         }
       ],
       "test_coverage": {
-        "status": "partial",
+        "status": "covered",
         "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_all_mqtt5_connect_reason_codes",
+          "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_rejects_every_non_connect_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_rejects_invalid_reason_code",
           "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_qos_not_supported_reason_code",
           "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_retain_not_supported_reason_code",
           "rumqttc-v5/src/mqttbytes/v5/connack.rs::connack_decodes_client_identifier_not_valid_reason_code",
           "rumqttc-v5/tests/reliability.rs"
         ],
-        "notes": "Tests cover decoding several valid CONNACK reason codes and surfacing refusal behavior, but there is no direct test that an invalid CONNACK reason code byte is rejected."
+        "notes": "Coverage now directly enumerates every valid MQTT 5 Connect Reason Code accepted by the CONNACK decoder and verifies every other byte is rejected as InvalidConnectReturnCode before the packet can be accepted."
       },
       "follow_up": null
     },
