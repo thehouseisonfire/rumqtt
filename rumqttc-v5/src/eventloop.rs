@@ -1490,6 +1490,32 @@ mod tests {
         connack
     }
 
+    fn mqtt5_non_success_connect_return_codes() -> [ConnectReturnCode; 21] {
+        [
+            ConnectReturnCode::UnspecifiedError,
+            ConnectReturnCode::MalformedPacket,
+            ConnectReturnCode::ProtocolError,
+            ConnectReturnCode::ImplementationSpecificError,
+            ConnectReturnCode::UnsupportedProtocolVersion,
+            ConnectReturnCode::ClientIdentifierNotValid,
+            ConnectReturnCode::BadUserNamePassword,
+            ConnectReturnCode::NotAuthorized,
+            ConnectReturnCode::ServerUnavailable,
+            ConnectReturnCode::ServerBusy,
+            ConnectReturnCode::Banned,
+            ConnectReturnCode::BadAuthenticationMethod,
+            ConnectReturnCode::TopicNameInvalid,
+            ConnectReturnCode::PacketTooLarge,
+            ConnectReturnCode::QuotaExceeded,
+            ConnectReturnCode::PayloadFormatInvalid,
+            ConnectReturnCode::RetainNotSupported,
+            ConnectReturnCode::QoSNotSupported,
+            ConnectReturnCode::UseAnotherServer,
+            ConnectReturnCode::ServerMoved,
+            ConnectReturnCode::ConnectionRateExceeded,
+        ]
+    }
+
     async fn read_packet_bytes(peer: &mut DuplexStream) -> Vec<u8> {
         let byte1 = peer.read_u8().await.unwrap();
         let mut multiplier = 1usize;
@@ -1969,6 +1995,38 @@ mod tests {
             disconnect,
             vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
+    }
+
+    #[test]
+    fn refused_connack_validation_rejects_session_present_for_every_non_success_reason_code() {
+        for code in mqtt5_non_success_connect_return_codes() {
+            let connack = ConnAck {
+                session_present: true,
+                code,
+                properties: None,
+            };
+
+            let err = validate_connack_session_present_for_reason_code(&connack).unwrap_err();
+
+            assert!(
+                matches!(err, StateError::Deserialization(MqttError::ProtocolError)),
+                "reason code {code:?} returned {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refused_connack_validation_accepts_session_absent_for_every_non_success_reason_code() {
+        for code in mqtt5_non_success_connect_return_codes() {
+            let connack = ConnAck {
+                session_present: false,
+                code,
+                properties: None,
+            };
+
+            validate_connack_session_present_for_reason_code(&connack)
+                .unwrap_or_else(|err| panic!("reason code {code:?} returned {err:?}"));
+        }
     }
 
     #[tokio::test]

@@ -690,6 +690,44 @@ mod test {
     }
 
     #[test]
+    fn connack_decodes_all_mqtt5_connect_reason_codes() {
+        let valid_reason_codes = [
+            (0x00, ConnectReturnCode::Success),
+            (0x80, ConnectReturnCode::UnspecifiedError),
+            (0x81, ConnectReturnCode::MalformedPacket),
+            (0x82, ConnectReturnCode::ProtocolError),
+            (0x83, ConnectReturnCode::ImplementationSpecificError),
+            (0x84, ConnectReturnCode::UnsupportedProtocolVersion),
+            (0x85, ConnectReturnCode::ClientIdentifierNotValid),
+            (0x86, ConnectReturnCode::BadUserNamePassword),
+            (0x87, ConnectReturnCode::NotAuthorized),
+            (0x88, ConnectReturnCode::ServerUnavailable),
+            (0x89, ConnectReturnCode::ServerBusy),
+            (0x8A, ConnectReturnCode::Banned),
+            (0x8C, ConnectReturnCode::BadAuthenticationMethod),
+            (0x90, ConnectReturnCode::TopicNameInvalid),
+            (0x95, ConnectReturnCode::PacketTooLarge),
+            (0x97, ConnectReturnCode::QuotaExceeded),
+            (0x99, ConnectReturnCode::PayloadFormatInvalid),
+            (0x9A, ConnectReturnCode::RetainNotSupported),
+            (0x9B, ConnectReturnCode::QoSNotSupported),
+            (0x9C, ConnectReturnCode::UseAnotherServer),
+            (0x9D, ConnectReturnCode::ServerMoved),
+            (0x9F, ConnectReturnCode::ConnectionRateExceeded),
+        ];
+
+        for (reason_code, expected) in valid_reason_codes {
+            let mut bytes = BytesMut::from(&[0x20, 0x03, 0x00, reason_code, 0x00][..]);
+            let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+            let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+
+            let connack = ConnAck::read(fixed_header, packet_bytes).unwrap();
+
+            assert_eq!(connack.code, expected, "reason code 0x{reason_code:02X}");
+        }
+    }
+
+    #[test]
     fn connack_rejects_invalid_reason_code() {
         let mut bytes = BytesMut::from(
             &[
@@ -706,5 +744,30 @@ mod test {
         let err = ConnAck::read(fixed_header, packet_bytes).unwrap_err();
 
         assert!(matches!(err, Error::InvalidConnectReturnCode(0xFF)));
+    }
+
+    #[test]
+    fn connack_rejects_every_non_connect_reason_code() {
+        let valid_reason_codes = [
+            0x00, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8C, 0x90,
+            0x95, 0x97, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9F,
+        ];
+
+        for reason_code in u8::MIN..=u8::MAX {
+            if valid_reason_codes.contains(&reason_code) {
+                continue;
+            }
+
+            let mut bytes = BytesMut::from(&[0x20, 0x03, 0x00, reason_code, 0x00][..]);
+            let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+            let packet_bytes = bytes.split_to(fixed_header.frame_length()).freeze();
+
+            let err = ConnAck::read(fixed_header, packet_bytes).unwrap_err();
+
+            assert!(
+                matches!(err, Error::InvalidConnectReturnCode(code) if code == reason_code),
+                "reason code 0x{reason_code:02X} returned {err:?}"
+            );
+        }
     }
 }
