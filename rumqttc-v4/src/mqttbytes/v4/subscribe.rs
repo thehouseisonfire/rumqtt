@@ -299,6 +299,22 @@ mod test {
     }
 
     #[test]
+    fn subscribe_parsing_rejects_empty_payload() {
+        let stream = &[
+            0b1000_0010,
+            2, // packet type, flags and remaining len
+            0x00,
+            0x01, // variable header. pkid = 1
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let subscribe_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Subscribe::read(fixed_header, subscribe_bytes);
+
+        assert!(matches!(packet, Err(Error::EmptySubscription)));
+    }
+
+    #[test]
     fn subscribe_encoding_rejects_zero_packet_identifier() {
         let subscribe = Subscribe {
             pkid: 0,
@@ -331,6 +347,26 @@ mod test {
         let packet = Subscribe::read(fixed_header, subscribe_bytes);
 
         assert!(matches!(packet, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn subscribe_parsing_rejects_invalid_utf8_filter() {
+        let stream = &[
+            0b1000_0010,
+            6, // packet type, flags and remaining len
+            0x00,
+            0x01, // variable header. pkid = 1
+            0x00,
+            0x01,
+            0xff, // invalid UTF-8 topic filter
+            0x00, // payload. qos = 0
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let subscribe_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Subscribe::read(fixed_header, subscribe_bytes);
+
+        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
     }
 
     #[test]

@@ -3523,8 +3523,16 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Reviewed against the v4 client role. This requirement governs server behavior when it rejects an unauthorized client PUBLISH; the client is not required to infer authorization state beyond normal QoS acknowledgement handling or connection closure.",
+      "compliance_status": "not_applicable",
+      "evidence": [],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only authorization behavior; no client-side conformance point to assert in rumqttc-v4."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.6.1-1",
@@ -3537,8 +3545,34 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/pubrel.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.6 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Applicable to the v4 client because it must encode PUBREL with fixed-header flags 0b0010 and reject incoming PUBREL packets whose reserved flags are not 0b0010.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "validate_fixed_header_flags"
+          ],
+          "reason": "All incoming MQTT packets pass through Packet::read, which rejects PUBREL when the low fixed-header bits are not 0b0010 by returning IncorrectPacketFormat before packet decoding continues."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/pubrel.rs",
+          "symbols": [
+            "PubRel::write"
+          ],
+          "reason": "Outgoing PUBREL packets are always encoded with first byte 0x62, which fixes the reserved nibble to 0b0010."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/mod.rs::tests::read_rejects_malformed_pubrel_flags"
+        ],
+        "notes": "Decode-side rejection of invalid PUBREL flags is tested. The encoder hard-codes 0x62, so the write-side behavior is direct."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.1-1",
@@ -3551,8 +3585,35 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Applicable to the v4 client because it must encode SUBSCRIBE with fixed-header flags 0b0010 and reject incoming SUBSCRIBE packets whose reserved flags are not 0b0010.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "validate_fixed_header_flags"
+          ],
+          "reason": "The shared fixed-header validator rejects SUBSCRIBE packets unless the reserved nibble is exactly 0b0010 before Subscribe::read is called."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/subscribe.rs",
+          "symbols": [
+            "Subscribe::write"
+          ],
+          "reason": "Outgoing SUBSCRIBE packets are always encoded with first byte 0x82, which sets the required reserved nibble to 0b0010."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/mod.rs::tests::read_rejects_malformed_subscribe_flags",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::test::subscribe_encoding_works"
+        ],
+        "notes": "Tests cover invalid incoming SUBSCRIBE flags and successful encoding with the required 0x82 header byte."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.3-1",
@@ -3565,8 +3626,49 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-applicable on outbound SUBSCRIBE payload encoding. v4 serializes each filter path with write_mqtt_string, which validates MQTT strings through mqttbytes-core before writing; inbound defensive parsing also uses read_mqtt_string. This requirement is effectively the SUBSCRIBE-specific application of the shared UTF-8 string rules already reviewed for MQTT-1.5.3-1.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/subscribe.rs",
+          "symbols": [
+            "Subscribe::read",
+            "SubscribeFilter::write"
+          ],
+          "reason": "SUBSCRIBE decode reads each filter with read_mqtt_string, and encode writes each filter with write_mqtt_string."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+          "symbols": [
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
+          "reason": "The v4 MQTT string helpers delegate to mqttbytes-core validation on both read and write paths."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "Shared primitive validation rejects non-UTF-8 byte sequences before a SUBSCRIBE filter can be accepted or decoded."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_ud800",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_udfff",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_overlong_encoding",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_accepts_valid_utf8",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_rejects_invalid_utf8_filter",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_rejects_null_character_in_filter",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_works"
+        ],
+        "notes": "UTF-8 enforcement is covered at the shared MQTT-string primitive layer, and SUBSCRIBE packet tests directly verify that invalid MQTT strings in v4 topic filters are rejected."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.3-2",
@@ -3579,8 +3681,49 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Duplicate of MQTT-3.8.3-1 with the same normative text and client scope. Evidence is identical: SUBSCRIBE filter strings go through the shared MQTT UTF-8 validation on encode and decode.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/subscribe.rs",
+          "symbols": [
+            "Subscribe::read",
+            "SubscribeFilter::write"
+          ],
+          "reason": "SUBSCRIBE decode reads each filter with read_mqtt_string, and encode writes each filter with write_mqtt_string."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+          "symbols": [
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
+          "reason": "The v4 MQTT string helpers delegate to mqttbytes-core validation on both read and write paths."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "Shared primitive validation rejects non-UTF-8 byte sequences before a SUBSCRIBE filter can be accepted or decoded."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_ud800",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_udfff",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_overlong_encoding",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_accepts_valid_utf8",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_rejects_invalid_utf8_filter",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_rejects_null_character_in_filter",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_works"
+        ],
+        "notes": "Same coverage as MQTT-3.8.3-1 because this entry duplicates the same requirement text, including direct v4 SUBSCRIBE topic-filter rejection tests."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.3-3",
@@ -3593,8 +3736,45 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-applicable on outbound SUBSCRIBE construction and inbound defensive parsing. v4 rejects empty filter lists in the client API gate, in the state machine before assigning a packet identifier, and in the SUBSCRIBE decoder when a parsed packet contains no Topic Filter/QoS pairs.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/client.rs",
+          "symbols": [
+            "subscribe_has_valid_filters",
+            "AsyncClient::subscribe_many",
+            "Client::subscribe_many"
+          ],
+          "reason": "Public subscribe APIs reject requests whose filter list is empty before they are queued to the event loop."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "State::outgoing_subscribe"
+          ],
+          "reason": "The event-loop state machine returns StateError::EmptySubscription if a SUBSCRIBE request reaches it with no filters."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/subscribe.rs",
+          "symbols": [
+            "Subscribe::read"
+          ],
+          "reason": "The packet decoder returns Error::EmptySubscription when a SUBSCRIBE frame has no payload entries after the packet identifier."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/subscribe.rs::subscribe_parsing_rejects_empty_payload",
+          "rumqttc-v4/src/client.rs::subscribing_with_empty_filter_list_fails",
+          "rumqttc-v4/src/client.rs::async_subscribing_with_empty_filter_list_fails"
+        ],
+        "notes": "Coverage includes SUBSCRIBE decoder rejection for empty payload and client API rejection of empty filter lists in both sync and async subscribe_many paths."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-1",

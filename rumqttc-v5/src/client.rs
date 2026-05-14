@@ -3805,6 +3805,55 @@ mod test {
     }
 
     #[test]
+    fn subscribing_with_empty_filter_list_fails() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+
+        let err = client
+            .subscribe_many(Vec::<Filter>::new())
+            .expect_err("Empty subscribe filter list should fail");
+        assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Subscribe(_))));
+
+        let err = client
+            .try_subscribe_many(Vec::<Filter>::new())
+            .expect_err("Empty subscribe filter list should fail");
+        assert!(
+            matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Subscribe(_)))
+        );
+
+        assert!(rx.is_empty());
+    }
+
+    #[test]
+    fn async_subscribing_with_empty_filter_list_fails() {
+        let (tx, rx) = flume::bounded(2);
+        let client = AsyncClient::from_senders(tx);
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let err = client
+                .subscribe_many(Vec::<Filter>::new())
+                .await
+                .expect_err("Empty subscribe filter list should fail");
+            assert!(
+                matches!(err, ClientError::Request(req) if matches!(*req, Request::Subscribe(_)))
+            );
+        });
+
+        let err = client
+            .try_subscribe_many(Vec::<Filter>::new())
+            .expect_err("Empty subscribe filter list should fail");
+        assert!(
+            matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Subscribe(_)))
+        );
+
+        assert!(rx.is_empty());
+    }
+
+    #[test]
     fn tracked_unsubscribe_uses_control_request_channel() {
         let (requests, requests_rx) = flume::bounded(1);
         let (control_requests, control_requests_rx) = flume::bounded(1);

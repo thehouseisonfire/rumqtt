@@ -5256,8 +5256,45 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/pubrel.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.6 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Applicable to the v5 client because it must encode PUBREL with fixed-header flags 0b0010 and reject incoming PUBREL packets whose reserved flags are not 0b0010. In the networked v5 path, malformed fixed-header flags are also translated into a DISCONNECT with reason code Malformed Packet.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "validate_fixed_header_flags"
+          ],
+          "reason": "All incoming MQTT v5 packets pass through Packet::read, which rejects PUBREL when the low fixed-header bits are not 0b0010 by returning IncorrectPacketFormat before packet decoding continues."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": [
+            "PubRel::write"
+          ],
+          "reason": "Outgoing PUBREL packets are always encoded with first byte 0x62, which fixes the reserved nibble to 0b0010."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error",
+            "Network::try_send_inbound_disconnect"
+          ],
+          "reason": "The framed runtime maps IncorrectPacketFormat to DisconnectReasonCode::MalformedPacket and sends a best-effort MQTT 5 DISCONNECT before surfacing the decode error, which is the client-side reaction required for malformed inbound packets."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::tests::read_rejects_pubrel_with_wrong_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::tests::validate_flags_const_fn_works_for_all_types",
+          "rumqttc-v5/src/framed.rs::tests::read_sends_malformed_packet_disconnect_before_returning_error"
+        ],
+        "notes": "Decode-side rejection of invalid fixed-header flags is directly tested for PUBREL. The encoder hard-codes 0x62, and the framed runtime separately verifies that IncorrectPacketFormat is turned into a Malformed Packet DISCONNECT."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.6.2-1",
@@ -5354,8 +5391,46 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Applicable to the v5 client because it must encode SUBSCRIBE with fixed-header flags 0b0010 and reject incoming SUBSCRIBE packets whose reserved flags are not 0b0010. In the networked v5 path, malformed fixed-header flags are translated into a DISCONNECT with reason code Malformed Packet.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "validate_fixed_header_flags"
+          ],
+          "reason": "The shared fixed-header validator rejects SUBSCRIBE packets unless the reserved nibble is exactly 0b0010 before Subscribe::read is called."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::write"
+          ],
+          "reason": "Outgoing SUBSCRIBE packets are always encoded with first byte 0x82, which sets the required reserved nibble to 0b0010."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error",
+            "Network::try_send_inbound_disconnect"
+          ],
+          "reason": "The runtime classifies IncorrectPacketFormat as Malformed Packet and sends a best-effort DISCONNECT, covering the client-side handling of malformed inbound packets on the network path."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::tests::read_rejects_subscribe_with_wrong_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::tests::validate_flags_const_fn_works_for_all_types",
+          "rumqttc-v5/src/framed.rs::tests::read_sends_malformed_packet_disconnect_before_returning_error",
+          "rumqttc-v5/src/mqttbytes/v5/subscribe.rs::test::length_calculation"
+        ],
+        "notes": "Decode-side rejection of invalid SUBSCRIBE flags is tested directly. Subscribe::write hard-codes 0x82; the existing subscribe codec tests exercise successful encoding paths, and the framed runtime verifies Malformed Packet DISCONNECT behavior for IncorrectPacketFormat."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.3-1",
@@ -5368,8 +5443,48 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-applicable on outbound SUBSCRIBE payload encoding, and the v5 codec also enforces the same rule defensively on decode. Each filter path is serialized with write_mqtt_string and parsed with read_mqtt_string, so SUBSCRIBE topic filters inherit the shared MQTT UTF-8 validation already used across the v5 codec.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::read",
+            "Filter::read",
+            "Filter::write"
+          ],
+          "reason": "SUBSCRIBE decode reads each filter path with read_mqtt_string and then reads one Subscription Options byte; encode writes each filter path with write_mqtt_string and then emits one options byte."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/mod.rs",
+          "symbols": [
+            "read_mqtt_string",
+            "write_mqtt_string"
+          ],
+          "reason": "The v5 MQTT string helpers delegate to mqttbytes-core validation for both decode and encode paths."
+        },
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "Shared primitive validation rejects malformed UTF-8 before a SUBSCRIBE filter string can be accepted."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_ud800",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_udfff",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_overlong_encoding",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_accepts_valid_utf8",
+          "rumqttc-v5/src/mqttbytes/v5/subscribe.rs::subscribe_parsing_rejects_invalid_utf8_filter"
+        ],
+        "notes": "UTF-8 enforcement is covered at the shared MQTT-string primitive layer, and the v5 SUBSCRIBE packet test directly verifies that an invalid UTF-8 topic filter is rejected."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.3-2",
@@ -5382,8 +5497,55 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-applicable on outbound SUBSCRIBE construction and inbound malformed-packet handling. v5 rejects empty filter lists in the client API guard, in the state machine before assigning a packet identifier, and in the SUBSCRIBE decoder when the payload contains no Topic Filter / Subscription Options pairs.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/client.rs",
+          "symbols": [
+            "subscribe_has_valid_filters",
+            "AsyncClient::handle_subscribe_many",
+            "AsyncClient::handle_try_subscribe_many",
+            "Client::handle_subscribe_many"
+          ],
+          "reason": "Public subscribe-many APIs reject requests whose filter list is empty before they are queued."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "State::outgoing_subscribe"
+          ],
+          "reason": "The event-loop state machine returns StateError::EmptySubscription if a SUBSCRIBE request reaches it with no filters."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::read"
+          ],
+          "reason": "The SUBSCRIBE decoder returns Error::EmptySubscription when no filter/options pairs remain after packet identifier and properties."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::read",
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error"
+          ],
+          "reason": "An inbound EmptySubscription decode error is classified as a ProtocolError DISCONNECT on the wire, matching the v5 protocol-error handling path."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/subscribe.rs::subscribe_parsing_rejects_empty_payload",
+          "rumqttc-v5/src/client.rs::subscribing_with_empty_filter_list_fails",
+          "rumqttc-v5/src/client.rs::async_subscribing_with_empty_filter_list_fails",
+          "rumqttc-v5/src/framed.rs::read_sends_protocol_error_disconnect_for_empty_subscribe"
+        ],
+        "notes": "Coverage includes direct SUBSCRIBE decoder rejection, sync and async public API rejection of empty filter lists, and the network path that maps EmptySubscription to a Protocol Error DISCONNECT."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.3-3",
@@ -5424,8 +5586,34 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is primarily server-side malformed-packet handling, but the client still has client-applicable wire-format responsibilities: encode reserved Subscription Options bits 6 and 7 as zero and reject non-zero reserved bits on decode. The v5 encoder satisfies this by constructing options only from QoS, No Local, Retain As Published, and Retain Handling fields. The v5 decoder now enforces the reserved-bit rule by rejecting option bytes with bits 6 or 7 set.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Filter::write"
+          ],
+          "reason": "The encoder only sets bits 0-5 from defined fields and never sets reserved bits 6 or 7, so outbound SUBSCRIBE packets are serialized with zero reserved bits."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Filter::read"
+          ],
+          "reason": "The decoder validates the Subscription Options byte and returns IncorrectPacketFormat when bits 6 or 7 are non-zero, rejecting malformed option bytes such as 0x40 and 0x80."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/subscribe.rs::subscribe_parsing_rejects_reserved_subscription_option_bits",
+          "rumqttc-v5/src/framed.rs::read_sends_malformed_packet_disconnect_for_reserved_subscribe_option_bits"
+        ],
+        "notes": "Packet parsing tests verify that non-zero reserved Subscription Options bits 6 and 7 are rejected, and framed runtime tests verify this decode failure is surfaced as IncorrectPacketFormat and mapped to a Malformed Packet DISCONNECT."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-1",
