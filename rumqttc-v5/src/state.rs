@@ -227,6 +227,22 @@ pub enum ProtocolViolation {
     DuplicateConnAck,
     #[error("server sent packet type {0:?}, which is invalid in the current client state")]
     UnexpectedIncomingPacket(PacketType),
+    #[error(
+        "SUBACK return code count mismatch for packet id {pkid}: expected {expected}, got {actual}"
+    )]
+    SubAckReturnCodeCountMismatch {
+        pkid: u16,
+        expected: usize,
+        actual: usize,
+    },
+    #[error(
+        "UNSUBACK reason code count mismatch for packet id {pkid}: expected {expected}, got {actual}"
+    )]
+    UnsubAckReasonCodeCountMismatch {
+        pkid: u16,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl From<mqttbytes::Error> for StateError {
@@ -1095,6 +1111,23 @@ impl MqttState {
     }
 
     fn handle_incoming_suback(&mut self, suback: &SubAck) -> Result<Option<Packet>, StateError> {
+        let Some((subscribe, _)) = self.tracked_subscribe.get(&suback.pkid) else {
+            error!("Unsolicited suback packet: {:?}", suback.pkid);
+            return Err(StateError::Unsolicited(suback.pkid));
+        };
+
+        let expected = subscribe.filters.len();
+        let actual = suback.return_codes.len();
+        if actual != expected {
+            return Err(StateError::ProtocolViolation(
+                ProtocolViolation::SubAckReturnCodeCountMismatch {
+                    pkid: suback.pkid,
+                    expected,
+                    actual,
+                },
+            ));
+        }
+
         for reason in &suback.return_codes {
             match reason {
                 SubscribeReasonCode::Success(qos) => {
@@ -1105,12 +1138,12 @@ impl MqttState {
                 }
             }
         }
-        if let Some((_, notice)) = self.tracked_subscribe.remove(&suback.pkid) {
-            notice.success(suback.clone());
-        } else {
-            error!("Unsolicited suback packet: {:?}", suback.pkid);
-            return Err(StateError::Unsolicited(suback.pkid));
-        }
+
+        let (_, notice) = self
+            .tracked_subscribe
+            .remove(&suback.pkid)
+            .expect("tracked subscribe checked before SUBACK validation");
+        notice.success(suback.clone());
         Ok(None)
     }
 
@@ -1118,17 +1151,34 @@ impl MqttState {
         &mut self,
         unsuback: &UnsubAck,
     ) -> Result<Option<Packet>, StateError> {
+        let Some((unsubscribe, _)) = self.tracked_unsubscribe.get(&unsuback.pkid) else {
+            error!("Unsolicited unsuback packet: {:?}", unsuback.pkid);
+            return Err(StateError::Unsolicited(unsuback.pkid));
+        };
+
+        let expected = unsubscribe.filters.len();
+        let actual = unsuback.reasons.len();
+        if actual != expected {
+            return Err(StateError::ProtocolViolation(
+                ProtocolViolation::UnsubAckReasonCodeCountMismatch {
+                    pkid: unsuback.pkid,
+                    expected,
+                    actual,
+                },
+            ));
+        }
+
         for reason in &unsuback.reasons {
             if reason != &UnsubAckReason::Success {
                 warn!("UnsubAck Pkid = {:?}, Reason = {:?}", unsuback.pkid, reason);
             }
         }
-        if let Some((_, notice)) = self.tracked_unsubscribe.remove(&unsuback.pkid) {
-            notice.success(unsuback.clone());
-        } else {
-            error!("Unsolicited unsuback packet: {:?}", unsuback.pkid);
-            return Err(StateError::Unsolicited(unsuback.pkid));
-        }
+
+        let (_, notice) = self
+            .tracked_unsubscribe
+            .remove(&unsuback.pkid)
+            .expect("tracked unsubscribe checked before UNSUBACK validation");
+        notice.success(unsuback.clone());
         Ok(None)
     }
 
@@ -1640,10 +1690,9 @@ impl MqttState {
         let elapsed_in = self.last_incoming.elapsed();
         let elapsed_out = self.last_outgoing.elapsed();
 
-        if self.collision.is_some()
-            && self.ping.increment_collision_count() >= 2 {
-                return Err(StateError::CollisionTimeout);
-            }
+        if self.collision.is_some() && self.ping.increment_collision_count() >= 2 {
+            return Err(StateError::CollisionTimeout);
+        }
 
         // raise error if last ping didn't receive ack
         if self.ping.await_pingresp() {
@@ -2526,6 +2575,42 @@ mod test {
     }
 
     #[test]
+    fn incoming_suback_with_mismatched_return_code_count_is_protocol_violation() {
+        let mut mqtt = build_mqttstate();
+        let (tx, _notice) = SubscribeNoticeTx::new();
+
+        let subscribe = Subscribe::new_many(
+            [
+                Filter::new("a/b", QoS::AtMostOnce),
+                Filter::new("c/d", QoS::AtLeastOnce),
+            ],
+            None,
+        );
+        mqtt.outgoing_subscribe(subscribe, Some(tx)).unwrap();
+        mqtt.events.clear();
+
+        let suback = SubAck {
+            pkid: 1,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        };
+        let got = mqtt
+            .handle_incoming_packet(Incoming::SubAck(suback))
+            .unwrap_err();
+
+        assert!(matches!(
+            got,
+            StateError::ProtocolViolation(ProtocolViolation::SubAckReturnCodeCountMismatch {
+                pkid: 1,
+                expected: 2,
+                actual: 1
+            })
+        ));
+        assert_eq!(mqtt.tracked_subscribe_len(), 1);
+        assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
     fn incoming_unsuback_with_untracked_pkid_is_unsolicited() {
         let mut mqtt = build_mqttstate();
 
@@ -2542,6 +2627,37 @@ mod test {
             StateError::Unsolicited(pkid) => assert_eq!(pkid, 7),
             e => panic!("Unexpected error: {e}"),
         }
+    }
+
+    #[test]
+    fn incoming_unsuback_with_mismatched_reason_code_count_is_protocol_violation() {
+        let mut mqtt = build_mqttstate();
+        let (tx, _notice) = UnsubscribeNoticeTx::new();
+
+        let mut unsubscribe = Unsubscribe::new("a/b", None);
+        unsubscribe.filters.push("c/d".to_owned());
+        mqtt.outgoing_unsubscribe(unsubscribe, Some(tx)).unwrap();
+        mqtt.events.clear();
+
+        let unsuback = UnsubAck {
+            pkid: 1,
+            reasons: vec![UnsubAckReason::Success],
+            properties: None,
+        };
+        let got = mqtt
+            .handle_incoming_packet(Incoming::UnsubAck(unsuback))
+            .unwrap_err();
+
+        assert!(matches!(
+            got,
+            StateError::ProtocolViolation(ProtocolViolation::UnsubAckReasonCodeCountMismatch {
+                pkid: 1,
+                expected: 2,
+                actual: 1
+            })
+        ));
+        assert_eq!(mqtt.tracked_unsubscribe_len(), 1);
+        assert!(mqtt.events.is_empty());
     }
 
     #[test]

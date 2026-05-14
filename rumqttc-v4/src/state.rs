@@ -47,6 +47,14 @@ pub enum ProtocolViolation {
     DuplicateConnAck,
     #[error("server sent packet type {0:?}, which is invalid in the current client state")]
     UnexpectedIncomingPacket(PacketType),
+    #[error(
+        "SUBACK return code count mismatch for packet id {pkid}: expected {expected}, got {actual}"
+    )]
+    SubAckReturnCodeCountMismatch {
+        pkid: u16,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -651,12 +659,32 @@ impl MqttState {
     }
 
     fn handle_incoming_suback(&mut self, suback: &SubAck) -> Result<Option<Packet>, StateError> {
-        if let Some((_, notice)) = self.tracked_subscribe.remove(&suback.pkid) {
-            notice.success(suback.clone());
-        } else {
+        let Some((subscribe, _)) = self.tracked_subscribe.get(&suback.pkid) else {
             error!("Unsolicited suback packet: {:?}", suback.pkid);
             return Err(StateError::Unsolicited(suback.pkid));
+        };
+
+        let expected = subscribe.filters.len();
+        let actual = suback.return_codes.len();
+        if expected != actual {
+            error!(
+                "Suback return code count mismatch for pkid {:?}: expected {:?}, got {:?}",
+                suback.pkid, expected, actual
+            );
+            return Err(StateError::ProtocolViolation(
+                ProtocolViolation::SubAckReturnCodeCountMismatch {
+                    pkid: suback.pkid,
+                    expected,
+                    actual,
+                },
+            ));
         }
+
+        let (_, notice) = self
+            .tracked_subscribe
+            .remove(&suback.pkid)
+            .ok_or(StateError::InvalidState)?;
+        notice.success(suback.clone());
 
         Ok(None)
     }
@@ -949,10 +977,9 @@ impl MqttState {
         let elapsed_in = self.last_incoming.elapsed();
         let elapsed_out = self.last_outgoing.elapsed();
 
-        if self.collision.is_some()
-            && self.ping.increment_collision_count() >= 2 {
-                return Err(StateError::CollisionTimeout);
-            }
+        if self.collision.is_some() && self.ping.increment_collision_count() >= 2 {
+            return Err(StateError::CollisionTimeout);
+        }
 
         // raise error if last ping didn't receive ack
         if self.ping.await_pingresp() {
@@ -1440,6 +1467,33 @@ mod test {
             StateError::Unsolicited(pkid) => assert_eq!(pkid, 5),
             e => panic!("Unexpected error: {e}"),
         }
+    }
+
+    #[test]
+    fn incoming_suback_with_mismatched_return_code_count_is_protocol_violation() {
+        let mut mqtt = build_mqttstate();
+        let (tx, _notice) = SubscribeNoticeTx::new();
+
+        let mut subscribe = Subscribe::new("a/b", QoS::AtMostOnce);
+        subscribe.add("c/d".to_owned(), QoS::AtLeastOnce);
+        mqtt.outgoing_subscribe(subscribe, Some(tx)).unwrap();
+        mqtt.events.clear();
+
+        let suback = SubAck::new(1, vec![SubscribeReasonCode::Success(QoS::AtMostOnce)]);
+        let got = mqtt
+            .handle_incoming_packet(Incoming::SubAck(suback))
+            .unwrap_err();
+
+        assert!(matches!(
+            got,
+            StateError::ProtocolViolation(ProtocolViolation::SubAckReturnCodeCountMismatch {
+                pkid: 1,
+                expected: 2,
+                actual: 1
+            })
+        ));
+        assert_eq!(mqtt.tracked_subscribe_len(), 1);
+        assert!(mqtt.events.is_empty());
     }
 
     #[test]
