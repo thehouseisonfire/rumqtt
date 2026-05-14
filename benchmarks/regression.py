@@ -25,7 +25,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 PERCENTILES = (50, 90, 99)
 MODE_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "throughput": ("published", "received", "throughput_avg", "elapsed_secs"),
@@ -152,7 +151,12 @@ def choose_metric_object(
             return None, {}, "no structured benchmark JSON payload found"
         filtered = [c for c in candidates if expected_mode is None or c[2] == expected_mode]
         if len(filtered) != 1:
-            return None, {}, f"expected exactly one benchmark payload for mode '{expected_mode}', found {len(filtered)}"
+            return (
+                None,
+                {},
+                "expected exactly one benchmark payload for mode "
+                f"'{expected_mode}', found {len(filtered)}",
+            )
         return filtered[0][0], filtered[0][1], None
 
     if candidates:
@@ -325,7 +329,9 @@ def safe_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name)
 
 
-def run_benchmark_once(worktree: Path, cmd: str, timeout_sec: int) -> tuple[int | None, bool, str, str, float]:
+def run_benchmark_once(
+    worktree: Path, cmd: str, timeout_sec: int
+) -> tuple[int | None, bool, str, str, float]:
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -340,8 +346,16 @@ def run_benchmark_once(worktree: Path, cmd: str, timeout_sec: int) -> tuple[int 
         return proc.returncode, False, proc.stdout, proc.stderr, elapsed
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - start
-        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
-        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace")
+        stdout = (
+            exc.stdout
+            if isinstance(exc.stdout, str)
+            else (exc.stdout or b"").decode(errors="replace")
+        )
+        stderr = (
+            exc.stderr
+            if isinstance(exc.stderr, str)
+            else (exc.stderr or b"").decode(errors="replace")
+        )
         return None, True, stdout, stderr, elapsed
 
 
@@ -399,8 +413,8 @@ def compute_paired_metric_comparisons(
     paired_run_ids = sorted(set(baseline_by_run.keys()) & set(target_by_run.keys()))
     metrics: set[str] = set()
     for run_id in paired_run_ids:
-        metrics.update(k for k in baseline_by_run[run_id].keys() if isinstance(k, str))
-        metrics.update(k for k in target_by_run[run_id].keys() if isinstance(k, str))
+        metrics.update(k for k in baseline_by_run[run_id] if isinstance(k, str))
+        metrics.update(k for k in target_by_run[run_id] if isinstance(k, str))
 
     results: dict[str, dict[str, Any]] = {}
     for metric in sorted(metrics):
@@ -412,7 +426,10 @@ def compute_paired_metric_comparisons(
                 paired_values.append((float(b_metrics[metric]), float(t_metrics[metric])))
 
         if not paired_values:
-            results[metric] = {"paired_runs": 0, "error": "no successful paired runs had this metric"}
+            results[metric] = {
+                "paired_runs": 0,
+                "error": "no successful paired runs had this metric",
+            }
             continue
 
         baseline_values = [b for b, _ in paired_values]
@@ -472,16 +489,11 @@ def build_html_report(
     quality: dict[str, Any] | None = None,
 ) -> None:
     metrics = sorted(
-        {
-            metric
-            for branch_data in per_branch.values()
-            for metric in branch_data["metrics"].keys()
-        }
+        {metric for branch_data in per_branch.values() for metric in branch_data["metrics"]}
     )
 
     html_parts: list[str] = []
-    html_parts.append(
-        """<!doctype html>
+    html_parts.append("""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -490,10 +502,19 @@ def build_html_report(
     body { font-family: "Helvetica Neue", Arial, sans-serif; margin: 24px; color: #1d1d1f; }
     h1, h2, h3 { margin: 0 0 10px 0; }
     .meta { margin-bottom: 24px; padding: 12px; background: #f4f7fa; border-radius: 8px; }
-    .quality-pass { margin-bottom: 16px; padding: 10px; border-radius: 8px; background: #e9f8ef; color: #0f8a39; }
-    .quality-fail { margin-bottom: 16px; padding: 10px; border-radius: 8px; background: #fdecec; color: #b3261e; }
+    .quality-pass {
+      margin-bottom: 16px; padding: 10px; border-radius: 8px;
+      background: #e9f8ef; color: #0f8a39;
+    }
+    .quality-fail {
+      margin-bottom: 16px; padding: 10px; border-radius: 8px;
+      background: #fdecec; color: #b3261e;
+    }
     .metric { margin: 22px 0; padding: 14px; border: 1px solid #e6e6e6; border-radius: 8px; }
-    .grid { display: grid; grid-template-columns: 180px 80px 1fr 120px; gap: 8px; align-items: center; }
+    .grid {
+      display: grid; grid-template-columns: 180px 80px 1fr 120px;
+      gap: 8px; align-items: center;
+    }
     .bar-wrap { background: #f0f0f0; height: 16px; border-radius: 999px; overflow: hidden; }
     .bar { height: 100%; }
     .branch-a { background: #2f80ed; }
@@ -507,13 +528,14 @@ def build_html_report(
   </style>
 </head>
 <body>
-"""
-    )
+""")
 
     html_parts.append("<h1>Benchmark Regression Report</h1>")
     html_parts.append('<div class="meta">')
     html_parts.append(f"<p><strong>Timestamp:</strong> {html.escape(metadata['timestamp'])}</p>")
-    html_parts.append(f"<p><strong>Command:</strong> <code>{html.escape(metadata['command'])}</code></p>")
+    html_parts.append(
+        f"<p><strong>Command:</strong> <code>{html.escape(metadata['command'])}</code></p>"
+    )
     html_parts.append(
         f"<p><strong>Measured runs:</strong> {metadata['runs']} (warmup: {metadata['warmup']})</p>"
     )
@@ -558,7 +580,9 @@ def build_html_report(
 
         html_parts.append(f'<div class="metric"><h3>{html.escape(metric)}</h3>')
         html_parts.append('<div class="grid">')
-        html_parts.append("<strong>Branch</strong><strong>Stat</strong><strong>Bar</strong><strong>Value</strong>")
+        html_parts.append(
+            "<strong>Branch</strong><strong>Stat</strong><strong>Bar</strong><strong>Value</strong>"
+        )
         for idx, branch_name in enumerate((left_branch, right_branch)):
             stats = per_branch[branch_name]["metrics"].get(metric, {})
             for p in PERCENTILES:
@@ -566,7 +590,9 @@ def build_html_report(
                 val = stats.get(stat_key)
                 width = 0.0 if val is None or max_v == 0 else (float(val) / max_v) * 100.0
                 css = "branch-a" if idx == 0 else "branch-b"
-                html_parts.append(f"<span>{html.escape(per_branch[branch_name]['name'])} ({branch_name})</span>")
+                html_parts.append(
+                    f"<span>{html.escape(per_branch[branch_name]['name'])} ({branch_name})</span>"
+                )
                 html_parts.append(f"<span>{stat_key}</span>")
                 html_parts.append(
                     '<span class="bar-wrap">'
@@ -594,7 +620,9 @@ def build_html_report(
         html_parts.append(f"<td>{fmt(row.get('baseline'))}</td>")
         html_parts.append(f"<td>{fmt(row.get('target'))}</td>")
         html_parts.append(f"<td>{fmt(row.get('delta_abs'))}</td>")
-        html_parts.append(f'<td class="{cls}">{fmt(delta_pct, 2) if delta_pct is not None else "-"}</td>')
+        html_parts.append(
+            f'<td class="{cls}">{fmt(delta_pct, 2) if delta_pct is not None else "-"}</td>'
+        )
         html_parts.append("</tr>")
     html_parts.append("</tbody></table>")
 
@@ -602,7 +630,8 @@ def build_html_report(
         html_parts.append("<h2>Paired Run Comparison</h2>")
         html_parts.append(
             "<table><thead><tr>"
-            "<th>Metric</th><th>Paired Runs</th><th>Median % Delta</th><th>95% CI [%]</th><th>Class</th>"
+            "<th>Metric</th><th>Paired Runs</th><th>Median % Delta</th>"
+            "<th>95% CI [%]</th><th>Class</th>"
             "</tr></thead><tbody>"
         )
         for metric in sorted(paired_comparisons.keys()):
@@ -658,7 +687,9 @@ def process_command_series(
     for i in range(1, total_runs + 1):
         run_id = f"run_{i:03d}"
         is_warmup = i <= warmup
-        returncode, timed_out, stdout, stderr, elapsed_sec = run_benchmark_once(cwd, command, timeout_sec)
+        returncode, timed_out, stdout, stderr, elapsed_sec = run_benchmark_once(
+            cwd, command, timeout_sec
+        )
 
         write_text(runs_dir / f"{run_id}.stdout.txt", stdout)
         write_text(runs_dir / f"{run_id}.stderr.txt", stderr)
@@ -702,7 +733,9 @@ def process_command_series(
             "returncode": returncode,
             "elapsed_sec": elapsed_sec,
         }
-        write_text(parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True))
+        write_text(
+            parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True)
+        )
 
         run_records.append(run_record)
         if ok and not is_warmup:
@@ -749,22 +782,44 @@ def make_cross_command(
 ) -> str:
     if side == "baseline":
         cmd = [
-            "cargo", "run", "--bin", "rumqttv5bench", "--release", "--",
-            "--mode", mode,
-            "--duration", str(duration),
-            "--warmup", str(inner_warmup),
-            "--url", broker_url,
-            "--client-id", client_id,
-            "--run-id", run_id,
+            "cargo",
+            "run",
+            "--bin",
+            "rumqttv5bench",
+            "--release",
+            "--",
+            "--mode",
+            mode,
+            "--duration",
+            str(duration),
+            "--warmup",
+            str(inner_warmup),
+            "--url",
+            broker_url,
+            "--client-id",
+            client_id,
+            "--run-id",
+            run_id,
         ]
     else:
         cmd = [
-            "cargo", "run", "-p", "mqttv5-cli", "--release", "--", "bench",
-            "--mode", mode,
-            "--duration", str(duration),
-            "--warmup", str(inner_warmup),
-            "--url", broker_url,
-            "--client-id", client_id,
+            "cargo",
+            "run",
+            "-p",
+            "mqttv5-cli",
+            "--release",
+            "--",
+            "bench",
+            "--mode",
+            mode,
+            "--duration",
+            str(duration),
+            "--warmup",
+            str(inner_warmup),
+            "--url",
+            broker_url,
+            "--client-id",
+            client_id,
         ]
 
     if mode != "connections":
@@ -808,7 +863,9 @@ def evaluate_scenario_quality(
             reasons.append(f"{side}: successful runs {succ} below minimum {min_runs}")
         if success_rate < min_success_rate:
             passed = False
-            reasons.append(f"{side}: success rate {success_rate:.3f} below minimum {min_success_rate:.3f}")
+            reasons.append(
+                f"{side}: success rate {success_rate:.3f} below minimum {min_success_rate:.3f}"
+            )
 
     primary_metric = PRIMARY_METRIC_BY_MODE.get(mode)
     checks["primary_metric"] = primary_metric
@@ -826,7 +883,9 @@ def evaluate_scenario_quality(
 
     baseline_runs = per_branch["baseline"]["runs"]
     target_runs = per_branch["target"]["runs"]
-    metric_names = sorted(set(per_branch["baseline"]["metrics"].keys()) | set(per_branch["target"]["metrics"].keys()))
+    metric_names = sorted(
+        set(per_branch["baseline"]["metrics"].keys()) | set(per_branch["target"]["metrics"].keys())
+    )
 
     for metric in metric_names:
         b_vals = [
@@ -865,16 +924,16 @@ def evaluate_scenario_quality(
                 if width > max_ci_width_pct:
                     passed = False
                     reasons.append(
-                        (
-                            f"primary metric '{primary_metric}' CI width {width:.2f}% "
-                            f"above threshold {max_ci_width_pct:.2f}%"
-                        )
+                        f"primary metric '{primary_metric}' CI width {width:.2f}% "
+                        f"above threshold {max_ci_width_pct:.2f}%"
                     )
         else:
             stats["comparisons"][metric] = {"error": "insufficient data for bootstrap CI"}
             if metric == primary_metric:
                 passed = False
-                reasons.append(f"primary metric '{primary_metric}' has insufficient data for bootstrap CI")
+                reasons.append(
+                    f"primary metric '{primary_metric}' has insufficient data for bootstrap CI"
+                )
 
     quality = {
         "passed": passed,
@@ -892,23 +951,55 @@ def run_cross_library(args: argparse.Namespace) -> int:
 
     rumqtt_root = Path(args.rumqtt_root).expanduser().resolve()
     mqttlib_root = Path(args.mqttlib_root).expanduser().resolve()
-    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%SZ")
 
     if args.output_dir:
         output_dir = Path(args.output_dir).expanduser().resolve()
     else:
-        output_dir = (rumqtt_root / "benchmarks" / "results" / "cross-library" / timestamp).resolve()
+        output_dir = (
+            rumqtt_root / "benchmarks" / "results" / "cross-library" / timestamp
+        ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    min_runs, min_success_rate, max_cv, max_ci_width_pct, bootstrap_samples, confidence = quality_thresholds(args)
+    min_runs, min_success_rate, max_cv, max_ci_width_pct, bootstrap_samples, confidence = (
+        quality_thresholds(args)
+    )
 
     scenario_runs: list[dict[str, Any]] = []
     any_quality_failures = False
     matrix = [
-        {"mode": "throughput", "duration": 6, "payload_size": 64, "qos": 0, "publishers": 1, "subscribers": 1},
-        {"mode": "throughput", "duration": 6, "payload_size": 64, "qos": 1, "publishers": 1, "subscribers": 1},
-        {"mode": "latency", "duration": 6, "payload_size": 64, "qos": 1, "publishers": 1, "subscribers": 1},
-        {"mode": "connections", "duration": 6, "payload_size": 0, "qos": 0, "publishers": 0, "subscribers": 0},
+        {
+            "mode": "throughput",
+            "duration": 6,
+            "payload_size": 64,
+            "qos": 0,
+            "publishers": 1,
+            "subscribers": 1,
+        },
+        {
+            "mode": "throughput",
+            "duration": 6,
+            "payload_size": 64,
+            "qos": 1,
+            "publishers": 1,
+            "subscribers": 1,
+        },
+        {
+            "mode": "latency",
+            "duration": 6,
+            "payload_size": 64,
+            "qos": 1,
+            "publishers": 1,
+            "subscribers": 1,
+        },
+        {
+            "mode": "connections",
+            "duration": 6,
+            "payload_size": 0,
+            "qos": 0,
+            "publishers": 0,
+            "subscribers": 0,
+        },
     ]
 
     transports = [("tcp", args.broker_url_tcp)]
@@ -918,7 +1009,7 @@ def run_cross_library(args: argparse.Namespace) -> int:
     seed_prefix = args.seed_prefix or f"bench-{timestamp}"
     host_name = socket.gethostname()
     runtime_meta = {
-        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "timestamp": dt.datetime.now(dt.UTC).isoformat(),
         "hostname": host_name,
         "python": sys.version,
         "quality_mode": args.quality_mode,
@@ -945,7 +1036,9 @@ def run_cross_library(args: argparse.Namespace) -> int:
     for transport_name, broker_url in transports:
         for scenario in matrix:
             mode = scenario["mode"]
-            scenario_name = f"{mode}-{transport_name}-qos{scenario['qos']}-ps{scenario['payload_size']}"
+            scenario_name = (
+                f"{mode}-{transport_name}-qos{scenario['qos']}-ps{scenario['payload_size']}"
+            )
             scenario_dir = output_dir / safe_name(scenario_name)
             scenario_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1025,7 +1118,12 @@ def run_cross_library(args: argparse.Namespace) -> int:
                         strict_schema=True,
                     )
                     schema_error = validate_mode_metrics(mode, metrics) if metrics else None
-                    ok = (not timed_out) and (returncode == 0) and bool(metrics) and (schema_error is None)
+                    ok = (
+                        (not timed_out)
+                        and (returncode == 0)
+                        and bool(metrics)
+                        and (schema_error is None)
+                    )
 
                     if not is_warmup:
                         if ok:
@@ -1069,7 +1167,10 @@ def run_cross_library(args: argparse.Namespace) -> int:
                         "parse_error": parse_error,
                         "schema_error": schema_error,
                     }
-                    write_text(parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True))
+                    write_text(
+                        parsed_dir / f"{run_id}.json",
+                        json.dumps(parsed_payload, indent=2, sort_keys=True),
+                    )
 
                     per_branch[side]["runs"].append(run_record)
                     if ok and not is_warmup:
@@ -1103,7 +1204,7 @@ def run_cross_library(args: argparse.Namespace) -> int:
                 any_quality_failures = True
 
             report_meta = {
-                "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "timestamp": dt.datetime.now(dt.UTC).isoformat(),
                 "command": f"cross-library scenario {scenario_name}",
                 "runs": args.runs,
                 "warmup": args.warmup,
@@ -1146,8 +1247,12 @@ def run_cross_library(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run benchmark regression comparison across two branches.")
-    parser.add_argument("--target-branch", required=False, help="Branch/ref to compare against baseline branch.")
+    parser = argparse.ArgumentParser(
+        description="Run benchmark regression comparison across two branches."
+    )
+    parser.add_argument(
+        "--target-branch", required=False, help="Branch/ref to compare against baseline branch."
+    )
     parser.add_argument(
         "--baseline-branch",
         required=False,
@@ -1157,13 +1262,22 @@ def main() -> int:
     parser.add_argument(
         "--cross-library",
         action="store_true",
-        help="Run cross-library benchmark matrix (rumqtt-v5 vs mqttv5-cli) instead of git branch comparison.",
+        help=(
+            "Run cross-library benchmark matrix (rumqtt-v5 vs mqttv5-cli) "
+            "instead of git branch comparison."
+        ),
     )
     parser.add_argument("--rumqtt-root", default=None, help="Path to rumqtt repository root.")
     parser.add_argument("--mqttlib-root", default=None, help="Path to mqtt-lib repository root.")
-    parser.add_argument("--broker-url-tcp", default=None, help="Broker URL for TCP benchmark scenarios.")
-    parser.add_argument("--broker-url-tls", default=None, help="Broker URL for TLS benchmark scenarios.")
-    parser.add_argument("--ca-cert", default=None, help="CA certificate path for TLS benchmark scenarios.")
+    parser.add_argument(
+        "--broker-url-tcp", default=None, help="Broker URL for TCP benchmark scenarios."
+    )
+    parser.add_argument(
+        "--broker-url-tls", default=None, help="Broker URL for TLS benchmark scenarios."
+    )
+    parser.add_argument(
+        "--ca-cert", default=None, help="CA certificate path for TLS benchmark scenarios."
+    )
     parser.add_argument(
         "--runs",
         type=int,
@@ -1193,13 +1307,32 @@ def main() -> int:
         default="fast",
         help="Quality thresholds preset for cross-library mode.",
     )
-    parser.add_argument("--min-runs", type=int, default=None, help="Minimum successful measured runs per side.")
-    parser.add_argument("--min-success-rate", type=float, default=None, help="Minimum run success rate per side.")
-    parser.add_argument("--max-cv", type=float, default=None, help="Maximum allowed CV on scenario primary metric.")
-    parser.add_argument("--bootstrap-samples", type=int, default=None, help="Bootstrap samples for CI computation.")
-    parser.add_argument("--confidence", type=float, default=None, help="Bootstrap confidence level (0,1).")
-    parser.add_argument("--max-ci-width-pct", type=float, default=None, help="Max CI width for primary relative delta.")
-    parser.add_argument("--seed-prefix", default=None, help="Prefix used to generate deterministic run ids/client ids.")
+    parser.add_argument(
+        "--min-runs", type=int, default=None, help="Minimum successful measured runs per side."
+    )
+    parser.add_argument(
+        "--min-success-rate", type=float, default=None, help="Minimum run success rate per side."
+    )
+    parser.add_argument(
+        "--max-cv", type=float, default=None, help="Maximum allowed CV on scenario primary metric."
+    )
+    parser.add_argument(
+        "--bootstrap-samples", type=int, default=None, help="Bootstrap samples for CI computation."
+    )
+    parser.add_argument(
+        "--confidence", type=float, default=None, help="Bootstrap confidence level (0,1)."
+    )
+    parser.add_argument(
+        "--max-ci-width-pct",
+        type=float,
+        default=None,
+        help="Max CI width for primary relative delta.",
+    )
+    parser.add_argument(
+        "--seed-prefix",
+        default=None,
+        help="Prefix used to generate deterministic run ids/client ids.",
+    )
     parser.add_argument(
         "--alternate-order",
         action=argparse.BooleanOptionalAction,
@@ -1210,7 +1343,10 @@ def main() -> int:
         "--interleaved",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Interleave baseline/target runs in branch comparison mode (A/B then B/A alternating).",
+        help=(
+            "Interleave baseline/target runs in branch comparison mode "
+            "(A/B then B/A alternating)."
+        ),
     )
     parser.add_argument(
         "--paired-analysis",
@@ -1250,13 +1386,15 @@ def main() -> int:
         return run_cross_library(args)
 
     repo_root = get_repo_root()
-    baseline_branch = args.baseline_branch if args.baseline_branch else get_current_branch(repo_root)
+    baseline_branch = (
+        args.baseline_branch if args.baseline_branch else get_current_branch(repo_root)
+    )
     target_branch = args.target_branch
 
     baseline_ref = resolve_ref(repo_root, baseline_branch)
     target_ref = resolve_ref(repo_root, target_branch)
 
-    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%SZ")
     if args.output_dir:
         output_dir = Path(args.output_dir).expanduser().resolve()
     else:
@@ -1282,13 +1420,16 @@ def main() -> int:
                 capture=True,
             )
             if proc.returncode != 0:
+                worktree_error = proc.stderr.strip() or proc.stdout.strip()
                 raise RuntimeError(
-                    f"Failed to create worktree for '{branch_name}': {proc.stderr.strip() or proc.stdout.strip()}"
+                    f"Failed to create worktree for '{branch_name}': {worktree_error}"
                 )
             worktrees[branch_label] = wt_path
 
         _, _, _, _, bootstrap_samples, confidence = quality_thresholds(args)
-        paired_analysis_enabled = args.interleaved if args.paired_analysis is None else args.paired_analysis
+        paired_analysis_enabled = (
+            args.interleaved if args.paired_analysis is None else args.paired_analysis
+        )
         seed_prefix = args.seed_prefix or f"branch-{timestamp}"
         total_runs = args.warmup + args.runs
 
@@ -1377,7 +1518,9 @@ def main() -> int:
                 "returncode": returncode,
                 "elapsed_sec": elapsed_sec,
             }
-            write_text(parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True))
+            write_text(
+                parsed_dir / f"{run_id}.json", json.dumps(parsed_payload, indent=2, sort_keys=True)
+            )
 
             per_branch[branch_label]["runs"].append(run_record)
             if ok and not is_warmup:
@@ -1419,7 +1562,9 @@ def main() -> int:
                     f"See {branch_dir / 'runs'} for logs."
                 )
 
-        comparisons = compare_metric_sets(per_branch["baseline"]["metrics"], per_branch["target"]["metrics"])
+        comparisons = compare_metric_sets(
+            per_branch["baseline"]["metrics"], per_branch["target"]["metrics"]
+        )
         paired_comparisons: dict[str, dict[str, Any]] | None = None
         if paired_analysis_enabled:
             paired_comparisons = compute_paired_metric_comparisons(
@@ -1473,13 +1618,47 @@ def main() -> int:
                 branch_data = per_branch[branch_label]
                 branch_title = f"{branch_data['name']} ({branch_label})"
                 writer.writerow(
-                    ["branch", branch_title, "_runs", "success", branch_data["success_runs"], "", "", "", ""]
+                    [
+                        "branch",
+                        branch_title,
+                        "_runs",
+                        "success",
+                        branch_data["success_runs"],
+                        "",
+                        "",
+                        "",
+                        "",
+                    ]
                 )
-                writer.writerow(["branch", branch_title, "_runs", "failed", branch_data["failed_runs"], "", "", "", ""])
+                writer.writerow(
+                    [
+                        "branch",
+                        branch_title,
+                        "_runs",
+                        "failed",
+                        branch_data["failed_runs"],
+                        "",
+                        "",
+                        "",
+                        "",
+                    ]
+                )
                 for metric_name, stats in branch_data["metrics"].items():
-                    for stat_name in ("min", "max", "mean", "median", "mad", "cv", "p50", "p90", "p99"):
+                    for stat_name in (
+                        "min",
+                        "max",
+                        "mean",
+                        "median",
+                        "mad",
+                        "cv",
+                        "p50",
+                        "p90",
+                        "p99",
+                    ):
                         val = stats.get(stat_name)
-                        writer.writerow(["branch", branch_title, metric_name, stat_name, val, "", "", "", ""])
+                        writer.writerow(
+                            ["branch", branch_title, metric_name, stat_name, val, "", "", "", ""]
+                        )
 
             for row in comparisons:
                 writer.writerow(
@@ -1579,7 +1758,7 @@ def main() -> int:
                     )
 
         report_meta = {
-            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "timestamp": dt.datetime.now(dt.UTC).isoformat(),
             "command": args.cmd,
             "runs": args.runs,
             "warmup": args.warmup,
@@ -1606,7 +1785,9 @@ def main() -> int:
             print(f"Keeping temporary worktrees at: {temp_root}")
         else:
             for wt in worktrees.values():
-                run_process(["git", "worktree", "remove", "--force", str(wt)], cwd=repo_root, capture=True)
+                run_process(
+                    ["git", "worktree", "remove", "--force", str(wt)], cwd=repo_root, capture=True
+                )
             shutil.rmtree(temp_root, ignore_errors=True)
 
 
