@@ -3837,7 +3837,7 @@
       "section_number": "3.8.4",
       "section_title": "Response",
       "obligation": "MUST",
-      "summary": "The SUBACK Packet sent by the Server to the Client MUST contain a return code for each Topic Filter/QoS pair. This return code MUST either show the maximum QoS that was granted for that Subscription or indicate that the subscription failed .",
+      "summary": "The Server might grant a lower maximum QoS than the subscriber requested. The QoS of Payload Messages sent in response to a Subscription MUST be the minimum of the QoS of the originally published message and the maximum QoS granted by the Server. The server is permitted to send duplicate copies of a message to a subscriber in the case where the original message was published with QoS 1 and the maximum QoS granted was QoS 0.",
       "source_anchor": "_Toc384800440",
       "occurrences": 3,
       "candidate_paths": [
