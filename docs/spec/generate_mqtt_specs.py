@@ -23,9 +23,7 @@ from lxml import html
 
 REQUIREMENT_RE = re.compile(r"MQTT-\d+(?:\.\d+)+-\d+")
 HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+(.+)$")
-NORMATIVE_RE = re.compile(
-    r"\b(MUST NOT|SHALL NOT|SHOULD NOT|MUST|SHALL|SHOULD|MAY|REQUIRED)\b"
-)
+NORMATIVE_RE = re.compile(r"\b(MUST NOT|SHALL NOT|SHOULD NOT|MUST|SHALL|SHOULD|MAY|REQUIRED)\b")
 
 
 @dataclass
@@ -142,10 +140,6 @@ def clean_summary(clause: str) -> str:
     return summary
 
 
-def summary_compare_key(summary: str) -> str:
-    return normalize_text(summary).replace(" .", ".")
-
-
 def find_first_anchor(node: Any) -> str | None:
     if not hasattr(node, "xpath"):
         return None
@@ -226,7 +220,9 @@ def section_for_node_idx(sections: list[Section], idx: int) -> Section | None:
     return None
 
 
-def mapping_for_section(version: str, section_number: str, section_title: str) -> tuple[list[str], str]:
+def mapping_for_section(
+    version: str, section_number: str, section_title: str
+) -> tuple[list[str], str]:
     packet_map = V4_PACKET_MAP if version == "3.1.1" else V5_PACKET_MAP
     base_paths = (
         [
@@ -268,13 +264,19 @@ def mapping_for_section(version: str, section_number: str, section_title: str) -
     sec_prefix = section_number if len(sec_prefix_parts) < 2 else ".".join(sec_prefix_parts[:2])
 
     if sec_prefix in packet_map:
-        return packet_map[sec_prefix], f"Heuristic mapping from section prefix {sec_prefix} to packet module."
+        return (
+            packet_map[sec_prefix],
+            f"Heuristic mapping from section prefix {sec_prefix} to packet module.",
+        )
 
     if section_number.startswith("2.") or section_number.startswith("1."):
         return base_paths, "Heuristic mapping to core packet framing and codec modules."
 
     if section_number.startswith("4."):
-        return ops_paths, "Heuristic mapping to state machine, event loop, and topic behavior modules."
+        return (
+            ops_paths,
+            "Heuristic mapping to state machine, event loop, and topic behavior modules.",
+        )
 
     if section_number.startswith("6."):
         return ws_paths, "Heuristic mapping to websocket and transport modules."
@@ -297,23 +299,6 @@ def is_placeholder_summary(summary: str) -> bool:
     return not summary or summary == "."
 
 
-def requirement_context_text(node: Any, text: str) -> str:
-    row = node.xpath("ancestor::tr[1]")
-    if not row:
-        return text
-
-    row_text = normalize_text(row[0].text_content())
-    if not row_text:
-        return text
-
-    text_without_ids = normalize_text(REQUIREMENT_RE.sub("", text))
-    row_without_ids = normalize_text(REQUIREMENT_RE.sub("", row_text))
-    if is_placeholder_summary(clean_summary(text_without_ids)) or len(row_without_ids) > len(text_without_ids):
-        return row_text
-
-    return text
-
-
 def find_obligation_with_lookback(node: Any, text: str) -> str:
     """Find the obligation keyword for a requirement-bearing node.
 
@@ -333,7 +318,7 @@ def find_obligation_with_lookback(node: Any, text: str) -> str:
     if prev is not None:
         prev_text = normalize_text(prev.text_content())
         current_text = normalize_text(REQUIREMENT_RE.sub("", text))
-        tail_fragment = re.split(r'(?<=[.!?;:])\s+', prev_text)[-1]
+        tail_fragment = re.split(r"(?<=[.!?;:])\s+", prev_text)[-1]
         tail_fragment = normalize_text(REQUIREMENT_RE.sub("", tail_fragment))
         if (
             prev.tag == node.tag
@@ -356,46 +341,9 @@ def find_obligation_with_lookback(node: Any, text: str) -> str:
     return "UNSPECIFIED"
 
 
-def resolve_requirement_section(
-    req_id: str,
-    current_section: Section,
-    sections: list[Section],
-    summary: str,
-) -> Section:
-    if not is_conformance_section(current_section.number):
-        return current_section
-
-    match = re.match(r"MQTT-((?:\d+\.)+\d+)-\d+$", req_id)
-    if not match:
-        return current_section
-
-    prefix = match.group(1)
-    candidates = [
-        section
-        for section in sections
-        if not is_conformance_section(section.number)
-        and (section.number == prefix or section.number.startswith(f"{prefix}."))
-    ]
-    if not candidates:
-        return current_section
-
-    summary_lower = summary.lower()
-    title_matches = [
-        section
-        for section in candidates
-        if section.title and section.title.lower() in summary_lower
-    ]
-    if title_matches:
-        return max(title_matches, key=lambda section: (section.number.count("."), len(section.number)))
-
-    exact = [section for section in candidates if section.number == prefix]
-    if exact:
-        return exact[0]
-
-    return max(candidates, key=lambda section: (section.number.count("."), len(section.number)))
-
-
-def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) -> list[dict[str, Any]]:
+def extract_requirements(
+    doc: Any, sections: list[Section], config: SpecConfig
+) -> list[dict[str, Any]]:
     all_nodes = list(doc.iter())
     node_index = {id(node): i for i, node in enumerate(all_nodes)}
 
@@ -409,10 +357,7 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
 
     anchor_positions = [item[0] for item in anchors]
 
-    for node in all_nodes:
-        if node.tag not in {"p", "li", "td"}:
-            continue
-
+    for node in doc.xpath("//p|//li|//td"):
         text = normalize_text(node.text_content())
         if not text:
             continue
@@ -434,27 +379,23 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
         if not local_anchor:
             local_anchor = section.anchor
 
-        context_text = requirement_context_text(node, text)
-        obligation = find_obligation_with_lookback(node, context_text)
-        summary = clean_summary(context_text)
+        obligation = find_obligation_with_lookback(node, text)
+        summary = clean_summary(text)
 
         for req_id in req_ids:
-            resolved_section = resolve_requirement_section(req_id, section, sections, summary)
             mapping_paths, mapping_reason = mapping_for_section(
-                config.version,
-                resolved_section.number,
-                resolved_section.title,
+                config.version, section.number, section.title
             )
 
             req = requirement_items.get(req_id)
             if req is None:
                 req = {
                     "id": req_id,
-                    "section_number": resolved_section.number,
-                    "section_title": resolved_section.title,
+                    "section_number": section.number,
+                    "section_title": section.title,
                     "obligation": obligation,
                     "summary": summary,
-                    "source_anchor": resolved_section.anchor or local_anchor,
+                    "source_anchor": local_anchor,
                     "occurrences": 1,
                     "candidate_paths": mapping_paths,
                     "mapping_status": "unreviewed",
@@ -467,27 +408,15 @@ def extract_requirements(doc: Any, sections: list[Section], config: SpecConfig) 
                     req["obligation"] == "UNSPECIFIED"
                     and obligation != "UNSPECIFIED"
                     and (
-                        not is_conformance_section(resolved_section.number)
+                        not is_conformance_section(section.number)
                         or is_placeholder_summary(req["summary"])
                     )
                 ):
                     req["obligation"] = obligation
-                if is_placeholder_summary(req["summary"]) and not is_placeholder_summary(summary):
-                    req["summary"] = summary
-                    req["source_anchor"] = resolved_section.anchor or local_anchor
-                    req["section_number"] = resolved_section.number
-                    req["section_title"] = resolved_section.title
-                    req["candidate_paths"] = mapping_paths
-                    req["mapping_reason"] = mapping_reason
-                elif (
-                    is_conformance_section(section.number)
-                    and not is_placeholder_summary(summary)
-                    and summary != req["summary"]
-                    and summary_compare_key(summary) in summary_compare_key(req["summary"])
-                ):
-                    req["summary"] = summary
 
-    requirements = sorted(requirement_items.values(), key=lambda item: requirement_sort_key(item["id"]))
+    requirements = sorted(
+        requirement_items.values(), key=lambda item: requirement_sort_key(item["id"])
+    )
     if len(requirements) < config.min_requirements:
         raise RuntimeError(
             f"Requirement extraction too low for {config.key}: got {len(requirements)} "
@@ -524,7 +453,9 @@ def render_markdown(
         key = (req["section_number"], req["section_title"])
         section_map.setdefault(key, []).append(req)
 
-    ordered_sections = sorted(section_map.keys(), key=lambda key: tuple(int(p) for p in key[0].split(".")))
+    ordered_sections = sorted(
+        section_map.keys(), key=lambda key: tuple(int(p) for p in key[0].split("."))
+    )
 
     lines: list[str] = []
     lines.append(f"# {config.title} Compliance Digest")
@@ -543,7 +474,9 @@ def render_markdown(
     for section_number, section_title in ordered_sections:
         section_slug = slugify(section_number, section_title)
         count = len(section_map[(section_number, section_title)])
-        lines.append(f"- [{section_number} {section_title}](#{section_slug}) ({count} requirements)")
+        lines.append(
+            f"- [{section_number} {section_title}](#{section_slug}) ({count} requirements)"
+        )
 
     lines.append("")
     lines.append("## Compliance Sections")
@@ -554,7 +487,9 @@ def render_markdown(
         lines.append("")
         rows = section_map[(section_number, section_title)]
         lines.append(
-            f"Compliance digest: {len(rows)} requirement IDs extracted and mapped to candidate implementation files."
+            "Compliance digest: "
+            f"{len(rows)} requirement IDs extracted and mapped "
+            "to candidate implementation files."
         )
         lines.append("")
         lines.append("| ID | Obligation | Summary | Anchor | Candidate Code | Mapping Status |")
@@ -566,7 +501,8 @@ def render_markdown(
             candidate = "<br>".join(req["candidate_paths"])
             summary = req["summary"].replace("|", "\\|")
             lines.append(
-                f"| {req['id']} | {req['obligation']} | {summary} | {anchor_link} | {candidate} | {req['mapping_status']} |"
+                f"| {req['id']} | {req['obligation']} | {summary} | "
+                f"{anchor_link} | {candidate} | {req['mapping_status']} |"
             )
 
         lines.append("")
@@ -602,7 +538,9 @@ def load_source(
             payload = json.loads(meta_path.read_text(encoding="utf-8"))
             last_modified = payload.get("source_last_modified", "unknown")
         else:
-            last_modified = dt.datetime.fromtimestamp(source_path.stat().st_mtime, tz=dt.timezone.utc).isoformat()
+            last_modified = dt.datetime.fromtimestamp(
+                source_path.stat().st_mtime, tz=dt.UTC
+            ).isoformat()
         return content, last_modified
 
     content, last_modified = fetch_source(config.url, timeout_seconds)
@@ -610,9 +548,11 @@ def load_source(
     meta_payload = {
         "source_url": config.url,
         "source_last_modified": last_modified,
-        "cached_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "cached_at_utc": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
     }
-    meta_path.write_text(json.dumps(meta_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    meta_path.write_text(
+        json.dumps(meta_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     return content, last_modified
 
 
@@ -653,7 +593,9 @@ def process_spec(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate MQTT compliance docs from official specs")
+    parser = argparse.ArgumentParser(
+        description="Generate MQTT compliance docs from official specs"
+    )
     parser.add_argument(
         "--versions",
         nargs="+",
@@ -691,12 +633,14 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     repo_root = Path(__file__).resolve().parents[2]
 
-    generated_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    generated_at_utc = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
     for version_key in args.versions:
         config = SPEC_CONFIGS[version_key]
         try:
-            process_spec(config, out_dir, args.timeout_seconds, generated_at_utc, args.offline, repo_root)
+            process_spec(
+                config, out_dir, args.timeout_seconds, generated_at_utc, args.offline, repo_root
+            )
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Failed to fetch {config.url}: {exc}") from exc
 
