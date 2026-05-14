@@ -493,7 +493,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Client-side non-zero pkid assignment is enforced in both the codec and state layers for SUBSCRIBE, UNSUBSCRIBE, and PUBLISH QoS > 0. Publish, Subscribe, and Unsubscribe read/write paths reject pkid==0. next_control_pkid assigns non-zero currently-unused pkids for subscribe/unsubscribe requests. next_publish_pkid and next_pkid assign currently-unused publish pkids, with next_pkid returning None instead of recycling an in-use pkid when the publish pkid range is exhausted. outgoing_publish_with_notice validates pkid bounds, preserves outgoing_pub collision replay handling, and rejects pkids already used by outgoing_rel, tracked_subscribe, or tracked_unsubscribe.",
+      "mapping_reason": "Client-side non-zero pkid assignment is enforced in both the codec and state layers for SUBSCRIBE, UNSUBSCRIBE, and PUBLISH QoS > 0. Publish, Subscribe, and Unsubscribe read/write paths reject pkid==0. next_control_pkid assigns non-zero currently-unused pkids for subscribe/unsubscribe requests. next_publish_pkid and next_pkid assign currently-unused publish pkids, with next_pkid returning None instead of recycling an in-use pkid when the publish pkid range is exhausted. outgoing_publish_with_notice validates pkid bounds, preserves outgoing_pub collision replay handling, and rejects pkids already used by outgoing_rel, pending_subscribe, or pending_unsubscribe.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
@@ -527,7 +527,7 @@
             "next_control_pkid",
             "packet_identifier_in_use"
           ],
-          "reason": "Packet id assignment checks packet_identifier_in_use across outgoing_pub, outgoing_rel, tracked_subscribe, and tracked_unsubscribe. next_pkid returns None when no currently-unused publish pkid is available."
+          "reason": "Packet id assignment checks packet_identifier_in_use across outgoing_pub, outgoing_rel, pending_subscribe, and pending_unsubscribe. next_pkid returns None when no currently-unused publish pkid is available."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
@@ -551,7 +551,8 @@
           "subscribe_parsing_rejects_zero_packet_identifier",
           "subscribe_encoding_rejects_zero_packet_identifier",
           "unsubscribe_parsing_rejects_zero_packet_identifier",
-          "unsubscribe_encoding_rejects_zero_packet_identifier"
+          "unsubscribe_encoding_rejects_zero_packet_identifier",
+          "outgoing_publish_rejects_packet_identifier_used_by_untracked_control_flow"
         ],
         "notes": "State tests cover pkid increment, exhausted publish-id allocation, max-inflight behavior, and cross-type conflicts with subscribe, unsubscribe, and pubrel tracking. Packet codec tests cover zero-pkid rejection for PUBLISH QoS > 0, SUBSCRIBE, and UNSUBSCRIBE."
       },
@@ -613,7 +614,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Client-generated acks correctly echo the pkid from the received packet: automatic PUBACK/PUBREC use publish.pkid, automatic PUBREL uses pubrec.pkid, and automatic PUBCOMP uses pubrel.pkid. Manual/outgoing PUBACK and PUBREC are validated against tracked incoming QoS1/QoS2 publish packet identifiers; outgoing PUBREL is validated against packet identifiers for QoS2 publishes that reached PUBREC or are being replayed after reconnect. Explicit outbound PUBLISH packet identifiers are also rejected while reserved for PUBREL replay. Client validates incoming PUBACK/PUBREC/PUBREL/PUBCOMP pkids against tracked packet-id state (returns StateError::Unsolicited on mismatch). Incoming SUBACK and UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. All ack decode paths (PubAck::read, PubRec::read, PubRel::read, PubComp::read, SubAck::read, UnsubAck::read) reject pkid==0 with Error::PacketIdZero. All v5 PUBACK/PUBREC/PUBREL/PUBCOMP encode paths also reject pkid==0.",
+      "mapping_reason": "Client-generated acks correctly echo the pkid from the received packet: automatic PUBACK/PUBREC use publish.pkid, automatic PUBREL uses pubrec.pkid, and automatic PUBCOMP uses pubrel.pkid. Manual/outgoing PUBACK and PUBREC are validated against tracked incoming QoS1/QoS2 publish packet identifiers; outgoing PUBREL is validated against packet identifiers for QoS2 publishes that reached PUBREC or are being replayed after reconnect. Explicit outbound PUBLISH packet identifiers are also rejected while reserved for PUBREL replay. Client validates incoming PUBACK/PUBREC/PUBREL/PUBCOMP pkids against tracked packet-id state (returns StateError::Unsolicited on mismatch). Incoming SUBACK and UNSUBACK pkids are validated against pending_subscribe/pending_unsubscribe. All ack decode paths (PubAck::read, PubRec::read, PubRel::read, PubComp::read, SubAck::read, UnsubAck::read) reject pkid==0 with Error::PacketIdZero. All v5 PUBACK/PUBREC/PUBREL/PUBCOMP encode paths also reject pkid==0.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
@@ -650,7 +651,7 @@
             "handle_incoming_suback",
             "handle_incoming_unsuback"
           ],
-          "reason": "Incoming SUBACK/UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. Returns StateError::Unsolicited if pkid doesn't match any tracked request. Notice is resolved on match."
+          "reason": "Incoming SUBACK/UNSUBACK pkids are validated against pending_subscribe/pending_unsubscribe. Returns StateError::Unsolicited if pkid doesn't match any pending request. Notice is resolved on match."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -781,7 +782,7 @@
             "handle_incoming_suback",
             "handle_incoming_unsuback"
           ],
-          "reason": "Same evidence as MQTT-2.2.1-5. Incoming SUBACK/UNSUBACK pkids validated against tracked_subscribe/tracked_unsubscribe with StateError::Unsolicited."
+          "reason": "Same evidence as MQTT-2.2.1-5. Incoming SUBACK/UNSUBACK pkids validated against pending_subscribe/pending_unsubscribe with StateError::Unsolicited."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -4327,12 +4328,19 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish", "Publish::write", "Publish::read"],
+          "symbols": [
+            "Publish",
+            "Publish::write",
+            "Publish::read"
+          ],
           "reason": "The v5 PUBLISH codec preserves the RETAIN bit on encode/decode, but it contains no client-side logic for broker retained-message storage semantics."
         },
         {
           "path": "rumqttc-v5/src/client.rs",
-          "symbols": ["Client::handle_publish", "Client::handle_publish_bytes"],
+          "symbols": [
+            "Client::handle_publish",
+            "Client::handle_publish_bytes"
+          ],
           "reason": "The public client APIs only copy the caller-provided retain flag into the outbound Publish packet; they do not enforce server-side retained-message behavior."
         }
       ],
@@ -4430,12 +4438,17 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::write", "Publish::read"],
+          "symbols": [
+            "Publish::write",
+            "Publish::read"
+          ],
           "reason": "Encoding writes the topic immediately after the remaining length and before optional pkid/properties/payload. Decoding reads the topic first from the variable header and validates it before processing pkid or properties."
         },
         {
           "path": "mqttbytes-core/src/primitives.rs",
-          "symbols": ["validate_mqtt_string"],
+          "symbols": [
+            "validate_mqtt_string"
+          ],
           "reason": "Shared UTF-8 validation rejects ill-formed UTF-8 and U+0000, which is the concrete enforcement used for the PUBLISH Topic Name bytes."
         }
       ],
@@ -4470,17 +4483,27 @@
       "evidence": [
         {
           "path": "mqttbytes-core/src/topic.rs",
-          "symbols": ["valid_topic"],
+          "symbols": [
+            "valid_topic"
+          ],
           "reason": "The shared helper used by the public client APIs returns false when a topic contains '+' or '#'."
         },
         {
           "path": "rumqttc-v5/src/client.rs",
-          "symbols": ["ValidatedTopic::new", "Client::handle_publish", "Client::handle_publish_bytes"],
+          "symbols": [
+            "ValidatedTopic::new",
+            "Client::handle_publish",
+            "Client::handle_publish_bytes"
+          ],
           "reason": "High-level publish APIs reject wildcard-containing raw topics before enqueueing requests."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::read", "Publish::write", "validate_publish_topic_name"],
+          "symbols": [
+            "Publish::read",
+            "Publish::write",
+            "validate_publish_topic_name"
+          ],
           "reason": "The codec now validates Topic Name bytes with validate_publish_topic_name, which first enforces MQTT UTF-8 string rules and then rejects '+' and '#' on both decode and encode."
         }
       ],
@@ -4515,12 +4538,17 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_packet", "MqttState::handle_incoming_publish"],
+          "symbols": [
+            "MqttState::handle_incoming_packet",
+            "MqttState::handle_incoming_publish"
+          ],
           "reason": "Incoming PUBLISH packets are accepted as broker-delivered messages and processed based on alias/QoS state only; there is no client-side topic-filter matching step."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["Publish::read"],
+          "symbols": [
+            "Publish::read"
+          ],
           "reason": "The codec decodes and validates the Topic Name from the wire, but does not compare it against subscribed filters."
         }
       ],
@@ -4967,17 +4995,29 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_publish", "MqttState::outgoing_puback", "MqttState::outgoing_pubrec"],
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::outgoing_puback",
+            "MqttState::outgoing_pubrec"
+          ],
           "reason": "Default incoming publish handling maps QoS 1 to PUBACK and QoS 2 to PUBREC, while QoS 0 returns no response."
         },
         {
           "path": "rumqttc-v5/src/lib.rs",
-          "symbols": ["AckMode", "MqttOptions::set_ack_mode", "MqttOptions::ack_mode"],
+          "symbols": [
+            "AckMode",
+            "MqttOptions::set_ack_mode",
+            "MqttOptions::ack_mode"
+          ],
           "reason": "The public configuration can disable automatic acknowledgements entirely, shifting the required PUBLISH response to the embedding application."
         },
         {
           "path": "rumqttc-v5/src/client.rs",
-          "symbols": ["prepare_ack", "AsyncClient::manual_ack", "AsyncClient::ack"],
+          "symbols": [
+            "prepare_ack",
+            "AsyncClient::manual_ack",
+            "AsyncClient::ack"
+          ],
           "reason": "Manual-ack APIs expose the correct PUBACK/PUBREC packet generation when applications opt into manual acknowledgement mode."
         }
       ],
@@ -5014,12 +5054,17 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/client.rs",
-          "symbols": ["AsyncClient::subscribe", "AsyncClient::subscribe_with_properties"],
+          "symbols": [
+            "AsyncClient::subscribe",
+            "AsyncClient::subscribe_with_properties"
+          ],
           "reason": "The client only submits subscription requests and requested QoS values; it does not resolve overlap behavior locally."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_publish"],
+          "symbols": [
+            "MqttState::handle_incoming_publish"
+          ],
           "reason": "Incoming PUBLISH handling reacts to the broker-delivered packet's own QoS and properties, not to any local overlap-resolution logic across subscription filters."
         }
       ],
@@ -5047,12 +5092,18 @@
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
-          "symbols": ["PublishProperties::read", "PublishProperties::subscription_identifiers"],
+          "symbols": [
+            "PublishProperties::read",
+            "PublishProperties::subscription_identifiers"
+          ],
           "reason": "The codec parses Subscription Identifier properties from inbound PUBLISH packets and stores them in the decoded packet."
         },
         {
           "path": "rumqttc-v5/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_packet", "MqttState::handle_incoming_publish"],
+          "symbols": [
+            "MqttState::handle_incoming_packet",
+            "MqttState::handle_incoming_publish"
+          ],
           "reason": "State forwards the broker-delivered PUBLISH packet to the application but does not validate that the set of Subscription Identifiers is complete for overlapping subscriptions."
         }
       ],
@@ -5658,7 +5709,7 @@
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "Client-side packet identifier correlation for SUBACK is enforced. Outgoing SUBSCRIBE packets are assigned/tracked by packet identifier, and incoming SUBACK packets are accepted only when their packet identifier matches a tracked subscribe; otherwise the client reports an unsolicited packet identifier error.",
+      "mapping_reason": "Client-side packet identifier correlation for SUBACK is enforced. Every outgoing SUBSCRIBE packet is recorded as pending protocol metadata by packet identifier, while tracked APIs additionally store a completion notice. Incoming SUBACK packets are accepted only when their packet identifier matches a pending client-originated SUBSCRIBE; otherwise the client reports an unsolicited packet identifier error.",
       "compliance_status": "compliant",
       "evidence": [
         {
@@ -5668,7 +5719,7 @@
             "MqttState::handle_incoming_suback",
             "StateError::Unsolicited"
           ],
-          "reason": "outgoing_subscribe assigns a control packet identifier and records it in tracked_subscribe; handle_incoming_suback removes by suback.pkid and returns StateError::Unsolicited when there is no matching tracked SUBSCRIBE."
+          "reason": "outgoing_subscribe assigns a control packet identifier and records it in pending_subscribe with an optional notice; handle_incoming_suback removes by suback.pkid only after validation, and unmatched packet identifiers return StateError::Unsolicited."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -5683,9 +5734,10 @@
         "tests": [
           "rumqttc-v5/src/state.rs::tracked_suback_returns_ack_with_properties_and_preserves_incoming_event",
           "rumqttc-v5/src/state.rs::incoming_suback_with_untracked_pkid_is_unsolicited",
-          "rumqttc-v5/src/mqttbytes/v5/suback.rs::suback_parsing_rejects_zero_packet_identifier"
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::suback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/state.rs::untracked_suback_returns_ack_with_properties_and_preserves_incoming_event"
         ],
-        "notes": "Tests cover positive SUBACK correlation, rejection of unmatched SUBACK packet identifiers, and decode-time rejection of zero packet identifier."
+        "notes": "Tests cover positive SUBACK correlation for tracked and untracked client SUBSCRIBE flows, rejection of unmatched SUBACK packet identifiers, and decode-time rejection of zero packet identifier."
       },
       "follow_up": null
     },
@@ -5717,7 +5769,7 @@
           "symbols": [
             "MqttState::outgoing_subscribe",
             "MqttState::handle_incoming_suback",
-            "MqttState::tracked_subscribe"
+            "MqttState::pending_subscribe"
           ],
           "reason": "State tracks in-flight SUBSCRIBE requests by packet identifier for SUBACK correlation only; it is not a broker subscription store keyed by non-shared Topic Filters."
         }
@@ -5757,7 +5809,7 @@
           "symbols": [
             "MqttState::outgoing_subscribe",
             "MqttState::handle_incoming_suback",
-            "MqttState::tracked_subscribe"
+            "MqttState::pending_subscribe"
           ],
           "reason": "State tracks in-flight SUBSCRIBE requests by packet identifier for SUBACK correlation only; it is not a broker subscription store keyed by non-shared Topic Filters."
         }
@@ -5813,7 +5865,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The server owns the obligation to send one SUBACK Reason Code for each Topic Filter/Subscription Option pair, but the v5 client has a real validation obligation when consuming that SUBACK. The decoder accepts only valid SUBACK Reason Code values, and the state machine rejects a tracked SUBACK whose reason-code count does not match the original SUBSCRIBE filter count.",
+      "mapping_reason": "The server owns the obligation to send one SUBACK Reason Code for each Topic Filter/Subscription Option pair, but the v5 client has a real validation obligation when consuming that SUBACK. The decoder accepts only valid SUBACK Reason Code values, and the state machine rejects a pending SUBACK whose reason-code count does not match the original SUBSCRIBE filter count.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -5830,7 +5882,7 @@
             "MqttState::handle_incoming_suback",
             "ProtocolViolation::SubAckReturnCodeCountMismatch"
           ],
-          "reason": "State records the original SUBSCRIBE filters and rejects SUBACK when return_codes.len() differs from the tracked filter count, leaving the request unresolved."
+          "reason": "State records the original SUBSCRIBE filters and rejects SUBACK when return_codes.len() differs from the pending SUBSCRIBE filter count, leaving the request unresolved."
         }
       ],
       "test_coverage": {
@@ -5857,7 +5909,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Duplicate of MQTT-3.8.4-6. The v5 client validates the client-observable side of this server obligation by rejecting invalid SUBACK Reason Code values during decode and rejecting tracked SUBACK packets whose reason-code count differs from the original SUBSCRIBE filter count.",
+      "mapping_reason": "Duplicate of MQTT-3.8.4-6. The v5 client validates the client-observable side of this server obligation by rejecting invalid SUBACK Reason Code values during decode and rejecting pending SUBACK packets whose reason-code count differs from the original SUBSCRIBE filter count.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -5874,7 +5926,7 @@
             "MqttState::handle_incoming_suback",
             "ProtocolViolation::SubAckReturnCodeCountMismatch"
           ],
-          "reason": "Same evidence as MQTT-3.8.4-6: state compares the incoming SUBACK reason-code count with the tracked SUBSCRIBE filter count before resolving the request."
+          "reason": "Same evidence as MQTT-3.8.4-6: state compares the incoming SUBACK reason-code count with the pending SUBSCRIBE filter count before resolving the request."
         }
       ],
       "test_coverage": {
@@ -5901,7 +5953,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Duplicate of MQTT-3.8.4-6. The v5 client validates the client-observable side of this server obligation by rejecting invalid SUBACK Reason Code values during decode and rejecting tracked SUBACK packets whose reason-code count differs from the original SUBSCRIBE filter count.",
+      "mapping_reason": "Duplicate of MQTT-3.8.4-6. The v5 client validates the client-observable side of this server obligation by rejecting invalid SUBACK Reason Code values during decode and rejecting pending SUBACK packets whose reason-code count differs from the original SUBSCRIBE filter count.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -5918,7 +5970,7 @@
             "MqttState::handle_incoming_suback",
             "ProtocolViolation::SubAckReturnCodeCountMismatch"
           ],
-          "reason": "Same evidence as MQTT-3.8.4-6: state compares the incoming SUBACK reason-code count with the tracked SUBSCRIBE filter count before resolving the request."
+          "reason": "Same evidence as MQTT-3.8.4-6: state compares the incoming SUBACK reason-code count with the pending SUBSCRIBE filter count before resolving the request."
         }
       ],
       "test_coverage": {
@@ -5943,8 +5995,44 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/suback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is a server-side constraint on the SUBACK Reason String property, but the v5 client validates the observable protocol boundary. Incoming packet framing enforces the configured client maximum packet size before SUBACK decoding, and SubAckProperties::read rejects duplicate Reason String properties as a protocol error.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read",
+            "SubAckProperties::read"
+          ],
+          "reason": "SubAckProperties::read accepts at most one Reason String property and returns Error::ProtocolError when a second Reason String is present."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "check"
+          ],
+          "reason": "Packet::read calls check with the configured maximum incoming packet size before decoding the packet body; check rejects packets whose full frame length exceeds that limit with Error::PayloadSizeLimitExceeded."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/codec.rs",
+          "symbols": [
+            "Codec::decode",
+            "Codec::max_incoming_size"
+          ],
+          "reason": "Codec::decode passes max_incoming_size to Packet::read, applying the client's incoming packet-size limit to SUBACK frames before their properties are decoded."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::suback_parsing_rejects_duplicate_reason_string",
+          "rumqttc-v5/src/mqttbytes/v5/codec.rs::tests::incoming_max_packet_size_check_rejects_oversized_suback"
+        ],
+        "notes": "Tests cover decode-time rejection of duplicate Reason String and SUBACK-specific incoming packet-size enforcement before packet-body decoding. The broker-side choice to omit oversized diagnostic properties cannot be proven beyond the client's frame-size limit enforcement."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.9.2-2",
@@ -5973,7 +6061,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The v5 client validates the complete client-observable portion of this SUBACK payload requirement. SUBACK decoding preserves Reason Codes in wire order, and state handling verifies that the reason-code count matches the tracked SUBSCRIBE filter count. The remaining semantic choice of which Reason Code the broker assigns to each filter is server behavior that the client cannot independently prove beyond the ordered wire payload.",
+      "mapping_reason": "The v5 client validates the complete client-observable portion of this SUBACK payload requirement. SUBACK decoding preserves Reason Codes in wire order, and state handling verifies that the reason-code count matches the pending SUBSCRIBE filter count. The remaining semantic choice of which Reason Code the broker assigns to each filter is server behavior that the client cannot independently prove beyond the ordered wire payload.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
@@ -5988,7 +6076,7 @@
             "MqttState::handle_incoming_suback",
             "ProtocolViolation::SubAckReturnCodeCountMismatch"
           ],
-          "reason": "The state machine rejects SUBACK payloads whose reason-code count does not match the tracked SUBSCRIBE filter count."
+          "reason": "The state machine rejects SUBACK payloads whose reason-code count does not match the pending SUBSCRIBE filter count."
         }
       ],
       "test_coverage": {
@@ -6012,8 +6100,30 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/suback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement defines the allowed MQTT 5 SUBACK Subscribe Reason Code values. The v5 client validates the client-observable side by rejecting unknown Subscribe Reason Code values during SUBACK decoding before state handling.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read",
+            "SubscribeReasonCode::try_from",
+            "reason"
+          ],
+          "reason": "SubAck::read converts each payload byte through reason and SubscribeReasonCode::try_from, which accepts only the MQTT 5 Subscribe Reason Code values and returns Error::InvalidSubscribeReasonCode for all other values."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::reason_and_code_round_trip",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::reason_invalid_code_errors"
+        ],
+        "notes": "Tests cover invalid Reason Code rejection and round-tripping of valid SUBACK Subscribe Reason Codes."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.10.1-1",
@@ -6152,8 +6262,44 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement is a server-side constraint on the UNSUBACK Reason String property, but the v5 client validates the observable protocol boundary. Incoming packet framing enforces the configured client maximum packet size before UNSUBACK decoding, and UnsubAckProperties::read rejects duplicate Reason String properties as a protocol error.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": [
+            "UnsubAck::read",
+            "UnsubAckProperties::read"
+          ],
+          "reason": "UnsubAckProperties::read accepts at most one Reason String property and returns Error::ProtocolError when a second Reason String is present."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "check"
+          ],
+          "reason": "Packet::read calls check with the configured maximum incoming packet size before decoding the packet body; check rejects packets whose full frame length exceeds that limit with Error::PayloadSizeLimitExceeded."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/codec.rs",
+          "symbols": [
+            "Codec::decode",
+            "Codec::max_incoming_size"
+          ],
+          "reason": "Codec::decode passes max_incoming_size to Packet::read, applying the client's incoming packet-size limit to UNSUBACK frames before their properties are decoded."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/unsuback.rs::test::unsuback_parsing_rejects_duplicate_reason_string",
+          "rumqttc-v5/src/mqttbytes/v5/codec.rs::tests::incoming_max_packet_size_check_rejects_oversized_unsuback"
+        ],
+        "notes": "Tests cover decode-time rejection of duplicate Reason String and UNSUBACK-specific incoming packet-size enforcement before packet-body decoding. The broker-side choice to omit oversized diagnostic properties cannot be proven beyond the client's frame-size limit enforcement."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.11.2-2",
@@ -6182,7 +6328,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The v5 client validates the complete client-observable portion of this UNSUBACK payload requirement. UNSUBACK decoding preserves Reason Codes in wire order, and state handling verifies that the reason-code count matches the tracked UNSUBSCRIBE filter count. The remaining semantic choice of which Reason Code the broker assigns to each filter is server behavior that the client cannot independently prove beyond the ordered wire payload.",
+      "mapping_reason": "The v5 client validates the complete client-observable portion of this UNSUBACK payload requirement. UNSUBACK decoding preserves Reason Codes in wire order, and state handling verifies that the reason-code count matches the pending UNSUBSCRIBE filter count. The remaining semantic choice of which Reason Code the broker assigns to each filter is server behavior that the client cannot independently prove beyond the ordered wire payload.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
@@ -6197,7 +6343,7 @@
             "MqttState::handle_incoming_unsuback",
             "ProtocolViolation::UnsubAckReasonCodeCountMismatch"
           ],
-          "reason": "The state machine rejects UNSUBACK payloads whose reason-code count does not match the tracked UNSUBSCRIBE filter count."
+          "reason": "The state machine rejects UNSUBACK payloads whose reason-code count does not match the pending UNSUBSCRIBE filter count."
         }
       ],
       "test_coverage": {
@@ -6223,7 +6369,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The server owns the obligation to choose valid UNSUBACK Reason Codes for each Topic Filter, but the v5 client validates the client-observable wire behavior. The decoder accepts only MQTT 5 Unsubscribe Reason Code values, and the state machine rejects a tracked UNSUBACK whose reason-code count does not match the original UNSUBSCRIBE filter count.",
+      "mapping_reason": "The server owns the obligation to choose valid UNSUBACK Reason Codes for each Topic Filter, but the v5 client validates the client-observable wire behavior. The decoder accepts only MQTT 5 Unsubscribe Reason Code values, and the state machine rejects a pending UNSUBACK whose reason-code count does not match the original UNSUBSCRIBE filter count.",
       "evidence": [
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
@@ -6240,7 +6386,7 @@
             "MqttState::handle_incoming_unsuback",
             "ProtocolViolation::UnsubAckReasonCodeCountMismatch"
           ],
-          "reason": "State records the original UNSUBSCRIBE filters and rejects UNSUBACK when reasons.len() differs from the tracked filter count, leaving the request unresolved."
+          "reason": "State records the original UNSUBSCRIBE filters and rejects UNSUBACK when reasons.len() differs from the pending UNSUBSCRIBE filter count, leaving the request unresolved."
         }
       ],
       "test_coverage": {

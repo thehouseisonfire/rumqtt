@@ -90,4 +90,54 @@ mod tests {
             _ => unreachable!(),
         }
     }
+
+    #[test]
+    fn incoming_max_packet_size_check_rejects_oversized_suback() {
+        let mut buf = BytesMut::from(
+            &[
+                0x90, 0x0C, // SUBACK, remaining length 12
+                0x00, 0x01, // pkid
+                0x08, // properties length
+                0x1F, 0x00, 0x05, b'h', b'e', b'l', b'l', b'o', // Reason String
+                0x00, // Success QoS0
+            ][..],
+        );
+        let mut codec = Codec {
+            max_incoming_size: Some(10),
+            max_outgoing_size: Some(200),
+        };
+
+        match codec.decode(&mut buf) {
+            Err(Error::PayloadSizeLimitExceeded {
+                pkt_size: 14,
+                max: 10,
+            }) => {}
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn incoming_max_packet_size_check_rejects_oversized_unsuback() {
+        let mut buf = BytesMut::from(
+            &[
+                0xB0, 0x0C, // UNSUBACK, remaining length 12
+                0x00, 0x01, // pkid
+                0x08, // properties length
+                0x1F, 0x00, 0x05, b'h', b'e', b'l', b'l', b'o', // Reason String
+                0x00, // Success
+            ][..],
+        );
+        let mut codec = Codec {
+            max_incoming_size: Some(10),
+            max_outgoing_size: Some(200),
+        };
+
+        match codec.decode(&mut buf) {
+            Err(Error::PayloadSizeLimitExceeded {
+                pkt_size: 14,
+                max: 10,
+            }) => {}
+            _ => unreachable!(),
+        }
+    }
 }
