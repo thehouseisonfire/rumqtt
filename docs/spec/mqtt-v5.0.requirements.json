@@ -5626,8 +5626,25 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "The requirement text is server-side: the server MUST send SUBACK in response to SUBSCRIBE. The v5 client can send SUBSCRIBE and process SUBACKs, but it cannot itself enforce the server MUST-to-respond behavior. This duplicated source sentence is split with MQTT-3.8.4-2, which captures the client-relevant packet-identifier correlation behavior.",
+      "compliance_status": "not_applicable",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback"
+          ],
+          "reason": "The client issues SUBSCRIBE and tracks pending SUBACK correlation, but whether a server replies with SUBACK is a server obligation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "This normative MUST targets server response behavior, not a client-enforceable action."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-2",
@@ -5640,8 +5657,37 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "Client-side packet identifier correlation for SUBACK is enforced. Outgoing SUBSCRIBE packets are assigned/tracked by packet identifier, and incoming SUBACK packets are accepted only when their packet identifier matches a tracked subscribe; otherwise the client reports an unsolicited packet identifier error.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback",
+            "StateError::Unsolicited"
+          ],
+          "reason": "outgoing_subscribe assigns a control packet identifier and records it in tracked_subscribe; handle_incoming_suback removes by suback.pkid and returns StateError::Unsolicited when there is no matching tracked SUBSCRIBE."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read"
+          ],
+          "reason": "SUBACK decoding rejects packet identifier 0 with Error::PacketIdZero, enforcing valid packet identifier semantics before correlation."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/state.rs::tracked_suback_returns_ack_with_properties_and_preserves_incoming_event",
+          "rumqttc-v5/src/state.rs::incoming_suback_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::suback_parsing_rejects_zero_packet_identifier"
+        ],
+        "notes": "Tests cover positive SUBACK correlation, rejection of unmatched SUBACK packet identifiers, and decode-time rejection of zero packet identifier."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-3",
@@ -5654,8 +5700,34 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is broker-side subscription state management: replacing an existing non-shared subscription when the same Topic Filter is re-subscribed in the current session. rumqttc-v5 is a client implementation and does not implement broker subscription-table replacement semantics.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::new_many",
+            "Subscribe::write"
+          ],
+          "reason": "Client code constructs and serializes outbound SUBSCRIBE packets, including topic filters and options, but does not manage server-side subscription replacement."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback",
+            "MqttState::tracked_subscribe"
+          ],
+          "reason": "State tracks in-flight SUBSCRIBE requests by packet identifier for SUBACK correlation only; it is not a broker subscription store keyed by non-shared Topic Filters."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Client tests cover SUBSCRIBE/SUBACK send/receive behavior, but cannot validate broker-internal replacement of existing non-shared subscriptions."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-4",
@@ -5668,8 +5740,34 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "Duplicate of MQTT-3.8.4-3: this requirement is broker-side subscription state management for replacing an existing non-shared subscription when the same Topic Filter is re-subscribed in the current session. rumqttc-v5 is a client implementation and does not implement broker subscription-table replacement semantics.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::new_many",
+            "Subscribe::write"
+          ],
+          "reason": "Client code constructs and serializes outbound SUBSCRIBE packets, including topic filters and options, but does not manage server-side subscription replacement."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback",
+            "MqttState::tracked_subscribe"
+          ],
+          "reason": "State tracks in-flight SUBSCRIBE requests by packet identifier for SUBACK correlation only; it is not a broker subscription store keyed by non-shared Topic Filters."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Client tests cover SUBSCRIBE/SUBACK send/receive behavior, but cannot validate broker-internal replacement of existing non-shared subscriptions."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-5",
@@ -5682,8 +5780,25 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is broker-side processing semantics: a server receiving one multi-filter SUBSCRIBE must process it as if it received multiple SUBSCRIBE packets while combining the responses into one SUBACK. rumqttc-v5 is a client implementation and does not implement broker subscription processing policy.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::new_many",
+            "Subscribe::write"
+          ],
+          "reason": "Client code can construct and serialize a SUBSCRIBE containing multiple Topic Filters, but it does not implement server-side per-filter subscription processing."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "The normative MUST targets broker processing behavior and cannot be proven by client-side tests. Client-side SUBACK reason-code count validation is tracked under MQTT-3.8.4-6 through MQTT-3.8.4-8 and MQTT-3.9.3-1."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-6",
@@ -5696,8 +5811,38 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The server owns the obligation to send one SUBACK Reason Code for each Topic Filter/Subscription Option pair, but the v5 client has a real validation obligation when consuming that SUBACK. The decoder accepts only valid SUBACK Reason Code values, and the state machine rejects a tracked SUBACK whose reason-code count does not match the original SUBSCRIBE filter count.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read",
+            "reason"
+          ],
+          "reason": "SUBACK decoding reads each Reason Code and rejects values outside the MQTT 5 Subscribe Reason Code set."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback",
+            "ProtocolViolation::SubAckReturnCodeCountMismatch"
+          ],
+          "reason": "State records the original SUBSCRIBE filters and rejects SUBACK when return_codes.len() differs from the tracked filter count, leaving the request unresolved."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::suback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/state.rs::test::incoming_suback_with_mismatched_return_code_count_is_protocol_violation"
+        ],
+        "notes": "Coverage includes invalid Reason Code rejection, invalid packet identifier rejection, and state-level rejection when the SUBACK reason-code count does not match the tracked SUBSCRIBE filter count."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-7",
@@ -5710,8 +5855,38 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.8.4-6. The v5 client validates the client-observable side of this server obligation by rejecting invalid SUBACK Reason Code values during decode and rejecting tracked SUBACK packets whose reason-code count differs from the original SUBSCRIBE filter count.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read",
+            "reason"
+          ],
+          "reason": "Same evidence as MQTT-3.8.4-6: SUBACK decoding reads each Reason Code and rejects values outside the MQTT 5 Subscribe Reason Code set."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback",
+            "ProtocolViolation::SubAckReturnCodeCountMismatch"
+          ],
+          "reason": "Same evidence as MQTT-3.8.4-6: state compares the incoming SUBACK reason-code count with the tracked SUBSCRIBE filter count before resolving the request."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::suback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/state.rs::test::incoming_suback_with_mismatched_return_code_count_is_protocol_violation"
+        ],
+        "notes": "Same as MQTT-3.8.4-6."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.8.4-8",
@@ -5724,8 +5899,38 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.8 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "Duplicate of MQTT-3.8.4-6. The v5 client validates the client-observable side of this server obligation by rejecting invalid SUBACK Reason Code values during decode and rejecting tracked SUBACK packets whose reason-code count differs from the original SUBSCRIBE filter count.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read",
+            "reason"
+          ],
+          "reason": "Same evidence as MQTT-3.8.4-6: SUBACK decoding reads each Reason Code and rejects values outside the MQTT 5 Subscribe Reason Code set."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback",
+            "ProtocolViolation::SubAckReturnCodeCountMismatch"
+          ],
+          "reason": "Same evidence as MQTT-3.8.4-6: state compares the incoming SUBACK reason-code count with the tracked SUBSCRIBE filter count before resolving the request."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::suback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/state.rs::test::incoming_suback_with_mismatched_return_code_count_is_protocol_violation"
+        ],
+        "notes": "Same as MQTT-3.8.4-6."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.9.2-1",
@@ -5766,8 +5971,35 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/suback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The v5 client validates the complete client-observable portion of this SUBACK payload requirement. SUBACK decoding preserves Reason Codes in wire order, and state handling verifies that the reason-code count matches the tracked SUBSCRIBE filter count. The remaining semantic choice of which Reason Code the broker assigns to each filter is server behavior that the client cannot independently prove beyond the ordered wire payload.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read"
+          ],
+          "reason": "SUBACK decoding preserves Reason Codes in wire order in SubAck::return_codes."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_suback",
+            "ProtocolViolation::SubAckReturnCodeCountMismatch"
+          ],
+          "reason": "The state machine rejects SUBACK payloads whose reason-code count does not match the tracked SUBSCRIBE filter count."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/state.rs::test::incoming_suback_with_mismatched_return_code_count_is_protocol_violation"
+        ],
+        "notes": "Tests cover Reason Code decoding and count mismatch rejection. No further client-side enforcement is realistic for the broker's internal semantic assignment beyond the ordered wire payload."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.9.3-2",
@@ -5948,8 +6180,35 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The v5 client validates the complete client-observable portion of this UNSUBACK payload requirement. UNSUBACK decoding preserves Reason Codes in wire order, and state handling verifies that the reason-code count matches the tracked UNSUBSCRIBE filter count. The remaining semantic choice of which Reason Code the broker assigns to each filter is server behavior that the client cannot independently prove beyond the ordered wire payload.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": [
+            "UnsubAck::read"
+          ],
+          "reason": "UNSUBACK decoding preserves Reason Codes in wire order in UnsubAck::reasons."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_unsuback",
+            "ProtocolViolation::UnsubAckReasonCodeCountMismatch"
+          ],
+          "reason": "The state machine rejects UNSUBACK payloads whose reason-code count does not match the tracked UNSUBSCRIBE filter count."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/unsuback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/state.rs::test::incoming_unsuback_with_mismatched_reason_code_count_is_protocol_violation"
+        ],
+        "notes": "Tests cover Reason Code decoding and count mismatch rejection. No further client-side enforcement is realistic for the broker's internal semantic assignment beyond the ordered wire payload."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.11.3-2",
@@ -5962,8 +6221,38 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.11 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The server owns the obligation to choose valid UNSUBACK Reason Codes for each Topic Filter, but the v5 client validates the client-observable wire behavior. The decoder accepts only MQTT 5 Unsubscribe Reason Code values, and the state machine rejects a tracked UNSUBACK whose reason-code count does not match the original UNSUBSCRIBE filter count.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": [
+            "UnsubAck::read",
+            "reason"
+          ],
+          "reason": "UNSUBACK decoding reads each Reason Code and rejects values outside the MQTT 5 Unsubscribe Reason Code set."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_unsubscribe",
+            "MqttState::handle_incoming_unsuback",
+            "ProtocolViolation::UnsubAckReasonCodeCountMismatch"
+          ],
+          "reason": "State records the original UNSUBSCRIBE filters and rejects UNSUBACK when reasons.len() differs from the tracked filter count, leaving the request unresolved."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/unsuback.rs::test::read_errors_on_invalid_first_reason_code",
+          "rumqttc-v5/src/mqttbytes/v5/unsuback.rs::test::unsuback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/state.rs::test::incoming_unsuback_with_mismatched_reason_code_count_is_protocol_violation"
+        ],
+        "notes": "Coverage includes invalid Reason Code rejection, invalid packet identifier rejection, and state-level rejection when the UNSUBACK reason-code count does not match the tracked UNSUBSCRIBE filter count."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.12.4-1",

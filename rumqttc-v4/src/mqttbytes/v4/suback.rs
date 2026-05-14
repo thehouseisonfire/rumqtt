@@ -137,4 +137,19 @@ mod test {
 
         assert!(matches!(packet, Err(Error::PacketIdZero)));
     }
+
+    #[test]
+    fn suback_parsing_rejects_invalid_return_code() {
+        let stream = &[
+            0x90, 3, // packet type, flags and remaining len
+            0x00, 0x01, // variable header. pkid = 1
+            0x03, // payload. invalid return code
+        ];
+        let mut stream = BytesMut::from(&stream[..]);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let ack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = SubAck::read(fixed_header, ack_bytes);
+
+        assert!(matches!(packet, Err(Error::InvalidSubscribeReasonCode(3))));
+    }
 }
