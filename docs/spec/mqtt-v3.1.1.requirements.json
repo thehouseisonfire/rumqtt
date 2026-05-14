@@ -290,7 +290,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Non-zero pkid: Publish::write() and Publish::read() validate pkid!=0 for QoS>0. Subscribe::write()/read() and Unsubscribe::write()/read() validate pkid!=0 returning Error::PacketIdZero. Client-side assignment uses next_pkid() for QoS>0 PUBLISH and next_control_pkid() for SUBSCRIBE/UNSUBSCRIBE; both search for an unused pkid via packet_identifier_in_use(), which checks outgoing_pub, outgoing_rel, tracked_subscribe, and tracked_unsubscribe.",
+      "mapping_reason": "Non-zero pkid: Publish::write() and Publish::read() validate pkid!=0 for QoS>0. Subscribe::write()/read() and Unsubscribe::write()/read() validate pkid!=0 returning Error::PacketIdZero. Client-side assignment uses next_pkid() for QoS>0 PUBLISH and next_control_pkid() for SUBSCRIBE/UNSUBSCRIBE; both search for an unused pkid via packet_identifier_in_use(), which checks outgoing_pub, outgoing_rel, pending_subscribe, and pending_unsubscribe.",
       "evidence": [
         {
           "path": "rumqttc-v4/src/state.rs",
@@ -336,7 +336,8 @@
           "subscribe_parsing_rejects_zero_packet_identifier",
           "subscribe_encoding_rejects_zero_packet_identifier",
           "unsubscribe_parsing_rejects_zero_packet_identifier",
-          "unsubscribe_encoding_rejects_zero_packet_identifier"
+          "unsubscribe_encoding_rejects_zero_packet_identifier",
+          "outgoing_publish_rejects_packet_identifier_used_by_untracked_control_flow"
         ],
         "notes": "Tests cover state assignment for non-zero/currently-unused packet identifiers and packet codec zero-pkid rejection for SUBSCRIBE, UNSUBSCRIBE, and QoS>0 PUBLISH boundaries."
       },
@@ -357,7 +358,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Non-zero pkid is fully enforced at encode and decode levels for all three packet types. Uniqueness is enforced in the pkid-assignment and state mutation paths: next_publish_pkid and next_control_pkid both check packet_identifier_in_use, next_pkid returns None when no currently-unused publish pkid is available, and outgoing_publish_with_notice rejects pkids already used by outgoing_rel, tracked_subscribe, or tracked_unsubscribe while preserving existing outgoing_pub collision replay handling.",
+      "mapping_reason": "Non-zero pkid is fully enforced at encode and decode levels for all three packet types. Uniqueness is enforced in the pkid-assignment and state mutation paths: next_publish_pkid and next_control_pkid both check packet_identifier_in_use, next_pkid returns None when no currently-unused publish pkid is available, and outgoing_publish_with_notice rejects pkids already used by outgoing_rel, pending_subscribe, or pending_unsubscribe while preserving existing outgoing_pub collision replay handling.",
       "evidence": [
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
@@ -391,14 +392,14 @@
             "next_control_pkid",
             "packet_identifier_in_use"
           ],
-          "reason": "next_publish_pkid and next_control_pkid both check packet_identifier_in_use, which covers outgoing_pub, outgoing_rel, tracked_subscribe, and tracked_unsubscribe. next_pkid delegates to next_publish_pkid and returns None instead of recycling an in-use pkid when the publish pkid range is exhausted."
+          "reason": "next_publish_pkid and next_control_pkid both check packet_identifier_in_use, which covers outgoing_pub, outgoing_rel, pending_subscribe, and pending_unsubscribe. next_pkid delegates to next_publish_pkid and returns None instead of recycling an in-use pkid when the publish pkid range is exhausted."
         },
         {
           "path": "rumqttc-v4/src/state.rs",
           "symbols": [
             "outgoing_publish_with_notice"
           ],
-          "reason": "outgoing_publish_with_notice validates the pkid bound, preserves outgoing_pub collision replay handling, and rejects pkids already used by outgoing_rel, tracked_subscribe, or tracked_unsubscribe before storing a new outgoing publish."
+          "reason": "outgoing_publish_with_notice validates the pkid bound, preserves outgoing_pub collision replay handling, and rejects pkids already used by outgoing_rel, pending_subscribe, or pending_unsubscribe before storing a new outgoing publish."
         }
       ],
       "test_coverage": {
@@ -412,7 +413,8 @@
           "subscribe_encoding_rejects_zero_packet_identifier",
           "unsubscribe_parsing_rejects_zero_packet_identifier",
           "unsubscribe_encoding_rejects_zero_packet_identifier",
-          "can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit"
+          "can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit",
+          "outgoing_publish_rejects_packet_identifier_used_by_untracked_control_flow"
         ],
         "notes": "Non-zero pkid rejection is tested for all three packet types. Pkid increment, publish-id exhaustion, and cross-type conflicts with subscribe, unsubscribe, and pubrel tracking are covered."
       },
@@ -618,7 +620,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Client-generated acknowledgements named by this requirement correctly echo the related packet identifier: automatic PUBACK/PUBREC use publish.pkid and automatic PUBREL uses pubrec.pkid. Manual/outgoing PUBACK and PUBREC are validated against tracked incoming QoS1/QoS2 publish packet identifiers; outgoing PUBREL is validated against packet identifiers for QoS2 publishes that reached PUBREC or are being replayed after reconnect. Explicit outbound PUBLISH packet identifiers are also rejected while reserved for PUBREL replay. Client validates incoming PUBACK/PUBREC/PUBREL pkids against tracked packet-id state (returns StateError::Unsolicited on mismatch). Incoming SUBACK and UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. SubAck::read and UnsubAck::read reject pkid==0 with Error::PacketIdZero, consistent with the other v3 acknowledgement packet decoders.",
+      "mapping_reason": "Client-generated acknowledgements named by this requirement correctly echo the related packet identifier: automatic PUBACK/PUBREC use publish.pkid and automatic PUBREL uses pubrec.pkid. Manual/outgoing PUBACK and PUBREC are validated against tracked incoming QoS1/QoS2 publish packet identifiers; outgoing PUBREL is validated against packet identifiers for QoS2 publishes that reached PUBREC or are being replayed after reconnect. Explicit outbound PUBLISH packet identifiers are also rejected while reserved for PUBREL replay. Client validates incoming PUBACK/PUBREC/PUBREL pkids against tracked packet-id state (returns StateError::Unsolicited on mismatch). Incoming SUBACK and UNSUBACK pkids are validated against pending_subscribe/pending_unsubscribe. SubAck::read and UnsubAck::read reject pkid==0 with Error::PacketIdZero, consistent with the other v3 acknowledgement packet decoders.",
       "evidence": [
         {
           "path": "rumqttc-v4/src/state.rs",
@@ -653,7 +655,7 @@
             "handle_incoming_suback",
             "handle_incoming_unsuback"
           ],
-          "reason": "Incoming SUBACK/UNSUBACK pkids are validated against tracked_subscribe/tracked_unsubscribe. Returns StateError::Unsolicited if pkid doesn't match any tracked request. Notice is resolved on match."
+          "reason": "Incoming SUBACK/UNSUBACK pkids are validated against pending_subscribe/pending_unsubscribe. Returns StateError::Unsolicited if pkid doesn't match any pending request. Notice is resolved on match."
         },
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/suback.rs",
@@ -742,7 +744,7 @@
             "handle_incoming_suback",
             "handle_incoming_unsuback"
           ],
-          "reason": "Same evidence as MQTT-2.3.1-6. Incoming SUBACK/UNSUBACK pkids validated against tracked_subscribe/tracked_unsubscribe with StateError::Unsolicited."
+          "reason": "Same evidence as MQTT-2.3.1-6. Incoming SUBACK/UNSUBACK pkids validated against pending_subscribe/pending_unsubscribe with StateError::Unsolicited."
         },
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/suback.rs",
@@ -3304,12 +3306,18 @@
       "evidence": [
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
-          "symbols": ["Publish", "Publish::write", "Publish::read"],
+          "symbols": [
+            "Publish",
+            "Publish::write",
+            "Publish::read"
+          ],
           "reason": "The v4 PUBLISH codec preserves the RETAIN bit on encode/decode, but there is no client-side logic here for broker retained-message storage semantics."
         },
         {
           "path": "rumqttc-v4/src/client.rs",
-          "symbols": ["Client::handle_publish"],
+          "symbols": [
+            "Client::handle_publish"
+          ],
           "reason": "The client API only forwards the caller-provided retain flag into the outbound Publish packet; it does not enforce server-side retained-message behavior."
         }
       ],
@@ -3340,7 +3348,11 @@
       "evidence": [
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
-          "symbols": ["Publish::write", "Publish::read", "validate_publish_topic_name"],
+          "symbols": [
+            "Publish::write",
+            "Publish::read",
+            "validate_publish_topic_name"
+          ],
           "reason": "Encoding writes the topic immediately after the remaining length and before any optional pkid. Decoding reads the topic first from the variable header, then enforces MQTT topic-name validity including UTF-8 and U+0000 rejection."
         }
       ],
@@ -3377,12 +3389,20 @@
       "evidence": [
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
-          "symbols": ["Publish::write", "Publish::read", "validate_publish_topic_name"],
+          "symbols": [
+            "Publish::write",
+            "Publish::read",
+            "validate_publish_topic_name"
+          ],
           "reason": "validate_publish_topic_name returns IncorrectPacketFormat if the Topic Name contains '+' or '#', and both Publish::read and Publish::write call it."
         },
         {
           "path": "rumqttc-v4/src/client.rs",
-          "symbols": ["valid_publish_topic", "Client::handle_publish", "ValidatedTopic::new"],
+          "symbols": [
+            "valid_publish_topic",
+            "Client::handle_publish",
+            "ValidatedTopic::new"
+          ],
           "reason": "High-level publish APIs reject wildcard-containing topics before enqueueing outbound requests, reinforcing the packet-level check."
         }
       ],
@@ -3416,12 +3436,17 @@
       "evidence": [
         {
           "path": "rumqttc-v4/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_packet", "MqttState::handle_incoming_publish"],
+          "symbols": [
+            "MqttState::handle_incoming_packet",
+            "MqttState::handle_incoming_publish"
+          ],
           "reason": "Incoming PUBLISH packets are accepted as broker-delivered messages and forwarded/acked based on QoS only; there is no client-side subscription-filter matching step because the matching obligation belongs to the server."
         },
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
-          "symbols": ["Publish::read"],
+          "symbols": [
+            "Publish::read"
+          ],
           "reason": "The codec decodes the Topic Name from the wire and validates its format, but does not compare it against locally tracked subscription filters."
         }
       ],
@@ -3449,17 +3474,29 @@
       "evidence": [
         {
           "path": "rumqttc-v4/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_publish", "MqttState::outgoing_puback", "MqttState::outgoing_pubrec"],
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::outgoing_puback",
+            "MqttState::outgoing_pubrec"
+          ],
           "reason": "Default incoming publish handling maps QoS 1 to PUBACK and QoS 2 to PUBREC, while QoS 0 returns no response."
         },
         {
           "path": "rumqttc-v4/src/lib.rs",
-          "symbols": ["AckMode", "MqttOptions::set_ack_mode", "MqttOptions::ack_mode"],
+          "symbols": [
+            "AckMode",
+            "MqttOptions::set_ack_mode",
+            "MqttOptions::ack_mode"
+          ],
           "reason": "The public configuration allows disabling automatic acknowledgements entirely, shifting the required PUBLISH response to the embedding application."
         },
         {
           "path": "rumqttc-v4/src/client.rs",
-          "symbols": ["prepare_ack", "AsyncClient::manual_ack", "AsyncClient::ack"],
+          "symbols": [
+            "prepare_ack",
+            "AsyncClient::manual_ack",
+            "AsyncClient::ack"
+          ],
           "reason": "Manual-ack APIs expose the correct PUBACK/PUBREC packet generation when applications opt into manual acknowledgement mode."
         }
       ],
@@ -3496,12 +3533,18 @@
       "evidence": [
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/subscribe.rs",
-          "symbols": ["Subscribe", "Subscribe::write", "Subscribe::read"],
+          "symbols": [
+            "Subscribe",
+            "Subscribe::write",
+            "Subscribe::read"
+          ],
           "reason": "The client only serializes/deserializes subscription requests and requested QoS values; it does not evaluate overlapping subscriptions locally."
         },
         {
           "path": "rumqttc-v4/src/state.rs",
-          "symbols": ["MqttState::handle_incoming_publish"],
+          "symbols": [
+            "MqttState::handle_incoming_publish"
+          ],
           "reason": "Incoming PUBLISH handling reacts to the broker-delivered packet's own QoS and packet identifier, not to any local overlap-resolution logic across subscription filters."
         }
       ],
@@ -3820,7 +3863,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "Client-side correlation of SUBACK to SUBSCRIBE packet identifiers is enforced in v4 state handling. Outgoing SUBSCRIBE packets are tracked by packet identifier, and incoming SUBACK packets are accepted only when their packet identifier matches a tracked outstanding subscribe; otherwise they are rejected as unsolicited.",
+      "mapping_reason": "Client-side correlation of SUBACK to SUBSCRIBE packet identifiers is enforced in v4 state handling. Every outgoing SUBSCRIBE packet is recorded as pending protocol metadata by packet identifier, while tracked APIs additionally store a completion notice. Incoming SUBACK packets are accepted only when their packet identifier matches a pending client-originated SUBSCRIBE; otherwise they are rejected as unsolicited.",
       "evidence": [
         {
           "path": "rumqttc-v4/src/state.rs",
@@ -3829,7 +3872,7 @@
             "MqttState::handle_incoming_suback",
             "StateError::Unsolicited"
           ],
-          "reason": "outgoing_subscribe assigns/records subscribe.pkid in tracked_subscribe, and handle_incoming_suback removes by suback.pkid; unmatched packet identifiers return StateError::Unsolicited."
+          "reason": "outgoing_subscribe assigns subscribe.pkid and records the request in pending_subscribe with an optional notice; handle_incoming_suback removes by suback.pkid only after validation, and unmatched packet identifiers return StateError::Unsolicited."
         },
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/suback.rs",
@@ -3844,9 +3887,10 @@
         "tests": [
           "tracked_suback_returns_ack_and_preserves_incoming_event",
           "incoming_suback_with_untracked_pkid_is_unsolicited",
-          "suback_parsing_rejects_zero_packet_identifier"
+          "suback_parsing_rejects_zero_packet_identifier",
+          "untracked_suback_returns_ack_and_preserves_incoming_event"
         ],
-        "notes": "Tests cover successful SUBACK correlation to a tracked SUBSCRIBE, rejection of untracked SUBACK identifiers, and decoder rejection of invalid zero packet identifiers."
+        "notes": "Tests cover successful SUBACK correlation for tracked and untracked client SUBSCRIBE flows, rejection of unknown SUBACK identifiers, and decoder rejection of invalid zero packet identifiers."
       },
       "follow_up": null
     },
@@ -3876,7 +3920,7 @@
         {
           "path": "rumqttc-v4/src/state.rs",
           "symbols": [
-            "MqttState::tracked_subscribe",
+            "MqttState::pending_subscribe",
             "MqttState::outgoing_subscribe",
             "MqttState::handle_incoming_suback"
           ],
@@ -3948,7 +3992,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The server owns the obligation to send one SUBACK return code for each Topic Filter/QoS pair, but the v4 client has a real validation obligation when consuming that SUBACK. The decoder accepts only valid v3.1.1 SUBACK return-code values, and the state machine rejects a tracked SUBACK whose return-code count does not match the original SUBSCRIBE filter count.",
+      "mapping_reason": "The server owns the obligation to send one SUBACK return code for each Topic Filter/QoS pair, but the v4 client has a real validation obligation when consuming that SUBACK. The decoder accepts only valid v3.1.1 SUBACK return-code values, and the state machine rejects a pending SUBACK whose return-code count does not match the original SUBSCRIBE filter count.",
       "evidence": [
         {
           "path": "rumqttc-v4/src/mqttbytes/v4/suback.rs",
@@ -3965,7 +4009,7 @@
             "MqttState::handle_incoming_suback",
             "ProtocolViolation::SubAckReturnCodeCountMismatch"
           ],
-          "reason": "State records the original SUBSCRIBE filters and rejects SUBACK when return_codes.len() differs from the tracked filter count, leaving the request unresolved."
+          "reason": "State records the original SUBSCRIBE filters and rejects SUBACK when return_codes.len() differs from the pending SUBSCRIBE filter count, leaving the request unresolved."
         }
       ],
       "test_coverage": {
@@ -4008,7 +4052,7 @@
             "MqttState::handle_incoming_suback",
             "ProtocolViolation::SubAckReturnCodeCountMismatch"
           ],
-          "reason": "The state machine rejects SUBACK payloads whose return-code count does not match the tracked SUBSCRIBE filter count."
+          "reason": "The state machine rejects SUBACK payloads whose return-code count does not match the pending SUBSCRIBE filter count."
         }
       ],
       "test_coverage": {
@@ -4032,8 +4076,28 @@
       "candidate_paths": [
         "rumqttc-v4/src/mqttbytes/v4/suback.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.9 to packet module."
+      "mapping_status": "reviewed",
+      "mapping_reason": "This requirement defines the allowed MQTT 3.1.1 SUBACK return-code values. The v4 client validates the client-observable side by rejecting reserved return-code values during SUBACK decoding before state handling.",
+      "compliance_status": "compliant",
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/suback.rs",
+          "symbols": [
+            "SubAck::read",
+            "SubscribeReasonCode::try_from"
+          ],
+          "reason": "SubAck::read converts each payload byte with SubscribeReasonCode::try_from, which accepts only 0x00, 0x01, 0x02, and 0x80 and returns Error::InvalidSubscribeReasonCode for all other values."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/suback.rs::test::suback_parsing_rejects_invalid_return_code",
+          "rumqttc-v4/src/mqttbytes/v4/suback.rs::test::suback_parsing_works"
+        ],
+        "notes": "Tests cover rejection of a reserved return code and successful parsing of valid return-code values."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.10.1-1",

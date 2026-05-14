@@ -141,6 +141,9 @@ impl SubAckProperties {
 
             match property(prop)? {
                 PropertyType::ReasonString => {
+                    if reason_string.is_some() {
+                        return Err(Error::ProtocolError);
+                    }
                     let reason = read_mqtt_string(bytes)?;
                     cursor += 2 + reason.len();
                     reason_string = Some(reason);
@@ -330,6 +333,24 @@ mod test {
         assert!(matches!(
             SubAck::read(fixed_header, packet),
             Err(Error::InvalidSubscribeReasonCode(0xFF))
+        ));
+    }
+
+    #[test]
+    fn suback_parsing_rejects_duplicate_reason_string() {
+        let packet = Bytes::from_static(&[
+            0x90, 0x16, // packet type + remaining length
+            0x00, 0x0A, // pkid
+            0x12, // properties length
+            0x1F, 0x00, 0x05, b'f', b'i', b'r', b's', b't', // reason string
+            0x1F, 0x00, 0x06, b's', b'e', b'c', b'o', b'n', b'd', // reason string
+            0x00, // Success QoS0
+        ]);
+
+        let fixed_header = FixedHeader::new(0x90, 1, 0x16);
+        assert!(matches!(
+            SubAck::read(fixed_header, packet),
+            Err(Error::ProtocolError)
         ));
     }
 
