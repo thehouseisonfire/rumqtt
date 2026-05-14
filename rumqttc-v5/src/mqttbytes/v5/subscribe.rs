@@ -141,6 +141,9 @@ impl Filter {
         while bytes.has_remaining() {
             let path = read_mqtt_string(bytes)?;
             let options = read_u8(bytes)?;
+            if options & 0b1100_0000 != 0 {
+                return Err(Error::IncorrectPacketFormat);
+            }
             let requested_qos = options & 0b0000_0011;
 
             let nolocal = (options >> 2) & 0b0000_0001;
@@ -349,6 +352,61 @@ mod test {
 
         assert!(matches!(result, Err(Error::PacketIdZero)));
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn subscribe_parsing_rejects_empty_payload() {
+        let mut bytes = BytesMut::from(
+            &[
+                0x82, // SUBSCRIBE
+                0x03, // remaining length
+                0x00, 0x01, // packet identifier
+                0x00, // properties length
+            ][..],
+        );
+
+        let result = Packet::read(&mut bytes, Some(1024));
+
+        assert!(matches!(result, Err(Error::EmptySubscription)));
+    }
+
+    #[test]
+    fn subscribe_parsing_rejects_reserved_subscription_option_bits() {
+        for options in [0x40, 0x80] {
+            let mut bytes = BytesMut::from(
+                &[
+                    0x82, // SUBSCRIBE
+                    0x07, // remaining length
+                    0x00, 0x01, // packet identifier
+                    0x00, // properties length
+                    0x00, 0x01, b'a',    // topic filter
+                    options, // subscription options with a reserved bit set
+                ][..],
+            );
+
+            let result = Packet::read(&mut bytes, Some(1024));
+
+            assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+        }
+    }
+
+    #[test]
+    fn subscribe_parsing_rejects_invalid_utf8_filter() {
+        let mut bytes = BytesMut::from(
+            [
+                0x82, // SUBSCRIBE
+                0x07, // remaining length
+                0x00, 0x01, // packet identifier
+                0x00, // properties length
+                0x00, 0x01, 0xff, // invalid UTF-8 topic filter
+                0x00, // subscription options
+            ]
+            .as_slice(),
+        );
+
+        let result = Packet::read(&mut bytes, Some(1024));
+
+        assert!(matches!(result, Err(Error::TopicNotUtf8)));
     }
 
     #[test]

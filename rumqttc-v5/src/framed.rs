@@ -413,6 +413,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_sends_malformed_packet_disconnect_for_reserved_subscribe_option_bits() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+
+        peer.write_all(&[0x82, 0x07, 0x00, 0x01, 0x00, 0x00, 0x01, b'a', 0x40])
+            .await
+            .unwrap();
+
+        let err = network.read().await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::IncorrectPacketFormat)
+        ));
+
+        let mut response = [0; 4];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::MalformedPacket as u8,
+                0x00
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn read_sends_protocol_error_disconnect_for_zero_subscription_identifier() {
         let (client, mut peer) = duplex(64);
         let mut network = Network::new(client, Some(1024));
