@@ -590,8 +590,7 @@ impl MqttState {
             error!("Unsolicited puback packet: {:?}", puback.pkid);
             return Err(StateError::Unsolicited(puback.pkid));
         }
-        self.outgoing_pub_ack.set(puback.pkid as usize, true);
-        self.advance_last_puback_frontier();
+        self.mark_outgoing_packet_id_complete(puback.pkid);
 
         if let Some(tx) = self.outgoing_pub_notice[puback.pkid as usize].take() {
             tx.success(PublishResult::Qos1(puback.clone()));
@@ -649,6 +648,7 @@ impl MqttState {
         }
 
         self.outgoing_rel.set(pubcomp.pkid as usize, false);
+        self.mark_outgoing_packet_id_complete(pubcomp.pkid);
         if let Some(tx) = self.outgoing_rel_notice[pubcomp.pkid as usize].take() {
             tx.success(PublishResult::Qos2Completed(pubcomp.clone()));
         }
@@ -902,6 +902,11 @@ impl MqttState {
 
             Packet::Publish(publish)
         })
+    }
+
+    fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
+        self.outgoing_pub_ack.set(pkid as usize, true);
+        self.advance_last_puback_frontier();
     }
 
     fn advance_last_puback_frontier(&mut self) {
@@ -1528,6 +1533,32 @@ mod test {
 
         mqtt.handle_incoming_puback(&PubAck::new(3)).unwrap();
         assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
+    fn mixed_qos_completion_clears_outbound_drain_state() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+
+        mqtt.handle_incoming_pubrec(&PubRec::new(1)).unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(2)).unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(3)).unwrap();
+        mqtt.handle_incoming_pubcomp(&PubComp::new(1)).unwrap();
+        mqtt.handle_incoming_pubrec(&PubRec::new(4)).unwrap();
+        mqtt.handle_incoming_pubcomp(&PubComp::new(4)).unwrap();
+
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
+        assert!(mqtt.outgoing_rel.ones().next().is_none());
     }
 
     #[test]
