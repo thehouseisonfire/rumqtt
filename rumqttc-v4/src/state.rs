@@ -796,8 +796,7 @@ impl MqttState {
         }
         self.outgoing_pub_flush_attempted
             .set(puback.pkid as usize, false);
-        self.outgoing_pub_ack.set(puback.pkid as usize, true);
-        self.advance_last_puback_frontier();
+        self.mark_outgoing_packet_id_complete(puback.pkid);
 
         if let Some(tx) = self.outgoing_pub_notice[puback.pkid as usize].take() {
             tx.success(PublishResult::Qos1(puback.clone()));
@@ -865,6 +864,7 @@ impl MqttState {
         }
 
         self.outgoing_rel.set(pubcomp.pkid as usize, false);
+        self.mark_outgoing_packet_id_complete(pubcomp.pkid);
         if let Some(tx) = self.outgoing_rel_notice[pubcomp.pkid as usize].take() {
             tx.success(PublishResult::Qos2Completed(pubcomp.clone()));
         }
@@ -1170,6 +1170,11 @@ impl MqttState {
 
             Packet::Publish(publish)
         })
+    }
+
+    fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
+        self.outgoing_pub_ack.set(pkid as usize, true);
+        self.advance_last_puback_frontier();
     }
 
     fn advance_last_puback_frontier(&mut self) {
@@ -1749,6 +1754,40 @@ mod test {
             mqtt.events.pop_front(),
             Some(Event::Incoming(Packet::UnsubAck(unsuback)))
         );
+    }
+
+    #[test]
+    fn control_acks_above_publish_tracking_capacity_complete_without_publish_frontier() {
+        let mut mqtt = MqttState::builder(10).build();
+        let pkid = 34;
+
+        mqtt.pending_subscribe.insert(
+            pkid,
+            PendingSubscribe {
+                subscribe: Subscribe::new("a/b", QoS::AtMostOnce),
+                notice: None,
+            },
+        );
+        mqtt.pending_unsubscribe.insert(
+            pkid + 1,
+            PendingUnsubscribe {
+                unsubscribe: Unsubscribe::new("c/d"),
+                notice: None,
+            },
+        );
+
+        assert!(mqtt.outgoing_pub_ack.len() <= pkid as usize);
+        mqtt.handle_incoming_suback(&SubAck::new(
+            pkid,
+            vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+        ))
+        .unwrap();
+        mqtt.handle_incoming_unsuback(&UnsubAck::new(pkid + 1))
+            .unwrap();
+
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
+        assert_eq!(mqtt.last_puback, 0);
     }
 
     #[test]
@@ -2440,6 +2479,32 @@ mod test {
 
         mqtt.handle_incoming_puback(&PubAck::new(3)).unwrap();
         assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
+    fn mixed_qos_completion_clears_outbound_drain_state() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+
+        mqtt.handle_incoming_pubrec(&PubRec::new(1)).unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(2)).unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(3)).unwrap();
+        mqtt.handle_incoming_pubcomp(&PubComp::new(1)).unwrap();
+        mqtt.handle_incoming_pubrec(&PubRec::new(4)).unwrap();
+        mqtt.handle_incoming_pubcomp(&PubComp::new(4)).unwrap();
+
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
+        assert!(mqtt.outgoing_rel.ones().next().is_none());
     }
 
     #[test]

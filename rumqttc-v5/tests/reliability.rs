@@ -1078,6 +1078,128 @@ async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
 }
 
 #[tokio::test]
+async fn graceful_disconnect_with_properties_drains_mixed_qos_before_disconnect() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("mixed-qos-properties-disconnect", ("127.0.0.1", port));
+    options.set_keep_alive(5);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build();
+    let (disconnect_event_tx, disconnect_event_rx) = oneshot::channel();
+    let eventloop_task = task::spawn(async move {
+        let mut disconnect_event_tx = Some(disconnect_event_tx);
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Outgoing(Outgoing::Disconnect)) => {
+                    if let Some(tx) = disconnect_event_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let client_task = task::spawn(async move {
+        client
+            .publish("test/qos2/one", QoS::ExactlyOnce, false, "qos2-one")
+            .await
+            .unwrap();
+        client
+            .publish("test/qos1/two", QoS::AtLeastOnce, false, "qos1-two")
+            .await
+            .unwrap();
+        client
+            .publish("test/qos1/three", QoS::AtLeastOnce, false, "qos1-three")
+            .await
+            .unwrap();
+        client
+            .publish("test/qos2/four", QoS::ExactlyOnce, false, "qos2-four")
+            .await
+            .unwrap();
+        client
+            .disconnect_with_properties_timeout(
+                DisconnectReasonCode::NormalDisconnection,
+                DisconnectProperties {
+                    session_expiry_interval: Some(0),
+                    reason_string: None,
+                    user_properties: Vec::new(),
+                    server_reference: None,
+                },
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+
+    let mut first_pubrel_seen = false;
+    let mut fourth_pubrel_seen = false;
+    let mut qos1_acks_sent = 0;
+    let mut first_pubcomp_sent = false;
+    let mut fourth_pubcomp_sent = false;
+    let mut disconnect_seen = false;
+
+    while !disconnect_seen {
+        let event = time::timeout(PHASE_TIMEOUT, broker.tick())
+            .await
+            .expect("timed out waiting for mixed QoS graceful disconnect packets");
+        match event {
+            Event::Incoming(Packet::Publish(publish)) => match (publish.pkid, publish.qos) {
+                (1, QoS::ExactlyOnce) => broker.pubrec(publish.pkid).await,
+                (2 | 3, QoS::AtLeastOnce) => {
+                    broker.ack(publish.pkid).await;
+                    qos1_acks_sent += 1;
+                    if first_pubrel_seen && qos1_acks_sent == 2 && !first_pubcomp_sent {
+                        broker.pubcomp(1).await;
+                        first_pubcomp_sent = true;
+                    }
+                }
+                (4, QoS::ExactlyOnce) => broker.pubrec(publish.pkid).await,
+                _ => panic!("unexpected publish while draining mixed QoS: {publish:?}"),
+            },
+            Event::Incoming(Packet::PubRel(pubrel)) if pubrel.pkid == 1 => {
+                first_pubrel_seen = true;
+                if qos1_acks_sent == 2 && !first_pubcomp_sent {
+                    broker.pubcomp(pubrel.pkid).await;
+                    first_pubcomp_sent = true;
+                }
+            }
+            Event::Incoming(Packet::PubRel(pubrel)) if pubrel.pkid == 4 => {
+                fourth_pubrel_seen = true;
+                if !fourth_pubcomp_sent {
+                    broker.pubcomp(pubrel.pkid).await;
+                    fourth_pubcomp_sent = true;
+                }
+            }
+            Event::Incoming(Packet::Disconnect(_)) => {
+                disconnect_seen = true;
+            }
+            event => panic!("unexpected broker event while draining mixed QoS: {event:?}"),
+        }
+    }
+
+    assert!(first_pubrel_seen);
+    assert!(fourth_pubrel_seen);
+    assert!(first_pubcomp_sent);
+    assert!(fourth_pubcomp_sent);
+    client_task.await.unwrap();
+    time::timeout(PHASE_TIMEOUT, disconnect_event_rx)
+        .await
+        .expect("event loop did not emit Outgoing(Disconnect)")
+        .expect("disconnect event waiter dropped");
+    eventloop_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn graceful_disconnect_timeout_does_not_send_disconnect() {
     let (listener, port) = reserve_listener().await;
     let options = MqttOptions::new("issue-1031-timeout", ("127.0.0.1", port));
