@@ -5,31 +5,17 @@ This directory contains generated, compliance-oriented references for MQTT 3.1.1
 ## Files
 
 - `mqtt-v3.1.1.md`: Markdown compliance digest for MQTT 3.1.1.
-- `markdown/mqtt-v5.0.md`: Markdown compliance digest for MQTT 5.0.
+- `mqtt-v5.0.md`: Markdown compliance digest for MQTT 5.0.
 - `mqtt-v3.1.1.requirements.json`: Machine-readable requirement index for MQTT 3.1.1.
 - `mqtt-v5.0.requirements.json`: Machine-readable requirement index for MQTT 5.0.
-- `generate_mqtt_specs.py`: Generator script.
 
-## Generate
+## Source of Truth
 
-Run from the repository root:
+`mqtt-v3.1.1.md`, `mqtt-v3.1.1.requirements.correct.json` `mqtt-v5.0.md` and `mqtt-v5.0.requirements.correct.json` are authoritative.
 
-```bash
-python3 docs/spec/generate_mqtt_specs.py --versions v3.1.1 v5.0 --out-dir docs/spec --fail-on-count-drift
-```
+The generated requirements JSON files at `mqtt-v3.1.1.requirements.correct.json`, `mqtt-v3.1.1.requirements.fix-attempt.json` and `mqtt-v5.0.requirements.correct.json` are useful as indexes and mapping hints, but they may contain incorrect summaries, duplicated requirements, wrong actors, or adjacent requirement mappings. Audit passes must verify reviewed requirements against the authoritative source text.
 
-Options:
-
-- `--versions`: subset of specs to generate (`v3.1.1`, `v5.0`).
-- `--out-dir`: output directory.
-- `--timeout-seconds`: HTTP timeout when downloading sources.
-- `--fail-on-count-drift`: strict guard against requirement count changes.
-- `--offline`: use cached `*.source.html` files in `--out-dir` and skip downloads.
-
-The generator also stores source cache artifacts:
-
-- `<version>.source.html`: cached official HTML source.
-- `<version>.source.meta.json`: cached source metadata (including `source_last_modified`).
+Do not modify the generated requirements files during hardening unless explicitly instructed. Add corrected reviewed entries to `mqtt-v3.1.1.requirements.correct.json` and `mqtt-v5.0.requirements.correct.json`.
 
 ## JSON Schema
 
@@ -41,7 +27,7 @@ Top-level keys:
 - `generated_at_utc`
 - `requirements`
 
-Each `requirements[]` item includes:
+Each generated `requirements[]` item includes:
 
 - `id`: requirement ID (`MQTT-x.x.x-y`).
 - `section_number`: spec section number.
@@ -51,8 +37,22 @@ Each `requirements[]` item includes:
 - `source_anchor`: source HTML anchor when available.
 - `occurrences`: number of matches in source text.
 - `candidate_paths`: heuristic list of likely implementation files.
-- `mapping_status`: currently `unreviewed`.
+- `mapping_status`: extraction/review status.
 - `mapping_reason`: explanation of mapping heuristic used.
+
+Reviewed entries in `mqtt-v3.1.1.requirements.correct.json` may also include:
+
+- `authoritative_source`: source file, section, title, and anchor checked.
+- `authoritative_summary`: corrected summary from the authoritative source.
+- `authoritative_actor`: actor responsible for the requirement.
+- `original_mapping_assessment`: whether the generated mapping was correct, wrong, or unclear.
+- `fix_attempt_mapping_assessment`: whether the abandoned fix-attempt mapping was correct, wrong, absent, or unclear.
+- `wrong_mapping_client_behavior_risk`: whether following an incorrect mapping could introduce incorrect client behavior.
+- `wrong_mapping_behavior_present`: whether that incorrect behavior was found in the codebase.
+- `compliance_status`: reviewed implementation status for client-applicable obligations.
+- `evidence`: concrete implementation paths and symbols.
+- `test_coverage`: tests that assert the reviewed behavior, or notes when not applicable.
+- `follow_up`: remaining work or `null`.
 
 Audit passes may add these review fields to individual requirement entries:
 
