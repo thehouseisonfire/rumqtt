@@ -1062,8 +1062,11 @@ impl MqttState {
             return Err(StateError::EmptySubscription);
         }
 
-        let pkid = self.next_control_pkid()?;
-        subscription.pkid = pkid;
+        if subscription.pkid == 0 {
+            subscription.pkid = self.next_control_pkid()?;
+        } else {
+            self.reserve_control_pkid(subscription.pkid)?;
+        }
 
         debug!(
             "Subscribe. Topics = {:?}, Pkid = {:?}",
@@ -1088,8 +1091,11 @@ impl MqttState {
         mut unsub: Unsubscribe,
         notice: Option<UnsubscribeNoticeTx>,
     ) -> Result<Packet, StateError> {
-        let pkid = self.next_control_pkid()?;
-        unsub.pkid = pkid;
+        if unsub.pkid == 0 {
+            unsub.pkid = self.next_control_pkid()?;
+        } else {
+            self.reserve_control_pkid(unsub.pkid)?;
+        }
 
         debug!(
             "Unsubscribe. Topics = {:?}, Pkid = {:?}",
@@ -1234,6 +1240,14 @@ impl MqttState {
         }
 
         Err(StateError::InvalidState)
+    }
+
+    fn reserve_control_pkid(&self, pkid: u16) -> Result<(), StateError> {
+        if pkid == 0 || self.packet_identifier_in_use(pkid) {
+            return Err(StateError::InvalidState);
+        }
+
+        Ok(())
     }
 }
 
@@ -2152,6 +2166,72 @@ mod test {
             mqtt.outgoing_publish(publish),
             Err(StateError::InvalidState)
         ));
+    }
+
+    #[test]
+    fn replayed_subscribe_keeps_original_packet_identifier_until_suback() {
+        let mut mqtt = build_mqttstate();
+        mqtt.outgoing_subscribe(Subscribe::new("a/b", QoS::AtMostOnce), None)
+            .unwrap();
+
+        let mut pending = mqtt.clean();
+        let replay = pending.remove(0);
+        match &replay {
+            Request::Subscribe(subscribe) => assert_eq!(subscribe.pkid, 1),
+            request => panic!("unexpected replay request: {request:?}"),
+        }
+
+        mqtt.last_pkid = 42;
+        let packet = mqtt.handle_outgoing_packet(replay).unwrap().unwrap();
+        match packet {
+            Packet::Subscribe(subscribe) => assert_eq!(subscribe.pkid, 1),
+            packet => panic!("unexpected packet: {packet:?}"),
+        }
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 1;
+        assert!(matches!(
+            mqtt.outgoing_publish(publish.clone()),
+            Err(StateError::InvalidState)
+        ));
+
+        mqtt.handle_incoming_suback(&SubAck::new(
+            1,
+            vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+        ))
+        .unwrap();
+        assert!(mqtt.outgoing_publish(publish).is_ok());
+    }
+
+    #[test]
+    fn replayed_unsubscribe_keeps_original_packet_identifier_until_unsuback() {
+        let mut mqtt = build_mqttstate();
+        mqtt.outgoing_unsubscribe(Unsubscribe::new("a/b"), None)
+            .unwrap();
+
+        let mut pending = mqtt.clean();
+        let replay = pending.remove(0);
+        match &replay {
+            Request::Unsubscribe(unsubscribe) => assert_eq!(unsubscribe.pkid, 1),
+            request => panic!("unexpected replay request: {request:?}"),
+        }
+
+        mqtt.last_pkid = 42;
+        let packet = mqtt.handle_outgoing_packet(replay).unwrap().unwrap();
+        match packet {
+            Packet::Unsubscribe(unsubscribe) => assert_eq!(unsubscribe.pkid, 1),
+            packet => panic!("unexpected packet: {packet:?}"),
+        }
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 1;
+        assert!(matches!(
+            mqtt.outgoing_publish(publish.clone()),
+            Err(StateError::InvalidState)
+        ));
+
+        mqtt.handle_incoming_unsuback(&UnsubAck::new(1)).unwrap();
+        assert!(mqtt.outgoing_publish(publish).is_ok());
     }
 
     #[test]
