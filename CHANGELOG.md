@@ -5,6 +5,18 @@
 ### Deprecated
 ### Removed
 ### Fixed
+### Security
+
+---
+
+## [rumqttc-next 0.33.1] - 16-05-2026
+
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
 Fix `disconnect_with_properties_timeout()` timing out although all visible outbound QoS states are completed.
 ### Security
 
