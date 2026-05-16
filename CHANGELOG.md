@@ -5,6 +5,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+Fix `disconnect_with_properties_timeout()` timing out although all visible outbound QoS states are completed.
 ### Security
 
 ---
