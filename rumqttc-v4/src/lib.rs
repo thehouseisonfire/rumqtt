@@ -2078,6 +2078,20 @@ mod test {
     }
 
     #[test]
+    fn accepts_broad_valid_client_ids() {
+        for client_id in [
+            "this-client-id-is-definitely-longer-than-twenty-three-bytes",
+            "client.with.dots",
+            "client_with_underscores",
+            "client-123",
+            "cliente-áéíóú",
+        ] {
+            let options = MqttOptions::new(client_id, "127.0.0.1");
+            assert_eq!(options.client_id(), client_id);
+        }
+    }
+
+    #[test]
     fn minimum_client_id_helper_accepts_server_required_profile() {
         assert!(is_mqtt_minimum_client_id("abcXYZ01234567890123456"));
     }
@@ -2218,5 +2232,13 @@ mod test {
         let mut options = MqttOptions::new("id", "127.0.0.1");
         options.set_clean_session(false);
         options.set_client_id(String::new());
+    }
+
+    /// MQTT-3.1.3-7: disabling clean_session with an empty client_id must panic.
+    #[test]
+    #[should_panic(expected = "Cannot unset clean session when client id is empty")]
+    fn set_clean_session_panics_on_false_with_empty_client_id() {
+        let mut options = MqttOptions::new("", "127.0.0.1");
+        options.set_clean_session(false);
     }
 }

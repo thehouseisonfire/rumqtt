@@ -763,6 +763,27 @@ mod test {
     }
 
     #[test]
+    fn connect_encoding_allows_broad_client_ids() {
+        let client_id = "client-id_with.symbols/and/unicode-é".to_owned();
+        assert!(client_id.len() > 23);
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: client_id.clone(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
+
+        assert_eq!(decoded.client_id, client_id);
+    }
+
+    #[test]
     fn connect_encoding_rejects_null_character_in_will_topic() {
         let connect = Connect {
             keep_alive: 10,

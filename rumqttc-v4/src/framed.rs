@@ -16,6 +16,12 @@ pub struct Network {
     framed: Framed<Box<dyn AsyncReadWrite>, Codec>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadBatchOutcome {
+    NoResponseWritten,
+    ResponseWritten,
+}
+
 impl Network {
     pub fn new(
         socket: impl AsyncReadWrite + 'static,
@@ -44,20 +50,22 @@ impl Network {
 
     /// Read packets in bulk. This allow replies to be in bulk. This method is used
     /// after the connection is established to read a bunch of incoming packets
-    pub async fn readb(
+    pub(crate) async fn readb(
         &mut self,
         state: &mut MqttState,
         read_batch_limit: usize,
-    ) -> Result<(), StateError> {
+    ) -> Result<ReadBatchOutcome, StateError> {
         // wait for the first read
         let mut res = self.framed.next().await;
         let read_batch_limit = read_batch_limit.max(1);
         let mut count = 0;
+        let mut outcome = ReadBatchOutcome::NoResponseWritten;
         loop {
             match res {
                 Some(Ok(packet)) => {
                     if let Some(outgoing) = state.handle_incoming_packet(packet)? {
                         self.write(outgoing).await?;
+                        outcome = ReadBatchOutcome::ResponseWritten;
                     }
 
                     count += 1;
@@ -76,7 +84,7 @@ impl Network {
             }
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
     /// Serializes packet into write buffer
@@ -108,9 +116,10 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        network.readb(&mut state, 2).await.unwrap();
+        let outcome = network.readb(&mut state, 2).await.unwrap();
 
         assert_eq!(state.events.len(), 2);
+        assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
     }
 
     #[tokio::test]
@@ -121,8 +130,9 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        network.readb(&mut state, 1).await.unwrap();
+        let outcome = network.readb(&mut state, 1).await.unwrap();
 
         assert_eq!(state.events.len(), 1);
+        assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
     }
 }
