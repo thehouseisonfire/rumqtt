@@ -2010,6 +2010,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poll_drops_network_after_incoming_packet_with_invalid_fixed_header_flags() {
+        use crate::mqttbytes::Error as MqttError;
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, mut peer) = duplex(1024);
+        eventloop.network = Some(Network::new(client, 1024, 1024));
+
+        peer.write_all(&[
+            0x11, 0x00, // CONNECT with invalid fixed-header flags
+        ])
+        .await
+        .unwrap();
+
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(
+                MqttError::IncorrectPacketFormat
+            ))
+        ));
+        assert!(
+            eventloop.network.is_none(),
+            "poll() must drop the network after incoming invalid fixed-header flags"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_drops_network_after_incoming_publish_with_malformed_utf8_topic() {
+        use crate::mqttbytes::Error as MqttError;
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, mut peer) = duplex(1024);
+        eventloop.network = Some(Network::new(client, 1024, 1024));
+
+        peer.write_all(&[
+            0b0011_0000,
+            5, // packet type, flags and remaining len
+            0x00,
+            0x03, // topic length = 3
+            0xED,
+            0xA0,
+            0x80, // topic = U+D800 encoded as CESU-8
+        ])
+        .await
+        .unwrap();
+
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(MqttError::TopicNotUtf8))
+        ));
+        assert!(
+            eventloop.network.is_none(),
+            "poll() must drop the network after an incoming PUBLISH with malformed UTF-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_drops_network_after_incoming_publish_with_null_character_in_topic() {
+        use crate::mqttbytes::Error as MqttError;
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, mut peer) = duplex(1024);
+        eventloop.network = Some(Network::new(client, 1024, 1024));
+
+        peer.write_all(&[
+            0b0011_0000,
+            5, // packet type, flags and remaining len
+            0x00,
+            0x03, // topic length = 3
+            b'a',
+            0x00,
+            b'b',
+        ])
+        .await
+        .unwrap();
+
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(MqttError::MalformedPacket))
+        ));
+        assert!(
+            eventloop.network.is_none(),
+            "poll() must drop the network after an incoming PUBLISH with U+0000 in the topic"
+        );
+    }
+
+    #[tokio::test]
     async fn drain_pending_as_failed_drains_all_and_returns_count() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);

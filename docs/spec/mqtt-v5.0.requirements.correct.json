@@ -1,0 +1,662 @@
+{
+  "spec_version": "5.0",
+  "source_url": "https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html",
+  "local_reference": "/home/eagle/MQTT/rumqtt/docs/spec/mqtt-v5.0.md",
+  "//": "Use `/home/eagle/MQTT/rumqtt/docs/spec/mqtt-v5.0.md` as authorative.",
+  "source_last_modified": "Tue, 21 Apr 2026 10:58:17 GMT",
+  "generated_at_utc": "2026-05-17T00:00:00-03:00",
+  "requirements": [
+    {
+      "id": "MQTT-1.5.4-1",
+      "section_number": "1.5.4",
+      "section_title": "UTF-8 Encoded String",
+      "obligation": "MUST",
+      "summary": "UTF-8 Encoded String character data MUST be well-formed UTF-8, including no surrogate code point encodings; if a Client or Server receives an MQTT Control Packet containing ill-formed UTF-8 it is a Malformed Packet.",
+      "source_anchor": "_Hlk511139803",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement includes both UTF-8 well-formedness and receiver-side Malformed Packet handling. rumqttc-v5 enforces UTF-8 validity through shared string validators, validates Bytes-backed topic fields explicitly, and maps inbound decode failures such as TopicNotUtf8 to a v5 Malformed Packet DISCONNECT path.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "1.5.4",
+        "section_title": "UTF-8 Encoded String",
+        "source_anchor": "_Hlk511139803",
+        "summary": "The character data in a UTF-8 Encoded String MUST be well-formed UTF-8, MUST NOT include surrogate code point encodings, and inbound ill-formed UTF-8 is a Malformed Packet."
+      },
+      "authoritative_actor": "packet encoder and receiver",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_behavior_present_in_code": "no",
+        "notes": "The generated entry captured the UTF-8 validity sentence but omitted the receiver-side Malformed Packet consequence that follows the requirement in the authoritative text."
+      },
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "Shared UTF-8 validation uses std::str::from_utf8 and rejects ill-formed UTF-8, including surrogate encodings, before returning decoded strings."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "write_mqtt_string"
+          ],
+          "reason": "The v5 wrapper validates outbound UTF-8 string fields before serialization, so packet writers cannot emit ill-formed UTF-8 through String-backed fields."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "validate_publish_topic_name",
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "Bytes-backed PUBLISH topic names are explicitly validated on both decode and encode paths, so zero-copy topic storage does not bypass UTF-8 checks."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::read",
+            "Connect::write",
+            "LastWill::read",
+            "LastWill::write"
+          ],
+          "reason": "CONNECT client_id and username fields use shared string validators, while Bytes-backed LastWill.topic is explicitly validated on both read and write."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error",
+            "read_sends_malformed_packet_disconnect_for_invalid_utf8"
+          ],
+          "reason": "Inbound TopicNotUtf8 decode failures are classified as DisconnectReasonCode::MalformedPacket and trigger the v5 best-effort DISCONNECT response."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_ud800",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_udfff",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_ud801",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_overlong_encoding",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_truncated_sequence",
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_invalid_continuation_byte",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::read_rejects_topic_with_invalid_utf8",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::last_will_read_rejects_topic_with_invalid_utf8",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_surrogate_in_client_id",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_surrogate_in_username",
+          "rumqttc-v5/src/framed.rs::read_sends_malformed_packet_disconnect_for_invalid_utf8"
+        ],
+        "notes": "Shared primitive tests cover malformed UTF-8 decoding, packet tests cover representative v5 UTF-8 fields, and the framed runtime test proves invalid UTF-8 is handled as a v5 Malformed Packet."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-1.5.4-2",
+      "section_number": "1.5.4",
+      "section_title": "UTF-8 Encoded String",
+      "obligation": "MUST NOT",
+      "summary": "A UTF-8 Encoded String MUST NOT include an encoding of U+0000; if a receiver gets U+0000 in an MQTT Control Packet it is a Malformed Packet.",
+      "source_anchor": "_Hlk511139803",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "rumqttc-v5 rejects U+0000 in shared string validation, applies that validation to outbound String fields, explicitly validates Bytes-backed topic fields on both read and write, and classifies inbound MalformedPacket decode errors as v5 Malformed Packet disconnects.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "1.5.4",
+        "section_title": "UTF-8 Encoded String",
+        "source_anchor": "_Hlk511139803",
+        "summary": "A UTF-8 Encoded String MUST NOT include an encoding of U+0000, and inbound U+0000 in an MQTT Control Packet is a Malformed Packet."
+      },
+      "authoritative_actor": "packet encoder and receiver",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry captured both the sender-side prohibition and the receiver-side Malformed Packet consequence."
+      },
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "validate_mqtt_string",
+            "read_mqtt_string"
+          ],
+          "reason": "Shared UTF-8 validation rejects any NUL byte with Error::MalformedPacket before returning a decoded string."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "write_mqtt_string"
+          ],
+          "reason": "All v5 String-backed MQTT fields are validated before serialization, so outbound U+0000 is rejected."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "validate_publish_topic_name",
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "Bytes-backed PUBLISH topic names are validated on both decode and encode paths, so U+0000 cannot bypass string checks."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::read",
+            "Connect::write",
+            "LastWill::read",
+            "LastWill::write"
+          ],
+          "reason": "CONNECT string fields use shared read/write string validators, and LastWill.topic is explicitly validated on both paths."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error"
+          ],
+          "reason": "Inbound Error::MalformedPacket decode failures are classified as DisconnectReasonCode::MalformedPacket for v5 receiver handling."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_null_character",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::read_rejects_topic_with_null_character",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::write_rejects_topic_with_null_character",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::last_will_read_rejects_topic_with_null_character",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::last_will_write_rejects_topic_with_null_character",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_null_character_in_client_id",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_rejects_null_character_in_client_id",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_null_character_in_username",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_rejects_null_character_in_username",
+          "rumqttc-v5/src/framed.rs::read_sends_malformed_packet_disconnect_for_malformed_packet"
+        ],
+        "notes": "Shared and packet-level tests cover U+0000 rejection across representative v5 fields, and the framed runtime test covers the receiver-side Malformed Packet disconnect path for decode errors that classify as malformed packets."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-1.5.4-3",
+      "section_number": "1.5.4",
+      "section_title": "UTF-8 Encoded String",
+      "obligation": "MUST NOT",
+      "summary": "The UTF-8 sequence 0xEF 0xBB 0xBF must be interpreted as U+FEFF wherever it appears in a string and must not be skipped or stripped by a packet receiver.",
+      "source_anchor": "_Hlk511139803",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The v5 decode path relies on std::str::from_utf8 and returns decoded strings without any content normalization, stripping, or BOM handling. Bytes-backed topic validators also inspect borrowed UTF-8 without rewriting the original bytes, so U+FEFF is preserved rather than skipped.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "1.5.4",
+        "section_title": "UTF-8 Encoded String",
+        "source_anchor": "_Hlk511139803",
+        "summary": "A UTF-8 encoded sequence 0xEF 0xBB 0xBF is always interpreted as U+FEFF wherever it appears in a string and MUST NOT be skipped over or stripped off by a packet receiver."
+      },
+      "authoritative_actor": "packet receiver",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry matched the authoritative requirement text."
+      },
+      "evidence": [
+        {
+          "path": "mqttbytes-core/src/primitives.rs",
+          "symbols": [
+            "read_mqtt_string",
+            "validate_mqtt_string",
+            "read_mqtt_string_preserves_bom"
+          ],
+          "reason": "String decoding uses std::str::from_utf8 and returns the decoded content unchanged; the shared BOM test proves U+FEFF is preserved in decoded MQTT strings."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "read_mqtt_string",
+            "validate_mqtt_string",
+            "write_mqtt_string"
+          ],
+          "reason": "The v5 wrappers forward directly to the shared primitives without post-processing, so there is no opportunity to strip or skip U+FEFF."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "validate_publish_topic_name"
+          ],
+          "reason": "Bytes-backed topic validation only checks borrowed UTF-8 and wildcard constraints; it does not rewrite the topic bytes or strip a BOM sequence."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "mqttbytes-core/src/primitives.rs::read_mqtt_string_preserves_bom",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::publish_topic_with_bom_round_trips_without_stripping"
+        ],
+        "notes": "Shared primitive coverage proves BOM preservation for decoded MQTT strings, and v5 packet-level coverage now verifies that a PUBLISH topic containing U+FEFF round-trips without stripping."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.1.3-1",
+      "section_number": "2.1.3",
+      "section_title": "Flags",
+      "obligation": "MUST",
+      "summary": "Reserved fixed-header flag bits MUST be set to the values listed for each MQTT Control Packet type.",
+      "source_anchor": "_Toc473619951",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is the sender-side fixed-header flag constraint. rumqttc-v5 encodes each packet type with the required low nibble and rejects invalid low nibbles on decode, but the receiver-side malformed-packet consequence is handled separately under section 4.13.1 rather than being part of this requirement ID.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "2.1.3",
+        "section_title": "Flags",
+        "source_anchor": "_Toc473619951",
+        "summary": "Where a flag bit is marked as Reserved it is reserved for future use and MUST be set to the value listed."
+      },
+      "authoritative_actor": "packet encoder",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry pointed at the correct normative sentence. Its existing reasoning blended in malformed-packet handling from the following sentence, which belongs to the section 4.13.1 error-handling path rather than this requirement ID."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "Packet::read",
+            "validate_fixed_header_flags"
+          ],
+          "reason": "The shared packet parser enforces the exact fixed-header low-nibble values per packet type before dispatching to packet-specific decoders."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::write"
+          ],
+          "reason": "PUBLISH encoding derives byte 1 only from the defined DUP, QoS, and RETAIN bits."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::write"
+          ],
+          "reason": "SUBSCRIBE encoding always emits 0x82, which carries the required 0b0010 flag pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
+          "symbols": [
+            "Unsubscribe::write"
+          ],
+          "reason": "UNSUBSCRIBE encoding always emits 0xA2, which carries the required 0b0010 flag pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": [
+            "PubRel::write"
+          ],
+          "reason": "PUBREL encoding always emits 0x62, which carries the required 0b0010 flag pattern."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "Disconnect::write",
+            "Disconnect::read"
+          ],
+          "reason": "DISCONNECT encoding emits 0xE0 and the standalone public parser also rejects invalid fixed-header flags for direct callers."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_connect_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_connack_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_puback_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_pubrec_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_pubrel_with_wrong_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_pubcomp_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_subscribe_with_wrong_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_suback_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_unsubscribe_with_wrong_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_unsuback_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_pingreq_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_pingresp_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_disconnect_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::read_rejects_auth_with_nonzero_reserved_flags",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::validate_flags_const_fn_works_for_all_types",
+          "rumqttc-v5/src/mqttbytes/v5/disconnect.rs::disconnect_read_rejects_invalid_fixed_header_flags"
+        ],
+        "notes": "Coverage exercises the fixed-header validator across packet types and confirms a direct DISCONNECT parse also rejects invalid reserved flags."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.2.1-2",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST NOT",
+      "summary": "A PUBLISH packet with QoS 0 MUST NOT contain a Packet Identifier.",
+      "source_anchor": "_Toc473619955",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "rumqttc-v5 omits the packet-identifier field on the wire for QoS 0 PUBLISH, decodes QoS 0 PUBLISH without consuming a packet identifier, and does not assign or track packet identifiers for QoS 0 outgoing publishes in state management.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "2.2.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Toc473619955",
+        "summary": "A PUBLISH packet MUST NOT contain a Packet Identifier if its QoS value is set to 0."
+      },
+      "authoritative_actor": "packet encoder and packet decoder",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry matched the authoritative requirement."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::len",
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "QoS 0 PUBLISH omits packet-identifier bytes from length calculation and encoding, and decode sets pkid to 0 without reading the field."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_publish_with_notice"
+          ],
+          "reason": "The state machine only assigns and tracks outgoing packet identifiers when QoS is greater than 0."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::length_calculation",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid"
+        ],
+        "notes": "The dedicated QoS 0 encoding regression proves the wire format omits the packet identifier even if a non-zero struct field is present."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.2.1-3",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "Each new client SUBSCRIBE, UNSUBSCRIBE, and QoS>0 PUBLISH packet MUST use a non-zero Packet Identifier that is currently unused.",
+      "source_anchor": "_Toc473619955",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The v5 client enforces non-zero packet identifiers in packet codecs and allocates currently-unused identifiers in the state layer for outgoing QoS>0 PUBLISH, SUBSCRIBE, and UNSUBSCRIBE requests. Cross-flow reuse is prevented by checking the publish, pubrel, subscribe, and unsubscribe tracking tables before allocation or acceptance.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "2.2.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Toc473619955",
+        "summary": "Each time a Client sends a new SUBSCRIBE, UNSUBSCRIBE, or PUBLISH (where QoS > 0) MQTT Control Packet it MUST assign it a non-zero Packet Identifier that is currently unused."
+      },
+      "authoritative_actor": "client sender and session state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry matched the authoritative requirement."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "QoS>0 PUBLISH encode and decode reject packet identifier 0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+          "symbols": [
+            "Subscribe::read",
+            "Subscribe::write"
+          ],
+          "reason": "SUBSCRIBE encode and decode reject packet identifier 0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
+          "symbols": [
+            "Unsubscribe::read",
+            "Unsubscribe::write"
+          ],
+          "reason": "UNSUBSCRIBE encode and decode reject packet identifier 0 with Error::PacketIdZero."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "packet_identifier_in_use",
+            "next_publish_pkid",
+            "next_pkid",
+            "next_control_pkid",
+            "outgoing_publish_with_notice",
+            "outgoing_subscribe",
+            "outgoing_unsubscribe"
+          ],
+          "reason": "The state machine allocates only non-zero identifiers and checks current use across outgoing publishes, released QoS 2 publishes, pending subscribes, and pending unsubscribes before assigning a new identifier."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/state.rs::next_pkid_increments_as_expected",
+          "rumqttc-v5/src/state.rs::next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use",
+          "rumqttc-v5/src/state.rs::outgoing_publish_should_set_pkid_and_add_publish_to_queue",
+          "rumqttc-v5/src/state.rs::outgoing_publish_rejects_packet_identifier_used_by_non_publish_flow",
+          "rumqttc-v5/src/state.rs::can_send_publish_searches_free_pkid_after_control_ids_pass_inflight_limit",
+          "rumqttc-v5/src/state.rs::outgoing_publish_rejects_packet_identifier_used_by_untracked_control_flow",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::qos1_publish_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::qos2_publish_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::qos1_publish_encoding_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/publish.rs::qos2_publish_encoding_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/subscribe.rs::subscribe_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/subscribe.rs::subscribe_encoding_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs::unsubscribe_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs::unsubscribe_encoding_rejects_zero_packet_identifier"
+        ],
+        "notes": "State coverage proves currently-unused allocation and cross-flow collision rejection. Packet-level codec coverage now directly checks zero-pkid rejection for QoS 1 and QoS 2 PUBLISH, plus SUBSCRIBE and UNSUBSCRIBE."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.2.1-4",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "Each new server QoS>0 PUBLISH packet MUST use a non-zero Packet Identifier that is currently unused.",
+      "source_anchor": "_Toc473619955",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement applies to the server's allocation of packet identifiers for outbound QoS>0 PUBLISH packets. rumqttc-v5 is a client and does not implement the server sender role. The client does validate non-zero inbound packet identifiers and tracks inbound acknowledgments, but that is separate defensive behavior rather than satisfaction of this server MUST.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "2.2.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Toc473619955",
+        "summary": "Each time a Server sends a new PUBLISH (with QoS > 0) MQTT Control Packet it MUST assign it a non zero Packet Identifier that is currently unused."
+      },
+      "authoritative_actor": "server sender and session state machine",
+      "applicability": "server_only",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry matched the authoritative requirement, but it is a server-only obligation for this repository."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+          "symbols": [
+            "Publish::read"
+          ],
+          "reason": "Inbound QoS>0 PUBLISH decode rejects packet identifier 0, which is adjacent defensive validation but not proof of server uniqueness enforcement."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "incoming_puback",
+            "incoming_pub",
+            "incoming_pubrec"
+          ],
+          "reason": "The client tracks inbound packet identifiers to drive PUBACK/PUBREC/PUBCOMP behavior, not to validate that the server assigned a globally unused identifier per this server-side requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-only requirement; no client-side compliance test is required."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-4.13.1-1",
+      "section_number": "4.13.1",
+      "section_title": "Malformed Packet and Protocol Errors",
+      "obligation": "MUST",
+      "summary": "When a server detects a Malformed Packet or Protocol Error for which the specification gives a reason code, it MUST close the Network Connection.",
+      "source_anchor": "_Ref477790493",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/client.rs",
+        "mqttbytes-core/src/topic.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This is an explicit server-side MUST. rumqttc-v5 does not implement the server role and therefore cannot satisfy or violate the normative close-on-error obligation. The client does implement the neighboring client-side SHOULD path from section 4.13.1 by sending best-effort DISCONNECT reason codes for inbound malformed packets and then dropping the network on poll failure, but that is not the same requirement.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "4.13.1",
+        "section_title": "Malformed Packet and Protocol Errors",
+        "source_anchor": "_Ref477790493",
+        "summary": "When a Server detects a Malformed Packet or Protocol Error, and a Reason Code is given in the specification, it MUST close the Network Connection."
+      },
+      "authoritative_actor": "server receiver",
+      "applicability": "server_only",
+      "mapping_review": {
+        "original_mapping_status": "unreviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated summary captured the correct server-side requirement and included adjacent explanatory sentences from the same paragraph. The heuristic candidate paths point to client-side defensive handling, which is related context but not this server obligation."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error",
+            "Network::read",
+            "Network::readb"
+          ],
+          "reason": "The client maps inbound malformed-packet and protocol-error decode failures to best-effort outbound DISCONNECT reason codes, which reflects the neighboring client-side SHOULD behavior in section 4.13.1."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "EventLoop::clean"
+          ],
+          "reason": "When polling encounters a connection or protocol error, the event loop drops the live network handle, so the client does close its side of the connection after error handling."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v5/src/framed.rs::read_sends_malformed_packet_disconnect_before_returning_error",
+          "rumqttc-v5/src/framed.rs::read_returns_decode_error_promptly_under_write_backpressure"
+        ],
+        "notes": "These tests cover the client's defensive error-handling path, not the server-only MUST in MQTT-4.13.1-1."
+      },
+      "follow_up": null
+    }
+  ]
+}

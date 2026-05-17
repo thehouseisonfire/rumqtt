@@ -607,4 +607,19 @@ mod test {
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
     }
+
+    #[test]
+    fn publish_topic_with_bom_round_trips_without_stripping() {
+        let topic = "\u{FEFF}a/b";
+        let publish = Publish::new(topic, QoS::AtMostOnce, vec![0x01, 0x02]);
+
+        let mut buf = BytesMut::new();
+        publish.write(&mut buf).unwrap();
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let publish_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Publish::read(fixed_header, publish_bytes).unwrap();
+
+        assert_eq!(std::str::from_utf8(&decoded.topic).unwrap(), topic);
+    }
 }
