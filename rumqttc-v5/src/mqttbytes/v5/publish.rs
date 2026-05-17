@@ -398,6 +398,58 @@ mod test {
     }
 
     #[test]
+    fn qos1_publish_parsing_rejects_zero_packet_identifier() {
+        let mut frame = BytesMut::from(
+            &[
+                0x32, // PUBLISH, QoS=1
+                0x0A, // remaining length
+                0x00, 0x03, b'a', b'/', b'b', // topic
+                0x00, 0x00, // packet identifier
+                0x00, // properties length
+                0x01, 0x02, // payload
+            ][..],
+        );
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn qos2_publish_parsing_rejects_zero_packet_identifier() {
+        let mut frame = BytesMut::from(
+            &[
+                0x34, // PUBLISH, QoS=2
+                0x0A, // remaining length
+                0x00, 0x03, b'a', b'/', b'b', // topic
+                0x00, 0x00, // packet identifier
+                0x00, // properties length
+                0x01, 0x02, // payload
+            ][..],
+        );
+        let result = Packet::read(&mut frame, Some(1024));
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn qos1_publish_encoding_rejects_zero_packet_identifier() {
+        let publish = Publish::new("a/b", QoS::AtLeastOnce, vec![0xE1, 0xE2], None);
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn qos2_publish_encoding_rejects_zero_packet_identifier() {
+        let publish = Publish::new("a/b", QoS::ExactlyOnce, vec![0xE1, 0xE2], None);
+        let mut buf = BytesMut::new();
+        let result = publish.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
     fn invalid_qos_bits_are_reported_as_malformed_packet() {
         let mut frame = BytesMut::from(&[0x36, 0x02, 0x00, 0x00][..]);
         let result = Packet::read(&mut frame, Some(1024));
@@ -472,6 +524,23 @@ mod test {
         let result = publish.write(&mut buffer);
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn publish_topic_with_bom_round_trips_without_stripping() {
+        let topic = "\u{FEFF}a/b";
+        let publish = Publish::new(topic, QoS::AtMostOnce, vec![0x01, 0x02], None);
+
+        let mut buffer = BytesMut::new();
+        publish.write(&mut buffer).unwrap();
+
+        let mut frame = buffer.clone();
+        let decoded = Packet::read(&mut frame, Some(1024)).unwrap();
+        let Packet::Publish(decoded) = decoded else {
+            panic!("expected PUBLISH packet");
+        };
+
+        assert_eq!(std::str::from_utf8(&decoded.topic).unwrap(), topic);
     }
 
     #[test]
