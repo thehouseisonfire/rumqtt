@@ -34,6 +34,19 @@
 
 ---
 
+## [rumqttc-next 0.33.1] - 17-05-2026
+
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+- `rumqttc` v4/v5: Fix Issue #6 - `disconnect_with_properties_timeout()` times out although all visible outbound QoS state is completed
+### Security
+
+---
+
 ## [rumqttc-next 0.33.0] - 03-05-2026
 
 
