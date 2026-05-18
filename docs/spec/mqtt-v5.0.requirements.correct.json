@@ -557,7 +557,7 @@
         "summary": "Each time a Server sends a new PUBLISH (with QoS > 0) MQTT Control Packet it MUST assign it a non zero Packet Identifier that is currently unused."
       },
       "authoritative_actor": "server sender and session state machine",
-      "applicability": "server_only",
+      "applicability": "not_applicable",
       "mapping_review": {
         "original_mapping_status": "reviewed",
         "original_mapping_assessment": "correct",
@@ -590,6 +590,276 @@
         "status": "not_applicable",
         "tests": [],
         "notes": "Server-only requirement; no client-side compliance test is required."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.2.1-5",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "A PUBACK, PUBREC, PUBREL, or PUBCOMP packet MUST contain the same Packet Identifier as the PUBLISH packet that was originally sent.",
+      "source_anchor": "_Toc473619955",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+        "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+        "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+        "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement covers only the PUBLISH acknowledgement family. rumqttc-v5 generates PUBACK, PUBREC, PUBREL, and PUBCOMP packets with the tracked Packet Identifier from the corresponding publish flow and rejects incoming or outgoing acknowledgement packets whose Packet Identifier does not match tracked publish state.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "2.2.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Toc473619955",
+        "summary": "A PUBACK, PUBREC, PUBREL, or PUBCOMP packet MUST contain the same Packet Identifier as the PUBLISH packet that was originally sent."
+      },
+      "authoritative_actor": "packet encoder, packet decoder, and session state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_behavior_present_in_code": "no",
+        "notes": "The generated entry merged MQTT-2.2.1-5 with the separate SUBACK and UNSUBACK rule from MQTT-2.2.1-6. The client implementation still enforces the correct publish-acknowledgement Packet Identifier matching."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::handle_incoming_pubrec",
+            "MqttState::handle_incoming_pubrel"
+          ],
+          "reason": "Automatic PUBACK echoes publish.pkid for QoS 1, automatic PUBREC echoes publish.pkid for QoS 2, automatic PUBREL echoes pubrec.pkid, and automatic PUBCOMP echoes pubrel.pkid."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_puback",
+            "MqttState::outgoing_pubrec",
+            "MqttState::save_pubrel_with_notice"
+          ],
+          "reason": "Manual or replayed outgoing PUBACK, PUBREC, and PUBREL are rejected unless their Packet Identifier matches tracked publish state, preventing mismatched acknowledgements from being sent."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_puback",
+            "MqttState::handle_incoming_pubrec",
+            "MqttState::handle_incoming_pubrel",
+            "MqttState::handle_incoming_pubcomp"
+          ],
+          "reason": "Incoming PUBACK, PUBREC, PUBREL, and PUBCOMP packets are validated against tracked outgoing or incoming publish state and fail with StateError::Unsolicited on Packet Identifier mismatch."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+          "symbols": [
+            "PubAck::read",
+            "PubAck::write"
+          ],
+          "reason": "PUBACK encode and decode reject packet identifier 0, so malformed acknowledgements cannot bypass state validation."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+          "symbols": [
+            "PubRec::read",
+            "PubRec::write"
+          ],
+          "reason": "PUBREC encode and decode reject packet identifier 0, complementing state validation for publish acknowledgements."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+          "symbols": [
+            "PubRel::read",
+            "PubRel::write"
+          ],
+          "reason": "PUBREL encode and decode reject packet identifier 0, and the state layer ensures PUBREL only reuses the tracked publish identifier."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
+          "symbols": [
+            "PubComp::read",
+            "PubComp::write"
+          ],
+          "reason": "PUBCOMP encode and decode reject packet identifier 0, complementing state validation for QoS 2 completion."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/state.rs::manual_puback_must_match_received_qos1_publish",
+          "rumqttc-v5/src/state.rs::manual_pubrec_must_match_received_qos2_publish",
+          "rumqttc-v5/src/state.rs::outgoing_pubrel_without_original_publish_is_unsolicited",
+          "rumqttc-v5/src/state.rs::incoming_pubrec_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v5/src/state.rs::incoming_pubrel_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v5/src/state.rs::incoming_pubcomp_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v5/src/mqttbytes/v5/puback.rs::puback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/puback.rs::puback_encoding_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/pubrec.rs::pubrec_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/pubrec.rs::pubrec_encoding_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/pubrel.rs::pubrel_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/pubrel.rs::pubrel_encoding_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs::pubcomp_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs::pubcomp_encoding_rejects_zero_packet_identifier"
+        ],
+        "notes": "State tests cover Packet Identifier matching for outgoing and incoming publish acknowledgements, and codec tests cover malformed zero-pkid acknowledgement packets."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.2.1-6",
+      "section_number": "2.2.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "A SUBACK and UNSUBACK MUST contain the Packet Identifier that was used in the corresponding SUBSCRIBE and UNSUBSCRIBE packet respectively.",
+      "source_anchor": "_Toc473619955",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+        "rumqttc-v5/src/mqttbytes/v5/unsuback.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is separate from the publish-acknowledgement rule in MQTT-2.2.1-5. rumqttc-v5 validates incoming SUBACK and UNSUBACK packets against the tracked Packet Identifier of the corresponding pending SUBSCRIBE or UNSUBSCRIBE request and rejects malformed zero-pkid packets at decode time.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "2.2.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Toc473619955",
+        "summary": "A SUBACK and UNSUBACK MUST contain the Packet Identifier that was used in the corresponding SUBSCRIBE and UNSUBSCRIBE packet respectively."
+      },
+      "authoritative_actor": "packet decoder and session state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_behavior_present_in_code": "no",
+        "notes": "The generated entry duplicated the broader MQTT-2.2.1-5 summary instead of isolating the SUBACK and UNSUBACK acknowledgement rule. The client implementation still validates the correct request-to-ack Packet Identifier matching."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_suback",
+            "MqttState::handle_incoming_unsuback"
+          ],
+          "reason": "Incoming SUBACK and UNSUBACK packets are matched against pending_subscribe and pending_unsubscribe by Packet Identifier and fail with StateError::Unsolicited when no corresponding request exists."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+          "symbols": [
+            "SubAck::read"
+          ],
+          "reason": "SUBACK decode rejects packet identifier 0 before state matching, so malformed server acknowledgements cannot bypass request correlation."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+          "symbols": [
+            "UnsubAck::read"
+          ],
+          "reason": "UNSUBACK decode rejects packet identifier 0 before state matching, so malformed server acknowledgements cannot bypass request correlation."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/state.rs::tracked_suback_returns_ack_with_properties_and_preserves_incoming_event",
+          "rumqttc-v5/src/state.rs::tracked_unsuback_returns_ack_with_properties_and_preserves_incoming_event",
+          "rumqttc-v5/src/state.rs::incoming_suback_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v5/src/state.rs::incoming_unsuback_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v5/src/mqttbytes/v5/suback.rs::suback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v5/src/mqttbytes/v5/unsuback.rs::unsuback_parsing_rejects_zero_packet_identifier"
+        ],
+        "notes": "State tests cover matching and rejection of unexpected SUBACK and UNSUBACK Packet Identifiers, and codec tests cover zero-pkid malformed packets."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-4.4.0-1",
+      "section_number": "4.4",
+      "section_title": "Message delivery retry",
+      "obligation": "MUST",
+      "summary": "When a Client reconnects with Clean Start set to 0 and a session is present, it MUST resend any unacknowledged QoS>0 PUBLISH and PUBREL packets using their original Packet Identifiers, and it MUST NOT resend messages at any other time.",
+      "source_anchor": "_Message_delivery_retry",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/tests/reliability.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement includes both the positive resend rule on resumed sessions and the negative prohibition on resending at other times. rumqttc-v5 moves unacknowledged outgoing QoS>0 PUBLISH and PUBREL state into reconnect replay queues, preserves their original Packet Identifiers, marks flushed publish replays with DUP when required, and drops replay state when CONNACK shows no session is present or when Clean Start begins a new session.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "4.4",
+        "section_title": "Message delivery retry",
+        "source_anchor": "_Message_delivery_retry",
+        "summary": "When a Client reconnects with Clean Start set to 0 and a session is present, both the Client and Server MUST resend unacknowledged QoS>0 PUBLISH and PUBREL packets using their original Packet Identifiers, and Clients and Servers MUST NOT resend messages at any other time."
+      },
+      "authoritative_actor": "client sender and session state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "unreviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry captured the resumed-session resend rule and the no-other-time resend prohibition correctly. The review confirmed the client-specific behavior against the event loop and state machine."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::clean_with_notices",
+            "MqttState::mark_outgoing_publishes_flush_attempted",
+            "MqttState::save_pubrel_with_notice"
+          ],
+          "reason": "On reconnect cleanup, the state machine requeues unacknowledged outgoing PUBLISH packets with their original Packet Identifiers, sets DUP on flushed QoS>0 publish replays, and requeues tracked PUBREL packets using their original Packet Identifiers."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "EventLoop::clean",
+            "EventLoop::reconcile_connack_session",
+            "should_replay_after_reconnect"
+          ],
+          "reason": "Transport or protocol errors trigger reconnect cleanup, replay envelopes are prepared only for reconnect handling, PUBACK and PUBREC are excluded from replay, and replay state is discarded when CONNACK shows no session is present or when a new session is started."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reset_session_state"
+          ],
+          "reason": "When the broker does not resume the session, the event loop clears pending replay state instead of resending old tracked packets on the new session, enforcing the no-other-time resend rule for lost sessions and Clean Start reconnects."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/state.rs::clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
+          "rumqttc-v5/src/state.rs::clean_does_not_mark_unflushed_qos1_publish_dup_for_reconnect_replay",
+          "rumqttc-v5/tests/reliability.rs::reconnection_resends_unacked_packets_from_the_previous_connection_first",
+          "rumqttc-v5/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first",
+          "rumqttc-v5/tests/reliability.rs::reconnection_replays_pubrel_with_original_packet_identifier",
+          "rumqttc-v5/tests/reliability.rs::reconnection_clean_start_drops_pending_packets_after_reconnect",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_keeps_pending_when_resumed_session_exists"
+        ],
+        "notes": "QoS 1 publish replay, DUP handling, QoS 2 PUBREL replay with the original Packet Identifier, and dropped replay state for non-resumed sessions are all directly tested."
       },
       "follow_up": null
     },
