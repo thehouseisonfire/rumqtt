@@ -1000,6 +1000,84 @@ async fn reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_f
 }
 
 #[tokio::test]
+async fn reconnection_replays_pubrel_with_original_packet_identifier() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options
+        .set_keep_alive(5)
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY));
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
+    let client_task = task::spawn(async move {
+        client
+            .publish("test/qos2/replay", QoS::ExactlyOnce, false, "qos2-replay")
+            .await
+            .unwrap();
+        time::sleep(Duration::from_secs(10)).await;
+    });
+
+    let eventloop_task = task::spawn(async move {
+        run(&mut eventloop, true).await.unwrap();
+    });
+
+    let first_pkid = {
+        let mut broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await;
+
+        let publish = broker
+            .read_publish_with_timeout(PHASE_TIMEOUT)
+            .await
+            .expect("expected initial QoS2 publish before disconnect");
+        assert_eq!(publish.qos, QoS::ExactlyOnce);
+        let pkid = publish.pkid;
+        broker.pubrec(pkid).await;
+
+        match broker
+            .read_packet_with_timeout(PHASE_TIMEOUT)
+            .await
+            .expect("expected PUBREL after PUBREC")
+        {
+            Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, pkid),
+            packet => panic!("expected PUBREL after PUBREC, got {packet:?}"),
+        }
+
+        pkid
+    };
+
+    let listener = listener_on(port).await;
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: true,
+        },
+    )
+    .await;
+
+    match broker
+        .read_packet_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("expected replayed PUBREL after reconnect")
+    {
+        Packet::PubRel(pubrel) => {
+            assert_eq!(pubrel.pkid, first_pkid);
+            broker.pubcomp(pubrel.pkid).await;
+        }
+        packet => panic!("expected replayed PUBREL after reconnect, got {packet:?}"),
+    }
+
+    client_task.abort();
+    let _ = client_task.await;
+    eventloop_task.abort();
+    let _ = eventloop_task.await;
+}
+
+#[tokio::test]
 async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("issue-1031", ("127.0.0.1", port));
