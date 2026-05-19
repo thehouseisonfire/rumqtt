@@ -126,9 +126,13 @@ async fn connection_should_timeout_on_time() {
     let o = eventloop.poll().await;
     let elapsed = start.elapsed();
 
-    dbg!(&o);
     assert_matches!(o, Err(ConnectionError::NetworkTimeout));
-    assert_eq!(elapsed.as_secs(), 5);
+
+    let expected = Duration::from_secs(5);
+    assert!(
+        elapsed >= expected && elapsed <= expected + Duration::from_secs(1),
+        "connection timeout happened outside expected window: expected around {expected:?}, got {elapsed:?}"
+    );
 }
 
 //
