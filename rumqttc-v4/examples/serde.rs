@@ -1,3 +1,8 @@
+#![allow(
+    clippy::mem_forget,
+    reason = "SchemaRead derive from wincode emits mem::forget internally"
+)]
+
 use rumqttc::{Client, Event, Incoming, MqttOptions, QoS};
 use std::thread;
 use std::time::{Duration, SystemTime};
