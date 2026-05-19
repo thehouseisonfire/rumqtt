@@ -7,6 +7,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use core::fmt;
 use mqttbytes_core::primitives::{self as core_primitives, Error as PrimitiveError};
 use std::slice::Iter;
+use std::str::Utf8Error;
 
 pub mod v4;
 
@@ -46,8 +47,8 @@ pub enum Error {
     PayloadSizeLimitExceeded(usize),
     #[error("Payload required")]
     PayloadRequired,
-    #[error("Topic is not UTF-8")]
-    TopicNotUtf8,
+    #[error("Topic is not UTF-8: {source}")]
+    TopicNotUtf8 { source: Utf8Error },
     #[error("Promised boundary crossed: {0}")]
     BoundaryCrossed(usize),
     #[error("Malformed packet")]
@@ -76,7 +77,7 @@ impl From<PrimitiveError> for Error {
             PrimitiveError::BoundaryCrossed(len) => Self::BoundaryCrossed(len),
             PrimitiveError::MalformedPacket => Self::MalformedPacket,
             PrimitiveError::MalformedRemainingLength => Self::MalformedRemainingLength,
-            PrimitiveError::TopicNotUtf8 => Self::TopicNotUtf8,
+            PrimitiveError::TopicNotUtf8 { source } => Self::TopicNotUtf8 { source },
             PrimitiveError::InsufficientBytes(required) => Self::InsufficientBytes(required),
         }
     }

@@ -79,7 +79,7 @@ impl From<PrimitiveError> for Error {
             PrimitiveError::BoundaryCrossed(len) => Self::BoundaryCrossed(len),
             PrimitiveError::MalformedPacket => Self::MalformedPacket,
             PrimitiveError::MalformedRemainingLength => Self::MalformedRemainingLength,
-            PrimitiveError::TopicNotUtf8 => Self::TopicNotUtf8,
+            PrimitiveError::TopicNotUtf8 { source } => Self::TopicNotUtf8 { source },
             PrimitiveError::InsufficientBytes(required) => Self::InsufficientBytes(required),
         }
     }

@@ -366,7 +366,7 @@ mod test {
         let subscribe_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Subscribe::read(fixed_header, subscribe_bytes);
 
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]

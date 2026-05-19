@@ -48,8 +48,8 @@ pub enum Error {
     PayloadRequired,
     #[error("Payload is required = {0}")]
     PayloadNotUtf8(#[from] Utf8Error),
-    #[error("Topic not utf-8")]
-    TopicNotUtf8,
+    #[error("Topic not utf-8: {source}")]
+    TopicNotUtf8 { source: Utf8Error },
     #[error("Promised boundary crossed, contains {0} bytes")]
     BoundaryCrossed(usize),
     #[error("Packet is malformed")]

@@ -1,5 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::slice::Iter;
+use std::str::Utf8Error;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -11,8 +12,8 @@ pub enum Error {
     MalformedPacket,
     #[error("Remaining length is malformed")]
     MalformedRemainingLength,
-    #[error("Topic not utf-8")]
-    TopicNotUtf8,
+    #[error("Topic not utf-8: {source}")]
+    TopicNotUtf8 { source: Utf8Error },
     #[error("Insufficient number of bytes to frame packet, {0} more bytes required")]
     InsufficientBytes(usize),
 }
@@ -160,10 +161,11 @@ pub fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
 /// # Errors
 ///
 /// Returns the validated borrowed string on success, [`Error::TopicNotUtf8`]
-/// when the bytes are not well-formed UTF-8, and [`Error::MalformedPacket`]
-/// when the string contains U+0000.
+/// when the bytes are not well-formed UTF-8, preserving the underlying
+/// [`Utf8Error`], and [`Error::MalformedPacket`] when the string contains
+/// U+0000.
 pub fn validate_mqtt_string(bytes: &[u8]) -> Result<&str, Error> {
-    let string = std::str::from_utf8(bytes).map_err(|_| Error::TopicNotUtf8)?;
+    let string = std::str::from_utf8(bytes).map_err(|source| Error::TopicNotUtf8 { source })?;
 
     if bytes.contains(&0) {
         return Err(Error::MalformedPacket);
@@ -340,7 +342,7 @@ mod tests {
         bytes.extend_from_slice(&[0xED, 0xA0, 0x80]);
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -351,7 +353,7 @@ mod tests {
         bytes.extend_from_slice(&[0xED, 0xBF, 0xBF]);
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -362,7 +364,7 @@ mod tests {
         bytes.extend_from_slice(&[0xED, 0xA0, 0x81]);
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -373,7 +375,7 @@ mod tests {
         bytes.extend_from_slice(&[0xC0, 0x80]);
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -384,7 +386,7 @@ mod tests {
         bytes.extend_from_slice(&[0xE0]);
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -395,7 +397,7 @@ mod tests {
         bytes.extend_from_slice(&[0xC2, 0x00]);
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
