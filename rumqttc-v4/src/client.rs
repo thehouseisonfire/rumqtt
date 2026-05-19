@@ -1629,12 +1629,14 @@ pub enum TryRecvError {
 }
 
 /// Error type returned by [`Connection::recv_timeout`]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RecvTimeoutError {
     /// User has closed requests channel
+    #[error("all request senders have been dropped")]
     Disconnected,
-    /// Recv request timedout
-    Timeout,
+    /// No event arrived before the supplied duration elapsed.
+    #[error("no event arrived within {duration:?}")]
+    Timeout { duration: Duration },
 }
 
 ///  MQTT connection. Maintains all the necessary state
@@ -1710,7 +1712,7 @@ impl Connection {
         let event = self
             .runtime
             .block_on(async { timeout(duration, f).await })
-            .map_err(|_| RecvTimeoutError::Timeout)?;
+            .map_err(|_| RecvTimeoutError::Timeout { duration })?;
 
         resolve_event(event).ok_or(RecvTimeoutError::Disconnected)
     }
