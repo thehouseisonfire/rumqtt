@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[tokio::test]
 async fn v4_custom_socket_connector_is_invoked() {
     let called = Arc::new(AtomicBool::new(false));
-    let called_flag = called.clone();
+    let called_flag = Arc::clone(&called);
 
     let mut options = rumqttc::MqttOptions::new("test-client", "127.0.0.1");
     options.set_socket_connector(move |_host, _network_options| {
-        let called_flag = called_flag.clone();
+        let called_flag = Arc::clone(&called_flag);
         async move {
             called_flag.store(true, Ordering::Relaxed);
             Err::<tokio::net::TcpStream, io::Error>(io::Error::other(
