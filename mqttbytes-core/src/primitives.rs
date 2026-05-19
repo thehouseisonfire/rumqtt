@@ -3,8 +3,8 @@ use std::slice::Iter;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum Error {
-    #[error("Payload is too long")]
-    PayloadTooLong,
+    #[error("Payload is too long: {actual} bytes exceeds max {max} bytes")]
+    PayloadTooLong { actual: usize, max: usize },
     #[error("Promised boundary crossed, contains {0} bytes")]
     BoundaryCrossed(usize),
     #[error("Packet is malformed")]
@@ -179,7 +179,10 @@ pub fn validate_mqtt_string(bytes: &[u8]) -> Result<&str, Error> {
 /// Returns [`Error::PayloadTooLong`] when `bytes` cannot fit in an MQTT
 /// two-byte length-prefixed field.
 pub fn write_mqtt_bytes(stream: &mut BytesMut, bytes: &[u8]) -> Result<(), Error> {
-    let len = u16::try_from(bytes.len()).map_err(|_| Error::PayloadTooLong)?;
+    let len = u16::try_from(bytes.len()).map_err(|_| Error::PayloadTooLong {
+        actual: bytes.len(),
+        max: usize::from(u16::MAX),
+    })?;
     stream.put_u16(len);
     stream.extend_from_slice(bytes);
     Ok(())
@@ -208,7 +211,10 @@ pub fn write_mqtt_string(stream: &mut BytesMut, string: &str) -> Result<(), Erro
 /// cannot happen for valid Rust integer conversions.
 pub fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize, Error> {
     if len > 268_435_455 {
-        return Err(Error::PayloadTooLong);
+        return Err(Error::PayloadTooLong {
+            actual: len,
+            max: 268_435_455,
+        });
     }
 
     let mut done = false;
@@ -440,7 +446,13 @@ mod tests {
 
         let result = write_mqtt_bytes(&mut stream, &bytes);
 
-        assert_eq!(result, Err(Error::PayloadTooLong));
+        assert_eq!(
+            result,
+            Err(Error::PayloadTooLong {
+                actual: bytes.len(),
+                max: usize::from(u16::MAX),
+            })
+        );
         assert!(stream.is_empty());
     }
 
@@ -451,7 +463,13 @@ mod tests {
 
         let result = write_mqtt_string(&mut stream, &string);
 
-        assert_eq!(result, Err(Error::PayloadTooLong));
+        assert_eq!(
+            result,
+            Err(Error::PayloadTooLong {
+                actual: string.len(),
+                max: usize::from(u16::MAX),
+            })
+        );
         assert!(stream.is_empty());
     }
 }

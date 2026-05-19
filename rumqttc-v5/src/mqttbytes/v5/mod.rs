@@ -75,7 +75,7 @@ pub enum Packet {
 impl From<PrimitiveError> for Error {
     fn from(error: PrimitiveError) -> Self {
         match error {
-            PrimitiveError::PayloadTooLong => Self::PayloadTooLong,
+            PrimitiveError::PayloadTooLong { .. } => Self::PayloadTooLong,
             PrimitiveError::BoundaryCrossed(len) => Self::BoundaryCrossed(len),
             PrimitiveError::MalformedPacket => Self::MalformedPacket,
             PrimitiveError::MalformedRemainingLength => Self::MalformedRemainingLength,
