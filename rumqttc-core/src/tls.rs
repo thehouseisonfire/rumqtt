@@ -110,7 +110,7 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
 
             Arc::new(config)
         }
-        TlsConfiguration::Rustls(tls_client_config) => Arc::clone(&tls_client_config),
+        TlsConfiguration::Rustls(tls_client_config) => Arc::clone(tls_client_config),
         #[allow(unreachable_patterns)]
         _ => unreachable!("This cannot be called for other TLS backends than Rustls"),
     };
