@@ -843,7 +843,7 @@ mod test {
         let fixed_header = parse_fixed_header(stream.iter()).unwrap();
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -882,7 +882,7 @@ mod test {
         let fixed_header = parse_fixed_header(stream.iter()).unwrap();
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -918,7 +918,7 @@ mod test {
         let fixed_header = parse_fixed_header(stream.iter()).unwrap();
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -940,7 +940,7 @@ mod test {
         let fixed_header = parse_fixed_header(stream.iter()).unwrap();
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     /// MQTT-3.1.2-9 / MQTT-3.1.2-11: When no last will is set, the Will Flag,

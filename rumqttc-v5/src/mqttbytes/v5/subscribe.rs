@@ -406,7 +406,7 @@ mod test {
 
         let result = Packet::read(&mut bytes, Some(1024));
 
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -463,7 +463,7 @@ mod test {
 
         let result = SubscribeProperties::read(&mut bytes);
 
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod test {
 
         let result = SubscribeProperties::read(&mut bytes);
 
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]

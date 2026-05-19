@@ -132,7 +132,7 @@ fn validate_publish_topic_name(topic: &[u8]) -> Result<(), Error> {
         return Err(Error::IncorrectPacketFormat);
     }
 
-    let topic = std::str::from_utf8(topic).map_err(|_| Error::TopicNotUtf8)?;
+    let topic = std::str::from_utf8(topic).map_err(|source| Error::TopicNotUtf8 { source })?;
     if topic.contains('\0') {
         return Err(Error::MalformedPacket);
     }
@@ -518,7 +518,7 @@ mod test {
         let fixed_header = parse_fixed_header(stream.iter()).unwrap();
         let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Publish::read(fixed_header, publish_bytes);
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod test {
 
         let mut buf = BytesMut::new();
         let result = publish.write(&mut buf);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod test {
         let fixed_header = parse_fixed_header(stream.iter()).unwrap();
         let publish_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Publish::read(fixed_header, publish_bytes);
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -569,7 +569,7 @@ mod test {
 
         let mut buf = BytesMut::new();
         let result = publish.write(&mut buf);
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]

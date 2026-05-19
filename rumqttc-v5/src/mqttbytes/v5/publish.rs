@@ -496,7 +496,7 @@ mod test {
         );
         let result = Packet::read(&mut frame, Some(1024));
 
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]

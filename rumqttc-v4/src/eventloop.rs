@@ -2063,7 +2063,7 @@ mod tests {
         let err = eventloop.poll().await.unwrap_err();
         assert!(matches!(
             err,
-            ConnectionError::MqttState(StateError::Deserialization(MqttError::TopicNotUtf8))
+            ConnectionError::MqttState(StateError::Deserialization(MqttError::TopicNotUtf8 { .. }))
         ));
         assert!(
             eventloop.network.is_none(),

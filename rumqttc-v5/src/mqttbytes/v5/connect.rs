@@ -1063,7 +1063,7 @@ mod test {
         ]);
         let result = LastWill::read(0x04, &mut bytes);
 
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -1106,7 +1106,7 @@ mod test {
         let mut buffer = BytesMut::new();
         let result = will.write(&mut buffer);
 
-        assert!(matches!(result, Err(Error::TopicNotUtf8)));
+        assert!(matches!(result, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]
@@ -1264,7 +1264,7 @@ mod test {
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
 
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     /// [MQTT-3.1.3-12] / [MQTT-1.5.4-2]: The User Name MUST be a UTF-8 Encoded
@@ -1367,7 +1367,7 @@ mod test {
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
 
-        assert!(matches!(packet, Err(Error::TopicNotUtf8)));
+        assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
     #[test]

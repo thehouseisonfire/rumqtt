@@ -18,7 +18,7 @@ impl InboundDisconnect {
             mqttbytes::Error::MalformedPacket
             | mqttbytes::Error::MalformedRemainingLength
             | mqttbytes::Error::IncorrectPacketFormat
-            | mqttbytes::Error::TopicNotUtf8 => DisconnectReasonCode::MalformedPacket,
+            | mqttbytes::Error::TopicNotUtf8 { .. } => DisconnectReasonCode::MalformedPacket,
             mqttbytes::Error::EmptySubscription | mqttbytes::Error::ProtocolError => {
                 DisconnectReasonCode::ProtocolError
             }
@@ -538,7 +538,7 @@ mod tests {
         let err = network.read().await.unwrap_err();
         assert!(matches!(
             err,
-            StateError::Deserialization(mqttbytes::Error::TopicNotUtf8)
+            StateError::Deserialization(mqttbytes::Error::TopicNotUtf8 { .. })
         ));
 
         let mut response = [0; 4];
