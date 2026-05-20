@@ -4,6 +4,7 @@
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
 - `rumqttc` v5: Add `MqttStateBuilder::client_topic_alias_max(u16)` builder method and `MqttState::set_client_topic_alias_max(Option<u16>)` to configure the incoming Topic Alias Maximum, propagated from `MqttOptions::topic_alias_max()` at connect time.
 ### Changed
+- `rumqttc` v4 (Breaking Change): Make `EventLoop::network` private for v5 parity, and so downstream code can no longer access the live transport and inject arbitrary MQTT packets, including a second `CONNECT`, on an existing connection.
 - `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
 - `rumqttc` v4 (Breaking Change): Add state-level `ProtocolViolation`, remove `StateError::WrongPacket`, and report duplicate or post-handshake invalid inbound packets as protocol-state errors instead of codec format errors.
 - `rumqttc` v5 (Breaking Change): Add state-level `ProtocolViolation`, remove `StateError::WrongPacket`, report duplicate or post-handshake invalid inbound packets as protocol-state errors, and avoid queueing rejected inbound packets as successful events.
