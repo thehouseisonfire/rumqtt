@@ -60,6 +60,9 @@ pub enum Error {
     #[cfg(feature = "use-native-tls")]
     #[error("Native TLS error {0}")]
     NativeTls(#[from] NativeTlsError),
+    /// Unsupported or not-enabled TLS backend for the given configuration
+    #[error("TLS configuration is unsupported by the enabled TLS backends")]
+    UnsupportedBackendConfiguration,
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
@@ -211,10 +214,6 @@ pub fn websocket_tls_connector(
 /// Returns any TLS configuration, server-name validation, or handshake error
 /// produced by the selected backend.
 ///
-/// # Panics
-///
-/// Panics only if the build enables no backend matching `tls_config`, which
-/// indicates an invalid internal configuration.
 pub async fn tls_connect(
     addr: &str,
     _port: u16,
@@ -236,7 +235,7 @@ pub async fn tls_connect(
             Box::new(connector.connect(addr, tcp).await?)
         }
         #[allow(unreachable_patterns)]
-        _ => panic!("Unknown or not enabled TLS backend configuration"),
+        _ => return Err(Error::UnsupportedBackendConfiguration),
     };
     Ok(tls)
 }
