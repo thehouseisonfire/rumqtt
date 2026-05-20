@@ -374,6 +374,18 @@ impl EventLoop {
         self.pending.is_empty() && self.queued.is_empty()
     }
 
+    /// Returns true when all request sources are drained and no more work remains.
+    fn all_request_sources_drained(&self) -> bool {
+        self.queued.is_empty()
+            && self.pending.is_empty()
+            && self.pending_disconnect.is_none()
+            && self.requests_rx.is_disconnected()
+            && self.requests_rx.is_empty()
+            && self.control_requests_rx.is_disconnected()
+            && self.control_requests_rx.is_empty()
+            && self.state.outbound_requests_drained()
+    }
+
     /// Drains pending retransmission queue and fails tracked notices with the given reason.
     ///
     /// Returns the number of pending requests removed from the queue.
@@ -508,15 +520,7 @@ impl EventLoop {
                 return self.handle_immediate_disconnect(envelope).await;
             }
 
-            if self.queued.is_empty()
-                && self.pending.is_empty()
-                && self.pending_disconnect.is_none()
-                && self.requests_rx.is_disconnected()
-                && self.requests_rx.is_empty()
-                && self.control_requests_rx.is_disconnected()
-                && self.control_requests_rx.is_empty()
-                && self.state.outbound_requests_drained()
-            {
+            if self.all_request_sources_drained() {
                 return Err(ConnectionError::RequestsDone);
             }
 
