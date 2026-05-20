@@ -107,7 +107,7 @@ mod test {
     fn read_connack(packetstream: &[u8]) -> Result<ConnAck, Error> {
         let mut stream = bytes::BytesMut::new();
         stream.extend_from_slice(packetstream);
-        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let fixed_header = parse_fixed_header(stream.iter())?;
         let connack_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         ConnAck::read(fixed_header, connack_bytes)
     }
