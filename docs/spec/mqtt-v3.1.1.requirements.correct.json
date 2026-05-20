@@ -755,6 +755,412 @@
         "notes": "No client-side test can prove the server's sender-side Packet Identifier reuse policy. Incoming publish handling is covered elsewhere, but that is not evidence of server compliance."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-2.3.1-5",
+      "section_number": "2.3.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST NOT",
+      "summary": "A QoS 0 PUBLISH packet MUST NOT carry a Packet Identifier.",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+        "rumqttc-v4/src/state.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is the sender-side QoS 0 packet format rule. rumqttc-v4 omits the Packet Identifier when encoding QoS 0 PUBLISH packets and does not allocate or track one for QoS 0 sends.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "2.3.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Figure_2.3_-",
+        "summary": "A PUBLISH Packet MUST NOT contain a Packet Identifier if its QoS value is set to 0."
+      },
+      "authoritative_actor": "packet encoder",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior JSON files mapped this requirement to the correct QoS 0 PUBLISH Packet Identifier prohibition."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
+          "symbols": [
+            "Publish::len",
+            "Publish::read",
+            "Publish::write"
+          ],
+          "reason": "QoS 0 encoding excludes the two-byte Packet Identifier field, and QoS 0 decoding does not consume a Packet Identifier from the wire."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_publish_with_notice"
+          ],
+          "reason": "The state machine skips Packet Identifier assignment and inflight tracking for QoS::AtMostOnce publishes."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_encoding_works",
+          "rumqttc-v4/src/mqttbytes/v4/publish.rs::qos0_publish_encoding_omits_packet_identifier_even_if_struct_has_pkid"
+        ],
+        "notes": "Packet-level tests cover both QoS 0 decode and the absence of Packet Identifier bytes in encoded QoS 0 publishes."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.3.1-6",
+      "section_number": "2.3.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "PUBACK, PUBREC, and PUBREL packets MUST reuse the Packet Identifier from the corresponding PUBLISH packet.",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 5,
+      "candidate_paths": [
+        "rumqttc-v4/src/state.rs",
+        "rumqttc-v4/src/client.rs",
+        "rumqttc-v4/src/mqttbytes/v4/puback.rs",
+        "rumqttc-v4/src/mqttbytes/v4/pubrec.rs",
+        "rumqttc-v4/src/mqttbytes/v4/pubrel.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement covers only the publish acknowledgement packets. rumqttc-v4 generates PUBACK, PUBREC, and PUBREL with the tracked PUBLISH Packet Identifier and rejects inbound or manual acknowledgement flows whose Packet Identifier does not match tracked protocol state.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "2.3.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Figure_2.3_-",
+        "summary": "A PUBACK, PUBREC or PUBREL Packet MUST contain the same Packet Identifier as the PUBLISH Packet that was originally sent."
+      },
+      "authoritative_actor": "client sender and receiver state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original generated entry merged MQTT-2.3.1-7 into this requirement. That mapping still included the correct PUBACK/PUBREC/PUBREL rule, but it blurred the requirement boundary. The fix-attempt isolated the authoritative sentence."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::outgoing_puback",
+            "MqttState::outgoing_pubrec_for_incoming_publish"
+          ],
+          "reason": "Automatic and manual PUBACK/PUBREC flows use the Packet Identifier from the received PUBLISH and reject untracked identifiers."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_pubrec",
+            "MqttState::save_pubrel_with_notice"
+          ],
+          "reason": "PUBREL is created from the received PUBREC Packet Identifier and may only be sent for a tracked QoS 2 publish exchange."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_puback",
+            "MqttState::handle_incoming_pubrec",
+            "MqttState::handle_incoming_pubrel"
+          ],
+          "reason": "Inbound PUBACK, PUBREC, and PUBREL packets are matched against tracked Packet Identifier state and rejected as unsolicited on mismatch."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/state.rs::manual_puback_must_match_received_qos1_publish",
+          "rumqttc-v4/src/state.rs::manual_pubrec_must_match_received_qos2_publish",
+          "rumqttc-v4/src/state.rs::outgoing_pubrel_without_original_publish_is_unsolicited",
+          "rumqttc-v4/src/state.rs::incoming_puback_with_pkid_beyond_allocated_tracking_is_unsolicited",
+          "rumqttc-v4/src/state.rs::incoming_pubrec_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v4/src/state.rs::incoming_pubrel_with_untracked_pkid_is_unsolicited"
+        ],
+        "notes": "State tests cover matching Packet Identifier requirements for client-generated PUBACK/PUBREC/PUBREL and unsolicited mismatch handling for inbound acknowledgement packets."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-2.3.1-7",
+      "section_number": "2.3.1",
+      "section_title": "Packet Identifier",
+      "obligation": "MUST",
+      "summary": "SUBACK and UNSUBACK packets MUST reuse the Packet Identifier from the corresponding SUBSCRIBE or UNSUBSCRIBE packet.",
+      "source_anchor": "_Figure_2.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/state.rs",
+        "rumqttc-v4/src/mqttbytes/v4/suback.rs",
+        "rumqttc-v4/src/mqttbytes/v4/unsuback.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is the server acknowledgement Packet Identifier rule. rumqttc-v4 cannot prove the server's sender-side intent, but it does enforce the client-side reaction by matching inbound SUBACK and UNSUBACK packets to the tracked SUBSCRIBE and UNSUBSCRIBE Packet Identifiers and rejecting mismatches.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "2.3.1",
+        "section_title": "Packet Identifier",
+        "source_anchor": "_Figure_2.3_-",
+        "summary": "SUBACK and UNSUBACK MUST contain the Packet Identifier that was used in the corresponding SUBSCRIBE and UNSUBSCRIBE Packet respectively."
+      },
+      "authoritative_actor": "server sender; client receiver state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original generated entry duplicated the combined MQTT-2.3.1-6 and MQTT-2.3.1-7 text instead of isolating the SUBACK/UNSUBACK rule. The fix-attempt restored the correct requirement boundary."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_subscribe",
+            "MqttState::handle_incoming_suback"
+          ],
+          "reason": "SUBSCRIBE requests are tracked by Packet Identifier, and inbound SUBACK packets are accepted only when their Packet Identifier matches a pending subscription request."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_unsubscribe",
+            "MqttState::handle_incoming_unsuback"
+          ],
+          "reason": "UNSUBSCRIBE requests are tracked by Packet Identifier, and inbound UNSUBACK packets are accepted only when their Packet Identifier matches a pending unsubscribe request."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/suback.rs",
+          "symbols": [
+            "SubAck::read"
+          ],
+          "reason": "SUBACK decode rejects Packet Identifier 0 before state handling."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/unsuback.rs",
+          "symbols": [
+            "UnsubAck::read"
+          ],
+          "reason": "UNSUBACK decode rejects Packet Identifier 0 before state handling."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/state.rs::tracked_suback_returns_ack_and_preserves_incoming_event",
+          "rumqttc-v4/src/state.rs::tracked_unsuback_returns_ack_and_preserves_incoming_event",
+          "rumqttc-v4/src/state.rs::incoming_suback_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v4/src/state.rs::incoming_unsuback_with_untracked_pkid_is_unsolicited",
+          "rumqttc-v4/src/mqttbytes/v4/suback.rs::suback_parsing_rejects_zero_packet_identifier",
+          "rumqttc-v4/src/mqttbytes/v4/unsuback.rs::unsuback_parsing_rejects_zero_packet_identifier"
+        ],
+        "notes": "Tests cover successful matching to pending requests, unsolicited mismatch handling, and zero Packet Identifier rejection at decode time."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.0-1",
+      "section_number": "3.1",
+      "section_title": "CONNECT – Client requests a connection to a Server",
+      "obligation": "MUST",
+      "summary": "After a Network Connection is established by a Client to a Server, the first Packet sent from the Client to the Server MUST be a CONNECT Packet.",
+      "source_anchor": "_Ref363033523",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/eventloop.rs",
+        "rumqttc-v4/src/lib.rs",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is client-side and rumqttc-v4 enforces it at the event loop boundary: once the transport is established, the connection path sends CONNECT before exposing the network to any queued user request.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1",
+        "section_title": "CONNECT – Client requests a connection to a Server",
+        "source_anchor": "_Ref363033523",
+        "summary": "After a Network Connection is established by a Client to a Server, the first Packet sent from the Client to the Server MUST be a CONNECT Packet."
+      },
+      "authoritative_actor": "client sender",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior JSON files preserve the authoritative requirement text. The fix-attempt only changed review status, not the mapping itself."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "connect",
+            "mqtt_connect"
+          ],
+          "reason": "When `self.network` is `None`, `poll()` establishes the transport with `connect()`, which immediately calls `mqtt_connect()` to write CONNECT and await CONNACK before storing the network handle or processing queued requests."
+        },
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": [
+            "Request"
+          ],
+          "reason": "The public request channel has no `Connect` variant, so callers cannot inject any other MQTT packet ahead of the internally generated CONNECT."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs::mqtt_connect_sends_connect_as_first_packet_on_the_wire",
+          "rumqttc-v4/src/eventloop.rs::poll_sends_connect_before_queued_requests"
+        ],
+        "notes": "Wire-level and eventloop-level tests confirm that CONNECT is the first MQTT packet emitted on a newly established connection, even when a user request is already queued."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.0-2",
+      "section_number": "3.1",
+      "section_title": "CONNECT – Client requests a connection to a Server",
+      "obligation": "MUST",
+      "summary": "A Client can only send the CONNECT Packet once over a Network Connection, and a Server MUST treat a second CONNECT from that Client as a protocol violation and disconnect it.",
+      "source_anchor": "_Ref363033523",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/eventloop.rs",
+        "rumqttc-v4/src/lib.rs",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement includes both a client-side restriction and a server-side reaction. rumqttc-v4 satisfies the applicable client-side half by keeping the live network handle internal and reserving CONNECT emission for the internal connection setup path; the server-side disconnect clause is not a client obligation.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1",
+        "section_title": "CONNECT – Client requests a connection to a Server",
+        "source_anchor": "_Ref363033523",
+        "summary": "A Client can only send the CONNECT Packet once over a Network Connection. The Server MUST process a second CONNECT Packet sent from a Client as a protocol violation and disconnect the Client."
+      },
+      "authoritative_actor": "client sender; server receiver",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "wrong",
+        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_behavior_present_in_code": "no",
+        "notes": "The original generated entry preserved both halves of the requirement. The fix-attempt narrowed the mapping to the server reaction only, which would have missed the client-side once-per-connection obligation during audit."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/lib.rs",
+          "symbols": [
+            "Request"
+          ],
+          "reason": "No public request variant can carry CONNECT, so the client API cannot request a second CONNECT over an already established network connection."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop"
+          ],
+          "reason": "The live `Network` handle is stored in a private `EventLoop` field, so downstream code cannot obtain the active transport and call `Network::write(Packet::Connect(...))` on an existing connection."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "connect",
+            "mqtt_connect",
+            "EventLoop::clean"
+          ],
+          "reason": "`mqtt_connect()` is only reached from `poll()` when `self.network` is `None`. After a successful handshake, later polls use `select()` on the existing connection; if the connection fails, `clean()` drops it and any subsequent CONNECT is sent only after a brand-new network connection is created."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs::eventloop_sends_only_one_connect_per_network_connection"
+        ],
+        "notes": "The wire-level regression verifies that activity after the initial handshake on the same socket is not another CONNECT. The API boundary is enforced directly by keeping the active network handle private rather than by a standalone request-surface test."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-1",
+      "section_number": "3.1.2.1",
+      "section_title": "Protocol Name",
+      "obligation": "MAY",
+      "summary": "If the protocol name is incorrect, the Server MAY disconnect the Client or continue under some other specification, but it MUST NOT continue processing that CONNECT under MQTT 3.1.1.",
+      "source_anchor": "_Figure_3.2_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This is a server-side requirement about how to respond to an inbound CONNECT with the wrong protocol name. rumqttc-v4 is an MQTT client and does not act as the receiving server for CONNECT packets, so the normative behavior is outside the client's responsibility.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.1",
+        "section_title": "Protocol Name",
+        "source_anchor": "_Figure_3.2_-",
+        "summary": "If the protocol name is incorrect the Server MAY disconnect the Client, or it MAY continue processing the CONNECT packet in accordance with some other specification. In the latter case, the Server MUST NOT continue to process the CONNECT packet in line with this specification."
+      },
+      "authoritative_actor": "server receiver",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior JSON files map the requirement text correctly. The requirement remains server-only for this client audit pass."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write"
+          ],
+          "reason": "The client always emits the correct MQTT 3.1.1 protocol name by hardcoding `write_mqtt_string(buffer, \"MQTT\")`, so ordinary client operation does not trigger the server-side branch described by the requirement."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::read"
+          ],
+          "reason": "The defensive decoder rejects a non-`MQTT` protocol name with `Error::InvalidProtocol`, but this is not evidence for the server-only normative behavior because clients do not receive CONNECT packets in the normal protocol role."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side test is required for this server-only requirement. There is also no dedicated protocol-name encoding regression test in the current v4 suite."
+      },
+      "follow_up": null
     }
   ]
 }

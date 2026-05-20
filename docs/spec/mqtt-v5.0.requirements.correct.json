@@ -399,7 +399,7 @@
         "source_anchor": "_Toc473619955",
         "summary": "A PUBLISH packet MUST NOT contain a Packet Identifier if its QoS value is set to 0."
       },
-      "authoritative_actor": "packet encoder and packet decoder",
+      "authoritative_actor": "packet encoder",
       "applicability": "applicable",
       "mapping_review": {
         "original_mapping_status": "reviewed",
@@ -408,7 +408,7 @@
         "fix_attempt_assessment": "absent",
         "wrong_mapping_client_behavior_risk": "no",
         "wrong_mapping_behavior_present_in_code": "not_applicable",
-        "notes": "The generated entry matched the authoritative requirement."
+        "notes": "The generated entry matched the authoritative QoS 0 sender-side prohibition."
       },
       "evidence": [
         {
@@ -625,9 +625,9 @@
         "original_mapping_assessment": "wrong",
         "fix_attempt_status": "absent",
         "fix_attempt_assessment": "absent",
-        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_client_behavior_risk": "no",
         "wrong_mapping_behavior_present_in_code": "no",
-        "notes": "The generated entry merged MQTT-2.2.1-5 with the separate SUBACK and UNSUBACK rule from MQTT-2.2.1-6. The client implementation still enforces the correct publish-acknowledgement Packet Identifier matching."
+        "notes": "The generated entry merged MQTT-2.2.1-5 with the separate SUBACK and UNSUBACK rule from MQTT-2.2.1-6. That boundary error did not imply different packet behavior, but it was still the wrong requirement summary."
       },
       "evidence": [
         {
@@ -743,9 +743,9 @@
         "original_mapping_assessment": "wrong",
         "fix_attempt_status": "absent",
         "fix_attempt_assessment": "absent",
-        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_client_behavior_risk": "no",
         "wrong_mapping_behavior_present_in_code": "no",
-        "notes": "The generated entry duplicated the broader MQTT-2.2.1-5 summary instead of isolating the SUBACK and UNSUBACK acknowledgement rule. The client implementation still validates the correct request-to-ack Packet Identifier matching."
+        "notes": "The generated entry duplicated the broader MQTT-2.2.1-5 summary instead of isolating the SUBACK and UNSUBACK acknowledgement rule. That mapping error blurred review scope more than runtime behavior."
       },
       "evidence": [
         {
@@ -925,6 +925,189 @@
           "rumqttc-v5/src/framed.rs::read_returns_decode_error_promptly_under_write_backpressure"
         ],
         "notes": "These tests cover the client's defensive error-handling path, not the server-only MUST in MQTT-4.13.1-1."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.0-1",
+      "section_number": "3.1",
+      "section_title": "CONNECT – Connection Request",
+      "obligation": "MUST",
+      "summary": "After a Network Connection is established by a Client to a Server, the first packet sent from the Client to the Server MUST be a CONNECT packet.",
+      "source_anchor": "_CONNECT_–_Connection",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/lib.rs",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is client-side. rumqttc-v5 enforces it at the event-loop boundary by establishing the transport and sending CONNECT before any queued user packet can be written on that network connection.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1",
+        "section_title": "CONNECT – Connection Request",
+        "source_anchor": "_CONNECT_–_Connection",
+        "summary": "After a Network Connection is established by a Client to a Server, the first packet sent from the Client to the Server MUST be a CONNECT packet."
+      },
+      "authoritative_actor": "client sender",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry matches the authoritative requirement text."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "connect",
+            "mqtt_connect",
+            "mqtt_connect_inner"
+          ],
+          "reason": "When `self.network` is `None`, `poll()` establishes the transport and reaches `mqtt_connect_inner()`, which writes the CONNECT packet before the network handle is retained for normal request processing."
+        },
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": [
+            "Request"
+          ],
+          "reason": "The public request surface has no `Connect` variant, so callers cannot inject any other MQTT packet ahead of the internally generated CONNECT."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::mqtt_connect_sends_connect_as_first_packet_on_the_wire",
+          "rumqttc-v5/src/eventloop.rs::poll_sends_connect_before_queued_requests"
+        ],
+        "notes": "Wire-level and eventloop-level tests confirm that CONNECT is the first MQTT packet emitted on a newly established connection, including when a request is already queued."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.0-2",
+      "section_number": "3.1",
+      "section_title": "CONNECT – Connection Request",
+      "obligation": "MUST",
+      "summary": "A Client can only send the CONNECT packet once over a Network Connection. The Server MUST process a second CONNECT packet sent from a Client as a Protocol Error and close the Network Connection.",
+      "source_anchor": "_CONNECT_–_Connection",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/lib.rs",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement contains both a client-side restriction and a server-side reaction. rumqttc-v5 satisfies the applicable client-side half by making CONNECT an internal one-shot step for each live network connection; the server close-on-error clause is outside the client's role.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1",
+        "section_title": "CONNECT – Connection Request",
+        "source_anchor": "_CONNECT_–_Connection",
+        "summary": "A Client can only send the CONNECT packet once over a Network Connection. The Server MUST process a second CONNECT packet sent from a Client as a Protocol Error and close the Network Connection."
+      },
+      "authoritative_actor": "client sender; server receiver",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry preserves both the client-side once-per-connection rule and the server-side Protocol Error consequence."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/lib.rs",
+          "symbols": [
+            "Request"
+          ],
+          "reason": "The public request API exposes no `Connect` variant, so callers cannot request a second CONNECT over an already established network connection."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::poll",
+            "connect",
+            "mqtt_connect",
+            "mqtt_connect_inner",
+            "EventLoop::clean"
+          ],
+          "reason": "`mqtt_connect_inner()` is only reached during `connect()` while `self.network` is `None`. After handshake success, later polls use the existing connection; after failure, `clean()` drops the old connection and any later CONNECT is sent only on a newly established network connection."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/eventloop.rs::eventloop_sends_only_one_connect_per_network_connection"
+        ],
+        "notes": "The wire-level regression verifies that later activity on the same socket is not another CONNECT. The absence of a public `Request::Connect` path is supporting API-surface evidence, not independently regression-tested by a strong standalone test."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-1",
+      "section_number": "3.1.2.1",
+      "section_title": "Protocol Name",
+      "obligation": "MUST",
+      "summary": "The CONNECT protocol name MUST be the UTF-8 String \"MQTT\". If the Server does not want to accept the CONNECT and wishes to reveal that it is an MQTT Server, it MAY send CONNACK reason code 0x84 and then MUST close the Network Connection.",
+      "source_anchor": "_Figure_3.2_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative text includes a client-relevant wire-format rule and a server-side reaction. rumqttc-v5 enforces the applicable sender-side requirement by hardcoding the CONNECT protocol name to `MQTT`; the optional CONNACK 0x84 and mandatory server close behavior are outside the client role.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.1",
+        "section_title": "Protocol Name",
+        "source_anchor": "_Figure_3.2_-",
+        "summary": "The protocol name MUST be the UTF-8 String \"MQTT\". If the Server does not want to accept the CONNECT, and wishes to reveal that it is an MQTT Server it MAY send a CONNACK packet with Reason Code 0x84 (Unsupported Protocol Version), and then it MUST close the Network Connection."
+      },
+      "authoritative_actor": "packet encoder; server receiver",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated JSON summary is actually truncated with a literal `...`, so it is not a faithful authoritative summary. The client-relevant `\"MQTT\"` requirement is still present, but the entry does not completely and accurately record the normative text."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write"
+          ],
+          "reason": "Outbound CONNECT encoding always writes the protocol name using `write_mqtt_string(buffer, \"MQTT\")`, so callers cannot serialize any other protocol name."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::read"
+          ],
+          "reason": "The defensive decoder rejects any non-`MQTT` protocol name with `Error::InvalidProtocol`, although clients do not normally receive CONNECT packets in the protocol role."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::write_uses_mqtt_protocol_name"
+        ],
+        "notes": "The current v5 packet test explicitly verifies the encoded protocol-name bytes are the MQTT UTF-8 string. There is no dedicated invalid-protocol-name decode regression test, but that decode path is not the normal client responsibility for this requirement."
       },
       "follow_up": null
     }

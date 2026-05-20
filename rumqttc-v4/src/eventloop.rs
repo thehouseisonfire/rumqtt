@@ -180,7 +180,7 @@ pub struct EventLoop {
     /// Requests admitted by the event loop and waiting for protocol scheduling.
     queued: OutboundScheduler<RequestEnvelope>,
     /// Network connection to the broker
-    pub network: Option<Network>,
+    network: Option<Network>,
     /// Keep alive time
     keepalive_timeout: Option<Pin<Box<Sleep>>>,
     /// Dummy sleep used as a placeholder in select! when keepalive is disabled.

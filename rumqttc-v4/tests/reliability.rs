@@ -1173,7 +1173,8 @@ async fn state_is_being_cleaned_properly_and_pending_request_calculated_properly
         if let Err(e) = res {
             match e {
                 ConnectionError::FlushTimeout => {
-                    assert!(eventloop.network.is_none());
+                    assert!(!eventloop.pending_is_empty());
+                    assert!(eventloop.state.collision.is_none());
                     println!("State is being clean properly");
                 }
                 _ => {
