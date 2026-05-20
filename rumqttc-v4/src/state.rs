@@ -436,7 +436,9 @@ impl MqttState {
             let request = Request::PubRel(PubRel::new(pkid));
             pending.push((
                 request,
-                self.outgoing_rel_notice[pkid as usize]
+                self.outgoing_rel_notice
+                    .get_mut(pkid as usize)
+                    .expect("outgoing_rel pkid within notice vec bounds")
                     .take()
                     .map(TrackedNoticeTx::Publish),
             ));
@@ -798,7 +800,11 @@ impl MqttState {
             .set(puback.pkid as usize, false);
         self.mark_outgoing_packet_id_complete(puback.pkid);
 
-        if let Some(tx) = self.outgoing_pub_notice[puback.pkid as usize].take() {
+        if let Some(tx) = self.outgoing_pub_notice
+            .get_mut(puback.pkid as usize)
+            .expect("puback pkid within outgoing_pub_notice bounds")
+            .take()
+        {
             tx.success(PublishResult::Qos1(puback.clone()));
         }
 
@@ -824,10 +830,15 @@ impl MqttState {
         self.outgoing_pub_flush_attempted
             .set(pubrec.pkid as usize, false);
 
-        let notice = self.outgoing_pub_notice[pubrec.pkid as usize].take();
+        let notice = self.outgoing_pub_notice
+            .get_mut(pubrec.pkid as usize)
+            .expect("pubrec pkid within outgoing_pub_notice bounds")
+            .take();
         // NOTE: Inflight - 1 for qos2 in comp
         self.outgoing_rel.insert(pubrec.pkid as usize);
-        self.outgoing_rel_notice[pubrec.pkid as usize] = notice;
+        *self.outgoing_rel_notice
+            .get_mut(pubrec.pkid as usize)
+            .expect("pubrec pkid within outgoing_rel_notice bounds") = notice;
         let release = PubRel { pkid: pubrec.pkid };
         let event = Event::Outgoing(Outgoing::PubRel(pubrec.pkid));
         self.events.push_back(event);
@@ -865,7 +876,11 @@ impl MqttState {
 
         self.outgoing_rel.set(pubcomp.pkid as usize, false);
         self.mark_outgoing_packet_id_complete(pubcomp.pkid);
-        if let Some(tx) = self.outgoing_rel_notice[pubcomp.pkid as usize].take() {
+        if let Some(tx) = self.outgoing_rel_notice
+            .get_mut(pubcomp.pkid as usize)
+            .expect("pubcomp pkid within outgoing_rel_notice bounds")
+            .take()
+        {
             tx.success(PublishResult::Qos2Completed(pubcomp.clone()));
         }
         self.inflight -= 1;
