@@ -9,7 +9,8 @@ fn main() {
         options.auth(),
         &ConnectAuth::Username {
             username: "user-only".into(),
-        }
+        },
+        "set_username should produce a Username-only ConnectAuth"
     );
 
     options.set_credentials("user", Bytes::from_static(b"\x00\xfftoken"));
@@ -18,9 +19,14 @@ fn main() {
         &ConnectAuth::UsernamePassword {
             username: "user".into(),
             password: Bytes::from_static(b"\x00\xfftoken"),
-        }
+        },
+        "set_credentials with raw bytes should produce a UsernamePassword ConnectAuth"
     );
 
     options.clear_auth();
-    assert_eq!(options.auth(), &ConnectAuth::None);
+    assert_eq!(
+        options.auth(),
+        &ConnectAuth::None,
+        "clear_auth should reset to None"
+    );
 }
