@@ -244,7 +244,10 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 
     server_task.await.unwrap();
 
@@ -334,7 +337,10 @@ async fn wss_client_publishes_over_tls_websocket() {
     wait_for_at_least(&publish_count, 10, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
     server_task.await.unwrap();
 
     assert_eq!(publish_count.load(Ordering::SeqCst), 10);
@@ -383,7 +389,10 @@ async fn wss_client_publishes_over_native_tls_websocket() {
     wait_for_at_least(&publish_count, 10, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
     server_task.await.unwrap();
 
     assert_eq!(publish_count.load(Ordering::SeqCst), 10);
@@ -463,7 +472,10 @@ async fn wss_client_reconnects_and_delivers_all_messages() {
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 
     server_task.await.unwrap();
 
@@ -544,7 +556,10 @@ async fn wss_client_reconnects_and_delivers_all_messages_over_native_tls_websock
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 
     server_task.await.unwrap();
 
