@@ -35,7 +35,10 @@ async fn start_requests(count: u8, qos: QoS, delay: u64, client: AsyncClient) {
         let topic = "hello/world".to_owned();
         let payload = vec![i, 1, 2, 3];
 
-        let _ = client.publish(topic, qos, false, payload).await;
+        client
+            .publish(topic, qos, false, payload)
+            .await
+            .expect("test publish should be queued");
         time::sleep(Duration::from_secs(delay)).await;
     }
 }
@@ -179,7 +182,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     }
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 
     assert_eq!(count, 3);
 }
@@ -224,7 +227,7 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     }
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 
     assert_eq!(count, 3);
 }
@@ -401,7 +404,10 @@ async fn bounded_publish_backpressure_is_preserved_while_inflight_is_full() {
 
     drop(client);
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    match eventloop_task.await {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(error)) => panic!("eventloop task should not fail: {error:?}"),
+    }
 }
 
 #[tokio::test]
@@ -460,7 +466,10 @@ async fn control_request_bypasses_blocked_publish_without_ack_progress() {
 
     drop(client);
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    match eventloop_task.await {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(error)) => panic!("eventloop task should not fail: {error:?}"),
+    }
 }
 
 #[tokio::test]
@@ -519,7 +528,10 @@ async fn tracked_unsubscribe_bypasses_blocked_publish_without_ack_progress() {
 
     drop(client);
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    match eventloop_task.await {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(error)) => panic!("eventloop task should not fail: {error:?}"),
+    }
 }
 
 #[tokio::test]
@@ -1072,9 +1084,9 @@ async fn reconnection_replays_pubrel_with_original_packet_identifier() {
     }
 
     client_task.abort();
-    let _ = client_task.await;
+    assert!(client_task.await.is_err(), "client task should be aborted");
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 }
 
 #[tokio::test]
@@ -1169,7 +1181,9 @@ async fn graceful_disconnect_with_properties_drains_mixed_qos_before_disconnect(
             match eventloop.poll().await {
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => {
                     if let Some(tx) = disconnect_event_tx.take() {
-                        let _ = tx.send(());
+                        match tx.send(()) {
+                            Ok(()) | Err(()) => {}
+                        }
                     }
                 }
                 Ok(_) => {}

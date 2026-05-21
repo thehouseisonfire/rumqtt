@@ -2376,11 +2376,17 @@ mod test {
 
     fn poison_mutex<T: Send + 'static>(mutex: &Arc<Mutex<T>>) {
         let mutex = Arc::clone(mutex);
-        let _ = thread::spawn(move || {
-            let _guard = mutex.lock().unwrap();
-            panic!("poison mutex");
-        })
-        .join();
+        assert!(
+            thread::spawn(move || {
+                let _guard = mutex
+                    .lock()
+                    .expect("mutex should not be poisoned before this helper poisons it");
+                panic!("poison mutex");
+            })
+            .join()
+            .is_err(),
+            "poisoning thread should panic while holding the mutex"
+        );
     }
 
     fn auth_properties(authentication_method: Option<&str>) -> AuthProperties {

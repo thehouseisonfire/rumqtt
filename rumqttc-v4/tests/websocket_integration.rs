@@ -59,7 +59,7 @@ const FIRST_CONNECTION_MESSAGES: usize = 20;
 fn install_test_rustls_provider() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+        drop(tokio_rustls::rustls::crypto::ring::default_provider().install_default());
     });
 }
 
@@ -71,7 +71,7 @@ fn install_test_rustls_provider() {
 fn install_test_rustls_provider() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+        drop(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default());
     });
 }
 
@@ -220,7 +220,7 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     let (client, mut eventloop) = AsyncClient::builder(mqtt_options).capacity(100).build();
     let eventloop_task = tokio::spawn(async move {
         loop {
-            let _ = eventloop.poll().await;
+            drop(eventloop.poll().await);
         }
     });
 
@@ -244,7 +244,7 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 
     server_task.await.unwrap();
 
@@ -323,7 +323,7 @@ async fn wss_client_publishes_over_tls_websocket() {
     let (client, mut eventloop) = AsyncClient::builder(mqtt_options).capacity(20).build();
     let eventloop_task = tokio::spawn(async move {
         loop {
-            let _ = eventloop.poll().await;
+            drop(eventloop.poll().await);
         }
     });
 
@@ -334,7 +334,7 @@ async fn wss_client_publishes_over_tls_websocket() {
     wait_for_at_least(&publish_count, 10, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
     server_task.await.unwrap();
 
     assert_eq!(publish_count.load(Ordering::SeqCst), 10);
@@ -372,7 +372,7 @@ async fn wss_client_publishes_over_native_tls_websocket() {
     let (client, mut eventloop) = AsyncClient::builder(mqtt_options).capacity(20).build();
     let eventloop_task = tokio::spawn(async move {
         loop {
-            let _ = eventloop.poll().await;
+            drop(eventloop.poll().await);
         }
     });
 
@@ -383,7 +383,7 @@ async fn wss_client_publishes_over_native_tls_websocket() {
     wait_for_at_least(&publish_count, 10, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
     server_task.await.unwrap();
 
     assert_eq!(publish_count.load(Ordering::SeqCst), 10);
@@ -439,7 +439,7 @@ async fn wss_client_reconnects_and_delivers_all_messages() {
     let (client, mut eventloop) = AsyncClient::builder(mqtt_options).capacity(100).build();
     let eventloop_task = tokio::spawn(async move {
         loop {
-            let _ = eventloop.poll().await;
+            drop(eventloop.poll().await);
         }
     });
 
@@ -463,7 +463,7 @@ async fn wss_client_reconnects_and_delivers_all_messages() {
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 
     server_task.await.unwrap();
 
@@ -520,7 +520,7 @@ async fn wss_client_reconnects_and_delivers_all_messages_over_native_tls_websock
     let (client, mut eventloop) = AsyncClient::builder(mqtt_options).capacity(100).build();
     let eventloop_task = tokio::spawn(async move {
         loop {
-            let _ = eventloop.poll().await;
+            drop(eventloop.poll().await);
         }
     });
 
@@ -544,7 +544,7 @@ async fn wss_client_reconnects_and_delivers_all_messages_over_native_tls_websock
     wait_for_at_least(&received_count, TOTAL_MESSAGES, Duration::from_secs(10)).await;
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 
     server_task.await.unwrap();
 

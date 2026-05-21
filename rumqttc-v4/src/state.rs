@@ -2301,9 +2301,9 @@ mod test {
         let publish2 = build_incoming_publish(QoS::AtLeastOnce, 2);
         let publish3 = build_incoming_publish(QoS::ExactlyOnce, 3);
 
-        let _ = mqtt.handle_incoming_publish(&publish1).unwrap();
-        let _ = mqtt.handle_incoming_publish(&publish2).unwrap();
-        let _ = mqtt.handle_incoming_publish(&publish3).unwrap();
+        drop(mqtt.handle_incoming_publish(&publish1).unwrap());
+        drop(mqtt.handle_incoming_publish(&publish2).unwrap());
+        drop(mqtt.handle_incoming_publish(&publish3).unwrap());
 
         // qos1 and qos2 publishes are tracked until their acknowledgement flow completes
         assert!(!mqtt.incoming_puback.contains(1));
