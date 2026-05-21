@@ -38,6 +38,14 @@ repos:
             -D clippy::unwrap_in_result \
             -D clippy::panic_in_result_fn \
             -D clippy::mem_forget
+            -D clippy::rest_pat_in_fully_bound_structs \
+            -D clippy::string_slice \
+            -D clippy::iter_over_hash_type \
+            -D clippy::host_endian_bytes \
+            -D clippy::little_endian_bytes \
+            -D clippy::mixed_read_write_in_expression \
+            -D clippy::suspicious_xor_used_as_pow \
+            -D clippy::fn_to_numeric_cast_any
           '
         language: system
         pass_filenames: false
