@@ -606,11 +606,13 @@ impl MqttState {
             kind: AuthExchangeKind::InitialConnect,
             method: &method,
         };
-        let start_result = {
-            let mut locked = authenticator
-                .lock()
-                .map_err(|_| StateError::AuthenticatorLockPoisoned)?;
-            locked.start(context)
+        let start_result = match authenticator.lock() {
+            Ok(mut locked) => locked.start(context),
+            Err(poisoned) => {
+                drop(poisoned);
+                self.fail_auth_exchange_due_to_authenticator_lock_poisoned();
+                return Err(StateError::AuthenticatorLockPoisoned);
+            }
         };
         let properties = match start_result {
             Ok(properties) => properties,
@@ -976,6 +978,14 @@ impl MqttState {
         self.fail_auth_exchange(
             AuthNoticeError::ConnectionClosed,
             AuthError::Failed("authentication aborted by client disconnect".to_owned()),
+        );
+    }
+
+    fn fail_auth_exchange_due_to_authenticator_lock_poisoned(&mut self) {
+        let message = StateError::AuthenticatorLockPoisoned.to_string();
+        self.fail_auth_exchange(
+            AuthNoticeError::AuthenticationFailed(message.clone()),
+            AuthError::Failed(message),
         );
     }
 
@@ -1877,11 +1887,16 @@ impl MqttState {
                 kind: AuthExchangeKind::Reauthentication,
                 method: &method,
             };
-            let start_result = {
-                let mut locked = authenticator
-                    .lock()
-                    .map_err(|_| StateError::AuthenticatorLockPoisoned)?;
-                locked.start(context)
+            let start_result = match authenticator.lock() {
+                Ok(mut locked) => locked.start(context),
+                Err(_poisoned) => {
+                    if let Some(notice) = notice.take() {
+                        notice.error(AuthNoticeError::AuthenticationFailed(
+                            StateError::AuthenticatorLockPoisoned.to_string(),
+                        ));
+                    }
+                    return Err(StateError::AuthenticatorLockPoisoned);
+                }
             };
             match start_result {
                 Ok(Some(properties)) if auth.properties.is_none() => {
@@ -2278,6 +2293,7 @@ mod test {
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
+    use std::thread;
 
     const AUTH_METHOD: &str = "test-method";
 
@@ -2348,6 +2364,15 @@ mod test {
         MqttState::builder(10)
             .authentication_method(authentication_method.map(str::to_owned))
             .build()
+    }
+
+    fn poison_mutex<T: Send + 'static>(mutex: &Arc<Mutex<T>>) {
+        let mutex = Arc::clone(mutex);
+        let _ = thread::spawn(move || {
+            let _guard = mutex.lock().unwrap();
+            panic!("poison mutex");
+        })
+        .join();
     }
 
     fn auth_properties(authentication_method: Option<&str>) -> AuthProperties {
@@ -4233,6 +4258,37 @@ mod test {
     }
 
     #[test]
+    fn tracked_reauth_poisoned_authenticator_lock_fails_notice_with_auth_error() {
+        let authenticator = Arc::new(Mutex::new(StartAuthManager { response: None }));
+        poison_mutex(&authenticator);
+        let mut mqtt = MqttState::builder(10)
+            .authentication_method(Some(AUTH_METHOD.to_owned()))
+            .authenticator(authenticator)
+            .build();
+        let (notice_tx, notice) = AuthNoticeTx::new();
+
+        let err = mqtt.handle_outgoing_packet_with_notice(
+            Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+            Some(crate::notice::TrackedNoticeTx::Auth(notice_tx)),
+        );
+
+        assert!(matches!(err, Err(StateError::AuthenticatorLockPoisoned)));
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            AuthNoticeError::AuthenticationFailed("Authenticator lock poisoned".to_owned())
+        );
+        assert!(!mqtt.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Started {
+                    kind: crate::AuthExchangeKind::Reauthentication,
+                    ..
+                })
+            )
+        }));
+    }
+
+    #[test]
     fn initial_auth_start_returns_normalized_auth_properties() {
         let authenticator = Arc::new(Mutex::new(StartAuthManager {
             response: Some(auth_properties(None)),
@@ -4249,6 +4305,31 @@ mod test {
 
         assert_eq!(properties.method.as_deref(), Some(AUTH_METHOD));
         assert_eq!(properties.data, Some(Bytes::from_static(b"auth-data")));
+    }
+
+    #[test]
+    fn initial_auth_poisoned_authenticator_lock_fails_exchange_and_resets_state() {
+        let authenticator = Arc::new(Mutex::new(StartAuthManager { response: None }));
+        poison_mutex(&authenticator);
+        let mut mqtt = MqttState::builder(10)
+            .authentication_method(Some(AUTH_METHOD.to_owned()))
+            .authenticator(authenticator)
+            .build();
+
+        let err = mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()));
+
+        assert!(matches!(err, Err(StateError::AuthenticatorLockPoisoned)));
+        assert!(mqtt.auth.active_exchange().is_none());
+        assert!(mqtt.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Auth(crate::AuthEvent::Failed {
+                    kind: crate::AuthExchangeKind::InitialConnect,
+                    reason: crate::AuthFailureReason::AuthenticationFailed(message),
+                    ..
+                }) if message == "Authenticator lock poisoned"
+            )
+        }));
     }
 
     #[test]
