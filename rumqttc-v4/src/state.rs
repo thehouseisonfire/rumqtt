@@ -606,6 +606,13 @@ impl MqttState {
         request: Request,
         notice: Option<TrackedNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        fn unsupported_outgoing_request(
+            request: Request,
+        ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+            let _request = request;
+            Err(StateError::InvalidState)
+        }
+
         let result =
             match request {
                 Request::Publish(publish) => {
@@ -650,7 +657,10 @@ impl MqttState {
                 Request::DisconnectNow(_) => (Some(self.outgoing_disconnect()), None),
                 Request::PubAck(puback) => (Some(self.outgoing_puback(puback)?), None),
                 Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)?), None),
-                _ => unimplemented!(),
+                Request::PubComp(_)
+                | Request::PingResp(_)
+                | Request::SubAck(_)
+                | Request::UnsubAck(_) => unsupported_outgoing_request(request)?,
             };
 
         self.last_outgoing = Instant::now();
@@ -2851,6 +2861,17 @@ mod test {
             Err(StateError::AwaitPingResp) => (),
             Err(e) => panic!("Should throw pingresp await error. Error = {e:?}"),
         }
+    }
+
+    #[test]
+    fn handle_outgoing_packet_rejects_incoming_only_request_variants() {
+        let mut mqtt = build_mqttstate();
+
+        let err = mqtt
+            .handle_outgoing_packet(Request::PingResp(PingResp))
+            .unwrap_err();
+
+        assert!(matches!(err, StateError::InvalidState));
     }
 
     #[test]
