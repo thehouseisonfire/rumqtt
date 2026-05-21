@@ -70,7 +70,7 @@ pub fn valid_filter(filter: &str) -> bool {
 /// during a subscribe
 #[must_use]
 pub fn matches(topic: &str, filter: &str) -> bool {
-    if !topic.is_empty() && topic[..1].contains('$') {
+    if topic.starts_with('$') {
         return false;
     }
 
