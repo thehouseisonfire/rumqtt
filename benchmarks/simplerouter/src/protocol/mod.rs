@@ -254,7 +254,7 @@ pub fn length(stream: Iter<u8>) -> Result<(usize, usize), Error> {
     // be framed as number 0bwww_wwww_zzz_zzzz_yyy_yyyy_xxx_xxxx
     for byte in stream {
         len_len += 1;
-        let byte = *byte as usize;
+        let byte = usize::from(*byte);
         len += (byte & 0x7F) << shift;
 
         // stop when continue bit is 0
@@ -329,7 +329,7 @@ fn read_u8(stream: &mut Bytes) -> Result<u8, Error> {
 
 /// Reads a series of bytes with a length from a byte stream
 fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
-    let len = read_u16(stream)? as usize;
+    let len = usize::from(read_u16(stream)?);
 
     // Prevent attacks with wrong remaining length. This method is used in
     // `packet.assembly()` with (enough) bytes to frame packet. Ensures that
