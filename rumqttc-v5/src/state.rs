@@ -1530,10 +1530,14 @@ impl MqttState {
                         kind,
                         method: &method,
                     };
-                    let auth_result = authenticator
-                        .lock()
-                        .unwrap()
-                        .success(context, auth.properties.clone());
+                    let auth_result = match authenticator.lock() {
+                        Ok(mut locked) => locked.success(context, auth.properties.clone()),
+                        Err(poisoned) => {
+                            drop(poisoned);
+                            self.fail_auth_exchange_due_to_authenticator_lock_poisoned();
+                            return Err(StateError::AuthenticatorLockPoisoned);
+                        }
+                    };
                     if let Err(err) = auth_result {
                         return Err(self.fail_authenticator(&err));
                     }
@@ -1552,10 +1556,14 @@ impl MqttState {
                     .and_then(|props| props.method.as_deref())
                     .unwrap_or_default();
                 let context = AuthContext { kind, method };
-                let continue_result = authenticator
-                    .lock()
-                    .unwrap()
-                    .continue_auth(context, auth.properties.clone());
+                let continue_result = match authenticator.lock() {
+                    Ok(mut locked) => locked.continue_auth(context, auth.properties.clone()),
+                    Err(poisoned) => {
+                        drop(poisoned);
+                        self.fail_auth_exchange_due_to_authenticator_lock_poisoned();
+                        return Err(StateError::AuthenticatorLockPoisoned);
+                    }
+                };
                 let action = match continue_result {
                     Ok(action) => action,
                     Err(err) => return Err(self.fail_authenticator(&err)),
