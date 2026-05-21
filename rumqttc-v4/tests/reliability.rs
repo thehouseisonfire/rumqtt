@@ -243,7 +243,10 @@ async fn regular_outgoing_packets_delay_keepalive_ping() {
     }
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 }
 
 #[tokio::test]
@@ -284,7 +287,10 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     }
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 
     assert_eq!(count, 3);
 }
