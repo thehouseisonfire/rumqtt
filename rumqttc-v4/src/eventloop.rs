@@ -979,6 +979,7 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
                 RequestReadiness::Blocked
             },
         },
+        // All remaining request kinds are sent as ready control/default traffic.
         _ => ScheduledRequest {
             class: RequestClass::Control,
             readiness: RequestReadiness::Ready,
