@@ -46,6 +46,15 @@ repos:
             -D clippy::mixed_read_write_in_expression \
             -D clippy::suspicious_xor_used_as_pow \
             -D clippy::fn_to_numeric_cast_any
+            -D clippy::await_holding_lock \
+            -D clippy::await_holding_refcell_ref \
+            -D clippy::future_not_send \
+            -D clippy::large_futures \
+            -D clippy::large_stack_frames \
+            -D clippy::large_enum_variant \
+            -D clippy::mutex_atomic \
+            -D clippy::rc_mutex \
+            -D clippy::multiple_crate_versions
           '
         language: system
         pass_filenames: false
