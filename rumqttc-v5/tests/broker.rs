@@ -197,13 +197,15 @@ impl Broker {
     }
 
     pub async fn read_packet_with_timeout(&mut self, timeout: Duration) -> Option<Packet> {
-        drop(time::timeout(timeout, async {
-            let result = self.framed.readb(&mut self.incoming).await;
-            if result.is_err() {
-                println!("Broker read = {result:?}");
-            }
-        })
-        .await);
+        drop(
+            time::timeout(timeout, async {
+                let result = self.framed.readb(&mut self.incoming).await;
+                if result.is_err() {
+                    println!("Broker read = {result:?}");
+                }
+            })
+            .await,
+        );
 
         self.incoming.pop_front()
     }

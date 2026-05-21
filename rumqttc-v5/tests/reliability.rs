@@ -182,7 +182,10 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     }
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 
     assert_eq!(count, 3);
 }
@@ -227,7 +230,10 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     }
 
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 
     assert_eq!(count, 3);
 }
@@ -1086,7 +1092,10 @@ async fn reconnection_replays_pubrel_with_original_packet_identifier() {
     client_task.abort();
     assert!(client_task.await.is_err(), "client task should be aborted");
     eventloop_task.abort();
-    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 }
 
 #[tokio::test]
