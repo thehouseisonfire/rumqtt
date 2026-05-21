@@ -217,6 +217,8 @@ pub enum StateError {
     AuthError(String),
     #[error("Authenticator not set")]
     AuthenticatorNotSet,
+    #[error("Authenticator lock poisoned")]
+    AuthenticatorLockPoisoned,
 }
 
 /// MQTT protocol-state violations detected by the client state machine.
@@ -604,7 +606,12 @@ impl MqttState {
             kind: AuthExchangeKind::InitialConnect,
             method: &method,
         };
-        let start_result = authenticator.lock().unwrap().start(context);
+        let start_result = {
+            let mut locked = authenticator
+                .lock()
+                .map_err(|_| StateError::AuthenticatorLockPoisoned)?;
+            locked.start(context)
+        };
         let properties = match start_result {
             Ok(properties) => properties,
             Err(err) => return Err(self.fail_authenticator(&err)),
@@ -943,13 +950,18 @@ impl MqttState {
         };
 
         if let Some(authenticator) = self.authenticator.clone() {
-            authenticator.lock().unwrap().failure(
-                AuthContext {
-                    kind: AuthExchangeKind::Reauthentication,
-                    method: &method,
-                },
-                AuthError::Failed(notice_error.to_string()),
-            );
+            match authenticator.lock() {
+                Ok(mut locked) => locked.failure(
+                    AuthContext {
+                        kind: AuthExchangeKind::Reauthentication,
+                        method: &method,
+                    },
+                    AuthError::Failed(notice_error.to_string()),
+                ),
+                Err(_) => debug!(
+                    "authenticator lock poisoned while failing reauth exchange due to session reset"
+                ),
+            }
         }
     }
 
@@ -1561,13 +1573,18 @@ impl MqttState {
         if let Some((kind, method)) = self.auth.active_exchange()
             && let Some(authenticator) = self.authenticator.clone()
         {
-            authenticator.lock().unwrap().failure(
-                AuthContext {
-                    kind,
-                    method: &method,
-                },
-                callback_error,
-            );
+            match authenticator.lock() {
+                Ok(mut locked) => locked.failure(
+                    AuthContext {
+                        kind,
+                        method: &method,
+                    },
+                    callback_error,
+                ),
+                Err(_) => debug!(
+                    "authenticator lock poisoned while failing auth exchange: {notice_error:?}"
+                ),
+            }
         }
         self.auth.reset(notice_error, &mut self.events);
     }
@@ -1860,7 +1877,12 @@ impl MqttState {
                 kind: AuthExchangeKind::Reauthentication,
                 method: &method,
             };
-            let start_result = authenticator.lock().unwrap().start(context);
+            let start_result = {
+                let mut locked = authenticator
+                    .lock()
+                    .map_err(|_| StateError::AuthenticatorLockPoisoned)?;
+                locked.start(context)
+            };
             match start_result {
                 Ok(Some(properties)) if auth.properties.is_none() => {
                     auth.properties = Some(properties);
