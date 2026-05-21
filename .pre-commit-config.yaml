@@ -21,6 +21,29 @@ repos:
         always_run: true
         require_serial: true
 
+      - id: clippy-workspace
+        name: clippy workspace
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          cargo clippy --workspace --all-targets -- \
+            -D clippy::dbg_macro \
+            -D clippy::todo \
+            -D clippy::exit \
+            -D clippy::clone_on_ref_ptr \
+            -D clippy::empty_drop \
+            -D clippy::let_underscore_must_use \
+            -D clippy::unused_result_ok \
+            -D clippy::undocumented_unsafe_blocks \
+            -D clippy::unwrap_in_result \
+            -D clippy::panic_in_result_fn \
+            -D clippy::mem_forget
+          '
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+
       - id: tests
         name: tests
         entry: >
