@@ -218,7 +218,9 @@ pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
 
     if line_uppercase.starts_with("MSG") {
         // Extract whitespace-delimited arguments that come after "MSG".
-        let args = line["MSG".len()..]
+        let args = line
+            .strip_prefix("MSG")
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "expected MSG prefix"))?
             .split_whitespace()
             .filter(|s| !s.is_empty());
         let args = args.collect::<Vec<_>>();
@@ -273,7 +275,9 @@ pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
 
     if line_uppercase.starts_with("HMSG") {
         // Extract whitespace-delimited arguments that come after "HMSG".
-        let args = line["HMSG".len()..]
+        let args = line
+            .strip_prefix("HMSG")
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "expected HMSG prefix"))?
             .split_whitespace()
             .filter(|s| !s.is_empty());
         let args = args.collect::<Vec<_>>();
@@ -363,7 +367,12 @@ pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
 
     if line_uppercase.starts_with("-ERR") {
         // Extract the message argument.
-        let msg = line["-ERR".len()..].trim().trim_matches('\'').to_string();
+        let msg = line
+            .strip_prefix("-ERR")
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "expected -ERR prefix"))?
+            .trim()
+            .trim_matches('\'')
+            .to_string();
 
         return Ok(Some(ServerOp::Err(msg)));
     }

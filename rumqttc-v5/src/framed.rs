@@ -240,7 +240,8 @@ mod tests {
             _cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            let position = self.read.position() as usize;
+            let position = usize::try_from(self.read.position())
+                .expect("test cursor position should fit in usize");
             let remaining = &self.read.get_ref()[position..];
             if remaining.is_empty() {
                 return Poll::Ready(Ok(()));
@@ -248,7 +249,12 @@ mod tests {
 
             let to_copy = remaining.len().min(buf.remaining());
             buf.put_slice(&remaining[..to_copy]);
-            self.read.set_position((position + to_copy) as u64);
+            let new_position = position
+                .checked_add(to_copy)
+                .expect("test cursor position should not overflow");
+            self.read.set_position(
+                u64::try_from(new_position).expect("test cursor position should fit in u64"),
+            );
             Poll::Ready(Ok(()))
         }
     }
