@@ -38,7 +38,9 @@ fn publish(client: &Client) {
         let topic = format!("hello/{i}/world");
         let qos = QoS::AtLeastOnce;
 
-        let _ = client.publish(topic, qos, true, payload);
+        client
+            .publish(topic, qos, true, payload)
+            .expect("example publish should succeed");
     }
 
     thread::sleep(Duration::from_secs(1));

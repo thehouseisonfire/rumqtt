@@ -100,5 +100,7 @@ async fn v5_fallible_request_modifier_error_propagates() {
     }
 
     listener_task.abort();
-    let _ = listener_task.await;
+    match listener_task.await {
+        Ok(()) | Err(_) => {}
+    }
 }

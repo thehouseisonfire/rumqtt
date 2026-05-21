@@ -3013,8 +3013,8 @@ mod test {
         mqttoptions.set_keep_alive(5).set_last_will(will);
 
         let (_, mut connection) = Client::builder(mqttoptions).capacity(10).build();
-        let _ = connection.iter();
-        let _ = connection.iter();
+        drop(connection.iter());
+        drop(connection.iter());
     }
 
     #[test]
@@ -3121,7 +3121,7 @@ mod test {
         client
             .publish("hello/world", QoS::ExactlyOnce, false, "good bye")
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3253,12 +3253,16 @@ mod test {
         client
             .reauth(Some(props.clone()))
             .expect("Should be able to reauth");
-        let _ = connection.iter().next().expect("Should have event");
+        match connection.iter().next().expect("Should have event") {
+            Ok(_) | Err(_) => {}
+        }
 
         client
             .try_reauth(Some(props))
             .expect("Should be able to reauth");
-        let _ = connection.iter().next().expect("Should have event");
+        match connection.iter().next().expect("Should have event") {
+            Ok(_) | Err(_) => {}
+        }
     }
 
     #[test]
@@ -3269,7 +3273,7 @@ mod test {
         client
             .publish(valid_topic, QoS::ExactlyOnce, false, "good bye")
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3283,8 +3287,8 @@ mod test {
         client
             .try_publish(&topic, QoS::ExactlyOnce, false, "good bye")
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3307,8 +3311,8 @@ mod test {
                 "good bye",
             )
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3356,7 +3360,7 @@ mod test {
                 PublishProperties::default(),
             )
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3432,7 +3436,7 @@ mod test {
         client
             .try_publish(valid_topic, QoS::ExactlyOnce, false, "good bye")
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3449,7 +3453,7 @@ mod test {
                 PublishProperties::default(),
             )
             .expect("Should be able to publish");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3532,10 +3536,10 @@ mod test {
                 .expect("Should be able to publish");
         });
 
-        let _ = rx.try_recv().expect("Should have message");
-        let _ = rx.try_recv().expect("Should have message");
-        let _ = rx.try_recv().expect("Should have message");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
+        drop(rx.try_recv().expect("Should have message"));
+        drop(rx.try_recv().expect("Should have message"));
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]
@@ -3562,8 +3566,8 @@ mod test {
             )
             .expect("Should be able to publish");
 
-        let _ = rx.try_recv().expect("Should have message");
-        let _ = rx.try_recv().expect("Should have message");
+        drop(rx.try_recv().expect("Should have message"));
+        drop(rx.try_recv().expect("Should have message"));
     }
 
     #[test]

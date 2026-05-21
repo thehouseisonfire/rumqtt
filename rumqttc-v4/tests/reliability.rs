@@ -32,7 +32,10 @@ async fn start_requests(count: u8, qos: QoS, delay: u64, client: AsyncClient) {
         let topic = "hello/world".to_owned();
         let payload = vec![i, 1, 2, 3];
 
-        let _ = client.publish(topic, qos, false, payload).await;
+        client
+            .publish(topic, qos, false, payload)
+            .await
+            .expect("test publish should be queued");
         time::sleep(Duration::from_secs(delay)).await;
     }
 }
@@ -48,7 +51,10 @@ async fn start_requests_with_payload(
         let topic = "hello/world".to_owned();
         let payload = vec![i; payload];
 
-        let _ = client.publish(topic, qos, false, payload).await;
+        client
+            .publish(topic, qos, false, payload)
+            .await
+            .expect("test publish should be queued");
         time::sleep(Duration::from_secs(delay)).await;
     }
 }
@@ -237,7 +243,7 @@ async fn regular_outgoing_packets_delay_keepalive_ping() {
     }
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 }
 
 #[tokio::test]
@@ -278,7 +284,7 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     }
 
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    assert!(eventloop_task.await.is_err(), "eventloop task should be aborted");
 
     assert_eq!(count, 3);
 }
@@ -445,7 +451,10 @@ async fn bounded_publish_backpressure_is_preserved_while_inflight_is_full() {
 
     drop(client);
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    match eventloop_task.await {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(error)) => panic!("eventloop task should not fail: {error:?}"),
+    }
 }
 
 #[tokio::test]
@@ -498,7 +507,10 @@ async fn control_request_bypasses_blocked_publish_without_ack_progress() {
 
     drop(client);
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    match eventloop_task.await {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(error)) => panic!("eventloop task should not fail: {error:?}"),
+    }
 }
 
 #[tokio::test]
@@ -551,7 +563,10 @@ async fn tracked_unsubscribe_bypasses_blocked_publish_without_ack_progress() {
 
     drop(client);
     eventloop_task.abort();
-    let _ = eventloop_task.await;
+    match eventloop_task.await {
+        Ok(Ok(())) | Err(_) => {}
+        Ok(Err(error)) => panic!("eventloop task should not fail: {error:?}"),
+    }
 }
 
 #[tokio::test]

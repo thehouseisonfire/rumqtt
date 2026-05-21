@@ -1403,9 +1403,9 @@ async fn send_protocol_error_disconnect(network: &mut Network) {
         )))
         .await
         .is_ok()
-    {
-        let _ = network.flush().await;
-    }
+        && let Err(error) = network.flush().await {
+            warn!("ignoring protocol error disconnect flush failure: {error:?}");
+        }
 }
 
 const fn should_replay_after_reconnect(request: &Request) -> bool {
