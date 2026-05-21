@@ -59,7 +59,8 @@ fn main() {
 fn generate_data(count: usize, payload_size: usize) -> Vec<v5::Publish> {
     let mut data = Vec::with_capacity(count);
     for i in 0..count {
-        let mut publish = v5::Publish::new("hello/world", QoS::AtLeastOnce, vec![1; payload_size], None);
+        let mut publish =
+            v5::Publish::new("hello/world", QoS::AtLeastOnce, vec![1; payload_size], None);
         publish.pkid = (i % 100 + 1) as u16;
         data.push(publish);
     }
