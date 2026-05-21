@@ -401,7 +401,7 @@ pub mod publish {
                 .raw
                 .get(self.fixed_header.fixed_header_len..)
                 .ok_or(Error::MalformedPacket)?;
-            let topic_len = view_u16(stream)? as usize;
+            let topic_len = usize::from(view_u16(stream)?);
 
             let stream = stream.get(2..).ok_or(Error::MalformedPacket)?;
             let topic = view_str(stream, topic_len)?;
@@ -427,7 +427,7 @@ pub mod publish {
                 .raw
                 .get(self.fixed_header.fixed_header_len..)
                 .ok_or(Error::MalformedPacket)?;
-            let topic_len = view_u16(stream)? as usize;
+            let topic_len = usize::from(view_u16(stream)?);
 
             let stream = stream.get(2..).ok_or(Error::MalformedPacket)?;
             let topic = view_str(stream, topic_len)?;

@@ -379,9 +379,9 @@ impl MqttState {
             outgoing_rel: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_replay: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_notice: Self::new_notice_slots_with_len(tracking_len),
-            incoming_puback: FixedBitSet::with_capacity(u16::MAX as usize + 1),
-            incoming_pub: FixedBitSet::with_capacity(u16::MAX as usize + 1),
-            incoming_pubrec: FixedBitSet::with_capacity(u16::MAX as usize + 1),
+            incoming_puback: FixedBitSet::with_capacity(usize::from(u16::MAX) + 1),
+            incoming_pub: FixedBitSet::with_capacity(usize::from(u16::MAX) + 1),
+            incoming_pubrec: FixedBitSet::with_capacity(usize::from(u16::MAX) + 1),
             collision: None,
             collision_notice: None,
             pending_subscribe: BTreeMap::new(),
@@ -405,10 +405,10 @@ impl MqttState {
         let mut pending = Vec::with_capacity(self.clean_pending_capacity());
         let (first_half, second_half) = self
             .outgoing_pub
-            .split_at_mut(self.last_puback as usize + 1);
+            .split_at_mut(usize::from(self.last_puback) + 1);
         let (notice_first_half, notice_second_half) = self
             .outgoing_pub_notice
-            .split_at_mut(self.last_puback as usize + 1);
+            .split_at_mut(usize::from(self.last_puback) + 1);
 
         for (publish, notice) in second_half
             .iter_mut()
@@ -419,7 +419,7 @@ impl MqttState {
                 if publish.qos != QoS::AtMostOnce
                     && self
                         .outgoing_pub_flush_attempted
-                        .contains(publish.pkid as usize)
+                        .contains(usize::from(publish.pkid))
                 {
                     publish.dup = true;
                 }
@@ -437,7 +437,7 @@ impl MqttState {
             pending.push((
                 request,
                 self.outgoing_rel_notice
-                    .get_mut(pkid as usize)
+                    .get_mut(usize::from(pkid))
                     .expect("outgoing_rel pkid within notice vec bounds")
                     .take()
                     .map(TrackedNoticeTx::Publish),
@@ -775,7 +775,7 @@ impl MqttState {
             QoS::AtMostOnce => Ok(None),
             QoS::AtLeastOnce => {
                 let pkid = publish.pkid;
-                self.incoming_puback.insert(pkid as usize);
+                self.incoming_puback.insert(usize::from(pkid));
 
                 if self.ack_mode == AckMode::Automatic {
                     let puback = PubAck::new(pkid);
@@ -785,7 +785,7 @@ impl MqttState {
             }
             QoS::ExactlyOnce => {
                 let pkid = publish.pkid;
-                self.incoming_pub.insert(pkid as usize);
+                self.incoming_pub.insert(usize::from(pkid));
 
                 if self.ack_mode == AckMode::Automatic {
                     let pubrec = PubRec::new(pkid);
@@ -799,7 +799,7 @@ impl MqttState {
     fn handle_incoming_puback(&mut self, puback: &PubAck) -> Result<Option<Packet>, StateError> {
         let publish = self
             .outgoing_pub
-            .get_mut(puback.pkid as usize)
+            .get_mut(usize::from(puback.pkid))
             .ok_or(StateError::Unsolicited(puback.pkid))?;
 
         if publish.take().is_none() {
@@ -807,12 +807,12 @@ impl MqttState {
             return Err(StateError::Unsolicited(puback.pkid));
         }
         self.outgoing_pub_flush_attempted
-            .set(puback.pkid as usize, false);
+            .set(usize::from(puback.pkid), false);
         self.mark_outgoing_packet_id_complete(puback.pkid);
 
         if let Some(tx) = self
             .outgoing_pub_notice
-            .get_mut(puback.pkid as usize)
+            .get_mut(usize::from(puback.pkid))
             .expect("puback pkid within outgoing_pub_notice bounds")
             .take()
         {
@@ -831,7 +831,7 @@ impl MqttState {
     fn handle_incoming_pubrec(&mut self, pubrec: &PubRec) -> Result<Option<Packet>, StateError> {
         let publish = self
             .outgoing_pub
-            .get_mut(pubrec.pkid as usize)
+            .get_mut(usize::from(pubrec.pkid))
             .ok_or(StateError::Unsolicited(pubrec.pkid))?;
 
         if publish.take().is_none() {
@@ -839,18 +839,18 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
         self.outgoing_pub_flush_attempted
-            .set(pubrec.pkid as usize, false);
+            .set(usize::from(pubrec.pkid), false);
 
         let notice = self
             .outgoing_pub_notice
-            .get_mut(pubrec.pkid as usize)
+            .get_mut(usize::from(pubrec.pkid))
             .expect("pubrec pkid within outgoing_pub_notice bounds")
             .take();
         // NOTE: Inflight - 1 for qos2 in comp
-        self.outgoing_rel.insert(pubrec.pkid as usize);
+        self.outgoing_rel.insert(usize::from(pubrec.pkid));
         *self
             .outgoing_rel_notice
-            .get_mut(pubrec.pkid as usize)
+            .get_mut(usize::from(pubrec.pkid))
             .expect("pubrec pkid within outgoing_rel_notice bounds") = notice;
         let release = PubRel { pkid: pubrec.pkid };
         let event = Event::Outgoing(Outgoing::PubRel(pubrec.pkid));
@@ -860,11 +860,11 @@ impl MqttState {
     }
 
     fn handle_incoming_pubrel(&mut self, pubrel: &PubRel) -> Result<Option<Packet>, StateError> {
-        if !self.incoming_pub.contains(pubrel.pkid as usize) {
+        if !self.incoming_pub.contains(usize::from(pubrel.pkid)) {
             error!("Unsolicited pubrel packet: {:?}", pubrel.pkid);
             return Err(StateError::Unsolicited(pubrel.pkid));
         }
-        if !self.incoming_pubrec.contains(pubrel.pkid as usize) {
+        if !self.incoming_pubrec.contains(usize::from(pubrel.pkid)) {
             error!(
                 "Pubrel packet received before pubrec was sent: {:?}",
                 pubrel.pkid
@@ -872,8 +872,8 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubrel.pkid));
         }
 
-        self.incoming_pub.set(pubrel.pkid as usize, false);
-        self.incoming_pubrec.set(pubrel.pkid as usize, false);
+        self.incoming_pub.set(usize::from(pubrel.pkid), false);
+        self.incoming_pubrec.set(usize::from(pubrel.pkid), false);
         let event = Event::Outgoing(Outgoing::PubComp(pubrel.pkid));
         let pubcomp = PubComp { pkid: pubrel.pkid };
         self.events.push_back(event);
@@ -882,16 +882,16 @@ impl MqttState {
     }
 
     fn handle_incoming_pubcomp(&mut self, pubcomp: &PubComp) -> Result<Option<Packet>, StateError> {
-        if !self.outgoing_rel.contains(pubcomp.pkid as usize) {
+        if !self.outgoing_rel.contains(usize::from(pubcomp.pkid)) {
             error!("Unsolicited pubcomp packet: {:?}", pubcomp.pkid);
             return Err(StateError::Unsolicited(pubcomp.pkid));
         }
 
-        self.outgoing_rel.set(pubcomp.pkid as usize, false);
+        self.outgoing_rel.set(usize::from(pubcomp.pkid), false);
         self.mark_outgoing_packet_id_complete(pubcomp.pkid);
         if let Some(tx) = self
             .outgoing_rel_notice
-            .get_mut(pubcomp.pkid as usize)
+            .get_mut(usize::from(pubcomp.pkid))
             .expect("pubcomp pkid within outgoing_rel_notice bounds")
             .take()
         {
@@ -936,10 +936,10 @@ impl MqttState {
 
             let pkid = publish.pkid;
             self.validate_outgoing_pkid_bound(pkid)?;
-            self.ensure_outgoing_tracking_capacity(pkid as usize + 1);
+            self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
             if self
                 .outgoing_pub
-                .get(publish.pkid as usize)
+                .get(usize::from(publish.pkid))
                 .ok_or(StateError::Unsolicited(publish.pkid))?
                 .is_some()
             {
@@ -951,8 +951,8 @@ impl MqttState {
                 return Ok((None, None));
             }
 
-            if self.outgoing_rel.contains(pkid as usize)
-                || self.outgoing_rel_replay.contains(pkid as usize)
+            if self.outgoing_rel.contains(usize::from(pkid))
+                || self.outgoing_rel_replay.contains(usize::from(pkid))
                 || self.pending_subscribe.contains_key(&pkid)
                 || self.pending_unsubscribe.contains_key(&pkid)
             {
@@ -961,10 +961,10 @@ impl MqttState {
 
             // if there is an existing publish at this pkid, this implies that broker hasn't acked this
             // packet yet. This error is possible only when broker isn't acking sequentially
-            self.outgoing_pub[pkid as usize] = Some(publish.clone());
-            self.outgoing_pub_notice[pkid as usize] = notice.take();
-            self.outgoing_pub_flush_attempted.set(pkid as usize, false);
-            self.outgoing_pub_ack.set(pkid as usize, false);
+            self.outgoing_pub[usize::from(pkid)] = Some(publish.clone());
+            self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
+            self.outgoing_pub_flush_attempted.set(usize::from(pkid), false);
+            self.outgoing_pub_ack.set(usize::from(pkid), false);
             self.inflight += 1;
         }
 
@@ -1000,12 +1000,12 @@ impl MqttState {
     }
 
     fn outgoing_puback(&mut self, puback: PubAck) -> Result<Packet, StateError> {
-        if !self.incoming_puback.contains(puback.pkid as usize) {
+        if !self.incoming_puback.contains(usize::from(puback.pkid)) {
             error!("Unsolicited puback request: {:?}", puback.pkid);
             return Err(StateError::Unsolicited(puback.pkid));
         }
 
-        self.incoming_puback.set(puback.pkid as usize, false);
+        self.incoming_puback.set(usize::from(puback.pkid), false);
         let event = Event::Outgoing(Outgoing::PubAck(puback.pkid));
         self.events.push_back(event);
 
@@ -1028,11 +1028,11 @@ impl MqttState {
         pubrec: PubRec,
         allow_duplicate: bool,
     ) -> Result<Packet, StateError> {
-        if !self.incoming_pub.contains(pubrec.pkid as usize) {
+        if !self.incoming_pub.contains(usize::from(pubrec.pkid)) {
             error!("Unsolicited pubrec request: {:?}", pubrec.pkid);
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
-        if self.incoming_pubrec.contains(pubrec.pkid as usize) {
+        if self.incoming_pubrec.contains(usize::from(pubrec.pkid)) {
             if allow_duplicate {
                 let event = Event::Outgoing(Outgoing::PubRec(pubrec.pkid));
                 self.events.push_back(event);
@@ -1043,7 +1043,7 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
 
-        self.incoming_pubrec.insert(pubrec.pkid as usize);
+        self.incoming_pubrec.insert(usize::from(pubrec.pkid));
         let event = Event::Outgoing(Outgoing::PubRec(pubrec.pkid));
         self.events.push_back(event);
 
@@ -1172,7 +1172,7 @@ impl MqttState {
         notice: Option<PublishNoticeTx>,
     ) -> Result<PubRel, StateError> {
         self.validate_outgoing_pkid_bound(pubrel.pkid)?;
-        let pkid_index = pubrel.pkid as usize;
+        let pkid_index = usize::from(pubrel.pkid);
         let replaying_pubrel = self.outgoing_rel_replay.contains(pkid_index);
         if !self.outgoing_rel.contains(pkid_index) && !replaying_pubrel {
             error!("Unsolicited pubrel request: {:?}", pubrel.pkid);
@@ -1182,7 +1182,7 @@ impl MqttState {
         if replaying_pubrel {
             self.outgoing_rel_replay.set(pkid_index, false);
         }
-        self.ensure_outgoing_tracking_capacity(pubrel.pkid as usize + 1);
+        self.ensure_outgoing_tracking_capacity(usize::from(pubrel.pkid) + 1);
         self.outgoing_rel.insert(pkid_index);
         self.outgoing_rel_notice[pkid_index] = notice;
         self.inflight += 1;
@@ -1192,11 +1192,11 @@ impl MqttState {
     fn replay_collision_publish(&mut self, pkid: u16) -> Option<Packet> {
         self.check_collision(pkid).map(|(publish, notice)| {
             let publish_pkid = publish.pkid;
-            self.ensure_outgoing_tracking_capacity(publish_pkid as usize + 1);
-            self.outgoing_pub[publish_pkid as usize] = Some(publish.clone());
-            self.outgoing_pub_notice[publish_pkid as usize] = notice;
+            self.ensure_outgoing_tracking_capacity(usize::from(publish_pkid) + 1);
+            self.outgoing_pub[usize::from(publish_pkid)] = Some(publish.clone());
+            self.outgoing_pub_notice[usize::from(publish_pkid)] = notice;
             self.outgoing_pub_flush_attempted
-                .set(publish_pkid as usize, false);
+                .set(usize::from(publish_pkid), false);
             self.inflight += 1;
 
             let event = Event::Outgoing(Outgoing::Publish(publish_pkid));
@@ -1208,14 +1208,14 @@ impl MqttState {
     }
 
     fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
-        self.outgoing_pub_ack.set(pkid as usize, true);
+        self.outgoing_pub_ack.set(usize::from(pkid), true);
         self.advance_last_puback_frontier();
     }
 
     fn advance_last_puback_frontier(&mut self) {
         let mut next = self.next_puback_boundary_pkid(self.last_puback);
-        while next != 0 && self.outgoing_pub_ack.contains(next as usize) {
-            self.outgoing_pub_ack.set(next as usize, false);
+        while next != 0 && self.outgoing_pub_ack.contains(usize::from(next)) {
+            self.outgoing_pub_ack.set(usize::from(next), false);
             self.last_puback = next;
             next = self.next_puback_boundary_pkid(self.last_puback);
         }
@@ -1819,7 +1819,7 @@ mod test {
             },
         );
 
-        assert!(mqtt.outgoing_pub_ack.len() <= pkid as usize);
+        assert!(mqtt.outgoing_pub_ack.len() <= usize::from(pkid));
         mqtt.handle_incoming_suback(&SubAck::new(
             pkid,
             vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
