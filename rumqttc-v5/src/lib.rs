@@ -347,7 +347,8 @@ fn default_socket_connector() -> SocketConnector {
     Arc::new(|host, network_options| {
         Box::pin(async move {
             let tcp = default_socket_connect_staggered(host, network_options).await?;
-            Ok(Box::new(tcp) as Box<dyn crate::framed::AsyncReadWrite>)
+            let stream: Box<dyn crate::framed::AsyncReadWrite> = Box::new(tcp);
+            Ok(stream)
         })
     })
 }
@@ -952,7 +953,8 @@ impl MqttOptions {
             let stream_future = f(host, network_options);
             let future = async move {
                 let stream = stream_future.await?;
-                Ok(Box::new(stream) as Box<dyn crate::framed::AsyncReadWrite>)
+                let stream: Box<dyn crate::framed::AsyncReadWrite> = Box::new(stream);
+                Ok(stream)
             };
             Box::pin(future)
         }));

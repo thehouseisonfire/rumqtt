@@ -75,7 +75,7 @@ pub struct Network {
 
 impl Network {
     pub fn new(socket: impl AsyncReadWrite + 'static, max_incoming_size: Option<u32>) -> Self {
-        let socket = Box::new(socket) as Box<dyn AsyncReadWrite>;
+        let socket: Box<dyn AsyncReadWrite> = Box::new(socket);
         let codec = Codec {
             max_incoming_size,
             max_outgoing_size: None,
