@@ -800,7 +800,8 @@ impl MqttState {
             .set(puback.pkid as usize, false);
         self.mark_outgoing_packet_id_complete(puback.pkid);
 
-        if let Some(tx) = self.outgoing_pub_notice
+        if let Some(tx) = self
+            .outgoing_pub_notice
             .get_mut(puback.pkid as usize)
             .expect("puback pkid within outgoing_pub_notice bounds")
             .take()
@@ -830,13 +831,15 @@ impl MqttState {
         self.outgoing_pub_flush_attempted
             .set(pubrec.pkid as usize, false);
 
-        let notice = self.outgoing_pub_notice
+        let notice = self
+            .outgoing_pub_notice
             .get_mut(pubrec.pkid as usize)
             .expect("pubrec pkid within outgoing_pub_notice bounds")
             .take();
         // NOTE: Inflight - 1 for qos2 in comp
         self.outgoing_rel.insert(pubrec.pkid as usize);
-        *self.outgoing_rel_notice
+        *self
+            .outgoing_rel_notice
             .get_mut(pubrec.pkid as usize)
             .expect("pubrec pkid within outgoing_rel_notice bounds") = notice;
         let release = PubRel { pkid: pubrec.pkid };
@@ -876,7 +879,8 @@ impl MqttState {
 
         self.outgoing_rel.set(pubcomp.pkid as usize, false);
         self.mark_outgoing_packet_id_complete(pubcomp.pkid);
-        if let Some(tx) = self.outgoing_rel_notice
+        if let Some(tx) = self
+            .outgoing_rel_notice
             .get_mut(pubcomp.pkid as usize)
             .expect("pubcomp pkid within outgoing_rel_notice bounds")
             .take()
