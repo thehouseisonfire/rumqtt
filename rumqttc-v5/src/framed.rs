@@ -13,19 +13,9 @@ struct InboundDisconnect {
 
 impl InboundDisconnect {
     const fn classify(error: &mqttbytes::Error) -> Option<Self> {
-        let reason = match error {
-            mqttbytes::Error::ProtocolViolation(reason) => *reason,
-            mqttbytes::Error::MalformedPacket
-            | mqttbytes::Error::MalformedRemainingLength
-            | mqttbytes::Error::IncorrectPacketFormat
-            | mqttbytes::Error::TopicNotUtf8 { .. } => DisconnectReasonCode::MalformedPacket,
-            mqttbytes::Error::EmptySubscription | mqttbytes::Error::ProtocolError => {
-                DisconnectReasonCode::ProtocolError
-            }
-            mqttbytes::Error::PayloadSizeLimitExceeded { .. } => {
-                DisconnectReasonCode::PacketTooLarge
-            }
-            _ => return None,
+        let reason = match inbound_disconnect_reason(error) {
+            Some(reason) => reason,
+            None => return None,
         };
 
         Some(Self { reason })
@@ -34,9 +24,45 @@ impl InboundDisconnect {
     const fn error(self) -> mqttbytes::Error {
         match self.reason {
             DisconnectReasonCode::ProtocolError => mqttbytes::Error::ProtocolError,
+            // Preserve any more-specific MQTT 5 disconnect reason that came from parsing/state.
             reason => mqttbytes::Error::ProtocolViolation(reason),
         }
     }
+}
+
+const fn inbound_disconnect_reason(error: &mqttbytes::Error) -> Option<DisconnectReasonCode> {
+    let reason = match error {
+        mqttbytes::Error::ProtocolViolation(reason) => *reason,
+        mqttbytes::Error::InvalidConnectReturnCode(_)
+        | mqttbytes::Error::InvalidReason(_)
+        | mqttbytes::Error::InvalidRemainingLength(_)
+        | mqttbytes::Error::InvalidProtocol
+        | mqttbytes::Error::InvalidProtocolLevel(_)
+        | mqttbytes::Error::IncorrectPacketFormat
+        | mqttbytes::Error::InvalidPacketType(_)
+        | mqttbytes::Error::InvalidRetainForwardRule(_)
+        | mqttbytes::Error::InvalidQoS(_)
+        | mqttbytes::Error::InvalidSubscribeReasonCode(_)
+        | mqttbytes::Error::PayloadSizeIncorrect
+        | mqttbytes::Error::PayloadTooLong
+        | mqttbytes::Error::PayloadRequired
+        | mqttbytes::Error::PayloadNotUtf8(_)
+        | mqttbytes::Error::BoundaryCrossed(_)
+        | mqttbytes::Error::MalformedPacket
+        | mqttbytes::Error::MalformedRemainingLength
+        | mqttbytes::Error::InvalidPropertyType(_)
+        | mqttbytes::Error::TopicNotUtf8 { .. } => DisconnectReasonCode::MalformedPacket,
+        mqttbytes::Error::EmptySubscription
+        | mqttbytes::Error::ProtocolError
+        | mqttbytes::Error::PacketIdZero => DisconnectReasonCode::ProtocolError,
+        mqttbytes::Error::PayloadSizeLimitExceeded { .. } => DisconnectReasonCode::PacketTooLarge,
+        // These cases are local transport/incremental framing conditions, not protocol responses.
+        mqttbytes::Error::InsufficientBytes(_)
+        | mqttbytes::Error::Io(_)
+        | mqttbytes::Error::OutgoingPacketTooLarge { .. } => return None,
+    };
+
+    Some(reason)
 }
 
 /// Network transforms packets <-> frames efficiently. It takes
@@ -320,6 +346,29 @@ mod tests {
         assert_eq!(
             response,
             [0xE0, 0x02, DisconnectReasonCode::PacketTooLarge as u8, 0x00]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_sends_protocol_error_disconnect_for_zero_packet_id() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+
+        peer.write_all(&[0x82, 0x06, 0x00, 0x00, 0x00, 0x01, b'a', 0x00])
+            .await
+            .unwrap();
+
+        let err = network.read().await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::PacketIdZero)
+        ));
+
+        let mut response = [0; 4];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
     }
 

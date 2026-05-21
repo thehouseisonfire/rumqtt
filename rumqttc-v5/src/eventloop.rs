@@ -1028,7 +1028,7 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
             class: RequestClass::Publish,
             readiness: RequestReadiness::Ready,
         },
-        Request::Subscribe(_) | Request::Unsubscribe(_) => ScheduledRequest {
+        request if request_needs_fresh_client_packet_id(request) => ScheduledRequest {
             class: RequestClass::Control,
             readiness: if state.control_packet_identifier_available() {
                 RequestReadiness::Ready
@@ -1043,10 +1043,14 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
     }
 }
 
+const fn request_needs_fresh_client_packet_id(request: &Request) -> bool {
+    matches!(request, Request::Subscribe(_) | Request::Unsubscribe(_))
+}
+
 fn request_allocates_client_packet_id(request: &Request) -> bool {
     match request {
         Request::Publish(publish) => publish.qos != crate::mqttbytes::QoS::AtMostOnce,
-        Request::Subscribe(_) | Request::Unsubscribe(_) => true,
+        request if request_needs_fresh_client_packet_id(request) => true,
         _ => false,
     }
 }
@@ -1403,9 +1407,10 @@ async fn send_protocol_error_disconnect(network: &mut Network) {
         )))
         .await
         .is_ok()
-        && let Err(error) = network.flush().await {
-            warn!("ignoring protocol error disconnect flush failure: {error:?}");
-        }
+        && let Err(error) = network.flush().await
+    {
+        warn!("ignoring protocol error disconnect flush failure: {error:?}");
+    }
 }
 
 const fn should_replay_after_reconnect(request: &Request) -> bool {

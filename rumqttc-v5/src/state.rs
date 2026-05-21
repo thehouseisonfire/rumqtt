@@ -1012,6 +1012,13 @@ impl MqttState {
         request: Request,
         notice: Option<TrackedNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        fn unsupported_outgoing_request(
+            request: Request,
+        ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+            let _request = request;
+            Err(StateError::InvalidState)
+        }
+
         let result = match request {
             Request::Publish(publish) => {
                 let publish_notice = match notice {
@@ -1085,7 +1092,9 @@ impl MqttState {
                 };
                 (Some(self.outgoing_auth(auth, auth_notice)?), None)
             }
-            _ => unimplemented!(),
+            Request::PubComp(_) | Request::PingResp | Request::SubAck(_) | Request::UnsubAck(_) => {
+                unsupported_outgoing_request(request)?
+            }
         };
 
         self.last_outgoing = Instant::now();
@@ -2519,6 +2528,15 @@ mod test {
     fn new_state_preallocates_event_queue_for_read_batch_bursts() {
         let mqtt = MqttState::builder(10).build();
         assert!(mqtt.events.capacity() >= MqttState::initial_events_capacity());
+    }
+
+    #[test]
+    fn handle_outgoing_packet_rejects_incoming_only_request_variants() {
+        let mut mqtt = build_mqttstate();
+
+        let err = mqtt.handle_outgoing_packet(Request::PingResp).unwrap_err();
+
+        assert!(matches!(err, StateError::InvalidState));
     }
 
     #[test]
