@@ -15,6 +15,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Fix graceful disconnect drain handling so queued but unsent flow-controlled publishes do not prevent MQTT `DISCONNECT` after actual outbound protocol state has completed.
 - `rumqttc` v4/v5: Reset retained local session state before reconnecting with a changed ClientId so pending state from one MQTT identity is not reused under another.
 - `rumqttc` v4/v5 codecs: Return `PayloadTooLong` instead of panicking when encoding MQTT strings or binary fields that exceed the MQTT two-byte length prefix limit.
 - `rumqttc` v4/v5 codecs: Enforce MQTT UTF-8 string validation on read/write paths, rejecting malformed UTF-8 and U+0000 in MQTT strings, including publish topics, will topics, subscribe filters, and unsubscribe filters.
