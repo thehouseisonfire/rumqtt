@@ -394,37 +394,40 @@ impl EventLoop {
         for envelope in self.pending.drain(..) {
             drained += 1;
             if let Some(notice) = envelope.notice {
-                match notice {
-                    TrackedNoticeTx::Publish(notice) => {
-                        notice.error(reason.publish_error());
-                    }
-                    TrackedNoticeTx::Subscribe(notice) => {
-                        notice.error(reason.subscribe_error());
-                    }
-                    TrackedNoticeTx::Unsubscribe(notice) => {
-                        notice.error(reason.unsubscribe_error());
-                    }
-                }
+                Self::fail_tracked_notice(notice, reason);
             }
         }
         for envelope in self.queued.drain() {
             drained += 1;
             if let Some(notice) = envelope.notice {
-                match notice {
-                    TrackedNoticeTx::Publish(notice) => {
-                        notice.error(reason.publish_error());
-                    }
-                    TrackedNoticeTx::Subscribe(notice) => {
-                        notice.error(reason.subscribe_error());
-                    }
-                    TrackedNoticeTx::Unsubscribe(notice) => {
-                        notice.error(reason.unsubscribe_error());
-                    }
-                }
+                Self::fail_tracked_notice(notice, reason);
             }
         }
 
         drained
+    }
+
+    fn fail_tracked_notice(notice: TrackedNoticeTx, reason: NoticeFailureReason) {
+        match notice {
+            TrackedNoticeTx::Publish(notice) => {
+                notice.error(reason.publish_error());
+            }
+            TrackedNoticeTx::Subscribe(notice) => {
+                notice.error(reason.subscribe_error());
+            }
+            TrackedNoticeTx::Unsubscribe(notice) => {
+                notice.error(reason.unsubscribe_error());
+            }
+        }
+    }
+
+    fn drop_unprocessed_requests(&mut self) {
+        // These requests never became MQTT protocol state. Dropping their notice senders
+        // resolves tracked handles with the existing Recv error.
+        self.pending.clear();
+        self.queued.clear();
+        self.requests_rx.drain().for_each(drop);
+        self.control_requests_rx.drain().for_each(drop);
     }
 
     /// Clears eventloop and state tracking bound to a previous session.
@@ -496,6 +499,7 @@ impl EventLoop {
                 self.network = None;
                 self.keepalive_timeout = None;
                 self.pending_disconnect = None;
+                self.drop_unprocessed_requests();
                 self.disconnect_complete = true;
                 Err(ConnectionError::DisconnectTimeout)
             }
@@ -524,7 +528,7 @@ impl EventLoop {
                 return Err(ConnectionError::RequestsDone);
             }
 
-            if self.handle_ready_requests().await? {
+            if self.pending_disconnect.is_none() && self.handle_ready_requests().await? {
                 if let Some(event) = self.state.events.pop_front() {
                     return Ok(event);
                 }
@@ -532,7 +536,7 @@ impl EventLoop {
             }
 
             if self.pending_disconnect.is_some() {
-                if self.queued.is_empty() && self.state.outbound_requests_drained() {
+                if self.state.outbound_requests_drained() {
                     return self.send_pending_disconnect().await;
                 }
 
@@ -858,6 +862,7 @@ impl EventLoop {
             self.flush_network().await?;
         }
 
+        self.drop_unprocessed_requests();
         self.disconnect_complete = true;
         Ok(self.state.events.pop_front().unwrap())
     }

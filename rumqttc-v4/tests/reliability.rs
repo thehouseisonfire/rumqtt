@@ -984,6 +984,71 @@ async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
 }
 
 #[tokio::test]
+async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("queued-publish-disconnect", ("127.0.0.1", port));
+    options.set_inflight(1).set_max_request_batch(1);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build();
+    let (disconnect_event_tx, disconnect_event_rx) = oneshot::channel();
+    let eventloop_task = task::spawn(async move {
+        let mut disconnect_event_tx = Some(disconnect_event_tx);
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Outgoing(Outgoing::Disconnect)) => {
+                    if let Some(tx) = disconnect_event_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                Ok(_) => {}
+                Err(ConnectionError::RequestsDone) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    });
+
+    let client_task = task::spawn(async move {
+        client
+            .publish("test/qos1/first", QoS::AtLeastOnce, false, "first")
+            .await
+            .unwrap();
+        client
+            .publish("test/qos1/unsent", QoS::AtLeastOnce, false, "unsent")
+            .await
+            .unwrap();
+        client
+            .disconnect_with_timeout(Duration::from_secs(2))
+            .await
+            .unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
+    let publish = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("expected first QoS1 publish before graceful disconnect");
+    assert_eq!(publish.pkid, 1);
+    assert_eq!(publish.qos, QoS::AtLeastOnce);
+    broker.ack(publish.pkid).await;
+
+    match broker
+        .read_packet_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("expected DISCONNECT after first QoS1 publish completed")
+    {
+        Packet::Disconnect => {}
+        packet => panic!("unsent queued publish must not delay graceful disconnect: {packet:?}"),
+    }
+
+    client_task.await.unwrap();
+    time::timeout(PHASE_TIMEOUT, disconnect_event_rx)
+        .await
+        .expect("event loop did not emit Outgoing(Disconnect)")
+        .expect("disconnect event waiter dropped");
+    eventloop_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn graceful_disconnect_timeout_does_not_send_disconnect() {
     let (listener, port) = reserve_listener().await;
     let options = MqttOptions::new("issue-1031-timeout", ("127.0.0.1", port));
