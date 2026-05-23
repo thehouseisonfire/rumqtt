@@ -997,7 +997,7 @@ async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() 
             match eventloop.poll().await {
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => {
                     if let Some(tx) = disconnect_event_tx.take() {
-                        let _ = tx.send(());
+                        let _unused = tx.send(());
                     }
                 }
                 Ok(_) => {}
