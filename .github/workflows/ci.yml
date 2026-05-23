@@ -52,6 +52,12 @@ jobs:
         with:
           tool: cargo-hack,cargo-llvm-cov,nextest
 
+      - name: Install Mosquitto smoke-test broker
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y mosquitto
+
       # - name: Check benchmarks
       #   uses: actions-rs/cargo@v1
       #   env:
@@ -66,8 +72,8 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
-            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4
-            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5-next
 
       - name: Check standalone crates
         env:
@@ -80,8 +86,8 @@ jobs:
       - name: Check docs
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
-            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4
-            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5-next
 
       - name: Check standalone crate docs
         if: ${{ matrix.os != 'windows-latest' }}
@@ -92,8 +98,8 @@ jobs:
 
       - name: Doctests
         run: |
-            cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v4
-            cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v5
+            cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v4-next
+            cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v5-next
 
       - name: Standalone crate doctests
         run: |
@@ -103,8 +109,8 @@ jobs:
 
       - name: Test rumqttc
         run: |
-            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v4 --no-report nextest
-            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v5 --no-report nextest
+            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v4-next --no-report nextest
+            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v5-next --no-report nextest
 
       - name: Test standalone crates
         run: |
@@ -119,22 +125,22 @@ jobs:
 
       - name: Verify rustls provider conflict guard
         run: |
-            if cargo check -p rumqttc-v4 --no-default-features --features "use-rustls-aws-lc,use-rustls-ring"; then
-              echo "Expected mutually-exclusive rustls provider feature check for rumqttc-v4 to fail, but it succeeded."
+            if cargo check -p rumqttc-v4-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring"; then
+              echo "Expected mutually-exclusive rustls provider feature check for rumqttc-v4-next to fail, but it succeeded."
               exit 1
             fi
-            if cargo check -p rumqttc-v5 --no-default-features --features "use-rustls-aws-lc,use-rustls-ring"; then
-              echo "Expected mutually-exclusive rustls provider feature check for rumqttc-v5 to fail, but it succeeded."
+            if cargo check -p rumqttc-v5-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring"; then
+              echo "Expected mutually-exclusive rustls provider feature check for rumqttc-v5-next to fail, but it succeeded."
               exit 1
             fi
             echo "Mutually-exclusive rustls provider feature guards failed as expected."
 
       - name: Verify cross-crate transport feature isolation
         run: |
-            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features -F rumqttc-v5/websocket
-            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features -F rumqttc-v4/websocket
-            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features --features "rumqttc-v4/use-rustls-ring rumqttc-v5/use-rustls-aws-lc"
-            cargo check -p rumqttc-v4 -p rumqttc-v5 --no-default-features --features "rumqttc-v4/use-rustls-aws-lc rumqttc-v5/use-rustls-ring"
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v5-next/websocket
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v4-next/websocket
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features --features "rumqttc-v4-next/use-rustls-ring rumqttc-v5-next/use-rustls-aws-lc"
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features --features "rumqttc-v4-next/use-rustls-aws-lc rumqttc-v5-next/use-rustls-ring"
 
       - name: Verify rumqttc-next feature forwarding
         run: |
