@@ -5,6 +5,18 @@
 ### Deprecated
 ### Removed
 ### Fixed
+### Security
+
+---
+
+## [rumqttc-next 0.33.2] - 23-05-2026
+
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
 - `rumqttc` v4/v5: Fix graceful disconnect drain handling so queued but unsent flow-controlled publishes do not prevent MQTT `DISCONNECT` after actual outbound protocol state has completed.
 ### Security
 

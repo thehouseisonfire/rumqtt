@@ -1,6 +1,6 @@
 [package]
 name = "rumqttc-v4-next"
-version = "0.33.1"
+version = "0.33.2"
 publish = true
 autoexamples = false
 description = "Explicit MQTT 3.1.1 client crate in the rumqttc-next family"
@@ -40,8 +40,8 @@ bytes = "1.5"
 log = "0.4"
 flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
-rumqttc-core = { package = "rumqttc-core-next", path = "../rumqttc-core", version = "0.33.1", default-features = false }
-mqttbytes-core = { package = "mqttbytes-core-next", path = "../mqttbytes-core", version = "0.33.1" }
+rumqttc-core = { package = "rumqttc-core-next", path = "../rumqttc-core", version = "0.33.2", default-features = false }
+mqttbytes-core = { package = "mqttbytes-core-next", path = "../mqttbytes-core", version = "0.33.2" }
 
 # Optional
 # rustls
