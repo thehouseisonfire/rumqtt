@@ -44,7 +44,7 @@ impl MosquittoBroker {
             eprintln!(
                 "WARN: skipping Mosquitto disconnect smoke test: cannot write config {config:?}: {err}"
             );
-            let _ = fs::remove_dir_all(&dir);
+            drop(fs::remove_dir_all(&dir));
             return None;
         }
 
@@ -61,7 +61,7 @@ impl MosquittoBroker {
                 eprintln!(
                     "WARN: skipping Mosquitto disconnect smoke test: cannot launch clean broker: {err}"
                 );
-                let _ = fs::remove_dir_all(&dir);
+                drop(fs::remove_dir_all(&dir));
                 return None;
             }
         };
@@ -88,15 +88,15 @@ impl MosquittoBroker {
             return String::new();
         };
 
-        let _ = child.kill();
+        drop(child.kill());
         let output = match child.wait_with_output() {
             Ok(output) => output,
             Err(err) => {
-                let _ = fs::remove_dir_all(&self.dir);
+                drop(fs::remove_dir_all(&self.dir));
                 return format!("failed to collect mosquitto output: {err}");
             }
         };
-        let _ = fs::remove_dir_all(&self.dir);
+        drop(fs::remove_dir_all(&self.dir));
 
         format!(
             "{}{}",
@@ -109,10 +109,10 @@ impl MosquittoBroker {
 impl Drop for MosquittoBroker {
     fn drop(&mut self) {
         if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
+            drop(child.kill());
+            drop(child.wait());
         }
-        let _ = fs::remove_dir_all(&self.dir);
+        drop(fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -195,13 +195,13 @@ async fn start_will_observer(
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
                     if let Some(tx) = suback_tx.take() {
-                        let _ = tx.send(());
+                        let _unused = tx.send(());
                     }
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     if publish.topic.as_ref() == will_topic.as_bytes() {
                         let payload = String::from_utf8_lossy(&publish.payload).into_owned();
-                        let _ = will_tx.send(payload);
+                        drop(will_tx.send(payload));
                     }
                 }
                 Ok(_) => {}
@@ -242,7 +242,7 @@ async fn stop_observer(
     observer_task: tokio::task::JoinHandle<Result<(), ConnectionError>>,
 ) {
     observer.disconnect_now().await.unwrap();
-    let _ = time::timeout(OBSERVER_TIMEOUT, observer_task).await;
+    drop(time::timeout(OBSERVER_TIMEOUT, observer_task).await);
 }
 
 #[tokio::test]
