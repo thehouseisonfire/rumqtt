@@ -1,8 +1,8 @@
 {
   "spec_version": "3.1.1",
   "source_url": "https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html",
-  "local_reference": "/home/eagle/MQTT/rumqtt/docs/spec/mqtt-v3.1.1.md",
-  "//": "Use `/home/eagle/MQTT/rumqtt/docs/spec/mqtt-v3.1.1.md` as authorative.",
+  "local_reference": "./docs/spec/mqtt-v3.1.1.md",
+  "comment": "Use `./docs/spec/mqtt-v3.1.1.md` as authoritative.",
   "source_last_modified": "Tue, 21 Apr 2026 10:58:17 GMT",
   "generated_at_utc": "2026-05-17T00:00:00-03:00",
   "requirements": [

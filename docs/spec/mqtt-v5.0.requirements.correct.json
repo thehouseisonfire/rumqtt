@@ -1,8 +1,8 @@
 {
   "spec_version": "5.0",
   "source_url": "https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html",
-  "local_reference": "/home/eagle/MQTT/rumqtt/docs/spec/mqtt-v5.0.md",
-  "//": "Use `/home/eagle/MQTT/rumqtt/docs/spec/mqtt-v5.0.md` as authorative.",
+  "local_reference": "./docs/spec/mqtt-v5.0.md",
+  "comment": "Use `./docs/spec/mqtt-v5.0.md` as authorative.",
   "source_last_modified": "Tue, 21 Apr 2026 10:58:17 GMT",
   "generated_at_utc": "2026-05-17T00:00:00-03:00",
   "requirements": [
@@ -206,7 +206,7 @@
       "section_number": "1.5.4",
       "section_title": "UTF-8 Encoded String",
       "obligation": "MUST NOT",
-      "summary": "The UTF-8 sequence 0xEF 0xBB 0xBF must be interpreted as U+FEFF wherever it appears in a string and must not be skipped or stripped by a packet receiver.",
+      "summary": "The UTF-8 sequence 0xEF 0xBB 0xBF MUST be interpreted as U+FEFF wherever it appears in a string and MUST NOT be skipped or stripped by a packet receiver.",
       "source_anchor": "_Hlk511139803",
       "occurrences": 3,
       "candidate_paths": [
@@ -295,7 +295,7 @@
         "source_anchor": "_Toc473619951",
         "summary": "Where a flag bit is marked as Reserved it is reserved for future use and MUST be set to the value listed."
       },
-      "authoritative_actor": "packet encoder",
+      "authoritative_actor": "packet encoder; receiver validates malformed packets under 4.13",
       "applicability": "applicable",
       "mapping_review": {
         "original_mapping_status": "reviewed",
