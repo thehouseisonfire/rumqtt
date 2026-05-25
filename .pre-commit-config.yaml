@@ -1,6 +1,18 @@
 repos:
   - repo: local
     hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          cargo fmt --all
+          '
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+
       - id: clippy
         name: clippy
         entry: >
