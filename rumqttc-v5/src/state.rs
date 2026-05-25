@@ -1502,7 +1502,8 @@ impl MqttState {
             let replay_publish = self.publish_for_replay_tracking(&publish);
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
             self.outgoing_pub_notice[usize::from(pkid)] = notice;
-            self.outgoing_pub_flush_attempted.set(usize::from(pkid), false);
+            self.outgoing_pub_flush_attempted
+                .set(usize::from(pkid), false);
             self.inflight += 1;
             self.record_outgoing_topic_alias(&publish);
 
@@ -1673,7 +1674,8 @@ impl MqttState {
             let replay_publish = self.publish_for_replay_tracking(&publish);
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
             self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
-            self.outgoing_pub_flush_attempted.set(usize::from(pkid), false);
+            self.outgoing_pub_flush_attempted
+                .set(usize::from(pkid), false);
             self.outgoing_pub_ack.set(usize::from(pkid), false);
             self.inflight += 1;
         }
