@@ -963,7 +963,8 @@ impl MqttState {
             // packet yet. This error is possible only when broker isn't acking sequentially
             self.outgoing_pub[usize::from(pkid)] = Some(publish.clone());
             self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
-            self.outgoing_pub_flush_attempted.set(usize::from(pkid), false);
+            self.outgoing_pub_flush_attempted
+                .set(usize::from(pkid), false);
             self.outgoing_pub_ack.set(usize::from(pkid), false);
             self.inflight += 1;
         }
