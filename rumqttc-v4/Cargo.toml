@@ -117,6 +117,10 @@ name = "tracked_notices"
 path = "examples/tracked_notices.rs"
 
 [[example]]
+name = "resubscribe_on_reconnect"
+path = "examples/resubscribe_on_reconnect.rs"
+
+[[example]]
 name = "unbounded_v4"
 path = "examples/unbounded.rs"
 
