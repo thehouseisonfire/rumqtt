@@ -80,6 +80,17 @@ Tracked APIs return notices that resolve with MQTT protocol responses:
 
 See `examples/tracked_notices.rs` for a runnable async example.
 
+Resubscribing after reconnect
+------------------------------
+
+The event loop yields `Event::Incoming(Packet::ConnAck(_))` after every
+successful connection, including automatic reconnects. If `session_present` is
+false, the broker has a fresh session and no longer has the client's
+subscriptions. Keep the desired subscription set in the application and reissue
+it on those `CONNACK`s.
+
+See `examples/resubscribe_on_reconnect.rs` for a runnable async example.
+
 Quick overview of features
 - Eventloop orchestrates outgoing/incoming packets concurrently and handles the state
 - Pings the broker when necessary and detects client side half open connections as well
