@@ -1110,6 +1110,314 @@
         "notes": "The current v5 packet test explicitly verifies the encoded protocol-name bytes are the MQTT UTF-8 string. There is no dedicated invalid-protocol-name decode regression test, but that decode path is not the normal client responsibility for this requirement."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-7",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1, a Will Message MUST be stored on the Server and associated with the Session.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement is a server-side Will storage rule. The v5 client can request a Will by encoding CONNECT Will fields, but it does not store Will Messages or associate them with server Sessions.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "If the Will Flag is set to 1 this indicates that a Will Message MUST be stored on the Server and associated with the Session."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "unclear",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry includes the correct storage sentence but appends the adjacent descriptive sentence about Will fields, which is context rather than the normative storage obligation."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "LastWill::write"
+          ],
+          "reason": "The client codec can encode a CONNECT Will request; server Session storage is outside the client implementation."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "The connection path writes options.last_will() into CONNECT, but performs no server-side Session storage."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side Will storage cannot be proven by v5 client unit tests. Client Will field encoding is covered under MQTT-3.1.2-9."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-8",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "The Will Message MUST be published after the Network Connection is subsequently closed and either the Will Delay Interval has elapsed or the Session ends, unless it has been deleted on normal DISCONNECT or a new Network Connection for the ClientID opens before the Will Delay Interval elapses.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement is a server-side Will publication lifecycle rule. The v5 client can encode Will data and normal DISCONNECT packets, but it does not decide when a stored Will is published.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "The Will Message MUST be published after the Network Connection is subsequently closed and either the Will Delay Interval has elapsed or the Session ends, unless deleted by the Server on receipt of DISCONNECT reason code 0x00 or a new Network Connection for the ClientID is opened before the Will Delay Interval has elapsed."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated JSON incorrectly duplicates MQTT-3.1.2-7's storage summary and omits the publication timing, Will Delay, Session end, normal DISCONNECT, and reconnect exceptions."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "LastWillProperties",
+            "LastWill::write"
+          ],
+          "reason": "The client can encode Will properties, including Will Delay Interval, but publication timing is enforced by the server."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "DisconnectReasonCode::NormalDisconnection",
+            "Disconnect::write"
+          ],
+          "reason": "The client can encode a normal DISCONNECT reason code that lets a compliant server delete the Will instead of publishing it."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v5/tests/smoke/mosquitto/disconnect.rs::mixed_qos_graceful_disconnect_suppresses_will",
+          "rumqttc-v5/tests/smoke/mosquitto/disconnect.rs::graceful_disconnect_with_unsent_backlog_suppresses_will"
+        ],
+        "notes": "Broker smoke tests cover interoperability with normal DISCONNECT suppressing a Will, but the normative publication lifecycle is server-side and not v5 client compliance."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-9",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1, the Will Properties, Will Topic, and Will Payload fields MUST be present in the Payload.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is the CONNECT packet-format rule requiring Will Properties, Will Topic, and Will Payload when Will Flag is set. rumqttc-v5 only sets Will Flag when a LastWill value is supplied, always writes the property section, topic, and payload, and rejects truncated inbound CONNECT Will data.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "If the Will Flag is set to 1, the Will Properties, Will Topic, and Will Payload fields MUST be present in the Payload."
+      },
+      "authoritative_actor": "client packet encoder; packet decoder",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_behavior_present_in_code": "no",
+        "notes": "The generated JSON merges this packet-format requirement with MQTT-3.1.2-10 and truncates the combined summary, which could confuse client packet encoding with server stored-session cleanup."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "LastWill::write",
+            "LastWill"
+          ],
+          "reason": "Connect::write sets Will Flag only when will is Some. LastWill::write always serializes a Will Properties length, Will Topic, and Will Payload from a LastWill value that contains topic and message fields."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::read",
+            "LastWill::read"
+          ],
+          "reason": "When Will Flag is set, the decoder reads Will Properties, Will Topic, and Will Payload; missing or truncated data fails decoding."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner"
+          ],
+          "reason": "The v5 connection path passes options.last_will() into Packet::Connect before writing it to the network."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_last_will",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_will_flag_set_without_will_topic",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::last_will_encoding_writes_zero_length_properties_when_none"
+        ],
+        "notes": "Tests cover Will CONNECT round-trip, rejection when Will Flag is set but Will fields are absent, and the required zero-length Will Properties section when no Will properties exist."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-10",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "The Server MUST remove the Will Message from stored Session State once it has been published or once the Server has received a DISCONNECT packet with reason code 0x00 from the Client.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement is server-side stored-session cleanup. The v5 client can send normal DISCONNECT, but it does not own or mutate the server's stored Will state.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "The Will Message MUST be removed from stored Session State in the Server once it has been published or the Server has received a DISCONNECT packet with reason code 0x00 (Normal disconnection) from the Client."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated JSON duplicates and truncates MQTT-3.1.2-9's payload-presence text instead of isolating this server-side stored-session cleanup requirement."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "DisconnectReasonCode::NormalDisconnection",
+            "Disconnect::write"
+          ],
+          "reason": "The client can send DISCONNECT reason code 0x00, which is the trigger for a compliant server to remove the stored Will without publishing it."
+        },
+        {
+          "path": "rumqttc-v5/src/client.rs",
+          "symbols": [
+            "AsyncClient::disconnect",
+            "AsyncClient::build_disconnect_packet"
+          ],
+          "reason": "The default client disconnect API builds a normal DISCONNECT packet; server stored-session cleanup remains outside the client implementation."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/disconnect.rs::disconnect1_encoding_works",
+          "rumqttc-v5/tests/smoke/mosquitto/disconnect.rs::mixed_qos_graceful_disconnect_suppresses_will",
+          "rumqttc-v5/tests/smoke/mosquitto/disconnect.rs::graceful_disconnect_with_unsent_backlog_suppresses_will"
+        ],
+        "notes": "Tests cover normal DISCONNECT encoding and broker interoperability for Will suppression, but server-side stored Will removal is not v5 client compliance."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.14.4-3",
+      "section_number": "3.14.4",
+      "section_title": "DISCONNECT Actions",
+      "obligation": "MUST",
+      "summary": "On receipt of DISCONNECT with reason code 0x00, the Server MUST discard any Will Message associated with the current Connection without publishing it.",
+      "source_anchor": "_Toc473906327",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/disconnect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement is triggered on server receipt of a normal DISCONNECT and requires server-side Will discard. The v5 client can send normal DISCONNECT, but it cannot discard a Will stored by the server.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.14.4",
+        "section_title": "DISCONNECT Actions",
+        "source_anchor": "_Toc473906327",
+        "summary": "On receipt of DISCONNECT with a Reason Code of 0x00 (Success), the Server MUST discard any Will Message associated with the current Connection without publishing it."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "unreviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated summary is a fragment that omits the server actor and the triggering condition: receipt of DISCONNECT reason code 0x00."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "DisconnectReasonCode::NormalDisconnection",
+            "Disconnect::write",
+            "Disconnect::read"
+          ],
+          "reason": "The codec supports normal DISCONNECT reason code 0x00 and compact normal DISCONNECT encoding, but server-side Will discard is outside client responsibility."
+        },
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::outgoing_disconnect"
+          ],
+          "reason": "The state machine sends caller-selected DISCONNECT packets and records an outgoing disconnect event; it does not manage server-stored Will state."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/disconnect.rs::disconnect1_encoding_works",
+          "rumqttc-v5/src/mqttbytes/v5/disconnect.rs::disconnect1_parsing_works",
+          "rumqttc-v5/tests/smoke/mosquitto/disconnect.rs::mixed_qos_graceful_disconnect_suppresses_will",
+          "rumqttc-v5/tests/smoke/mosquitto/disconnect.rs::graceful_disconnect_with_unsent_backlog_suppresses_will"
+        ],
+        "notes": "Client tests cover normal DISCONNECT encoding/decoding and broker interoperability, but the authoritative Will discard action is server-only."
+      },
+      "follow_up": null
     }
   ]
 }
