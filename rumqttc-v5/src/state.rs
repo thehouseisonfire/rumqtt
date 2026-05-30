@@ -799,10 +799,9 @@ impl MqttState {
             ));
         }
 
-        // remove packet ids of incoming publishes
+        // QoS 1 receives are not part of the client session state. Incomplete QoS 2
+        // receives are, so keep incoming_pub/incoming_pubrec for persistent-session reconnects.
         self.incoming_puback.clear();
-        self.incoming_pub.clear();
-        self.incoming_pubrec.clear();
 
         self.ping.reset();
         self.inflight = 0;
@@ -934,6 +933,31 @@ impl MqttState {
         }
         self.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
         self.clear_collision();
+    }
+
+    pub(crate) fn reset_session_state(&mut self) {
+        self.fail_pending_notices();
+
+        let events = std::mem::take(&mut self.events);
+        let auth = self.auth.clone();
+        let ack_mode = self.ack_mode;
+        let auto_topic_alias_policy = self.topic_aliases.auto_policy;
+        let client_topic_alias_max = self.topic_aliases.client_max;
+        let authentication_method = auth.method().map(str::to_owned);
+        let authenticator = self.authenticator.clone();
+        let max_outgoing_inflight = self.max_outgoing_inflight_upper_limit;
+
+        let mut reset = Self::new_internal(
+            max_outgoing_inflight,
+            ack_mode,
+            auto_topic_alias_policy,
+            client_topic_alias_max,
+            authentication_method,
+            authenticator,
+        );
+        reset.events = events;
+        reset.auth = auth;
+        *self = reset;
     }
 
     pub(crate) fn fail_auth_exchange_due_to_session_reset(&mut self) {
@@ -1115,6 +1139,7 @@ impl MqttState {
         mut packet: Incoming,
     ) -> Result<Option<Packet>, StateError> {
         let events_len_before = self.events.len();
+        let is_duplicate_incoming_qos2_publish = self.is_duplicate_incoming_qos2_publish(&packet);
         let outgoing = match &mut packet {
             Incoming::PingResp(_) => Ok(self.handle_incoming_pingresp()),
             Incoming::Publish(publish) => self.handle_incoming_publish(publish),
@@ -1138,7 +1163,7 @@ impl MqttState {
         let skip_incoming_event = matches!(
             (&packet, &outgoing),
             (Incoming::Publish(_), Ok(Some(Packet::Disconnect(_))))
-        );
+        ) || is_duplicate_incoming_qos2_publish;
 
         let queue_incoming_event_on_error = matches!(
             (&packet, &outgoing),
@@ -1168,6 +1193,15 @@ impl MqttState {
                 Err(err)
             }
         }
+    }
+
+    fn is_duplicate_incoming_qos2_publish(&self, packet: &Incoming) -> bool {
+        matches!(
+            packet,
+            Incoming::Publish(publish)
+                if publish.qos == QoS::ExactlyOnce
+                    && self.incoming_pubrec.contains(usize::from(publish.pkid))
+        )
     }
 
     /// Builds the protocol-error disconnect response for the current state.
@@ -1365,7 +1399,9 @@ impl MqttState {
                 let pkid = publish.pkid;
                 self.incoming_pub.insert(usize::from(pkid));
 
-                if self.ack_mode == AckMode::Automatic {
+                if self.ack_mode == AckMode::Automatic
+                    || self.incoming_pubrec.contains(usize::from(pkid))
+                {
                     let pubrec = PubRec::new(pkid, None);
                     return Ok(Some(self.outgoing_pubrec_for_incoming_publish(pubrec)?));
                 }
@@ -1773,7 +1809,12 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
 
-        self.incoming_pubrec.insert(usize::from(pubrec.pkid));
+        if (pubrec.reason as u8) >= 0x80 {
+            self.incoming_pub.set(usize::from(pubrec.pkid), false);
+            self.incoming_pubrec.set(usize::from(pubrec.pkid), false);
+        } else {
+            self.incoming_pubrec.insert(usize::from(pubrec.pkid));
+        }
         let pkid = pubrec.pkid;
         let event = Event::Outgoing(Outgoing::PubRec(pkid));
         self.events.push_back(event);
@@ -2551,6 +2592,53 @@ mod test {
 
         assert!(replay.dup);
         assert_eq!(replay.qos, QoS::AtLeastOnce);
+    }
+
+    #[test]
+    fn clean_preserves_incomplete_incoming_qos2_state_for_session_resume() {
+        let mut mqtt = build_mqttstate();
+        let mut publish = build_incoming_publish(QoS::ExactlyOnce, 1);
+
+        match mqtt.handle_incoming_publish(&mut publish).unwrap().unwrap() {
+            Packet::PubRec(pubrec) => assert_eq!(pubrec.pkid, 1),
+            packet => panic!("Invalid network request: {packet:?}"),
+        }
+
+        let pending = mqtt.clean();
+
+        assert!(pending.is_empty());
+        assert!(mqtt.incoming_pub.contains(1));
+        assert!(mqtt.incoming_pubrec.contains(1));
+
+        let packet = mqtt
+            .handle_incoming_pubrel(&PubRel::new(1, None))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubComp(pubcomp) => assert_eq!(pubcomp.pkid, 1),
+            packet => panic!("Invalid network request after session resume: {packet:?}"),
+        }
+        assert!(!mqtt.incoming_pub.contains(1));
+        assert!(!mqtt.incoming_pubrec.contains(1));
+    }
+
+    #[test]
+    fn reset_session_state_discards_incomplete_incoming_qos2_state() {
+        let mut mqtt = build_mqttstate();
+        let mut publish = build_incoming_publish(QoS::ExactlyOnce, 1);
+
+        mqtt.handle_incoming_publish(&mut publish).unwrap();
+        assert!(mqtt.incoming_pub.contains(1));
+        assert!(mqtt.incoming_pubrec.contains(1));
+
+        mqtt.reset_session_state();
+
+        assert!(!mqtt.incoming_pub.contains(1));
+        assert!(!mqtt.incoming_pubrec.contains(1));
+        assert!(matches!(
+            mqtt.handle_incoming_pubrel(&PubRel::new(1, None)),
+            Err(StateError::Unsolicited(1))
+        ));
     }
 
     #[test]
@@ -5479,6 +5567,92 @@ mod test {
         assert_eq!(mqtt.events.len(), 2);
         assert_eq!(mqtt.events[0], Event::Incoming(Incoming::Publish(publish)));
         assert_eq!(mqtt.events[1], Event::Outgoing(Outgoing::PubRec(43)));
+    }
+
+    #[test]
+    fn handle_incoming_packet_suppresses_duplicate_qos2_publish_after_pubrec() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 43);
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+        mqtt.events.clear();
+
+        let packet = mqtt
+            .handle_incoming_packet(Incoming::Publish(publish))
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(packet, Packet::PubRec(pubrec) if pubrec.pkid == 43));
+        assert_eq!(mqtt.events.len(), 1);
+        assert_eq!(mqtt.events[0], Event::Outgoing(Outgoing::PubRec(43)));
+    }
+
+    #[test]
+    fn handle_incoming_packet_resends_pubrec_for_manual_duplicate_qos2_publish_after_pubrec() {
+        let mut mqtt = build_mqttstate();
+        mqtt.ack_mode = AckMode::Manual;
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 43);
+
+        assert!(
+            mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+                .unwrap()
+                .is_none()
+        );
+        mqtt.handle_outgoing_packet(Request::PubRec(PubRec::new(43, None)))
+            .unwrap();
+        mqtt.events.clear();
+
+        let packet = mqtt
+            .handle_incoming_packet(Incoming::Publish(publish))
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(packet, Packet::PubRec(pubrec) if pubrec.pkid == 43));
+        assert_eq!(mqtt.events.len(), 1);
+        assert_eq!(mqtt.events[0], Event::Outgoing(Outgoing::PubRec(43)));
+    }
+
+    #[test]
+    fn handle_incoming_packet_delivers_qos2_publish_after_pubcomp_completes_previous_flow() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 43);
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+        mqtt.handle_incoming_packet(Incoming::PubRel(PubRel::new(43, None)))
+            .unwrap();
+        mqtt.events.clear();
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+
+        assert_eq!(mqtt.events.len(), 2);
+        assert_eq!(mqtt.events[0], Event::Incoming(Incoming::Publish(publish)));
+        assert_eq!(mqtt.events[1], Event::Outgoing(Outgoing::PubRec(43)));
+    }
+
+    #[test]
+    fn pubrec_error_does_not_suppress_next_qos2_publish_with_same_packet_identifier() {
+        let mut mqtt = build_mqttstate();
+        mqtt.ack_mode = AckMode::Manual;
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 43);
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+        let mut pubrec = PubRec::new(43, None);
+        pubrec.reason = PubRecReason::ImplementationSpecificError;
+        mqtt.handle_outgoing_packet(Request::PubRec(pubrec))
+            .unwrap();
+        mqtt.events.clear();
+
+        mqtt.handle_incoming_packet(Incoming::Publish(publish.clone()))
+            .unwrap();
+
+        assert_eq!(mqtt.events.len(), 1);
+        assert_eq!(mqtt.events[0], Event::Incoming(Incoming::Publish(publish)));
+        assert!(mqtt.incoming_pub.contains(43));
+        assert!(!mqtt.incoming_pubrec.contains(43));
     }
 
     #[test]

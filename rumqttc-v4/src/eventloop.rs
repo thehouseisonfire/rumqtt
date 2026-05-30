@@ -433,7 +433,7 @@ impl EventLoop {
     /// Clears eventloop and state tracking bound to a previous session.
     pub fn reset_session_state(&mut self) {
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
-        self.state.fail_pending_notices();
+        self.state.reset_session_state();
     }
 
     fn reset_session_state_if_client_id_changed(&mut self) {
@@ -2264,6 +2264,48 @@ mod tests {
         eventloop.reconcile_connack_session(true).unwrap();
 
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[test]
+    fn connack_reconcile_keeps_incomplete_incoming_qos2_when_resumed_session_exists() {
+        let mut eventloop = build_eventloop_with_pending(false);
+        let mut publish = publish(QoS::ExactlyOnce);
+        publish.pkid = 7;
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::Publish(publish))
+            .unwrap();
+        eventloop.clean();
+
+        eventloop.reconcile_connack_session(true).unwrap();
+
+        let packet = eventloop
+            .state
+            .handle_incoming_packet(Incoming::PubRel(PubRel::new(7)))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(packet, Packet::PubComp(pubcomp) if pubcomp.pkid == 7));
+    }
+
+    #[test]
+    fn connack_reconcile_clears_incomplete_incoming_qos2_when_resumed_session_is_missing() {
+        let mut eventloop = build_eventloop_with_pending(false);
+        let mut publish = publish(QoS::ExactlyOnce);
+        publish.pkid = 7;
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::Publish(publish))
+            .unwrap();
+        eventloop.clean();
+
+        eventloop.reconcile_connack_session(false).unwrap();
+
+        assert!(matches!(
+            eventloop
+                .state
+                .handle_incoming_packet(Incoming::PubRel(PubRel::new(7))),
+            Err(StateError::Unsolicited(7))
+        ));
     }
 
     #[test]
