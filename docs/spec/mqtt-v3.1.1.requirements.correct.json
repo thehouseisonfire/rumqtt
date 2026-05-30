@@ -1478,6 +1478,305 @@
         "notes": "Tests cover rejecting an impossible resumed clean session and dropping replay state after CleanSession=1 reconnect."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-8",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1 and the Connect request is accepted, the Server MUST store a Will Message associated with the Network Connection and publish it when the Network Connection is subsequently closed unless the Server deleted it after receiving DISCONNECT.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement is a server-side Will storage and publication lifecycle rule. The v4 client can only encode a CONNECT packet that requests a Will; it does not store or publish Will Messages.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "If the Will Flag is set to 1 and the Connect request is accepted, a Will Message MUST be stored on the Server, associated with the Network Connection, and published when the Network Connection is subsequently closed unless deleted by the Server on receipt of DISCONNECT."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "wrong",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior entries identify the same requirement but preserve a truncated summary ending in 'unless the Will M...', which omits the DISCONNECT deletion condition. The omitted condition is server-side and does not imply client behavior."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "LastWill::write"
+          ],
+          "reason": "The client packet codec can encode a Will request in CONNECT, but the authoritative storage and publication obligation is on the server."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "The event loop copies MqttOptions::last_will into the outgoing CONNECT packet; it does not implement server-side Will storage or publication."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side Will storage and publication are outside the v4 client crate; client-side Will encoding is covered under MQTT-3.1.2-9."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-9",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 1, the Will QoS and Will Retain fields are used by the Server and the Will Topic and Will Message fields MUST be present in the payload.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The client-applicable part is the CONNECT packet-format rule requiring Will Topic and Will Message whenever the Will Flag is set. rumqttc-v4 only sets the Will Flag from a LastWill value that contains both fields, writes both fields, and rejects inbound CONNECT packets that set the flag without enough payload.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "If the Will Flag is set to 1, the Will QoS and Will Retain fields in Connect Flags will be used by the Server, and the Will Topic and Will Message fields MUST be present in the payload."
+      },
+      "authoritative_actor": "client packet encoder; packet decoder; server",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior mappings match the authoritative payload-presence rule. The server use of Will QoS and Will Retain is outside this client audit."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "LastWill::write",
+            "LastWill"
+          ],
+          "reason": "Connect::write sets Will Flag only when last_will is Some, and LastWill::write always serializes both topic and message from a struct that requires both fields."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::read",
+            "LastWill::read"
+          ],
+          "reason": "When Will Flag is set, the decoder reads Will Topic and Will Message; truncated or missing fields fail decoding."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "The client connection path copies MqttOptions::last_will into the CONNECT packet before writing it to the network."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_works",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_works",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_flag_set_without_will_topic"
+        ],
+        "notes": "Tests cover encoding and decoding CONNECT with a Will and rejecting a CONNECT with Will Flag set but missing Will Topic/Message bytes."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-10",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "The Server MUST remove the Will Message from stored Session state once it has been published or once the Server has received DISCONNECT from the Client.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement is entirely server-side. A rumqttc client may send CONNECT and DISCONNECT packets, but it does not own server stored Session state and cannot remove a stored Will Message from it.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "The Will Message MUST be removed from stored Session state in the Server once it has been published or the Server has received a DISCONNECT packet from the Client."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior mappings identify the server-side stored Will removal rule correctly."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect",
+            "LastWill"
+          ],
+          "reason": "The client codec represents and serializes Will data for CONNECT, but has no server stored-session state to mutate."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/disconnect.rs",
+          "symbols": [
+            "Disconnect::write"
+          ],
+          "reason": "The client can encode DISCONNECT, but the resulting Will removal obligation remains a server-side session-state action."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side removal of a stored Will Message is outside the v4 client implementation."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-11",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST",
+      "summary": "If the Will Flag is set to 0, the Will QoS and Will Retain fields in Connect Flags MUST be zero and the Will Topic and Will Message fields MUST NOT be present in the payload.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is a CONNECT packet-format rule. rumqttc-v4 leaves all Will bits clear and writes no Will payload when last_will is None; on decode it rejects Will QoS or Will Retain bits without Will Flag and rejects extra Will payload bytes.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "If the Will Flag is set to 0, the Will QoS and Will Retain fields in Connect Flags MUST be set to zero and the Will Topic and Will Message fields MUST NOT be present in the payload."
+      },
+      "authoritative_actor": "client packet encoder; packet decoder",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior mappings identify the Will Flag 0 packet-format rule correctly."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "LastWill::write"
+          ],
+          "reason": "Connect::write starts with zero flags and only sets Will Flag, Will QoS, Will Retain, and writes Will payload inside the last_will Some branch."
+        },
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::read",
+            "LastWill::read"
+          ],
+          "reason": "LastWill::read rejects Will QoS or Will Retain when Will Flag is 0, returns None without consuming Will payload, and Connect::read rejects any remaining unexpected payload bytes."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_without_last_will_emits_zero_will_bits",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_flag_zero_with_will_qos_1",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_flag_zero_with_will_retain",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_fields_when_will_flag_zero"
+        ],
+        "notes": "Tests cover outbound zero Will bits with no LastWill and inbound rejection for forbidden Will QoS, Will Retain, and Will payload bytes."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-12",
+      "section_number": "3.1.2.5",
+      "section_title": "Will Flag",
+      "obligation": "MUST NOT",
+      "summary": "If the Will Flag is set to 0, a Will Message MUST NOT be published when this Network Connection ends.",
+      "source_anchor": "_Will_Flag",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative requirement governs server-side Will publication. The client can encode Will Flag 0 by omitting LastWill data, but it never publishes Will Messages when a Network Connection ends.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.5",
+        "section_title": "Will Flag",
+        "source_anchor": "_Will_Flag",
+        "summary": "If the Will Flag is set to 0, a Will Message MUST NOT be published when this Network Connection ends."
+      },
+      "authoritative_actor": "server",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior mappings identify the server-side no-Will-publication rule correctly. The client packet-format half is covered by MQTT-3.1.2-11."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "LastWill"
+          ],
+          "reason": "The client represents absence of a Will as last_will None and encodes Will Flag 0; publishing or suppressing Will Messages on connection end is server behavior."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "The connection path sends the encoded CONNECT packet but does not implement server-side Will publication."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "Server-side Will publication suppression cannot be proven in the v4 client crate; outbound Will Flag 0 encoding is covered under MQTT-3.1.2-11."
+      },
+      "follow_up": null
     }
   ]
 }
