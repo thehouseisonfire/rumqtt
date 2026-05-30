@@ -1161,6 +1161,323 @@
         "notes": "No client-side test is required for this server-only requirement. There is also no dedicated protocol-name encoding regression test in the current v4 suite."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-2",
+      "section_number": "3.1.2.2",
+      "section_title": "Protocol Level",
+      "obligation": "MUST",
+      "summary": "The Server MUST respond with CONNACK return code 0x01 and then disconnect the Client if the Protocol Level is not supported by the Server.",
+      "source_anchor": "_Figure_3.3_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "rumqttc-v4/src/eventloop.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The tagged MQTT-3.1.2-2 requirement is a server-side response to an unsupported CONNECT Protocol Level. rumqttc-v4 is the client, so it cannot implement the server CONNACK-and-disconnect obligation. The related client behavior is correct: the v4 CONNECT encoder always emits protocol level 4 and the event loop maps non-success CONNACK codes, including refused protocol version, to ConnectionRefused.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.2",
+        "section_title": "Protocol Level",
+        "source_anchor": "_Figure_3.3_-",
+        "summary": "The Server MUST respond to the CONNECT Packet with a CONNACK return code 0x01 and then disconnect the Client if the Protocol Level is not supported by the Server."
+      },
+      "authoritative_actor": "server receiver",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original entry mixed the untagged v3.1.1 protocol-level value statement with the tagged server-only MUST and treated client encoding as compliance evidence. The fix-attempt maps the tagged requirement correctly."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
+          "reason": "The client encoder writes protocol level 0x04 for v3.1.1 CONNECT packets. The defensive CONNECT decoder rejects unsupported protocol levels, but clients do not normally receive CONNECT packets."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect"
+          ],
+          "reason": "The client sends the CONNECT packet through the v4 encoder and treats non-success CONNACK return codes as connection refusal."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_emits_protocol_level_4",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_invalid_protocol_level",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_protocol_level_5"
+        ],
+        "notes": "Related codec tests cover v4 level encoding and defensive decode rejection. The server CONNACK-and-disconnect obligation is not testable in this client crate."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-3",
+      "section_number": "3.1.2.3",
+      "section_title": "Connect Flags",
+      "obligation": "MUST",
+      "summary": "The Server MUST validate that the reserved flag in the CONNECT Control Packet is zero and disconnect the Client if it is not zero.",
+      "source_anchor": "_Figure_3.4_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is a server-side validation and disconnect obligation for inbound CONNECT packets. The v4 client cannot perform the server disconnect action. Its related encoder behavior is correct because CONNECT flag bit 0 starts at zero and is never set.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.3",
+        "section_title": "Connect Flags",
+        "source_anchor": "_Figure_3.4_-",
+        "summary": "The Server MUST validate that the reserved flag in the CONNECT Control Packet is set to zero and disconnect the Client if it is not zero."
+      },
+      "authoritative_actor": "server receiver",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior mappings identify the tagged server-side requirement correctly. Client encode/decode checks are useful defensive evidence only."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "validate_connect_flags"
+          ],
+          "reason": "Connect::write initializes connect_flags to zero and only ORs defined bits. validate_connect_flags rejects inbound CONNECT packets with reserved bit 0 set, but the normative disconnect requirement is server-only."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_emits_zero_reserved_connect_flag_bit",
+          "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_reserved_connect_flag"
+        ],
+        "notes": "Related codec tests cover client encoding and defensive decoding. No client-side test is required for the server disconnect obligation."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-4",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Session",
+      "obligation": "MUST",
+      "summary": "When CleanSession is 0, the Server MUST resume or create a Session, and the Client and Server MUST store the Session after disconnection.",
+      "source_anchor": "_Ref362965194",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "rumqttc-v4/src/eventloop.rs",
+        "rumqttc-v4/src/state.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement includes server resume/create behavior and a client-applicable obligation to store Client Session state after disconnection. rumqttc-v4 preserves and replays unacknowledged outgoing QoS 1/2 publishes and pending SUBSCRIBE/UNSUBSCRIBE requests across reconnects, and now preserves incomplete inbound QoS 2 receive state across persistent-session reconnects while clearing it on session reset.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.4",
+        "section_title": "Clean Session",
+        "source_anchor": "_Ref362965194",
+        "summary": "If CleanSession is set to 0, the Server MUST resume communications with the Client based on the current Session or create a new Session, and the Client and Server MUST store the Session after disconnection."
+      },
+      "authoritative_actor": "server session state machine; client session state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "yes",
+        "wrong_mapping_behavior_present_in_code": "no",
+        "notes": "The original mapping omitted the Client and Server session-storage sentence and treated the requirement as server-only. The fix-attempt includes the missing storage obligation. The previous inbound QoS 2 state drop has been fixed in the v4 client."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write"
+          ],
+          "reason": "The client correctly encodes CleanSession=0 by leaving CONNECT flag bit 1 clear when clean_session is false."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::clean",
+            "EventLoop::reconcile_connack_session"
+          ],
+          "reason": "On network cleanup, the event loop moves replayable state into pending queues. If the server reports session_present=true for CleanSession=0, reconcile_connack_session preserves those pending requests; if not, it resets local pending state."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::clean_with_notices",
+            "MqttState::handle_incoming_publish",
+            "MqttState::handle_incoming_pubrel"
+          ],
+          "reason": "clean_with_notices requeues unacknowledged outgoing QoS publishes and pending SUBSCRIBE/UNSUBSCRIBE requests, clears transient QoS 1 receive-ack tracking, and preserves incoming_pub/incoming_pubrec so incomplete inbound QoS 2 state survives persistent-session reconnects. MqttState::reset_session_state clears that preserved state when the broker starts a new session."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/tests/reliability.rs::reconnection_resumes_from_the_previous_state",
+          "rumqttc-v4/tests/reliability.rs::reconnection_resends_unacked_packets_from_the_previous_connection_first",
+          "rumqttc-v4/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first",
+          "rumqttc-v4/src/eventloop.rs::connack_reconcile_keeps_pending_when_resumed_session_exists",
+          "rumqttc-v4/src/eventloop.rs::connack_reconcile_keeps_incomplete_incoming_qos2_when_resumed_session_exists",
+          "rumqttc-v4/src/eventloop.rs::connack_reconcile_clears_incomplete_incoming_qos2_when_resumed_session_is_missing",
+          "rumqttc-v4/src/state.rs::clean_preserves_incomplete_incoming_qos2_state_for_session_resume",
+          "rumqttc-v4/src/state.rs::clean_resends_pubrec_for_duplicate_incoming_qos2_publish_after_session_resume",
+          "rumqttc-v4/src/state.rs::reset_session_state_discards_incomplete_incoming_qos2_state"
+        ],
+        "notes": "Tests cover outgoing pending replay/preservation for CleanSession=0, preserving incomplete inbound QoS 2 state on resumed sessions, repeated PUBREC for duplicate QoS 2 PUBLISH after reconnect, and clearing that state when the server reports no resumed session."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-5",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Session",
+      "obligation": "MUST",
+      "summary": "After disconnection of a Session with CleanSession set to 0, the Server MUST store further QoS 1 and QoS 2 messages matching the client's subscriptions as part of Session state.",
+      "source_anchor": "_Ref362965194",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "rumqttc-v4/src/eventloop.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This requirement is solely a server-side obligation to store matching QoS 1 and QoS 2 messages for a disconnected persistent session. The client can request CleanSession=0 and process messages delivered after reconnect, but it cannot enforce the server's offline message storage.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.4",
+        "section_title": "Clean Session",
+        "source_anchor": "_Ref362965194",
+        "summary": "After the disconnection of a Session that had CleanSession set to 0, the Server MUST store further QoS 1 and QoS 2 messages that match any subscriptions that the client had at the time of disconnection as part of the Session state."
+      },
+      "authoritative_actor": "server session state machine",
+      "applicability": "not_applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original entry duplicated the resume/create mapping from MQTT-3.1.2-4. The fix-attempt maps the tagged server offline-storage requirement correctly."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write"
+          ],
+          "reason": "The client can encode CleanSession=0, which is the precondition for the server behavior, but the actual QoS 1/2 offline storage obligation belongs to the server."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session"
+          ],
+          "reason": "The event loop can preserve local pending state when the server reports an existing session, but it does not implement server-side storage of messages matching subscriptions while disconnected."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side unit test can prove the server offline-storage obligation. Broker integration could observe a broker's behavior, but that would not be v4 client implementation compliance."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-6",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Session",
+      "obligation": "MUST",
+      "summary": "If CleanSession is 1, the Client and Server MUST discard any previous Session, start a new Session, and MUST NOT reuse that Session state subsequently.",
+      "source_anchor": "_Ref362965194",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "rumqttc-v4/src/eventloop.rs",
+        "rumqttc-v4/src/state.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "This requirement has a client-applicable session-state discard obligation for CleanSession=1. The v4 client encodes CleanSession=1, rejects an invalid successful CONNACK with session_present=true, and drops pending replay state when the server reports a new session with session_present=false.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.2.4",
+        "section_title": "Clean Session",
+        "source_anchor": "_Ref362965194",
+        "summary": "If CleanSession is set to 1, the Client and Server MUST discard any previous Session and start a new one. This Session lasts as long as the Network Connection. State data associated with this Session MUST NOT be reused in any subsequent Session."
+      },
+      "authoritative_actor": "client session state machine; server session state machine",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "needs revision",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both prior mappings identify the authoritative CleanSession=1 discard/no-reuse requirement correctly. The server half remains outside this client audit."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+          "symbols": [
+            "Connect::write"
+          ],
+          "reason": "Connect::write sets CONNECT flag bit 1 when clean_session is true, requesting a clean session."
+        },
+        {
+          "path": "rumqttc-v4/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::clean",
+            "EventLoop::reconcile_connack_session",
+            "EventLoop::reset_session_state"
+          ],
+          "reason": "After reconnect cleanup gathers replayable state, reconcile_connack_session rejects clean_session=true with session_present=true and calls reset_session_state when session_present=false, draining pending replay state so it is not reused in the new clean session."
+        },
+        {
+          "path": "rumqttc-v4/src/state.rs",
+          "symbols": [
+            "MqttState::clean_with_notices"
+          ],
+          "reason": "Connection cleanup removes tracked inbound QoS acknowledgement state before the new clean session starts; reset_session_state then drops replay queues collected from the previous connection."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v4/src/eventloop.rs::connack_reconcile_rejects_clean_session_with_session_present",
+          "rumqttc-v4/src/eventloop.rs::poll_rejects_clean_session_with_session_present_connack",
+          "rumqttc-v4/src/eventloop.rs::connack_reconcile_resets_pending_when_clean_session_gets_new_session",
+          "rumqttc-v4/tests/reliability.rs::reconnection_clean_session_drops_pending_packets_after_reconnect"
+        ],
+        "notes": "Tests cover rejecting an impossible resumed clean session and dropping replay state after CleanSession=1 reconnect."
+      },
+      "follow_up": null
     }
   ]
 }
