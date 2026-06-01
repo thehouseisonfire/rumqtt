@@ -227,6 +227,36 @@ async fn run_publisher_eventloop_until_disconnect(
     }
 }
 
+async fn run_subscribed_publisher_eventloop_until_disconnect(
+    mut eventloop: rumqttc::EventLoop,
+    echo_topic: String,
+    suback_tx: oneshot::Sender<()>,
+    echo_tx: mpsc::UnboundedSender<String>,
+) -> Result<bool, ConnectionError> {
+    let mut saw_disconnect = false;
+    let mut suback_tx = Some(suback_tx);
+
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Packet::SubAck(_))) => {
+                if let Some(tx) = suback_tx.take() {
+                    let _ = tx.send(());
+                }
+            }
+            Ok(Event::Incoming(Packet::Publish(publish))) => {
+                if publish.topic.as_ref() == echo_topic.as_bytes() {
+                    let payload = String::from_utf8_lossy(&publish.payload).into_owned();
+                    let _ = echo_tx.send(payload);
+                }
+            }
+            Ok(Event::Outgoing(Outgoing::Disconnect)) => saw_disconnect = true,
+            Ok(_) => {}
+            Err(ConnectionError::RequestsDone) => return Ok(saw_disconnect),
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 async fn assert_no_will_received(will_rx: &mut mpsc::UnboundedReceiver<String>) {
     assert!(
         time::timeout(WILL_OBSERVATION_WINDOW, will_rx.recv())
@@ -242,6 +272,118 @@ async fn stop_observer(
 ) {
     observer.disconnect_now().await.unwrap();
     let _ = time::timeout(OBSERVER_TIMEOUT, observer_task).await;
+}
+
+#[derive(Clone, Copy)]
+enum SubscriptionDisconnectMode {
+    KeepSubscription,
+    PlainUnsubscribe,
+    TrackedUnsubscribe,
+}
+
+impl SubscriptionDisconnectMode {
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::KeepSubscription => "subscribed",
+            Self::PlainUnsubscribe => "plain-unsubscribe",
+            Self::TrackedUnsubscribe => "tracked-unsubscribe",
+        }
+    }
+}
+
+async fn assert_subscribed_publisher_graceful_disconnect_suppresses_will(
+    mode: SubscriptionDisconnectMode,
+) {
+    let Some(mut broker) = MosquittoBroker::start().await else {
+        return;
+    };
+    let port = broker.port;
+    let suffix = mode.suffix();
+    let client_id = format!("rumqttc-v4-smoke-{port}-{suffix}-publisher");
+    let echo_topic = format!("rumqttc/v4/smoke/{port}/{suffix}/echo");
+    let will_topic = format!("rumqttc/v4/smoke/{port}/{suffix}/will");
+
+    let (observer, suback_rx, mut will_rx, observer_task) =
+        start_will_observer(port, will_topic.clone()).await;
+    observer
+        .subscribe(will_topic.clone(), QoS::AtLeastOnce)
+        .await
+        .unwrap();
+    time::timeout(OBSERVER_TIMEOUT, suback_rx)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let will = LastWill::new(will_topic, "will-published", QoS::AtLeastOnce, false);
+    let mut options = MqttOptions::new(client_id.clone(), ("127.0.0.1", port));
+    options.set_keep_alive(5).set_last_will(will);
+
+    let (client, eventloop) = AsyncClient::builder(options).capacity(16).build();
+    let (publisher_suback_tx, publisher_suback_rx) = oneshot::channel();
+    let (echo_tx, mut echo_rx) = mpsc::unbounded_channel();
+    let publisher_task = tokio::spawn(run_subscribed_publisher_eventloop_until_disconnect(
+        eventloop,
+        echo_topic.clone(),
+        publisher_suback_tx,
+        echo_tx,
+    ));
+
+    client
+        .subscribe(echo_topic.clone(), QoS::ExactlyOnce)
+        .await
+        .unwrap();
+    time::timeout(OBSERVER_TIMEOUT, publisher_suback_rx)
+        .await
+        .unwrap()
+        .unwrap();
+
+    client
+        .publish(echo_topic.clone(), QoS::ExactlyOnce, false, "echo")
+        .await
+        .unwrap();
+    let echo = time::timeout(PUBLISHER_TIMEOUT, echo_rx.recv())
+        .await
+        .expect("timed out waiting for broker echo to subscribed publisher")
+        .expect("publisher echo channel closed");
+    assert_eq!(echo, "echo");
+
+    match mode {
+        SubscriptionDisconnectMode::KeepSubscription => {}
+        SubscriptionDisconnectMode::PlainUnsubscribe => {
+            client.unsubscribe(echo_topic.clone()).await.unwrap();
+        }
+        SubscriptionDisconnectMode::TrackedUnsubscribe => {
+            let notice = client
+                .unsubscribe_tracked(echo_topic.clone())
+                .await
+                .unwrap();
+            notice.wait_completion_async().await.unwrap();
+        }
+    }
+
+    client
+        .disconnect_with_timeout(Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    let saw_disconnect = time::timeout(PUBLISHER_TIMEOUT, publisher_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        saw_disconnect,
+        "publisher eventloop did not emit Outgoing(Disconnect)"
+    );
+
+    assert_no_will_received(&mut will_rx).await;
+    stop_observer(observer, observer_task).await;
+
+    let logs = broker.stop();
+    assert!(
+        logs.contains(&format!("Received DISCONNECT from {client_id}")),
+        "mosquitto did not log subscribed publisher DISCONNECT:\n{logs}"
+    );
 }
 
 #[tokio::test]
@@ -335,6 +477,30 @@ async fn mixed_qos_graceful_disconnect_suppresses_will() {
         )),
         "mosquitto did not log publisher DISCONNECT:\n{logs}"
     );
+}
+
+#[tokio::test]
+async fn subscribed_publisher_graceful_disconnect_suppresses_will() {
+    assert_subscribed_publisher_graceful_disconnect_suppresses_will(
+        SubscriptionDisconnectMode::KeepSubscription,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn subscribed_publisher_plain_unsubscribe_then_graceful_disconnect_suppresses_will() {
+    assert_subscribed_publisher_graceful_disconnect_suppresses_will(
+        SubscriptionDisconnectMode::PlainUnsubscribe,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn subscribed_publisher_tracked_unsubscribe_then_graceful_disconnect_suppresses_will() {
+    assert_subscribed_publisher_graceful_disconnect_suppresses_will(
+        SubscriptionDisconnectMode::TrackedUnsubscribe,
+    )
+    .await;
 }
 
 #[tokio::test]

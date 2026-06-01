@@ -481,6 +481,34 @@ impl MqttState {
             && self.outgoing_rel.ones().next().is_none()
     }
 
+    pub(crate) fn outbound_drain_diagnostics(&self) -> String {
+        format!(
+            "inflight={}, collision={}, collision_notice={}, tracked_subscribe={}, \
+             tracked_unsubscribe={}, outgoing_pub={}, outgoing_pub_notice={}, \
+             outgoing_rel_notice={}, outgoing_pub_ack={}, outgoing_rel={}, incoming_pub={}",
+            self.inflight,
+            self.collision.is_some(),
+            self.collision_notice.is_some(),
+            self.tracked_subscribe.len(),
+            self.tracked_unsubscribe.len(),
+            self.outgoing_pub
+                .iter()
+                .filter(|publish| publish.is_some())
+                .count(),
+            self.outgoing_pub_notice
+                .iter()
+                .filter(|notice| notice.is_some())
+                .count(),
+            self.outgoing_rel_notice
+                .iter()
+                .filter(|notice| notice.is_some())
+                .count(),
+            self.outgoing_pub_ack.ones().count(),
+            self.outgoing_rel.ones().count(),
+            self.incoming_pub.ones().count()
+        )
+    }
+
     fn maybe_shrink_outgoing_tracking_capacity(&mut self, target_len: usize, pending_empty: bool) {
         if !pending_empty
             || self.outgoing_pub.len() <= target_len
@@ -1388,6 +1416,7 @@ impl MqttState {
 
         let pkid = self.next_control_pkid()?;
         subscription.pkid = pkid;
+        self.mark_control_packet_id_complete(pkid);
 
         debug!(
             "Subscribe. Topics = {:?}, Pkid = {:?}",
@@ -1412,6 +1441,7 @@ impl MqttState {
     ) -> Result<Packet, StateError> {
         let pkid = self.next_control_pkid()?;
         unsub.pkid = pkid;
+        self.mark_control_packet_id_complete(pkid);
 
         debug!(
             "Unsubscribe. Topics = {:?}, Pkid = {:?}",
@@ -1529,6 +1559,13 @@ impl MqttState {
     fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
         self.outgoing_pub_ack.set(pkid as usize, true);
         self.advance_last_puback_frontier();
+    }
+
+    fn mark_control_packet_id_complete(&mut self, pkid: u16) {
+        if pkid <= self.max_outgoing_inflight {
+            self.ensure_outgoing_tracking_capacity(pkid as usize + 1);
+            self.mark_outgoing_packet_id_complete(pkid);
+        }
     }
 
     fn advance_last_puback_frontier(&mut self) {
@@ -3921,6 +3958,24 @@ mod test {
 
         mqtt.handle_incoming_puback(&PubAck::new(3, None)).unwrap();
         assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
+    fn control_packet_id_gap_does_not_leave_completed_publish_undrained() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_subscribe(
+            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            None,
+        )
+        .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
+
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
     }
 
     #[test]

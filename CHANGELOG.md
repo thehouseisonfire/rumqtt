@@ -5,6 +5,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Fix graceful disconnect after subscribe/unsubscribe packet-id gaps so completed publishes do not leave stale outbound drain tracking and prevent MQTT `DISCONNECT`.
 ### Security
 
 ---
