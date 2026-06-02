@@ -58,7 +58,6 @@ __pycache__/
 # ================
 benchmarks/results/regressions
 benchmarks/__pycache__
-benchmarks/clients
 benchmarks/results/cross-library
 
 
