@@ -267,7 +267,7 @@ async fn start_will_observer(
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
                     if let Some(tx) = suback_tx.take() {
-                    let _result = tx.send(());
+                        let _result = tx.send(());
                     }
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
