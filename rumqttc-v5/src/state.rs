@@ -670,6 +670,37 @@ impl MqttState {
             && self.outgoing_rel.ones().next().is_none()
     }
 
+    pub(crate) fn outbound_drain_diagnostics(&self) -> String {
+        format!(
+            "inflight={}, collision={}, collision_notice={}, pending_subscribe={}, \
+             pending_unsubscribe={}, outgoing_pub={}, outgoing_pub_notice={}, \
+             outgoing_rel_notice={}, outgoing_pub_flush_attempted={}, outgoing_pub_ack={}, \
+             outgoing_rel={}, outgoing_rel_replay={}, incoming_pub={}",
+            self.inflight,
+            self.collision.is_some(),
+            self.collision_notice.is_some(),
+            self.pending_subscribe.len(),
+            self.pending_unsubscribe.len(),
+            self.outgoing_pub
+                .iter()
+                .filter(|publish| publish.is_some())
+                .count(),
+            self.outgoing_pub_notice
+                .iter()
+                .filter(|notice| notice.is_some())
+                .count(),
+            self.outgoing_rel_notice
+                .iter()
+                .filter(|notice| notice.is_some())
+                .count(),
+            self.outgoing_pub_flush_attempted.ones().count(),
+            self.outgoing_pub_ack.ones().count(),
+            self.outgoing_rel.ones().count(),
+            self.outgoing_rel_replay.ones().count(),
+            self.incoming_pub.ones().count()
+        )
+    }
+
     fn maybe_shrink_outgoing_tracking_capacity(&mut self, target_len: usize, pending_empty: bool) {
         if !pending_empty
             || self.outgoing_pub.len() <= target_len
@@ -1255,6 +1286,7 @@ impl MqttState {
             .pending_subscribe
             .remove(&suback.pkid)
             .expect("tracked subscribe checked before SUBACK validation");
+        self.mark_control_packet_id_complete(suback.pkid);
         if let Some(notice) = pending_subscribe.notice {
             notice.success(suback.clone());
         }
@@ -1292,6 +1324,7 @@ impl MqttState {
             .pending_unsubscribe
             .remove(&unsuback.pkid)
             .expect("tracked unsubscribe checked before UNSUBACK validation");
+        self.mark_control_packet_id_complete(unsuback.pkid);
         if let Some(notice) = pending_unsubscribe.notice {
             notice.success(unsuback.clone());
         }
@@ -2029,6 +2062,20 @@ impl MqttState {
     fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
         self.outgoing_pub_ack.set(usize::from(pkid), true);
         self.advance_last_puback_frontier();
+    }
+
+    fn mark_control_packet_id_complete(&mut self, pkid: u16) {
+        if self.control_packet_id_needs_frontier_completion(pkid) {
+            self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
+            self.mark_outgoing_packet_id_complete(pkid);
+        }
+    }
+
+    const fn control_packet_id_needs_frontier_completion(&self, pkid: u16) -> bool {
+        pkid != 0
+            && pkid <= self.max_outgoing_inflight
+            && pkid != self.last_puback
+            && (self.last_puback >= self.max_outgoing_inflight || pkid > self.last_puback)
     }
 
     fn advance_last_puback_frontier(&mut self) {
@@ -5724,6 +5771,54 @@ mod test {
 
         mqtt.handle_incoming_puback(&PubAck::new(3, None)).unwrap();
         assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
+    fn control_packet_id_gap_does_not_leave_completed_publish_undrained() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_subscribe(
+            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            None,
+        )
+        .unwrap();
+        mqtt.handle_incoming_suback(&SubAck {
+            pkid: 1,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        })
+        .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
+
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
+    }
+
+    #[test]
+    fn control_packet_id_behind_frontier_does_not_leave_stale_ack_bit() {
+        let mut mqtt = build_mqttstate();
+        mqtt.last_puback = 10;
+        mqtt.last_pkid = 10;
+        mqtt.pending_subscribe.insert(
+            1,
+            PendingSubscribe {
+                subscribe: Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+                notice: None,
+            },
+        );
+
+        mqtt.handle_incoming_suback(&SubAck {
+            pkid: 1,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        })
+        .unwrap();
+
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
     }
 
     #[test]

@@ -496,6 +496,15 @@ impl EventLoop {
         match self.select().await {
             Ok(v) => Ok(v),
             Err(ConnectionError::DisconnectTimeout) => {
+                warn!(
+                    "Graceful disconnect timed out before outbound protocol state drained: {}; \
+                     pending={}, queued={}, requests_rx={}, control_requests_rx={}",
+                    self.state.outbound_drain_diagnostics(),
+                    self.pending.len(),
+                    self.queued.len(),
+                    self.requests_rx.len(),
+                    self.control_requests_rx.len()
+                );
                 self.network = None;
                 self.keepalive_timeout = None;
                 self.pending_disconnect = None;
