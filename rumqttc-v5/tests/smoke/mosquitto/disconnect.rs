@@ -2,23 +2,29 @@ use rumqttc::mqttbytes::v5::{DisconnectProperties, DisconnectReasonCode, LastWil
 use rumqttc::{AsyncClient, ConnectionError, Event, MqttOptions, Outgoing, QoS};
 use std::fs;
 use std::io;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 
+const BROKER_PORT_ATTEMPTS: usize = 64;
+const BROKER_PORT_MIN: u16 = 20_000;
+const BROKER_PORT_RANGE: u16 = 40_000;
 const STARTUP_ATTEMPTS: usize = 50;
 const STARTUP_RETRY: Duration = Duration::from_millis(50);
 const OBSERVER_TIMEOUT: Duration = Duration::from_secs(3);
 const PUBLISHER_TIMEOUT: Duration = Duration::from_secs(6);
 const WILL_OBSERVATION_WINDOW: Duration = Duration::from_millis(750);
+static NEXT_BROKER_PORT_SEED: AtomicU64 = AtomicU64::new(0);
 
 struct MosquittoBroker {
     child: Option<Child>,
     dir: PathBuf,
     port: u16,
+    stdout: PathBuf,
+    stderr: PathBuf,
 }
 
 impl MosquittoBroker {
@@ -30,57 +36,91 @@ impl MosquittoBroker {
             return None;
         }
 
-        let port = reserve_port();
-        let dir = smoke_dir();
-        if let Err(err) = fs::create_dir_all(&dir) {
-            eprintln!(
-                "WARN: skipping Mosquitto disconnect smoke test: cannot create temp dir {dir:?}: {err}"
-            );
-            return None;
-        }
+        let mut startup_logs = String::new();
 
-        let config = dir.join("mosquitto.conf");
-        if let Err(err) = write_config(&config, port) {
-            eprintln!(
-                "WARN: skipping Mosquitto disconnect smoke test: cannot write config {config:?}: {err}"
-            );
-            drop(fs::remove_dir_all(&dir));
-            return None;
-        }
-
-        let child = match Command::new("mosquitto")
-            .arg("-c")
-            .arg(&config)
-            .arg("-v")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(err) => {
+        for attempt in 0..BROKER_PORT_ATTEMPTS {
+            let port = broker_port_candidate(attempt);
+            let dir = smoke_dir();
+            if let Err(err) = fs::create_dir_all(&dir) {
                 eprintln!(
-                    "WARN: skipping Mosquitto disconnect smoke test: cannot launch clean broker: {err}"
+                    "WARN: skipping Mosquitto disconnect smoke test: cannot create temp dir {dir:?}: {err}"
+                );
+                return None;
+            }
+
+            let config = dir.join("mosquitto.conf");
+            if let Err(err) = write_config(&config, port) {
+                eprintln!(
+                    "WARN: skipping Mosquitto disconnect smoke test: cannot write config {config:?}: {err}"
                 );
                 drop(fs::remove_dir_all(&dir));
                 return None;
             }
-        };
 
-        let mut broker = Self {
-            child: Some(child),
-            dir,
-            port,
-        };
+            let stdout = dir.join("mosquitto.stdout.log");
+            let stderr = dir.join("mosquitto.stderr.log");
+            let stdout_file = match fs::File::create(&stdout) {
+                Ok(file) => file,
+                Err(err) => {
+                    eprintln!(
+                        "WARN: skipping Mosquitto disconnect smoke test: cannot create stdout log {stdout:?}: {err}"
+                    );
+                    drop(fs::remove_dir_all(&dir));
+                    return None;
+                }
+            };
+            let stderr_file = match fs::File::create(&stderr) {
+                Ok(file) => file,
+                Err(err) => {
+                    eprintln!(
+                        "WARN: skipping Mosquitto disconnect smoke test: cannot create stderr log {stderr:?}: {err}"
+                    );
+                    drop(fs::remove_dir_all(&dir));
+                    return None;
+                }
+            };
 
-        if wait_for_broker(port).await {
-            Some(broker)
-        } else {
-            let logs = broker.stop();
-            eprintln!(
-                "WARN: skipping Mosquitto disconnect smoke test: clean broker did not accept connections:\n{logs}"
-            );
-            None
+            let child = match Command::new("mosquitto")
+                .arg("-c")
+                .arg(&config)
+                .arg("-v")
+                .stdout(stdout_file)
+                .stderr(stderr_file)
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(err) => {
+                    eprintln!(
+                        "WARN: skipping Mosquitto disconnect smoke test: cannot launch clean broker: {err}"
+                    );
+                    drop(fs::remove_dir_all(&dir));
+                    return None;
+                }
+            };
+
+            let mut broker = Self {
+                child: Some(child),
+                dir,
+                port,
+                stdout,
+                stderr,
+            };
+
+            if wait_for_broker(&mut broker, port).await {
+                return Some(broker);
+            }
+
+            startup_logs.push_str(&format!(
+                "\n--- port {port}, attempt {} ---\n{}",
+                attempt + 1,
+                broker.stop()
+            ));
         }
+
+        eprintln!(
+            "WARN: skipping Mosquitto disconnect smoke test: clean broker did not accept connections:\n{startup_logs}"
+        );
+        None
     }
 
     fn stop(&mut self) -> String {
@@ -89,20 +129,31 @@ impl MosquittoBroker {
         };
 
         drop(child.kill());
-        let output = match child.wait_with_output() {
-            Ok(output) => output,
-            Err(err) => {
-                drop(fs::remove_dir_all(&self.dir));
-                return format!("failed to collect mosquitto output: {err}");
-            }
-        };
+        if let Err(err) = child.wait() {
+            drop(fs::remove_dir_all(&self.dir));
+            return format!("failed to wait for mosquitto process: {err}");
+        }
+        let logs = self.logs();
         drop(fs::remove_dir_all(&self.dir));
 
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
+        logs
+    }
+
+    fn logs(&self) -> String {
+        let stdout = match fs::read_to_string(&self.stdout) {
+            Ok(output) => output,
+            Err(err) => {
+                format!("failed to collect mosquitto stdout: {err}\n")
+            }
+        };
+        let stderr = match fs::read_to_string(&self.stderr) {
+            Ok(output) => output,
+            Err(err) => {
+                format!("failed to collect mosquitto stderr: {err}\n")
+            }
+        };
+
+        format!("{stdout}{stderr}")
     }
 }
 
@@ -125,12 +176,18 @@ fn mosquitto_available() -> bool {
         .is_ok()
 }
 
-fn reserve_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port allocation should work");
-    listener
-        .local_addr()
-        .expect("ephemeral listener should have a local address")
-        .port()
+fn broker_port_candidate(attempt: usize) -> u16 {
+    let seed = NEXT_BROKER_PORT_SEED
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos() as u64,
+        );
+    let offset =
+        seed.wrapping_add((attempt as u64).wrapping_mul(1_299_709)) % u64::from(BROKER_PORT_RANGE);
+    BROKER_PORT_MIN + offset as u16
 }
 
 fn smoke_dir() -> PathBuf {
@@ -158,13 +215,28 @@ log_type all
     )
 }
 
-async fn wait_for_broker(port: u16) -> bool {
+async fn wait_for_broker(broker: &mut MosquittoBroker, port: u16) -> bool {
     for _ in 0..STARTUP_ATTEMPTS {
+        let Some(child) = &mut broker.child else {
+            return false;
+        };
+        if child.try_wait().is_ok_and(|status| status.is_some()) {
+            return false;
+        }
+
+        let opened_listener = broker
+            .logs()
+            .contains(&format!("Opening ipv4 listen socket on port {port}."));
         if tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .is_ok()
+            && opened_listener
         {
-            return true;
+            time::sleep(STARTUP_RETRY).await;
+            let Some(child) = &mut broker.child else {
+                return false;
+            };
+            return child.try_wait().is_ok_and(|status| status.is_none());
         }
         time::sleep(STARTUP_RETRY).await;
     }
