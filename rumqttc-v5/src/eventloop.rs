@@ -1433,7 +1433,10 @@ mod tests {
     use crate::mqttbytes::{Error as MqttError, QoS};
     use crate::{AckMode, BrokerSessionResumePolicy};
     use crate::{Auth, AuthProperties, AuthReasonCode};
-    use crate::{ConnAckProperties, Filter, PubAck, PubComp, PubRec, PubRel, PublishProperties};
+    use crate::{
+        ConnAckProperties, Filter, PubAck, PubComp, PubCompReason, PubRec, PubRel,
+        PublishProperties,
+    };
     use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
     use std::sync::{Arc, Mutex};
@@ -3621,12 +3624,15 @@ mod tests {
 
         eventloop.reconcile_connack_session(false).unwrap();
 
-        assert!(matches!(
-            eventloop
-                .state
-                .handle_incoming_packet(Incoming::PubRel(PubRel::new(7, None))),
-            Err(StateError::Unsolicited(7))
-        ));
+        let packet = eventloop
+            .state
+            .handle_incoming_packet(Incoming::PubRel(PubRel::new(7, None)))
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(packet, Packet::PubComp(pubcomp) if pubcomp.pkid == 7
+                && pubcomp.reason == PubCompReason::PacketIdentifierNotFound)
+        );
     }
 
     #[test]
