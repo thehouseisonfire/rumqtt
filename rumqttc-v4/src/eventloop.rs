@@ -2309,12 +2309,12 @@ mod tests {
 
         eventloop.reconcile_connack_session(false).unwrap();
 
-        assert!(matches!(
-            eventloop
-                .state
-                .handle_incoming_packet(Incoming::PubRel(PubRel::new(7))),
-            Err(StateError::Unsolicited(7))
-        ));
+        let packet = eventloop
+            .state
+            .handle_incoming_packet(Incoming::PubRel(PubRel::new(7)))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(packet, Packet::PubComp(pubcomp) if pubcomp.pkid == 7));
     }
 
     #[test]

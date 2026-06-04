@@ -1515,8 +1515,15 @@ impl MqttState {
 
     fn handle_incoming_pubrel(&mut self, pubrel: &PubRel) -> Result<Option<Packet>, StateError> {
         if !self.incoming_pub.contains(usize::from(pubrel.pkid)) {
-            error!("Unsolicited pubrel packet: {:?}", pubrel.pkid);
-            return Err(StateError::Unsolicited(pubrel.pkid));
+            warn!(
+                "Untracked pubrel packet: {:?}. Sending pubcomp with packet identifier not found",
+                pubrel.pkid
+            );
+            let event = Event::Outgoing(Outgoing::PubComp(pubrel.pkid));
+            let mut pubcomp = PubComp::new(pubrel.pkid, None);
+            pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+            self.events.push_back(event);
+            return Ok(Some(Packet::PubComp(pubcomp)));
         }
         if !self.incoming_pubrec.contains(usize::from(pubrel.pkid)) {
             error!(
@@ -2682,10 +2689,17 @@ mod test {
 
         assert!(!mqtt.incoming_pub.contains(1));
         assert!(!mqtt.incoming_pubrec.contains(1));
-        assert!(matches!(
-            mqtt.handle_incoming_pubrel(&PubRel::new(1, None)),
-            Err(StateError::Unsolicited(1))
-        ));
+        let packet = mqtt
+            .handle_incoming_pubrel(&PubRel::new(1, None))
+            .unwrap()
+            .unwrap();
+        match packet {
+            Packet::PubComp(pubcomp) => {
+                assert_eq!(pubcomp.pkid, 1);
+                assert_eq!(pubcomp.reason, PubCompReason::PacketIdentifierNotFound);
+            }
+            packet => panic!("Invalid recovery network request after session reset: {packet:?}"),
+        }
     }
 
     #[test]
@@ -3326,16 +3340,20 @@ mod test {
     }
 
     #[test]
-    fn incoming_pubrel_with_untracked_pkid_is_unsolicited() {
+    fn incoming_pubrel_with_untracked_pkid_sends_pubcomp_with_packet_identifier_not_found() {
         let mut mqtt = build_mqttstate();
 
-        let got = mqtt
+        let packet = mqtt
             .handle_incoming_pubrel(&PubRel::new(7, None))
-            .unwrap_err();
+            .unwrap()
+            .unwrap();
 
-        match got {
-            StateError::Unsolicited(pkid) => assert_eq!(pkid, 7),
-            e => panic!("Unexpected error: {e}"),
+        match packet {
+            Packet::PubComp(pubcomp) => {
+                assert_eq!(pubcomp.pkid, 7);
+                assert_eq!(pubcomp.reason, PubCompReason::PacketIdentifierNotFound);
+            }
+            packet => panic!("Invalid network request: {packet:?}"),
         }
     }
 
@@ -6070,6 +6088,36 @@ mod test {
             Packet::PubComp(pubcomp) => assert_eq!(pubcomp.pkid, 1),
             packet => panic!("Invalid network request: {packet:?}"),
         }
+
+        match mqtt
+            .handle_incoming_pubrel(&PubRel::new(1, None))
+            .unwrap()
+            .unwrap()
+        {
+            Packet::PubComp(pubcomp) => {
+                assert_eq!(pubcomp.pkid, 1);
+                assert_eq!(pubcomp.reason, PubCompReason::PacketIdentifierNotFound);
+            }
+            packet => panic!("Invalid recovery network request: {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn incoming_pubrel_before_pubrec_is_unsolicited() {
+        let mut mqtt = build_mqttstate();
+        mqtt.ack_mode = AckMode::Manual;
+        let mut publish = build_incoming_publish(QoS::ExactlyOnce, 1);
+
+        assert!(
+            mqtt.handle_incoming_publish(&mut publish)
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(matches!(
+            mqtt.handle_incoming_pubrel(&PubRel::new(1, None)),
+            Err(StateError::Unsolicited(1))
+        ));
     }
 
     #[test]
