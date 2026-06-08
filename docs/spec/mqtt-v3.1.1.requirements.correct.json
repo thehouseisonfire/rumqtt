@@ -1776,7 +1776,65 @@
         "tests": [],
         "notes": "Server-side Will publication suppression cannot be proven in the v4 client crate; outbound Will Flag 0 encoding is covered under MQTT-3.1.2-11."
       },
-      "follow_up": null
-    }
-  ]
-}
+            "follow_up": null
+          },
+          {
+            "id": "MQTT-3.1.2-13",
+            "section_number": "3.1.2.6",
+            "section_title": "Will QoS",
+            "obligation": "MUST",
+            "summary": "If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00).",
+            "source_anchor": "_Toc385349233",
+            "occurrences": 3,
+            "candidate_paths": [
+              "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "The authoritative requirement is the sender-side Will QoS=0 constraint when Will Flag=0. rumqttc-v4 enforces it on encode (Will QoS bits are only set inside the last_will Some branch, so they remain 0 when absent) and on decode (LastWill::read checks 0b0011_1000 which includes Will QoS bits 0b11000, rejecting non-zero values when Will Flag=0).",
+            "authoritative_source": {
+              "path": "docs/spec/mqtt-v3.1.1.md",
+              "section_number": "3.1.2.6",
+              "section_title": "Will QoS",
+              "source_anchor": "_Toc385349233",
+              "summary": "If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00)."
+            },
+            "authoritative_actor": "packet encoder and packet decoder",
+            "applicability": "applicable",
+            "mapping_review": {
+              "original_mapping_status": "reviewed",
+              "original_mapping_assessment": "correct",
+              "fix_attempt_status": "reviewed",
+              "fix_attempt_assessment": "correct",
+              "wrong_mapping_client_behavior_risk": "no",
+              "wrong_mapping_behavior_present_in_code": "not_applicable",
+              "notes": "Both prior JSON files map the authoritative requirement correctly and agree on compliance. The original notes that this is a subset of MQTT-3.1.2-11, which is accurate but does not affect the mapping."
+            },
+            "evidence": [
+              {
+                "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                "symbols": [
+                  "Connect::write"
+                ],
+                "reason": "Encode path: connect_flags starts at 0 and Will QoS bits (0b11000) are only set inside the `if let Some(last_will)` branch, so when last_will is None the Will QoS bits remain 0."
+              },
+              {
+                "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                "symbols": [
+                  "LastWill::read"
+                ],
+                "reason": "Decode path: when Will Flag bit (0x04) is 0, checks (connect_flags & 0b0011_1000) != 0, which includes Will QoS bits (0b11000). Returns Error::IncorrectPacketFormat if Will QoS is non-zero when Will Flag=0."
+              }
+            ],
+            "test_coverage": {
+              "status": "covered",
+              "tests": [
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_without_last_will_emits_zero_will_bits",
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_flag_zero_with_will_qos_1"
+              ],
+              "notes": "Encode test verifies Will QoS bits are 0 when last_will is None. Decode test verifies rejection of Will Flag=0 with Will QoS=1."
+            },
+            "follow_up": null
+          }
+        ]
+      }
