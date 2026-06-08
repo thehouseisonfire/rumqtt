@@ -1417,7 +1417,72 @@
         ],
         "notes": "Client tests cover normal DISCONNECT encoding/decoding and broker interoperability, but the authoritative Will discard action is server-only."
       },
-      "follow_up": null
-    }
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-11",
+    "section_number": "3.1.2.6",
+    "section_title": "Will QoS",
+    "obligation": "MUST",
+    "summary": "If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00).",
+    "source_anchor": "_Toc385349233",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement mandates that Will QoS bits be zero when Will Flag is zero, applying to both the client encoder (must not send such a packet) and the client decoder (must reject such a packet on receipt). rumqttc-v5 enforces both paths: Connect::write() only sets Will QoS bits inside `if let Some(w) = will`, leaving them at 0 when will is None; LastWill::read() checks (connect_flags & 0b0011_1000) != 0 when Will Flag=0 and returns Error::IncorrectPacketFormat, which the framed layer classifies as DisconnectReasonCode::MalformedPacket.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.6",
+      "section_title": "Will QoS",
+      "source_anchor": "_Toc385349233",
+      "summary": "If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00)."
+    },
+    "authoritative_actor": "packet encoder and receiver",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "correct",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry correctly identified the requirement, compliance status, encode/decode enforcement paths, and test coverage. No factual errors found."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "Connect::write"
+        ],
+        "reason": "Encode: Will QoS bits are only set inside `if let Some(w) = will`, so when will is None the Will QoS bits in connect_flags remain 0. Verified by connect_encoding_without_last_will_emits_zero_will_bits test (asserts buf[9] & 0x3C == 0, covering Will QoS bits 3-4 and Will Retain bit 5)."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::read"
+        ],
+        "reason": "Decode: When Will Flag=0 (connect_flags & 0b100 == 0), checks (connect_flags & 0b0011_1000) != 0. The mask 0b0011_1000 covers Will QoS bits 3-4 (0x18) and Will Retain bit 5 (0x20). If any of these bits are non-zero, returns Error::IncorrectPacketFormat. This rejects Will QoS=1, 2, and 3 when Will Flag=0."
+      },
+      {
+        "path": "rumqttc-v5/src/framed.rs",
+        "symbols": [
+          "InboundDisconnect::classify"
+        ],
+        "reason": "Error::IncorrectPacketFormat is classified as DisconnectReasonCode::MalformedPacket, so the client sends the correct v5 DISCONNECT reason code before closing the connection on this protocol violation."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_without_last_will_emits_zero_will_bits",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_will_flag_zero_with_will_qos_1"
+      ],
+      "notes": "Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will QoS=1. The mask 0b0011_1000 also covers QoS=2, but no explicit test for Will QoS=2 with Will Flag=0 exists; the code path is identical."
+    },
+    "follow_up": null
+  }
   ]
 }
