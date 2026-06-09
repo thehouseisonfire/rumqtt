@@ -1693,6 +1693,81 @@ mod test {
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 
+    /// MQTT-3.1.2-12: Will QoS values 0, 1, and 2 MUST encode into the correct
+    /// bit positions in the CONNECT flags (bit 3 = LSB, bit 4 = MSB).
+    #[test]
+    fn connect_encoding_emits_correct_will_qos_bits() {
+        let connect = Connect {
+            keep_alive: 5,
+            client_id: "c".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        // Will Flag is bit 2 (0x04). Will QoS is bits 3-4.
+        // connect_flags = 0x04 | (qos as u8) << 3
+        // QoS 0: 0x04 | 0x00 = 0x04  (bits: ...0 0 1 0 0)
+        // QoS 1: 0x04 | 0x08 = 0x0C  (bits: ...0 1 1 0 0)
+        // QoS 2: 0x04 | 0x10 = 0x14  (bits: ...1 0 1 0 0)
+        for (qos, expected_will_bits) in [
+            (QoS::AtMostOnce, 0x04u8),
+            (QoS::AtLeastOnce, 0x0Cu8),
+            (QoS::ExactlyOnce, 0x14u8),
+        ] {
+            let will = Some(LastWill {
+                topic: Bytes::from_static(b"t"),
+                message: Bytes::from_static(b"m"),
+                qos,
+                retain: false,
+                properties: None,
+            });
+
+            let mut buf = BytesMut::new();
+            connect.write(&will, &ConnectAuth::None, &mut buf).unwrap();
+
+            let flags = buf[9];
+            // Mask bits 2-4 (Will Flag + Will QoS)
+            assert_eq!(
+                flags & 0x1C,
+                expected_will_bits & 0x1C,
+                "QoS {qos:?}: expected Will bits {:#010b}, got {:#010b}",
+                expected_will_bits & 0x1C,
+                flags & 0x1C
+            );
+        }
+    }
+
+    /// MQTT-3.1.2-12: Will QoS 0, 1, and 2 MUST round-trip through
+    /// encode and decode without alteration.
+    #[test]
+    fn connect_roundtrips_all_valid_will_qos_levels() {
+        let connect = Connect {
+            keep_alive: 5,
+            client_id: "c".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        for qos in [QoS::AtMostOnce, QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let will = Some(LastWill {
+                topic: Bytes::from_static(b"t"),
+                message: Bytes::from_static(b"m"),
+                qos,
+                retain: false,
+                properties: None,
+            });
+
+            let mut buf = BytesMut::new();
+            connect.write(&will, &ConnectAuth::None, &mut buf).unwrap();
+
+            let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+            let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+            let (_, decoded_will, _) = Connect::read(fixed_header, connect_bytes).unwrap();
+
+            assert_eq!(decoded_will.as_ref().unwrap().qos, qos);
+        }
+    }
+
     /// MQTT-3.1.2-12: A Will QoS value of 3 (0x03) is a Malformed Packet.
     #[test]
     fn connect_parsing_rejects_will_qos_3() {
