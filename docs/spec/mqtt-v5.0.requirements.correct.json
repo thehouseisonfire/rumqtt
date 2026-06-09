@@ -1613,6 +1613,285 @@
       "notes": "Server-only rejection/close requirement. The client's Will QoS encoding is tested under MQTT-3.1.2-12. The ability to decode CONNACK reason code 0x9B is covered by connack decode tests."
     },
     "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-13",
+    "section_number": "3.1.2.7",
+    "section_title": "Will Retain",
+    "obligation": "MUST",
+    "summary": "If the Will Flag is set to 0, then Will Retain MUST be set to 0.",
+    "source_anchor": "_Toc385349234",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is the sender-side and receiver-side Will Retain=0 constraint when Will Flag=0. rumqttc-v5 enforces it on encode because Will Retain bit 0x20 is only set inside the last_will Some branch (via LastWill::write), and on decode because LastWill::read checks (connect_flags & 0b0011_1000) != 0 when Will Flag=0, which includes the Will Retain bit (0x20), rejecting non-zero values with Error::IncorrectPacketFormat.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.7",
+      "section_title": "Will Retain",
+      "source_anchor": "_Toc385349234",
+      "summary": "If the Will Flag is set to 0, then Will Retain MUST be set to 0."
+    },
+    "authoritative_actor": "packet encoder and packet decoder",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry lumped all three Will Retain clauses (MQTT-3.1.2-13, -14, -15) into a single summary and assessed compliance against the combined text. The authoritative per-tag requirement for MQTT-3.1.2-13 is only the client-applicable clause: Will Flag=0 implies Will Retain=0. The compliance finding is correct but the summary and mapping_reason overclaimed by including server-only clauses."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "Connect::write"
+        ],
+        "reason": "Encode path: connect_flags starts at 0 and Will Retain bit (0x20) is only set inside the `if let Some(w) = will` branch via `connect_flags |= 0x20` when retain is true, so when will is None the Will Retain bit remains 0."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::read"
+        ],
+        "reason": "Decode path: when connect_flags & 0b100 == 0 (Will Flag=0), the code checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit 5 (0x20). If Will Retain is 1 while Will Flag=0, Error::IncorrectPacketFormat is returned."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_without_last_will_emits_zero_will_bits",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_will_flag_zero_with_will_retain"
+      ],
+      "notes": "connect_encoding_without_last_will_emits_zero_will_bits verifies that all Will-related bits (including Will Retain 0x20) are zero when will is None. connect_parsing_rejects_will_flag_zero_with_will_retain directly tests that Will Flag=0 with Will Retain=1 is rejected with Error::IncorrectPacketFormat."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-14",
+    "section_number": "3.1.2.7",
+    "section_title": "Will Retain",
+    "obligation": "MUST",
+    "summary": "If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message.",
+    "source_anchor": "_Toc385349234",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "not_applicable",
+    "mapping_reason": "The authoritative requirement obligates the Server to publish the Will Message as non-retained when Will Flag=1 and Will Retain=0. This is a server-side publishing behavior; a client library cannot enforce it. The client correctly encodes the Will Retain bit (0 when retain=false) for the server to consume.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.7",
+      "section_title": "Will Retain",
+      "source_anchor": "_Toc385349234",
+      "summary": "If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message."
+    },
+    "authoritative_actor": "Server",
+    "applicability": "not_applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry lumped all three Will Retain clauses into a single summary and marked compliance as 'compliant' against the combined text. The per-tag requirement MQTT-3.1.2-14 is server-only. The client's encode of Will Retain=0 is covered by MQTT-3.1.2-13; there is no separate client obligation here."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::write"
+        ],
+        "reason": "The client correctly encodes Will Retain=0 (omit 0x20 bit) when self.retain is false, which is what the server uses to determine non-retained publishing. The actual publishing obligation is the server's."
+      }
+    ],
+    "test_coverage": {
+      "status": "not_applicable",
+      "tests": [],
+      "notes": "Server-only publishing requirement. The client's Will Retain encoding is tested under MQTT-3.1.2-13."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-15",
+    "section_number": "3.1.2.7",
+    "section_title": "Will Retain",
+    "obligation": "MUST",
+    "summary": "If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish the Will Message as a retained message.",
+    "source_anchor": "_Toc385349234",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "not_applicable",
+    "mapping_reason": "The authoritative requirement obligates the Server to publish the Will Message as retained when Will Flag=1 and Will Retain=1. This is a server-side publishing behavior; a client library cannot enforce it. The client correctly encodes the Will Retain bit (1 when retain=true) for the server to consume.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.7",
+      "section_title": "Will Retain",
+      "source_anchor": "_Toc385349234",
+      "summary": "If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish the Will Message as a retained message."
+    },
+    "authoritative_actor": "Server",
+    "applicability": "not_applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry lumped all three Will Retain clauses into a single summary and marked compliance as 'compliant' against the combined text. The per-tag requirement MQTT-3.1.2-15 is server-only. The client's encode of Will Retain=1 is covered by MQTT-3.1.2-13; there is no separate client obligation here."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::write"
+        ],
+        "reason": "The client correctly encodes Will Retain=1 (sets 0x20 bit) when self.retain is true, which is what the server uses to determine retained publishing. The actual publishing obligation is the server's."
+      }
+    ],
+    "test_coverage": {
+      "status": "not_applicable",
+      "tests": [],
+      "notes": "Server-only publishing requirement. The client's Will Retain encoding is tested under MQTT-3.1.2-13."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.2.2-13",
+    "section_number": "3.2.2.3.5",
+    "section_title": "Retain Available",
+    "obligation": "MUST",
+    "summary": "If a Server receives a CONNECT packet containing a Will Message with the Will Retain set to 1, and it does not support retained messages, the Server MUST reject the connection request. It SHOULD send CONNACK with Reason Code 0x9A (Retain not supported) and then it MUST close the Network Connection.",
+    "source_anchor": "_Toc471282759",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "not_applicable",
+    "mapping_reason": "The authoritative requirement obligates the Server to reject a connection and close the network when the client sends Will Retain=1 but the server does not support retained messages. This is a server-side validation and connection-rejection requirement; a client library cannot enforce it. The client correctly encodes Will Retain and can decode CONNACK reason code 0x9A (RetainNotSupported).",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.2.2.3.5",
+      "section_title": "Retain Available",
+      "source_anchor": "_Toc471282759",
+      "summary": "If a Server receives a CONNECT packet containing a Will Message with the Will Retain set to 1, and it does not support retained messages, the Server MUST reject the connection request. It SHOULD send CONNACK with Reason Code 0x9A (Retain not supported) and then it MUST close the Network Connection."
+    },
+    "authoritative_actor": "Server",
+    "applicability": "not_applicable",
+    "mapping_review": {
+      "original_mapping_status": "unreviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry was unreviewed with only a heuristic path mapping. The requirement is server-only (Server MUST reject/close). The client can decode CONNACK reason code 0x9A as ConnectReturnCode::RetainNotSupported, which is sufficient for client-side observability."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+        "symbols": [
+          "ConnectReturnCode::RetainNotSupported"
+        ],
+        "reason": "The client can decode CONNACK reason code 0x9A (154) as ConnectReturnCode::RetainNotSupported, which the server SHOULD send when rejecting for this reason."
+      }
+    ],
+    "test_coverage": {
+      "status": "not_applicable",
+      "tests": [],
+      "notes": "Server-only rejection/close requirement. The ability to decode CONNACK reason code 0x9A is covered by connack decode tests (connack_decodes_retain_not_supported_reason_code)."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.2.2-14",
+    "section_number": "3.2.2.3.5",
+    "section_title": "Retain Available",
+    "obligation": "MUST NOT",
+    "summary": "A Client receiving Retain Available set to 0 from the Server MUST NOT send a PUBLISH packet with the RETAIN flag set to 1.",
+    "source_anchor": "_Toc471282759",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+      "rumqttc-v5/src/state.rs",
+      "rumqttc-v5/src/client.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "non_compliant",
+    "mapping_reason": "The authoritative requirement obligates the client to not send PUBLISH with RETAIN=1 when the server has declared Retain Available=0. rumqttc-v5 parses retain_available from CONNACK properties but does not store it in MqttState or enforce it on outbound PUBLISH. The client accepts retain=true in publish() calls unconditionally, setting the RETAIN flag in the outgoing PUBLISH packet regardless of server capabilities.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.2.2.3.5",
+      "section_title": "Retain Available",
+      "source_anchor": "_Toc471282759",
+      "summary": "A Client receiving Retain Available set to 0 from the Server MUST NOT send a PUBLISH packet with the RETAIN flag set to 1."
+    },
+    "authoritative_actor": "Client",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "unreviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "yes",
+      "wrong_mapping_behavior_present_in_code": "yes",
+      "notes": "The generated entry was unreviewed with only a heuristic path mapping to connack.rs. The actual requirement is a client-side MUST NOT. The client parses retain_available from CONNACK but never stores or acts on it, so the prohibition is not enforced. The client can and will send PUBLISH with RETAIN=1 when retain_available=0."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+        "symbols": [
+          "ConnAckProperties::retain_available",
+          "PropertyType::RetainAvailable"
+        ],
+        "reason": "CONNACK decoder parses PropertyType::RetainAvailable into ConnAckProperties::retain_available (Option<u8>). The property is correctly extracted from the wire but the value is not propagated to MqttState."
+      },
+      {
+        "path": "rumqttc-v5/src/state.rs",
+        "symbols": [
+          "handle_incoming_connack"
+        ],
+        "reason": "handle_incoming_connack processes topic_alias_max and receive_max from CONNACK properties but does not read or store retain_available. The value is lost after CONNACK processing."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+        "symbols": [
+          "Publish::write"
+        ],
+        "reason": "Publish::write sets the RETAIN flag from self.retain (bit 0 of byte1) unconditionally. There is no check against server-negotiated retain_available."
+      },
+      {
+        "path": "rumqttc-v5/src/client.rs",
+        "symbols": [
+          "Client::publish",
+          "handle_publish"
+        ],
+        "reason": "Client publish methods accept retain: bool and set publish.retain = retain without any check against server-negotiated Retain Available. The caller can freely set retain=true regardless of server support."
+      }
+    ],
+    "test_coverage": {
+      "status": "not_covered",
+      "tests": [],
+      "notes": "No test exists for the client enforcing Retain Available=0 on outbound PUBLISH. The CONNACK decode path for the retain_available property is tested (connack_decodes_retain_not_supported_reason_code), but enforcement of the MUST NOT is absent."
+    },
+    "follow_up": {
+      "action": "Implement retain_available tracking in MqttState and enforcement on outbound PUBLISH. Store retain_available from CONNACK in MqttState during handle_incoming_connack, then reject or clear the RETAIN flag in publish when retain_available=0.",
+      "priority": "high",
+      "spec_reference": "MQTT-3.2.2-14"
+    }
   }
   ]
 }

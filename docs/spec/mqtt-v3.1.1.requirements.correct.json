@@ -1904,7 +1904,65 @@
       ],
       "notes": "Decode rejection of Will QoS=3, encode-side bit-value verification for all valid QoS levels, round-trip preservation of each valid Will QoS, decode acceptance of all valid Will QoS values, and QoS enum discriminant constraint proving value 3 is unreachable on the encode path."
     },
-    "follow_up": null
-  }
-]
-      }
+"follow_up": null
+            },
+            {
+                "id": "MQTT-3.1.2-15",
+                "section_number": "3.1.2.7",
+                "section_title": "Will Retain",
+                "obligation": "MUST",
+                "summary": "If the Will Flag is set to 0, then the Will Retain Flag MUST be set to 0.",
+                "source_anchor": "_Toc385349234",
+                "occurrences": 3,
+                "candidate_paths": [
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+                ],
+                "mapping_status": "reviewed",
+                "compliance_status": "compliant",
+                "mapping_reason": "The authoritative requirement is the sender-side and receiver-side Will Retain=0 constraint when Will Flag=0. rumqttc-v4 enforces it on encode because Will Retain bit 0x20 is only set inside the last_will Some branch, and on decode because LastWill::read checks (connect_flags & 0b0011_1000) != 0 when Will Flag=0, which includes the Will Retain bit (0x20), rejecting non-zero values with Error::IncorrectPacketFormat.",
+                "authoritative_source": {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "section_number": "3.1.2.7",
+                    "section_title": "Will Retain",
+                    "source_anchor": "_Toc385349234",
+                    "summary": "If the Will Flag is set to 0, then the Will Retain Flag MUST be set to 0."
+                },
+                "authoritative_actor": "packet encoder and packet decoder",
+                "applicability": "applicable",
+                "mapping_review": {
+                    "original_mapping_status": "reviewed",
+                    "original_mapping_assessment": "correct",
+                    "fix_attempt_status": "reviewed",
+                    "fix_attempt_assessment": "correct",
+                    "wrong_mapping_client_behavior_risk": "no",
+                    "wrong_mapping_behavior_present_in_code": "not_applicable",
+                    "notes": "Both prior JSON files map the authoritative requirement text correctly and agree on compliance."
+                },
+                "evidence": [
+                    {
+                        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                        "symbols": [
+                            "Connect::write"
+                        ],
+                        "reason": "Encode path: connect_flags starts at 0 and Will Retain bit (0x20) is only set inside the `if let Some(last_will)` branch via `connect_flags |= 0x20` when retain is true, so when last_will is None the Will Retain bit remains 0."
+                    },
+                    {
+                        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                        "symbols": [
+                            "LastWill::read"
+                        ],
+                        "reason": "Decode path: when connect_flags & 0b100 == 0 (Will Flag=0), the code checks (connect_flags & 0b0011_1000) != 0 which includes Will Retain bit 5 (0x20). If Will Retain is 1 while Will Flag=0, Error::IncorrectPacketFormat is returned."
+                    }
+                ],
+                "test_coverage": {
+                    "status": "covered",
+                    "tests": [
+                        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_flag_zero_with_will_retain",
+                        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_without_last_will_emits_zero_will_bits"
+                    ],
+                    "notes": "connect_parsing_rejects_will_flag_zero_with_will_retain directly tests that Will Flag=0 with Will Retain=1 is rejected. connect_encoding_without_last_will_emits_zero_will_bits verifies that all Will-related bits (including Will Retain 0x20) are zero when last_will is None."
+                },
+                "follow_up": null
+            }
+        ]
+    }
