@@ -1483,6 +1483,136 @@
       "notes": "Encode test verifies all Will bits (Flag+QoS+Retain) are 0 when will is None. Decode test verifies rejection of Will Flag=0 with Will QoS=1. The mask 0b0011_1000 also covers QoS=2, but no explicit test for Will QoS=2 with Will Flag=0 exists; the code path is identical."
     },
     "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-12",
+    "section_number": "3.1.2.6",
+    "section_title": "Will QoS",
+    "obligation": "MUST",
+    "summary": "If the Will Flag is set to 1, the value of Will QoS can be 0 (0x00), 1 (0x01), or 2 (0x02). A value of 3 (0x03) is a Malformed Packet. Refer to section 4.13 for information about handling errors.",
+    "source_anchor": "_Toc385349233",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement mandates that Will QoS be 0, 1, or 2 when Will Flag=1, and that Will QoS=3 is a Malformed Packet per v5 section 4.13. rumqttc-v5 enforces both encode and decode paths: LastWill::write() uses (self.qos as u8) << 3, and the QoS enum only defines AtMostOnce=0, AtLeastOnce=1, ExactlyOnce=2, so value 3 is impossible at the type level. LastWill::read() extracts Will QoS as (connect_flags & 0b11000) >> 3 and passes it to qos(qos_num).ok_or(Error::InvalidQoS(qos_num)), which returns Error::InvalidQoS(3) for value 3. The framed layer classifies Error::InvalidQoS as DisconnectReasonCode::MalformedPacket, matching the v5 spec requirement.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.6",
+      "section_title": "Will QoS",
+      "source_anchor": "_Toc385349233",
+      "summary": "If the Will Flag is set to 1, the value of Will QoS can be 0 (0x00), 1 (0x01), or 2 (0x02). A value of 3 (0x03) is a Malformed Packet. Refer to section 4.13 for information about handling errors."
+    },
+    "authoritative_actor": "packet encoder and receiver",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "correct",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry correctly identified the requirement, compliance status, encode/decode enforcement paths, and the Malformed Packet classification for QoS=3. No factual errors found."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::write"
+        ],
+        "reason": "Encode: uses (self.qos as u8) << 3. QoS enum discriminants are 0, 1, 2 only — value 3 is impossible at the type level."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::read"
+        ],
+        "reason": "Decode: extracts qos_num = (connect_flags & 0b11000) >> 3, then qos(qos_num).ok_or(Error::InvalidQoS(qos_num)). Value 3 maps to None, producing Error::InvalidQoS(3)."
+      },
+      {
+        "path": "mqttbytes-core/src/qos.rs",
+        "symbols": [
+          "qos",
+          "QoS"
+        ],
+        "reason": "qos(3) returns None because QoS only defines AtMostOnce=0, AtLeastOnce=1, ExactlyOnce=2."
+      },
+      {
+        "path": "rumqttc-v5/src/framed.rs",
+        "symbols": [
+          "InboundDisconnect::classify"
+        ],
+        "reason": "Error::InvalidQoS is classified as DisconnectReasonCode::MalformedPacket, matching the v5 spec requirement that QoS=3 is a Malformed Packet."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_will_qos_3",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_last_will"
+      ],
+      "notes": "Decode test verifies Will QoS=3 is rejected with Error::InvalidQoS(3). Round-trip test verifies QoS 1 encodes and decodes correctly. Encode-side coverage is implicit from the QoS enum having no variant for value 3. No explicit test for QoS 0 or 2 round-trip through Will specifically, but the code path is identical."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.2.2-12",
+    "section_number": "3.2.2.3.4",
+    "section_title": "Maximum QoS",
+    "obligation": "MUST",
+    "summary": "If a Server receives a CONNECT packet containing a Will QoS that exceeds its capabilities, it MUST reject the connection. It SHOULD use a CONNACK packet with Reason Code 0x9B (QoS not supported) as described in section 4.13 Handling errors, and MUST close the Network Connection.",
+    "source_anchor": "_Toc471282758",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "not_applicable",
+    "mapping_reason": "This requirement obligates the Server to reject a CONNECT with a Will QoS exceeding its capabilities, close the Network Connection, and SHOULD use CONNACK reason code 0x9B. The client's responsibility is limited to correctly encoding the Will QoS in the CONNECT packet (covered by MQTT-3.1.2-12) and being able to decode a CONNACK reason code if the server sends one. The v5 client can decode ConnectReturnCode::QoSNotSupported (0x9B/155) from a CONNACK response, but the obligation to reject and close is entirely server-side.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.2.2.3.4",
+      "section_title": "Maximum QoS",
+      "source_anchor": "_Toc471282758",
+      "summary": "If a Server receives a CONNECT packet containing a Will QoS that exceeds its capabilities, it MUST reject the connection. It SHOULD use a CONNACK packet with Reason Code 0x9B (QoS not supported) as described in section 4.13 Handling errors, and MUST close the Network Connection."
+    },
+    "authoritative_actor": "Server",
+    "applicability": "not_applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "correct",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry correctly identified this as server-only and not_applicable for a client library. The client's Will QoS encoding is covered by MQTT-3.1.2-12. No factual errors found."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+        "symbols": [
+          "connect_return",
+          "ConnectReturnCode::QoSNotSupported"
+        ],
+        "reason": "The client can decode CONNACK reason code 0x9B (155) as ConnectReturnCode::QoSNotSupported. The server-side behavior is to reject and close; using this specific reason code is recommended by SHOULD."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "LastWill::write",
+          "LastWill::read"
+        ],
+        "reason": "The client correctly encodes and decodes Will QoS in the CONNECT packet (covered by MQTT-3.1.2-12). Will QoS=3 is rejected as Malformed Packet; valid Will QoS values 0-2 are correctly serialized."
+      }
+    ],
+    "test_coverage": {
+      "status": "not_applicable",
+      "tests": [],
+      "notes": "Server-only rejection/close requirement. The client's Will QoS encoding is tested under MQTT-3.1.2-12. The ability to decode CONNACK reason code 0x9B is covered by connack decode tests."
+    },
+    "follow_up": null
   }
   ]
 }
