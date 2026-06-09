@@ -1834,7 +1834,77 @@
               ],
               "notes": "Encode test verifies Will QoS bits are 0 when last_will is None. Decode test verifies rejection of Will Flag=0 with Will QoS=1."
             },
-            "follow_up": null
-          }
-        ]
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-14",
+    "section_number": "3.1.2.6",
+    "section_title": "Will QoS",
+    "obligation": "MUST NOT",
+    "summary": "If the Will Flag is set to 1, the value of Will QoS can be 0 (0x00), 1 (0x01), or 2 (0x02). It MUST NOT be 3 (0x03).",
+    "source_anchor": "_Toc385349233",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is the sender-side and receiver-side Will QoS range constraint for CONNECT packets with Will Flag=1. rumqttc-v4 enforces it on encode because the QoS enum only has variants 0, 1, 2, and on decode because LastWill::read passes the extracted Will QoS bits through qos(), which rejects value 3 with Error::InvalidQoS.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v3.1.1.md",
+      "section_number": "3.1.2.6",
+      "section_title": "Will QoS",
+      "source_anchor": "_Toc385349233",
+      "summary": "If the Will Flag is set to 1, the value of Will QoS can be 0 (0x00), 1 (0x01), or 2 (0x02). It MUST NOT be 3 (0x03)."
+    },
+    "authoritative_actor": "packet encoder and packet decoder",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "correct",
+      "fix_attempt_status": "reviewed",
+      "fix_attempt_assessment": "correct",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "not_applicable",
+      "notes": "Both prior JSON files map the authoritative requirement text correctly and agree on compliance."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "symbols": [
+          "LastWill::read",
+          "LastWill::write"
+        ],
+        "reason": "Decode: qos((connect_flags & 0b11000) >> 3) rejects Will QoS value 3 via Error::InvalidQoS. Encode: ((self.qos as u8) << 3) can only produce 0, 8, or 16 in the Will QoS bits because the QoS enum only represents 0, 1, 2."
+      },
+      {
+        "path": "mqttbytes-core/src/qos.rs",
+        "symbols": [
+          "QoS",
+          "qos"
+        ],
+        "reason": "The QoS enum has only AtMostOnce=0, AtLeastOnce=1, ExactlyOnce=2. The core qos() function returns None for any value outside 0..=2, which the v4 wrapper converts to Error::InvalidQoS."
+      },
+      {
+        "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+        "symbols": [
+          "qos"
+        ],
+        "reason": "The v4 qos() wrapper converts the core Option<QoS> into Result<QoS, Error>, returning Error::InvalidQoS(num) for out-of-range values including 3."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_will_qos_3",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_emits_correct_will_qos_bits",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_roundtrips_all_valid_will_qos_levels",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_accepts_all_valid_will_qos_levels",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::qos_enum_discriminants_exclude_forbidden_value_3"
+      ],
+      "notes": "Decode rejection of Will QoS=3, encode-side bit-value verification for all valid QoS levels, round-trip preservation of each valid Will QoS, decode acceptance of all valid Will QoS values, and QoS enum discriminant constraint proving value 3 is unreachable on the encode path."
+    },
+    "follow_up": null
+  }
+]
       }

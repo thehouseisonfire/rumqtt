@@ -1078,6 +1078,145 @@ mod test {
         assert!(matches!(packet, Err(Error::InvalidQoS(3))));
     }
 
+    /// MQTT-3.1.2-14: Encode-side verification that each valid Will QoS
+    /// level (0, 1, 2) produces the correct bit pattern in CONNECT flags.
+    /// The QoS enum cannot represent value 3, so the encode path can never
+    /// produce an invalid Will QoS on the wire.
+    #[test]
+    fn connect_encoding_emits_correct_will_qos_bits() {
+        let expected_flags: [(QoS, u8); 3] = [
+            (QoS::AtMostOnce, 0b0000_0100),
+            (QoS::AtLeastOnce, 0b0000_1100),
+            (QoS::ExactlyOnce, 0b0001_0100),
+        ];
+
+        for (qos, expected_will_bits) in expected_flags {
+            let connect = Connect {
+                keep_alive: 10,
+                client_id: "test".to_owned(),
+                clean_session: true,
+                last_will: Some(LastWill {
+                    topic: "t".to_owned(),
+                    message: Bytes::from_static(b"m"),
+                    qos,
+                    retain: false,
+                }),
+                auth: ConnectAuth::None,
+            };
+
+            let mut buf = BytesMut::new();
+            connect.write(&mut buf).unwrap();
+
+            // CONNECT flags byte is at index 9 for this packet.
+            // Mask out Will QoS bits (0b11000 = 0x18) and Will Flag bit (0x04).
+            // Clean session bit (0x02) is always set; verify the Will bits.
+            assert_eq!(
+                buf[9] & 0x1C,
+                expected_will_bits,
+                "encode flags mismatch for Will QoS {:?}",
+                qos
+            );
+        }
+    }
+
+    /// MQTT-3.1.2-14: Round-trip each valid Will QoS through encode+decode
+    /// and verify the decoded LastWill preserves the original QoS.
+    #[test]
+    fn connect_roundtrips_all_valid_will_qos_levels() {
+        for qos in [QoS::AtMostOnce, QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let connect = Connect {
+                keep_alive: 10,
+                client_id: "test".to_owned(),
+                clean_session: true,
+                last_will: Some(LastWill {
+                    topic: "t".to_owned(),
+                    message: Bytes::from_static(b"m"),
+                    qos,
+                    retain: false,
+                }),
+                auth: ConnectAuth::None,
+            };
+
+            let mut buf = BytesMut::new();
+            connect.write(&mut buf).unwrap();
+            let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+            let decoded = Connect::read(fixed_header, buf.freeze()).unwrap();
+
+            assert_eq!(
+                decoded.last_will.as_ref().unwrap().qos,
+                qos,
+                "round-trip mismatch for Will QoS {:?}",
+                qos
+            );
+        }
+    }
+
+    /// MQTT-3.1.2-14: Decode must accept all valid Will QoS values (0, 1, 2)
+    /// and reject only the forbidden value 3.
+    #[test]
+    fn connect_parsing_accepts_all_valid_will_qos_levels() {
+        let valid_flags: [(u8, QoS); 3] = [
+            (0b0000_0110, QoS::AtMostOnce),
+            (0b0000_1110, QoS::AtLeastOnce),
+            (0b0001_0110, QoS::ExactlyOnce),
+        ];
+
+        for (connect_flags, expected_qos) in valid_flags {
+            // remaining = var_header(10) + client_id(2+1) + will_topic(2+1) + will_msg(2+1) = 19
+            let packetstream: Vec<u8> = [
+                0x10,
+                19,
+                0x00,
+                0x04,
+                b'M',
+                b'Q',
+                b'T',
+                b'T',
+                0x04,
+                connect_flags,
+                0x00,
+                0x0a,
+                0x00,
+                0x01,
+                b'a', // client_id = "a"
+                0x00,
+                0x01,
+                b'b', // will_topic = "b"
+                0x00,
+                0x01,
+                b'c', // will_message = "c"
+            ]
+            .into();
+
+            let mut stream = BytesMut::new();
+            stream.extend_from_slice(&packetstream);
+            let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+            let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+            let packet = Connect::read(fixed_header, connect_bytes).unwrap();
+
+            assert_eq!(
+                packet.last_will.as_ref().unwrap().qos,
+                expected_qos,
+                "decode mismatch for connect flags 0b{:08b}",
+                connect_flags
+            );
+        }
+    }
+
+    /// MQTT-3.1.2-14: The QoS enum guarantees that Will QoS=3 is impossible
+    /// on the encode path because it only defines discriminants 0, 1, 2.
+    #[test]
+    fn qos_enum_discriminants_exclude_forbidden_value_3() {
+        assert_eq!(QoS::AtMostOnce as u8, 0);
+        assert_eq!(QoS::AtLeastOnce as u8, 1);
+        assert_eq!(QoS::ExactlyOnce as u8, 2);
+
+        for n in 0u8..=2 {
+            assert!(qos(n).is_ok(), "qos({}) should be valid", n);
+        }
+        assert!(qos(3).is_err(), "qos(3) must fail per MQTT-3.1.2-14");
+    }
+
     /// MQTT-3.1.2-11: If the Will Flag is set to 0, the Will Retain field in
     /// the Connect Flags MUST be set to zero.
     #[test]
