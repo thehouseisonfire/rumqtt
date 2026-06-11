@@ -1769,6 +1769,249 @@
     "follow_up": null
   },
   {
+    "id": "MQTT-3.1.2-16",
+    "section_number": "3.1.2.8",
+    "section_title": "User Name Flag",
+    "obligation": "MUST NOT",
+    "summary": "If the User Name Flag is set to 0, a User Name MUST NOT be present in the Payload.",
+    "source_anchor": "_Toc385349235",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is only the User Name Flag=0 prohibition. ConnectAuth::None and ConnectAuth::Password write no User Name and leave bit 7 clear; the variants that write a User Name set bit 7. Connect::read also rejects unconsumed payload bytes when the flag is clear.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.8",
+      "section_title": "User Name Flag",
+      "source_anchor": "_Toc385349235",
+      "summary": "If the User Name Flag is set to 0, a User Name MUST NOT be present in the Payload."
+    },
+    "authoritative_actor": "CONNECT packet sender (Client)",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "not_applicable",
+      "notes": "The generated summary incorrectly merged MQTT-3.1.2-16 with the adjacent positive-presence requirement MQTT-3.1.2-17. The two clauses are compatible, but they must be audited independently."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth",
+          "ConnectAuth::write",
+          "Connect::write"
+        ],
+        "reason": "ConnectAuth::None writes no authentication payload and returns 0. ConnectAuth::Password writes only a length-prefixed Password and returns 0x40. Neither path can emit a User Name while bit 7 is clear."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::read",
+          "Connect::read"
+        ],
+        "reason": "When bit 7 is clear, ConnectAuth::read does not read a User Name. Connect::read rejects any bytes left after the flag-indicated fields, including a spurious User Name."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_password_only_auth",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_username_when_username_flag_zero"
+      ],
+      "notes": "The password-only round trip directly verifies the v5-specific bit-7-clear path with a Password present but no User Name. The decoder test rejects a spurious User Name when bit 7 is clear."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-17",
+    "section_number": "3.1.2.8",
+    "section_title": "User Name Flag",
+    "obligation": "MUST",
+    "summary": "If the User Name Flag is set to 1, a User Name MUST be present in the Payload.",
+    "source_anchor": "_Toc385349235",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is a positive-presence MUST, not the MUST NOT recorded by the generated entry. ConnectAuth::Username and ConnectAuth::UsernamePassword always write a length-prefixed User Name before returning a flag value with bit 7 set; decode paths with bit 7 set always call read_mqtt_string.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.8",
+      "section_title": "User Name Flag",
+      "source_anchor": "_Toc385349235",
+      "summary": "If the User Name Flag is set to 1, a User Name MUST be present in the Payload."
+    },
+    "authoritative_actor": "CONNECT packet sender (Client)",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "yes",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry copied both User Name clauses and assigned MUST NOT, obscuring this requirement's positive MUST. Following that obligation literally could omit the User Name while setting its flag; the implementation does not do so."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::write",
+          "Connect::write"
+        ],
+        "reason": "The only variants that return bit 7 set are Username and UsernamePassword, and both first write a length-prefixed User Name. Rust String values include the valid zero-length encoded-string case."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::read"
+        ],
+        "reason": "Both match arms with username_flag=true call read_mqtt_string, so a missing or truncated User Name field produces a decode error."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_with_password_and_empty_username_writes_zero_len_username",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_binary_password"
+      ],
+      "notes": "Coverage verifies that bit 7 set emits and decodes a User Name, including the valid zero-length User Name field and a non-empty User Name."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-18",
+    "section_number": "3.1.2.9",
+    "section_title": "Password Flag",
+    "obligation": "MUST NOT",
+    "summary": "If the Password Flag is set to 0, a Password MUST NOT be present in the Payload.",
+    "source_anchor": "_Toc462729098",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is only the Password Flag=0 prohibition. ConnectAuth::None and ConnectAuth::Username write no Password and leave bit 6 clear; the variants that write a Password set bit 6. Connect::read also rejects unconsumed payload bytes when the flag is clear.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.9",
+      "section_title": "Password Flag",
+      "source_anchor": "_Toc462729098",
+      "summary": "If the Password Flag is set to 0, a Password MUST NOT be present in the Payload."
+    },
+    "authoritative_actor": "CONNECT packet sender (Client)",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "not_applicable",
+      "notes": "The generated summary incorrectly merged MQTT-3.1.2-18 with the adjacent positive-presence requirement MQTT-3.1.2-19. The two clauses are compatible, but they must be audited independently."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth",
+          "ConnectAuth::write",
+          "Connect::write"
+        ],
+        "reason": "ConnectAuth::None and ConnectAuth::Username do not write Password bytes and return flag values with bit 6 clear. Password bytes are only available in variants that set bit 6."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::read",
+          "Connect::read"
+        ],
+        "reason": "When bit 6 is clear, ConnectAuth::read does not read a Password. Connect::read rejects any trailing bytes after the fields indicated by the flags."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_with_username_only_omits_password_and_flag",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_password_when_password_flag_zero",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_max_keep_alive"
+      ],
+      "notes": "The dedicated encoder test verifies that a username-only CONNECT leaves Password Flag bit 6 clear and ends after the username field. The decoder prohibition is tested directly, and ConnectAuth::None is also round-tripped."
+    },
+    "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-19",
+    "section_number": "3.1.2.9",
+    "section_title": "Password Flag",
+    "obligation": "MUST",
+    "summary": "If the Password Flag is set to 1, a Password MUST be present in the Payload.",
+    "source_anchor": "_Toc462729098",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is a positive-presence MUST, not the MUST NOT recorded by the generated entry. ConnectAuth::Password and ConnectAuth::UsernamePassword always write a length-prefixed Password before returning a flag value with bit 6 set; decode paths with bit 6 set always call read_mqtt_bytes.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.2.9",
+      "section_title": "Password Flag",
+      "source_anchor": "_Toc462729098",
+      "summary": "If the Password Flag is set to 1, a Password MUST be present in the Payload."
+    },
+    "authoritative_actor": "CONNECT packet sender (Client)",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "wrong",
+      "fix_attempt_status": "absent",
+      "fix_attempt_assessment": "absent",
+      "wrong_mapping_client_behavior_risk": "yes",
+      "wrong_mapping_behavior_present_in_code": "no",
+      "notes": "The generated entry copied both Password clauses and assigned MUST NOT, obscuring this requirement's positive MUST. Following that obligation literally could omit the Password while setting its flag; the implementation does not do so."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::write",
+          "Connect::write"
+        ],
+        "reason": "The only variants that return bit 6 set are Password and UsernamePassword, and both first write a length-prefixed Password. Bytes values include the valid zero-length Binary Data case."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::read"
+        ],
+        "reason": "Both match arms with password_flag=true call read_mqtt_bytes, so a missing or truncated Password field produces a decode error."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_password_flag_set_without_password",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_password_only_auth",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_explicitly_empty_password",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_binary_password"
+      ],
+      "notes": "Coverage verifies rejection when bit 6 is set without a Password and successful encoding/decoding of password-only, empty, and binary Password fields."
+    },
+    "follow_up": null
+  },
+  {
     "id": "MQTT-3.2.2-13",
     "section_number": "3.2.2.3.5",
     "section_title": "Retain Available",

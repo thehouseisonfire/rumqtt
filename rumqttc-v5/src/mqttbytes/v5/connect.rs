@@ -1430,6 +1430,28 @@ mod test {
     }
 
     #[test]
+    fn connect_encoding_with_username_only_omits_password_and_flag() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+        let auth = ConnectAuth::Username {
+            username: "user".to_owned(),
+        };
+
+        let mut buf = BytesMut::new();
+        connect_pkt.write(&None, &auth, &mut buf).unwrap();
+
+        assert_eq!(buf[9] & 0x40, 0);
+        assert_eq!(
+            &buf[..],
+            b"\x10\x19\x00\x04MQTT\x05\x82\x00\x05\x00\x00\x06client\x00\x04user"
+        );
+    }
+
+    #[test]
     fn connect_parsing_accepts_password_without_username_flag() {
         let mut stream = bytes::BytesMut::new();
         let packetstream = &[
@@ -1906,7 +1928,7 @@ mod test {
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 
-    /// MQTT-3.1.2-18: If the Password Flag is set to 1, a Password MUST be
+    /// MQTT-3.1.2-19: If the Password Flag is set to 1, a Password MUST be
     /// present in the Payload. Verify that decoding a CONNECT with
     /// password_flag=1 but no password data is rejected.
     #[test]
