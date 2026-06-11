@@ -671,6 +671,31 @@ mod test {
         );
     }
 
+    /// MQTT-3.1.2-19: If the User Name Flag is set to 1, a user name MUST
+    /// be present in the payload. Verify that encoding ConnectAuth::Username
+    /// sets the User Name Flag bit (0x80) in the CONNECT flags byte.
+    #[test]
+    fn connect_encoding_with_username_only_sets_username_flag_bit() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::Username {
+                username: "user".to_owned(),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet.
+        // User Name Flag is bit 7 (0x80). Password Flag is bit 6 (0x40).
+        // With ConnectAuth::Username, only the User Name Flag must be set.
+        assert_eq!(buf[9] & 0x80, 0x80);
+        assert_eq!(buf[9] & 0x40, 0x00);
+    }
+
     #[test]
     fn connect_roundtrips_username_only_auth() {
         let connect = Connect {
@@ -1274,6 +1299,46 @@ mod test {
         let packet = Connect::read(fixed_header, connect_bytes);
 
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
+    }
+
+    /// MQTT-3.1.2-19: If the User Name Flag is set to 1, a user name MUST
+    /// be present in the payload. Verify that decoding a CONNECT with
+    /// username_flag=1 but no username data is rejected.
+    #[test]
+    fn connect_parsing_rejects_truncated_username_when_username_flag_set() {
+        // CONNECT with username_flag=1 but payload truncated right after
+        // the client_id (no username bytes follow).
+        // remaining = var_header(10) + client_id(2+4) = 16
+        let packetstream: Vec<u8> = [
+            0x10,
+            16, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04, // protocol name + level
+            0b1000_0010, // connect flags: username + clean session
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x04,
+            b't',
+            b'e',
+            b's',
+            b't', // client_id = "test"
+            // no username bytes despite username_flag=1
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(packet.is_err());
     }
 
     /// MQTT-3.1.2-18: If the User Name Flag is set to 0, a user name MUST NOT
