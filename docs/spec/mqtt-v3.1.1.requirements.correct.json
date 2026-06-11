@@ -2103,7 +2103,81 @@
                     ],
                     "notes": "The dedicated encoder test verifies that ConnectAuth::None emits zero User Name and Password flags and that the payload ends after the ClientId. The decoder test rejects username bytes when the User Name Flag is zero."
                 },
-                "follow_up": null
-            }
-        ]
-    }
+  "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.2-19",
+    "section_number": "3.1.2.8",
+    "section_title": "User Name Flag",
+    "obligation": "MUST",
+    "summary": "If the User Name Flag is set to 1, a user name MUST be present in the payload.",
+    "source_anchor": "_Toc385349235",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement is the CONNECT packet-format rule that a username field MUST appear in the payload when the User Name Flag is set. rumqttc-v4 enforces this on encode because ConnectAuth::Username and ConnectAuth::UsernamePassword both write a length-prefixed username string and set flag bit 0x80; on decode, ConnectAuth::read always calls read_mqtt_string when username_flag is true, failing on truncated data; and Connect::read rejects trailing unconsumed bytes after declared fields.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v3.1.1.md",
+      "section_number": "3.1.2.8",
+      "section_title": "User Name Flag",
+      "source_anchor": "_Toc385349235",
+      "summary": "If the User Name Flag is set to 1, a user name MUST be present in the payload."
+    },
+    "authoritative_actor": "packet encoder and packet decoder",
+    "applicability": "applicable",
+    "mapping_review": {
+      "original_mapping_status": "reviewed",
+      "original_mapping_assessment": "correct",
+      "fix_attempt_status": "reviewed",
+      "fix_attempt_assessment": "correct",
+      "wrong_mapping_client_behavior_risk": "no",
+      "wrong_mapping_behavior_present_in_code": "not_applicable",
+      "notes": "Both prior JSON files map the authoritative requirement text correctly and agree on compliance. The trailing space in the original summary is cosmetic."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "symbols": [
+          "ConnectAuth::write"
+        ],
+        "reason": "Encode: ConnectAuth::Username writes a length-prefixed username string and returns flag 0x80. ConnectAuth::UsernamePassword writes both username and password strings and returns flag 0xC0. Both set the User Name Flag bit (0x80). ConnectAuth::None returns flag 0 and writes no username, so the flag and field are always consistent."
+      },
+      {
+        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "symbols": [
+          "ConnectAuth::read"
+        ],
+        "reason": "Decode: when username_flag is true (bit 7 set), ConnectAuth::read always calls read_mqtt_string to consume a username from the stream. If the stream is truncated or the username field is missing, read_mqtt_string returns an error, enforcing that the username MUST be present."
+      },
+      {
+        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "symbols": [
+          "Connect::write"
+        ],
+        "reason": "Connect::write ORs the auth flags from ConnectAuth::write into connect_flags, so the User Name Flag bit is set in the output exactly when a username field is present in the payload."
+      },
+      {
+        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+        "symbols": [
+          "Connect::read"
+        ],
+        "reason": "After reading all declared fields, Connect::read checks bytes.has_remaining() and returns Error::IncorrectPacketFormat for any trailing data, preventing a packet with username_flag=1 from silently omitting the username field while leaving extra data."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_roundtrips_username_only_auth",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_with_password_and_empty_username_writes_zero_len_username",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_roundtrips_binary_password",
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_emits_payload_fields_in_spec_order"
+      ],
+      "notes": "Roundtrip tests verify that ConnectAuth::Username (username-only) and ConnectAuth::UsernamePassword (username+password) both set the User Name Flag and include the username field in the payload, including the valid zero-length username edge case. The encoding order test confirms the username appears at the correct spec position."
+    },
+    "follow_up": null
+  }
+]
+}

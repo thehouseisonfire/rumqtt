@@ -1370,6 +1370,37 @@ mod test {
         assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
     }
 
+    /// [MQTT-3.1.3-12]: If the User Name Flag is set to 1, a User Name MUST be
+    /// present in the payload. Verify that decoding a CONNECT where the
+    /// username flag is set but the payload is truncated (length prefix claims
+    /// more bytes than remain) fails.
+    #[test]
+    fn connect_parsing_rejects_truncated_username_when_username_flag_set() {
+        // CONNECT with username flag set but payload ends after length prefix
+        // remaining = var_header(10) + props_len(1) + client_id(2+1) + username_len(2) = 16
+        // but the username length prefix says 5 bytes and only 1 is present
+        let packetstream: Vec<u8> = [
+            0x10, 16, // packet type, flags and remaining len
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, // protocol name + level
+            0b1000_0010, // connect flags: username + clean start
+            0x00, 0x0a, // keep alive = 10
+            0x00, // properties length = 0
+            0x00, 0x01, // client_id length = 1
+            b'a', // client_id = "a"
+            0x00, 0x05, // username length = 5 (but only 1 byte follows)
+            b'x', // truncated username
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+
+        assert!(packet.is_err());
+    }
+
     #[test]
     fn connect_roundtrips_binary_password() {
         let connect_pkt = Connect {

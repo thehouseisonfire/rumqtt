@@ -2135,6 +2135,75 @@
       "notes": "Coverage verifies negotiated enforcement, non-fatal event-loop rejection with a specific tracked notice error, the protocol default when the property is absent, connection-scoped reset, reconnect replay rejection, permitted non-retained publishes, and malformed property rejection."
     },
     "follow_up": null
+  },
+  {
+    "id": "MQTT-3.1.3-12",
+    "section_number": "3.1.3.5",
+    "section_title": "User Name",
+    "obligation": "MUST",
+    "summary": "If the User Name Flag is set to 1, the User Name is the next field in the Payload. The User Name MUST be a UTF-8 Encoded String as defined in section 1.5.4. It can be used by the Server for authentication and authorization.",
+    "source_anchor": "_Toc385349245",
+    "occurrences": 3,
+    "candidate_paths": [
+      "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+    ],
+    "mapping_status": "reviewed",
+    "compliance_status": "compliant",
+    "mapping_reason": "The User Name MUST be a UTF-8 Encoded String per Section 1.5.4 (well-formed UTF-8, no U+0000, no surrogates). On decode, ConnectAuth::read calls read_mqtt_string which delegates to validate_mqtt_string (std::str::from_utf8 + null-byte check). On encode, ConnectAuth::write calls write_mqtt_string which in v5 calls validate_mqtt_string before core_primitives::write_mqtt_string, rejecting U+0000 and ill-formed UTF-8 before serializing. The ConnectAuth username field is String, which is guaranteed valid UTF-8 by Rust's type system.",
+    "authoritative_source": {
+      "path": "docs/spec/mqtt-v5.0.md",
+      "section_number": "3.1.3.5",
+      "section_title": "User Name",
+      "source_anchor": "_Toc385349245",
+      "summary": "If the User Name Flag is set to 1, the User Name is the next field in the Payload. The User Name MUST be a UTF-8 Encoded String as defined in section 1.5.4."
+    },
+    "evidence": [
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+        "symbols": [
+          "ConnectAuth::read",
+          "ConnectAuth::write"
+        ],
+        "reason": "ConnectAuth::read decodes username via read_mqtt_string (enforces well-formed UTF-8 + no U+0000 via validate_mqtt_string). ConnectAuth::write encodes username via write_mqtt_string (v5 wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string)."
+      },
+      {
+        "path": "mqttbytes-core/src/primitives.rs",
+        "symbols": [
+          "validate_mqtt_string",
+          "read_mqtt_string"
+        ],
+        "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates per MQTT-1.5.4-1) and checks for U+0000 bytes (per MQTT-1.5.4-2). read_mqtt_string delegates to it."
+      },
+      {
+        "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "symbols": [
+          "write_mqtt_string"
+        ],
+        "reason": "v5 write_mqtt_string wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string, ensuring outbound strings are well-formed UTF-8 without U+0000."
+      }
+    ],
+    "test_coverage": {
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_null_character_in_username",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_rejects_null_character_in_username",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_surrogate_in_username",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_username_when_username_flag_zero",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_truncated_username_when_username_flag_set",
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_emits_payload_fields_in_spec_order",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_null_character",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_ud800",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_surrogate_udfff",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_overlong_encoding",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_truncated_sequence",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_rejects_invalid_continuation_byte",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_preserves_bom",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_accepts_valid_utf8",
+        "mqttbytes-core/src/primitives.rs::read_mqtt_string_accepts_multibyte_valid_utf8"
+      ],
+      "notes": "Direct v5 CONNECT tests cover User Name flag/payload consistency, truncated username rejection, payload field order, U+0000 rejection on encode and decode, and surrogate rejection on decode. Shared primitive tests in mqttbytes-core cover additional malformed UTF-8 boundaries (overlong encoding, truncated sequence, invalid continuation byte, BOM preservation)."
+    },
+    "follow_up": null
   }
-  ]
+]
 }
