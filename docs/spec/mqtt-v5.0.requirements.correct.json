@@ -1827,11 +1827,11 @@
     "candidate_paths": [
       "rumqttc-v5/src/mqttbytes/v5/connack.rs",
       "rumqttc-v5/src/state.rs",
-      "rumqttc-v5/src/client.rs"
+      "rumqttc-v5/src/eventloop.rs"
     ],
     "mapping_status": "reviewed",
-    "compliance_status": "non_compliant",
-    "mapping_reason": "The authoritative requirement obligates the client to not send PUBLISH with RETAIN=1 when the server has declared Retain Available=0. rumqttc-v5 parses retain_available from CONNACK properties but does not store it in MqttState or enforce it on outbound PUBLISH. The client accepts retain=true in publish() calls unconditionally, setting the RETAIN flag in the outgoing PUBLISH packet regardless of server capabilities.",
+    "compliance_status": "compliant",
+    "mapping_reason": "The authoritative requirement obligates the client to not send PUBLISH with RETAIN=1 when the server has declared Retain Available=0. rumqttc-v5 validates and parses retain_available from CONNACK, stores the negotiated capability as connection-scoped MqttState, and rejects retained outbound PUBLISH requests before packet-id allocation, alias mutation, protocol tracking, or wire encoding. EventLoop handles this as a request-level rejection without dropping the active connection, and tracked publishes receive PublishNoticeError::RetainNotSupported. An absent property defaults to retained messages being supported, as required by the specification.",
     "authoritative_source": {
       "path": "docs/spec/mqtt-v5.0.md",
       "section_number": "3.2.2.3.5",
@@ -1848,7 +1848,7 @@
       "fix_attempt_assessment": "absent",
       "wrong_mapping_client_behavior_risk": "yes",
       "wrong_mapping_behavior_present_in_code": "yes",
-      "notes": "The generated entry was unreviewed with only a heuristic path mapping to connack.rs. The actual requirement is a client-side MUST NOT. The client parses retain_available from CONNACK but never stores or acts on it, so the prohibition is not enforced. The client can and will send PUBLISH with RETAIN=1 when retain_available=0."
+      "notes": "The generated entry was unreviewed with only a heuristic path mapping to connack.rs. The actual requirement is a client-side MUST NOT. The implementation now retains the negotiated capability in connection-scoped state and rejects prohibited retained publishes."
     },
     "evidence": [
       {
@@ -1857,41 +1857,41 @@
           "ConnAckProperties::retain_available",
           "PropertyType::RetainAvailable"
         ],
-        "reason": "CONNACK decoder parses PropertyType::RetainAvailable into ConnAckProperties::retain_available (Option<u8>). The property is correctly extracted from the wire but the value is not propagated to MqttState."
+        "reason": "CONNACK decoding parses PropertyType::RetainAvailable into ConnAckProperties::retain_available, rejects duplicate properties, and rejects values other than 0 or 1 as Error::ProtocolError."
       },
       {
         "path": "rumqttc-v5/src/state.rs",
         "symbols": [
-          "handle_incoming_connack"
+          "handle_incoming_connack",
+          "outgoing_publish_with_notice",
+          "reset_connection_scoped_state"
         ],
-        "reason": "handle_incoming_connack processes topic_alias_max and receive_max from CONNACK properties but does not read or store retain_available. The value is lost after CONNACK processing."
+        "reason": "handle_incoming_connack stores Retain Available as connection-scoped state, defaulting to true when absent. outgoing_publish_with_notice returns StateError::RetainNotSupported before mutating outbound state when a retained publish is prohibited. reset_connection_scoped_state restores the protocol default before the next CONNACK."
       },
       {
-        "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+        "path": "rumqttc-v5/src/eventloop.rs",
         "symbols": [
-          "Publish::write"
+          "handle_request",
+          "reject_unsupported_retained_publish"
         ],
-        "reason": "Publish::write sets the RETAIN flag from self.retain (bit 0 of byte1) unconditionally. There is no check against server-negotiated retain_available."
-      },
-      {
-        "path": "rumqttc-v5/src/client.rs",
-        "symbols": [
-          "Client::publish",
-          "handle_publish"
-        ],
-        "reason": "Client publish methods accept retain: bool and set publish.retain = retain without any check against server-negotiated Retain Available. The caller can freely set retain=true regardless of server support."
+        "reason": "The event loop rejects prohibited retained publishes before passing notice ownership into MqttState, keeps the active network connection intact, continues processing the request batch, and resolves tracked publish notices with PublishNoticeError::RetainNotSupported."
       }
     ],
     "test_coverage": {
-      "status": "not_covered",
-      "tests": [],
-      "notes": "No test exists for the client enforcing Retain Available=0 on outbound PUBLISH. The CONNACK decode path for the retain_available property is tested (connack_decodes_retain_not_supported_reason_code), but enforcement of the MUST NOT is absent."
+      "status": "covered",
+      "tests": [
+        "rumqttc-v5/src/state.rs::retained_publish_is_rejected_when_broker_does_not_support_retained_messages",
+        "rumqttc-v5/src/state.rs::non_retained_publish_is_allowed_when_broker_does_not_support_retained_messages",
+        "rumqttc-v5/src/state.rs::retained_publish_is_allowed_when_retain_available_is_absent_or_one",
+        "rumqttc-v5/src/state.rs::retain_available_resets_between_network_connections",
+        "rumqttc-v5/src/state.rs::retained_publish_replay_is_rejected_by_new_broker_capability",
+        "rumqttc-v5/src/eventloop.rs::unsupported_retained_publish_is_rejected_without_dropping_connection",
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs::read_rejects_invalid_retain_available",
+        "rumqttc-v5/src/mqttbytes/v5/connack.rs::read_rejects_duplicate_retain_available"
+      ],
+      "notes": "Coverage verifies negotiated enforcement, non-fatal event-loop rejection with a specific tracked notice error, the protocol default when the property is absent, connection-scoped reset, reconnect replay rejection, permitted non-retained publishes, and malformed property rejection."
     },
-    "follow_up": {
-      "action": "Implement retain_available tracking in MqttState and enforcement on outbound PUBLISH. Store retain_available from CONNACK in MqttState during handle_incoming_connack, then reject or clear the RETAIN flag in publish when retain_available=0.",
-      "priority": "high",
-      "spec_reference": "MQTT-3.2.2-14"
-    }
+    "follow_up": null
   }
   ]
 }

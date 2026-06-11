@@ -358,7 +358,14 @@ fn read_connack_property(
             *cursor += 1;
         }
         PropertyType::RetainAvailable => {
-            properties.retain_available = Some(read_u8(bytes)?);
+            if properties.retain_available.is_some() {
+                return Err(Error::ProtocolError);
+            }
+            let retain_available = read_u8(bytes)?;
+            if retain_available > 1 {
+                return Err(Error::ProtocolError);
+            }
+            properties.retain_available = Some(retain_available);
             *cursor += 1;
         }
         PropertyType::AssignedClientIdentifier => {
@@ -543,6 +550,34 @@ mod test {
             0x21, // ReceiveMaximum property
             0x00, 0x00, // value = 0
         ]);
+        let result = ConnAckProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn read_rejects_invalid_retain_available() {
+        let mut bytes = Bytes::from_static(&[
+            0x02, // properties length
+            PropertyType::RetainAvailable as u8,
+            0x02, // invalid value
+        ]);
+
+        let result = ConnAckProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn read_rejects_duplicate_retain_available() {
+        let mut bytes = Bytes::from_static(&[
+            0x04, // properties length
+            PropertyType::RetainAvailable as u8,
+            0x00,
+            PropertyType::RetainAvailable as u8,
+            0x01,
+        ]);
+
         let result = ConnAckProperties::read(&mut bytes);
 
         assert!(matches!(result, Err(Error::ProtocolError)));

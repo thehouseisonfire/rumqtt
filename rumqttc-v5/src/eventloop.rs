@@ -817,6 +817,12 @@ impl EventLoop {
             reject_broker_only_session_request(&request, notice);
             return Ok(true);
         }
+        if matches!(&request, Request::Publish(publish) if publish.retain)
+            && !self.state.retain_available()
+        {
+            reject_unsupported_retained_publish(&request, notice);
+            return Ok(true);
+        }
 
         match request {
             Request::Disconnect(disconnect) => {
@@ -1084,6 +1090,16 @@ fn reject_broker_only_session_request(request: &Request, notice: Option<TrackedN
             drop(notice);
         }
         None => {}
+    }
+}
+
+fn reject_unsupported_retained_publish(request: &Request, notice: Option<TrackedNoticeTx>) {
+    warn!(
+        "rejecting retained publish because the broker does not support retained messages: {request:?}"
+    );
+
+    if let Some(TrackedNoticeTx::Publish(notice)) = notice {
+        notice.error(PublishNoticeError::RetainNotSupported);
     }
 }
 
@@ -1486,6 +1502,32 @@ mod tests {
                 receive_max: Some(receive_max),
                 max_qos: None,
                 retain_available: None,
+                max_packet_size: None,
+                assigned_client_identifier: None,
+                topic_alias_max: None,
+                reason_string: None,
+                user_properties: vec![],
+                wildcard_subscription_available: None,
+                subscription_identifiers_available: None,
+                shared_subscription_available: None,
+                server_keep_alive: None,
+                response_information: None,
+                server_reference: None,
+                authentication_method: None,
+                authentication_data: None,
+            }),
+        }
+    }
+
+    fn build_connack_with_retain_available(retain_available: u8) -> ConnAck {
+        ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: Some(ConnAckProperties {
+                session_expiry_interval: None,
+                receive_max: None,
+                max_qos: None,
+                retain_available: Some(retain_available),
                 max_packet_size: None,
                 assigned_client_identifier: None,
                 topic_alias_max: None,
@@ -3544,6 +3586,62 @@ mod tests {
             UnsubscribeNoticeError::BrokerOnlySessionResume
         );
         assert!(eventloop.broker_only_session_resume);
+    }
+
+    #[tokio::test]
+    async fn unsupported_retained_publish_is_rejected_without_dropping_connection() {
+        let mut eventloop = build_eventloop(true);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_retain_available(0)))
+            .unwrap();
+        eventloop.state.events.clear();
+
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let mut retained = publish(QoS::AtLeastOnce);
+        retained.retain = true;
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+
+        let keep_batching = eventloop
+            .handle_request(
+                Request::Publish(retained),
+                Some(TrackedNoticeTx::Publish(notice_tx)),
+                &mut should_flush,
+                &mut qos0_notices,
+            )
+            .await
+            .unwrap();
+
+        assert!(keep_batching);
+        assert!(!should_flush);
+        assert!(qos0_notices.is_empty());
+        assert!(eventloop.network.is_some());
+        assert!(eventloop.state.events.is_empty());
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::RetainNotSupported
+        );
+
+        let keep_batching = eventloop
+            .handle_request(
+                Request::Publish(publish(QoS::AtMostOnce)),
+                None,
+                &mut should_flush,
+                &mut qos0_notices,
+            )
+            .await
+            .unwrap();
+
+        assert!(keep_batching);
+        assert!(should_flush);
+        assert!(eventloop.network.is_some());
+        assert!(matches!(
+            eventloop.state.events.back(),
+            Some(Event::Outgoing(Outgoing::Publish(0)))
+        ));
     }
 
     #[test]
