@@ -196,6 +196,8 @@ pub enum StateError {
         "Cannot use topic alias '{alias:?}'. It's greater than the broker's maximum of '{max:?}'."
     )]
     InvalidAlias { alias: u16, max: u16 },
+    #[error("Cannot send a retained publish because the broker does not support retained messages")]
+    RetainNotSupported,
     #[error(
         "Cannot send packet of size '{pkt_size:?}'. It's greater than the broker's maximum packet size of: '{max:?}'"
     )]
@@ -325,6 +327,8 @@ pub struct MqttState {
     topic_aliases: TopicAliasState,
     /// Whether the current network connection has already completed its initial CONNACK.
     connack_received: bool,
+    /// Whether the broker supports retained messages on the current network connection.
+    retain_available: bool,
     /// Maximum number of allowed inflight `QoS1` & `QoS2` requests
     pub(crate) max_outgoing_inflight: u16,
     /// Upper limit on the maximum number of allowed inflight `QoS1` & `QoS2` requests
@@ -542,6 +546,7 @@ impl MqttState {
             ack_mode,
             topic_aliases: TopicAliasState::new(auto_topic_alias_policy, client_topic_alias_max),
             connack_received: false,
+            retain_available: true,
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
             authenticator,
@@ -729,6 +734,7 @@ impl MqttState {
     pub(crate) fn reset_connection_scoped_state(&mut self) {
         self.topic_aliases.reset_connection_scoped();
         self.connack_received = false;
+        self.retain_available = true;
     }
 
     pub(crate) fn replay_topic_aliases(&self) -> HashMap<u16, Bytes> {
@@ -883,6 +889,10 @@ impl MqttState {
 
     pub const fn inflight(&self) -> u16 {
         self.inflight
+    }
+
+    pub(crate) const fn retain_available(&self) -> bool {
+        self.retain_available
     }
 
     /// Number of SUBSCRIBE requests waiting for a SUBACK.
@@ -1362,6 +1372,11 @@ impl MqttState {
             // Grow immediately so incoming/outgoing packet-id indexed tracking stays valid.
             self.reconcile_outgoing_tracking_capacity(false);
         }
+        if let Some(props) = &connack.properties
+            && let Some(retain_available) = props.retain_available
+        {
+            self.retain_available = retain_available == 1;
+        }
         self.connack_received = true;
         Ok(None)
     }
@@ -1709,6 +1724,10 @@ impl MqttState {
         mut publish: Publish,
         notice: Option<PublishNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        if publish.retain && !self.retain_available {
+            return Err(StateError::RetainNotSupported);
+        }
+
         let mut notice = notice;
         let auto_topic_alias_action = self.apply_auto_topic_alias(&mut publish);
         self.validate_outgoing_topic_alias(&publish)?;
@@ -2384,6 +2403,7 @@ impl Clone for MqttState {
             ack_mode: self.ack_mode,
             topic_aliases: self.topic_aliases.clone(),
             connack_received: self.connack_received,
+            retain_available: self.retain_available,
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
             authenticator: self.authenticator.clone(),
@@ -3372,14 +3392,18 @@ mod test {
     }
 
     fn build_connack_with_receive_max(receive_max: u16) -> ConnAck {
+        build_connack(Some(receive_max), None)
+    }
+
+    fn build_connack(receive_max: Option<u16>, retain_available: Option<u8>) -> ConnAck {
         ConnAck {
             session_present: false,
             code: ConnectReturnCode::Success,
             properties: Some(ConnAckProperties {
                 session_expiry_interval: None,
-                receive_max: Some(receive_max),
+                receive_max,
                 max_qos: None,
-                retain_available: None,
+                retain_available,
                 max_packet_size: None,
                 assigned_client_identifier: None,
                 topic_alias_max: None,
@@ -3395,6 +3419,93 @@ mod test {
                 authentication_data: None,
             }),
         }
+    }
+
+    #[test]
+    fn retained_publish_is_rejected_when_broker_does_not_support_retained_messages() {
+        let mut mqtt = build_mqttstate();
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, Some(0))))
+            .unwrap();
+        mqtt.events.clear();
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.retain = true;
+
+        let err = mqtt.outgoing_publish(publish).unwrap_err();
+
+        assert!(matches!(err, StateError::RetainNotSupported));
+        assert_eq!(mqtt.last_pkid, 0);
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outgoing_pub.iter().all(Option::is_none));
+        assert!(mqtt.events.is_empty());
+    }
+
+    #[test]
+    fn non_retained_publish_is_allowed_when_broker_does_not_support_retained_messages() {
+        let mut mqtt = build_mqttstate();
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, Some(0))))
+            .unwrap();
+        mqtt.events.clear();
+        let publish = build_outgoing_publish(QoS::AtMostOnce);
+
+        let packet = mqtt.outgoing_publish(publish).unwrap();
+
+        assert!(matches!(
+            packet,
+            Some(Packet::Publish(Publish { retain: false, .. }))
+        ));
+    }
+
+    #[test]
+    fn retained_publish_is_allowed_when_retain_available_is_absent_or_one() {
+        for retain_available in [None, Some(1)] {
+            let mut mqtt = build_mqttstate();
+            mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, retain_available)))
+                .unwrap();
+            mqtt.events.clear();
+            let mut publish = build_outgoing_publish(QoS::AtMostOnce);
+            publish.retain = true;
+
+            let packet = mqtt.outgoing_publish(publish).unwrap();
+
+            assert!(matches!(
+                packet,
+                Some(Packet::Publish(Publish { retain: true, .. }))
+            ));
+        }
+    }
+
+    #[test]
+    fn retain_available_resets_between_network_connections() {
+        let mut mqtt = build_mqttstate();
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, Some(0))))
+            .unwrap();
+        assert!(!mqtt.retain_available);
+
+        mqtt.reset_connection_scoped_state();
+
+        assert!(mqtt.retain_available);
+    }
+
+    #[test]
+    fn retained_publish_replay_is_rejected_by_new_broker_capability() {
+        let mut mqtt = build_mqttstate();
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, None)))
+            .unwrap();
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.retain = true;
+        mqtt.outgoing_publish(publish).unwrap();
+
+        let mut pending = mqtt.clean();
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, Some(0))))
+            .unwrap();
+        mqtt.events.clear();
+        let replay = pending.pop().expect("retained publish should be pending");
+
+        let err = mqtt.handle_outgoing_packet(replay).unwrap_err();
+
+        assert!(matches!(err, StateError::RetainNotSupported));
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.events.is_empty());
     }
 
     #[test]

@@ -67,6 +67,8 @@ pub enum PublishNoticeError {
     SessionReset,
     #[error("publish rejected because broker-only session resume has no local packet-id state")]
     BrokerOnlySessionResume,
+    #[error("publish rejected because the broker does not support retained messages")]
+    RetainNotSupported,
     #[error("publish with topic alias {0} cannot be replayed after reconnect")]
     TopicAliasReplayUnavailable(u16),
     #[error("qos0 publish was not flushed to the network")]
