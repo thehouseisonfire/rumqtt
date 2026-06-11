@@ -1963,6 +1963,147 @@
                     "notes": "connect_parsing_rejects_will_flag_zero_with_will_retain directly tests that Will Flag=0 with Will Retain=1 is rejected. connect_encoding_without_last_will_emits_zero_will_bits verifies that all Will-related bits (including Will Retain 0x20) are zero when last_will is None."
                 },
                 "follow_up": null
+            },
+            {
+                "id": "MQTT-3.1.2-16",
+                "section_number": "3.1.2.7",
+                "section_title": "Will Retain",
+                "obligation": "MUST",
+                "summary": "If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message.",
+                "source_anchor": "_Toc385349234",
+                "occurrences": 3,
+                "candidate_paths": [
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+                ],
+                "mapping_status": "reviewed",
+                "compliance_status": "not_applicable",
+                "mapping_reason": "The authoritative obligation applies only to the Server's Will publication behavior when Will Flag=1 and Will Retain=0. rumqttc-v4 is a client and does not publish Will Messages on behalf of disconnected clients.",
+                "authoritative_source": {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "section_number": "3.1.2.7",
+                    "section_title": "Will Retain",
+                    "source_anchor": "_Toc385349234",
+                    "summary": "If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message."
+                },
+                "authoritative_actor": "Server",
+                "applicability": "not_applicable",
+                "mapping_review": {
+                    "original_mapping_status": "reviewed",
+                    "original_mapping_assessment": "wrong",
+                    "fix_attempt_status": "reviewed",
+                    "fix_attempt_assessment": "wrong",
+                    "wrong_mapping_client_behavior_risk": "no",
+                    "wrong_mapping_behavior_present_in_code": "not_applicable",
+                    "notes": "Both mappings omitted the governing Will Flag=1 condition. They retained the Server actor, so the truncation does not create a client-side obligation."
+                },
+                "evidence": [],
+                "test_coverage": {
+                    "status": "not_applicable",
+                    "tests": [],
+                    "notes": "Server-only Will publication behavior cannot be proven by rumqttc-v4 client tests."
+                },
+                "follow_up": null
+            },
+            {
+                "id": "MQTT-3.1.2-17",
+                "section_number": "3.1.2.7",
+                "section_title": "Will Retain",
+                "obligation": "MUST",
+                "summary": "If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish the Will Message as a retained message.",
+                "source_anchor": "_Toc385349234",
+                "occurrences": 3,
+                "candidate_paths": [
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+                ],
+                "mapping_status": "reviewed",
+                "compliance_status": "not_applicable",
+                "mapping_reason": "The authoritative obligation applies only to the Server's Will publication behavior when Will Flag=1 and Will Retain=1. rumqttc-v4 is a client and does not publish Will Messages on behalf of disconnected clients.",
+                "authoritative_source": {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "section_number": "3.1.2.7",
+                    "section_title": "Will Retain",
+                    "source_anchor": "_Toc385349234",
+                    "summary": "If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish the Will Message as a retained message."
+                },
+                "authoritative_actor": "Server",
+                "applicability": "not_applicable",
+                "mapping_review": {
+                    "original_mapping_status": "reviewed",
+                    "original_mapping_assessment": "wrong",
+                    "fix_attempt_status": "reviewed",
+                    "fix_attempt_assessment": "wrong",
+                    "wrong_mapping_client_behavior_risk": "no",
+                    "wrong_mapping_behavior_present_in_code": "not_applicable",
+                    "notes": "Both mappings omitted the governing Will Flag=1 condition. They retained the Server actor, so the truncation does not create a client-side obligation."
+                },
+                "evidence": [],
+                "test_coverage": {
+                    "status": "not_applicable",
+                    "tests": [],
+                    "notes": "Server-only Will publication behavior cannot be proven by rumqttc-v4 client tests."
+                },
+                "follow_up": null
+            },
+            {
+                "id": "MQTT-3.1.2-18",
+                "section_number": "3.1.2.8",
+                "section_title": "User Name Flag",
+                "obligation": "MUST NOT",
+                "summary": "If the User Name Flag is set to 0, a user name MUST NOT be present in the CONNECT payload.",
+                "source_anchor": "_Toc385349235",
+                "occurrences": 3,
+                "candidate_paths": [
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+                ],
+                "mapping_status": "reviewed",
+                "compliance_status": "compliant",
+                "mapping_reason": "The authoritative requirement constrains the CONNECT sender. rumqttc-v4 represents authentication as a single ConnectAuth enum and ConnectAuth::write emits neither username bytes nor the User Name Flag for ConnectAuth::None, so the encoder cannot produce a username while that flag is zero.",
+                "authoritative_source": {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "section_number": "3.1.2.8",
+                    "section_title": "User Name Flag",
+                    "source_anchor": "_Toc385349235",
+                    "summary": "If the User Name Flag is set to 0, a user name MUST NOT be present in the CONNECT payload."
+                },
+                "authoritative_actor": "CONNECT packet sender (Client)",
+                "applicability": "applicable",
+                "mapping_review": {
+                    "original_mapping_status": "reviewed",
+                    "original_mapping_assessment": "correct",
+                    "fix_attempt_status": "reviewed",
+                    "fix_attempt_assessment": "correct",
+                    "wrong_mapping_client_behavior_risk": "no",
+                    "wrong_mapping_behavior_present_in_code": "not_applicable",
+                    "notes": "Both prior mappings are semantically equivalent to the authoritative requirement."
+                },
+                "evidence": [
+                    {
+                        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                        "symbols": [
+                            "ConnectAuth",
+                            "ConnectAuth::write",
+                            "Connect::write"
+                        ],
+                        "reason": "ConnectAuth::None writes no authentication payload and returns zero flag bits. The only variants that write a username also return the User Name Flag, and Connect::write combines those bytes and flags from the same enum value."
+                    },
+                    {
+                        "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                        "symbols": [
+                            "ConnectAuth::read",
+                            "Connect::read"
+                        ],
+                        "reason": "The decoder reads no username when the User Name Flag is zero and rejects any unconsumed payload bytes, including a spurious username."
+                    }
+                ],
+                "test_coverage": {
+                    "status": "covered",
+                    "tests": [
+                        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_without_auth_omits_username_and_flag",
+                        "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_username_when_username_flag_zero"
+                    ],
+                    "notes": "The dedicated encoder test verifies that ConnectAuth::None emits zero User Name and Password flags and that the payload ends after the ClientId. The decoder test rejects username bytes when the User Name Flag is zero."
+                },
+                "follow_up": null
             }
         ]
     }

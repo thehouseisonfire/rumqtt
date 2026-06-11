@@ -590,6 +590,28 @@ mod test {
         assert_eq!(buf[9] & 0x01, 0);
     }
 
+    /// MQTT-3.1.2-18: If the User Name Flag is zero, the CONNECT payload
+    /// MUST NOT contain a user name.
+    #[test]
+    fn connect_encoding_without_auth_omits_username_and_flag() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::None,
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        assert_eq!(buf[9] & 0xC0, 0);
+        assert_eq!(
+            &buf[..],
+            b"\x10\x10\x00\x04MQTT\x04\x02\x00\x0a\x00\x04test"
+        );
+    }
+
     #[test]
     fn connect_encoding_with_password_and_empty_username_writes_zero_len_username() {
         let connect = Connect {
