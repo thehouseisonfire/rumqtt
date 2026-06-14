@@ -2252,6 +2252,74 @@
                 "notes": "connect_parsing_rejects_password_when_password_flag_zero directly tests that spurious password bytes after a username are rejected when password_flag=0. connect_encoding_without_auth_omits_username_and_flag verifies both User Name and Password flags (0xC0) are zero with ConnectAuth::None. connect_encoding_with_username_only_sets_username_flag_bit explicitly asserts password_flag bit (0x40) is zero for ConnectAuth::Username. connect_parsing_rejects_password_flag_without_username_flag covers the indirectly related MQTT-3.1.2-22 constraint."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.2-21",
+            "section_number": "3.1.2.9",
+            "section_title": "Password Flag",
+            "obligation": "MUST",
+            "summary": "If the Password Flag is set to 1, a password MUST be present in the payload.",
+            "source_anchor": "_Toc385349236",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "The authoritative requirement is the CONNECT packet-format rule that a password payload field must accompany password_flag=1. rumqttc-v4 enforces this on both encode and decode paths: the enum type system prevents a password_flag=1 without password data on encode, and the decoder fails on buffer underflow when password_flag=1 but no password bytes follow.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.2.9",
+                "section_title": "Password Flag",
+                "source_anchor": "_Toc385349236",
+                "summary": "If the Password Flag is set to 1, a password MUST be present in the payload."
+            },
+            "authoritative_actor": "client packet encoder; packet decoder",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Both prior JSON files preserve the authoritative requirement text accurately."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "ConnectAuth::write",
+                        "ConnectAuth::UsernamePassword"
+                    ],
+                    "reason": "Encode: ConnectAuth::UsernamePassword always writes both username and password bytes and returns flags=0xC0 (password_flag=1), so a length-prefixed password field is always present on the wire when password_flag is set."
+                },
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "ConnectAuth::read"
+                    ],
+                    "reason": "Decode: when (username_flag=true, password_flag=true), read_mqtt_bytes() is called for the password. If the password field is absent from the stream, this call fails with a buffer-underflow error."
+                },
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "ConnectAuth"
+                    ],
+                    "reason": "The ConnectAuth enum has no variant that sets password_flag=1 without carrying a password Bytes field. UsernamePassword { username, password } always contains both."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_rejects_password_flag_set_without_password",
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_with_username_password_sets_both_flag_bits",
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_roundtrips_explicitly_empty_password",
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_roundtrips_binary_password"
+                ],
+                "notes": "Dedicated test verifies that a CONNECT with password_flag=1 but payload truncated before the password field is rejected. connect_encoding_with_username_password_sets_both_flag_bits explicitly asserts both User Name Flag (0x80) and Password Flag (0x40) bits are set on encode. Roundtrip tests verify a length-prefixed password field is present when password_flag=1, including empty and binary passwords."
+            },
+            "follow_up": null
         }
     ]
 }
