@@ -2342,6 +2342,82 @@
                 "notes": "Integration test verifies client overrides its keep_alive (60s) with the server's Server Keep Alive value (1s) from CONNACK. A second integration test verifies that Server Keep Alive = 0 disables PINGREQ entirely. Unit test verifies CONNACK property decoding of ServerKeepAlive (0x13) as u16."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.3-1",
+            "section_number": "3.1.3",
+            "section_title": "CONNECT Payload",
+            "obligation": "MUST",
+            "summary": "The Payload of the CONNECT packet contains one or more length-prefixed fields, whose presence is determined by the flags in the Variable Header. These fields, if present, MUST appear in the order Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password.",
+            "source_anchor": "_Toc384800404",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "Both encode and decode paths in v5 Connect enforce the spec-required CONNECT payload field ordering: Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password. Sequential read/write structure makes reordering structurally impossible.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.3",
+                "section_title": "CONNECT Payload",
+                "source_anchor": "_Toc384800404",
+                "summary": "The Payload of the CONNECT packet contains one or more length-prefixed fields, whose presence is determined by the flags in the Variable Header. These fields, if present, MUST appear in the order Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password."
+            },
+            "authoritative_actor": "packet encoder and packet decoder",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original summary matches the authoritative v5 text exactly. Section 3.1.3 and source anchor _Toc384800404 are correct. No fix-attempt file exists for v5."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "Connect::write"
+                    ],
+                    "reason": "write() emits client_id (line 121), then will via LastWill::write (line 124) which emits Will Properties, Will Topic, Will Payload, then auth via ConnectAuth::write (line 127) which emits Username then Password. Sequential encode order matches the v5 spec-required field ordering."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "Connect::read"
+                    ],
+                    "reason": "read() consumes client_id (line 45), then will via LastWill::read (line 46) which reads Will Properties, Will Topic, Will Payload, then auth via ConnectAuth::read (line 47) which reads Username then Password. has_remaining() check at line 49 rejects trailing unexpected fields."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "LastWill::write",
+                        "LastWill::read"
+                    ],
+                    "reason": "LastWill::write emits Will Properties (line 472-476), then Will Topic (line 478-479), then Will Payload (line 480). LastWill::read reads Will Properties (line 444), then Will Topic (line 446), then Will Payload (line 448). Correct v5 sub-ordering with Will Properties before Will Topic."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "ConnectAuth::write",
+                        "ConnectAuth::read"
+                    ],
+                    "reason": "ConnectAuth::write emits Username then Password for all auth variants. ConnectAuth::read reads Username then Password based on connect flags. v5 also supports Password-only auth (no username) unlike v4."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_emits_payload_fields_in_spec_order",
+                    "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_last_will",
+                    "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_binary_password",
+                    "rumqttc-v5/src/mqttbytes/v5/connect.rs::last_will_encoding_writes_zero_length_properties_when_none"
+                ],
+                "notes": "connect_encoding_emits_payload_fields_in_spec_order directly verifies byte-level positions of each v5 CONNECT payload field (Client Identifier, Will Properties length, Will Topic, Will Payload, User Name, Password). connect_roundtrips_last_will and connect_roundtrips_binary_password exercise full encode+decode with will and auth fields. last_will_encoding_writes_zero_length_properties_when_none verifies the Will Properties zero-length encoding when no properties are set."
+            },
+            "follow_up": null
         }
     ]
 }
