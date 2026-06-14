@@ -2342,6 +2342,128 @@ mod tests {
         assert_eq!(eventloop.session_client_id, None);
     }
 
+    // MQTT-3.1.3-2: The ClientId MUST be used by Clients and by Servers to identify
+    // state that they hold relating to this MQTT Session.
+    #[tokio::test]
+    async fn poll_sets_session_client_id_after_successful_connect() {
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        assert_eq!(eventloop.session_client_id, None);
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            peer.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+        });
+
+        let event = eventloop.poll().await.unwrap();
+        assert!(matches!(
+            event,
+            Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present == false
+        ));
+        assert_eq!(
+            eventloop.session_client_id,
+            Some("test-client".to_owned())
+        );
+
+        broker.await.unwrap();
+    }
+
+    // MQTT-3.1.3-2: The ClientId MUST be used by Clients and by Servers to identify
+    // state that they hold relating to this MQTT Session. An unacked outgoing QoS 1
+    // publish must survive a network failure and reconnection with the same ClientId.
+    #[tokio::test]
+    async fn poll_preserves_pending_state_across_reconnect_with_same_client_id() {
+        use tokio::io::{AsyncWriteExt, duplex};
+
+        let (peer_tx, peer_rx) = flume::bounded(2);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_clean_session(false);
+        options.set_keep_alive(0);
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        // Seed an unacked QoS 1 publish in outgoing_pub, simulating a previous session.
+        let mut seeded = publish(QoS::AtLeastOnce);
+        seeded.pkid = 1;
+        eventloop.state.outgoing_pub[1] = Some(seeded);
+        eventloop.state.inflight = 1;
+
+        // First connection: CONNACK with session_present=true (session resumed).
+        // Broker drops the peer after sending CONNACK to simulate network failure.
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            // ConnAck: type=0x20, remaining_len=2, session_present=1, return_code=0
+            peer.write_all(&[0x20, 0x02, 0x01, 0x00]).await.unwrap();
+            drop(peer);
+
+            // Second connection: CONNACK with session_present=true (session resumed).
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            peer.write_all(&[0x20, 0x02, 0x01, 0x00]).await.unwrap();
+        });
+
+        // First poll: connects, session_present=true preserves outgoing_pub.
+        let event = eventloop.poll().await.unwrap();
+        assert!(matches!(
+            event,
+            Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present
+        ));
+        assert_eq!(
+            eventloop.session_client_id,
+            Some("test-client".to_owned())
+        );
+
+        // Second poll: network read fails (peer dropped), clean() moves
+        // outgoing_pub to pending.
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(!matches!(err, ConnectionError::RequestsDone));
+
+        // Pending state must exist after clean().
+        assert_eq!(eventloop.pending_len(), 1);
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::Publish(_))
+        ));
+
+        // Third poll: reconnects with same ClientId, session resumed.
+        let event = eventloop.poll().await.unwrap();
+        assert!(matches!(
+            event,
+            Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present
+        ));
+
+        // The unacked publish from the previous session must survive.
+        assert_eq!(eventloop.pending_len(), 1);
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::Publish(p)) if p.pkid == 1
+        ));
+
+        broker.await.unwrap();
+    }
+
     // MQTT-3.1.0-1: After a Network Connection is established by a Client to a Server,
     // the first Packet sent from the Client to the Server MUST be a CONNECT Packet.
     #[tokio::test]

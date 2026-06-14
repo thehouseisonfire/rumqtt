@@ -2418,6 +2418,91 @@
                 "notes": "connect_encoding_emits_payload_fields_in_spec_order directly verifies byte-level positions of each v5 CONNECT payload field (Client Identifier, Will Properties length, Will Topic, Will Payload, User Name, Password). connect_roundtrips_last_will and connect_roundtrips_binary_password exercise full encode+decode with will and auth fields. last_will_encoding_writes_zero_length_properties_when_none verifies the Will Properties zero-length encoding when no properties are set."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.3-2",
+            "section_number": "3.1.3.1",
+            "section_title": "Client Identifier (ClientID)",
+            "obligation": "MUST",
+            "summary": "Each Client connecting to the Server has a unique ClientID. The ClientID MUST be used by Clients and by Servers to identify state that they hold relating to this MQTT Session between the Client and the Server.",
+            "source_anchor": "_Toc385349242",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "The v5 client sends the configured ClientID in every CONNECT packet, adopts the Assigned Client Identifier from CONNACK for empty client_ids, records the ClientID associated with retained local session state after a successful connection, and resets retained local session state when the configured ClientID changes before reconnecting.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.3.1",
+                "section_title": "Client Identifier (ClientID)",
+                "source_anchor": "_Toc385349242",
+                "summary": "The ClientID MUST be used by Clients and by Servers to identify state that they hold relating to this MQTT Session between the Client and the Server."
+            },
+            "authoritative_actor": "Client and Server",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original summary matches the authoritative v5 text (section 3.1.3.1 line 900-902 and requirements table line 6697). No fix-attempt file exists for v5."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "Connect::write",
+                        "Connect::read"
+                    ],
+                    "reason": "Connect::write() serializes client_id as the first payload field (line 121). Connect::read() deserializes it as the first payload field (line 45). The client_id field is mandatory in the struct."
+                },
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "mqtt_connect_inner"
+                    ],
+                    "reason": "mqtt_connect_inner() creates Connect with client_id from options (line 1307), sends it in the CONNECT packet, and adopts the Assigned Client Identifier from CONNACK for empty client_ids (lines 1351-1355)."
+                },
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::session_client_id"
+                    ],
+                    "reason": "EventLoop tracks the ClientID associated with retained local session state. After successful connection (unless broker_only_session_resume), session_client_id is set to the current configured ClientID (line 556)."
+                },
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::reset_session_state_if_client_id_changed"
+                    ],
+                    "reason": "Before reconnecting, this guard clears retained local session state when the configured ClientID differs from the ClientID associated with that state (lines 507-517), ensuring state from one ClientID is not reused under another."
+                },
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::reconcile_connack_session"
+                    ],
+                    "reason": "reconcile_connack_session uses has_local_session_state() (which compares session_client_id to current client_id) to determine whether local session state exists for the current ClientID (lines 221-241)."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "rumqttc-v5/src/eventloop.rs::client_id_guard_keeps_state_when_client_id_is_unchanged",
+                    "rumqttc-v5/src/eventloop.rs::client_id_guard_resets_state_when_client_id_changes",
+                    "rumqttc-v5/src/eventloop.rs::mqtt_connect_adopts_assigned_client_identifier",
+                    "rumqttc-v5/src/eventloop.rs::poll_records_assigned_client_identifier_as_session_client_id",
+                    "rumqttc-v5/src/eventloop.rs::connack_reconcile_keeps_pending_when_resumed_session_exists",
+                    "rumqttc-v5/src/eventloop.rs::reset_session_state_clears_local_session_marker",
+                    "rumqttc-v5/src/eventloop.rs::poll_preserves_pending_state_across_reconnect_with_same_client_id"
+                ],
+                "notes": "Guard tests verify session state is preserved when client_id is unchanged and reset when it changes. Assigned Client Identifier tests verify the server-assigned client_id is adopted and recorded as session_client_id. connack_reconcile_keeps_pending_when_resumed_session_exists verifies pending state survives session resume. reset_session_state_clears_local_session_marker verifies session_client_id is cleared on state reset. Integration test verifies unacked outgoing publishes survive a full disconnect+reconnect cycle with the same ClientID."
+            },
+            "follow_up": null
         }
     ]
 }
