@@ -296,6 +296,62 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
 }
 
 #[tokio::test]
+async fn automatic_protocol_responses_delay_keepalive_ping() {
+    let keep_alive = 3;
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_keep_alive(keep_alive);
+
+    let eventloop_task = task::spawn(async move {
+        let mut eventloop = EventLoop::new(options, 5);
+        run(&mut eventloop, false).await
+    });
+
+    let mut broker = TestBroker::from_listener(listener, 0, false).await;
+
+    // Send QoS 1 publishes from the broker at 1-second intervals.
+    // Each triggers an automatic PUBACK from the client, which is a
+    // Control Packet being sent and should reset the keepalive timer.
+    broker.spawn_publishes(5, QoS::AtLeastOnce, 1);
+
+    let mut pubacks = 0;
+    let mut last_puback_at = Instant::now();
+
+    while pubacks < 5 {
+        let event = broker.tick().await;
+        match event {
+            Event::Incoming(Incoming::PubAck(_)) => {
+                pubacks += 1;
+                last_puback_at = Instant::now();
+            }
+            Event::Outgoing(_) => {}
+            Event::Incoming(Incoming::PingReq) => {
+                panic!(
+                    "PINGREQ should not be sent while automatic PUBACK responses keep the connection active"
+                )
+            }
+            event => panic!("unexpected event while waiting for PUBACKs: {event:?}"),
+        }
+    }
+
+    // After all QoS 1 publishes stop, the client becomes outbound-idle
+    // and PINGREQ should arrive after the keep_alive interval.
+    match broker.tick().await {
+        Event::Incoming(Incoming::PingReq) => {
+            assert_keep_alive_interval(last_puback_at.elapsed(), keep_alive);
+            broker.pingresp().await;
+        }
+        event => panic!("expected idle PINGREQ after automatic responses stopped, got {event:?}"),
+    }
+
+    eventloop_task.abort();
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
+}
+
+#[tokio::test]
 async fn detects_halfopen_connections_in_the_second_ping_request() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));

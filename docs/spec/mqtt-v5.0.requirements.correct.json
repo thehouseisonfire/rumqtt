@@ -2204,6 +2204,144 @@
                 "notes": "Direct v5 CONNECT tests cover User Name flag/payload consistency, truncated username rejection, payload field order, U+0000 rejection on encode and decode, and surrogate rejection on decode. Shared primitive tests in mqttbytes-core cover additional malformed UTF-8 boundaries (overlong encoding, truncated sequence, invalid continuation byte, BOM preservation)."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.2-20",
+            "section_number": "3.1.2.10",
+            "section_title": "Keep Alive",
+            "obligation": "MUST",
+            "summary": "If Keep Alive is non-zero and in the absence of sending any other MQTT Control Packets, the Client MUST send a PINGREQ packet.",
+            "source_anchor": "_Figure_3.5_Keep",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/eventloop.rs",
+                "rumqttc-v5/src/framed.rs",
+                "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                "rumqttc-v5/src/lib.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "partial",
+            "mapping_reason": "The authoritative requirement requires PINGREQ only in the absence of other outbound Control Packets. rumqttc-v5 sends PINGREQ when the keepalive timer fires (correct for idle connections), but never resets the timer after outbound traffic. flush_request_batch does not call any keepalive reset, readb returns () instead of a ReadBatchOutcome so automatic protocol responses (PUBACK/PUBREC/PUBCOMP) are not tracked, and the only timer reset site is the PINGREQ branch itself. This means PINGREQ fires at a fixed interval from connection start regardless of other outbound Control Packets being sent. The existing test some_outgoing_and_no_incoming_should_trigger_pings_on_time verifies this incorrect behavior by asserting PINGREQ fires at keep_alive intervals while QoS 0 PUBLISH packets are flowing. Unlike v4 (which has reset_keepalive_timeout and ReadBatchOutcome), v5 was never ported to reset the keepalive timer on outbound traffic.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.2.10",
+                "section_title": "Keep Alive",
+                "source_anchor": "_Figure_3.5_Keep",
+                "summary": "It is the responsibility of the Client to ensure that the interval between MQTT Control Packets being sent does not exceed the Keep Alive value. If Keep Alive is non-zero and in the absence of sending any other MQTT Control Packets, the Client MUST send a PINGREQ packet."
+            },
+            "authoritative_actor": "Client",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "yes",
+                "wrong_mapping_behavior_present_in_code": "yes",
+                "notes": "The original summary captured the introductory definition of Keep Alive (what it is) rather than the normative client obligation (send PINGREQ when idle, not when other packets are flowing). The wrong mapping obscured the fact that the timer-reset-on-outbound-traffic behavior is missing: the compliance_status was marked compliant with reasoning about the timer not being reset after every ordinary outbound packet, but that was treated as acceptable rather than as a compliance gap."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::select"
+                    ],
+                    "reason": "The keepalive_timeout branch (line 675-688) sends PINGREQ and resets the timer inline, but no other branch resets the timer. The readb branch (line 670-673) does not check for automatic protocol responses and does not reset the timer."
+                },
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::flush_request_batch"
+                    ],
+                    "reason": "After successful outbound flush (line 882-887), no keepalive timer reset occurs. Compare with v4's flush_request_batch which calls reset_keepalive_timeout after success."
+                },
+                {
+                    "path": "rumqttc-v5/src/framed.rs",
+                    "symbols": [
+                        "Network::readb"
+                    ],
+                    "reason": "readb returns Result<(), StateError> instead of a ReadBatchOutcome, so the eventloop cannot know whether automatic protocol responses (PUBACK/PUBREC/PUBCOMP) were written during reading."
+                },
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::poll"
+                    ],
+                    "reason": "The only keepalive timer reset in the entire v5 codebase is at line 678, inside the PINGREQ branch. No reset occurs on outbound flush, automatic responses, or any other path."
+                }
+            ],
+            "test_coverage": {
+                "status": "partial",
+                "tests": [
+                    "tests/reliability.rs::idle_connection_triggers_pings_on_time",
+                    "tests/reliability.rs::some_outgoing_and_no_incoming_should_trigger_pings_on_time",
+                    "tests/reliability.rs::some_incoming_and_no_outgoing_should_trigger_pings_on_time"
+                ],
+                "notes": "idle_connection_triggers_pings_on_time correctly tests PINGREQ on idle connections. However, some_outgoing_and_no_incoming_should_trigger_pings_on_time asserts the WRONG behavior: it verifies PINGREQ fires at keep_alive intervals even while outbound QoS 0 PUBLISH packets are flowing, which contradicts the spec's 'in the absence of sending any other MQTT Control Packets' condition. No test verifies that outbound traffic suppresses PINGREQ. No test verifies that automatic protocol responses (PUBACK) suppress PINGREQ."
+            },
+            "follow_up": "Port the v4 keepalive-timer-reset fixes to v5: (1) add reset_keepalive_timeout and call it after successful outbound flush in flush_request_batch, (2) add ReadBatchOutcome to v5 readb so automatic protocol responses reset the timer, (3) fix or replace some_outgoing_and_no_incoming_should_trigger_pings_on_time to assert PINGREQ is suppressed while outbound traffic flows, (4) add a test verifying automatic PUBACK responses suppress PINGREQ."
+        },
+        {
+            "id": "MQTT-3.1.2-21",
+            "section_number": "3.1.2.10",
+            "section_title": "Keep Alive",
+            "obligation": "MUST",
+            "summary": "If the Server returns a Server Keep Alive on the CONNACK packet, the Client MUST use that value instead of the value it sent as the Keep Alive.",
+            "source_anchor": "_Figure_3.5_Keep",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/eventloop.rs",
+                "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "The authoritative requirement is the client-side obligation to use the Server Keep Alive value from CONNACK when present. rumqttc-v5 enforces this in mqtt_connect_inner (eventloop.rs line 1344-1348): after receiving CONNACK, if connack.properties.server_keep_alive is Some, options.keep_alive is overridden with Duration::from_secs(u64::from(keep_alive)). This override happens before the keepalive_timeout timer is initialized (line 560-561), so subsequent PINGREQ intervals use the server-assigned value. ConnAckProperties correctly decodes the ServerKeepAlive property (id 0x13) as a u16 via read_u16.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.2.10",
+                "section_title": "Keep Alive",
+                "source_anchor": "_Figure_3.5_Keep",
+                "summary": "If the Server returns a Server Keep Alive on the CONNACK packet, the Client MUST use that value instead of the value it sent as the Keep Alive."
+            },
+            "authoritative_actor": "Client",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original summary matches the authoritative text exactly. The compliance conclusion is correct and well-evidenced."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v5/src/eventloop.rs",
+                    "symbols": [
+                        "mqtt_connect_inner"
+                    ],
+                    "reason": "After receiving CONNACK, if connack.properties.server_keep_alive is Some(keep_alive), options.keep_alive is overridden with Duration::from_secs(u64::from(keep_alive)) at line 1347. This happens before the keepalive_timeout timer is initialized at line 560-561."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+                    "symbols": [
+                        "ConnAckProperties::read",
+                        "ConnAckProperties::write",
+                        "ConnAckProperties::server_keep_alive"
+                    ],
+                    "reason": "ConnAckProperties.server_keep_alive is Option<u16>, decoded from PropertyType::ServerKeepAlive (0x13) via read_u16 (line 410-411) and encoded via put_u16 (line 308-309)."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "tests/reliability.rs::client_uses_server_keep_alive_from_connack",
+                    "tests/reliability.rs::server_keep_alive_zero_disables_keepalive_pings",
+                    "rumqttc-v5/src/mqttbytes/v5/connack.rs::read_decodes_server_keep_alive"
+                ],
+                "notes": "Integration test verifies client overrides its keep_alive (60s) with the server's Server Keep Alive value (1s) from CONNACK. A second integration test verifies that Server Keep Alive = 0 disables PINGREQ entirely. Unit test verifies CONNACK property decoding of ServerKeepAlive (0x13) as u16."
+            },
+            "follow_up": null
         }
     ]
 }
