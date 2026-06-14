@@ -696,6 +696,33 @@ mod test {
         assert_eq!(buf[9] & 0x40, 0x00);
     }
 
+    /// MQTT-3.1.2-21: If the Password Flag is set to 1, a password MUST
+    /// be present in the payload. Verify that encoding
+    /// ConnectAuth::UsernamePassword sets both the User Name Flag bit (0x80)
+    /// and the Password Flag bit (0x40) in the CONNECT flags byte.
+    #[test]
+    fn connect_encoding_with_username_password_sets_both_flag_bits() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::UsernamePassword {
+                username: "user".to_owned(),
+                password: Bytes::from_static(b"pw"),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet.
+        // User Name Flag is bit 7 (0x80). Password Flag is bit 6 (0x40).
+        // With ConnectAuth::UsernamePassword, both flags must be set.
+        assert_eq!(buf[9] & 0x80, 0x80);
+        assert_eq!(buf[9] & 0x40, 0x40);
+    }
+
     #[test]
     fn connect_roundtrips_username_only_auth() {
         let connect = Connect {
