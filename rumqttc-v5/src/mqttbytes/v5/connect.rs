@@ -1380,14 +1380,24 @@ mod test {
         // remaining = var_header(10) + props_len(1) + client_id(2+1) + username_len(2) = 16
         // but the username length prefix says 5 bytes and only 1 is present
         let packetstream: Vec<u8> = [
-            0x10, 16, // packet type, flags and remaining len
-            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, // protocol name + level
+            0x10,
+            16, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x05,        // protocol name + level
             0b1000_0010, // connect flags: username + clean start
-            0x00, 0x0a, // keep alive = 10
+            0x00,
+            0x0a, // keep alive = 10
             0x00, // properties length = 0
-            0x00, 0x01, // client_id length = 1
+            0x00,
+            0x01, // client_id length = 1
             b'a', // client_id = "a"
-            0x00, 0x05, // username length = 5 (but only 1 byte follows)
+            0x00,
+            0x05, // username length = 5 (but only 1 byte follows)
             b'x', // truncated username
         ]
         .into();

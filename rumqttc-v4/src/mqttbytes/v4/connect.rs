@@ -1345,7 +1345,7 @@ mod test {
             b'Q',
             b'T',
             b'T',
-            0x04, // protocol name + level
+            0x04,        // protocol name + level
             0b1000_0010, // connect flags: username + clean session
             0x00,
             0x0a, // keep alive = 10
@@ -1355,7 +1355,7 @@ mod test {
             b'e',
             b's',
             b't', // client_id = "test"
-            // no username bytes despite username_flag=1
+                  // no username bytes despite username_flag=1
         ]
         .into();
 
