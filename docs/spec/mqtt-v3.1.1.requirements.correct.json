@@ -2385,6 +2385,130 @@
                 "notes": "Direct test constructs a CONNECT with connect_flags=0x42 (password_flag=1, username_flag=0) and verifies it is rejected with Error::IncorrectPacketFormat. Encode-side compliance is enforced by the type system and tested indirectly via connect_encoding_without_auth_omits_username_and_flag and connect_encoding_with_username_only_sets_username_flag_bit under MQTT-3.1.2-20."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.2-23",
+            "section_number": "3.1.2.10",
+            "section_title": "Keep Alive",
+            "obligation": "MUST",
+            "summary": "In the absence of sending any other Control Packets, the Client MUST send a PINGREQ Packet within the Keep Alive interval.",
+            "source_anchor": "_Figure_3.5_Keep",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/eventloop.rs",
+                "rumqttc-v4/src/framed.rs",
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                "rumqttc-v4/src/lib.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "The authoritative requirement is the client-side PINGREQ obligation: the client must send PINGREQ when no other Control Packet has been sent within the Keep Alive interval. rumqttc-v4 enforces this via EventLoop::select, which fires PINGREQ when the keepalive sleep elapses, and resets the timer after every outbound flush (including automatic protocol responses like PUBACK/PUBREC/PUBCOMP), ensuring PINGREQ is sent only during true outbound idle periods.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.2.10",
+                "section_title": "Keep Alive",
+                "source_anchor": "_Figure_3.5_Keep",
+                "summary": "It is the responsibility of the Client to ensure that the interval between Control Packets being sent does not exceed the Keep Alive value. In the absence of sending any other Control Packets, the Client MUST send a PINGREQ Packet."
+            },
+            "authoritative_actor": "Client",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "possibly confirmed",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "yes",
+                "wrong_mapping_behavior_present_in_code": "no",
+                "notes": "The original summary captured the introductory definition of Keep Alive (what it is) rather than the normative client obligation (what the client must do: send PINGREQ when idle). The fix-attempt restored the correct normative sentence. The code implements the correct behavior regardless of which summary was used."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::select",
+                        "EventLoop::reset_keepalive_timeout"
+                    ],
+                    "reason": "When keepalive_timeout fires and keep_alive is non-zero, PINGREQ is sent (line 609). Timer is reset after every outbound flush via flush_request_batch (line 800) and after automatic protocol responses from readb (lines 600-601, 857-858), so PINGREQ is only sent during true outbound idle."
+                },
+                {
+                    "path": "rumqttc-v4/src/eventloop.rs",
+                    "symbols": [
+                        "EventLoop::poll"
+                    ],
+                    "reason": "Timer is initialized after CONNACK (line 489-491) and cleared on disconnect (lines 336, 509). Keep-alive=0 disables the timer entirely (lines 489, 606, 889)."
+                },
+                {
+                    "path": "rumqttc-v4/src/framed.rs",
+                    "symbols": [
+                        "Network::readb"
+                    ],
+                    "reason": "readb reports ReadBatchOutcome::ResponseWritten when automatic protocol responses (PUBACK/PUBREC/PUBCOMP) are written, allowing the event loop to reset the keepalive timer after those outbound Control Packets."
+                },
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "Connect::read",
+                        "Connect::write"
+                    ],
+                    "reason": "keep_alive is encoded/decoded as u16 via put_u16/read_u16, matching the 16-bit wire format."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "tests/reliability.rs::idle_connection_triggers_pings_on_time",
+                    "tests/reliability.rs::regular_outgoing_packets_delay_keepalive_ping",
+                    "tests/reliability.rs::some_incoming_and_no_outgoing_should_trigger_pings_on_time",
+                    "tests/reliability.rs::automatic_protocol_responses_delay_keepalive_ping",
+                    "tests/reliability.rs::test_zero_keep_alive_values",
+                    "tests/reliability.rs::test_valid_keep_alive_values",
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_parsing_works",
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_encoding_works",
+                    "rumqttc-v4/src/mqttbytes/v4/connect.rs::connect_roundtrips_max_keep_alive"
+                ],
+                "notes": "Integration tests verify PINGREQ timing on idle connections, verify that user-initiated outbound packets delay PINGREQ, verify that automatic protocol responses (PUBACK for QoS 1 inbound) also delay PINGREQ, and verify PINGREQ is sent even when only receiving QoS 0 (no outbound). Unit tests verify keep_alive wire encoding/decoding."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.2-24",
+            "section_number": "3.1.2.10",
+            "section_title": "Keep Alive",
+            "obligation": "MUST",
+            "summary": "If the Keep Alive value is non-zero and the Server does not receive a Control Packet from the Client within one and a half times the Keep Alive time period, the Server MUST disconnect the Network Connection to the Client.",
+            "source_anchor": "_Figure_3.5_Keep",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "The authoritative requirement is a server-side obligation: the Server MUST disconnect the Client if it does not receive a packet within 1.5x the Keep Alive period. rumqttc-v4 is a client and has no obligation to enforce this timeout. The client handles server-initiated disconnection via ConnectionAborted errors from framed.rs, but this is generic connection error handling, not keep-alive-specific enforcement.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.2.10",
+                "section_title": "Keep Alive",
+                "source_anchor": "_Figure_3.5_Keep",
+                "summary": "If the Keep Alive value is non-zero and the Server does not receive a Control Packet from the Client within one and a half times the Keep Alive time period, it MUST disconnect the Network Connection to the Client as if the network had failed."
+            },
+            "authoritative_actor": "Server",
+            "applicability": "not_applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "unclear",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original summary matches the authoritative text exactly and correctly classifies it as not_applicable. The fix-attempt summary is also correct but the mapping_reason is confused, referencing MQTT-3.1.2-23 instead of explaining why MQTT-3.1.2-24 is server-only."
+            },
+            "evidence": [],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "Server-only requirement. Client-side keep-alive behavior (sending PINGREQ to prevent server timeout) is tested under MQTT-3.1.2-23."
+            },
+            "follow_up": null
         }
     ]
 }

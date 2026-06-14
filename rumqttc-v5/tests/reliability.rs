@@ -1648,3 +1648,37 @@ async fn client_uses_server_keep_alive_from_connack() {
 
     assert_eq!(count, 3);
 }
+
+#[tokio::test]
+async fn server_keep_alive_zero_disables_keepalive_pings() {
+    let client_keep_alive = 2;
+    let (listener, port) = reserve_listener().await;
+
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_keep_alive(client_keep_alive);
+
+    task::spawn(async move {
+        let mut eventloop = EventLoop::new(options, 5);
+        run(&mut eventloop, false).await.unwrap();
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::AcceptWithServerKeepAlive {
+            session_saved: false,
+            keep_alive_secs: 0,
+        },
+    )
+    .await;
+
+    // Wait well past the client's original keep_alive interval.
+    // Server Keep Alive = 0 turns off the keep-alive mechanism,
+    // so no PINGREQ should be sent.
+    let packet = broker
+        .read_packet_with_timeout(Duration::from_secs(4))
+        .await;
+    assert!(
+        packet.is_none(),
+        "PINGREQ should not be sent when Server Keep Alive is 0, but received {packet:?}"
+    );
+}
