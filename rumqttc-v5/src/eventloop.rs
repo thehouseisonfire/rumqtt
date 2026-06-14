@@ -4033,6 +4033,96 @@ mod tests {
         );
     }
 
+    // MQTT-3.1.3-2: The ClientID MUST be used by Clients and by Servers to identify
+    // state that they hold relating to this MQTT Session. An unacked outgoing QoS 1
+    // publish must survive a network failure and reconnection with the same ClientID.
+    #[tokio::test]
+    async fn poll_preserves_pending_state_across_reconnect_with_same_client_id() {
+        let (peer_tx, peer_rx) = flume::bounded(2);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_clean_start(false);
+        options.set_keep_alive(0);
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        // Seed an unacked QoS 1 publish in outgoing_pub, simulating a previous session.
+        let mut seeded = publish(QoS::AtLeastOnce);
+        seeded.pkid = 1;
+        eventloop.state.outgoing_pub[1] = Some(seeded);
+        eventloop.state.inflight = 1;
+        eventloop.session_client_id = Some("test-client".to_owned());
+
+        let broker = tokio::spawn(async move {
+            // First connection: CONNACK with session_present=true (session resumed).
+            // Broker drops the peer after sending CONNACK to simulate network failure.
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let connack = ConnAck {
+                session_present: true,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            };
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            drop(peer);
+
+            // Second connection: CONNACK with session_present=true (session resumed).
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        });
+
+        // First poll: connects, session_present=true preserves outgoing_pub.
+        let event = eventloop.poll().await.unwrap();
+        assert!(matches!(
+            event,
+            Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present
+        ));
+        assert_eq!(
+            eventloop.session_client_id.as_deref(),
+            Some("test-client")
+        );
+
+        // Second poll: network read fails (peer dropped), clean() moves
+        // outgoing_pub to pending.
+        let err = eventloop.poll().await.unwrap_err();
+        assert!(!matches!(err, ConnectionError::RequestsDone));
+
+        // Pending state must exist after clean().
+        assert_eq!(eventloop.pending_len(), 1);
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::Publish(_))
+        ));
+
+        // Third poll: reconnects with same ClientID, session resumed.
+        let event = eventloop.poll().await.unwrap();
+        assert!(matches!(
+            event,
+            Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present
+        ));
+
+        // The unacked publish from the previous session must survive.
+        assert_eq!(eventloop.pending_len(), 1);
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::Publish(p)) if p.pkid == 1
+        ));
+
+        broker.await.unwrap();
+    }
+
     // MQTT-3.1.0-2: A Client can only send the CONNECT packet once over a Network Connection.
     // The Request enum has no Connect variant, so users cannot submit a CONNECT
     // through the request channel. This is a compile-time invariant.
