@@ -1598,6 +1598,33 @@ mod test {
         assert_eq!(buf.len(), password_start + 4);
     }
 
+    /// MQTT-3.1.3-3: zero-byte ClientId is still serialized as the first payload field.
+    #[test]
+    fn connect_encoding_emits_zero_byte_client_id_first_in_payload() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: String::new(),
+            clean_session: true,
+            last_will: Some(LastWill::new("wt", "wm", QoS::AtLeastOnce, false)),
+            auth: ConnectAuth::UsernamePassword {
+                username: "un".to_owned(),
+                password: Bytes::from_static(b"pw"),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        let payload_start = 12;
+
+        // Zero-byte Client Identifier: 0x00 0x00
+        assert_eq!(&buf[payload_start..payload_start + 2], b"\x00\x00");
+
+        // Will Topic follows: 0x00 0x02 w t
+        let will_topic_start = payload_start + 2;
+        assert_eq!(&buf[will_topic_start..will_topic_start + 4], b"\x00\x02wt");
+    }
+
     /// MQTT-3.1.3-7: zero-byte ClientId with CleanSession=0 must be rejected.
     #[test]
     fn connect_encoding_rejects_empty_client_id_with_clean_session_false() {

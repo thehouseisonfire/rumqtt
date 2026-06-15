@@ -2669,6 +2669,62 @@
                 "notes": "Connect encode/decode tests verify client_id roundtrips correctly. EventLoop guard tests verify retained local state is preserved for an unchanged ClientId and reset when the configured ClientId changes before reconnect. Integration tests verify session_client_id is set after poll() and that unacked outgoing publishes survive a full disconnect+reconnect cycle with the same ClientId."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.3-3",
+            "section_number": "3.1.3.1",
+            "section_title": "Client Identifier",
+            "obligation": "MUST",
+            "source_anchor": "_Toc385349242",
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "Authoritative text requires ClientId to always be present and be the first field in the CONNECT payload. Connect::write() serializes client_id (non-optional String) immediately after the variable header, before last_will and auth. Connect::read() reads client_id first. Byte-level test confirms ordering.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.3.1",
+                "section_title": "Client Identifier",
+                "source_anchor": "_Toc385349242",
+                "summary": "The Client Identifier (ClientId) MUST be present and MUST be the first field in the CONNECT packet payload."
+            },
+            "authoritative_actor": "packet encoder",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Both original and fix-attempt entries correctly capture the authoritative requirement. Summary is semantically identical to the spec text."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "Connect::write",
+                        "Connect::read"
+                    ],
+                    "reason": "Connect::write() serializes client_id (non-optional String, always present) at line 142 immediately after the variable header, before last_will.write() at line 145 and auth.write() at line 148. Connect::read() reads client_id first at line 101 after the variable header."
+                },
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "connect_encoding_emits_payload_fields_in_spec_order"
+                    ],
+                    "reason": "Test verifies at byte level that client_id bytes appear at payload_start offset, before will_topic, will_message, username, and password fields."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "connect_encoding_emits_payload_fields_in_spec_order",
+                    "connect_parsing_works",
+                    "connect_encoding_works",
+                    "connect_encoding_emits_zero_byte_client_id_first_in_payload"
+                ],
+                "notes": "connect_encoding_emits_payload_fields_in_spec_order verifies field ordering with a non-empty ClientId. connect_encoding_emits_zero_byte_client_id_first_in_payload proves zero-byte ClientId is still serialized as the first payload field. Roundtrip tests confirm ClientId is always present."
+            },
+            "follow_up": null
         }
     ]
 }
