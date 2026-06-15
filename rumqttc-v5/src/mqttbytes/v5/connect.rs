@@ -2122,4 +2122,42 @@ mod test {
         // Nothing after password.
         assert_eq!(buf.len(), password_start + 4);
     }
+
+    /// MQTT-3.1.3-3: zero-byte ClientID is still serialized as the first payload field.
+    #[test]
+    fn connect_encoding_emits_zero_byte_client_id_first_in_payload() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: String::new(),
+            clean_start: true,
+            properties: None,
+        };
+        let will = Some(LastWill {
+            topic: Bytes::from_static(b"wt"),
+            message: Bytes::from_static(b"wm"),
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            properties: None,
+        });
+        let auth = ConnectAuth::UsernamePassword {
+            username: "un".to_owned(),
+            password: Bytes::from_static(b"pw"),
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&will, &auth, &mut buf).unwrap();
+
+        let payload_start = 13;
+
+        // Zero-byte Client Identifier: 0x00 0x00
+        assert_eq!(&buf[payload_start..payload_start + 2], b"\x00\x00");
+
+        // Will Properties Length: 0x00
+        let will_props_start = payload_start + 2;
+        assert_eq!(buf[will_props_start], 0x00);
+
+        // Will Topic follows: 0x00 0x02 w t
+        let will_topic_start = will_props_start + 1;
+        assert_eq!(&buf[will_topic_start..will_topic_start + 4], b"\x00\x02wt");
+    }
 }
