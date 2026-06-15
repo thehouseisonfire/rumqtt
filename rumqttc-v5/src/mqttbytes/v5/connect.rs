@@ -833,6 +833,29 @@ mod test {
     }
 
     #[test]
+    fn connect_roundtrips_multibyte_utf8_client_id() {
+        let client_id = "cl-日本語-🔑".to_owned();
+        let connect_pkt = Connect {
+            keep_alive: 10,
+            client_id: client_id.clone(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let (connect, will, auth) = Connect::read(fixed_header, bytes.freeze()).unwrap();
+
+        assert_eq!(connect.client_id, client_id);
+        assert_eq!(will, None);
+        assert_eq!(auth, ConnectAuth::None);
+    }
+
+    #[test]
     fn connect_encoding_rejects_client_id_larger_than_u16() {
         let connect_pkt = Connect {
             keep_alive: 5,
