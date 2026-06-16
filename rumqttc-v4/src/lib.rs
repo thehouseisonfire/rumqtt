@@ -2243,4 +2243,21 @@ mod test {
         let mut options = MqttOptions::new("", "127.0.0.1");
         options.set_clean_session(false);
     }
+
+    /// MQTT-3.1.3-7: builder with empty client_id and clean_session=false must panic.
+    #[test]
+    #[should_panic(expected = "Cannot unset clean session when client id is empty")]
+    fn builder_panics_on_clean_session_false_with_empty_client_id() {
+        let _ = MqttOptions::builder("", "127.0.0.1")
+            .clean_session(false)
+            .build();
+    }
+
+    /// MQTT-3.1.3-7: URL parsing with empty client_id and clean_session=false must panic.
+    #[test]
+    #[cfg(feature = "url")]
+    #[should_panic(expected = "Cannot unset clean session when client id is empty")]
+    fn parse_url_panics_on_clean_session_false_with_empty_client_id() {
+        MqttOptions::parse_url("mqtt://127.0.0.1?client_id=&clean_session=false").unwrap();
+    }
 }
