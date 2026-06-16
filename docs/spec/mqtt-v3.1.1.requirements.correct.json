@@ -2912,6 +2912,84 @@
                 "notes": "No client-side tests are required for this server-only requirement. The client correctly does not implement server-side ClientId assignment."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.3-7",
+            "section_number": "3.1.3.1",
+            "section_title": "Client Identifier",
+            "obligation": "MUST",
+            "summary": "If the Client supplies a zero-byte ClientId, the Client MUST also set CleanSession to 1.",
+            "source_anchor": "_Toc385349242",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/lib.rs",
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                "rumqttc-v4/src/eventloop.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "Authoritative requirement: client MUST set CleanSession=1 when supplying a zero-byte ClientId. Enforced at three levels: (1) MqttOptions::set_clean_session panics if clean_session is set to false while client_id is empty; (2) MqttOptions::set_client_id panics if client_id is set to empty while clean_session is false; (3) Connect::write returns Error::IncorrectPacketFormat if client_id is empty and clean_session is false. MqttOptions::new defaults clean_session=true, so a freshly constructed MqttOptions with empty client_id is compliant. mqtt_connect copies both fields from MqttOptions into Connect, so the Connect::write guard provides defense-in-depth.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.3.1",
+                "section_title": "Client Identifier",
+                "source_anchor": "_Toc385349242",
+                "summary": "If the Client supplies a zero-byte ClientId, the Client MUST also set CleanSession to 1."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "possibly confirmed",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "yes",
+                "wrong_mapping_behavior_present_in_code": "no",
+                "notes": "Original JSON has wrong summary (quotes adjacent MQTT-3.1.3-5/6 text about server MAY allowing longer ClientIds and zero-byte ClientIds) and wrong obligation (MAY instead of MUST). The mapping_reason and evidence in the original were nevertheless correct, creating an inconsistent entry. Fix-attempt correctly identifies the client-side MUST and provides accurate evidence. The wrong summary/obligation could have misled an implementer into ignoring the constraint, but the code already enforces it correctly."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/lib.rs",
+                    "symbols": [
+                        "MqttOptions::set_clean_session",
+                        "MqttOptions::set_client_id"
+                    ],
+                    "reason": "Both setters panic on the invalid combination: set_clean_session(false) panics if client_id is empty; set_client_id(\"\") panics if clean_session is false."
+                },
+                {
+                    "path": "rumqttc-v4/src/lib.rs",
+                    "symbols": [
+                        "MqttOptions::new"
+                    ],
+                    "reason": "Constructor defaults clean_session=true, so a freshly constructed MqttOptions with empty client_id is compliant."
+                },
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "Connect::write"
+                    ],
+                    "reason": "Connect::write validates that client_id is non-empty or clean_session is true, returning Error::IncorrectPacketFormat otherwise."
+                },
+                {
+                    "path": "rumqttc-v4/src/eventloop.rs",
+                    "symbols": [
+                        "mqtt_connect"
+                    ],
+                    "reason": "mqtt_connect copies clean_session and client_id from MqttOptions into Connect; the Connect::write guard provides defense-in-depth."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "accept_empty_client_id",
+                    "set_client_id_panics_on_empty_with_clean_session_false",
+                    "set_clean_session_panics_on_false_with_empty_client_id",
+                    "connect_encoding_rejects_empty_client_id_with_clean_session_false",
+                    "connect_encoding_emits_zero_byte_client_id_first_in_payload",
+                    "builder_panics_on_clean_session_false_with_empty_client_id",
+                    "parse_url_panics_on_clean_session_false_with_empty_client_id"
+                ],
+                "notes": "Seven tests cover the valid path (empty client_id with clean_session=true), both setter panic paths, the Connect::write guard, correct serialization order of zero-byte client_id, the builder API path, and the URL parsing path."
+            },
+            "follow_up": null
         }
     ]
 }
