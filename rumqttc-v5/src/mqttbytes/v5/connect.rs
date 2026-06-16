@@ -855,6 +855,35 @@ mod test {
         assert_eq!(auth, ConnectAuth::None);
     }
 
+    /// MQTT-3.1.3-5: the server-required acceptance profile (1-23 UTF-8 bytes,
+    /// ASCII alphanumeric only) is a server-side obligation, not a client-side
+    /// outbound restriction. The codec must not reject a ClientID merely for
+    /// being longer than 23 bytes or for containing characters outside that
+    /// 62-character set.
+    #[test]
+    fn connect_encoding_allows_broad_client_ids() {
+        let client_id = "client-id_with.symbols/and/unicode-é".to_owned();
+        assert!(client_id.len() > 23);
+        let connect_pkt = Connect {
+            keep_alive: 10,
+            client_id: client_id.clone(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let (connect, will, auth) = Connect::read(fixed_header, bytes.freeze()).unwrap();
+
+        assert_eq!(connect.client_id, client_id);
+        assert_eq!(will, None);
+        assert_eq!(auth, ConnectAuth::None);
+    }
+
     #[test]
     fn connect_encoding_rejects_client_id_larger_than_u16() {
         let connect_pkt = Connect {
