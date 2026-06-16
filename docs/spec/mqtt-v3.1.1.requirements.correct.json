@@ -2990,6 +2990,64 @@
                 "notes": "Seven tests cover the valid path (empty client_id with clean_session=true), both setter panic paths, the Connect::write guard, correct serialization order of zero-byte client_id, the builder API path, and the URL parsing path."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.3-8",
+            "section_number": "3.1.3.1",
+            "section_title": "Client Identifier",
+            "obligation": "MUST",
+            "summary": "If the Client supplies a zero-byte ClientId with CleanSession set to 0, the Server MUST respond to the CONNECT Packet with a CONNACK return code 0x02 (Identifier rejected) and then close the Network Connection.",
+            "source_anchor": "_Toc385349242",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Authoritative requirement is a Server MUST: the Server must send CONNACK 0x02 and close the connection when receiving a zero-byte ClientId with CleanSession=0. The rumqttc v4 client has no obligation to implement this server-side rejection logic. The client-side obligation to not send zero-byte ClientId with CleanSession=0 is covered by MQTT-3.1.3-7. The client correctly handles CONNACK 0x02 if a server sends it: mqtt_connect returns ConnectionError::ConnectionRefused(ConnectReturnCode::BadClientId) and the caller drops the network handle.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.3.1",
+                "section_title": "Client Identifier",
+                "source_anchor": "_Toc385349242",
+                "summary": "If the Client supplies a zero-byte ClientId with CleanSession set to 0, the Server MUST respond to the CONNECT Packet with a CONNACK return code 0x02 (Identifier rejected) and then close the Network Connection."
+            },
+            "authoritative_actor": "Server",
+            "applicability": "not_applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "needs revision",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Original JSON has a truncated summary showing adjacent text from MQTT-3.1.3-6/MQTT-3.1.3-9 instead of the actual MQTT-3.1.3-8 requirement text. However, the mapping_reason and compliance_status (not_applicable) were correct, and the evidence accurately described client-side CONNACK 0x02 handling. The wrong summary would not have introduced a client bug because the conclusion and reasoning were sound. Fix-attempt corrected the summary and obligation to match the authoritative text."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+                    "symbols": [
+                        "ConnectReturnCode::BadClientId",
+                        "connect_return"
+                    ],
+                    "reason": "CONNACK decoder maps return code 0x02 to ConnectReturnCode::BadClientId, correctly parsing the server's rejection response."
+                },
+                {
+                    "path": "rumqttc-v4/src/eventloop.rs",
+                    "symbols": [
+                        "mqtt_connect"
+                    ],
+                    "reason": "mqtt_connect returns ConnectionError::ConnectionRefused(ConnectReturnCode::BadClientId) for any non-Success CONNACK, including 0x02. The caller (connect) drops the network handle via the ? operator, tearing down the client side of the connection."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "rumqttc-v4/src/eventloop.rs::mqtt_connect_returns_bad_client_id_rejection"
+                ],
+                "notes": "Test verifies that mqtt_connect returns ConnectionError::ConnectionRefused(ConnectReturnCode::BadClientId) when the server sends CONNACK with return code 0x02."
+            },
+            "follow_up": null
         }
     ]
 }
