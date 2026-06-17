@@ -1493,6 +1493,36 @@ mod test {
     }
 
     #[test]
+    fn connect_roundtrips_multibyte_utf8_username() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+        let username = "user-日本語-🔑".to_owned();
+        let login = ConnectAuth::UsernamePassword {
+            username: username.clone(),
+            password: Bytes::from_static(b"pw"),
+        };
+
+        let mut buf = BytesMut::new();
+        connect_pkt.write(&None, &login, &mut buf).unwrap();
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let (_, _, decoded_login) = Connect::read(fixed_header, connect_bytes).unwrap();
+
+        assert_eq!(
+            decoded_login,
+            ConnectAuth::UsernamePassword {
+                username,
+                password: Bytes::from_static(b"pw"),
+            }
+        );
+    }
+
+    #[test]
     fn connect_encoding_with_password_and_empty_username_writes_zero_len_username() {
         let connect_pkt = Connect {
             keep_alive: 5,
