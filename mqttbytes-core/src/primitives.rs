@@ -320,6 +320,7 @@ mod tests {
         for len in [0usize, 127, 128, 321, 16_384, 268_435_455] {
             let mut b = BytesMut::new();
             let count = write_remaining_length(&mut b, len).unwrap();
+            assert_eq!(count, len_len(len));
             let (decoded_count, decoded) = length(b.iter()).unwrap();
             assert_eq!(count, decoded_count);
             assert_eq!(decoded, len);
