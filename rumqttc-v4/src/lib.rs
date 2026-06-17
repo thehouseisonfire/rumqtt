@@ -2248,9 +2248,11 @@ mod test {
     #[test]
     #[should_panic(expected = "Cannot unset clean session when client id is empty")]
     fn builder_panics_on_clean_session_false_with_empty_client_id() {
-        drop(MqttOptions::builder("", "127.0.0.1")
-            .clean_session(false)
-            .build());
+        drop(
+            MqttOptions::builder("", "127.0.0.1")
+                .clean_session(false)
+                .build(),
+        );
     }
 
     /// MQTT-3.1.3-7: URL parsing with empty client_id and clean_session=false must panic.
