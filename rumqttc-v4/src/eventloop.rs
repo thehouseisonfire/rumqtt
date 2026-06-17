@@ -2371,7 +2371,7 @@ mod tests {
         let event = eventloop.poll().await.unwrap();
         assert!(matches!(
             event,
-            Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present == false
+            Event::Incoming(Packet::ConnAck(ref connack)) if !connack.session_present
         ));
         assert_eq!(eventloop.session_client_id, Some("test-client".to_owned()));
 
