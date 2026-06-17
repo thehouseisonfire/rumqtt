@@ -2373,10 +2373,7 @@ mod tests {
             event,
             Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present == false
         ));
-        assert_eq!(
-            eventloop.session_client_id,
-            Some("test-client".to_owned())
-        );
+        assert_eq!(eventloop.session_client_id, Some("test-client".to_owned()));
 
         broker.await.unwrap();
     }
@@ -2430,10 +2427,7 @@ mod tests {
             event,
             Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present
         ));
-        assert_eq!(
-            eventloop.session_client_id,
-            Some("test-client".to_owned())
-        );
+        assert_eq!(eventloop.session_client_id, Some("test-client".to_owned()));
 
         // Second poll: network read fails (peer dropped), clean() moves
         // outgoing_pub to pending.
