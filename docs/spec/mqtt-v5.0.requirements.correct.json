@@ -273,6 +273,68 @@
             "follow_up": null
         },
         {
+            "id": "MQTT-1.5.5-1",
+            "section_number": "1.5.5",
+            "section_title": "Variable Byte Integer",
+            "obligation": "MUST",
+            "summary": "The Variable Byte Integer is encoded using an encoding scheme which uses a single byte for values up to 127. Larger values are handled as follows. The least significant seven bits of each byte encode the data, and the most significant bit is used to indicate whether there are...",
+            "source_anchor": "_Toc473619950",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/mod.rs",
+                "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+                "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "The encoder write_remaining_length uses modulo-128 / integer-division-by-128 and terminates when the quotient reaches zero. This algorithm is mathematically guaranteed to emit the minimum number of bytes: value 0 produces exactly 1 byte (0x00), value 127 produces 1 byte (0x7F), value 128 produces 2 bytes (0x80 0x01), etc. The decoder length() correctly reads up to 4 bytes using the continuation-bit scheme and rejects encodings wider than 4 bytes. len_len() maps value ranges to the correct 1–4 byte widths. v5 delegates all VBI operations to the shared core without modification.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "1.5.5",
+                "section_title": "Variable Byte Integer",
+                "source_anchor": "_Toc473619950",
+                "summary": "The encoded Variable Byte Integer value MUST use the minimum number of bytes necessary to represent the value. The encoding uses 7 data bits per byte with the most significant bit as a continuation flag, and the maximum width is 4 bytes (values up to 268,435,455)."
+            },
+            "authoritative_actor": "packet encoder",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original mapping correctly identified that the VBI encoding and decoding paths are compliant. The encoder algorithm inherently produces minimum-byte encodings, and the decoder correctly handles the continuation-bit scheme with a 4-byte maximum."
+            },
+            "evidence": [
+                {
+                    "path": "mqttbytes-core/src/primitives.rs",
+                    "symbols": [
+                        "write_remaining_length",
+                        "len_len",
+                        "length"
+                    ],
+                    "reason": "write_remaining_length() encodes using x%128 for data and x/128 for the next iteration, terminating when x==0. This cannot produce non-minimal encodings (e.g. [0x80,0x00] for value 0). len_len() maps value ranges to 1-4 bytes matching Table 1-1. length() decodes using continuation bit at position 7, accumulates 7 bits per byte, and rejects more than 4 bytes (shift>21)."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+                    "symbols": [
+                        "write_remaining_length",
+                        "len_len",
+                        "length"
+                    ],
+                    "reason": "v5 module delegates all VBI operations directly to core_primitives without wrapping or modification. Property lengths and remaining lengths both use these shared primitives."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "len_len_matches_expected_thresholds",
+                    "write_remaining_length_round_trip"
+                ],
+                "notes": "len_len_matches_expected_thresholds verifies boundary values (0, 127, 128, 16383, 16384, 2097151, 2097152) map to correct byte widths 1-4. write_remaining_length_round_trip verifies encode-then-decode for values 0, 127, 128, 321, 16384, 268435455 with count and value equality assertions. The encoder algorithm is deterministic and mathematically minimal, so round-trip correctness at these boundary values proves minimum-byte encoding."
+            },
+            "follow_up": null
+        },
+        {
             "id": "MQTT-2.1.3-1",
             "section_number": "2.1.3",
             "section_title": "Flags",
