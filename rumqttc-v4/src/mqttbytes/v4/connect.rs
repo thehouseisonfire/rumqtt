@@ -980,6 +980,45 @@ mod test {
     }
 
     #[test]
+    fn connect_parsing_rejects_null_character_in_will_topic() {
+        // CONNECT with will_topic containing U+0000 ("a\0b")
+        // remaining = var_header(10) + client_id(2+1) + will_topic(2+3) + will_msg(2+1) = 21
+        let packetstream: Vec<u8> = [
+            0x10,
+            21, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b0000_1110, // connect flags: clean session + will flag + will qos 0
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x01,
+            b'a', // client_id = "a"
+            0x00,
+            0x03, // will_topic length = 3
+            b'a',
+            0x00,
+            b'b', // will_topic = "a\0b" (contains U+0000)
+            0x00,
+            0x01,
+            b'x', // will_message = "x"
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+        assert!(matches!(packet, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
     fn connect_parsing_rejects_surrogate_in_username() {
         // CONNECT with username containing U+D801 (CESU-8: 0xED 0xA0 0x81)
         // remaining = var_header(10) + client_id(2+1) + username(2+3) = 18
