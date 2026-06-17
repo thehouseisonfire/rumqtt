@@ -74,7 +74,7 @@ pub struct Network {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReadBatchOutcome {
+pub enum ReadBatchOutcome {
     NoResponseWritten,
     ResponseWritten,
 }
