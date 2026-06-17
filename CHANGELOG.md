@@ -24,6 +24,7 @@
 - `rumqttc` v4/v5: Prevent packet identifier reuse across publish, `PUBREL`, subscribe, and unsubscribe flows, returning state errors instead of silently colliding identifiers.
 - `rumqttc` v4/v5: Reject zero packet identifiers and unsolicited ACK/`PUBREL` packets in codec/state handling, including tracked `SUBACK`/`UNSUBACK` and manual `PUBACK`/`PUBREC` acknowledgement flows.
 - `rumqttc` v4: Reset the keepalive timeout after inbound traffic that produces response writes, QoS 0 flushes, and graceful disconnect draining, preventing premature keepalive-triggered disconnects on otherwise active connections.
+- `rumqttc` v5: Reset the keepalive timeout after outbound request flushes and automatic protocol responses, preventing unnecessary `PINGREQ`s while other MQTT Control Packets keep the connection active.
 - `rumqttc` v5 codecs: Reject `RequestResponseInformation` and `RequestProblemInformation` CONNECT property values > 1 and duplicate instances per [MQTT-3.1.2-28]/[MQTT-3.1.2-29], returning `Error::ProtocolError` instead of silently accepting or encoding spec-invalid values.
 - `rumqttc` v5: Reject CONNACK `Response Information` when `Request Response Information` is 0 or absent per [MQTT-3.1.2-28], sending `DISCONNECT(ProtocolError)` instead of silently accepting the spec-violating server response.
 - `rumqttc` v4: Panic in `MqttOptions::set_client_id(...)` when `client_id` is empty and `clean_session` is false (MQTT-3.1.3-7), closing the gap left by the 0.24.0 `set_clean_session` panic that only covered the reverse call order.

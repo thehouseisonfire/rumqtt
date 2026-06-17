@@ -1,4 +1,4 @@
-use super::framed::Network;
+use super::framed::{Network, ReadBatchOutcome};
 use super::mqttbytes::v5::{
     ConnAck, Connect, ConnectProperties, Disconnect, DisconnectReasonCode, Packet, Publish,
     Subscribe, Unsubscribe,
@@ -668,15 +668,15 @@ impl EventLoop {
                     Err(_) => continue,
                 },
                 o = self.network.as_mut().unwrap().readb(&mut self.state, read_batch_size) => {
-                    o?;
+                    let outcome = o?;
                     self.flush_network().await?;
+                    if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
+                        self.reset_keepalive_timeout();
+                    }
                     Ok(self.state.events.pop_front().unwrap())
                 },
                 () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
                     if self.keepalive_timeout.is_some() && !self.options.keep_alive.is_zero() => {
-                    let timeout = self.keepalive_timeout.as_mut().unwrap();
-                    timeout.as_mut().reset(Instant::now() + self.options.keep_alive);
-
                     let (outgoing, _flush_notice) = self
                         .state
                         .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
@@ -684,6 +684,7 @@ impl EventLoop {
                         self.network.as_mut().unwrap().write(outgoing).await?;
                     }
                     self.flush_network().await?;
+                    self.reset_keepalive_timeout();
                     Ok(self.state.events.pop_front().unwrap())
                 }
             };
@@ -884,6 +885,7 @@ impl EventLoop {
                 for notice in qos0_notices {
                     notice.success(PublishResult::Qos0Flushed);
                 }
+                self.reset_keepalive_timeout();
                 Ok(())
             }
             Err(err) => {
@@ -909,7 +911,7 @@ impl EventLoop {
             .unwrap()
             .readb(&mut self.state, read_batch_size);
 
-        if let Some(deadline) = self
+        let outcome = if let Some(deadline) = self
             .pending_disconnect
             .as_ref()
             .and_then(|pending| pending.deadline)
@@ -930,9 +932,12 @@ impl EventLoop {
                 },
                 result = read => result?,
             }
-        }
+        };
 
         self.flush_network().await?;
+        if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
+            self.reset_keepalive_timeout();
+        }
         Ok(None)
     }
 
@@ -954,6 +959,18 @@ impl EventLoop {
         self.drop_unprocessed_requests();
         self.disconnect_complete = true;
         Ok(self.state.events.pop_front().unwrap())
+    }
+
+    fn reset_keepalive_timeout(&mut self) {
+        if self.options.keep_alive.is_zero() {
+            return;
+        }
+
+        if let Some(timeout) = &mut self.keepalive_timeout {
+            timeout
+                .as_mut()
+                .reset(Instant::now() + self.options.keep_alive);
+        }
     }
 
     async fn try_next_request(

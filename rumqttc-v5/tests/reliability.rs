@@ -141,8 +141,8 @@ async fn idle_connection_triggers_pings_on_time() {
 }
 
 #[tokio::test]
-async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
-    let keep_alive = 5;
+async fn regular_outgoing_packets_delay_keepalive_ping() {
+    let keep_alive = 2;
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_keep_alive(keep_alive);
@@ -151,7 +151,7 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
     let publisher = client.clone();
 
     task::spawn(async move {
-        start_requests(10, QoS::AtMostOnce, 1, publisher).await;
+        start_requests(4, QoS::AtMostOnce, 1, publisher).await;
     });
 
     let eventloop_task = task::spawn(async move { run(&mut eventloop, false).await });
@@ -163,22 +163,31 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
         },
     )
     .await;
-    let mut count = 0;
-    let mut start = Instant::now();
+    let mut publishes = 0;
+    let mut last_publish_at = Instant::now();
 
-    loop {
+    while publishes < 4 {
         let event = broker.tick().await;
-
-        if matches!(event, Event::Incoming(Incoming::PingReq(_))) {
-            count += 1;
-            assert_keep_alive_interval(start.elapsed(), keep_alive);
-            broker.pingresp().await;
-            if count == 3 {
-                break;
+        match event {
+            Event::Incoming(Incoming::Publish(_)) => {
+                publishes += 1;
+                last_publish_at = Instant::now();
             }
-
-            start = Instant::now();
+            Event::Incoming(Incoming::PingReq(_)) => {
+                panic!(
+                    "PINGREQ should not be sent while other Control Packets keep the connection active"
+                )
+            }
+            event => panic!("unexpected event while waiting for outgoing publishes: {event:?}"),
         }
+    }
+
+    match broker.tick().await {
+        Event::Incoming(Incoming::PingReq(_)) => {
+            assert_keep_alive_interval(last_publish_at.elapsed(), keep_alive);
+            broker.pingresp().await;
+        }
+        event => panic!("expected idle PINGREQ after outgoing publishes stopped, got {event:?}"),
     }
 
     eventloop_task.abort();
@@ -186,8 +195,6 @@ async fn some_outgoing_and_no_incoming_should_trigger_pings_on_time() {
         eventloop_task.await.is_err(),
         "eventloop task should be aborted"
     );
-
-    assert_eq!(count, 3);
 }
 
 #[tokio::test]
@@ -236,6 +243,63 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     );
 
     assert_eq!(count, 3);
+}
+
+#[tokio::test]
+async fn automatic_protocol_responses_delay_keepalive_ping() {
+    let keep_alive = 3;
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options.set_keep_alive(keep_alive);
+
+    let eventloop_task = task::spawn(async move {
+        let mut eventloop = EventLoop::new(options, 5);
+        run(&mut eventloop, false).await
+    });
+
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+
+    broker.spawn_publishes(5, QoS::AtLeastOnce, 1);
+
+    let mut pubacks = 0;
+    let mut last_puback_at = Instant::now();
+
+    while pubacks < 5 {
+        let event = broker.tick().await;
+        match event {
+            Event::Incoming(Incoming::PubAck(_)) => {
+                pubacks += 1;
+                last_puback_at = Instant::now();
+            }
+            Event::Outgoing(_) => {}
+            Event::Incoming(Incoming::PingReq(_)) => {
+                panic!(
+                    "PINGREQ should not be sent while automatic PUBACK responses keep the connection active"
+                )
+            }
+            event => panic!("unexpected event while waiting for PUBACKs: {event:?}"),
+        }
+    }
+
+    match broker.tick().await {
+        Event::Incoming(Incoming::PingReq(_)) => {
+            assert_keep_alive_interval(last_puback_at.elapsed(), keep_alive);
+            broker.pingresp().await;
+        }
+        event => panic!("expected idle PINGREQ after automatic responses stopped, got {event:?}"),
+    }
+
+    eventloop_task.abort();
+    assert!(
+        eventloop_task.await.is_err(),
+        "eventloop task should be aborted"
+    );
 }
 
 #[tokio::test]
