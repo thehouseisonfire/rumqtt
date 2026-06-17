@@ -3177,6 +3177,73 @@
                 "notes": "Direct v4 CONNECT tests cover will_topic U+0000 rejection on encode and surrogate rejection on decode. Shared primitive tests cover additional malformed UTF-8 boundaries for read_mqtt_string."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.3-11",
+            "section_number": "3.1.3.4",
+            "section_title": "User Name",
+            "obligation": "MUST",
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "Authoritative text requires User Name to be a UTF-8 encoded string per Section 1.5.3 when User Name Flag is 1. On decode, ConnectAuth::read calls read_mqtt_string which delegates to validate_mqtt_string (std::str::from_utf8 + U+0000 check). On encode, ConnectAuth::write calls write_mqtt_string which calls validate_mqtt_string before serializing. The ConnectAuth username field is String, guaranteed valid UTF-8 by Rust's type system.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.3.4",
+                "section_title": "User Name",
+                "source_anchor": "_Toc385349245",
+                "summary": "If the User Name Flag is set to 1, the User Name is the next field in the payload. The User Name MUST be a UTF-8 encoded string as defined in Section 1.5.3."
+            },
+            "authoritative_actor": "packet encoder and decoder",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Both original and fix-attempt entries correctly map the authoritative requirement. The summary matches the spec text semantically."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "ConnectAuth::read",
+                        "ConnectAuth::write"
+                    ],
+                    "reason": "ConnectAuth::read decodes username via read_mqtt_string (enforces well-formed UTF-8 + no U+0000). ConnectAuth::write encodes username via write_mqtt_string (validates UTF-8 + no U+0000 before serializing)."
+                },
+                {
+                    "path": "mqttbytes-core/src/primitives.rs",
+                    "symbols": [
+                        "validate_mqtt_string",
+                        "read_mqtt_string"
+                    ],
+                    "reason": "validate_mqtt_string uses std::str::from_utf8 (rejects ill-formed UTF-8 including surrogates) and checks for U+0000 bytes. read_mqtt_string delegates to it."
+                },
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/mod.rs",
+                    "symbols": [
+                        "write_mqtt_string"
+                    ],
+                    "reason": "v4 write_mqtt_string wrapper calls validate_mqtt_string before core_primitives::write_mqtt_string, ensuring outbound strings are well-formed UTF-8 without U+0000."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "connect_encoding_rejects_null_character_in_username",
+                    "connect_parsing_rejects_null_character_in_username",
+                    "connect_parsing_rejects_surrogate_in_username",
+                    "connect_roundtrips_multibyte_utf8_username",
+                    "connect_parsing_rejects_username_when_username_flag_zero",
+                    "connect_parsing_rejects_password_when_password_flag_zero",
+                    "connect_parsing_rejects_password_flag_set_without_password",
+                    "connect_encoding_emits_payload_fields_in_spec_order"
+                ],
+                "notes": "Direct v4 CONNECT tests cover username U+0000 rejection on both encode and decode, surrogate rejection on decode, multi-byte UTF-8 roundtrip, Username/Password flag consistency, and payload field order. Shared primitive tests cover additional malformed UTF-8 boundaries for read_mqtt_string."
+            },
+            "follow_up": null
         }
     ]
 }

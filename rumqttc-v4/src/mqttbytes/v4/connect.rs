@@ -750,6 +750,35 @@ mod test {
     }
 
     #[test]
+    fn connect_roundtrips_multibyte_utf8_username() {
+        let username = "user-日本語-🔑".to_owned();
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "test".to_owned(),
+            clean_session: true,
+            last_will: None,
+            auth: ConnectAuth::UsernamePassword {
+                username: username.clone(),
+                password: Bytes::from_static(b"pw"),
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        connect.write(&mut buf).unwrap();
+
+        let fixed_header = parse_fixed_header(buf.iter()).unwrap();
+        let connect_bytes = buf.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Connect::read(fixed_header, connect_bytes).unwrap();
+        assert_eq!(
+            decoded.auth,
+            ConnectAuth::UsernamePassword {
+                username,
+                password: Bytes::from_static(b"pw"),
+            }
+        );
+    }
+
+    #[test]
     fn connect_roundtrips_explicitly_empty_password() {
         let connect = Connect {
             keep_alive: 10,
@@ -1052,6 +1081,42 @@ mod test {
         let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
         let packet = Connect::read(fixed_header, connect_bytes);
         assert!(matches!(packet, Err(Error::TopicNotUtf8 { .. })));
+    }
+
+    #[test]
+    fn connect_parsing_rejects_null_character_in_username() {
+        // CONNECT with username containing U+0000 ("a\0b")
+        // remaining = var_header(10) + client_id(2+1) + username(2+3) = 18
+        let packetstream: Vec<u8> = [
+            0x10,
+            18, // packet type, flags and remaining len
+            0x00,
+            0x04,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            0x04,        // protocol name + level
+            0b1000_0010, // connect flags: username + clean session
+            0x00,
+            0x0a, // keep alive = 10
+            0x00,
+            0x01,
+            b'a', // client_id = "a"
+            0x00,
+            0x03, // username length = 3
+            b'a',
+            0x00,
+            b'b', // username = "a\0b" (contains U+0000)
+        ]
+        .into();
+
+        let mut stream = BytesMut::new();
+        stream.extend_from_slice(&packetstream);
+        let fixed_header = parse_fixed_header(stream.iter()).unwrap();
+        let connect_bytes = stream.split_to(fixed_header.frame_length()).freeze();
+        let packet = Connect::read(fixed_header, connect_bytes);
+        assert!(matches!(packet, Err(Error::MalformedPacket)));
     }
 
     #[test]
