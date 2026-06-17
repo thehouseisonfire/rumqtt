@@ -2280,8 +2280,8 @@
                 "rumqttc-v5/src/lib.rs"
             ],
             "mapping_status": "reviewed",
-            "compliance_status": "partial",
-            "mapping_reason": "The authoritative requirement requires PINGREQ only in the absence of other outbound Control Packets. rumqttc-v5 sends PINGREQ when the keepalive timer fires (correct for idle connections), but never resets the timer after outbound traffic. flush_request_batch does not call any keepalive reset, readb returns () instead of a ReadBatchOutcome so automatic protocol responses (PUBACK/PUBREC/PUBCOMP) are not tracked, and the only timer reset site is the PINGREQ branch itself. This means PINGREQ fires at a fixed interval from connection start regardless of other outbound Control Packets being sent. The existing test some_outgoing_and_no_incoming_should_trigger_pings_on_time verifies this incorrect behavior by asserting PINGREQ fires at keep_alive intervals while QoS 0 PUBLISH packets are flowing. Unlike v4 (which has reset_keepalive_timeout and ReadBatchOutcome), v5 was never ported to reset the keepalive timer on outbound traffic.",
+            "compliance_status": "compliant",
+            "mapping_reason": "The authoritative requirement requires the Client to send PINGREQ when Keep Alive is non-zero and no other MQTT Control Packets have been sent within the Keep Alive interval. rumqttc-v5 now implements this by scheduling PINGREQ on the keepalive timer and resetting that timer after successful outbound Control Packet flushes. EventLoop::flush_request_batch calls reset_keepalive_timeout after successful user-request flushes, and Network::readb returns ReadBatchOutcome::ResponseWritten when automatic protocol responses such as PUBACK/PUBREC/PUBCOMP are written so EventLoop::select and poll_disconnect_drain can reset the timer after those outbound packets. This matches the v4 keepalive behavior and prevents unnecessary PINGREQ while outbound traffic is already keeping the connection active.",
             "authoritative_source": {
                 "path": "docs/spec/mqtt-v5.0.md",
                 "section_number": "3.1.2.10",
@@ -2297,8 +2297,8 @@
                 "fix_attempt_status": "absent",
                 "fix_attempt_assessment": "absent",
                 "wrong_mapping_client_behavior_risk": "yes",
-                "wrong_mapping_behavior_present_in_code": "yes",
-                "notes": "The original summary captured the introductory definition of Keep Alive (what it is) rather than the normative client obligation (send PINGREQ when idle, not when other packets are flowing). The wrong mapping obscured the fact that the timer-reset-on-outbound-traffic behavior is missing: the compliance_status was marked compliant with reasoning about the timer not being reset after every ordinary outbound packet, but that was treated as acceptable rather than as a compliance gap."
+                "wrong_mapping_behavior_present_in_code": "no",
+                "notes": "The original summary captured the introductory definition of Keep Alive (what it is) rather than the normative client obligation (send PINGREQ when idle, not when other packets are flowing). That mapping previously obscured the missing timer-reset-on-outbound-traffic behavior. The current v5 code has been updated to reset the keepalive timer after successful outbound request flushes and automatic protocol responses."
             },
             "evidence": [
                 {
@@ -2306,40 +2306,42 @@
                     "symbols": [
                         "EventLoop::select"
                     ],
-                    "reason": "The keepalive_timeout branch (line 675-688) sends PINGREQ and resets the timer inline, but no other branch resets the timer. The readb branch (line 670-673) does not check for automatic protocol responses and does not reset the timer."
+                    "reason": "The keepalive_timeout branch sends PINGREQ when the timer elapses and resets the timer via reset_keepalive_timeout after the PINGREQ is flushed. The readb branch captures ReadBatchOutcome and resets the timer when automatic protocol responses were written."
                 },
                 {
                     "path": "rumqttc-v5/src/eventloop.rs",
                     "symbols": [
                         "EventLoop::flush_request_batch"
                     ],
-                    "reason": "After successful outbound flush (line 882-887), no keepalive timer reset occurs. Compare with v4's flush_request_batch which calls reset_keepalive_timeout after success."
+                    "reason": "After a successful outbound request flush, flush_request_batch completes QoS 0 notices and calls reset_keepalive_timeout so user-initiated outbound Control Packets delay the next PINGREQ."
                 },
                 {
                     "path": "rumqttc-v5/src/framed.rs",
                     "symbols": [
                         "Network::readb"
                     ],
-                    "reason": "readb returns Result<(), StateError> instead of a ReadBatchOutcome, so the eventloop cannot know whether automatic protocol responses (PUBACK/PUBREC/PUBCOMP) were written during reading."
+                    "reason": "readb returns ReadBatchOutcome and reports ResponseWritten when automatic protocol responses (PUBACK/PUBREC/PUBCOMP) are written during reading, allowing the event loop to reset the keepalive timer."
                 },
                 {
                     "path": "rumqttc-v5/src/eventloop.rs",
                     "symbols": [
                         "EventLoop::poll"
                     ],
-                    "reason": "The only keepalive timer reset in the entire v5 codebase is at line 678, inside the PINGREQ branch. No reset occurs on outbound flush, automatic responses, or any other path."
+                    "reason": "reset_keepalive_timeout centralizes timer reset behavior and is called after PINGREQ flushes, successful outbound request flushes, and automatic protocol responses from readb, including disconnect-drain reads."
                 }
             ],
             "test_coverage": {
-                "status": "partial",
+                "status": "complete",
                 "tests": [
                     "tests/reliability.rs::idle_connection_triggers_pings_on_time",
-                    "tests/reliability.rs::some_outgoing_and_no_incoming_should_trigger_pings_on_time",
-                    "tests/reliability.rs::some_incoming_and_no_outgoing_should_trigger_pings_on_time"
+                    "tests/reliability.rs::regular_outgoing_packets_delay_keepalive_ping",
+                    "tests/reliability.rs::some_incoming_and_no_outgoing_should_trigger_pings_on_time",
+                    "tests/reliability.rs::automatic_protocol_responses_delay_keepalive_ping",
+                    "framed::tests::readb_reports_response_written_for_automatic_puback"
                 ],
-                "notes": "idle_connection_triggers_pings_on_time correctly tests PINGREQ on idle connections. However, some_outgoing_and_no_incoming_should_trigger_pings_on_time asserts the WRONG behavior: it verifies PINGREQ fires at keep_alive intervals even while outbound QoS 0 PUBLISH packets are flowing, which contradicts the spec's 'in the absence of sending any other MQTT Control Packets' condition. No test verifies that outbound traffic suppresses PINGREQ. No test verifies that automatic protocol responses (PUBACK) suppress PINGREQ."
+                "notes": "Integration tests verify PINGREQ timing on idle connections, verify that incoming QoS 0 traffic alone does not suppress PINGREQ, verify that regular outbound QoS 0 PUBLISH packets delay PINGREQ until the connection becomes outbound-idle, and verify that automatic PUBACK responses also delay PINGREQ. A framed unit test verifies readb reports ResponseWritten when it writes an automatic PUBACK."
             },
-            "follow_up": "Port the v4 keepalive-timer-reset fixes to v5: (1) add reset_keepalive_timeout and call it after successful outbound flush in flush_request_batch, (2) add ReadBatchOutcome to v5 readb so automatic protocol responses reset the timer, (3) fix or replace some_outgoing_and_no_incoming_should_trigger_pings_on_time to assert PINGREQ is suppressed while outbound traffic flows, (4) add a test verifying automatic PUBACK responses suppress PINGREQ."
+            "follow_up": null
         },
         {
             "id": "MQTT-3.1.2-21",

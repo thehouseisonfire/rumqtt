@@ -73,6 +73,12 @@ pub struct Network {
     framed: Framed<Box<dyn AsyncReadWrite>, Codec>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadBatchOutcome {
+    NoResponseWritten,
+    ResponseWritten,
+}
+
 impl Network {
     pub fn new(socket: impl AsyncReadWrite + 'static, max_incoming_size: Option<u32>) -> Self {
         let socket: Box<dyn AsyncReadWrite> = Box::new(socket);
@@ -140,11 +146,12 @@ impl Network {
         &mut self,
         state: &mut MqttState,
         read_batch_limit: usize,
-    ) -> Result<(), StateError> {
+    ) -> Result<ReadBatchOutcome, StateError> {
         // wait for the first read
         let mut res = self.framed.next().await;
         let read_batch_limit = read_batch_limit.max(1);
         let mut count = 0;
+        let mut outcome = ReadBatchOutcome::NoResponseWritten;
         loop {
             match res {
                 Some(Ok(packet)) => {
@@ -159,7 +166,10 @@ impl Network {
                             self.try_send_inbound_disconnect(disconnect).await;
                             return Err(StateError::Deserialization(disconnect.error()));
                         }
-                        Ok(Some(outgoing)) => self.write(outgoing).await?,
+                        Ok(Some(outgoing)) => {
+                            self.write(outgoing).await?;
+                            outcome = ReadBatchOutcome::ResponseWritten;
+                        }
                         Ok(None) => {}
                         Err(
                             err @ (StateError::Deserialization(mqttbytes::Error::ProtocolError)
@@ -190,7 +200,7 @@ impl Network {
             }
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
     /// Serializes packet into write buffer
@@ -212,7 +222,10 @@ impl Network {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mqttbytes::v5::{Auth, AuthProperties, AuthReasonCode};
+    use crate::mqttbytes::{
+        QoS,
+        v5::{Auth, AuthProperties, AuthReasonCode, Publish},
+    };
     use bytes::BytesMut;
     use std::{
         io,
@@ -285,9 +298,10 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        network.readb(&mut state, 2).await.unwrap();
+        let outcome = network.readb(&mut state, 2).await.unwrap();
 
         assert_eq!(state.events.len(), 2);
+        assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
     }
 
     #[tokio::test]
@@ -298,9 +312,27 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        network.readb(&mut state, 1).await.unwrap();
+        let outcome = network.readb(&mut state, 1).await.unwrap();
 
         assert_eq!(state.events.len(), 1);
+        assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
+    }
+
+    #[tokio::test]
+    async fn readb_reports_response_written_for_automatic_puback() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::builder(10).build();
+        let mut publish = Publish::new("hello/world", QoS::AtLeastOnce, vec![1, 2, 3], None);
+        publish.pkid = 1;
+        let mut bytes = BytesMut::new();
+        publish.write(&mut bytes).unwrap();
+
+        peer.write_all(&bytes).await.unwrap();
+
+        let outcome = network.readb(&mut state, 1).await.unwrap();
+
+        assert_eq!(outcome, ReadBatchOutcome::ResponseWritten);
     }
 
     #[tokio::test]
