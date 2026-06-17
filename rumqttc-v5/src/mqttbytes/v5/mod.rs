@@ -571,10 +571,11 @@ mod tests {
     use bytes::{Bytes, BytesMut};
 
     use super::{
-        Auth, AuthReasonCode, ConnAck, Connect, ConnectAuth, ConnectReturnCode, Disconnect,
-        DisconnectReasonCode, Error, Filter, Packet, PacketType, PubAck, PubAckReason, PubComp,
-        PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck, Subscribe,
-        SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe, validate_fixed_header_flags,
+        Auth, AuthReasonCode, ConnAck, Connect, ConnectAuth, ConnectProperties, ConnectReturnCode,
+        Disconnect, DisconnectReasonCode, Error, Filter, Packet, PacketType, PubAck, PubAckReason,
+        PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck,
+        Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
+        validate_fixed_header_flags,
     };
 
     fn assert_packet_bytes_round_trip(packet: Packet, expected: &[u8]) {
@@ -685,6 +686,173 @@ mod tests {
         assert_packet_bytes_round_trip(
             Packet::Auth(Auth::new(AuthReasonCode::Continue, None)),
             &[0xF0, 0x02, 0x18, 0x00],
+        );
+    }
+
+    #[test]
+    fn non_zero_property_length_is_vbi_encoded_and_excludes_its_own_bytes() {
+        let props = ConnectProperties {
+            session_expiry_interval: Some(300),
+            ..ConnectProperties::new()
+        };
+        let packet = Packet::Connect(
+            Connect {
+                keep_alive: 60,
+                client_id: "c".into(),
+                clean_start: true,
+                properties: Some(props),
+            },
+            None,
+            ConnectAuth::None,
+        );
+
+        let mut encoded = BytesMut::new();
+        packet.write(&mut encoded, None).unwrap();
+
+        // CONNECT byte layout: fixed header (1) + remaining length VBI (1) + protocol name
+        // length (2) + "MQTT" (4) + protocol version (1) + connect flags (1) + keep alive (2)
+        // = Property Length VBI at offset 12.
+        let prop_len_offset = 12;
+        assert_eq!(
+            encoded[prop_len_offset], 5,
+            "Property Length VBI should be 5"
+        );
+
+        let prop_data_start = prop_len_offset + 1;
+        assert_eq!(
+            encoded[prop_data_start], 0x11,
+            "first property byte should be SessionExpiryInterval identifier (0x11)"
+        );
+
+        let expected: &[u8] = &[
+            0x10, 0x13, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, 0x02, 0x00, 0x3C, 0x05, 0x11,
+            0x00, 0x00, 0x01, 0x2C, 0x00, 0x01, b'c',
+        ];
+        assert_eq!(&encoded[..], expected);
+
+        let decoded = Packet::read(&mut encoded, None).unwrap();
+        assert_eq!(
+            decoded,
+            Packet::Connect(
+                Connect {
+                    keep_alive: 60,
+                    client_id: "c".into(),
+                    clean_start: true,
+                    properties: Some(ConnectProperties {
+                        session_expiry_interval: Some(300),
+                        ..ConnectProperties::new()
+                    }),
+                },
+                None,
+                ConnectAuth::None,
+            )
+        );
+    }
+
+    #[test]
+    fn property_length_uses_multi_byte_vbi_when_property_data_exceeds_127_bytes() {
+        // Each UserProperty("012345678901234", "012345678901234") contributes
+        // 1 + 2 + 15 + 2 + 15 = 35 bytes. Four of them total 140 bytes.
+        // Add session_expiry_interval (1 + 4 = 5) and receive_maximum (1 + 2 = 3)
+        // for a grand total of 140 + 5 + 3 = 148 bytes of property data.
+        // 148 >= 128 requires a 2-byte VBI: (148 & 0x7F) | 0x80 = 0x94, 148 >> 7 = 0x01.
+        let k = "012345678901234";
+        let v = "012345678901234";
+        let props = ConnectProperties {
+            session_expiry_interval: Some(300),
+            receive_maximum: Some(20),
+            user_properties: vec![
+                (k.to_owned(), v.to_owned()),
+                (k.to_owned(), v.to_owned()),
+                (k.to_owned(), v.to_owned()),
+                (k.to_owned(), v.to_owned()),
+            ],
+            ..ConnectProperties::new()
+        };
+        let packet = Packet::Connect(
+            Connect {
+                keep_alive: 60,
+                client_id: "c".into(),
+                clean_start: true,
+                properties: Some(props),
+            },
+            None,
+            ConnectAuth::None,
+        );
+
+        let mut encoded = BytesMut::new();
+        packet.write(&mut encoded, None).unwrap();
+
+        // Remaining length is 163, which needs 2-byte VBI encoding.
+        // CONNECT byte layout: fixed header (1) + remaining length VBI (2) + protocol name
+        // length (2) + "MQTT" (4) + protocol version (1) + connect flags (1) + keep alive (2)
+        // = Property Length VBI at offset 13.
+        let prop_len_offset = 13;
+        let vbi_byte_0 = encoded[prop_len_offset] as usize;
+        let vbi_byte_1 = encoded[prop_len_offset + 1] as usize;
+        assert_ne!(
+            vbi_byte_0 & 0x80,
+            0,
+            "first VBI byte should have continuation bit set for property data >= 128"
+        );
+        let decoded_prop_len = (vbi_byte_0 & 0x7F) | ((vbi_byte_1 & 0x7F) << 7);
+        assert_eq!(decoded_prop_len, 148, "Property Length should be 148");
+
+        let vbi_len = 2;
+        let prop_data_start = prop_len_offset + vbi_len;
+        assert_eq!(
+            encoded[prop_data_start], 0x11,
+            "first property byte should be SessionExpiryInterval identifier (0x11)"
+        );
+
+        let expected: &[u8] = &[
+            // fixed header + remaining length VBI (163 = [0xA3, 0x01])
+            0x10, 0xA3, 0x01, // protocol name: length + "MQTT"
+            0x00, 0x04, b'M', b'Q', b'T', b'T',
+            // protocol version + connect flags + keep alive
+            0x05, 0x02, 0x00, 0x3C, // Property Length VBI (148 = 0x94, 0x01)
+            0x94, 0x01, // SessionExpiryInterval: id(0x11) + u32(300 = 0x0000012C)
+            0x11, 0x00, 0x00, 0x01, 0x2C, // ReceiveMaximum: id(0x21) + u16(20 = 0x0014)
+            0x21, 0x00, 0x14, // UserProperty 1: id(0x26) + key + value
+            0x26, 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0',
+            b'1', b'2', b'3', b'4', 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7',
+            b'8', b'9', b'0', b'1', b'2', b'3', b'4', // UserProperty 2
+            0x26, 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0',
+            b'1', b'2', b'3', b'4', 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7',
+            b'8', b'9', b'0', b'1', b'2', b'3', b'4', // UserProperty 3
+            0x26, 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0',
+            b'1', b'2', b'3', b'4', 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7',
+            b'8', b'9', b'0', b'1', b'2', b'3', b'4', // UserProperty 4
+            0x26, 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0',
+            b'1', b'2', b'3', b'4', 0x00, 0x0F, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7',
+            b'8', b'9', b'0', b'1', b'2', b'3', b'4', // client ID: length + "c"
+            0x00, 0x01, b'c',
+        ];
+        assert_eq!(&encoded[..], expected);
+
+        let decoded = Packet::read(&mut encoded, None).unwrap();
+        assert_eq!(
+            decoded,
+            Packet::Connect(
+                Connect {
+                    keep_alive: 60,
+                    client_id: "c".into(),
+                    clean_start: true,
+                    properties: Some(ConnectProperties {
+                        session_expiry_interval: Some(300),
+                        receive_maximum: Some(20),
+                        user_properties: vec![
+                            (k.to_owned(), v.to_owned()),
+                            (k.to_owned(), v.to_owned()),
+                            (k.to_owned(), v.to_owned()),
+                            (k.to_owned(), v.to_owned()),
+                        ],
+                        ..ConnectProperties::new()
+                    }),
+                },
+                None,
+                ConnectAuth::None,
+            )
         );
     }
 

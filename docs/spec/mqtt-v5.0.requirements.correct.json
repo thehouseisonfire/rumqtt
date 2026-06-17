@@ -3026,6 +3026,169 @@
                 "notes": "Tests in subscribe.rs prove both key and value are validated on decode for invalid UTF-8 and U+0000. Encode-side null rejection also tested. The shared primitives have additional surrogate and malformed UTF-8 tests in mqttbytes-core."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-2.2.2-1",
+            "section_number": "2.2.2.1",
+            "section_title": "Property Length",
+            "obligation": "MUST",
+            "summary": "The Property Length is encoded as a Variable Byte Integer. The Property Length does not include the bytes used to encode itself, but includes the length of the Properties. If there are no properties, this MUST be indicated by including a Property Length of zero.",
+            "source_anchor": "_Toc471282714",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/mod.rs",
+                "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+                "rumqttc-v5/src/mqttbytes/v5/codec.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "All property-bearing v5 packet types encode Property Length via write_remaining_length (VBI), compute the length value as the property data byte count excluding the VBI encoding itself (properties_len = p.len(), with len_len(properties_len) tracked separately for Remaining Length), and emit write_remaining_length(buffer, 0) when no properties are present. Decoders read the VBI with length(), advance past it, and return Ok(None) when properties_len == 0.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "2.2.2.1",
+                "section_title": "Property Length",
+                "source_anchor": "_Toc471282714",
+                "summary": "The Property Length is encoded as a Variable Byte Integer. The Property Length does not include the bytes used to encode itself, but includes the length of the Properties. If there are no properties, this MUST be indicated by including a Property Length of zero."
+            },
+            "authoritative_actor": "packet encoder and packet decoder",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original summary is a near-verbatim copy of the authoritative spec text. The mapping correctly identifies the VBI encoding, self-exclusion, and zero-indication obligations."
+            },
+            "evidence": [
+                {
+                    "path": "mqttbytes-core/src/primitives.rs",
+                    "symbols": [
+                        "write_remaining_length",
+                        "length"
+                    ],
+                    "reason": "write_remaining_length encodes a Variable Byte Integer; length() decodes one. These are the shared primitives used for Property Length encoding and decoding across all v5 packet types."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+                    "symbols": [
+                        "Publish::write",
+                        "PublishProperties::write",
+                        "PublishProperties::read"
+                    ],
+                    "reason": "Publish::write calls write_remaining_length(buffer, 0) when properties are None. PublishProperties::write calls write_remaining_length(buffer, self.len()) where len() returns the property data byte count. PublishProperties::read decodes the VBI with length() and returns Ok(None) when properties_len == 0."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "Connect::write",
+                        "ConnectProperties::write",
+                        "ConnectProperties::read",
+                        "LastWill::write",
+                        "LastWillProperties::write",
+                        "LastWillProperties::read"
+                    ],
+                    "reason": "CONNECT, Will Properties, and their property structs all encode Property Length with write_remaining_length (including 0 for absent properties) and decode with length(). The length value excludes VBI encoding bytes (len_len tracked separately in parent len())."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+                    "symbols": [
+                        "ConnAckProperties::write",
+                        "ConnAckProperties::read"
+                    ],
+                    "reason": "CONNACK properties encode Property Length via write_remaining_length and decode via length(), returning Ok(None) on zero."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/puback.rs",
+                    "symbols": [
+                        "PubAckProperties::write",
+                        "PubAckProperties::read"
+                    ],
+                    "reason": "PUBACK properties encode/decode Property Length with write_remaining_length/length, handling zero-property case."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/pubrec.rs",
+                    "symbols": [
+                        "PubRecProperties::write",
+                        "PubRecProperties::read"
+                    ],
+                    "reason": "PUBREC properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/pubrel.rs",
+                    "symbols": [
+                        "PubRelProperties::write",
+                        "PubRelProperties::read"
+                    ],
+                    "reason": "PUBREL properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/pubcomp.rs",
+                    "symbols": [
+                        "PubCompProperties::write",
+                        "PubCompProperties::read"
+                    ],
+                    "reason": "PUBCOMP properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+                    "symbols": [
+                        "SubscribeProperties::write",
+                        "SubscribeProperties::read"
+                    ],
+                    "reason": "SUBSCRIBE properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/suback.rs",
+                    "symbols": [
+                        "SubAckProperties::write",
+                        "SubAckProperties::read"
+                    ],
+                    "reason": "SUBACK properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/unsubscribe.rs",
+                    "symbols": [
+                        "UnsubscribeProperties::write",
+                        "UnsubscribeProperties::read"
+                    ],
+                    "reason": "UNSUBSCRIBE properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/unsuback.rs",
+                    "symbols": [
+                        "UnsubAckProperties::write",
+                        "UnsubAckProperties::read"
+                    ],
+                    "reason": "UNSUBACK properties follow the same VBI property length encode/decode pattern."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+                    "symbols": [
+                        "DisconnectProperties::write",
+                        "DisconnectProperties::extract"
+                    ],
+                    "reason": "DISCONNECT properties encode Property Length with write_remaining_length and decode with length(), handling zero."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/auth.rs",
+                    "symbols": [
+                        "AuthProperties::write",
+                        "AuthProperties::read"
+                    ],
+                    "reason": "AUTH properties encode Property Length via write_remaining_length and decode via length(), returning Ok(None) on zero."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "rumqttc-v5/src/mqttbytes/v5/mod.rs::property_bearing_packets_emit_and_read_explicit_zero_property_lengths",
+                    "rumqttc-v5/src/mqttbytes/v5/mod.rs::non_zero_property_length_is_vbi_encoded_and_excludes_its_own_bytes",
+                    "rumqttc-v5/src/mqttbytes/v5/mod.rs::property_length_uses_multi_byte_vbi_when_property_data_exceeds_127_bytes",
+                    "mqttbytes-core/src/primitives.rs::write_remaining_length_round_trip"
+                ],
+                "notes": "The dedicated zero-property-length test covers all 13 packet types with properties: None, verifying each emits 0x00 (Property Length = 0) and round-trips correctly. The non-zero test verifies a 5-byte property section encodes as a single-byte VBI (0x05) excluding its own encoding bytes, with byte-level inspection and round-trip decode. The multi-byte VBI test uses 148 bytes of property data (4 user properties + session_expiry + receive_maximum) to verify 2-byte VBI encoding with the continuation bit set and correct decoded value. The VBI primitive round-trip test covers 0, 127, 128, 321, 16384, and 268435455."
+            },
+            "follow_up": null
         }
     ]
 }
