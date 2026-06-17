@@ -4089,10 +4089,7 @@ mod tests {
             event,
             Event::Incoming(Packet::ConnAck(ref connack)) if connack.session_present
         ));
-        assert_eq!(
-            eventloop.session_client_id.as_deref(),
-            Some("test-client")
-        );
+        assert_eq!(eventloop.session_client_id.as_deref(), Some("test-client"));
 
         // Second poll: network read fails (peer dropped), clean() moves
         // outgoing_pub to pending.
