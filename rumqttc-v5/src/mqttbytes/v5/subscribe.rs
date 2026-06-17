@@ -495,6 +495,20 @@ mod test {
     }
 
     #[test]
+    fn read_user_property_rejects_null_character_value() {
+        let mut bytes = Bytes::from_static(&[
+            0x09, // properties length
+            0x26, // UserProperty property
+            0x00, 0x01, b'k', // key
+            0x00, 0x03, b'a', 0x00, b'b', // value with null
+        ]);
+
+        let result = SubscribeProperties::read(&mut bytes);
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
     fn write_user_property_rejects_null_character_key_or_value() {
         let mut bytes = BytesMut::new();
         let props = SubscribeProperties {

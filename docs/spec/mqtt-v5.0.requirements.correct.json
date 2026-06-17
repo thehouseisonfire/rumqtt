@@ -2956,6 +2956,76 @@
                 "notes": "Symmetric coverage: both encode and decode paths tested for both U+0000 and malformed UTF-8 rejection at the Will Topic integration level."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-1.5.7-1",
+            "section_number": "1.5.7",
+            "section_title": "UTF-8 String Pair",
+            "obligation": "MUST",
+            "summary": "Both strings in a UTF-8 String Pair MUST comply with the requirements for UTF-8 Encoded Strings. If a receiver receives a string pair which does not meet these requirements it is a Malformed Packet.",
+            "source_anchor": "_Toc464547791",
+            "mapping_status": "reviewed",
+            "compliance_status": "compliant",
+            "mapping_reason": "Both halves of every UserProperty string pair are validated through shared read_mqtt_string (decode) and write_mqtt_string (encode) helpers, which enforce UTF-8 well-formedness, surrogate rejection, and U+0000 rejection. Decode failures map to DisconnectReasonCode::MalformedPacket in framed.rs.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "1.5.7",
+                "section_title": "UTF-8 String Pair",
+                "source_anchor": "_Toc464547791",
+                "summary": "Both strings in a UTF-8 String Pair MUST comply with UTF-8 Encoded String requirements (MQTT-1.5.4-1, MQTT-1.5.4-2, MQTT-1.5.4-3). A receiver that gets a non-conforming string pair MUST treat it as a Malformed Packet."
+            },
+            "authoritative_actor": "packet encoder and receiver",
+            "applicability": "applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The generated entry's summary accurately captures both the outbound UTF-8 validation obligation and the receiver-side Malformed Packet consequence from the authoritative text."
+            },
+            "evidence": [
+                {
+                    "path": "mqttbytes-core/src/primitives.rs",
+                    "symbols": ["read_mqtt_string", "validate_mqtt_string"],
+                    "reason": "Shared primitive validates each string via std::str::from_utf8 (rejects surrogates, overlong, truncated sequences) and rejects U+0000. Used for both key and value in every string pair read path."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+                    "symbols": ["write_mqtt_string"],
+                    "reason": "v5 write_mqtt_string calls validate_mqtt_string before serializing, preventing outbound string pairs with ill-formed UTF-8 or U+0000."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": ["ConnectProperties::read", "ConnectProperties::write", "LastWillProperties::read", "LastWillProperties::write"],
+                    "reason": "CONNECT and Will UserProperty pairs use two consecutive read_mqtt_string/write_mqtt_string calls, each independently validating both key and value."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
+                    "symbols": ["PublishProperties::read", "PublishProperties::write"],
+                    "reason": "PUBLISH UserProperty pairs validated on both read and write paths."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/subscribe.rs",
+                    "symbols": ["SubscribeProperties::read", "SubscribeProperties::write"],
+                    "reason": "SUBSCRIBE UserProperty pairs validated on both read and write paths. Also contains dedicated malformed string pair tests."
+                },
+                {
+                    "path": "rumqttc-v5/src/framed.rs",
+                    "symbols": ["error_to_disconnect_reason_code"],
+                    "reason": "Maps TopicNotUtf8 and MalformedPacket decode errors to DisconnectReasonCode::MalformedPacket (0x81), satisfying the receiver-side Malformed Packet obligation."
+                }
+            ],
+            "test_coverage": {
+                "status": "covered",
+                "tests": [
+                    "read_user_property_rejects_invalid_utf8_key",
+                    "read_user_property_rejects_invalid_utf8_value",
+                    "read_user_property_rejects_null_character_key",
+                    "write_user_property_rejects_null_character_key_or_value"
+                ],
+                "notes": "Tests in subscribe.rs prove both key and value are validated on decode for invalid UTF-8 and U+0000. Encode-side null rejection also tested. The shared primitives have additional surrogate and malformed UTF-8 tests in mqttbytes-core."
+            },
+            "follow_up": null
         }
     ]
 }
