@@ -150,7 +150,9 @@ out side the library and `Eventloop` is accessible, users can
   save failure is reported through the corresponding `SessionPersistence(...)`
   notice error. rumqttc clears the configured store when the broker starts a
   fresh session (`Session Present = 0`), when local session state is explicitly
-  reset, or when the effective session expiry is zero at disconnect.
+  reset, or when the effective session expiry is zero at disconnect. See
+  `examples/persistent_session_file_store_v5.rs` for a complete file-backed
+  `SessionStore` implementation owned by application code.
 
 - Applications that intentionally rely on broker-retained messages after local
   state loss can opt into non-strict MQTT 5 compatibility mode with
