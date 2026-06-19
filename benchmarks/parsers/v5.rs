@@ -1,3 +1,5 @@
+#![allow(clippy::cast_precision_loss)]
+
 use bytes::{Buf, BytesMut};
 use rumqttc_v5::Packet;
 use rumqttc_v5::mqttbytes::QoS;
@@ -25,21 +27,22 @@ fn main() {
     let elapsed_micros = start.elapsed().as_micros();
     let total_size = output.len();
     let throughput = (total_size * 1_000_000) / elapsed_micros as usize;
-    let write_throughput = (throughput as f64 / 1024.0 / 1024.0 / 1024.0) as f32;
-    let total_size_gb = (total_size as f64 / 1024.0 / 1024.0 / 1024.0) as f32;
+    let write_throughput = throughput as f32 / 1024.0 / 1024.0 / 1024.0;
+    let total_size_gb = total_size as f32 / 1024.0 / 1024.0 / 1024.0;
 
     // --------------------------- read throughput -------------------------------
 
     let start = Instant::now();
-    let mut _packets = Vec::with_capacity(count);
+    let mut packet_count = 0usize;
     while output.has_remaining() {
-        let packet = Packet::read(&mut output, Some(10 * 1024)).unwrap();
-        _packets.push(packet);
+        let _packet = Packet::read(&mut output, Some(10 * 1024)).unwrap();
+        packet_count += 1;
     }
+    std::hint::black_box(packet_count);
 
     let elapsed_micros = start.elapsed().as_micros();
     let throughput = (total_size * 1_000_000) / elapsed_micros as usize;
-    let read_throughput = (throughput as f64 / 1024.0 / 1024.0 / 1024.0) as f32;
+    let read_throughput = throughput as f32 / 1024.0 / 1024.0 / 1024.0;
 
     // --------------------------- results ---------------------------------------
 
