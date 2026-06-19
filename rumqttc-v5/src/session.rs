@@ -9,13 +9,18 @@ pub type SessionStoreError = Box<dyn Error + Send + Sync>;
 pub type SessionStoreFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, SessionStoreError>> + Send + 'a>>;
 
-/// Durable storage for MQTT 5 client session state.
+/// Durable storage for MQTT 5 client session checkpoints.
 ///
 /// Implementations must make `save` crash-consistent. A later `load` should
 /// return either the last complete checkpoint or no checkpoint, never a
 /// partially written session. The crate intentionally does not prescribe a
 /// serialization format; applications can encode [`PersistedSession`] with the
 /// storage and compatibility policy they need.
+///
+/// rumqttc calls [`SessionStore::clear`] when local session state is explicitly
+/// reset, when the broker reports that no previous session is present, or when
+/// the effective MQTT session expiry is zero at disconnect. A failed `load`,
+/// `save`, or `clear` is surfaced as [`crate::ConnectionError::SessionStore`].
 pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
     /// Loads the last complete session checkpoint for `client_id`.
     fn load<'a>(&'a self, client_id: &'a str) -> SessionStoreFuture<'a, Option<PersistedSession>>;
@@ -27,6 +32,9 @@ pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
     fn save<'a>(&'a self, session: &'a PersistedSession) -> SessionStoreFuture<'a, ()>;
 
     /// Clears any checkpoint associated with `client_id`.
+    ///
+    /// This should make a following `load(client_id)` return `None` once the
+    /// clear operation completes.
     fn clear<'a>(&'a self, client_id: &'a str) -> SessionStoreFuture<'a, ()>;
 }
 
@@ -34,6 +42,12 @@ pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
 ///
 /// This type contains protocol state required to resume local client ownership
 /// of in-flight `QoS` and control-packet flows after recreating an `EventLoop`.
+///
+/// The structure is intentionally public so applications can serialize it with
+/// their own format and compatibility policy. Restore validates that the
+/// checkpoint belongs to the configured client and is compatible with packet-id
+/// tracking, acknowledgement mode, and other local options; invalid checkpoint
+/// contents are reported as [`SessionRestoreError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistedSession {
     /// Persistence model version emitted by this crate.
@@ -43,6 +57,9 @@ pub struct PersistedSession {
     /// `clean_start` value the checkpoint was created under.
     pub clean_start: bool,
     /// CONNECT Session Expiry Interval associated with this checkpoint.
+    ///
+    /// This records the effective option value at save time, including any
+    /// server override received in CONNACK before the checkpoint was written.
     pub session_expiry_interval: Option<u32>,
     /// Configured outgoing inflight upper limit, if any.
     pub outgoing_inflight_upper_limit: Option<u16>,
@@ -209,6 +226,10 @@ pub struct PersistedUnsubscribeProperties {
 
 /// Error returned when a persisted session cannot be restored under the current
 /// client configuration.
+///
+/// These errors indicate that the store returned a checkpoint which rumqttc
+/// will not replay. During `EventLoop::poll`, they are wrapped in
+/// [`crate::ConnectionError::SessionRestore`].
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionRestoreError {

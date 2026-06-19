@@ -1074,6 +1074,14 @@ impl MqttOptions {
     /// Set durable storage for MQTT 5 persistent client session state.
     ///
     /// Persistence is opt-in and used only when `clean_start` is `false`.
+    /// rumqttc supplies the [`SessionStore`] trait and [`PersistedSession`]
+    /// checkpoint model, but applications provide the actual storage backend
+    /// and serialization format.
+    ///
+    /// The event loop saves checkpoints after local session state changes,
+    /// loads a checkpoint before reconnecting a newly constructed event loop,
+    /// and clears the store when the broker starts a fresh session or the
+    /// effective session expiry is zero.
     pub fn set_session_store<S>(&mut self, store: S) -> &mut Self
     where
         S: SessionStore,
@@ -1083,6 +1091,8 @@ impl MqttOptions {
     }
 
     /// Set durable storage from an existing shared store handle.
+    ///
+    /// See [`MqttOptions::set_session_store`] for persistence semantics.
     pub fn set_session_store_arc(&mut self, store: Arc<dyn SessionStore>) -> &mut Self {
         self.session_store = Some(store);
         self
@@ -1755,6 +1765,8 @@ impl MqttOptionsBuilder {
     }
 
     /// Set durable storage for MQTT 5 persistent client session state.
+    ///
+    /// See [`MqttOptions::set_session_store`] for persistence semantics.
     #[must_use]
     pub fn session_store<S>(mut self, store: S) -> Self
     where
@@ -1765,6 +1777,8 @@ impl MqttOptionsBuilder {
     }
 
     /// Set durable storage from an existing shared store handle.
+    ///
+    /// See [`MqttOptions::set_session_store`] for persistence semantics.
     #[must_use]
     pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.options.set_session_store_arc(store);
