@@ -2103,6 +2103,7 @@ dependencies = [
  "rustls-webpki",
  "scram-rs",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-native-tls",
