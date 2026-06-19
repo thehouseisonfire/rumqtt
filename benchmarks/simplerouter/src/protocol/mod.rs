@@ -364,7 +364,8 @@ pub fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize
     let mut count = 0;
 
     while !done {
-        let mut byte = u8::try_from(x % 128).unwrap();
+        // `x % 128` is always in 0..=127 and therefore fits in u8.
+        let mut byte = (x % 128) as u8;
         x /= 128;
         if x > 0 {
             byte |= 128;
