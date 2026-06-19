@@ -1,18 +1,25 @@
 use super::mqttbytes::v5::{
-    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType,
+    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Filter, Packet, PacketType,
     PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel,
-    PubRelReason, Publish, PublishProperties, SubAck, Subscribe, SubscribeReasonCode, UnsubAck,
-    UnsubAckReason, Unsubscribe,
+    PubRelReason, Publish, PublishProperties, RetainForwardRule, SubAck, Subscribe,
+    SubscribeProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
+    UnsubscribeProperties,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::auth::{AuthLifecycle, IncomingAuthEffect};
 use crate::notice::{
-    AuthNoticeError, PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx,
-    UnsubscribeNoticeTx,
+    AuthNoticeError, DeferredNotice, PublishNoticeTx, PublishResult, SubscribeNoticeTx,
+    TrackedNoticeTx, UnsubscribeNoticeTx,
+};
+use crate::session::{
+    PersistedAckMode, PersistedFilter, PersistedIncomingQos2, PersistedPubRel, PersistedPublish,
+    PersistedPublishProperties, PersistedQoS, PersistedRequest, PersistedRetainForwardRule,
+    PersistedSession, PersistedSubscribe, PersistedSubscribeProperties, PersistedUnsubscribe,
+    PersistedUnsubscribeProperties, SessionRestoreError,
 };
 use crate::{
-    AckMode, AuthContext, AuthError, AuthExchangeKind, Authenticator, NoticeFailureReason,
-    PublishNoticeError, TopicAliasPolicy,
+    AckMode, AuthContext, AuthError, AuthExchangeKind, Authenticator, MqttOptions,
+    NoticeFailureReason, PublishNoticeError, TopicAliasPolicy,
 };
 
 use super::{Event, Incoming, Outgoing, Request};
@@ -276,6 +283,45 @@ pub struct PendingSubscribe {
 pub struct PendingUnsubscribe {
     unsubscribe: Unsubscribe,
     notice: Option<UnsubscribeNoticeTx>,
+}
+
+#[derive(Debug, Default)]
+pub struct IncomingPacketEffects {
+    pub(crate) outgoing: Option<Packet>,
+    pub(crate) notices: Vec<DeferredNotice>,
+}
+
+impl IncomingPacketEffects {
+    const fn outgoing(outgoing: Option<Packet>) -> Self {
+        Self {
+            outgoing,
+            notices: Vec::new(),
+        }
+    }
+
+    fn with_notice(mut self, notice: DeferredNotice) -> Self {
+        self.notices.push(notice);
+        self
+    }
+
+    fn complete_notices(self) -> Option<Packet> {
+        for notice in self.notices {
+            notice.complete();
+        }
+
+        self.outgoing
+    }
+
+    #[cfg(test)]
+    fn complete_notices_and_has_no_outgoing(self) -> bool {
+        self.complete_notices().is_none()
+    }
+
+    #[cfg(test)]
+    fn unwrap(self) -> Packet {
+        self.complete_notices()
+            .expect("called `IncomingPacketEffects::unwrap()` with no outgoing packet")
+    }
 }
 
 #[derive(Debug)]
@@ -1077,6 +1123,23 @@ impl MqttState {
         request: Request,
         notice: Option<TrackedNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        self.handle_outgoing_packet_with_notice_internal(request, notice, false)
+    }
+
+    pub(crate) fn handle_replayed_outgoing_packet_with_notice(
+        &mut self,
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+    ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        self.handle_outgoing_packet_with_notice_internal(request, notice, true)
+    }
+
+    fn handle_outgoing_packet_with_notice_internal(
+        &mut self,
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+        replay: bool,
+    ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
         fn unsupported_outgoing_request(
             request: Request,
         ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
@@ -1119,7 +1182,12 @@ impl MqttState {
                     )
                     | None => None,
                 };
-                (self.outgoing_subscribe(subscribe, request_notice)?, None)
+                let packet = if replay {
+                    self.replay_outgoing_subscribe(subscribe, request_notice)?
+                } else {
+                    self.outgoing_subscribe(subscribe, request_notice)?
+                };
+                (packet, None)
             }
             Request::Unsubscribe(unsubscribe) => {
                 let request_notice = match notice {
@@ -1131,10 +1199,12 @@ impl MqttState {
                     )
                     | None => None,
                 };
-                (
-                    Some(self.outgoing_unsubscribe(unsubscribe, request_notice)?),
-                    None,
-                )
+                let packet = if replay {
+                    self.replay_outgoing_unsubscribe(unsubscribe, request_notice)?
+                } else {
+                    self.outgoing_unsubscribe(unsubscribe, request_notice)?
+                };
+                (Some(packet), None)
             }
             Request::PingReq => (self.outgoing_ping()?, None),
             Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
@@ -1177,22 +1247,43 @@ impl MqttState {
     /// client state.
     pub fn handle_incoming_packet(
         &mut self,
-        mut packet: Incoming,
+        packet: Incoming,
     ) -> Result<Option<Packet>, StateError> {
+        Ok(self
+            .handle_incoming_packet_with_effects(packet)?
+            .complete_notices())
+    }
+
+    pub(crate) fn handle_incoming_packet_with_effects(
+        &mut self,
+        mut packet: Incoming,
+    ) -> Result<IncomingPacketEffects, StateError> {
         let events_len_before = self.events.len();
         let is_duplicate_incoming_qos2_publish = self.is_duplicate_incoming_qos2_publish(&packet);
-        let outgoing = match &mut packet {
-            Incoming::PingResp(_) => Ok(self.handle_incoming_pingresp()),
-            Incoming::Publish(publish) => self.handle_incoming_publish(publish),
+        let effects = match &mut packet {
+            Incoming::PingResp(_) => Ok(IncomingPacketEffects::outgoing(
+                self.handle_incoming_pingresp(),
+            )),
+            Incoming::Publish(publish) => self
+                .handle_incoming_publish(publish)
+                .map(IncomingPacketEffects::outgoing),
             Incoming::SubAck(suback) => self.handle_incoming_suback(suback),
             Incoming::UnsubAck(unsuback) => self.handle_incoming_unsuback(unsuback),
             Incoming::PubAck(puback) => self.handle_incoming_puback(puback),
             Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec),
-            Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel),
+            Incoming::PubRel(pubrel) => self
+                .handle_incoming_pubrel(pubrel)
+                .map(IncomingPacketEffects::outgoing),
             Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp),
-            Incoming::ConnAck(connack) => self.handle_incoming_connack(connack),
-            Incoming::Disconnect(disconn) => Self::handle_incoming_disconn(disconn),
-            Incoming::Auth(auth) => self.handle_incoming_auth(auth),
+            Incoming::ConnAck(connack) => self
+                .handle_incoming_connack(connack)
+                .map(IncomingPacketEffects::outgoing),
+            Incoming::Disconnect(disconn) => {
+                Self::handle_incoming_disconn(disconn).map(IncomingPacketEffects::outgoing)
+            }
+            Incoming::Auth(auth) => self
+                .handle_incoming_auth(auth)
+                .map(IncomingPacketEffects::outgoing),
             _ => {
                 error!("Invalid incoming packet = {packet:?}");
                 Err(StateError::ProtocolViolation(
@@ -1202,12 +1293,18 @@ impl MqttState {
         };
 
         let skip_incoming_event = matches!(
-            (&packet, &outgoing),
-            (Incoming::Publish(_), Ok(Some(Packet::Disconnect(_))))
+            (&packet, &effects),
+            (
+                Incoming::Publish(_),
+                Ok(IncomingPacketEffects {
+                    outgoing: Some(Packet::Disconnect(_)),
+                    ..
+                })
+            )
         ) || is_duplicate_incoming_qos2_publish;
 
         let queue_incoming_event_on_error = matches!(
-            (&packet, &outgoing),
+            (&packet, &effects),
             (Incoming::ConnAck(_), Err(StateError::ConnFail { .. }))
                 | (
                     Incoming::Disconnect(_),
@@ -1217,14 +1314,14 @@ impl MqttState {
 
         // Preserve original event ordering (Incoming first, derived Outgoing next)
         // without cloning the incoming packet.
-        match outgoing {
-            Ok(outgoing) => {
+        match effects {
+            Ok(effects) => {
                 if !skip_incoming_event {
                     self.events
                         .insert(events_len_before, Event::Incoming(packet));
                 }
                 self.last_incoming = Instant::now();
-                Ok(outgoing)
+                Ok(effects)
             }
             Err(err) => {
                 if queue_incoming_event_on_error {
@@ -1263,7 +1360,10 @@ impl MqttState {
         self.ping.reset_collision_count();
     }
 
-    fn handle_incoming_suback(&mut self, suback: &SubAck) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_suback(
+        &mut self,
+        suback: &SubAck,
+    ) -> Result<IncomingPacketEffects, StateError> {
         let Some(pending_subscribe) = self.pending_subscribe.get(&suback.pkid) else {
             error!("Unsolicited suback packet: {:?}", suback.pkid);
             return Err(StateError::Unsolicited(suback.pkid));
@@ -1297,16 +1397,17 @@ impl MqttState {
             .remove(&suback.pkid)
             .expect("tracked subscribe checked before SUBACK validation");
         self.mark_control_packet_id_complete(suback.pkid);
+        let mut effects = IncomingPacketEffects::outgoing(None);
         if let Some(notice) = pending_subscribe.notice {
-            notice.success(suback.clone());
+            effects = effects.with_notice(DeferredNotice::Subscribe(notice, suback.clone()));
         }
-        Ok(None)
+        Ok(effects)
     }
 
     fn handle_incoming_unsuback(
         &mut self,
         unsuback: &UnsubAck,
-    ) -> Result<Option<Packet>, StateError> {
+    ) -> Result<IncomingPacketEffects, StateError> {
         let Some(pending_unsubscribe) = self.pending_unsubscribe.get(&unsuback.pkid) else {
             error!("Unsolicited unsuback packet: {:?}", unsuback.pkid);
             return Err(StateError::Unsolicited(unsuback.pkid));
@@ -1335,10 +1436,11 @@ impl MqttState {
             .remove(&unsuback.pkid)
             .expect("tracked unsubscribe checked before UNSUBACK validation");
         self.mark_control_packet_id_complete(unsuback.pkid);
+        let mut effects = IncomingPacketEffects::outgoing(None);
         if let Some(notice) = pending_unsubscribe.notice {
-            notice.success(unsuback.clone());
+            effects = effects.with_notice(DeferredNotice::Unsubscribe(notice, unsuback.clone()));
         }
-        Ok(None)
+        Ok(effects)
     }
 
     fn handle_incoming_connack(&mut self, connack: &ConnAck) -> Result<Option<Packet>, StateError> {
@@ -1458,7 +1560,10 @@ impl MqttState {
         }
     }
 
-    fn handle_incoming_puback(&mut self, puback: &PubAck) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_puback(
+        &mut self,
+        puback: &PubAck,
+    ) -> Result<IncomingPacketEffects, StateError> {
         let publish = self
             .outgoing_pub
             .get_mut(usize::from(puback.pkid))
@@ -1483,14 +1588,22 @@ impl MqttState {
                 puback.pkid, puback.reason
             );
         }
+        let mut effects =
+            IncomingPacketEffects::outgoing(self.replay_collision_publish(puback.pkid));
         if let Some(tx) = notice {
-            tx.success(PublishResult::Qos1(puback.clone()));
+            effects = effects.with_notice(DeferredNotice::Publish(
+                tx,
+                PublishResult::Qos1(puback.clone()),
+            ));
         }
 
-        Ok(self.replay_collision_publish(puback.pkid))
+        Ok(effects)
     }
 
-    fn handle_incoming_pubrec(&mut self, pubrec: &PubRec) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_pubrec(
+        &mut self,
+        pubrec: &PubRec,
+    ) -> Result<IncomingPacketEffects, StateError> {
         let publish = self
             .outgoing_pub
             .get_mut(usize::from(pubrec.pkid))
@@ -1511,12 +1624,17 @@ impl MqttState {
                 "PubRec Pkid = {:?}, reason: {:?}",
                 pubrec.pkid, pubrec.reason
             );
-            if let Some(tx) = notice {
-                tx.success(PublishResult::Qos2PubRecRejected(pubrec.clone()));
-            }
             self.mark_outgoing_packet_id_complete(pubrec.pkid);
             self.inflight -= 1;
-            return Ok(self.replay_collision_publish(pubrec.pkid));
+            let mut effects =
+                IncomingPacketEffects::outgoing(self.replay_collision_publish(pubrec.pkid));
+            if let Some(tx) = notice {
+                effects = effects.with_notice(DeferredNotice::Publish(
+                    tx,
+                    PublishResult::Qos2PubRecRejected(pubrec.clone()),
+                ));
+            }
+            return Ok(effects);
         }
 
         // NOTE: Inflight - 1 for qos2 in comp
@@ -1525,7 +1643,9 @@ impl MqttState {
         let event = Event::Outgoing(Outgoing::PubRel(pubrec.pkid));
         self.events.push_back(event);
 
-        Ok(Some(Packet::PubRel(PubRel::new(pubrec.pkid, None))))
+        Ok(IncomingPacketEffects::outgoing(Some(Packet::PubRel(
+            PubRel::new(pubrec.pkid, None),
+        ))))
     }
 
     fn handle_incoming_pubrel(&mut self, pubrel: &PubRel) -> Result<Option<Packet>, StateError> {
@@ -1564,7 +1684,10 @@ impl MqttState {
         Ok(Some(Packet::PubComp(PubComp::new(pubrel.pkid, None))))
     }
 
-    fn handle_incoming_pubcomp(&mut self, pubcomp: &PubComp) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_pubcomp(
+        &mut self,
+        pubcomp: &PubComp,
+    ) -> Result<IncomingPacketEffects, StateError> {
         if !self.outgoing_rel.contains(usize::from(pubcomp.pkid)) {
             error!("Unsolicited pubcomp packet: {:?}", pubcomp.pkid);
             return Err(StateError::Unsolicited(pubcomp.pkid));
@@ -1580,11 +1703,16 @@ impl MqttState {
                 pubcomp.pkid, pubcomp.reason
             );
         }
+        let mut effects =
+            IncomingPacketEffects::outgoing(self.replay_collision_publish(pubcomp.pkid));
         if let Some(tx) = notice {
-            tx.success(PublishResult::Qos2Completed(pubcomp.clone()));
+            effects = effects.with_notice(DeferredNotice::Publish(
+                tx,
+                PublishResult::Qos2Completed(pubcomp.clone()),
+            ));
         }
 
-        Ok(self.replay_collision_publish(pubcomp.pkid))
+        Ok(effects)
     }
 
     fn replay_collision_publish(&mut self, pkid: u16) -> Option<Packet> {
@@ -1920,7 +2048,27 @@ impl MqttState {
 
         let pkid = self.next_control_pkid()?;
         subscription.pkid = pkid;
+        Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
+    }
 
+    fn replay_outgoing_subscribe(
+        &mut self,
+        subscription: Subscribe,
+        notice: Option<SubscribeNoticeTx>,
+    ) -> Result<Option<Packet>, StateError> {
+        if subscription.filters.is_empty() {
+            return Err(StateError::EmptySubscription);
+        }
+
+        self.validate_replay_control_pkid(subscription.pkid)?;
+        Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
+    }
+
+    fn save_outgoing_subscribe(
+        &mut self,
+        subscription: Subscribe,
+        notice: Option<SubscribeNoticeTx>,
+    ) -> Packet {
         debug!(
             "Subscribe. Topics = {:?}, Pkid = {:?}",
             subscription.filters, subscription.pkid
@@ -1937,7 +2085,7 @@ impl MqttState {
             },
         );
 
-        Ok(Some(Packet::Subscribe(subscription)))
+        Packet::Subscribe(subscription)
     }
 
     fn outgoing_unsubscribe(
@@ -1947,7 +2095,23 @@ impl MqttState {
     ) -> Result<Packet, StateError> {
         let pkid = self.next_control_pkid()?;
         unsub.pkid = pkid;
+        Ok(self.save_outgoing_unsubscribe(unsub, notice))
+    }
 
+    fn replay_outgoing_unsubscribe(
+        &mut self,
+        unsub: Unsubscribe,
+        notice: Option<UnsubscribeNoticeTx>,
+    ) -> Result<Packet, StateError> {
+        self.validate_replay_control_pkid(unsub.pkid)?;
+        Ok(self.save_outgoing_unsubscribe(unsub, notice))
+    }
+
+    fn save_outgoing_unsubscribe(
+        &mut self,
+        unsub: Unsubscribe,
+        notice: Option<UnsubscribeNoticeTx>,
+    ) -> Packet {
         debug!(
             "Unsubscribe. Topics = {:?}, Pkid = {:?}",
             unsub.filters, unsub.pkid
@@ -1964,7 +2128,19 @@ impl MqttState {
             },
         );
 
-        Ok(Packet::Unsubscribe(unsub))
+        Packet::Unsubscribe(unsub)
+    }
+
+    fn validate_replay_control_pkid(&self, pkid: u16) -> Result<(), StateError> {
+        if pkid == 0 {
+            return Err(StateError::Unsolicited(pkid));
+        }
+
+        if self.packet_identifier_in_use(pkid) {
+            return Err(StateError::InvalidState);
+        }
+
+        Ok(())
     }
 
     fn outgoing_disconnect(&mut self, disconnect: Disconnect) -> Packet {
@@ -2350,6 +2526,431 @@ impl MqttState {
                 .retain(|topic, mapped_alias| *mapped_alias != alias || topic == &publish.topic);
         }
     }
+
+    pub(crate) fn persisted_session<'a>(
+        &self,
+        options: &MqttOptions,
+        replay_requests: impl IntoIterator<Item = &'a Request>,
+    ) -> PersistedSession {
+        let mut replay = self.persisted_replay_requests();
+        replay.extend(
+            replay_requests
+                .into_iter()
+                .filter_map(Self::persisted_request_from_request),
+        );
+
+        PersistedSession {
+            format_version: 1,
+            client_id: options.client_id(),
+            clean_start: options.clean_start(),
+            session_expiry_interval: options.session_expiry_interval(),
+            outgoing_inflight_upper_limit: options.get_outgoing_inflight_upper_limit(),
+            ack_mode: persisted_ack_mode(options.ack_mode()),
+            last_pkid: self.last_pkid,
+            last_puback: self.last_puback,
+            replay,
+            incoming_qos2: self
+                .incoming_pubrec
+                .ones()
+                .filter_map(|pkid| {
+                    u16::try_from(pkid)
+                        .ok()
+                        .map(|pkid| PersistedIncomingQos2 { pkid })
+                })
+                .collect(),
+        }
+    }
+
+    fn persisted_replay_requests(&self) -> Vec<PersistedRequest> {
+        let mut replay = Vec::with_capacity(self.clean_pending_capacity());
+        let (first_half, second_half) = self
+            .outgoing_pub
+            .split_at(usize::from(self.last_puback) + 1);
+
+        for publish in second_half.iter().chain(first_half.iter()).flatten() {
+            let mut publish = publish.clone();
+            if publish.qos != QoS::AtMostOnce
+                && self
+                    .outgoing_pub_flush_attempted
+                    .contains(usize::from(publish.pkid))
+            {
+                publish.dup = true;
+            }
+            if let Some(persisted) = persisted_publish(&publish) {
+                replay.push(PersistedRequest::Publish(persisted));
+            }
+        }
+
+        replay.extend(
+            self.outgoing_rel
+                .ones()
+                .filter_map(|pkid| u16::try_from(pkid).ok())
+                .map(|pkid| PersistedRequest::PubRel(PersistedPubRel { pkid })),
+        );
+
+        replay.extend(
+            self.pending_subscribe.values().map(|pending| {
+                PersistedRequest::Subscribe(persisted_subscribe(&pending.subscribe))
+            }),
+        );
+        replay.extend(self.pending_unsubscribe.values().map(|pending| {
+            PersistedRequest::Unsubscribe(persisted_unsubscribe(&pending.unsubscribe))
+        }));
+
+        replay
+    }
+
+    fn persisted_request_from_request(request: &Request) -> Option<PersistedRequest> {
+        match request {
+            Request::Publish(publish) => persisted_publish(publish).map(PersistedRequest::Publish),
+            Request::PubRel(pubrel) => Some(PersistedRequest::PubRel(PersistedPubRel {
+                pkid: pubrel.pkid,
+            })),
+            Request::Subscribe(subscribe) if subscribe.pkid != 0 => {
+                Some(PersistedRequest::Subscribe(persisted_subscribe(subscribe)))
+            }
+            Request::Unsubscribe(unsubscribe) if unsubscribe.pkid != 0 => Some(
+                PersistedRequest::Unsubscribe(persisted_unsubscribe(unsubscribe)),
+            ),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn restore_persisted_session(
+        &mut self,
+        options: &MqttOptions,
+        session: &PersistedSession,
+    ) -> Result<Vec<Request>, SessionRestoreError> {
+        validate_persisted_session_signature(options, session)?;
+        self.validate_persisted_session_packet_ids(session)?;
+
+        self.reset_session_state();
+        self.last_pkid = session.last_pkid;
+        self.last_puback = session.last_puback;
+
+        for incoming in &session.incoming_qos2 {
+            self.incoming_pub.insert(usize::from(incoming.pkid));
+            self.incoming_pubrec.insert(usize::from(incoming.pkid));
+        }
+
+        for request in &session.replay {
+            if let PersistedRequest::PubRel(pubrel) = request {
+                self.outgoing_rel_replay.insert(usize::from(pubrel.pkid));
+            }
+        }
+
+        session
+            .replay
+            .iter()
+            .map(request_from_persisted_request)
+            .collect()
+    }
+
+    fn validate_persisted_session_packet_ids(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<(), SessionRestoreError> {
+        validate_last_puback(session.last_puback, self.max_outgoing_inflight)?;
+
+        for incoming in &session.incoming_qos2 {
+            validate_pkid(incoming.pkid)?;
+        }
+
+        session.replay.iter().try_for_each(|request| {
+            validate_persisted_replay_request_pkid(request, self.max_outgoing_inflight)
+        })?;
+
+        Ok(())
+    }
+}
+
+fn validate_persisted_session_signature(
+    options: &MqttOptions,
+    session: &PersistedSession,
+) -> Result<(), SessionRestoreError> {
+    if session.format_version != 1 {
+        return Err(SessionRestoreError::UnsupportedFormatVersion {
+            actual: session.format_version,
+        });
+    }
+
+    let configured_client_id = options.client_id();
+    if session.client_id != configured_client_id {
+        return Err(SessionRestoreError::ClientIdMismatch {
+            persisted: session.client_id.clone(),
+            configured: configured_client_id,
+        });
+    }
+
+    if session.clean_start != options.clean_start() {
+        return Err(SessionRestoreError::CleanStartMismatch {
+            persisted: session.clean_start,
+            configured: options.clean_start(),
+        });
+    }
+
+    if session.outgoing_inflight_upper_limit != options.get_outgoing_inflight_upper_limit() {
+        return Err(SessionRestoreError::OutgoingInflightUpperLimitMismatch {
+            persisted: session.outgoing_inflight_upper_limit,
+            configured: options.get_outgoing_inflight_upper_limit(),
+        });
+    }
+
+    if session.ack_mode != persisted_ack_mode(options.ack_mode()) {
+        return Err(SessionRestoreError::AckModeMismatch);
+    }
+
+    Ok(())
+}
+
+const fn validate_pkid(pkid: u16) -> Result<(), SessionRestoreError> {
+    if pkid == 0 {
+        return Err(SessionRestoreError::InvalidPacketIdentifier(pkid));
+    }
+
+    Ok(())
+}
+
+fn validate_outgoing_pkid(
+    pkid: u16,
+    max_outgoing_inflight: u16,
+) -> Result<(), SessionRestoreError> {
+    validate_pkid(pkid)?;
+
+    if pkid > max_outgoing_inflight {
+        return Err(SessionRestoreError::OutgoingPacketIdentifierOutOfRange {
+            pkid,
+            max_outgoing_inflight,
+        });
+    }
+
+    Ok(())
+}
+
+const fn validate_last_puback(
+    last_puback: u16,
+    max_outgoing_inflight: u16,
+) -> Result<(), SessionRestoreError> {
+    if last_puback > max_outgoing_inflight {
+        return Err(SessionRestoreError::LastPubAckOutOfRange {
+            last_puback,
+            max_outgoing_inflight,
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_persisted_replay_request_pkid(
+    request: &PersistedRequest,
+    max_outgoing_inflight: u16,
+) -> Result<(), SessionRestoreError> {
+    match request {
+        PersistedRequest::Publish(publish) => {
+            validate_outgoing_pkid(publish.pkid, max_outgoing_inflight)
+        }
+        PersistedRequest::PubRel(pubrel) => {
+            validate_outgoing_pkid(pubrel.pkid, max_outgoing_inflight)
+        }
+        PersistedRequest::Subscribe(subscribe) => validate_pkid(subscribe.pkid),
+        PersistedRequest::Unsubscribe(unsubscribe) => validate_pkid(unsubscribe.pkid),
+    }
+}
+
+const fn persisted_ack_mode(ack_mode: AckMode) -> PersistedAckMode {
+    match ack_mode {
+        AckMode::Automatic => PersistedAckMode::Automatic,
+        AckMode::Manual => PersistedAckMode::Manual,
+    }
+}
+
+const fn persisted_qos(qos: QoS) -> PersistedQoS {
+    match qos {
+        QoS::AtMostOnce => PersistedQoS::AtMostOnce,
+        QoS::AtLeastOnce => PersistedQoS::AtLeastOnce,
+        QoS::ExactlyOnce => PersistedQoS::ExactlyOnce,
+    }
+}
+
+const fn qos_from_persisted(qos: PersistedQoS) -> QoS {
+    match qos {
+        PersistedQoS::AtMostOnce => QoS::AtMostOnce,
+        PersistedQoS::AtLeastOnce => QoS::AtLeastOnce,
+        PersistedQoS::ExactlyOnce => QoS::ExactlyOnce,
+    }
+}
+
+fn persisted_publish(publish: &Publish) -> Option<PersistedPublish> {
+    if publish.qos == QoS::AtMostOnce || publish.pkid == 0 || publish.topic.is_empty() {
+        return None;
+    }
+
+    Some(PersistedPublish {
+        dup: publish.dup,
+        qos: persisted_qos(publish.qos),
+        retain: publish.retain,
+        topic: publish.topic.to_vec(),
+        pkid: publish.pkid,
+        payload: publish.payload.to_vec(),
+        properties: publish
+            .properties
+            .as_ref()
+            .map(persisted_publish_properties),
+    })
+}
+
+fn persisted_publish_properties(properties: &PublishProperties) -> PersistedPublishProperties {
+    PersistedPublishProperties {
+        payload_format_indicator: properties.payload_format_indicator,
+        message_expiry_interval: properties.message_expiry_interval,
+        response_topic: properties.response_topic.clone(),
+        correlation_data: properties
+            .correlation_data
+            .as_ref()
+            .map(|data| data.to_vec()),
+        user_properties: properties.user_properties.clone(),
+        subscription_identifiers: properties.subscription_identifiers.clone(),
+        content_type: properties.content_type.clone(),
+    }
+}
+
+fn persisted_subscribe(subscribe: &Subscribe) -> PersistedSubscribe {
+    PersistedSubscribe {
+        pkid: subscribe.pkid,
+        filters: subscribe.filters.iter().map(persisted_filter).collect(),
+        properties: subscribe
+            .properties
+            .as_ref()
+            .map(|properties| PersistedSubscribeProperties {
+                id: properties.id,
+                user_properties: properties.user_properties.clone(),
+            }),
+    }
+}
+
+fn persisted_filter(filter: &Filter) -> PersistedFilter {
+    PersistedFilter {
+        path: filter.path.clone(),
+        qos: persisted_qos(filter.qos),
+        nolocal: filter.nolocal,
+        preserve_retain: filter.preserve_retain,
+        retain_forward_rule: match filter.retain_forward_rule {
+            RetainForwardRule::OnEverySubscribe => PersistedRetainForwardRule::OnEverySubscribe,
+            RetainForwardRule::OnNewSubscribe => PersistedRetainForwardRule::OnNewSubscribe,
+            RetainForwardRule::Never => PersistedRetainForwardRule::Never,
+        },
+    }
+}
+
+fn persisted_unsubscribe(unsubscribe: &Unsubscribe) -> PersistedUnsubscribe {
+    PersistedUnsubscribe {
+        pkid: unsubscribe.pkid,
+        filters: unsubscribe.filters.clone(),
+        properties: unsubscribe.properties.as_ref().map(|properties| {
+            PersistedUnsubscribeProperties {
+                user_properties: properties.user_properties.clone(),
+            }
+        }),
+    }
+}
+
+fn request_from_persisted_request(
+    request: &PersistedRequest,
+) -> Result<Request, SessionRestoreError> {
+    match request {
+        PersistedRequest::Publish(publish) => {
+            validate_pkid(publish.pkid)?;
+            Ok(Request::Publish(Publish {
+                dup: publish.dup,
+                qos: qos_from_persisted(publish.qos),
+                retain: publish.retain,
+                topic: Bytes::from(publish.topic.clone()),
+                pkid: publish.pkid,
+                payload: Bytes::from(publish.payload.clone()),
+                properties: publish
+                    .properties
+                    .as_ref()
+                    .map(publish_properties_from_persisted),
+            }))
+        }
+        PersistedRequest::PubRel(pubrel) => {
+            validate_pkid(pubrel.pkid)?;
+            Ok(Request::PubRel(PubRel::new(pubrel.pkid, None)))
+        }
+        PersistedRequest::Subscribe(subscribe) => {
+            validate_pkid(subscribe.pkid)?;
+            Ok(Request::Subscribe(Subscribe {
+                pkid: subscribe.pkid,
+                filters: subscribe
+                    .filters
+                    .iter()
+                    .map(filter_from_persisted)
+                    .collect(),
+                properties: subscribe
+                    .properties
+                    .as_ref()
+                    .map(subscribe_properties_from_persisted),
+            }))
+        }
+        PersistedRequest::Unsubscribe(unsubscribe) => {
+            validate_pkid(unsubscribe.pkid)?;
+            Ok(Request::Unsubscribe(Unsubscribe {
+                pkid: unsubscribe.pkid,
+                filters: unsubscribe.filters.clone(),
+                properties: unsubscribe
+                    .properties
+                    .as_ref()
+                    .map(unsubscribe_properties_from_persisted),
+            }))
+        }
+    }
+}
+
+fn publish_properties_from_persisted(properties: &PersistedPublishProperties) -> PublishProperties {
+    PublishProperties {
+        payload_format_indicator: properties.payload_format_indicator,
+        message_expiry_interval: properties.message_expiry_interval,
+        topic_alias: None,
+        response_topic: properties.response_topic.clone(),
+        correlation_data: properties
+            .correlation_data
+            .as_ref()
+            .map(|data| Bytes::from(data.clone())),
+        user_properties: properties.user_properties.clone(),
+        subscription_identifiers: properties.subscription_identifiers.clone(),
+        content_type: properties.content_type.clone(),
+    }
+}
+
+fn filter_from_persisted(filter: &PersistedFilter) -> Filter {
+    Filter {
+        path: filter.path.clone(),
+        qos: qos_from_persisted(filter.qos),
+        nolocal: filter.nolocal,
+        preserve_retain: filter.preserve_retain,
+        retain_forward_rule: match filter.retain_forward_rule {
+            PersistedRetainForwardRule::OnEverySubscribe => RetainForwardRule::OnEverySubscribe,
+            PersistedRetainForwardRule::OnNewSubscribe => RetainForwardRule::OnNewSubscribe,
+            PersistedRetainForwardRule::Never => RetainForwardRule::Never,
+        },
+    }
+}
+
+fn subscribe_properties_from_persisted(
+    properties: &PersistedSubscribeProperties,
+) -> SubscribeProperties {
+    SubscribeProperties {
+        id: properties.id,
+        user_properties: properties.user_properties.clone(),
+    }
+}
+
+fn unsubscribe_properties_from_persisted(
+    properties: &PersistedUnsubscribeProperties,
+) -> UnsubscribeProperties {
+    UnsubscribeProperties {
+        user_properties: properties.user_properties.clone(),
+    }
 }
 
 impl Clone for MqttState {
@@ -2423,7 +3024,10 @@ mod test {
         PublishResult, SubscribeNoticeError, SubscribeNoticeTx, TrackedNoticeTx,
         UnsubscribeNoticeError, UnsubscribeNoticeTx,
     };
-    use crate::{AckMode, NoticeFailureReason, TopicAliasPolicy};
+    use crate::{
+        AckMode, MqttOptions, NoticeFailureReason, PersistedAckMode, PersistedPubRel,
+        PersistedRequest, PersistedSession, SessionMode, SessionRestoreError, TopicAliasPolicy,
+    };
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
@@ -2468,6 +3072,12 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::builder(u16::MAX).build()
+    }
+
+    fn persistent_options() -> MqttOptions {
+        MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .build()
     }
 
     fn build_lru_auto_alias_mqttstate(max_inflight: u16, broker_topic_alias_max: u16) -> MqttState {
@@ -2719,6 +3329,257 @@ mod test {
                 assert_eq!(pubcomp.reason, PubCompReason::PacketIdentifierNotFound);
             }
             packet => panic!("Invalid recovery network request after session reset: {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn persisted_session_restores_qos1_publish_replay() {
+        let options = persistent_options();
+        let mut mqtt = build_mqttstate();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.mark_outgoing_publishes_flush_attempted();
+
+        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let mut restored = build_mqttstate();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("persisted session should restore");
+
+        assert_eq!(replay.len(), 1);
+        match &replay[0] {
+            Request::Publish(publish) => {
+                assert_eq!(publish.pkid, 1);
+                assert!(publish.dup);
+                assert_eq!(publish.qos, QoS::AtLeastOnce);
+                assert_eq!(publish.topic.as_ref(), b"hello/world");
+            }
+            request => panic!("expected restored publish replay, got {request:?}"),
+        }
+    }
+
+    #[test]
+    fn persisted_session_allows_broker_overridden_session_expiry_interval() {
+        let mut options = persistent_options();
+        options.set_session_expiry_interval(Some(120));
+        let mut session = build_mqttstate().persisted_session(&options, std::iter::empty());
+        session.session_expiry_interval = Some(60);
+        let mut restored = build_mqttstate();
+
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("server-overridden session expiry should not block pre-connect restore");
+
+        assert!(replay.is_empty());
+    }
+
+    #[test]
+    fn persisted_session_restores_qos2_pubrel_replay() {
+        let options = persistent_options();
+        let mut mqtt = build_mqttstate();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+        mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
+
+        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let mut restored = build_mqttstate();
+        let mut replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("persisted session should restore");
+
+        assert_eq!(replay.len(), 1);
+        let packet = restored
+            .handle_outgoing_packet(replay.remove(0))
+            .expect("restored pubrel replay should be accepted")
+            .expect("restored pubrel replay should produce a packet");
+        match packet {
+            Packet::PubRel(pubrel) => assert_eq!(pubrel.pkid, 1),
+            packet => panic!("expected restored PUBREL replay, got {packet:?}"),
+        }
+    }
+
+    #[test]
+    fn persisted_session_replays_control_packets_with_original_identifiers() {
+        let options = persistent_options();
+        let mut mqtt = build_mqttstate();
+        mqtt.outgoing_subscribe(
+            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            None,
+        )
+        .unwrap();
+        mqtt.outgoing_unsubscribe(Unsubscribe::new("c/d", None), None)
+            .unwrap();
+
+        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let mut restored = build_mqttstate();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("persisted session should restore");
+
+        assert_eq!(replay.len(), 2);
+        for request in replay {
+            let packet = restored
+                .handle_replayed_outgoing_packet_with_notice(request, None)
+                .expect("restored control replay should be accepted")
+                .0
+                .expect("restored control replay should produce a packet");
+            match packet {
+                Packet::Subscribe(subscribe) => assert_eq!(subscribe.pkid, 1),
+                Packet::Unsubscribe(unsubscribe) => assert_eq!(unsubscribe.pkid, 2),
+                packet => panic!("expected restored control replay, got {packet:?}"),
+            }
+        }
+
+        assert!(restored.pending_subscribe.contains_key(&1));
+        assert!(restored.pending_unsubscribe.contains_key(&2));
+    }
+
+    #[test]
+    fn persisted_session_omits_unsent_control_requests_without_packet_identifiers() {
+        let options = persistent_options();
+        let mqtt = build_mqttstate();
+        let replay_requests = [
+            Request::Subscribe(Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None)),
+            Request::Unsubscribe(Unsubscribe::new("c/d", None)),
+        ];
+
+        let session = mqtt.persisted_session(&options, replay_requests.iter());
+
+        assert!(session.replay.is_empty());
+        let mut restored = build_mqttstate();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("checkpoint without unsent controls should restore");
+        assert!(replay.is_empty());
+    }
+
+    #[test]
+    fn persisted_session_allows_control_packet_identifiers_above_publish_inflight_limit() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(1)
+            .build();
+        let mut subscribe = Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None);
+        subscribe.pkid = 2;
+        let mut unsubscribe = Unsubscribe::new("c/d", None);
+        unsubscribe.pkid = 3;
+        let session = PersistedSession {
+            format_version: 1,
+            client_id: "client".to_owned(),
+            clean_start: false,
+            session_expiry_interval: options.session_expiry_interval(),
+            outgoing_inflight_upper_limit: Some(1),
+            ack_mode: PersistedAckMode::Automatic,
+            last_pkid: 3,
+            last_puback: 0,
+            replay: vec![
+                PersistedRequest::Subscribe(super::persisted_subscribe(&subscribe)),
+                PersistedRequest::Unsubscribe(super::persisted_unsubscribe(&unsubscribe)),
+            ],
+            incoming_qos2: vec![],
+        };
+        let mut restored = MqttState::builder(1).build();
+
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("control ids are not constrained by publish inflight limit");
+
+        assert_eq!(replay.len(), 2);
+        assert!(matches!(&replay[0], Request::Subscribe(subscribe) if subscribe.pkid == 2));
+        assert!(matches!(&replay[1], Request::Unsubscribe(unsubscribe) if unsubscribe.pkid == 3));
+    }
+
+    #[test]
+    fn persisted_session_rejects_pubrel_replay_above_outgoing_inflight_limit() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(1)
+            .build();
+        let session = PersistedSession {
+            format_version: 1,
+            client_id: "client".to_owned(),
+            clean_start: false,
+            session_expiry_interval: options.session_expiry_interval(),
+            outgoing_inflight_upper_limit: Some(1),
+            ack_mode: PersistedAckMode::Automatic,
+            last_pkid: 0,
+            last_puback: 0,
+            replay: vec![PersistedRequest::PubRel(PersistedPubRel { pkid: 2 })],
+            incoming_qos2: vec![],
+        };
+        let mut restored = MqttState::builder(1).build();
+        restored.last_pkid = 9;
+
+        let err = restored
+            .restore_persisted_session(&options, &session)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            SessionRestoreError::OutgoingPacketIdentifierOutOfRange {
+                pkid: 2,
+                max_outgoing_inflight: 1,
+            }
+        );
+        assert_eq!(restored.last_pkid, 9);
+    }
+
+    #[test]
+    fn persisted_session_rejects_last_puback_above_outgoing_inflight_limit() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(10)
+            .build();
+        let session = PersistedSession {
+            format_version: 1,
+            client_id: "client".to_owned(),
+            clean_start: false,
+            session_expiry_interval: options.session_expiry_interval(),
+            outgoing_inflight_upper_limit: Some(10),
+            ack_mode: PersistedAckMode::Automatic,
+            last_pkid: 0,
+            last_puback: 100,
+            replay: vec![],
+            incoming_qos2: vec![],
+        };
+        let mut restored = MqttState::builder(10).build();
+        restored.last_puback = 4;
+
+        let err = restored
+            .restore_persisted_session(&options, &session)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            SessionRestoreError::LastPubAckOutOfRange {
+                last_puback: 100,
+                max_outgoing_inflight: 10,
+            }
+        );
+        assert_eq!(restored.last_puback, 4);
+    }
+
+    #[test]
+    fn persisted_session_restores_incoming_qos2_state() {
+        let options = persistent_options();
+        let mut mqtt = build_mqttstate();
+        let mut publish = build_incoming_publish(QoS::ExactlyOnce, 7);
+        mqtt.handle_incoming_publish(&mut publish).unwrap();
+
+        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let mut restored = build_mqttstate();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("persisted session should restore");
+
+        assert!(replay.is_empty());
+        let packet = restored
+            .handle_incoming_pubrel(&PubRel::new(7, None))
+            .unwrap()
+            .expect("restored incoming qos2 state should produce pubcomp");
+        match packet {
+            Packet::PubComp(pubcomp) => assert_eq!(pubcomp.pkid, 7),
+            packet => panic!("expected restored PUBCOMP response, got {packet:?}"),
         }
     }
 
@@ -3020,6 +3881,28 @@ mod test {
     }
 
     #[test]
+    fn effect_path_defers_tracked_puback_notice() {
+        let mut mqtt = build_mqttstate();
+        let notice = queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::AtLeastOnce));
+        mqtt.events.clear();
+
+        let puback = PubAck::new(1, None);
+        let effects = mqtt
+            .handle_incoming_packet_with_effects(Incoming::PubAck(puback.clone()))
+            .unwrap();
+
+        assert!(effects.outgoing.is_none());
+        assert_eq!(effects.notices.len(), 1);
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Packet::PubAck(puback.clone())))
+        );
+
+        assert!(effects.complete_notices().is_none());
+        assert_eq!(notice.wait(), Ok(PublishResult::Qos1(puback)));
+    }
+
+    #[test]
     fn tracked_suback_returns_ack_with_properties_and_preserves_incoming_event() {
         let mut mqtt = build_mqttstate();
         let (tx, notice) = SubscribeNoticeTx::new();
@@ -3049,6 +3932,37 @@ mod test {
             mqtt.events.pop_front(),
             Some(Event::Incoming(Packet::SubAck(suback)))
         );
+    }
+
+    #[test]
+    fn effect_path_defers_tracked_suback_notice() {
+        let mut mqtt = build_mqttstate();
+        let (tx, notice) = SubscribeNoticeTx::new();
+        mqtt.outgoing_subscribe(
+            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Some(tx),
+        )
+        .unwrap();
+        mqtt.events.clear();
+
+        let suback = SubAck {
+            pkid: 1,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        };
+        let effects = mqtt
+            .handle_incoming_packet_with_effects(Incoming::SubAck(suback.clone()))
+            .unwrap();
+
+        assert!(effects.outgoing.is_none());
+        assert_eq!(effects.notices.len(), 1);
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Packet::SubAck(suback.clone())))
+        );
+
+        assert!(effects.complete_notices().is_none());
+        assert_eq!(notice.wait(), Ok(suback));
     }
 
     #[test]
@@ -3109,6 +4023,34 @@ mod test {
             mqtt.events.pop_front(),
             Some(Event::Incoming(Packet::UnsubAck(unsuback)))
         );
+    }
+
+    #[test]
+    fn effect_path_defers_tracked_unsuback_notice() {
+        let mut mqtt = build_mqttstate();
+        let (tx, notice) = UnsubscribeNoticeTx::new();
+        mqtt.outgoing_unsubscribe(Unsubscribe::new("a/b", None), Some(tx))
+            .unwrap();
+        mqtt.events.clear();
+
+        let unsuback = UnsubAck {
+            pkid: 1,
+            reasons: vec![UnsubAckReason::Success],
+            properties: None,
+        };
+        let effects = mqtt
+            .handle_incoming_packet_with_effects(Incoming::UnsubAck(unsuback.clone()))
+            .unwrap();
+
+        assert!(effects.outgoing.is_none());
+        assert_eq!(effects.notices.len(), 1);
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Packet::UnsubAck(unsuback.clone())))
+        );
+
+        assert!(effects.complete_notices().is_none());
+        assert_eq!(notice.wait(), Ok(unsuback));
     }
 
     #[test]
@@ -6128,7 +7070,11 @@ mod test {
         let mut pubrec = PubRec::new(1, None);
         pubrec.reason = PubRecReason::ImplementationSpecificError;
 
-        assert!(mqtt.handle_incoming_pubrec(&pubrec).unwrap().is_none());
+        assert!(
+            mqtt.handle_incoming_pubrec(&pubrec)
+                .unwrap()
+                .complete_notices_and_has_no_outgoing()
+        );
         assert_eq!(
             first_notice.wait(),
             Ok(PublishResult::Qos2PubRecRejected(pubrec))
@@ -6254,7 +7200,11 @@ mod test {
         let mut pubcomp = PubComp::new(1, None);
         pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
 
-        assert!(mqtt.handle_incoming_pubcomp(&pubcomp).unwrap().is_none());
+        assert!(
+            mqtt.handle_incoming_pubcomp(&pubcomp)
+                .unwrap()
+                .complete_notices_and_has_no_outgoing()
+        );
         assert_eq!(
             first_notice.wait(),
             Ok(PublishResult::Qos2Completed(pubcomp))

@@ -3,6 +3,7 @@
 ### Added
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
 - `rumqttc` v5: Add `MqttStateBuilder::client_topic_alias_max(u16)` builder method and `MqttState::set_client_topic_alias_max(Option<u16>)` to configure the incoming Topic Alias Maximum, propagated from `MqttOptions::topic_alias_max()` at connect time.
+- `rumqttc` v5: Add opt-in client-side persistent session storage via `SessionStore`, `PersistedSession`, `MqttOptions::set_session_store(...)`, and builder `.session_store(...)`. When configured with `clean_start(false)`, the event loop can restore local QoS/session state across newly constructed clients or process restarts, including in-flight publishes, `PUBREL`, `SUBSCRIBE`, and `UNSUBSCRIBE` requests.
 ### Changed
 - `rumqttc` v4 (Breaking Change): Make `EventLoop::network` private for v5 parity, and so downstream code can no longer access the live transport and inject arbitrary MQTT packets, including a second `CONNECT`, on an existing connection.
 - `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
@@ -15,6 +16,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v5: Complete tracked publish/subscribe/unsubscribe notices only after updated persistent session state is saved. If the configured `SessionStore` fails at this durability barrier, notices now report `SessionPersistence(...)` errors instead of success.
 - `rumqttc` v5: Enforce CONNACK `Retain Available = 0` per MQTT-3.2.2-14 by rejecting retained outbound publishes, including reconnect replays, without dropping the active connection; tracked publishes report `PublishNoticeError::RetainNotSupported`.
 - `rumqttc` v4/v5: Fix graceful disconnect after subscribe/unsubscribe packet-id gaps so completed publishes do not leave stale outbound drain tracking and prevent MQTT `DISCONNECT`.
 - `rumqttc` v4/v5: Fix graceful disconnect drain handling so queued but unsent flow-controlled publishes do not prevent MQTT `DISCONNECT` after actual outbound protocol state has completed.
