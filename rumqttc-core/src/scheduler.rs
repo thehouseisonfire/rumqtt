@@ -37,10 +37,12 @@ impl<T> OutboundScheduler<T> {
         self.queue.push_back(item);
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.queue.len()
     }
