@@ -25,21 +25,21 @@ fn main() {
     let elapsed_micros = start.elapsed().as_micros();
     let total_size = output.len();
     let throughput = (total_size * 1_000_000) / elapsed_micros as usize;
-    let write_throughput = throughput as f32 / 1024.0 / 1024.0 / 1024.0;
-    let total_size_gb = total_size as f32 / 1024.0 / 1024.0 / 1024.0;
+    let write_throughput = (throughput as f64 / 1024.0 / 1024.0 / 1024.0) as f32;
+    let total_size_gb = (total_size as f64 / 1024.0 / 1024.0 / 1024.0) as f32;
 
     // --------------------------- read throughput -------------------------------
 
     let start = Instant::now();
-    let mut packets = Vec::with_capacity(count);
+    let mut _packets = Vec::with_capacity(count);
     while output.has_remaining() {
         let packet = Packet::read(&mut output, Some(10 * 1024)).unwrap();
-        packets.push(packet);
+        _packets.push(packet);
     }
 
     let elapsed_micros = start.elapsed().as_micros();
     let throughput = (total_size * 1_000_000) / elapsed_micros as usize;
-    let read_throughput = throughput as f32 / 1024.0 / 1024.0 / 1024.0;
+    let read_throughput = (throughput as f64 / 1024.0 / 1024.0 / 1024.0) as f32;
 
     // --------------------------- results ---------------------------------------
 
@@ -61,7 +61,7 @@ fn generate_data(count: usize, payload_size: usize) -> Vec<v5::Publish> {
     for i in 0..count {
         let mut publish =
             v5::Publish::new("hello/world", QoS::AtLeastOnce, vec![1; payload_size], None);
-        publish.pkid = (i % 100 + 1) as u16;
+        publish.pkid = u16::try_from(i % 100 + 1).unwrap();
         data.push(publish);
     }
 
