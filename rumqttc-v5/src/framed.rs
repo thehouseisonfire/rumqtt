@@ -2,6 +2,8 @@ use futures_util::{FutureExt, SinkExt, StreamExt, future::poll_fn};
 pub use rumqttc_core::AsyncReadWrite;
 use tokio_util::codec::Framed;
 
+use crate::notice::DeferredNotice;
+
 use super::mqttbytes::v5::{Disconnect, DisconnectReasonCode, Packet};
 use super::{Codec, Incoming, MqttState, StateError, mqttbytes};
 use std::task::Poll;
@@ -13,9 +15,8 @@ struct InboundDisconnect {
 
 impl InboundDisconnect {
     const fn classify(error: &mqttbytes::Error) -> Option<Self> {
-        let reason = match inbound_disconnect_reason(error) {
-            Some(reason) => reason,
-            None => return None,
+        let Some(reason) = inbound_disconnect_reason(error) else {
+            return None;
         };
 
         Some(Self { reason })
@@ -77,6 +78,31 @@ pub struct Network {
 pub enum ReadBatchOutcome {
     NoResponseWritten,
     ResponseWritten,
+}
+
+#[derive(Debug)]
+pub struct ReadBatch {
+    pub(crate) outcome: ReadBatchOutcome,
+    pub(crate) notices: Vec<DeferredNotice>,
+}
+
+#[derive(Debug)]
+pub struct ReadBatchError {
+    pub(crate) source: StateError,
+    pub(crate) batch: ReadBatch,
+}
+
+impl ReadBatchError {
+    const fn new(
+        source: StateError,
+        outcome: ReadBatchOutcome,
+        notices: Vec<DeferredNotice>,
+    ) -> Self {
+        Self {
+            source,
+            batch: ReadBatch { outcome, notices },
+        }
+    }
 }
 
 impl Network {
@@ -146,31 +172,68 @@ impl Network {
         &mut self,
         state: &mut MqttState,
         read_batch_limit: usize,
-    ) -> Result<ReadBatchOutcome, StateError> {
+    ) -> Result<ReadBatch, ReadBatchError> {
         // wait for the first read
         let mut res = self.framed.next().await;
         let read_batch_limit = read_batch_limit.max(1);
         let mut count = 0;
         let mut outcome = ReadBatchOutcome::NoResponseWritten;
+        let mut notices = Vec::new();
         loop {
             match res {
                 Some(Ok(packet)) => {
-                    match state.handle_incoming_packet(packet) {
-                        Ok(Some(Packet::Disconnect(disconnect)))
-                            if disconnect.reason_code as u8 >= 0x80 =>
-                        {
-                            let disconnect = InboundDisconnect {
-                                reason: disconnect.reason_code,
-                            };
-                            state.discard_last_outgoing_disconnect_event();
-                            self.try_send_inbound_disconnect(disconnect).await;
-                            return Err(StateError::Deserialization(disconnect.error()));
-                        }
-                        Ok(Some(outgoing)) => {
-                            self.write(outgoing).await?;
+                    match state.handle_incoming_packet_with_effects(packet) {
+                        Ok(super::state::IncomingPacketEffects {
+                            outgoing: Some(Packet::Disconnect(disconnect)),
+                            notices: packet_notices,
+                        }) => {
+                            if disconnect.reason_code as u8 >= 0x80 {
+                                let disconnect = InboundDisconnect {
+                                    reason: disconnect.reason_code,
+                                };
+                                state.discard_last_outgoing_disconnect_event();
+                                self.try_send_inbound_disconnect(disconnect).await;
+                                return Err(ReadBatchError::new(
+                                    StateError::Deserialization(disconnect.error()),
+                                    outcome,
+                                    notices,
+                                ));
+                            }
+
+                            let has_deferred_notices = !packet_notices.is_empty();
+                            notices.extend(packet_notices);
+                            if let Err(err) = self.write(Packet::Disconnect(disconnect)).await {
+                                return Err(ReadBatchError::new(err, outcome, notices));
+                            }
                             outcome = ReadBatchOutcome::ResponseWritten;
+                            if has_deferred_notices {
+                                break;
+                            }
                         }
-                        Ok(None) => {}
+                        Ok(super::state::IncomingPacketEffects {
+                            outgoing: Some(outgoing),
+                            notices: packet_notices,
+                        }) => {
+                            let has_deferred_notices = !packet_notices.is_empty();
+                            notices.extend(packet_notices);
+                            if let Err(err) = self.write(outgoing).await {
+                                return Err(ReadBatchError::new(err, outcome, notices));
+                            }
+                            outcome = ReadBatchOutcome::ResponseWritten;
+                            if has_deferred_notices {
+                                break;
+                            }
+                        }
+                        Ok(super::state::IncomingPacketEffects {
+                            outgoing: None,
+                            notices: packet_notices,
+                        }) => {
+                            let has_deferred_notices = !packet_notices.is_empty();
+                            notices.extend(packet_notices);
+                            if has_deferred_notices {
+                                break;
+                            }
+                        }
                         Err(
                             err @ (StateError::Deserialization(mqttbytes::Error::ProtocolError)
                             | StateError::ProtocolViolation(_)),
@@ -179,9 +242,9 @@ impl Network {
                                 reason: DisconnectReasonCode::ProtocolError,
                             })
                             .await;
-                            return Err(err);
+                            return Err(ReadBatchError::new(err, outcome, notices));
                         }
-                        Err(err) => return Err(err),
+                        Err(err) => return Err(ReadBatchError::new(err, outcome, notices)),
                     }
 
                     count += 1;
@@ -190,8 +253,17 @@ impl Network {
                     }
                 }
                 Some(Err(mqttbytes::Error::InsufficientBytes(_))) => unreachable!(),
-                Some(Err(e)) => return Err(self.handle_incoming_decode_error(e).await),
-                None => return Err(StateError::ConnectionAborted),
+                Some(Err(e)) => {
+                    let err = self.handle_incoming_decode_error(e).await;
+                    return Err(ReadBatchError::new(err, outcome, notices));
+                }
+                None => {
+                    return Err(ReadBatchError::new(
+                        StateError::ConnectionAborted,
+                        outcome,
+                        notices,
+                    ));
+                }
             }
             // do not wait for subsequent reads
             match self.framed.next().now_or_never() {
@@ -200,7 +272,7 @@ impl Network {
             }
         }
 
-        Ok(outcome)
+        Ok(ReadBatch { outcome, notices })
     }
 
     /// Serializes packet into write buffer
@@ -222,10 +294,12 @@ impl Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Request;
     use crate::mqttbytes::{
         QoS,
-        v5::{Auth, AuthProperties, AuthReasonCode, Publish},
+        v5::{Auth, AuthProperties, AuthReasonCode, PubAck, Publish},
     };
+    use crate::notice::{PublishNoticeTx, TrackedNoticeTx};
     use bytes::BytesMut;
     use std::{
         io,
@@ -298,7 +372,7 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        let outcome = network.readb(&mut state, 2).await.unwrap();
+        let outcome = network.readb(&mut state, 2).await.unwrap().outcome;
 
         assert_eq!(state.events.len(), 2);
         assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
@@ -312,7 +386,7 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        let outcome = network.readb(&mut state, 1).await.unwrap();
+        let outcome = network.readb(&mut state, 1).await.unwrap().outcome;
 
         assert_eq!(state.events.len(), 1);
         assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
@@ -330,9 +404,78 @@ mod tests {
 
         peer.write_all(&bytes).await.unwrap();
 
-        let outcome = network.readb(&mut state, 1).await.unwrap();
+        let outcome = network.readb(&mut state, 1).await.unwrap().outcome;
 
         assert_eq!(outcome, ReadBatchOutcome::ResponseWritten);
+    }
+
+    #[tokio::test]
+    async fn readb_stops_after_deferred_notice_before_buffered_error() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::builder(10).build();
+        let (notice_tx, _notice) = PublishNoticeTx::new();
+        let mut publish = Publish::new("hello/world", QoS::AtLeastOnce, vec![1, 2, 3], None);
+        publish.pkid = 1;
+        state
+            .handle_outgoing_packet_with_notice(
+                Request::Publish(publish),
+                Some(TrackedNoticeTx::Publish(notice_tx)),
+            )
+            .unwrap();
+        let mut puback = BytesMut::new();
+        PubAck::new(1, None).write(&mut puback).unwrap();
+
+        peer.write_all(&puback).await.unwrap();
+        peer.write_all(&[0xE1, 0x01, 0x00]).await.unwrap();
+
+        let batch = network.readb(&mut state, 10).await.unwrap();
+
+        assert_eq!(batch.outcome, ReadBatchOutcome::NoResponseWritten);
+        assert_eq!(batch.notices.len(), 1);
+
+        let err = network.readb(&mut state, 10).await.unwrap_err().source;
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::IncorrectPacketFormat)
+        ));
+    }
+
+    #[tokio::test]
+    async fn readb_preserves_deferred_notice_when_collision_replay_write_fails() {
+        let (client, mut peer) = duplex(64);
+        let (notice_tx, _notice) = PublishNoticeTx::new();
+        let mut first = Publish::new("hello/world", QoS::AtLeastOnce, vec![1, 2, 3], None);
+        first.pkid = 1;
+        let mut collision = Publish::new("hello/world", QoS::AtLeastOnce, vec![4, 5, 6], None);
+        collision.pkid = 1;
+        let mut puback = BytesMut::new();
+        PubAck::new(1, None).write(&mut puback).unwrap();
+        let mut network = Network::new(client, Some(1024));
+        network.set_max_outgoing_size(Some(1));
+        let mut state = MqttState::builder(10).build();
+
+        state
+            .handle_outgoing_packet_with_notice(
+                Request::Publish(first),
+                Some(TrackedNoticeTx::Publish(notice_tx)),
+            )
+            .unwrap();
+        let (packet, flush_notice) = state
+            .handle_outgoing_packet_with_notice(Request::Publish(collision), None)
+            .unwrap();
+        assert!(packet.is_none());
+        assert!(flush_notice.is_none());
+        assert!(state.collision.is_some());
+
+        peer.write_all(&puback).await.unwrap();
+        let err = network.readb(&mut state, 1).await.unwrap_err();
+
+        assert!(matches!(
+            err.source,
+            StateError::Deserialization(mqttbytes::Error::OutgoingPacketTooLarge { .. })
+        ));
+        assert_eq!(err.batch.notices.len(), 1);
     }
 
     #[tokio::test]
@@ -370,7 +513,7 @@ mod tests {
 
         peer.write_all(&[0x30, 0x14]).await.unwrap();
 
-        let err = network.readb(&mut state, 1).await.unwrap_err();
+        let err = network.readb(&mut state, 1).await.unwrap_err().source;
         assert!(matches!(
             err,
             StateError::Deserialization(mqttbytes::Error::PayloadSizeLimitExceeded {
@@ -420,7 +563,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = network.readb(&mut state, 1).await.unwrap_err();
+        let err = network.readb(&mut state, 1).await.unwrap_err().source;
         assert!(matches!(
             err,
             StateError::Deserialization(mqttbytes::Error::ProtocolViolation(
@@ -462,7 +605,7 @@ mod tests {
 
         peer.write_all(&encoded).await.unwrap();
 
-        let err = network.readb(&mut state, 1).await.unwrap_err();
+        let err = network.readb(&mut state, 1).await.unwrap_err().source;
         assert!(matches!(
             err,
             StateError::Deserialization(mqttbytes::Error::ProtocolError)
@@ -669,7 +812,8 @@ mod tests {
         )
         .await
         .expect("readb should not wait for best-effort disconnect")
-        .unwrap_err();
+        .unwrap_err()
+        .source;
 
         assert!(matches!(
             err,
@@ -705,7 +849,8 @@ mod tests {
         )
         .await
         .expect("readb should not wait for best-effort state protocol-error disconnect")
-        .unwrap_err();
+        .unwrap_err()
+        .source;
 
         assert!(matches!(
             err,

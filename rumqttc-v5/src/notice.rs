@@ -73,6 +73,8 @@ pub enum PublishNoticeError {
     TopicAliasReplayUnavailable(u16),
     #[error("qos0 publish was not flushed to the network")]
     Qos0NotFlushed,
+    #[error("session state could not be persisted before publish completion: {0}")]
+    SessionPersistence(String),
     #[error("v5 puback returned non-success reason: {0:?}")]
     V5PubAck(PubAckReason),
     #[error("v5 pubrec returned non-success reason: {0:?}")]
@@ -191,6 +193,8 @@ pub enum SubscribeNoticeError {
     SessionReset,
     #[error("subscribe rejected because broker-only session resume has no local packet-id state")]
     BrokerOnlySessionResume,
+    #[error("session state could not be persisted before subscribe completion: {0}")]
+    SessionPersistence(String),
     #[error("v5 suback returned failing reason codes: {0:?}")]
     V5SubAckFailure(Vec<V5SubscribeReasonCode>),
 }
@@ -266,6 +270,8 @@ pub enum UnsubscribeNoticeError {
     SessionReset,
     #[error("unsubscribe rejected because broker-only session resume has no local packet-id state")]
     BrokerOnlySessionResume,
+    #[error("session state could not be persisted before unsubscribe completion: {0}")]
+    SessionPersistence(String),
     #[error("v5 unsuback returned failing reason codes: {0:?}")]
     V5UnsubAckFailure(Vec<V5UnsubAckReason>),
 }
@@ -452,6 +458,35 @@ impl UnsubscribeNoticeTx {
 
     pub(crate) fn error(self, err: UnsubscribeNoticeError) {
         self.0.error(err);
+    }
+}
+
+#[derive(Debug)]
+pub enum DeferredNotice {
+    Publish(PublishNoticeTx, PublishResult),
+    Subscribe(SubscribeNoticeTx, SubAck),
+    Unsubscribe(UnsubscribeNoticeTx, UnsubAck),
+}
+
+impl DeferredNotice {
+    pub(crate) fn complete(self) {
+        match self {
+            Self::Publish(notice, result) => notice.success(result),
+            Self::Subscribe(notice, suback) => notice.success(suback),
+            Self::Unsubscribe(notice, unsuback) => notice.success(unsuback),
+        }
+    }
+
+    pub(crate) fn persistence_error(self, error: String) {
+        match self {
+            Self::Publish(notice, _) => notice.error(PublishNoticeError::SessionPersistence(error)),
+            Self::Subscribe(notice, _) => {
+                notice.error(SubscribeNoticeError::SessionPersistence(error));
+            }
+            Self::Unsubscribe(notice, _) => {
+                notice.error(UnsubscribeNoticeError::SessionPersistence(error));
+            }
+        }
     }
 }
 

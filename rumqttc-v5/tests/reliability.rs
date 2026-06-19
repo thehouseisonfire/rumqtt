@@ -1,5 +1,8 @@
 use matches::assert_matches;
+use std::future::Future;
 use std::io::ErrorKind;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -17,6 +20,77 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const KEEP_ALIVE_EARLY_TOLERANCE: Duration = Duration::from_secs(1);
 const KEEP_ALIVE_LATE_TOLERANCE: Duration = Duration::from_secs(2);
 const PERSISTENT_SESSION_EXPIRY: u32 = 60;
+
+#[derive(Clone, Debug)]
+struct MemorySessionStore {
+    session: Arc<Mutex<Option<PersistedSession>>>,
+}
+
+impl MemorySessionStore {
+    fn new(session: Option<PersistedSession>) -> Self {
+        Self {
+            session: Arc::new(Mutex::new(session)),
+        }
+    }
+
+    fn current(&self) -> Option<PersistedSession> {
+        self.session.lock().unwrap().clone()
+    }
+}
+
+impl SessionStore for MemorySessionStore {
+    fn load<'a>(
+        &'a self,
+        _client_id: &'a str,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<PersistedSession>, SessionStoreError>> + Send + 'a>,
+    > {
+        Box::pin(async move { Ok(self.session.lock().unwrap().clone()) })
+    }
+
+    fn save<'a>(
+        &'a self,
+        session: &'a PersistedSession,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            *self.session.lock().unwrap() = Some(session.clone());
+            Ok(())
+        })
+    }
+
+    fn clear<'a>(
+        &'a self,
+        _client_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            *self.session.lock().unwrap() = None;
+            Ok(())
+        })
+    }
+}
+
+fn persisted_qos1_session(client_id: &str) -> PersistedSession {
+    PersistedSession {
+        format_version: 1,
+        client_id: client_id.to_owned(),
+        clean_start: false,
+        session_expiry_interval: Some(PERSISTENT_SESSION_EXPIRY),
+        outgoing_inflight_upper_limit: None,
+        ack_mode: PersistedAckMode::Automatic,
+        last_pkid: 1,
+        last_puback: 0,
+        replay: vec![PersistedRequest::Publish(PersistedPublish {
+            dup: true,
+            qos: PersistedQoS::AtLeastOnce,
+            retain: false,
+            topic: b"hello/world".to_vec(),
+            pkid: 1,
+            payload: vec![9, 1, 2, 3],
+            properties: None,
+        })],
+        incoming_qos2: Vec::new(),
+    }
+}
 
 async fn reserve_listener() -> (TcpListener, u16) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -931,6 +1005,93 @@ async fn broker_only_session_resume_compatibility_mode_accepts_session_present()
 }
 
 #[tokio::test]
+async fn restored_session_store_accepts_session_present_and_replays_qos1() {
+    let (listener, port) = reserve_listener().await;
+    let store = MemorySessionStore::new(Some(persisted_qos1_session("dummy")));
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
+        .set_session_store(store.clone());
+
+    let broker = task::spawn(async move {
+        let mut broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: true,
+            },
+        )
+        .await;
+        broker
+            .read_publish()
+            .await
+            .expect("restored publish should be replayed")
+    });
+
+    let (_client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+    let event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("timed out waiting for restored CONNACK")
+        .unwrap();
+    assert_matches!(
+        event,
+        Event::Incoming(Packet::ConnAck(ConnAck {
+            code: ConnectReturnCode::Success,
+            session_present: true,
+            properties: None,
+        }))
+    );
+
+    let event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("timed out waiting for restored replay event")
+        .unwrap();
+    assert_matches!(event, Event::Outgoing(Outgoing::Publish(1)));
+
+    let publish = broker.await.unwrap();
+    assert_eq!(publish.pkid, 1);
+    assert!(publish.dup);
+    assert_eq!(publish.payload.as_ref(), &[9, 1, 2, 3]);
+}
+
+#[tokio::test]
+async fn restored_session_store_is_cleared_when_broker_has_no_session() {
+    let (listener, port) = reserve_listener().await;
+    let store = MemorySessionStore::new(Some(persisted_qos1_session("dummy")));
+    let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
+    options
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
+        .set_session_store(store.clone());
+
+    let broker = task::spawn(async move {
+        let _broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await;
+    });
+
+    let (_client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+    let event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("timed out waiting for fresh CONNACK")
+        .unwrap();
+    assert_matches!(
+        event,
+        Event::Incoming(Packet::ConnAck(ConnAck {
+            code: ConnectReturnCode::Success,
+            session_present: false,
+            properties: None,
+        }))
+    );
+    assert!(store.current().is_none());
+    broker.await.unwrap();
+}
+
+#[tokio::test]
 async fn reconnection_resumes_from_the_previous_state() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
@@ -1632,6 +1793,7 @@ async fn reconnection_clean_start_drops_pending_packets_after_reconnect() {
     });
 
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+    let client_guard = client.clone();
     let requests = task::spawn(async move {
         start_requests(3, QoS::AtLeastOnce, 0, client).await;
     });
@@ -1661,6 +1823,7 @@ async fn reconnection_clean_start_drops_pending_packets_after_reconnect() {
     .await
     .expect("timed out waiting for clean-start reconnect");
 
+    drop(client_guard);
     requests.await.unwrap();
     broker.await.unwrap();
 }

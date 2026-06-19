@@ -55,6 +55,10 @@ impl<T> OutboundScheduler<T> {
         self.queue.drain(..)
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.queue.iter()
+    }
+
     pub fn has_ready<F>(&self, classify: F) -> bool
     where
         F: Fn(&T) -> ScheduledRequest,

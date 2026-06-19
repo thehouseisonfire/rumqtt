@@ -139,6 +139,16 @@ out side the library and `Eventloop` is accessible, users can
   rejects `Session Present = 1` in that case with
   `ConnectionError::SessionStateMismatch`.
 
+- To resume local MQTT session state across newly constructed clients or process
+  restarts, configure `MqttOptions::set_session_store(...)` or builder
+  `.session_store(...)` together with `clean_start(false)`. rumqttc provides the
+  backend-neutral `SessionStore` trait and `PersistedSession` data model; the
+  application supplies the storage backend and serialization format. Store
+  implementations should make `save(...)` crash-consistent. Tracked publish,
+  subscribe, and unsubscribe notices are completed only after the updated session
+  checkpoint is saved; a save failure is reported through the corresponding
+  `SessionPersistence(...)` notice error.
+
 - Applications that intentionally rely on broker-retained messages after local
   state loss can opt into non-strict MQTT 5 compatibility mode with
   `MqttOptions::set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`

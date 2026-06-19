@@ -37,6 +37,7 @@ mod eventloop;
 mod framed;
 pub mod mqttbytes;
 mod notice;
+mod session;
 mod state;
 mod transport;
 
@@ -65,6 +66,12 @@ pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::TlsConfiguration;
 pub use rumqttc_core::default_socket_connect;
+pub use session::{
+    PersistedAckMode, PersistedFilter, PersistedIncomingQos2, PersistedPubRel, PersistedPublish,
+    PersistedPublishProperties, PersistedQoS, PersistedRequest, PersistedRetainForwardRule,
+    PersistedSession, PersistedSubscribe, PersistedSubscribeProperties, PersistedUnsubscribe,
+    PersistedUnsubscribeProperties, SessionRestoreError, SessionStore, SessionStoreError,
+};
 pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
 pub use transport::Transport;
 
@@ -715,6 +722,7 @@ pub struct MqttOptions {
     socket_connector: Option<SocketConnector>,
 
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
+    session_store: Option<Arc<dyn SessionStore>>,
 }
 
 impl MqttOptions {
@@ -757,6 +765,7 @@ impl MqttOptions {
             fallible_request_modifier: None,
             socket_connector: None,
             authenticator: None,
+            session_store: None,
         }
     }
 
@@ -1060,6 +1069,34 @@ impl MqttOptions {
     /// Returns how broker-retained session state is handled when local session state is missing.
     pub const fn broker_session_resume_policy(&self) -> BrokerSessionResumePolicy {
         self.broker_session_resume_policy
+    }
+
+    /// Set durable storage for MQTT 5 persistent client session state.
+    ///
+    /// Persistence is opt-in and used only when `clean_start` is `false`.
+    pub fn set_session_store<S>(&mut self, store: S) -> &mut Self
+    where
+        S: SessionStore,
+    {
+        self.session_store = Some(Arc::new(store));
+        self
+    }
+
+    /// Set durable storage from an existing shared store handle.
+    pub fn set_session_store_arc(&mut self, store: Arc<dyn SessionStore>) -> &mut Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    /// Remove durable session storage from these options.
+    pub fn clear_session_store(&mut self) -> &mut Self {
+        self.session_store = None;
+        self
+    }
+
+    /// Returns the configured durable session store, if any.
+    pub fn session_store(&self) -> Option<Arc<dyn SessionStore>> {
+        self.session_store.clone()
     }
 
     /// Replace the current CONNECT authentication state.
@@ -1717,6 +1754,23 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Set durable storage for MQTT 5 persistent client session state.
+    #[must_use]
+    pub fn session_store<S>(mut self, store: S) -> Self
+    where
+        S: SessionStore,
+    {
+        self.options.set_session_store(store);
+        self
+    }
+
+    /// Set durable storage from an existing shared store handle.
+    #[must_use]
+    pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.options.set_session_store_arc(store);
+        self
+    }
+
     /// Replace the current CONNECT authentication state.
     #[must_use]
     pub fn auth(mut self, auth: ConnectAuth) -> Self {
@@ -2150,6 +2204,7 @@ impl Debug for MqttOptions {
             .field("topic_alias_policy", &self.topic_alias_policy)
             .field("ack_mode", &self.ack_mode)
             .field("connect properties", &self.connect_properties)
+            .field("session_store", &self.session_store.is_some())
             .finish_non_exhaustive()
     }
 }

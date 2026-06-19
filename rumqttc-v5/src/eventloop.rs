@@ -1,4 +1,4 @@
-use super::framed::{Network, ReadBatchOutcome};
+use super::framed::{Network, ReadBatch, ReadBatchError, ReadBatchOutcome};
 use super::mqttbytes::v5::{
     ConnAck, Connect, ConnectProperties, Disconnect, DisconnectReasonCode, Packet, Publish,
     Subscribe, Unsubscribe,
@@ -9,6 +9,7 @@ use crate::notice::{
     AuthNoticeTx, PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx,
     UnsubscribeNoticeError, UnsubscribeNoticeTx,
 };
+use crate::session::{PersistedSession, SessionRestoreError, SessionStore, SessionStoreError};
 use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError, SubscribeNoticeError};
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
@@ -19,6 +20,7 @@ use tokio::time::{self, Instant, Sleep, error::Elapsed};
 use std::collections::VecDeque;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::mqttbytes::v5::ConnectReturnCode;
@@ -43,17 +45,42 @@ use crate::proxy::ProxyError;
 pub struct RequestEnvelope {
     request: Request,
     notice: Option<TrackedNoticeTx>,
+    replay: bool,
 }
 
 impl RequestEnvelope {
-    pub(crate) const fn from_parts(request: Request, notice: Option<TrackedNoticeTx>) -> Self {
-        Self { request, notice }
+    pub(crate) const fn replay_from_parts(
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+    ) -> Self {
+        Self::from_parts_with_replay(request, notice, true)
+    }
+
+    const fn from_parts_with_replay(
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+        replay: bool,
+    ) -> Self {
+        Self {
+            request,
+            notice,
+            replay,
+        }
     }
 
     pub(crate) const fn plain(request: Request) -> Self {
         Self {
             request,
             notice: None,
+            replay: false,
+        }
+    }
+
+    pub(crate) const fn plain_replay(request: Request) -> Self {
+        Self {
+            request,
+            notice: None,
+            replay: true,
         }
     }
 
@@ -61,6 +88,7 @@ impl RequestEnvelope {
         Self {
             request: Request::Publish(publish),
             notice: Some(TrackedNoticeTx::Publish(notice)),
+            replay: false,
         }
     }
 
@@ -68,6 +96,7 @@ impl RequestEnvelope {
         Self {
             request: Request::Subscribe(subscribe),
             notice: Some(TrackedNoticeTx::Subscribe(notice)),
+            replay: false,
         }
     }
 
@@ -78,6 +107,7 @@ impl RequestEnvelope {
         Self {
             request: Request::Unsubscribe(unsubscribe),
             notice: Some(TrackedNoticeTx::Unsubscribe(notice)),
+            replay: false,
         }
     }
 
@@ -88,11 +118,12 @@ impl RequestEnvelope {
         Self {
             request: Request::Auth(auth),
             notice: Some(TrackedNoticeTx::Auth(notice)),
+            replay: false,
         }
     }
 
-    pub(crate) fn into_parts(self) -> (Request, Option<TrackedNoticeTx>) {
-        (self.request, self.notice)
+    pub(crate) fn into_parts(self) -> (Request, Option<TrackedNoticeTx>, bool) {
+        (self.request, self.notice, self.replay)
     }
 }
 
@@ -113,6 +144,33 @@ impl PendingDisconnect {
             disconnect,
             deadline: timeout.map(|timeout| Instant::now() + timeout),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionCheckpointAction {
+    Save,
+    Clear,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionStoreResetAction {
+    Keep,
+    Clear,
+}
+
+struct SessionSave(Option<(Arc<dyn SessionStore>, PersistedSession)>);
+
+impl SessionSave {
+    async fn save(self) -> Result<(), ConnectionError> {
+        let Some((store, session)) = self.0 else {
+            return Ok(());
+        };
+
+        store
+            .save(&session)
+            .await
+            .map_err(ConnectionError::SessionStore)
     }
 }
 
@@ -146,6 +204,10 @@ pub enum ConnectionError {
         clean_start: bool,
         session_present: bool,
     },
+    #[error("MQTT session store error: {0}")]
+    SessionStore(#[source] SessionStoreError),
+    #[error("MQTT persisted session restore error: {0}")]
+    SessionRestore(#[from] SessionRestoreError),
     #[error("Broker target is incompatible with the selected transport")]
     BrokerTransportMismatch,
     /// All request senders have been dropped. Use `AsyncClient::disconnect` for MQTT-level
@@ -200,6 +262,10 @@ pub struct EventLoop {
     session_client_id: Option<String>,
     /// Current connection resumed broker state without matching local packet-id ownership.
     broker_only_session_resume: bool,
+    /// Whether an optional persistent session store has been checked for this event loop.
+    session_store_loaded: bool,
+    /// Whether an explicit local session reset still needs to invalidate the persistent store.
+    session_store_clear_pending: bool,
     pending_disconnect: Option<PendingDisconnect>,
     disconnect_complete: bool,
 }
@@ -232,7 +298,7 @@ impl EventLoop {
         }
 
         if !session_present {
-            self.reset_session_state();
+            self.reset_session_state_without_store_invalidation();
         }
 
         self.broker_only_session_resume =
@@ -351,6 +417,8 @@ impl EventLoop {
             no_sleep: None,
             session_client_id: None,
             broker_only_session_resume: false,
+            session_store_loaded: false,
+            session_store_clear_pending: false,
             pending_disconnect: None,
             disconnect_complete: false,
         }
@@ -372,7 +440,7 @@ impl EventLoop {
 
         for (request, notice) in self.state.clean_with_notices() {
             self.push_replay_envelope(
-                RequestEnvelope::from_parts(request, notice),
+                RequestEnvelope::replay_from_parts(request, notice),
                 &mut replay_topic_aliases,
             );
         }
@@ -497,11 +565,23 @@ impl EventLoop {
 
     /// Clears eventloop and state tracking bound to a previous session.
     pub fn reset_session_state(&mut self) {
+        self.reset_session_state_internal(SessionStoreResetAction::Clear);
+    }
+
+    fn reset_session_state_without_store_invalidation(&mut self) {
+        self.reset_session_state_internal(SessionStoreResetAction::Keep);
+    }
+
+    fn reset_session_state_internal(&mut self, store_reset: SessionStoreResetAction) {
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.fail_reauth_exchange_due_to_session_reset();
         self.state.reset_session_state();
         self.session_client_id = None;
         self.broker_only_session_resume = false;
+        self.session_store_loaded = false;
+        if store_reset == SessionStoreResetAction::Clear {
+            self.session_store_clear_pending = true;
+        }
     }
 
     fn reset_session_state_if_client_id_changed(&mut self) {
@@ -511,14 +591,173 @@ impl EventLoop {
         }
 
         if self.session_client_id.is_some() {
-            self.reset_session_state();
+            self.reset_session_state_without_store_invalidation();
         }
         self.session_client_id = None;
+        self.session_store_loaded = false;
     }
 
     fn reconcile_outgoing_tracking_after_connack(&mut self) {
         self.state
             .reconcile_outgoing_tracking_capacity(self.pending.is_empty());
+    }
+
+    async fn load_persisted_session_if_needed(&mut self) -> Result<(), ConnectionError> {
+        if self.session_store_clear_pending {
+            self.clear_persisted_session().await?;
+            return Ok(());
+        }
+
+        if self.session_store_loaded || self.options.clean_start() {
+            self.session_store_loaded = true;
+            return Ok(());
+        }
+
+        let Some(store) = self.options.session_store() else {
+            self.session_store_loaded = true;
+            self.session_store_clear_pending = false;
+            return Ok(());
+        };
+
+        let client_id = self.options.client_id();
+        let Some(session) = store
+            .load(&client_id)
+            .await
+            .map_err(ConnectionError::SessionStore)?
+        else {
+            self.session_store_loaded = true;
+            return Ok(());
+        };
+
+        let replay = self
+            .state
+            .restore_persisted_session(&self.options, &session)?;
+        self.pending
+            .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
+        self.session_client_id = Some(client_id);
+        self.session_store_loaded = true;
+        Ok(())
+    }
+
+    fn persisted_session_save(&self) -> SessionSave {
+        if self.options.clean_start() {
+            return SessionSave(None);
+        }
+
+        let Some(store) = self.options.session_store() else {
+            return SessionSave(None);
+        };
+
+        let pending_replay = self.pending.iter().map(|envelope| &envelope.request);
+        let queued_replay = self
+            .queued
+            .iter()
+            .filter(|envelope| envelope.replay)
+            .map(|envelope| &envelope.request);
+        let session = self
+            .state
+            .persisted_session(&self.options, pending_replay.chain(queued_replay));
+        SessionSave(Some((store, session)))
+    }
+
+    async fn persist_session_or_fail_qos0_notices(
+        session_save: SessionSave,
+        qos0_notices: &mut Vec<PublishNoticeTx>,
+        flush_notice: Option<PublishNoticeTx>,
+    ) -> Result<(), ConnectionError> {
+        if let Err(err) = session_save.save().await {
+            let error = PublishNoticeError::SessionPersistence(err.to_string());
+            for notice in qos0_notices.drain(..) {
+                notice.error(error.clone());
+            }
+            if let Some(notice) = flush_notice {
+                notice.error(error);
+            }
+            return Err(err);
+        }
+
+        if let Some(notice) = flush_notice {
+            qos0_notices.push(notice);
+        }
+        Ok(())
+    }
+
+    async fn clear_persisted_session(&mut self) -> Result<(), ConnectionError> {
+        let Some(store) = self.options.session_store() else {
+            self.session_store_loaded = true;
+            self.session_store_clear_pending = false;
+            return Ok(());
+        };
+
+        let client_id = self.options.client_id();
+        store
+            .clear(&client_id)
+            .await
+            .map_err(ConnectionError::SessionStore)?;
+        self.session_store_loaded = true;
+        self.session_store_clear_pending = false;
+        Ok(())
+    }
+
+    async fn clear_persisted_session_or_block_reload(&mut self) -> Result<(), ConnectionError> {
+        self.session_store_clear_pending = true;
+        self.clear_persisted_session().await
+    }
+
+    fn disconnect_expires_session(&self, disconnect: &Disconnect) -> bool {
+        disconnect
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.session_expiry_interval)
+            .or_else(|| self.options.session_expiry_interval())
+            .unwrap_or(0)
+            == 0
+    }
+
+    async fn complete_read_batch(
+        &mut self,
+        batch: ReadBatch,
+    ) -> Result<ReadBatchOutcome, ConnectionError> {
+        let ReadBatch { outcome, notices } = batch;
+        self.state.mark_outgoing_publishes_flush_attempted();
+        if let Err(err) = self.persisted_session_save().save().await {
+            let error = err.to_string();
+            for notice in notices {
+                notice.persistence_error(error.clone());
+            }
+            return Err(err);
+        }
+
+        let flush_result = self.network.as_mut().unwrap().flush().await;
+        for notice in notices {
+            notice.complete();
+        }
+        flush_result?;
+        Ok(outcome)
+    }
+
+    async fn complete_failed_read_batch(
+        session_save: SessionSave,
+        error: ReadBatchError,
+    ) -> ConnectionError {
+        let ReadBatchError { source, batch } = error;
+        let ReadBatch { notices, .. } = batch;
+        if notices.is_empty() {
+            return ConnectionError::MqttState(source);
+        }
+
+        if let Err(err) = session_save.save().await {
+            let error = err.to_string();
+            for notice in notices {
+                notice.persistence_error(error.clone());
+            }
+            return err;
+        }
+
+        for notice in notices {
+            notice.complete();
+        }
+        ConnectionError::MqttState(source)
     }
 
     /// Yields Next notification or outgoing request and periodically pings
@@ -545,6 +784,7 @@ impl EventLoop {
             }
 
             self.reset_session_state_if_client_id_changed();
+            self.load_persisted_session_if_needed().await?;
 
             let (network, connack) = time::timeout(
                 self.options.connect_timeout(),
@@ -552,6 +792,9 @@ impl EventLoop {
             )
             .await??;
             self.reconcile_connack_session(connack.session_present)?;
+            if !connack.session_present {
+                self.clear_persisted_session_or_block_reload().await?;
+            }
             if !self.broker_only_session_resume {
                 self.session_client_id = Some(self.options.client_id());
             }
@@ -589,6 +832,7 @@ impl EventLoop {
                 // MQTT requires that packets pending acknowledgement should be republished on session resume.
                 // Move pending messages from state to eventloop.
                 self.clean();
+                self.persisted_session_save().save().await?;
                 Err(e)
             }
         }
@@ -661,15 +905,21 @@ impl EventLoop {
                     && (!self.pending.is_empty()
                         || !self.requests_rx.is_empty()
                         || !self.requests_rx.is_disconnected()) => match o {
-                    Ok((request, notice)) => {
-                        self.admit_normal_request_batch((request, notice)).await;
+                    Ok((request, notice, replay)) => {
+                        self.admit_normal_request_batch((request, notice, replay)).await;
                         continue;
                     }
                     Err(_) => continue,
                 },
                 o = self.network.as_mut().unwrap().readb(&mut self.state, read_batch_size) => {
-                    let outcome = o?;
-                    self.flush_network().await?;
+                    let batch = match o {
+                        Ok(batch) => batch,
+                        Err(err) => {
+                            let session_save = self.persisted_session_save();
+                            return Err(Self::complete_failed_read_batch(session_save, err).await);
+                        }
+                    };
+                    let outcome = self.complete_read_batch(batch).await?;
                     if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
                         self.reset_keepalive_timeout();
                     }
@@ -695,38 +945,58 @@ impl EventLoop {
         &mut self,
         envelope: RequestEnvelope,
     ) -> Result<Event, ConnectionError> {
-        let (request, notice) = envelope.into_parts();
+        let (request, notice, replay) = envelope.into_parts();
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
-        self.handle_request(request, notice, &mut should_flush, &mut qos0_notices)
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+        self.handle_request_internal(
+            request,
+            notice,
+            replay,
+            &mut should_flush,
+            &mut qos0_notices,
+            &mut checkpoint_action,
+        )
+        .await?;
+        self.flush_request_batch(should_flush, qos0_notices, checkpoint_action)
             .await?;
-        self.flush_request_batch(should_flush, qos0_notices).await?;
         Ok(self.state.events.pop_front().unwrap())
     }
 
     async fn handle_ready_requests(&mut self) -> Result<bool, ConnectionError> {
-        let Some((request, notice)) = self.next_scheduled_request() else {
+        let Some((request, notice, replay)) = self.next_scheduled_request() else {
             return Ok(false);
         };
 
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
 
         if self
-            .handle_request(request, notice, &mut should_flush, &mut qos0_notices)
+            .handle_request_internal(
+                request,
+                notice,
+                replay,
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
             .await?
         {
             for _ in 1..self.options.max_request_batch.max(1) {
-                let Some((next_request, next_notice)) = self.next_scheduled_request() else {
+                let Some((next_request, next_notice, next_replay)) = self.next_scheduled_request()
+                else {
                     break;
                 };
 
                 if !self
-                    .handle_request(
+                    .handle_request_internal(
                         next_request,
                         next_notice,
+                        next_replay,
                         &mut should_flush,
                         &mut qos0_notices,
+                        &mut checkpoint_action,
                     )
                     .await?
                 {
@@ -735,11 +1005,12 @@ impl EventLoop {
             }
         }
 
-        self.flush_request_batch(should_flush, qos0_notices).await?;
+        self.flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+            .await?;
         Ok(true)
     }
 
-    fn next_scheduled_request(&mut self) -> Option<(Request, Option<TrackedNoticeTx>)> {
+    fn next_scheduled_request(&mut self) -> Option<(Request, Option<TrackedNoticeTx>, bool)> {
         let state = &self.state;
         self.queued
             .pop_next(|envelope| classify_request(state, &envelope.request))
@@ -760,7 +1031,7 @@ impl EventLoop {
                 break;
             }
 
-            let Some((request, notice)) = Self::try_next_request(
+            let Some((request, notice, replay)) = Self::try_next_request(
                 &mut self.pending,
                 &self.requests_rx,
                 self.options.pending_throttle,
@@ -772,24 +1043,31 @@ impl EventLoop {
 
             let stop_batch = is_disconnect_request(&request);
             self.queued
-                .push_back(RequestEnvelope::from_parts(request, notice));
+                .push_back(RequestEnvelope::from_parts_with_replay(
+                    request, notice, replay,
+                ));
             if stop_batch {
                 break;
             }
         }
     }
 
-    async fn admit_normal_request_batch(&mut self, first: (Request, Option<TrackedNoticeTx>)) {
-        let (request, notice) = first;
+    async fn admit_normal_request_batch(
+        &mut self,
+        first: (Request, Option<TrackedNoticeTx>, bool),
+    ) {
+        let (request, notice, replay) = first;
         let stop_batch = is_disconnect_request(&request);
         self.queued
-            .push_back(RequestEnvelope::from_parts(request, notice));
+            .push_back(RequestEnvelope::from_parts_with_replay(
+                request, notice, replay,
+            ));
         if stop_batch || !self.normal_request_admission_allowed() && self.pending.is_empty() {
             return;
         }
 
         for _ in 1..self.options.max_request_batch.max(1) {
-            let Some((request, notice)) = Self::try_next_request(
+            let Some((request, notice, replay)) = Self::try_next_request(
                 &mut self.pending,
                 &self.requests_rx,
                 self.options.pending_throttle,
@@ -800,19 +1078,23 @@ impl EventLoop {
             };
             let stop_batch = is_disconnect_request(&request);
             self.queued
-                .push_back(RequestEnvelope::from_parts(request, notice));
+                .push_back(RequestEnvelope::from_parts_with_replay(
+                    request, notice, replay,
+                ));
             if stop_batch {
                 break;
             }
         }
     }
 
-    async fn handle_request(
+    async fn handle_request_internal(
         &mut self,
         request: Request,
         notice: Option<TrackedNoticeTx>,
+        replay: bool,
         should_flush: &mut bool,
         qos0_notices: &mut Vec<PublishNoticeTx>,
+        checkpoint_action: &mut SessionCheckpointAction,
     ) -> Result<bool, ConnectionError> {
         if self.broker_only_session_resume && request_allocates_client_packet_id(&request) {
             reject_broker_only_session_request(&request, notice);
@@ -836,11 +1118,18 @@ impl EventLoop {
                 self.pending_disconnect = Some(PendingDisconnect::new(disconnect, Some(timeout)));
                 Ok(false)
             }
-            Request::DisconnectNow(_) => {
+            Request::DisconnectNow(disconnect) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
-                let (outgoing, _) = self
-                    .state
-                    .handle_outgoing_packet_with_notice(request, notice)?;
+                let session_expires = self.disconnect_expires_session(&disconnect);
+                let (outgoing, _) = self.state.handle_outgoing_packet_with_notice(
+                    Request::DisconnectNow(disconnect),
+                    notice,
+                )?;
+                if session_expires {
+                    *checkpoint_action = SessionCheckpointAction::Clear;
+                } else {
+                    self.persisted_session_save().save().await?;
+                }
                 if let Some(outgoing) = outgoing {
                     if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
                         return Err(ConnectionError::MqttState(err));
@@ -851,12 +1140,19 @@ impl EventLoop {
                 Ok(false)
             }
             request => {
-                let (outgoing, flush_notice) = self
-                    .state
-                    .handle_outgoing_packet_with_notice(request, notice)?;
-                if let Some(notice) = flush_notice {
-                    qos0_notices.push(notice);
-                }
+                let (outgoing, flush_notice) = if replay {
+                    self.state
+                        .handle_replayed_outgoing_packet_with_notice(request, notice)?
+                } else {
+                    self.state
+                        .handle_outgoing_packet_with_notice(request, notice)?
+                };
+                Self::persist_session_or_fail_qos0_notices(
+                    self.persisted_session_save(),
+                    qos0_notices,
+                    flush_notice,
+                )
+                .await?;
                 if let Some(outgoing) = outgoing {
                     if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
                         for notice in qos0_notices.drain(..) {
@@ -875,12 +1171,19 @@ impl EventLoop {
         &mut self,
         should_flush: bool,
         qos0_notices: Vec<PublishNoticeTx>,
+        checkpoint_action: SessionCheckpointAction,
     ) -> Result<(), ConnectionError> {
         if !should_flush {
+            if checkpoint_action == SessionCheckpointAction::Clear {
+                self.clear_persisted_session().await?;
+            }
             return Ok(());
         }
 
-        match self.flush_network().await {
+        match self
+            .flush_network_with_checkpoint_action(checkpoint_action)
+            .await
+        {
             Ok(()) => {
                 for notice in qos0_notices {
                     notice.success(PublishResult::Qos0Flushed);
@@ -899,8 +1202,22 @@ impl EventLoop {
 
     async fn flush_network(&mut self) -> Result<(), ConnectionError> {
         self.state.mark_outgoing_publishes_flush_attempted();
+        self.persisted_session_save().save().await?;
         self.network.as_mut().unwrap().flush().await?;
         Ok(())
+    }
+
+    async fn flush_network_with_checkpoint_action(
+        &mut self,
+        checkpoint_action: SessionCheckpointAction,
+    ) -> Result<(), ConnectionError> {
+        match checkpoint_action {
+            SessionCheckpointAction::Save => self.flush_network().await,
+            SessionCheckpointAction::Clear => {
+                self.network.as_mut().unwrap().flush().await?;
+                self.clear_persisted_session().await
+            }
+        }
     }
 
     async fn poll_disconnect_drain(&mut self) -> Result<Option<Event>, ConnectionError> {
@@ -911,7 +1228,7 @@ impl EventLoop {
             .unwrap()
             .readb(&mut self.state, read_batch_size);
 
-        let outcome = if let Some(deadline) = self
+        let batch = if let Some(deadline) = self
             .pending_disconnect
             .as_ref()
             .and_then(|pending| pending.deadline)
@@ -921,7 +1238,13 @@ impl EventLoop {
                     Ok(envelope) => return self.handle_immediate_disconnect(envelope).await.map(Some),
                     Err(_) => return Ok(None),
                 },
-                result = read => result?,
+                result = read => match result {
+                    Ok(batch) => batch,
+                    Err(err) => {
+                        let session_save = self.persisted_session_save();
+                        return Err(Self::complete_failed_read_batch(session_save, err).await);
+                    }
+                },
                 () = time::sleep_until(deadline) => return Err(ConnectionError::DisconnectTimeout),
             }
         } else {
@@ -930,11 +1253,17 @@ impl EventLoop {
                     Ok(envelope) => return self.handle_immediate_disconnect(envelope).await.map(Some),
                     Err(_) => return Ok(None),
                 },
-                result = read => result?,
+                result = read => match result {
+                    Ok(batch) => batch,
+                    Err(err) => {
+                        let session_save = self.persisted_session_save();
+                        return Err(Self::complete_failed_read_batch(session_save, err).await);
+                    }
+                },
             }
         };
 
-        self.flush_network().await?;
+        let outcome = self.complete_read_batch(batch).await?;
         if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
             self.reset_keepalive_timeout();
         }
@@ -947,16 +1276,26 @@ impl EventLoop {
             .take()
             .expect("pending disconnect checked by caller")
             .disconnect;
+        let clear_persisted_session = self.disconnect_expires_session(&disconnect);
         let (outgoing, _) = self
             .state
             .handle_outgoing_packet_with_notice(Request::DisconnectNow(disconnect), None)?;
 
         if let Some(outgoing) = outgoing {
             self.network.as_mut().unwrap().write(outgoing).await?;
-            self.flush_network().await?;
+            if clear_persisted_session {
+                self.network.as_mut().unwrap().flush().await?;
+            } else {
+                self.flush_network().await?;
+            }
         }
 
         self.drop_unprocessed_requests();
+        if clear_persisted_session {
+            self.clear_persisted_session().await?;
+        } else {
+            self.persisted_session_save().save().await?;
+        }
         self.disconnect_complete = true;
         Ok(self.state.events.pop_front().unwrap())
     }
@@ -977,7 +1316,7 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Option<(Request, Option<TrackedNoticeTx>)> {
+    ) -> Option<(Request, Option<TrackedNoticeTx>, bool)> {
         if !pending.is_empty() {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
@@ -1002,7 +1341,7 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Result<(Request, Option<TrackedNoticeTx>), ConnectionError> {
+    ) -> Result<(Request, Option<TrackedNoticeTx>, bool), ConnectionError> {
         if pending.is_empty() {
             rx.recv_async()
                 .await
@@ -1463,17 +1802,243 @@ const fn should_replay_after_reconnect(request: &Request) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framed::ReadBatch;
     use crate::mqttbytes::{Error as MqttError, QoS};
+    use crate::notice::DeferredNotice;
+    use crate::session::PersistedSession;
     use crate::{AckMode, BrokerSessionResumePolicy};
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{
         ConnAckProperties, Filter, PubAck, PubComp, PubCompReason, PubRec, PubRel,
-        PublishProperties,
+        PublishProperties, SubAck, SubscribeReasonCode, UnsubAck, UnsubAckReason,
     };
     use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
+    use std::future::Future;
+    use std::io;
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+
+    #[derive(Debug)]
+    struct FailingSessionStore;
+
+    impl crate::SessionStore for FailingSessionStore {
+        fn load<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn save<'a>(
+            &'a self,
+            _session: &'a PersistedSession,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                Err(Box::new(std::io::Error::other("session save failed"))
+                    as crate::SessionStoreError)
+            })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct SuccessfulSessionStore;
+
+    impl crate::SessionStore for SuccessfulSessionStore {
+        fn load<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn save<'a>(
+            &'a self,
+            _session: &'a PersistedSession,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct CapturingSessionStore {
+        session: Arc<Mutex<Option<PersistedSession>>>,
+    }
+
+    impl CapturingSessionStore {
+        fn new() -> Self {
+            Self {
+                session: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn current(&self) -> Option<PersistedSession> {
+            self.session.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::SessionStore for CapturingSessionStore {
+        fn load<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(self.session.lock().unwrap().clone()) })
+        }
+
+        fn save<'a>(
+            &'a self,
+            session: &'a PersistedSession,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                *self.session.lock().unwrap() = Some(session.clone());
+                Ok(())
+            })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                *self.session.lock().unwrap() = None;
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct ClearFailingSessionStore {
+        session: Arc<Mutex<Option<PersistedSession>>>,
+        loads: Arc<Mutex<usize>>,
+    }
+
+    impl ClearFailingSessionStore {
+        fn new() -> Self {
+            Self {
+                session: Arc::new(Mutex::new(None)),
+                loads: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn current(&self) -> Option<PersistedSession> {
+            self.session.lock().unwrap().clone()
+        }
+
+        fn load_count(&self) -> usize {
+            *self.loads.lock().unwrap()
+        }
+    }
+
+    impl crate::SessionStore for ClearFailingSessionStore {
+        fn load<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                *self.loads.lock().unwrap() += 1;
+                Ok(self.session.lock().unwrap().clone())
+            })
+        }
+
+        fn save<'a>(
+            &'a self,
+            session: &'a PersistedSession,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                *self.session.lock().unwrap() = Some(session.clone());
+                Ok(())
+            })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _client_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                Err(Box::new(std::io::Error::other("session clear failed"))
+                    as crate::SessionStoreError)
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct FlushFailingIo;
+
+    impl AsyncRead for FlushFailingIo {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for FlushFailingIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::other("flush failed")))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[derive(Debug)]
     struct StaticAuthManager {
@@ -1793,6 +2358,163 @@ mod tests {
         eventloop.pending.front().map(|envelope| &envelope.request)
     }
 
+    fn eventloop_with_failing_session_store() -> EventLoop {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(FailingSessionStore);
+        EventLoop::new_for_async_client(options, 1).0
+    }
+
+    fn eventloop_with_successful_session_store_and_failing_flush() -> EventLoop {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(SuccessfulSessionStore);
+        let mut eventloop = EventLoop::new_for_async_client(options, 1).0;
+        eventloop.network = Some(Network::new(FlushFailingIo, Some(1024)));
+        eventloop
+    }
+
+    fn assert_persistence_message(message: &str) {
+        assert!(
+            message.contains("session save failed"),
+            "unexpected persistence notice error: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_batch_publish_notice_reports_persistence_failure_before_success() {
+        let mut eventloop = eventloop_with_failing_session_store();
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let puback = PubAck::new(1, None);
+        let batch = ReadBatch {
+            outcome: ReadBatchOutcome::NoResponseWritten,
+            notices: vec![DeferredNotice::Publish(
+                notice_tx,
+                PublishResult::Qos1(puback),
+            )],
+        };
+
+        let err = eventloop.complete_read_batch(batch).await.unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        match notice.wait_async().await {
+            Err(PublishNoticeError::SessionPersistence(message)) => {
+                assert_persistence_message(&message);
+            }
+            result => panic!("unexpected publish notice result: {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_batch_subscribe_notice_reports_persistence_failure_before_success() {
+        let mut eventloop = eventloop_with_failing_session_store();
+        let (notice_tx, notice) = SubscribeNoticeTx::new();
+        let suback = SubAck {
+            pkid: 1,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        };
+        let batch = ReadBatch {
+            outcome: ReadBatchOutcome::NoResponseWritten,
+            notices: vec![DeferredNotice::Subscribe(notice_tx, suback)],
+        };
+
+        let err = eventloop.complete_read_batch(batch).await.unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        match notice.wait_async().await {
+            Err(SubscribeNoticeError::SessionPersistence(message)) => {
+                assert_persistence_message(&message);
+            }
+            result => panic!("unexpected subscribe notice result: {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_batch_unsubscribe_notice_reports_persistence_failure_before_success() {
+        let mut eventloop = eventloop_with_failing_session_store();
+        let (notice_tx, notice) = UnsubscribeNoticeTx::new();
+        let unsuback = UnsubAck {
+            pkid: 1,
+            reasons: vec![UnsubAckReason::Success],
+            properties: None,
+        };
+        let batch = ReadBatch {
+            outcome: ReadBatchOutcome::NoResponseWritten,
+            notices: vec![DeferredNotice::Unsubscribe(notice_tx, unsuback)],
+        };
+
+        let err = eventloop.complete_read_batch(batch).await.unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        match notice.wait_async().await {
+            Err(UnsubscribeNoticeError::SessionPersistence(message)) => {
+                assert_persistence_message(&message);
+            }
+            result => panic!("unexpected unsubscribe notice result: {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tracked_qos0_notice_reports_persistence_failure_before_flush() {
+        let mut eventloop = eventloop_with_failing_session_store();
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        let err = eventloop
+            .handle_request_internal(
+                Request::Publish(publish(QoS::AtMostOnce)),
+                Some(TrackedNoticeTx::Publish(notice_tx)),
+                false,
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        assert!(!should_flush);
+        assert!(qos0_notices.is_empty());
+        match notice.wait_async().await {
+            Err(PublishNoticeError::SessionPersistence(message)) => {
+                assert_persistence_message(&message);
+            }
+            result => panic!("unexpected publish notice result: {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_batch_publish_notice_completes_when_flush_fails_after_persistence() {
+        let mut eventloop = eventloop_with_successful_session_store_and_failing_flush();
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let puback = PubAck::new(1, None);
+        let batch = ReadBatch {
+            outcome: ReadBatchOutcome::NoResponseWritten,
+            notices: vec![DeferredNotice::Publish(
+                notice_tx,
+                PublishResult::Qos1(puback.clone()),
+            )],
+        };
+
+        let err = eventloop.complete_read_batch(batch).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(_))
+        ));
+        assert_eq!(
+            notice.wait_async().await.unwrap(),
+            PublishResult::Qos1(puback)
+        );
+    }
+
     #[tokio::test]
     async fn graceful_disconnect_fails_active_tracked_reauth_notice() {
         let mut options = MqttOptions::new("test-client", "localhost");
@@ -1803,14 +2525,17 @@ mod tests {
         let (notice_tx, notice) = AuthNoticeTx::new();
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
 
         assert!(
             eventloop
-                .handle_request(
+                .handle_request_internal(
                     Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
                     Some(TrackedNoticeTx::Auth(notice_tx)),
+                    false,
                     &mut should_flush,
                     &mut qos0_notices,
+                    &mut checkpoint_action,
                 )
                 .await
                 .unwrap()
@@ -1818,11 +2543,13 @@ mod tests {
         assert!(eventloop.state.outbound_requests_drained());
 
         let handled = eventloop
-            .handle_request(
+            .handle_request_internal(
                 Request::Disconnect(Disconnect::new(DisconnectReasonCode::NormalDisconnection)),
                 None,
+                false,
                 &mut should_flush,
                 &mut qos0_notices,
+                &mut checkpoint_action,
             )
             .await
             .unwrap();
@@ -2465,7 +3192,7 @@ mod tests {
 
         eventloop
             .next_scheduled_request()
-            .map(|(request, _notice)| request)
+            .map(|(request, _notice, _replay)| request)
     }
 
     #[test]
@@ -2483,8 +3210,9 @@ mod tests {
             .queued
             .push_back(RequestEnvelope::plain(Request::Subscribe(subscribe())));
 
-        let (request, _) = eventloop.next_scheduled_request().unwrap();
+        let (request, _, replay) = eventloop.next_scheduled_request().unwrap();
 
+        assert!(!replay);
         assert!(matches!(request, Request::Subscribe(_)));
         match eventloop.state.handle_outgoing_packet(request).unwrap() {
             Some(Packet::Subscribe(subscribe)) => assert_ne!(subscribe.pkid, 1),
@@ -2582,8 +3310,9 @@ mod tests {
                 Unsubscribe::new("hello/world", None),
             )));
 
-        let (request, _) = eventloop.next_scheduled_request().unwrap();
+        let (request, _, replay) = eventloop.next_scheduled_request().unwrap();
 
+        assert!(!replay);
         assert!(matches!(request, Request::Unsubscribe(_)));
         match eventloop.state.handle_outgoing_packet(request).unwrap() {
             Some(Packet::Unsubscribe(unsubscribe)) => assert_ne!(unsubscribe.pkid, 1),
@@ -2604,8 +3333,9 @@ mod tests {
             .queued
             .push_back(RequestEnvelope::plain(Request::Subscribe(subscribe())));
 
-        let (request, _) = eventloop.next_scheduled_request().unwrap();
+        let (request, _, replay) = eventloop.next_scheduled_request().unwrap();
 
+        assert!(!replay);
         assert!(matches!(request, Request::Publish(_)));
     }
 
@@ -3077,7 +3807,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(request, (Request::PingReq, None)));
+        assert!(matches!(request, (Request::PingReq, None, false)));
 
         let err = EventLoop::next_request(
             &mut eventloop.pending,
@@ -3123,7 +3853,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first, (Request::PingReq, None)));
+        assert!(matches!(first, (Request::PingReq, None, false)));
 
         let delayed = EventLoop::try_next_request(
             &mut eventloop.pending,
@@ -3159,7 +3889,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(received, Some((Request::PingReq, None))));
+        assert!(matches!(received, Some((Request::PingReq, None, false))));
     }
 
     #[tokio::test]
@@ -3179,7 +3909,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first, (Request::PingReq, None)));
+        assert!(matches!(first, (Request::PingReq, None, false)));
         assert!(eventloop.pending.is_empty());
 
         let second = EventLoop::next_request(
@@ -3189,7 +3919,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(second, (Request::PingReq, None)));
+        assert!(matches!(second, (Request::PingReq, None, false)));
     }
 
     #[tokio::test]
@@ -3227,7 +3957,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first, (Request::PingReq, None)));
+        assert!(matches!(first, (Request::PingReq, None, false)));
 
         let second = EventLoop::next_request(
             &mut eventloop.pending,
@@ -3238,7 +3968,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             second,
-            (Request::Publish(publish), Some(_)) if publish == tracked_publish
+            (Request::Publish(publish), Some(_), false) if publish == tracked_publish
         ));
 
         let third = EventLoop::next_request(
@@ -3248,7 +3978,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(third, (Request::PingResp, None)));
+        assert!(matches!(third, (Request::PingResp, None, false)));
     }
 
     #[tokio::test]
@@ -3580,8 +4310,16 @@ mod tests {
         for (request, notice) in requests {
             let mut should_flush = false;
             let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
             let keep_batching = eventloop
-                .handle_request(request, notice, &mut should_flush, &mut qos0_notices)
+                .handle_request_internal(
+                    request,
+                    notice,
+                    false,
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
                 .await
                 .unwrap();
 
@@ -3621,13 +4359,16 @@ mod tests {
         retained.retain = true;
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
 
         let keep_batching = eventloop
-            .handle_request(
+            .handle_request_internal(
                 Request::Publish(retained),
                 Some(TrackedNoticeTx::Publish(notice_tx)),
+                false,
                 &mut should_flush,
                 &mut qos0_notices,
+                &mut checkpoint_action,
             )
             .await
             .unwrap();
@@ -3643,11 +4384,13 @@ mod tests {
         );
 
         let keep_batching = eventloop
-            .handle_request(
+            .handle_request_internal(
                 Request::Publish(publish(QoS::AtMostOnce)),
                 None,
+                false,
                 &mut should_flush,
                 &mut qos0_notices,
+                &mut checkpoint_action,
             )
             .await
             .unwrap();
@@ -3693,6 +4436,65 @@ mod tests {
         assert!(eventloop.pending_is_empty());
     }
 
+    #[tokio::test]
+    async fn fresh_connack_clear_marks_session_store_loaded_after_reset() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(SuccessfulSessionStore);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.session_client_id = Some("test-client".to_owned());
+        eventloop.session_store_loaded = true;
+
+        eventloop.reconcile_connack_session(false).unwrap();
+        assert!(!eventloop.session_store_loaded);
+
+        eventloop.clear_persisted_session().await.unwrap();
+
+        assert!(eventloop.session_store_loaded);
+    }
+
+    #[tokio::test]
+    async fn fresh_connack_clear_failure_blocks_stale_store_reload() {
+        let store = ClearFailingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish(QoS::AtLeastOnce)))
+            .unwrap();
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        eventloop.session_client_id = Some("test-client".to_owned());
+        eventloop.session_store_loaded = true;
+        eventloop.reconcile_connack_session(false).unwrap();
+
+        let err = eventloop
+            .clear_persisted_session_or_block_reload()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        assert!(eventloop.session_store_clear_pending);
+        assert_eq!(store.load_count(), 0);
+
+        let err = eventloop
+            .load_persisted_session_if_needed()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        assert!(eventloop.session_store_clear_pending);
+        assert!(eventloop.pending_is_empty());
+        assert_eq!(store.load_count(), 0);
+    }
+
     #[test]
     fn connack_reconcile_keeps_pending_when_resumed_session_exists() {
         let mut eventloop = build_eventloop_with_pending(false);
@@ -3701,6 +4503,187 @@ mod tests {
         eventloop.reconcile_connack_session(true).unwrap();
 
         assert_eq!(eventloop.pending_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persist_session_includes_queued_replay_requests() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let mut replay_subscribe = subscribe();
+        replay_subscribe.pkid = 7;
+        let mut fresh_subscribe = subscribe();
+        fresh_subscribe.pkid = 8;
+
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain_replay(Request::Subscribe(
+                replay_subscribe,
+            )));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Subscribe(fresh_subscribe)));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+
+        let session = store.current().expect("session should be saved");
+        assert_eq!(session.replay.len(), 1);
+        assert!(matches!(
+            &session.replay[0],
+            crate::PersistedRequest::Subscribe(subscribe) if subscribe.pkid == 7
+        ));
+    }
+
+    #[tokio::test]
+    async fn reset_session_state_clears_store_before_next_load() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish(QoS::AtLeastOnce)))
+            .unwrap();
+
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        eventloop.reset_session_state();
+        eventloop.load_persisted_session_if_needed().await.unwrap();
+
+        assert!(eventloop.pending_is_empty());
+        assert!(store.current().is_none());
+        assert!(eventloop.session_store_loaded);
+    }
+
+    #[tokio::test]
+    async fn graceful_disconnect_clears_store_when_effective_expiry_is_zero() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        eventloop.options.set_session_expiry_interval(Some(0));
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            None,
+        ));
+
+        let event = eventloop.send_pending_disconnect().await.unwrap();
+
+        assert_eq!(event, Event::Outgoing(Outgoing::Disconnect));
+        assert!(store.current().is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_now_with_expiry_zero_clears_store_after_flush() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::NormalDisconnection,
+            crate::mqttbytes::v5::DisconnectProperties {
+                session_expiry_interval: Some(0),
+                reason_string: None,
+                user_properties: Vec::new(),
+                server_reference: None,
+            },
+        );
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        let keep_batching = eventloop
+            .handle_request_internal(
+                Request::DisconnectNow(disconnect),
+                None,
+                false,
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert!(!keep_batching);
+        assert!(should_flush);
+        assert_eq!(checkpoint_action, SessionCheckpointAction::Clear);
+        assert!(store.current().is_some());
+
+        eventloop
+            .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+            .await
+            .unwrap();
+
+        assert!(store.current().is_none());
+    }
+
+    #[tokio::test]
+    async fn reconnect_replay_preserves_pending_subscribe_packet_identifier() {
+        let mut eventloop = build_eventloop(false);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Subscribe(subscribe()))
+            .unwrap();
+
+        eventloop.clean();
+        let envelope = eventloop
+            .pending
+            .pop_front()
+            .expect("pending subscribe should be replayed after reconnect");
+        assert!(envelope.replay);
+        let (request, notice, replay) = envelope.into_parts();
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        let keep_batching = eventloop
+            .handle_request_internal(
+                request,
+                notice,
+                replay,
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert!(keep_batching);
+        assert!(should_flush);
+        assert!(qos0_notices.is_empty());
+        assert!(eventloop.state.pending_subscribe.contains_key(&1));
+        assert_eq!(
+            eventloop.state.events.pop_front(),
+            Some(Event::Outgoing(Outgoing::Subscribe(1)))
+        );
     }
 
     #[test]
