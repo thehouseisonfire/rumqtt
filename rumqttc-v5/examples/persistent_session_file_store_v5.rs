@@ -169,7 +169,7 @@ fn save_session(directory: &Path, stored: &StoredFile) -> Result<(), SessionStor
     drop(file);
 
     replace_file(&temp_path, &path).inspect_err(|_| {
-        let _ = fs::remove_file(&temp_path);
+        drop(fs::remove_file(&temp_path));
     })?;
     sync_directory(directory)?;
     Ok(())
