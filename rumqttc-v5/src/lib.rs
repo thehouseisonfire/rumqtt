@@ -94,7 +94,9 @@ pub enum BrokerSessionResumePolicy {
     ///
     /// This is the strict default. It follows MQTT-3.2.2-4 by rejecting
     /// `Session Present = 1` when the client cannot reconcile local in-flight
-    /// `QoS` 1/2 state.
+    /// `QoS` 1/2 state. Configure a [`SessionStore`] when a newly constructed
+    /// `EventLoop` or restarted process needs to restore that state and
+    /// strictly continue a broker-resumed session.
     #[default]
     Strict,
     /// Accept broker-only session resume even without matching local state.
@@ -1077,6 +1079,12 @@ impl MqttOptions {
     /// rumqttc supplies the [`SessionStore`] trait and [`PersistedSession`]
     /// checkpoint model, but applications provide the actual storage backend
     /// and serialization format.
+    ///
+    /// Configure a store if the client needs strict restart-safe resume for
+    /// sessions with a non-zero Session Expiry Interval. Without restored local
+    /// Session State, strict mode rejects a broker response with
+    /// `Session Present = 1` rather than continuing a session it cannot
+    /// reconcile.
     ///
     /// The event loop saves checkpoints after local session state changes,
     /// loads a checkpoint before reconnecting a newly constructed event loop,

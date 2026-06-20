@@ -154,6 +154,15 @@ out side the library and `Eventloop` is accessible, users can
   `examples/persistent_session_file_store_v5.rs` for a complete file-backed
   `SessionStore` implementation owned by application code.
 
+- For strict MQTT 5 restart-safe session resume, configure a `SessionStore`.
+  MQTT-3.2.2-4 requires a client that lacks Session State to close a connection
+  that returns `Session Present = 1`; MQTT-3.1.2-23 requires Client and Server
+  Session State to be stored after a connection closes when the Session Expiry
+  Interval is greater than zero. Without a `SessionStore`, rumqttc can still be
+  strict by rejecting broker-only resume after a new process or newly constructed
+  `EventLoop`, but it cannot strictly continue that resumed session because the
+  local client state was not restored.
+
 - Applications that intentionally rely on broker-retained messages after local
   state loss can opt into non-strict MQTT 5 compatibility mode with
   `MqttOptions::set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`
