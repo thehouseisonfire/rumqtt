@@ -231,6 +231,27 @@ pub enum ConnectionError {
     RequestModifier(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// Tracks the lifecycle of an optional persistent session store within the event loop.
+///
+/// This groups the flags that control whether the store has been hydrated and whether
+/// a deferred clear is still outstanding, keeping the `EventLoop` struct below the
+/// Clippy `struct_excessive_bools` threshold.
+struct SessionStoreState {
+    /// Whether the store has been checked/loaded for this event loop instance.
+    loaded: bool,
+    /// Whether an explicit local session reset still needs to clear the store.
+    clear_pending: bool,
+}
+
+impl SessionStoreState {
+    const fn new() -> Self {
+        Self {
+            loaded: false,
+            clear_pending: false,
+        }
+    }
+}
+
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
     /// Options of the current mqtt connection
@@ -263,10 +284,8 @@ pub struct EventLoop {
     session_client_id: Option<String>,
     /// Current connection resumed broker state without matching local packet-id ownership.
     broker_only_session_resume: bool,
-    /// Whether an optional persistent session store has been checked for this event loop.
-    session_store_loaded: bool,
-    /// Whether an explicit local session reset still needs to invalidate the persistent store.
-    session_store_clear_pending: bool,
+    /// Persistent session store lifecycle flags.
+    session_store: SessionStoreState,
     pending_disconnect: Option<PendingDisconnect>,
     disconnect_complete: bool,
 }
@@ -418,8 +437,7 @@ impl EventLoop {
             no_sleep: None,
             session_client_id: None,
             broker_only_session_resume: false,
-            session_store_loaded: false,
-            session_store_clear_pending: false,
+            session_store: SessionStoreState::new(),
             pending_disconnect: None,
             disconnect_complete: false,
         }
@@ -579,9 +597,9 @@ impl EventLoop {
         self.state.reset_session_state();
         self.session_client_id = None;
         self.broker_only_session_resume = false;
-        self.session_store_loaded = false;
+        self.session_store.loaded = false;
         if store_reset == SessionStoreResetAction::Clear {
-            self.session_store_clear_pending = true;
+            self.session_store.clear_pending = true;
         }
     }
 
@@ -595,7 +613,7 @@ impl EventLoop {
             self.reset_session_state_without_store_invalidation();
         }
         self.session_client_id = None;
-        self.session_store_loaded = false;
+        self.session_store.loaded = false;
     }
 
     fn reconcile_outgoing_tracking_after_connack(&mut self) {
@@ -604,19 +622,19 @@ impl EventLoop {
     }
 
     async fn load_persisted_session_if_needed(&mut self) -> Result<(), ConnectionError> {
-        if self.session_store_clear_pending {
+        if self.session_store.clear_pending {
             self.clear_persisted_session().await?;
             return Ok(());
         }
 
-        if self.session_store_loaded || self.options.clean_start() {
-            self.session_store_loaded = true;
+        if self.session_store.loaded || self.options.clean_start() {
+            self.session_store.loaded = true;
             return Ok(());
         }
 
         let Some(store) = self.options.session_store() else {
-            self.session_store_loaded = true;
-            self.session_store_clear_pending = false;
+            self.session_store.loaded = true;
+            self.session_store.clear_pending = false;
             return Ok(());
         };
 
@@ -626,7 +644,7 @@ impl EventLoop {
             .await
             .map_err(ConnectionError::SessionStore)?
         else {
-            self.session_store_loaded = true;
+            self.session_store.loaded = true;
             return Ok(());
         };
 
@@ -636,7 +654,7 @@ impl EventLoop {
         self.pending
             .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
         self.session_client_id = Some(client_id);
-        self.session_store_loaded = true;
+        self.session_store.loaded = true;
         Ok(())
     }
 
@@ -663,8 +681,8 @@ impl EventLoop {
 
     async fn save_persisted_session(&mut self) -> Result<(), ConnectionError> {
         if self.persisted_session_save().save().await? {
-            self.session_store_loaded = true;
-            self.session_store_clear_pending = false;
+            self.session_store.loaded = true;
+            self.session_store.clear_pending = false;
         }
 
         Ok(())
@@ -694,8 +712,8 @@ impl EventLoop {
 
     async fn clear_persisted_session(&mut self) -> Result<(), ConnectionError> {
         let Some(store) = self.options.session_store() else {
-            self.session_store_loaded = true;
-            self.session_store_clear_pending = false;
+            self.session_store.loaded = true;
+            self.session_store.clear_pending = false;
             return Ok(());
         };
 
@@ -704,13 +722,13 @@ impl EventLoop {
             .clear(&client_id)
             .await
             .map_err(ConnectionError::SessionStore)?;
-        self.session_store_loaded = true;
-        self.session_store_clear_pending = false;
+        self.session_store.loaded = true;
+        self.session_store.clear_pending = false;
         Ok(())
     }
 
     async fn clear_persisted_session_or_block_reload(&mut self) -> Result<(), ConnectionError> {
-        self.session_store_clear_pending = true;
+        self.session_store.clear_pending = true;
         self.clear_persisted_session().await
     }
 
@@ -4445,14 +4463,14 @@ mod tests {
             .set_session_store(SuccessfulSessionStore);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
         eventloop.session_client_id = Some("test-client".to_owned());
-        eventloop.session_store_loaded = true;
+        eventloop.session_store.loaded = true;
 
         eventloop.reconcile_connack_session(false).unwrap();
-        assert!(!eventloop.session_store_loaded);
+        assert!(!eventloop.session_store.loaded);
 
         eventloop.clear_persisted_session().await.unwrap();
 
-        assert!(eventloop.session_store_loaded);
+        assert!(eventloop.session_store.loaded);
     }
 
     #[tokio::test]
@@ -4472,7 +4490,7 @@ mod tests {
         assert!(store.current().is_some());
 
         eventloop.session_client_id = Some("test-client".to_owned());
-        eventloop.session_store_loaded = true;
+        eventloop.session_store.loaded = true;
         eventloop.reconcile_connack_session(false).unwrap();
 
         let err = eventloop
@@ -4481,7 +4499,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ConnectionError::SessionStore(_)));
-        assert!(eventloop.session_store_clear_pending);
+        assert!(eventloop.session_store.clear_pending);
         assert_eq!(store.load_count(), 0);
 
         let err = eventloop
@@ -4490,7 +4508,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ConnectionError::SessionStore(_)));
-        assert!(eventloop.session_store_clear_pending);
+        assert!(eventloop.session_store.clear_pending);
         assert!(eventloop.pending_is_empty());
         assert_eq!(store.load_count(), 0);
     }
@@ -4549,7 +4567,7 @@ mod tests {
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
 
         eventloop.reset_session_state();
-        assert!(eventloop.session_store_clear_pending);
+        assert!(eventloop.session_store.clear_pending);
 
         let mut subscribe = subscribe();
         subscribe.pkid = 7;
@@ -4559,11 +4577,11 @@ mod tests {
 
         eventloop.save_persisted_session().await.unwrap();
 
-        assert!(!eventloop.session_store_clear_pending);
+        assert!(!eventloop.session_store.clear_pending);
         assert!(store.current().is_some());
 
         eventloop.queued.clear();
-        eventloop.session_store_loaded = false;
+        eventloop.session_store.loaded = false;
         eventloop.load_persisted_session_if_needed().await.unwrap();
 
         assert!(store.current().is_some());
@@ -4595,7 +4613,7 @@ mod tests {
 
         assert!(eventloop.pending_is_empty());
         assert!(store.current().is_none());
-        assert!(eventloop.session_store_loaded);
+        assert!(eventloop.session_store.loaded);
     }
 
     #[tokio::test]
