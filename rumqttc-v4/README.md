@@ -147,6 +147,23 @@ out side the library and `Eventloop` is accessible, users can
   the disconnect request, and `disconnect_now()` is not an out-of-band transport
   abort.
 
+- For restart-safe MQTT 3.1.1 persistent sessions, configure
+  `MqttOptions::set_session_store(...)` or builder `.session_store(...)`
+  together with `clean_session(false)`. rumqttc provides the backend-neutral
+  `SessionStore` trait and `PersistedSession` data model; the application owns
+  serialization and durable storage. The store is saved before tracked
+  publish/subscribe/unsubscribe notices report completion when losing the saved
+  state would make recovery ambiguous. A save failure is reported through the
+  corresponding `SessionPersistence(...)` notice error and
+  `ConnectionError::SessionStore`.
+
+- MQTT 3.1.1 `CleanSession = 0` expects both client and server to keep session
+  state for reconnect. Without a `SessionStore`, rumqttc can still resume within
+  the same live `EventLoop`, but a new process cannot strictly continue a
+  broker-retained session unless it restores the local client session state.
+  See `examples/persistent_session_file_store.rs` for a complete file-backed
+  `SessionStore` implementation owned by application code.
+
 - This crate is intentionally protocol-specific. It does not expose MQTT 5
   features such as AUTH packets, topic aliases, or MQTT 5 property handling.
 

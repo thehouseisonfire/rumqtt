@@ -2,6 +2,12 @@
 
 ### Added
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
+- `rumqttc` v4: Add opt-in client-side persistent session storage via `SessionStore`, `PersistedSession`,
+  `MqttOptions::set_session_store(...)`, and builder `.session_store(...)`. When configured with
+  `clean_session(false)`, the event loop can restore local QoS/session state across newly constructed clients or
+  process restarts, including in-flight publishes, `PUBREL`, `SUBSCRIBE`, and `UNSUBSCRIBE` requests. This is a
+  storage API and backend-neutral checkpoint model; applications provide serialization and durable storage, and
+  rumqttc does not include a built-in file store.
 - `rumqttc` v5: Add `MqttStateBuilder::client_topic_alias_max(u16)` builder method and `MqttState::set_client_topic_alias_max(Option<u16>)` to configure the incoming Topic Alias Maximum, propagated from `MqttOptions::topic_alias_max()` at connect time.
 - `rumqttc` v5: Add opt-in client-side persistent session storage via `SessionStore`, `PersistedSession`,
   `MqttOptions::set_session_store(...)`, and builder `.session_store(...)`. When configured with

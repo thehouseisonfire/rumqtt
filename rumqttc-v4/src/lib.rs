@@ -30,6 +30,7 @@ mod eventloop;
 mod framed;
 pub mod mqttbytes;
 mod notice;
+mod session;
 mod state;
 mod transport;
 
@@ -83,6 +84,11 @@ pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::TlsConfiguration;
 pub use rumqttc_core::default_socket_connect;
+pub use session::{
+    PersistedAckMode, PersistedFilter, PersistedIncomingQos2, PersistedPubRel, PersistedPublish,
+    PersistedQoS, PersistedRequest, PersistedSession, PersistedSubscribe, PersistedUnsubscribe,
+    SessionRestoreError, SessionStore, SessionStoreError,
+};
 pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::Error as TlsError;
@@ -536,6 +542,8 @@ pub struct MqttOptions {
     last_will: Option<LastWill>,
     /// Controls how incoming publish acknowledgements are handled.
     ack_mode: AckMode,
+    /// Optional durable storage for MQTT 3.1.1 persistent client session state.
+    session_store: Option<Arc<dyn SessionStore>>,
     #[cfg(feature = "proxy")]
     /// Proxy configuration.
     proxy: Option<Proxy>,
@@ -584,6 +592,7 @@ impl MqttOptions {
             inflight: 100,
             last_will: None,
             ack_mode: AckMode::Automatic,
+            session_store: None,
             #[cfg(feature = "proxy")]
             proxy: None,
             #[cfg(feature = "websocket")]
@@ -936,6 +945,45 @@ impl MqttOptions {
         self.ack_mode
     }
 
+    /// Set durable storage for MQTT 3.1.1 persistent client session state.
+    ///
+    /// rumqttc supplies the [`SessionStore`] trait and [`PersistedSession`]
+    /// data model. Applications provide serialization and the storage backend.
+    /// When this is configured with `clean_session(false)`, a newly
+    /// constructed `EventLoop` can restore local client session state before
+    /// accepting a broker session resume.
+    ///
+    /// MQTT 3.1.1 requires clients using `CleanSession = 0` to store session
+    /// state while the session exists. For restart-safe QoS/session resume,
+    /// configure a store that durably saves checkpoints before returning from
+    /// [`SessionStore::save`].
+    pub fn set_session_store<S>(&mut self, store: S) -> &mut Self
+    where
+        S: SessionStore,
+    {
+        self.session_store = Some(Arc::new(store));
+        self
+    }
+
+    /// Set durable session storage from a shared trait object.
+    ///
+    /// See [`MqttOptions::set_session_store`] for persistence semantics.
+    pub fn set_session_store_arc(&mut self, store: Arc<dyn SessionStore>) -> &mut Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    /// Clear the configured durable session store.
+    pub fn clear_session_store(&mut self) -> &mut Self {
+        self.session_store = None;
+        self
+    }
+
+    /// Returns the configured durable session store, if any.
+    pub fn session_store(&self) -> Option<Arc<dyn SessionStore>> {
+        self.session_store.clone()
+    }
+
     #[cfg(feature = "proxy")]
     pub fn set_proxy(&mut self, proxy: Proxy) -> &mut Self {
         self.proxy = Some(proxy);
@@ -1224,6 +1272,27 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Set durable storage for MQTT 3.1.1 persistent client session state.
+    ///
+    /// See [`MqttOptions::set_session_store`] for persistence semantics.
+    #[must_use]
+    pub fn session_store<S>(mut self, store: S) -> Self
+    where
+        S: SessionStore,
+    {
+        self.options.set_session_store(store);
+        self
+    }
+
+    /// Set durable session storage from a shared trait object.
+    ///
+    /// See [`MqttOptions::set_session_store`] for persistence semantics.
+    #[must_use]
+    pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.options.set_session_store_arc(store);
+        self
+    }
+
     /// Set proxy configuration.
     #[cfg(feature = "proxy")]
     #[must_use]
@@ -1495,6 +1564,7 @@ impl Debug for MqttOptions {
             .field("inflight", &self.inflight)
             .field("last_will", &self.last_will)
             .field("ack_mode", &self.ack_mode)
+            .field("session_store", &self.session_store.is_some())
             .finish_non_exhaustive()
     }
 }
