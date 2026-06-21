@@ -705,6 +705,10 @@ impl MqttState {
         if self.outgoing_rel.len() < target_len {
             self.outgoing_rel.grow(target_len);
         }
+
+        if self.outgoing_rel_replay.len() < target_len {
+            self.outgoing_rel_replay.grow(target_len);
+        }
     }
 
     pub(crate) fn outbound_requests_drained(&self) -> bool {
@@ -766,6 +770,7 @@ impl MqttState {
         self.outgoing_pub_flush_attempted = FixedBitSet::with_capacity(target_len);
         self.outgoing_pub_ack = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel = FixedBitSet::with_capacity(target_len);
+        self.outgoing_rel_replay = FixedBitSet::with_capacity(target_len);
         // Ensure future packet id reuse starts from the beginning of the new range.
         self.last_pkid = 0;
         self.last_puback = 0;
@@ -2635,6 +2640,7 @@ impl MqttState {
 
         for request in &session.replay {
             if let PersistedRequest::PubRel(pubrel) = request {
+                self.ensure_outgoing_tracking_capacity(usize::from(pubrel.pkid) + 1);
                 self.outgoing_rel_replay.insert(usize::from(pubrel.pkid));
             }
         }
@@ -3522,6 +3528,38 @@ mod test {
             }
         );
         assert_eq!(restored.last_pkid, 9);
+    }
+
+    #[test]
+    fn persisted_session_restores_pubrel_replay_when_replay_bitset_is_short() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(10)
+            .build();
+        let session = PersistedSession {
+            format_version: 1,
+            client_id: "client".to_owned(),
+            clean_start: false,
+            session_expiry_interval: options.session_expiry_interval(),
+            outgoing_inflight_upper_limit: Some(10),
+            ack_mode: PersistedAckMode::Automatic,
+            last_pkid: 0,
+            last_puback: 0,
+            replay: vec![PersistedRequest::PubRel(PersistedPubRel { pkid: 10 })],
+            incoming_qos2: vec![],
+        };
+        let mut restored = MqttState::builder(10).build();
+        restored.outgoing_rel_replay = fixedbitset::FixedBitSet::with_capacity(2);
+
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .expect("persisted session should restore");
+
+        assert!(restored.outgoing_rel_replay.contains(10));
+        assert!(matches!(
+            &replay[0],
+            Request::PubRel(pubrel) if pubrel.pkid == 10
+        ));
     }
 
     #[test]

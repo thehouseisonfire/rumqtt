@@ -162,15 +162,16 @@ enum SessionStoreResetAction {
 struct SessionSave(Option<(Arc<dyn SessionStore>, PersistedSession)>);
 
 impl SessionSave {
-    async fn save(self) -> Result<(), ConnectionError> {
+    async fn save(self) -> Result<bool, ConnectionError> {
         let Some((store, session)) = self.0 else {
-            return Ok(());
+            return Ok(false);
         };
 
         store
             .save(&session)
             .await
-            .map_err(ConnectionError::SessionStore)
+            .map_err(ConnectionError::SessionStore)?;
+        Ok(true)
     }
 }
 
@@ -660,12 +661,21 @@ impl EventLoop {
         SessionSave(Some((store, session)))
     }
 
+    async fn save_persisted_session(&mut self) -> Result<(), ConnectionError> {
+        if self.persisted_session_save().save().await? {
+            self.session_store_loaded = true;
+            self.session_store_clear_pending = false;
+        }
+
+        Ok(())
+    }
+
     async fn persist_session_or_fail_qos0_notices(
-        session_save: SessionSave,
+        &mut self,
         qos0_notices: &mut Vec<PublishNoticeTx>,
         flush_notice: Option<PublishNoticeTx>,
     ) -> Result<(), ConnectionError> {
-        if let Err(err) = session_save.save().await {
+        if let Err(err) = self.save_persisted_session().await {
             let error = PublishNoticeError::SessionPersistence(err.to_string());
             for notice in qos0_notices.drain(..) {
                 notice.error(error.clone());
@@ -720,7 +730,7 @@ impl EventLoop {
     ) -> Result<ReadBatchOutcome, ConnectionError> {
         let ReadBatch { outcome, notices } = batch;
         self.state.mark_outgoing_publishes_flush_attempted();
-        if let Err(err) = self.persisted_session_save().save().await {
+        if let Err(err) = self.save_persisted_session().await {
             let error = err.to_string();
             for notice in notices {
                 notice.persistence_error(error.clone());
@@ -736,17 +746,14 @@ impl EventLoop {
         Ok(outcome)
     }
 
-    async fn complete_failed_read_batch(
-        session_save: SessionSave,
-        error: ReadBatchError,
-    ) -> ConnectionError {
+    async fn complete_failed_read_batch(&mut self, error: ReadBatchError) -> ConnectionError {
         let ReadBatchError { source, batch } = error;
         let ReadBatch { notices, .. } = batch;
         if notices.is_empty() {
             return ConnectionError::MqttState(source);
         }
 
-        if let Err(err) = session_save.save().await {
+        if let Err(err) = self.save_persisted_session().await {
             let error = err.to_string();
             for notice in notices {
                 notice.persistence_error(error.clone());
@@ -832,7 +839,7 @@ impl EventLoop {
                 // MQTT requires that packets pending acknowledgement should be republished on session resume.
                 // Move pending messages from state to eventloop.
                 self.clean();
-                self.persisted_session_save().save().await?;
+                self.save_persisted_session().await?;
                 Err(e)
             }
         }
@@ -915,8 +922,7 @@ impl EventLoop {
                     let batch = match o {
                         Ok(batch) => batch,
                         Err(err) => {
-                            let session_save = self.persisted_session_save();
-                            return Err(Self::complete_failed_read_batch(session_save, err).await);
+                            return Err(self.complete_failed_read_batch(err).await);
                         }
                     };
                     let outcome = self.complete_read_batch(batch).await?;
@@ -1128,7 +1134,7 @@ impl EventLoop {
                 if session_expires {
                     *checkpoint_action = SessionCheckpointAction::Clear;
                 } else {
-                    self.persisted_session_save().save().await?;
+                    self.save_persisted_session().await?;
                 }
                 if let Some(outgoing) = outgoing {
                     if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
@@ -1147,12 +1153,8 @@ impl EventLoop {
                     self.state
                         .handle_outgoing_packet_with_notice(request, notice)?
                 };
-                Self::persist_session_or_fail_qos0_notices(
-                    self.persisted_session_save(),
-                    qos0_notices,
-                    flush_notice,
-                )
-                .await?;
+                self.persist_session_or_fail_qos0_notices(qos0_notices, flush_notice)
+                    .await?;
                 if let Some(outgoing) = outgoing {
                     if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
                         for notice in qos0_notices.drain(..) {
@@ -1202,7 +1204,7 @@ impl EventLoop {
 
     async fn flush_network(&mut self) -> Result<(), ConnectionError> {
         self.state.mark_outgoing_publishes_flush_attempted();
-        self.persisted_session_save().save().await?;
+        self.save_persisted_session().await?;
         self.network.as_mut().unwrap().flush().await?;
         Ok(())
     }
@@ -1241,8 +1243,7 @@ impl EventLoop {
                 result = read => match result {
                     Ok(batch) => batch,
                     Err(err) => {
-                        let session_save = self.persisted_session_save();
-                        return Err(Self::complete_failed_read_batch(session_save, err).await);
+                        return Err(self.complete_failed_read_batch(err).await);
                     }
                 },
                 () = time::sleep_until(deadline) => return Err(ConnectionError::DisconnectTimeout),
@@ -1256,8 +1257,7 @@ impl EventLoop {
                 result = read => match result {
                     Ok(batch) => batch,
                     Err(err) => {
-                        let session_save = self.persisted_session_save();
-                        return Err(Self::complete_failed_read_batch(session_save, err).await);
+                        return Err(self.complete_failed_read_batch(err).await);
                     }
                 },
             }
@@ -1294,7 +1294,7 @@ impl EventLoop {
         if clear_persisted_session {
             self.clear_persisted_session().await?;
         } else {
-            self.persisted_session_save().save().await?;
+            self.save_persisted_session().await?;
         }
         self.disconnect_complete = true;
         Ok(self.state.events.pop_front().unwrap())
@@ -4535,6 +4535,41 @@ mod tests {
         assert!(matches!(
             &session.replay[0],
             crate::PersistedRequest::Subscribe(subscribe) if subscribe.pkid == 7
+        ));
+    }
+
+    #[tokio::test]
+    async fn successful_persisted_session_save_clears_pending_store_invalidation() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        eventloop.reset_session_state();
+        assert!(eventloop.session_store_clear_pending);
+
+        let mut subscribe = subscribe();
+        subscribe.pkid = 7;
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain_replay(Request::Subscribe(subscribe)));
+
+        eventloop.save_persisted_session().await.unwrap();
+
+        assert!(!eventloop.session_store_clear_pending);
+        assert!(store.current().is_some());
+
+        eventloop.queued.clear();
+        eventloop.session_store_loaded = false;
+        eventloop.load_persisted_session_if_needed().await.unwrap();
+
+        assert!(store.current().is_some());
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::Subscribe(subscribe)) if subscribe.pkid == 7
         ));
     }
 
