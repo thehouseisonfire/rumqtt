@@ -58,6 +58,8 @@ pub enum PublishNoticeError {
     SessionReset,
     #[error("qos0 publish was not flushed to the network")]
     Qos0NotFlushed,
+    #[error("session state could not be persisted before publish completion: {0}")]
+    SessionPersistence(String),
 }
 
 impl From<oneshot::error::RecvError> for PublishNoticeError {
@@ -164,6 +166,8 @@ pub enum SubscribeNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("session state could not be persisted before subscribe completion: {0}")]
+    SessionPersistence(String),
     #[error("v4 suback returned failing reason codes: {0:?}")]
     V4SubAckFailure(Vec<V4SubscribeReasonCode>),
 }
@@ -237,6 +241,8 @@ pub enum UnsubscribeNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("session state could not be persisted before unsubscribe completion: {0}")]
+    SessionPersistence(String),
 }
 
 impl From<oneshot::error::RecvError> for UnsubscribeNoticeError {
@@ -357,6 +363,35 @@ pub enum TrackedNoticeTx {
     Publish(PublishNoticeTx),
     Subscribe(SubscribeNoticeTx),
     Unsubscribe(UnsubscribeNoticeTx),
+}
+
+#[derive(Debug)]
+pub enum DeferredNotice {
+    Publish(PublishNoticeTx, PublishResult),
+    Subscribe(SubscribeNoticeTx, SubAck),
+    Unsubscribe(UnsubscribeNoticeTx, UnsubAck),
+}
+
+impl DeferredNotice {
+    pub(crate) fn complete(self) {
+        match self {
+            Self::Publish(notice, result) => notice.success(result),
+            Self::Subscribe(notice, suback) => notice.success(suback),
+            Self::Unsubscribe(notice, unsuback) => notice.success(unsuback),
+        }
+    }
+
+    pub(crate) fn persistence_error(self, error: String) {
+        match self {
+            Self::Publish(notice, _) => notice.error(PublishNoticeError::SessionPersistence(error)),
+            Self::Subscribe(notice, _) => {
+                notice.error(SubscribeNoticeError::SessionPersistence(error));
+            }
+            Self::Unsubscribe(notice, _) => {
+                notice.error(UnsubscribeNoticeError::SessionPersistence(error));
+            }
+        }
+    }
 }
 
 fn validate_v4_suback_completion(suback: &SubAck) -> Result<(), SubscribeNoticeError> {

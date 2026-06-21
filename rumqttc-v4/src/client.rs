@@ -140,7 +140,7 @@ enum RequestSender {
 }
 
 fn into_request(envelope: RequestEnvelope) -> Request {
-    let (request, _notice) = envelope.into_parts();
+    let (request, _notice, _replay) = envelope.into_parts();
     request
 }
 

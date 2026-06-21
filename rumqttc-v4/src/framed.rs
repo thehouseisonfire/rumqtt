@@ -6,6 +6,7 @@ use crate::mqttbytes::{
     self,
     v4::{Codec, Packet},
 };
+use crate::notice::DeferredNotice;
 use crate::{Incoming, MqttState, StateError};
 
 /// Network transforms packets <-> frames efficiently. It takes
@@ -20,6 +21,31 @@ pub struct Network {
 pub enum ReadBatchOutcome {
     NoResponseWritten,
     ResponseWritten,
+}
+
+#[derive(Debug)]
+pub struct ReadBatch {
+    pub(crate) outcome: ReadBatchOutcome,
+    pub(crate) notices: Vec<DeferredNotice>,
+}
+
+#[derive(Debug)]
+pub struct ReadBatchError {
+    pub(crate) source: StateError,
+    pub(crate) batch: ReadBatch,
+}
+
+impl ReadBatchError {
+    const fn new(
+        source: StateError,
+        outcome: ReadBatchOutcome,
+        notices: Vec<DeferredNotice>,
+    ) -> Self {
+        Self {
+            source,
+            batch: ReadBatch { outcome, notices },
+        }
+    }
 }
 
 impl Network {
@@ -54,18 +80,30 @@ impl Network {
         &mut self,
         state: &mut MqttState,
         read_batch_limit: usize,
-    ) -> Result<ReadBatchOutcome, StateError> {
+    ) -> Result<ReadBatch, ReadBatchError> {
         // wait for the first read
         let mut res = self.framed.next().await;
         let read_batch_limit = read_batch_limit.max(1);
         let mut count = 0;
         let mut outcome = ReadBatchOutcome::NoResponseWritten;
+        let mut notices = Vec::new();
         loop {
             match res {
                 Some(Ok(packet)) => {
-                    if let Some(outgoing) = state.handle_incoming_packet(packet)? {
-                        self.write(outgoing).await?;
+                    let effects = match state.handle_incoming_packet_with_effects(packet) {
+                        Ok(effects) => effects,
+                        Err(err) => return Err(ReadBatchError::new(err, outcome, notices)),
+                    };
+                    let has_deferred_notices = !effects.notices.is_empty();
+                    notices.extend(effects.notices);
+                    if let Some(outgoing) = effects.outgoing {
+                        if let Err(err) = self.write(outgoing).await {
+                            return Err(ReadBatchError::new(err, outcome, notices));
+                        }
                         outcome = ReadBatchOutcome::ResponseWritten;
+                    }
+                    if has_deferred_notices {
+                        break;
                     }
 
                     count += 1;
@@ -74,8 +112,20 @@ impl Network {
                     }
                 }
                 Some(Err(mqttbytes::Error::InsufficientBytes(_))) => unreachable!(),
-                Some(Err(e)) => return Err(StateError::Deserialization(e)),
-                None => return Err(StateError::ConnectionAborted),
+                Some(Err(e)) => {
+                    return Err(ReadBatchError::new(
+                        StateError::Deserialization(e),
+                        outcome,
+                        notices,
+                    ));
+                }
+                None => {
+                    return Err(ReadBatchError::new(
+                        StateError::ConnectionAborted,
+                        outcome,
+                        notices,
+                    ));
+                }
             }
             // do not wait for subsequent reads
             match self.framed.next().now_or_never() {
@@ -84,7 +134,7 @@ impl Network {
             }
         }
 
-        Ok(outcome)
+        Ok(ReadBatch { outcome, notices })
     }
 
     /// Serializes packet into write buffer
@@ -116,7 +166,7 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        let outcome = network.readb(&mut state, 2).await.unwrap();
+        let outcome = network.readb(&mut state, 2).await.unwrap().outcome;
 
         assert_eq!(state.events.len(), 2);
         assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
@@ -130,7 +180,7 @@ mod tests {
 
         peer.write_all(&[0xD0, 0x00, 0xD0, 0x00]).await.unwrap();
 
-        let outcome = network.readb(&mut state, 1).await.unwrap();
+        let outcome = network.readb(&mut state, 1).await.unwrap().outcome;
 
         assert_eq!(state.events.len(), 1);
         assert_eq!(outcome, ReadBatchOutcome::NoResponseWritten);
