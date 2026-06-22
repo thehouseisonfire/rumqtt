@@ -3059,7 +3059,7 @@
                 "original_mapping_assessment": "correct",
                 "wrong_mapping_client_behavior_risk": "no",
                 "wrong_mapping_behavior_present_in_code": "not_applicable",
-                "notes": "The original summary is a near-verbatim copy of the authoritative spec text. The mapping correctly identifies the VBI encoding, self-exclusion, and zero-indication obligations."
+                "notes": "The original summary is a near-verbatim copy of the authoritative spec text (verified verbatim against docs/spec/mqtt-v5.0.md section 2.2.2.1, line 1344, including the [MQTT-2.2.2-1] marker on the 'Property Length of zero' MUST clause). The mapping correctly identifies the three normative obligations: VBI encoding, self-exclusion of the VBI's own bytes, and zero-indication. Re-audit on 2026-06-22 re-verified the v5 codec paths: Publish::len()/write()/PublishProperties::read() in rumqttc-v5/src/mqttbytes/v5/publish.rs and write_remaining_length()/length() in mqttbytes-core/src/primitives.rs all enforce the obligations, and the four named tests in v5/mod.rs and primitives.rs still pass byte-level assertions covering all 13 property-bearing packet types plus multi-byte VBI."
             },
             "evidence": [
                 {
