@@ -227,7 +227,7 @@ struct SessionStoreState {
 }
 
 impl SessionStoreState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             loaded: false,
             clear_pending: false,
