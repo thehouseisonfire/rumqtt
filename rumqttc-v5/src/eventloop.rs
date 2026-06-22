@@ -43,9 +43,9 @@ use crate::proxy::ProxyError;
 
 #[derive(Debug)]
 pub struct RequestEnvelope {
-    request: Request,
-    notice: Option<TrackedNoticeTx>,
-    replay: bool,
+    pub(crate) request: Request,
+    pub(crate) notice: Option<TrackedNoticeTx>,
+    pub(crate) replay: bool,
 }
 
 impl RequestEnvelope {
@@ -121,16 +121,18 @@ impl RequestEnvelope {
             replay: false,
         }
     }
-
-    pub(crate) fn into_parts(self) -> (Request, Option<TrackedNoticeTx>, bool) {
-        (self.request, self.notice, self.replay)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestChannelCapacity {
     Bounded(usize),
     Unbounded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchControl {
+    Continue,
+    Stop,
 }
 
 struct PendingDisconnect {
@@ -930,8 +932,8 @@ impl EventLoop {
                     && (!self.pending.is_empty()
                         || !self.requests_rx.is_empty()
                         || !self.requests_rx.is_disconnected()) => match o {
-                    Ok((request, notice, replay)) => {
-                        self.admit_normal_request_batch((request, notice, replay)).await;
+                    Ok(envelope) => {
+                        self.admit_normal_request_batch(envelope).await;
                         continue;
                     }
                     Err(_) => continue,
@@ -969,14 +971,11 @@ impl EventLoop {
         &mut self,
         envelope: RequestEnvelope,
     ) -> Result<Event, ConnectionError> {
-        let (request, notice, replay) = envelope.into_parts();
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
         let mut checkpoint_action = SessionCheckpointAction::Save;
         self.handle_request_internal(
-            request,
-            notice,
-            replay,
+            envelope,
             &mut should_flush,
             &mut qos0_notices,
             &mut checkpoint_action,
@@ -988,7 +987,7 @@ impl EventLoop {
     }
 
     async fn handle_ready_requests(&mut self) -> Result<bool, ConnectionError> {
-        let Some((request, notice, replay)) = self.next_scheduled_request() else {
+        let Some(envelope) = self.next_scheduled_request() else {
             return Ok(false);
         };
 
@@ -998,31 +997,28 @@ impl EventLoop {
 
         if self
             .handle_request_internal(
-                request,
-                notice,
-                replay,
+                envelope,
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
             )
             .await?
+            == BatchControl::Continue
         {
             for _ in 1..self.options.max_request_batch.max(1) {
-                let Some((next_request, next_notice, next_replay)) = self.next_scheduled_request()
-                else {
+                let Some(envelope) = self.next_scheduled_request() else {
                     break;
                 };
 
-                if !self
+                if self
                     .handle_request_internal(
-                        next_request,
-                        next_notice,
-                        next_replay,
+                        envelope,
                         &mut should_flush,
                         &mut qos0_notices,
                         &mut checkpoint_action,
                     )
                     .await?
+                    == BatchControl::Stop
                 {
                     break;
                 }
@@ -1034,11 +1030,10 @@ impl EventLoop {
         Ok(true)
     }
 
-    fn next_scheduled_request(&mut self) -> Option<(Request, Option<TrackedNoticeTx>, bool)> {
+    fn next_scheduled_request(&mut self) -> Option<RequestEnvelope> {
         let state = &self.state;
         self.queued
             .pop_next(|envelope| classify_request(state, &envelope.request))
-            .map(RequestEnvelope::into_parts)
     }
 
     fn normal_request_admission_allowed(&self) -> bool {
@@ -1055,7 +1050,7 @@ impl EventLoop {
                 break;
             }
 
-            let Some((request, notice, replay)) = Self::try_next_request(
+            let Some(envelope) = Self::try_next_request(
                 &mut self.pending,
                 &self.requests_rx,
                 self.options.pending_throttle,
@@ -1065,33 +1060,23 @@ impl EventLoop {
                 break;
             };
 
-            let stop_batch = is_disconnect_request(&request);
-            self.queued
-                .push_back(RequestEnvelope::from_parts_with_replay(
-                    request, notice, replay,
-                ));
+            let stop_batch = is_disconnect_request(&envelope.request);
+            self.queued.push_back(envelope);
             if stop_batch {
                 break;
             }
         }
     }
 
-    async fn admit_normal_request_batch(
-        &mut self,
-        first: (Request, Option<TrackedNoticeTx>, bool),
-    ) {
-        let (request, notice, replay) = first;
-        let stop_batch = is_disconnect_request(&request);
-        self.queued
-            .push_back(RequestEnvelope::from_parts_with_replay(
-                request, notice, replay,
-            ));
+    async fn admit_normal_request_batch(&mut self, first: RequestEnvelope) {
+        let stop_batch = is_disconnect_request(&first.request);
+        self.queued.push_back(first);
         if stop_batch || !self.normal_request_admission_allowed() && self.pending.is_empty() {
             return;
         }
 
         for _ in 1..self.options.max_request_batch.max(1) {
-            let Some((request, notice, replay)) = Self::try_next_request(
+            let Some(envelope) = Self::try_next_request(
                 &mut self.pending,
                 &self.requests_rx,
                 self.options.pending_throttle,
@@ -1100,11 +1085,8 @@ impl EventLoop {
             else {
                 break;
             };
-            let stop_batch = is_disconnect_request(&request);
-            self.queued
-                .push_back(RequestEnvelope::from_parts_with_replay(
-                    request, notice, replay,
-                ));
+            let stop_batch = is_disconnect_request(&envelope.request);
+            self.queued.push_back(envelope);
             if stop_batch {
                 break;
             }
@@ -1113,34 +1095,37 @@ impl EventLoop {
 
     async fn handle_request_internal(
         &mut self,
-        request: Request,
-        notice: Option<TrackedNoticeTx>,
-        replay: bool,
+        envelope: RequestEnvelope,
         should_flush: &mut bool,
         qos0_notices: &mut Vec<PublishNoticeTx>,
         checkpoint_action: &mut SessionCheckpointAction,
-    ) -> Result<bool, ConnectionError> {
+    ) -> Result<BatchControl, ConnectionError> {
+        let RequestEnvelope {
+            request,
+            notice,
+            replay,
+        } = envelope;
         if self.broker_only_session_resume && request_allocates_client_packet_id(&request) {
             reject_broker_only_session_request(&request, notice);
-            return Ok(true);
+            return Ok(BatchControl::Continue);
         }
         if matches!(&request, Request::Publish(publish) if publish.retain)
             && !self.state.retain_available()
         {
             reject_unsupported_retained_publish(&request, notice);
-            return Ok(true);
+            return Ok(BatchControl::Continue);
         }
 
         match request {
             Request::Disconnect(disconnect) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
                 self.pending_disconnect = Some(PendingDisconnect::new(disconnect, None));
-                Ok(false)
+                Ok(BatchControl::Stop)
             }
             Request::DisconnectWithTimeout(disconnect, timeout) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
                 self.pending_disconnect = Some(PendingDisconnect::new(disconnect, Some(timeout)));
-                Ok(false)
+                Ok(BatchControl::Stop)
             }
             Request::DisconnectNow(disconnect) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
@@ -1161,7 +1146,7 @@ impl EventLoop {
                     *should_flush = true;
                 }
                 self.disconnect_complete = true;
-                Ok(false)
+                Ok(BatchControl::Stop)
             }
             request => {
                 let (outgoing, flush_notice) = if replay {
@@ -1182,7 +1167,7 @@ impl EventLoop {
                     }
                     *should_flush = true;
                 }
-                Ok(true)
+                Ok(BatchControl::Continue)
             }
         }
     }
@@ -1334,7 +1319,7 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Option<(Request, Option<TrackedNoticeTx>, bool)> {
+    ) -> Option<RequestEnvelope> {
         if !pending.is_empty() {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
@@ -1343,11 +1328,11 @@ impl EventLoop {
             }
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
-            return pending.pop_front().map(RequestEnvelope::into_parts);
+            return pending.pop_front();
         }
 
         match rx.try_recv() {
-            Ok(envelope) => return Some(envelope.into_parts()),
+            Ok(envelope) => return Some(envelope),
             Err(TryRecvError::Disconnected) => return None,
             Err(TryRecvError::Empty) => {}
         }
@@ -1359,11 +1344,10 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
-    ) -> Result<(Request, Option<TrackedNoticeTx>, bool), ConnectionError> {
+    ) -> Result<RequestEnvelope, ConnectionError> {
         if pending.is_empty() {
             rx.recv_async()
                 .await
-                .map(RequestEnvelope::into_parts)
                 .map_err(|_| ConnectionError::RequestsDone)
         } else {
             if pending_throttle.is_zero() {
@@ -1373,7 +1357,7 @@ impl EventLoop {
             }
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
-            Ok(pending.pop_front().unwrap().into_parts())
+            Ok(pending.pop_front().unwrap())
         }
     }
 
@@ -2487,9 +2471,11 @@ mod tests {
 
         let err = eventloop
             .handle_request_internal(
-                Request::Publish(publish(QoS::AtMostOnce)),
-                Some(TrackedNoticeTx::Publish(notice_tx)),
-                false,
+                RequestEnvelope {
+                    request: Request::Publish(publish(QoS::AtMostOnce)),
+                    notice: Some(TrackedNoticeTx::Publish(notice_tx)),
+                    replay: false,
+                },
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
@@ -2545,26 +2531,29 @@ mod tests {
         let mut qos0_notices = Vec::new();
         let mut checkpoint_action = SessionCheckpointAction::Save;
 
-        assert!(
+        assert_eq!(
             eventloop
                 .handle_request_internal(
-                    Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
-                    Some(TrackedNoticeTx::Auth(notice_tx)),
-                    false,
+                    RequestEnvelope {
+                        request: Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                        notice: Some(TrackedNoticeTx::Auth(notice_tx)),
+                        replay: false,
+                    },
                     &mut should_flush,
                     &mut qos0_notices,
                     &mut checkpoint_action,
                 )
                 .await
-                .unwrap()
+                .unwrap(),
+            BatchControl::Continue
         );
         assert!(eventloop.state.outbound_requests_drained());
 
         let handled = eventloop
             .handle_request_internal(
-                Request::Disconnect(Disconnect::new(DisconnectReasonCode::NormalDisconnection)),
-                None,
-                false,
+                RequestEnvelope::plain(Request::Disconnect(Disconnect::new(
+                    DisconnectReasonCode::NormalDisconnection,
+                ))),
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
@@ -2572,7 +2561,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!handled);
+        assert_eq!(handled, BatchControl::Stop);
         assert!(eventloop.pending_disconnect.is_some());
         assert_eq!(
             notice.wait_async().await.unwrap_err(),
@@ -3210,7 +3199,7 @@ mod tests {
 
         eventloop
             .next_scheduled_request()
-            .map(|(request, _notice, _replay)| request)
+            .map(|envelope| envelope.request)
     }
 
     #[test]
@@ -3228,11 +3217,15 @@ mod tests {
             .queued
             .push_back(RequestEnvelope::plain(Request::Subscribe(subscribe())));
 
-        let (request, _, replay) = eventloop.next_scheduled_request().unwrap();
+        let envelope = eventloop.next_scheduled_request().unwrap();
 
-        assert!(!replay);
-        assert!(matches!(request, Request::Subscribe(_)));
-        match eventloop.state.handle_outgoing_packet(request).unwrap() {
+        assert!(!envelope.replay);
+        assert!(matches!(envelope.request, Request::Subscribe(_)));
+        match eventloop
+            .state
+            .handle_outgoing_packet(envelope.request)
+            .unwrap()
+        {
             Some(Packet::Subscribe(subscribe)) => assert_ne!(subscribe.pkid, 1),
             packet => panic!("expected subscribe packet, got {packet:?}"),
         }
@@ -3328,11 +3321,15 @@ mod tests {
                 Unsubscribe::new("hello/world", None),
             )));
 
-        let (request, _, replay) = eventloop.next_scheduled_request().unwrap();
+        let envelope = eventloop.next_scheduled_request().unwrap();
 
-        assert!(!replay);
-        assert!(matches!(request, Request::Unsubscribe(_)));
-        match eventloop.state.handle_outgoing_packet(request).unwrap() {
+        assert!(!envelope.replay);
+        assert!(matches!(envelope.request, Request::Unsubscribe(_)));
+        match eventloop
+            .state
+            .handle_outgoing_packet(envelope.request)
+            .unwrap()
+        {
             Some(Packet::Unsubscribe(unsubscribe)) => assert_ne!(unsubscribe.pkid, 1),
             packet => panic!("expected unsubscribe packet, got {packet:?}"),
         }
@@ -3351,10 +3348,10 @@ mod tests {
             .queued
             .push_back(RequestEnvelope::plain(Request::Subscribe(subscribe())));
 
-        let (request, _, replay) = eventloop.next_scheduled_request().unwrap();
+        let envelope = eventloop.next_scheduled_request().unwrap();
 
-        assert!(!replay);
-        assert!(matches!(request, Request::Publish(_)));
+        assert!(!envelope.replay);
+        assert!(matches!(envelope.request, Request::Publish(_)));
     }
 
     #[tokio::test]
@@ -3825,7 +3822,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(request, (Request::PingReq, None, false)));
+        assert!(matches!(
+            request,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false
+            }
+        ));
 
         let err = EventLoop::next_request(
             &mut eventloop.pending,
@@ -3871,7 +3875,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first, (Request::PingReq, None, false)));
+        assert!(matches!(
+            first,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false
+            }
+        ));
 
         let delayed = EventLoop::try_next_request(
             &mut eventloop.pending,
@@ -3907,7 +3918,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(received, Some((Request::PingReq, None, false))));
+        assert!(matches!(
+            received,
+            Some(RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false
+            })
+        ));
     }
 
     #[tokio::test]
@@ -3927,7 +3945,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first, (Request::PingReq, None, false)));
+        assert!(matches!(
+            first,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false
+            }
+        ));
         assert!(eventloop.pending.is_empty());
 
         let second = EventLoop::next_request(
@@ -3937,7 +3962,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(second, (Request::PingReq, None, false)));
+        assert!(matches!(
+            second,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false
+            }
+        ));
     }
 
     #[tokio::test]
@@ -3975,7 +4007,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first, (Request::PingReq, None, false)));
+        assert!(matches!(
+            first,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false
+            }
+        ));
 
         let second = EventLoop::next_request(
             &mut eventloop.pending,
@@ -3986,7 +4025,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             second,
-            (Request::Publish(publish), Some(_), false) if publish == tracked_publish
+            RequestEnvelope { request: Request::Publish(publish), notice: Some(_), replay: false } if publish == tracked_publish
         ));
 
         let third = EventLoop::next_request(
@@ -3996,7 +4035,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(third, (Request::PingResp, None, false)));
+        assert!(matches!(
+            third,
+            RequestEnvelope {
+                request: Request::PingResp,
+                notice: None,
+                replay: false
+            }
+        ));
     }
 
     #[tokio::test]
@@ -4331,9 +4377,11 @@ mod tests {
             let mut checkpoint_action = SessionCheckpointAction::Save;
             let keep_batching = eventloop
                 .handle_request_internal(
-                    request,
-                    notice,
-                    false,
+                    RequestEnvelope {
+                        request,
+                        notice,
+                        replay: false,
+                    },
                     &mut should_flush,
                     &mut qos0_notices,
                     &mut checkpoint_action,
@@ -4341,7 +4389,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(keep_batching);
+            assert_eq!(keep_batching, BatchControl::Continue);
             assert!(!should_flush);
             assert!(qos0_notices.is_empty());
         }
@@ -4381,9 +4429,11 @@ mod tests {
 
         let keep_batching = eventloop
             .handle_request_internal(
-                Request::Publish(retained),
-                Some(TrackedNoticeTx::Publish(notice_tx)),
-                false,
+                RequestEnvelope {
+                    request: Request::Publish(retained),
+                    notice: Some(TrackedNoticeTx::Publish(notice_tx)),
+                    replay: false,
+                },
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
@@ -4391,7 +4441,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(keep_batching);
+        assert_eq!(keep_batching, BatchControl::Continue);
         assert!(!should_flush);
         assert!(qos0_notices.is_empty());
         assert!(eventloop.network.is_some());
@@ -4403,9 +4453,7 @@ mod tests {
 
         let keep_batching = eventloop
             .handle_request_internal(
-                Request::Publish(publish(QoS::AtMostOnce)),
-                None,
-                false,
+                RequestEnvelope::plain(Request::Publish(publish(QoS::AtMostOnce))),
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
@@ -4413,7 +4461,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(keep_batching);
+        assert_eq!(keep_batching, BatchControl::Continue);
         assert!(should_flush);
         assert!(eventloop.network.is_some());
         assert!(matches!(
@@ -4673,9 +4721,7 @@ mod tests {
 
         let keep_batching = eventloop
             .handle_request_internal(
-                Request::DisconnectNow(disconnect),
-                None,
-                false,
+                RequestEnvelope::plain(Request::DisconnectNow(disconnect)),
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
@@ -4683,7 +4729,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!keep_batching);
+        assert_eq!(keep_batching, BatchControl::Stop);
         assert!(should_flush);
         assert_eq!(checkpoint_action, SessionCheckpointAction::Clear);
         assert!(store.current().is_some());
@@ -4710,7 +4756,6 @@ mod tests {
             .pop_front()
             .expect("pending subscribe should be replayed after reconnect");
         assert!(envelope.replay);
-        let (request, notice, replay) = envelope.into_parts();
         let (client, _peer) = tokio::io::duplex(1024);
         eventloop.network = Some(Network::new(client, Some(1024)));
         let mut should_flush = false;
@@ -4719,9 +4764,7 @@ mod tests {
 
         let keep_batching = eventloop
             .handle_request_internal(
-                request,
-                notice,
-                replay,
+                envelope,
                 &mut should_flush,
                 &mut qos0_notices,
                 &mut checkpoint_action,
@@ -4729,7 +4772,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(keep_batching);
+        assert_eq!(keep_batching, BatchControl::Continue);
         assert!(should_flush);
         assert!(qos0_notices.is_empty());
         assert!(eventloop.state.pending_subscribe.contains_key(&1));

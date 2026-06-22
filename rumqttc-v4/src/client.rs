@@ -140,8 +140,7 @@ enum RequestSender {
 }
 
 fn into_request(envelope: RequestEnvelope) -> Request {
-    let (request, _notice, _replay) = envelope.into_parts();
-    request
+    envelope.request
 }
 
 fn map_send_envelope_error(err: SendError<RequestEnvelope>) -> ClientError {
@@ -2261,6 +2260,6 @@ mod test {
         let envelope = control_requests_rx
             .try_recv()
             .expect("tracked unsubscribe should use control channel");
-        assert!(matches!(envelope.into_parts().0, Request::Unsubscribe(_)));
+        assert!(matches!(envelope.request, Request::Unsubscribe(_)));
     }
 }
