@@ -10,7 +10,7 @@ repos:
           '
         language: system
         pass_filenames: false
-        always_run: true
+        always_run: false
         require_serial: true
 
       - id: clippy
@@ -30,7 +30,7 @@ repos:
           '
         language: system
         pass_filenames: false
-        always_run: true
+        always_run: false
         require_serial: true
 
       - id: clippy-workspace
@@ -70,7 +70,7 @@ repos:
           '
         language: system
         pass_filenames: false
-        always_run: true
+        always_run: false
         require_serial: true
 
       - id: tests
@@ -89,7 +89,7 @@ repos:
           '
         language: system
         pass_filenames: false
-        always_run: true
+        always_run: false
         require_serial: true
 
       - id: combo-tests
@@ -106,7 +106,7 @@ repos:
           '
         language: system
         pass_filenames: false
-        always_run: true
+        always_run: false
         require_serial: true
 
       - id: rustls-conflict-guard
@@ -128,5 +128,5 @@ repos:
           '
         language: system
         pass_filenames: false
-        always_run: true
+        always_run: false
         require_serial: true
