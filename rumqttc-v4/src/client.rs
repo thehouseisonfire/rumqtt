@@ -2260,6 +2260,6 @@ mod test {
         let envelope = control_requests_rx
             .try_recv()
             .expect("tracked unsubscribe should use control channel");
-        assert!(matches!(envelope.request, Request::Unsubscribe(_)));
+        assert!(matches!(&envelope.request, Request::Unsubscribe(_)));
     }
 }
