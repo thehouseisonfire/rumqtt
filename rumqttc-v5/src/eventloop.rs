@@ -995,7 +995,7 @@ impl EventLoop {
         let mut qos0_notices = Vec::new();
         let mut checkpoint_action = SessionCheckpointAction::Save;
 
-        if self
+        match self
             .handle_request_internal(
                 envelope,
                 &mut should_flush,
@@ -1003,26 +1003,28 @@ impl EventLoop {
                 &mut checkpoint_action,
             )
             .await?
-            == BatchControl::Continue
         {
-            for _ in 1..self.options.max_request_batch.max(1) {
-                let Some(envelope) = self.next_scheduled_request() else {
-                    break;
-                };
+            BatchControl::Continue => {
+                for _ in 1..self.options.max_request_batch.max(1) {
+                    let Some(envelope) = self.next_scheduled_request() else {
+                        break;
+                    };
 
-                if self
-                    .handle_request_internal(
-                        envelope,
-                        &mut should_flush,
-                        &mut qos0_notices,
-                        &mut checkpoint_action,
-                    )
-                    .await?
-                    == BatchControl::Stop
-                {
-                    break;
+                    match self
+                        .handle_request_internal(
+                            envelope,
+                            &mut should_flush,
+                            &mut qos0_notices,
+                            &mut checkpoint_action,
+                        )
+                        .await?
+                    {
+                        BatchControl::Continue => {}
+                        BatchControl::Stop => break,
+                    }
                 }
             }
+            BatchControl::Stop => {}
         }
 
         self.flush_request_batch(should_flush, qos0_notices, checkpoint_action)
@@ -3220,7 +3222,7 @@ mod tests {
         let envelope = eventloop.next_scheduled_request().unwrap();
 
         assert!(!envelope.replay);
-        assert!(matches!(envelope.request, Request::Subscribe(_)));
+        assert!(matches!(&envelope.request, Request::Subscribe(_)));
         match eventloop
             .state
             .handle_outgoing_packet(envelope.request)
@@ -3324,7 +3326,7 @@ mod tests {
         let envelope = eventloop.next_scheduled_request().unwrap();
 
         assert!(!envelope.replay);
-        assert!(matches!(envelope.request, Request::Unsubscribe(_)));
+        assert!(matches!(&envelope.request, Request::Unsubscribe(_)));
         match eventloop
             .state
             .handle_outgoing_packet(envelope.request)
@@ -3351,7 +3353,7 @@ mod tests {
         let envelope = eventloop.next_scheduled_request().unwrap();
 
         assert!(!envelope.replay);
-        assert!(matches!(envelope.request, Request::Publish(_)));
+        assert!(matches!(&envelope.request, Request::Publish(_)));
     }
 
     #[tokio::test]

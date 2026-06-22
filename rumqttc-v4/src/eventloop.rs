@@ -905,24 +905,26 @@ impl EventLoop {
 
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
-        if self
+        match self
             .handle_request(envelope, &mut should_flush, &mut qos0_notices)
             .await?
-            == BatchControl::Continue
         {
-            for _ in 1..self.mqtt_options.max_request_batch.max(1) {
-                let Some(envelope) = self.next_scheduled_request() else {
-                    break;
-                };
+            BatchControl::Continue => {
+                for _ in 1..self.mqtt_options.max_request_batch.max(1) {
+                    let Some(envelope) = self.next_scheduled_request() else {
+                        break;
+                    };
 
-                if self
-                    .handle_request(envelope, &mut should_flush, &mut qos0_notices)
-                    .await?
-                    == BatchControl::Stop
-                {
-                    break;
+                    match self
+                        .handle_request(envelope, &mut should_flush, &mut qos0_notices)
+                        .await?
+                    {
+                        BatchControl::Continue => {}
+                        BatchControl::Stop => break,
+                    }
                 }
             }
+            BatchControl::Stop => {}
         }
 
         self.flush_request_batch(should_flush, qos0_notices).await?;
@@ -2107,7 +2109,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(received, Some(ref e) if matches!(e.request, Request::PingReq(_))));
+        assert!(matches!(
+            received,
+            Some(RequestEnvelope {
+                request: Request::PingReq(_),
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

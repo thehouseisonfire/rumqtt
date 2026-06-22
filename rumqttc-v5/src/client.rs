@@ -3883,7 +3883,7 @@ mod test {
         let envelope = control_requests_rx
             .try_recv()
             .expect("tracked unsubscribe should use control channel");
-        assert!(matches!(envelope.request, Request::Unsubscribe(_)));
+        assert!(matches!(&envelope.request, Request::Unsubscribe(_)));
     }
 
     #[test]
@@ -3911,6 +3911,6 @@ mod test {
         let envelope = control_requests_rx
             .try_recv()
             .expect("tracked auth should use control channel");
-        assert!(matches!(envelope.request, Request::Auth(_)));
+        assert!(matches!(&envelope.request, Request::Auth(_)));
     }
 }
