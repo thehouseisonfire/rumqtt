@@ -3244,6 +3244,71 @@
                 "notes": "Direct v4 CONNECT tests cover username U+0000 rejection on both encode and decode, surrogate rejection on decode, multi-byte UTF-8 roundtrip, Username/Password flag consistency, and payload field order. Shared primitive tests cover additional malformed UTF-8 boundaries for read_mqtt_string."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.4-1",
+            "section_number": "3.1.4",
+            "section_title": "Response",
+            "obligation": "MUST",
+            "summary": "The Server MUST validate that the CONNECT Packet conforms to section 3.1 and close the Network Connection without sending a CONNACK if it does not conform.",
+            "source_anchor": "_Toc384800405",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Authoritative text (section 3.1.4, item 2) is a Server-only obligation: the server that receives a CONNECT must validate it against section 3.1 and, on failure, close the Network Connection without sending a CONNACK. A rumqttc-v4 client never acts as the CONNECT receiver (it only sends CONNECT and consumes the resulting CONNACK), so the normative validation/rejection obligation is outside the client's role. The client's own outbound CONNECT validation in Connect::write is the client's conformance to the separate section 3.1.2/3.1.3 packet-format requirements, not this server obligation.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.1.4",
+                "section_title": "Response",
+                "source_anchor": "_Toc384800405",
+                "summary": "The Server MUST validate that the CONNECT Packet conforms to section 3.1 and close the Network Connection without sending a CONNACK if it does not conform."
+            },
+            "authoritative_actor": "server receiver",
+            "applicability": "not_applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "correct",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Both the original requirements JSON and the abandoned fix-attempt JSON correctly map the authoritative server-only obligation. The summary matches the spec text semantically (section 3.1.4 item 2; also restated verbatim in the document's normative-summary table). The not_applicable classification is justified because rumqttc-v4 is a client and never receives CONNECT packets in its normal protocol role."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "symbols": [
+                        "Connect::write"
+                    ],
+                    "reason": "The client only constructs/sends its own outbound CONNECT. Connect::write validates the client's own packet (e.g., MQTT-3.1.3-7 empty-client-id check) before serialization, which is the client's conformance to section 3.1.2/3.1.3, not enforcement of the server-only MQTT-3.1.4-1 validation obligation."
+                },
+                {
+                    "path": "rumqttc-v4/src/eventloop.rs",
+                    "symbols": [
+                        "mqtt_connect",
+                        "connect"
+                    ],
+                    "reason": "The event loop is the CONNECT sender: it builds the outgoing Connect via Connect::new and then awaits the server's CONNACK. It never acts as the CONNECT receiver, confirming the server-only validation obligation is outside the client's role."
+                },
+                {
+                    "path": "rumqttc-v4/src/state.rs",
+                    "symbols": [
+                        "MqttState::handle_incoming_packet_with_effects"
+                    ],
+                    "reason": "Defensive handling maps an inbound Connect to StateError::ProtocolViolation(UnexpectedIncomingPacket(PacketType::Connect)). This is the client's reaction to a server that misbehaves by sending CONNECT, not enforcement of the server's own validation/rejection obligation in MQTT-3.1.4-1."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [
+                    "inbound_connect_after_connection_establishment_is_protocol_error"
+                ],
+                "notes": "No client-side test is required for the server-only MQTT-3.1.4-1 validation obligation. The referenced state.rs test documents the client's defensive reaction to an unexpected inbound CONNECT, which is a separate concern."
+            },
+            "follow_up": null
         }
     ]
 }
