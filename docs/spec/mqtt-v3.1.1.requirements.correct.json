@@ -979,7 +979,7 @@
         {
             "id": "MQTT-3.1.0-1",
             "section_number": "3.1",
-            "section_title": "CONNECT – Client requests a connection to a Server",
+            "section_title": "CONNECT \u2013 Client requests a connection to a Server",
             "obligation": "MUST",
             "summary": "After a Network Connection is established by a Client to a Server, the first Packet sent from the Client to the Server MUST be a CONNECT Packet.",
             "source_anchor": "_Ref363033523",
@@ -995,7 +995,7 @@
             "authoritative_source": {
                 "path": "docs/spec/mqtt-v3.1.1.md",
                 "section_number": "3.1",
-                "section_title": "CONNECT – Client requests a connection to a Server",
+                "section_title": "CONNECT \u2013 Client requests a connection to a Server",
                 "source_anchor": "_Ref363033523",
                 "summary": "After a Network Connection is established by a Client to a Server, the first Packet sent from the Client to the Server MUST be a CONNECT Packet."
             },
@@ -1041,7 +1041,7 @@
         {
             "id": "MQTT-3.1.0-2",
             "section_number": "3.1",
-            "section_title": "CONNECT – Client requests a connection to a Server",
+            "section_title": "CONNECT \u2013 Client requests a connection to a Server",
             "obligation": "MUST",
             "summary": "A Client can only send the CONNECT Packet once over a Network Connection, and a Server MUST treat a second CONNECT from that Client as a protocol violation and disconnect it.",
             "source_anchor": "_Ref363033523",
@@ -1057,7 +1057,7 @@
             "authoritative_source": {
                 "path": "docs/spec/mqtt-v3.1.1.md",
                 "section_number": "3.1",
-                "section_title": "CONNECT – Client requests a connection to a Server",
+                "section_title": "CONNECT \u2013 Client requests a connection to a Server",
                 "source_anchor": "_Ref363033523",
                 "summary": "A Client can only send the CONNECT Packet once over a Network Connection. The Server MUST process a second CONNECT Packet sent from a Client as a protocol violation and disconnect the Client."
             },
@@ -3433,6 +3433,138 @@
                     "path": "docs/spec/mqtt-v3.1.1.md",
                     "symbols": [],
                     "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement for retained message storage and future subscriber delivery. The client only originates retained publishes; it does not store them."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.2.2-1",
+            "section_number": "3.2.2.2",
+            "section_title": "Session Present",
+            "obligation": "MUST",
+            "summary": "If the Server accepts a connection with CleanSession set to 1, the Server MUST set Session Present to 0 in the CONNACK packet in addition to setting a zero return code in the CONNACK packet.",
+            "source_anchor": "_Toc385349255",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to set the Session Present flag to 0 when accepting a connection with CleanSession=1. The client only reads the Session Present flag; it does not set it.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.2.2.2",
+                "section_title": "Session Present",
+                "source_anchor": "_Toc385349255",
+                "summary": "If the Server accepts a connection with CleanSession set to 1, the Server MUST set Session Present to 0 in the CONNACK packet in addition to setting a zero return code in the CONNACK packet."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "wrong",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Both the original requirements JSON and the abandoned fix-attempt JSON incorrectly label this as client-applicable with defensive validation evidence. The normative requirement is purely about the Server setting the Session Present flag. The client's defensive validation is optional behavior, not a spec requirement."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "symbols": [],
+                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement for setting the Session Present flag in CONNACK. The client only reads the flag; it does not set it."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.2.2-2",
+            "section_number": "3.2.2.2",
+            "section_title": "Session Present",
+            "obligation": "MUST",
+            "summary": "If the Server accepts a connection with CleanSession set to 0 and the Server has stored Session state, it MUST set Session Present to 1 in the CONNACK packet.",
+            "source_anchor": "_Toc385349255",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to set Session Present to 1 when it has stored session state for a CleanSession=0 connection. The client cannot prove whether the server actually had stored session state.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.2.2.2",
+                "section_title": "Session Present",
+                "source_anchor": "_Toc385349255",
+                "summary": "If the Server accepts a connection with CleanSession set to 0 and the Server has stored Session state, it MUST set Session Present to 1 in the CONNACK packet."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "reviewed",
+                "fix_attempt_assessment": "wrong",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "Both the original requirements JSON and the abandoned fix-attempt JSON incorrectly label this as client-applicable with session state preservation evidence. The normative requirement is purely about the Server setting the Session Present flag based on its stored session state. The client's reaction to the flag is separate behavior."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "symbols": [],
+                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement for setting the Session Present flag based on stored session state. The client only reads the flag; it does not set it."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.12.4-1",
+            "section_number": "3.12.4",
+            "section_title": "Response",
+            "obligation": "MUST",
+            "summary": "The Server MUST send a PINGRESP Packet in response to a PINGREQ Packet.",
+            "source_anchor": "_Toc384800458",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v4/src/mqttbytes/v4/ping.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to send a PINGRESP Packet in response to a PINGREQ Packet. The client only receives PINGRESP; it does not send it.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v3.1.1.md",
+                "section_number": "3.12.4",
+                "section_title": "Response",
+                "source_anchor": "_Toc384800458",
+                "summary": "The Server MUST send a PINGRESP Packet in response to a PINGREQ Packet."
+            },
+            "mapping_review": {
+                "original_mapping_status": "unreviewed",
+                "original_mapping_assessment": "unclear",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original requirements JSON had this as unreviewed with a heuristic mapping reason. The fix-attempt JSON did not address this requirement. The normative requirement is purely about the Server sending PINGRESP."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v3.1.1.md",
+                    "symbols": [],
+                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement for sending PINGRESP in response to PINGREQ. The client only receives PINGRESP; it does not send it."
                 }
             ],
             "test_coverage": {
