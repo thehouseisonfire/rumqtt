@@ -3587,7 +3587,7 @@
             ],
             "mapping_status": "reviewed",
             "compliance_status": "not_applicable",
-            "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to perform CleanSession processing per section 3.1.2.4 (resume or create sessions). The client sends CleanSession=0 or 1 in CONNECT, but the actual processing logic is entirely server-side.",
+            "mapping_reason": "Server MUST perform the CleanSession processing described in §3.1.2.4 after successful CONNECT validation. This exact requirement is a server-side CONNECT processing obligation. Related client/session-state obligations in §3.1.2.4 should be audited under their own requirement IDs, not under this server-only requirement.",
             "authoritative_source": {
                 "path": "docs/spec/mqtt-v3.1.1.md",
                 "section_number": "3.1.4",
@@ -3610,7 +3610,7 @@
                 {
                     "path": "docs/spec/mqtt-v3.1.1.md",
                     "symbols": [],
-                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement: the Server MUST perform CleanSession processing per section 3.1.2.4. The client has no obligation to perform this processing."
+                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server CONNECT processing obligation. The Server MUST perform the CleanSession processing described in §3.1.2.4."
                 }
             ],
             "test_coverage": {
@@ -3634,7 +3634,7 @@
             ],
             "mapping_status": "reviewed",
             "compliance_status": "not_applicable",
-            "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to send CONNACK as its first packet after receiving CONNECT. The client only receives CONNACK; it does not send it. The client's defensive validation that the first inbound packet is CONNACK is a separate concern, not a normative obligation under this requirement.",
+            "mapping_reason": "Server MUST send CONNACK as the first packet from Server to Client after CONNECT. This exact requirement governs server packet ordering. Client-side behavior for receiving or timing out while waiting for CONNACK is adjacent and should be audited separately.",
             "authoritative_source": {
                 "path": "docs/spec/mqtt-v3.1.1.md",
                 "section_number": "3.2",
@@ -3657,7 +3657,7 @@
                 {
                     "path": "docs/spec/mqtt-v3.1.1.md",
                     "symbols": [],
-                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement: the first packet sent from the Server to the Client MUST be a CONNACK Packet. The client only receives CONNACK; it does not send it."
+                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server packet-ordering obligation. The first packet sent from the Server to the Client MUST be a CONNACK Packet."
                 }
             ],
             "test_coverage": {
@@ -3680,7 +3680,7 @@
             ],
             "mapping_status": "reviewed",
             "compliance_status": "not_applicable",
-            "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to set Session Present to 0 when it has no stored session state for a CleanSession=0 connection. The client only reads the Session Present flag; it does not set it. The client cannot prove whether the server actually had stored session state.",
+            "mapping_reason": "Server MUST set Session Present to 0 in CONNACK when it has no stored session state for the supplied ClientId. This exact requirement governs the server's CONNACK Session Present value. Client-side interpretation of Session Present is adjacent and should be audited separately.",
             "authoritative_source": {
                 "path": "docs/spec/mqtt-v3.1.1.md",
                 "section_number": "3.2.2.2",
@@ -3703,7 +3703,7 @@
                 {
                     "path": "docs/spec/mqtt-v3.1.1.md",
                     "symbols": [],
-                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement: the Server MUST set Session Present to 0 when it has no stored session state. The client only reads the flag; it does not set it."
+                    "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server CONNACK construction obligation. The Server MUST set Session Present to 0 when it has no stored session state."
                 }
             ],
             "test_coverage": {
