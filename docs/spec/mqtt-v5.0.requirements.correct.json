@@ -1174,6 +1174,61 @@
             "follow_up": null
         },
         {
+            "id": "MQTT-3.1.2-2",
+            "section_number": "3.1.2.2",
+            "section_title": "Protocol Version",
+            "obligation": "MAY",
+            "summary": "If the Protocol Version is not 5 and the Server does not want to accept the CONNECT packet, the Server MAY send a CONNACK packet with Reason Code 0x84 (Unsupported Protocol Version) and then MUST close the Network Connection.",
+            "source_anchor": "_Figure_3.3_-",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "The [MQTT-3.1.2-2] tag is attached only to the Server-side MAY/MUST clause (Server MAY send CONNACK 0x84 and then MUST close the Network Connection when the Protocol Version is not 5). Both the MAY and the MUST are explicitly assigned to 'the Server', making this a server-only obligation. The Client's duty to send Protocol Version value 5 (0x05) is stated in the preceding un-tagged field-definition sentence (line 572) and is not part of this requirement tag. rumqttc-v5 nonetheless sends 0x05 and defensively decodes 0x84 CONNACKs, but those are not mandated by MQTT-3.1.2-2.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.2.2",
+                "section_title": "Protocol Version",
+                "source_anchor": "_Figure_3.3_-",
+                "summary": "If the Protocol Version is not 5 and the Server does not want to accept the CONNECT packet, the Server MAY send a CONNACK packet with Reason Code 0x84 (Unsupported Protocol Version) and then MUST close the Network Connection. (The preceding descriptive sentence 'the value of the Protocol Version field for version 5.0 of the protocol is 5 (0x05)' carries no requirement tag.)"
+            },
+            "authoritative_actor": "server",
+            "applicability": "not_applicable",
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original JSON summary faithfully captured the Server MAY/MUST text, but the mapping_reason and compliance_status audited the client's encoding of Protocol Version 5 as if that were the tagged obligation. That is a mis-mapping: sending 0x05 is mandated by the un-tagged field definition (line 572), not by [MQTT-3.1.2-2]. Following the wrong mapping does not introduce a client bug because the client correctly emits 0x05 regardless."
+            },
+            "evidence": [
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+                    "symbols": [
+                        "Connect::write"
+                    ],
+                    "reason": "Outbound CONNECT encoding hardcodes buffer.put_u8(0x05) for the protocol level with no conditional, so the v5 client always sends Protocol Version 5. This satisfies the un-tagged field-definition obligation, not the [MQTT-3.1.2-2] Server clause."
+                },
+                {
+                    "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
+                    "symbols": [
+                        "ConnectReturnCode::UnsupportedProtocolVersion"
+                    ],
+                    "reason": "The decoder maps CONNACK reason code 0x84 (132) to UnsupportedProtocolVersion, so the client can defensively observe a server rejection that MQTT-3.1.2-2 permits the server to send. The mandatory close is the server's responsibility."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No client test is required for the strictly Server-only [MQTT-3.1.2-2] MAY/MUST obligation. The client's complementary v5-version encoding is covered by connect.rs::connect_encoding_emits_protocol_level_5, but that asserts the un-tagged field-definition behavior rather than this requirement."
+            },
+            "follow_up": null
+        },
+        {
             "id": "MQTT-3.1.2-7",
             "section_number": "3.1.2.5",
             "section_title": "Will Flag",
@@ -3344,6 +3399,138 @@
                 "status": "not_applicable",
                 "tests": [],
                 "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's outgoing max-packet-size enforcement is tested separately."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.4-3",
+            "section_number": "3.1.4",
+            "section_title": "CONNECT Actions",
+            "obligation": "MUST",
+            "summary": "If the ClientID represents a Client already connected to the Server, the Server sends a DISCONNECT packet to the existing Client with Reason Code of 0x8E (Session taken over) and MUST close the Network Connection of the existing Client.",
+            "source_anchor": "_Toc473620039",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Server-side. If the ClientID represents an already connected Client, the Server sends DISCONNECT with Reason Code 0x8E (Session taken over) to the existing Client and MUST close that existing Network Connection. rumqttc-v5 may receive and surface that DISCONNECT as a client, but the takeover decision and forced close are server obligations.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.4",
+                "section_title": "CONNECT Actions",
+                "source_anchor": "_Toc473620039",
+                "summary": "If the ClientID represents a Client already connected to the Server, the Server sends a DISCONNECT packet to the existing Client with Reason Code of 0x8E (Session taken over) as described in section 4.13 and MUST close the Network Connection of the existing Client."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original entry correctly identified this as server-only and marked not_applicable. The summary is faithful to the authoritative text. The client defensively decodes incoming SessionTakenOver DISCONNECT packets, but that is separate defensive behavior, not this requirement."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v5.0.md",
+                    "symbols": [],
+                    "reason": "The authoritative text explicitly assigns the MUST obligation to 'the Server' (the Server sends DISCONNECT and MUST close the Network Connection). The client has no obligation to validate, reject, encode, decode, store, retransmit, reconcile, or react to this server behavior beyond normal DISCONNECT handling."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.2.0-1",
+            "section_number": "3.2",
+            "section_title": "CONNACK – Connect acknowledgement",
+            "obligation": "MUST",
+            "summary": "The Server MUST send a CONNACK with a 0x00 (Success) Reason Code before sending any Packet other than AUTH.",
+            "source_anchor": "_CONNACK_–_Connect",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/v5/connack.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Server-side. The Server MUST send a CONNACK with 0x00 (Success) before sending any Packet other than AUTH. rumqttc-v5 does not send CONNACK packets. Client-side handling of CONNACK/AUTH ordering belongs under separate receive/handshake behavior.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.2",
+                "section_title": "CONNACK – Connect acknowledgement",
+                "source_anchor": "_CONNACK_–_Connect",
+                "summary": "The CONNACK packet is the packet sent by the Server in response to a CONNECT packet received from a Client. The Server MUST send a CONNACK with a 0x00 (Success) Reason Code before sending any Packet other than AUTH."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original entry correctly identified this as server-only and marked not_applicable. The summary captures the CONNACK ordering obligation. The client defensively handles the observable server behavior (accepting only AUTH before CONNACK), but that is separate defensive behavior, not this requirement."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v5.0.md",
+                    "symbols": [],
+                    "reason": "The authoritative text explicitly assigns the MUST obligation to 'the Server' (the Server MUST send a CONNACK with a 0x00 Reason Code before sending any Packet other than AUTH). The client has no obligation to validate, reject, encode, decode, store, retransmit, reconcile, or react to this server packet-ordering behavior beyond normal CONNACK handling."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.8.4-1",
+            "section_number": "3.8.4",
+            "section_title": "SUBSCRIBE Actions",
+            "obligation": "MUST",
+            "summary": "When the Server receives a SUBSCRIBE packet from a Client, the Server MUST respond with a SUBACK packet.",
+            "source_anchor": "_Toc384800440",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/mqttbytes/v5/subscribe.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Server-side. When the Server receives SUBSCRIBE from a Client, the Server MUST respond with SUBACK. rumqttc-v5 sends SUBSCRIBE and receives/handles SUBACK, but this exact requirement governs the server's response obligation.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.8.4",
+                "section_title": "SUBSCRIBE Actions",
+                "source_anchor": "_Toc384800440",
+                "summary": "When the Server receives a SUBSCRIBE packet from a Client, the Server MUST respond with a SUBACK packet."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "wrong",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The original entry merged MQTT-3.8.4-1 with MQTT-3.8.4-2 (the SUBACK Packet Identifier correlation rule). The combined summary is not a faithful representation of the individual requirement. The compliance_status (not_applicable) is correct since the obligation is server-only. The client tracks pending SUBSCRIBE/SUBACK correlation, but that is separate behavior covered by MQTT-3.8.4-2."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v5.0.md",
+                    "symbols": [],
+                    "reason": "The authoritative text explicitly assigns the MUST obligation to 'the Server' (the Server MUST respond with a SUBACK packet). The client has no obligation to validate, reject, encode, decode, store, retransmit, reconcile, or react to this server response behavior beyond normal SUBACK handling."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
             },
             "follow_up": null
         }
