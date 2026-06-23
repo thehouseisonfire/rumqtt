@@ -3258,6 +3258,94 @@
                 "notes": "No client-side test is required for the server-only MQTT-3.1.4-1 validation obligation. The referenced state.rs test documents the client's defensive reaction to an unexpected inbound CONNECT, which is a separate concern."
             },
             "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.2-22",
+            "section_number": "3.1.2.10",
+            "section_title": "Keep Alive",
+            "obligation": "MUST",
+            "summary": "If the Keep Alive value is non-zero and the Server does not receive an MQTT Control Packet from the Client within one and a half times the Keep Alive time period, it MUST close the Network Connection to the Client as if the network had failed.",
+            "source_anchor": "_Figure_3.5_Keep",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/eventloop.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Server MUST close the Network Connection if Keep Alive is non-zero and it does not receive an MQTT Control Packet from the Client within 1.5 times the Keep Alive period. This exact requirement is server-side timeout enforcement. Client PINGREQ and Server Keep Alive handling are adjacent client obligations covered by separate requirement IDs.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.2.10",
+                "section_title": "Keep Alive",
+                "source_anchor": "_Figure_3.5_Keep",
+                "summary": "If the Keep Alive value is non-zero and the Server does not receive an MQTT Control Packet from the Client within one and a half times the Keep Alive time period, it MUST close the Network Connection to the Client as if the network had failed."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The generated entry correctly identified this as a server-only obligation and marked it not_applicable. The mapping_reason accurately distinguishes this server-side timeout from the client-side PINGREQ obligation in MQTT-3.1.2-20."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v5.0.md",
+                    "symbols": [],
+                    "reason": "The authoritative text explicitly assigns the MUST obligation to 'the Server' (it MUST close the Network Connection). The preceding sentences in the same section assign the client's PINGREQ obligation to [MQTT-3.1.2-20] and the Server Keep Alive override to [MQTT-3.1.2-21], confirming that this specific tag covers only the server-side timeout behavior."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary PINGREQ behavior is tested under MQTT-3.1.2-20."
+            },
+            "follow_up": null
+        },
+        {
+            "id": "MQTT-3.1.2-25",
+            "section_number": "3.1.2.11.4",
+            "section_title": "Maximum Packet Size",
+            "obligation": "MUST",
+            "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message.",
+            "source_anchor": "_Toc471483569",
+            "occurrences": 3,
+            "candidate_paths": [
+                "rumqttc-v5/src/eventloop.rs"
+            ],
+            "mapping_status": "reviewed",
+            "compliance_status": "not_applicable",
+            "mapping_reason": "Server MUST discard an Application Message without sending it when the packet would be too large to send, and then behave as if sending had completed. This exact requirement is server-side behavior. Client-side Maximum Packet Size enforcement and oversized inbound packet handling are adjacent obligations covered separately.",
+            "authoritative_source": {
+                "path": "docs/spec/mqtt-v5.0.md",
+                "section_number": "3.1.2.11.4",
+                "section_title": "Maximum Packet Size",
+                "source_anchor": "_Toc471483569",
+                "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message."
+            },
+            "mapping_review": {
+                "original_mapping_status": "reviewed",
+                "original_mapping_assessment": "correct",
+                "fix_attempt_status": "absent",
+                "fix_attempt_assessment": "absent",
+                "wrong_mapping_client_behavior_risk": "no",
+                "wrong_mapping_behavior_present_in_code": "not_applicable",
+                "notes": "The generated entry correctly identified this as a server-only obligation and marked it not_applicable. The mapping_reason accurately distinguishes the server's discard obligation from the client's outgoing packet size enforcement."
+            },
+            "evidence": [
+                {
+                    "path": "docs/spec/mqtt-v5.0.md",
+                    "symbols": [],
+                    "reason": "The authoritative text explicitly assigns the MUST obligation to 'the Server' (MUST discard it without sending it). The preceding requirement [MQTT-3.1.2-24] covers the server's MUST NOT send exceeding Maximum Packet Size and the client's DISCONNECT reaction. This specific tag [MQTT-3.1.2-25] covers only the server-side discard-and-behave-as-if-completed obligation."
+                }
+            ],
+            "test_coverage": {
+                "status": "not_applicable",
+                "tests": [],
+                "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's outgoing max-packet-size enforcement is tested separately."
+            },
+            "follow_up": null
         }
     ]
 }
