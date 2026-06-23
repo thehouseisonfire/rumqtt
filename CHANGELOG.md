@@ -16,6 +16,7 @@
   storage API and backend-neutral checkpoint model; applications provide serialization and durable storage, and
   rumqttc does not include a built-in file store.
 ### Changed
+- `rumqttc` v4/v5 (Breaking Change): Unify publish API with `PublishOptions` and `IntoPublishPayload`. Replace scattered publish method variants (`publish`, `publish_bytes`, `publish_with_properties`, `publish_bytes_with_properties` and their tracked/`try_` counterparts) with a single set of publish methods that accept a `PublishOptions` struct and a generic payload implementing `IntoPublishPayload`. `PublishOptions` is a builder-style struct that bundles QoS, retain flag, and optional `PublishProperties`. `IntoPublishPayload` allows callers to pass `&str`, `&[u8]`, `[u8; N]`, `Bytes`, `Vec<u8>`, and `String` directly.
 - `rumqttc` v4 (Breaking Change): Make `EventLoop::network` private for v5 parity, and so downstream code can no longer access the live transport and inject arbitrary MQTT packets, including a second `CONNECT`, on an existing connection.
 - `rumqttc` v4 (Breaking Change): Remove the public `Protocol` enum and `Connect::protocol` field. The v4 CONNECT codec now always emits MQTT protocol level `0x04` and rejects other protocol levels on decode.
 - `rumqttc` v4 (Breaking Change): Add state-level `ProtocolViolation`, remove `StateError::WrongPacket`, and report duplicate or post-handshake invalid inbound packets as protocol-state errors instead of codec format errors.
