@@ -3610,6 +3610,88 @@
         "notes": "The server-side MUST (validate the reserved flag and treat a non-zero value as a Malformed Packet) is not testable in this client crate. The cited codec tests cover only the client-adjacent encode/decode behavior (bit 0 = 0 on encode; decode rejection of a set reserved bit)."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-4",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Start",
+      "obligation": "MUST",
+      "summary": "If a CONNECT packet is received with Clean Start is set to 1, the Client and Server MUST discard any existing Session and start a new Session. Consequently, the Session Present flag in CONNACK is always set to 0 if Clean Start is set to 1.",
+      "source_anchor": "_Clean_Start",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement is a joint Client+Server obligation. The client-applicable parts are: (1) the packet encoder emits Clean Start=1 at bit 1 of the CONNECT flags when requested; (2) when sending CONNECT with Clean Start=1 the Client discards any existing local Session and starts a new one; and (3) the Client treats a CONNACK reporting session_present=1 while Clean Start=1 as a protocol violation (the consequence that Session Present is always 0 in that case). rumqttc-v5 implements all three: Connect::write sets bit 0x02 from clean_start, the eventloop never loads/replays persisted session state when clean_start is set (load_persisted_session_if_needed and persisted_session_save short-circuit on clean_start) and discards local pending state via reset_session_state when the server reports session_present=0, and reconcile_connack_session returns SessionStateMismatch when Clean Start=1 arrives with session_present=1. The Server's own discard/start-new-session obligation is outside this client crate.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.4",
+        "section_title": "Clean Start",
+        "source_anchor": "_Clean_Start",
+        "summary": "If a CONNECT packet is received with Clean Start is set to 1, the Client and Server MUST discard any existing Session and start a new Session [MQTT-3.1.2-4]. Consequently, the Session Present flag in CONNACK is always set to 0 if Clean Start is set to 1."
+      },
+      "authoritative_actor": "Client (sender / session state machine); Server",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry already mapped the requirement to the correct client-side obligations (CONNECT flag encoding, CONNACK session_present validation for Clean Start=1, and local pending-state discard when the server reports a new session). The actor split (joint Client+Server discard; the server's own discard is out of scope for a client crate) is correctly noted. No incorrect behavior would have been introduced by following the mapping, and audit of the v5 code confirms the mapped behavior is implemented and tested."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "Connect::write",
+            "Connect::read"
+          ],
+          "reason": "Connect::write() sets connect_flags bit 0x02 from self.clean_start, emitting Clean Start at bit 1 of the Connect Flags byte as required. Connect::read() decodes the same bit ((connect_flags & 0b10) != 0). This satisfies the encoder obligation."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "mqtt_connect_inner",
+            "load_persisted_session_if_needed",
+            "persisted_session_save"
+          ],
+          "reason": "mqtt_connect_inner() builds the outgoing CONNECT with clean_start set from options.clean_start(). load_persisted_session_if_needed() and persisted_session_save() short-circuit (return early / emit empty SessionSave) when options.clean_start() is true, so no prior session state is loaded or persisted for a Clean Start=1 connection - i.e. the Client starts a new local Session."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "reconcile_connack_session",
+            "reset_session_state_without_store_invalidation",
+            "reset_session_state_internal"
+          ],
+          "reason": "reconcile_connack_session() enforces the consequence that Session Present MUST be 0 when Clean Start=1: it returns SessionStateMismatch {clean_start:true, session_present:true} when session_present is true and clean_start is true. When the server reports session_present=0 it calls reset_session_state_without_store_invalidation(), which drains pending requests as failed and resets state, discarding any existing local Session for the new session."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "validate_connack_session_present_for_reason_code"
+          ],
+          "reason": "Defensive receiver check: rejects any CONNACK whose reason code is not Success while session_present=1, complementing the Clean Start session reconciliation."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_sets_clean_start_bit_when_true",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_encoding_clears_clean_start_bit_when_false",
+          "rumqttc-v5/src/eventloop.rs::clean_start_does_not_load_or_replay_persisted_session",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_rejects_clean_start_with_session_present",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_resets_pending_when_clean_start_gets_new_session",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_parsing_rejects_reserved_connect_flag_bit",
+          "rumqttc-v5/src/mqttbytes/v5/connect.rs::connect_roundtrips_max_keep_alive"
+        ],
+        "notes": "All three client-applicable obligations are now directly tested. Obligation 1 (CONNECT flag encoding): connect_encoding_sets_clean_start_bit_when_true asserts bit 0x02 is set when clean_start=true, and connect_encoding_clears_clean_start_bit_when_false asserts the bit is clear and survives a parse_fixed_header+Connect::read round-trip (the first test in connect.rs to exercise clean_start=false). Obligation 2 (Client discards any existing local Session): clean_start_does_not_load_or_replay_persisted_session seeds a non-empty persisted session under clean_start=false, flips to clean_start=true, and proves load_persisted_session_if_needed short-circuits (no replay loaded, store untouched). Obligation 3 (Session Present must be 0 when Clean Start=1): connack_reconcile_rejects_clean_start_with_session_present verifies the SessionStateMismatch violation, and connack_reconcile_resets_pending_when_clean_start_gets_new_session verifies pending discard when the server reports a new session. The Server's own session discard is not testable in this client crate."
+      },
+      "follow_up": null
     }
   ]
 }
