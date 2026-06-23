@@ -4666,6 +4666,45 @@ mod tests {
         assert!(eventloop.session_store.loaded);
     }
 
+    /// MQTT-3.1.2-4: with Clean Start=1 the Client MUST discard any existing session;
+    /// nothing from a persisted session is loaded or replayed.
+    #[tokio::test]
+    async fn clean_start_does_not_load_or_replay_persisted_session() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        // Seed a replayable subscribe into the queued set so the persisted session's
+        // replay list is non-empty before we save the checkpoint.
+        let mut replay_subscribe = subscribe();
+        replay_subscribe.pkid = 7;
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain_replay(Request::Subscribe(
+                replay_subscribe,
+            )));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        // Drain the current session's queues so the assertions below isolate the load path.
+        eventloop.queued.clear();
+        assert!(eventloop.pending_is_empty());
+
+        // Flip to a Clean Start=1 session: the persisted checkpoint still exists in the
+        // store, so a load would have replayed it without the clean_start short-circuit.
+        eventloop.options.set_clean_start(true);
+        eventloop.load_persisted_session_if_needed().await.unwrap();
+
+        assert!(eventloop.pending_is_empty());
+        assert!(eventloop.session_store.loaded);
+        assert!(store.current().is_some());
+    }
+
     #[tokio::test]
     async fn graceful_disconnect_clears_store_when_effective_expiry_is_zero() {
         let store = CapturingSessionStore::new();

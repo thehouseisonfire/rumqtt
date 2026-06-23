@@ -930,6 +930,51 @@ mod test {
         assert_eq!(bytes[9] & 0x01, 0);
     }
 
+    /// MQTT-3.1.2-4: Clean Start=1 MUST encode into bit 1 (0x02) of the CONNECT flags.
+    #[test]
+    fn connect_encoding_sets_clean_start_bit_when_true() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: true,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet. Clean Start is bit 1 (0x02).
+        assert_eq!(bytes[9] & 0x02, 0x02);
+    }
+
+    /// MQTT-3.1.2-4: Clean Start=0 MUST leave bit 1 (0x02) clear and survive a round-trip.
+    #[test]
+    fn connect_encoding_clears_clean_start_bit_when_false() {
+        let connect_pkt = Connect {
+            keep_alive: 5,
+            client_id: "client".into(),
+            clean_start: false,
+            properties: None,
+        };
+
+        let mut bytes = BytesMut::new();
+        connect_pkt
+            .write(&None, &ConnectAuth::None, &mut bytes)
+            .unwrap();
+
+        // CONNECT flags byte sits at index 9 for this packet. Clean Start is bit 1 (0x02).
+        assert_eq!(bytes[9] & 0x02, 0);
+
+        let fixed_header = parse_fixed_header(bytes.iter()).unwrap();
+        let (connect, will, auth) = Connect::read(fixed_header, bytes.freeze()).unwrap();
+
+        assert_eq!(connect.clean_start, false);
+        assert_eq!(will, None);
+        assert_eq!(auth, ConnectAuth::None);
+    }
+
     #[test]
     fn connect_roundtrips_last_will() {
         let connect_pkt = Connect {
