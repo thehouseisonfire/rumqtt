@@ -5,7 +5,7 @@
 use clap::{Parser, ValueEnum};
 use rumqttc_v5::Transport;
 use rumqttc_v5::mqttbytes::QoS;
-use rumqttc_v5::{AsyncClient, Event, Incoming, MqttOptions};
+use rumqttc_v5::{AsyncClient, Event, Incoming, MqttOptions, PublishOptions};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -287,7 +287,7 @@ async fn run_throughput(
         pub_handles.push(tokio::spawn(async move {
             while run.load(Ordering::Relaxed) {
                 if publisher_client
-                    .publish(topic.clone(), qos, false, payload.to_vec())
+                    .publish(topic.clone(), payload.to_vec(), PublishOptions::new(qos))
                     .await
                     .is_ok()
                 {
@@ -441,7 +441,11 @@ async fn run_latency(
         let now_nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
         payload[0..8].copy_from_slice(&now_nanos.to_be_bytes());
         pub_client
-            .publish(cmd.topic.clone(), cmd.qos, false, payload.clone())
+            .publish(
+                cmd.topic.clone(),
+                payload.clone(),
+                PublishOptions::new(cmd.qos),
+            )
             .await?;
         tokio::time::sleep(Duration::from_micros(interval_us)).await;
     }
@@ -452,7 +456,11 @@ async fn run_latency(
         let now_nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
         payload[0..8].copy_from_slice(&now_nanos.to_be_bytes());
         pub_client
-            .publish(cmd.topic.clone(), cmd.qos, false, payload.clone())
+            .publish(
+                cmd.topic.clone(),
+                payload.clone(),
+                PublishOptions::new(cmd.qos),
+            )
             .await?;
         tokio::time::sleep(Duration::from_micros(interval_us)).await;
     }

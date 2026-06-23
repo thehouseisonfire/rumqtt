@@ -110,7 +110,7 @@ async fn start_requests(count: u8, qos: QoS, delay: u64, client: AsyncClient) {
         let payload = vec![i, 1, 2, 3];
 
         client
-            .publish(topic, qos, false, payload)
+            .publish(topic, payload, PublishOptions::new(qos))
             .await
             .expect("test publish should be queued");
         time::sleep(Duration::from_secs(delay)).await;
@@ -505,7 +505,7 @@ async fn bounded_publish_backpressure_is_preserved_while_inflight_is_full() {
     .await;
 
     client
-        .publish("test/topic", QoS::AtLeastOnce, false, "first")
+        .publish("test/topic", "first", PublishOptions::new(QoS::AtLeastOnce))
         .await
         .unwrap();
     let first = broker
@@ -514,7 +514,11 @@ async fn bounded_publish_backpressure_is_preserved_while_inflight_is_full() {
         .expect("missing first publish");
 
     client
-        .publish("test/topic", QoS::AtLeastOnce, false, "second")
+        .publish(
+            "test/topic",
+            "second",
+            PublishOptions::new(QoS::AtLeastOnce),
+        )
         .await
         .unwrap();
 
@@ -522,7 +526,7 @@ async fn bounded_publish_backpressure_is_preserved_while_inflight_is_full() {
         let client = client.clone();
         async move {
             client
-                .publish("test/topic", QoS::AtLeastOnce, false, "third")
+                .publish("test/topic", "third", PublishOptions::new(QoS::AtLeastOnce))
                 .await
         }
     });
@@ -580,7 +584,7 @@ async fn control_request_bypasses_blocked_publish_without_ack_progress() {
     .await;
 
     client
-        .publish("test/topic", QoS::AtLeastOnce, false, "first")
+        .publish("test/topic", "first", PublishOptions::new(QoS::AtLeastOnce))
         .await
         .unwrap();
     let first = broker
@@ -589,7 +593,11 @@ async fn control_request_bypasses_blocked_publish_without_ack_progress() {
         .expect("missing first publish");
 
     client
-        .publish("test/topic", QoS::AtLeastOnce, false, "second")
+        .publish(
+            "test/topic",
+            "second",
+            PublishOptions::new(QoS::AtLeastOnce),
+        )
         .await
         .unwrap();
     client
@@ -642,7 +650,7 @@ async fn tracked_unsubscribe_bypasses_blocked_publish_without_ack_progress() {
     .await;
 
     client
-        .publish("test/topic", QoS::AtLeastOnce, false, "first")
+        .publish("test/topic", "first", PublishOptions::new(QoS::AtLeastOnce))
         .await
         .unwrap();
     let first = broker
@@ -651,7 +659,11 @@ async fn tracked_unsubscribe_bypasses_blocked_publish_without_ack_progress() {
         .expect("missing first publish");
 
     client
-        .publish("test/topic", QoS::AtLeastOnce, false, "second")
+        .publish(
+            "test/topic",
+            "second",
+            PublishOptions::new(QoS::AtLeastOnce),
+        )
         .await
         .unwrap();
     let _notice = client
@@ -1254,7 +1266,11 @@ async fn reconnection_replays_pubrel_with_original_packet_identifier() {
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
     let client_task = task::spawn(async move {
         client
-            .publish("test/qos2/replay", QoS::ExactlyOnce, false, "qos2-replay")
+            .publish(
+                "test/qos2/replay",
+                "qos2-replay",
+                PublishOptions::new(QoS::ExactlyOnce),
+            )
             .await
             .unwrap();
         time::sleep(Duration::from_secs(10)).await;
@@ -1343,7 +1359,11 @@ async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
     let client_task = task::spawn(async move {
         for _ in 0..10 {
             client
-                .publish("test/topic", QoS::ExactlyOnce, false, "Test payload.")
+                .publish(
+                    "test/topic",
+                    "Test payload.",
+                    PublishOptions::new(QoS::ExactlyOnce),
+                )
                 .await
                 .unwrap();
         }
@@ -1427,11 +1447,19 @@ async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() 
 
     let client_task = task::spawn(async move {
         client
-            .publish("test/qos1/first", QoS::AtLeastOnce, false, "first")
+            .publish(
+                "test/qos1/first",
+                "first",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
         client
-            .publish("test/qos1/unsent", QoS::AtLeastOnce, false, "unsent")
+            .publish(
+                "test/qos1/unsent",
+                "unsent",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
         client
@@ -1515,19 +1543,35 @@ async fn graceful_disconnect_with_properties_drains_mixed_qos_before_disconnect(
 
     let client_task = task::spawn(async move {
         client
-            .publish("test/qos2/one", QoS::ExactlyOnce, false, "qos2-one")
+            .publish(
+                "test/qos2/one",
+                "qos2-one",
+                PublishOptions::new(QoS::ExactlyOnce),
+            )
             .await
             .unwrap();
         client
-            .publish("test/qos1/two", QoS::AtLeastOnce, false, "qos1-two")
+            .publish(
+                "test/qos1/two",
+                "qos1-two",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
         client
-            .publish("test/qos1/three", QoS::AtLeastOnce, false, "qos1-three")
+            .publish(
+                "test/qos1/three",
+                "qos1-three",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
         client
-            .publish("test/qos2/four", QoS::ExactlyOnce, false, "qos2-four")
+            .publish(
+                "test/qos2/four",
+                "qos2-four",
+                PublishOptions::new(QoS::ExactlyOnce),
+            )
             .await
             .unwrap();
         client
@@ -1628,7 +1672,11 @@ async fn graceful_disconnect_timeout_does_not_send_disconnect() {
 
     let client_task = task::spawn(async move {
         client
-            .publish("test/topic", QoS::ExactlyOnce, false, "Test payload.")
+            .publish(
+                "test/topic",
+                "Test payload.",
+                PublishOptions::new(QoS::ExactlyOnce),
+            )
             .await
             .unwrap();
         client
@@ -1680,7 +1728,11 @@ async fn disconnect_now_sends_disconnect_without_waiting_for_qos2_completion() {
 
     let client_task = task::spawn(async move {
         client
-            .publish("test/topic", QoS::ExactlyOnce, false, "Test payload.")
+            .publish(
+                "test/topic",
+                "Test payload.",
+                PublishOptions::new(QoS::ExactlyOnce),
+            )
             .await
             .unwrap();
         client.disconnect_now().await.unwrap();

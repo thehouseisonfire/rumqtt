@@ -1,3 +1,4 @@
+use rumqttc::PublishOptions;
 use rumqttc::{AsyncClient, Broker, Proxy, ProxyAuth, ProxyType, QoS};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
@@ -50,7 +51,11 @@ async fn requests(client: AsyncClient) {
 
     for i in 1..=10 {
         client
-            .publish("hello/world", QoS::ExactlyOnce, false, vec![1; i])
+            .publish(
+                "hello/world",
+                vec![1; i],
+                PublishOptions::new(QoS::ExactlyOnce),
+            )
             .await
             .unwrap();
 

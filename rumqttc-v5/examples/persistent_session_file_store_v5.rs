@@ -9,7 +9,8 @@ use rumqttc::{
     AsyncClient, Event, MqttOptions, PersistedAckMode, PersistedFilter, PersistedIncomingQos2,
     PersistedPubRel, PersistedPublish, PersistedPublishProperties, PersistedQoS, PersistedRequest,
     PersistedRetainForwardRule, PersistedSession, PersistedSubscribe, PersistedSubscribeProperties,
-    PersistedUnsubscribe, PersistedUnsubscribeProperties, SessionStore, SessionStoreError,
+    PersistedUnsubscribe, PersistedUnsubscribeProperties, PublishOptions, SessionStore,
+    SessionStoreError,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -115,9 +116,8 @@ async fn requests(client: AsyncClient) {
         client
             .publish(
                 "hello/persistent-session",
-                QoS::AtLeastOnce,
-                false,
                 format!("persistent message {i}"),
+                PublishOptions::new(QoS::AtLeastOnce),
             )
             .await
             .expect("publish should be queued");

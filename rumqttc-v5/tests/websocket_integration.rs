@@ -2,6 +2,7 @@
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
+use rumqttc::PublishOptions;
 #[cfg(feature = "use-native-tls")]
 use rumqttc::TlsConfiguration;
 #[cfg(any(
@@ -160,7 +161,11 @@ async fn process_websocket_connection(
 async fn publish_with_retry(client: &AsyncClient, payload: [u8; 2]) {
     loop {
         let publish_result = client
-            .publish("ws/migration", QoS::AtMostOnce, false, payload.to_vec())
+            .publish(
+                "ws/migration",
+                payload.to_vec(),
+                PublishOptions::new(QoS::AtMostOnce),
+            )
             .await;
 
         if publish_result.is_ok() {

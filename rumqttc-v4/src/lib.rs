@@ -70,8 +70,9 @@ type FallibleRequestModifierFn = Arc<
 mod proxy;
 
 pub use client::{
-    AsyncClient, AsyncClientBuilder, Client, ClientBuilder, ClientError, Connection, InvalidTopic,
-    Iter, ManualAck, PublishTopic, RecvError, RecvTimeoutError, TryRecvError, ValidatedTopic,
+    AsyncClient, AsyncClientBuilder, Client, ClientBuilder, ClientError, Connection,
+    IntoPublishPayload, InvalidTopic, Iter, ManualAck, PublishOptions, PublishTopic, RecvError,
+    RecvTimeoutError, TryRecvError, ValidatedTopic,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v4::*;
@@ -2260,10 +2261,10 @@ mod test {
         let (client, _eventloop) = AsyncClient::builder(mqttoptions).build();
 
         client
-            .try_publish("hello/world", QoS::AtMostOnce, false, "one")
+            .try_publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
             .expect("first request should fit configured capacity");
         assert!(matches!(
-            client.try_publish("hello/world", QoS::AtMostOnce, false, "two"),
+            client.try_publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce)),
             Err(ClientError::TryRequest(Request::Publish(_)))
         ));
     }

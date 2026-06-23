@@ -1,5 +1,6 @@
 use tokio::{task, time};
 
+use rumqttc::PublishOptions;
 use rumqttc::{AckMode, AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::error::Error;
 use std::time::Duration;
@@ -77,7 +78,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn requests(client: AsyncClient) {
     for i in 1..=10 {
         client
-            .publish("hello/world", QoS::AtLeastOnce, false, vec![1; i])
+            .publish(
+                "hello/world",
+                vec![1; i],
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
 

@@ -20,7 +20,7 @@ A simple synchronous publish and subscribe
 ----------------------------
 
 ```rust,no_run
-use rumqttc::{MqttOptions, Client, QoS};
+use rumqttc::{MqttOptions, Client, PublishOptions, QoS};
 use std::time::Duration;
 use std::thread;
 
@@ -30,7 +30,7 @@ mqttoptions.set_keep_alive(5);
 let (mut client, mut connection) = Client::builder(mqttoptions).capacity(10).build();
 client.subscribe("hello/rumqtt", QoS::AtMostOnce).unwrap();
 thread::spawn(move || for i in 0..10 {
-   client.publish("hello/rumqtt", QoS::AtLeastOnce, false, vec![i; i as usize]).unwrap();
+   client.publish("hello/rumqtt", vec![i; i as usize], PublishOptions::new(QoS::AtLeastOnce)).unwrap();
    thread::sleep(Duration::from_millis(100));
 });
 
@@ -44,7 +44,7 @@ A simple asynchronous publish and subscribe
 ------------------------------
 
 ```rust,no_run
-use rumqttc::{MqttOptions, AsyncClient, QoS};
+use rumqttc::{MqttOptions, AsyncClient, PublishOptions, QoS};
 use tokio::{task, time};
 use std::time::Duration;
 
@@ -58,7 +58,7 @@ client.subscribe("hello/rumqtt", QoS::AtMostOnce).await.unwrap();
 
 task::spawn(async move {
     for i in 0..10 {
-        client.publish("hello/rumqtt", QoS::AtLeastOnce, false, vec![i; i as usize]).await.unwrap();
+        client.publish("hello/rumqtt", vec![i; i as usize], PublishOptions::new(QoS::AtLeastOnce)).await.unwrap();
         time::sleep(Duration::from_millis(100)).await;
     }
 });

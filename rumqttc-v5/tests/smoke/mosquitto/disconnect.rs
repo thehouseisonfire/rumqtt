@@ -1,3 +1,4 @@
+use rumqttc::PublishOptions;
 use rumqttc::mqttbytes::v5::{DisconnectProperties, DisconnectReasonCode, LastWill, Packet};
 use rumqttc::{AsyncClient, ConnectionError, Event, MqttOptions, Outgoing, QoS};
 use std::fs;
@@ -411,7 +412,11 @@ async fn assert_subscribed_publisher_graceful_disconnect_suppresses_will(
         .unwrap();
 
     client
-        .publish(echo_topic.clone(), QoS::ExactlyOnce, false, "echo")
+        .publish(
+            echo_topic.clone(),
+            "echo",
+            PublishOptions::new(QoS::ExactlyOnce),
+        )
         .await
         .unwrap();
     let echo = time::timeout(PUBLISHER_TIMEOUT, echo_rx.recv())
@@ -516,27 +521,24 @@ async fn mixed_qos_graceful_disconnect_suppresses_will() {
     client
         .publish(
             "rumqttc/smoke/qos2/one",
-            QoS::ExactlyOnce,
-            false,
             "qos2-one",
+            PublishOptions::new(QoS::ExactlyOnce),
         )
         .await
         .unwrap();
     client
         .publish(
             "rumqttc/smoke/qos1/two",
-            QoS::AtLeastOnce,
-            false,
             "qos1-two",
+            PublishOptions::new(QoS::AtLeastOnce),
         )
         .await
         .unwrap();
     client
         .publish(
             "rumqttc/smoke/qos1/three",
-            QoS::AtLeastOnce,
-            false,
             "qos1-three",
+            PublishOptions::new(QoS::AtLeastOnce),
         )
         .await
         .unwrap();
@@ -544,9 +546,8 @@ async fn mixed_qos_graceful_disconnect_suppresses_will() {
     client
         .publish(
             "rumqttc/smoke/qos2/four",
-            QoS::ExactlyOnce,
-            false,
             "qos2-four",
+            PublishOptions::new(QoS::ExactlyOnce),
         )
         .await
         .unwrap();
@@ -614,18 +615,16 @@ async fn graceful_disconnect_with_unsent_backlog_suppresses_will() {
     client
         .publish(
             "rumqttc/smoke/backlog/first",
-            QoS::AtLeastOnce,
-            false,
             "first",
+            PublishOptions::new(QoS::AtLeastOnce),
         )
         .await
         .unwrap();
     client
         .publish(
             "rumqttc/smoke/backlog/unsent",
-            QoS::AtLeastOnce,
-            false,
             "unsent",
+            PublishOptions::new(QoS::AtLeastOnce),
         )
         .await
         .unwrap();

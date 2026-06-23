@@ -1,3 +1,4 @@
+use rumqttc::PublishOptions;
 use rumqttc::mqttbytes::QoS;
 use rumqttc::mqttbytes::v5::{
     Packet, PubAckProperties, PubAckReason, PubRecProperties, PubRecReason,
@@ -101,7 +102,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn requests(client: &AsyncClient) {
     for i in 1..=10 {
         client
-            .publish("hello/world", QoS::AtLeastOnce, false, vec![1; i])
+            .publish(
+                "hello/world",
+                vec![1; i],
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
 

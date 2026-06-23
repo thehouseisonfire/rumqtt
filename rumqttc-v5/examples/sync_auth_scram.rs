@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use flume::bounded;
+use rumqttc::PublishOptions;
 use rumqttc::mqttbytes::{QoS, v5::AuthProperties};
 use rumqttc::{AuthAction, AuthContext, AuthError, Authenticator, Client, MqttOptions};
 #[cfg(feature = "auth-scram")]
@@ -193,7 +194,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             .subscribe("rumqtt_auth/topic", QoS::AtLeastOnce)
             .unwrap();
         client
-            .publish("rumqtt_auth/topic", QoS::AtLeastOnce, false, "hello world")
+            .publish(
+                "rumqtt_auth/topic",
+                "hello world",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .unwrap();
 
         // Wait for the connection to be established.
