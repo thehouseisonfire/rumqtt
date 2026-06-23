@@ -1,7 +1,7 @@
 use rumqttc::mqttbytes::{QoS, v5::PublishProperties};
 use tokio::{task, time};
 
-use rumqttc::{AsyncClient, MqttOptions};
+use rumqttc::{AsyncClient, MqttOptions, PublishOptions};
 use std::error::Error;
 use std::time::Duration;
 
@@ -43,12 +43,10 @@ async fn requests(client: AsyncClient) {
     };
 
     client
-        .publish_with_properties(
+        .publish(
             "hello/world",
-            QoS::AtMostOnce,
-            false,
             vec![3; 3],
-            props.clone(),
+            PublishOptions::new(QoS::AtMostOnce).properties(props.clone()),
         )
         .await
         .unwrap();
@@ -57,12 +55,10 @@ async fn requests(client: AsyncClient) {
     other_props.topic_alias = Some(51);
 
     client
-        .publish_with_properties(
+        .publish(
             "bye/world",
-            QoS::AtMostOnce,
-            false,
             vec![3; 3],
-            other_props.clone(),
+            PublishOptions::new(QoS::AtMostOnce).properties(other_props.clone()),
         )
         .await
         .unwrap();
@@ -77,7 +73,11 @@ async fn requests(client: AsyncClient) {
 
         // no need to specify topic as we are using topic alias
         client
-            .publish_with_properties("", QoS::AtMostOnce, false, vec![1; i], properties)
+            .publish(
+                "",
+                vec![1; i],
+                PublishOptions::new(QoS::AtMostOnce).properties(properties),
+            )
             .await
             .unwrap();
 

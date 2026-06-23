@@ -1,3 +1,4 @@
+use rumqttc::PublishOptions;
 use rumqttc::mqttbytes::{QoS, v5::LastWill};
 use rumqttc::{Client, ConnectionError, MqttOptions};
 use std::thread;
@@ -39,7 +40,7 @@ fn publish(client: &Client) {
         let qos = QoS::AtLeastOnce;
 
         client
-            .publish(topic, qos, true, payload)
+            .publish(topic, payload, PublishOptions::new(qos).retained())
             .expect("example publish should succeed");
     }
 

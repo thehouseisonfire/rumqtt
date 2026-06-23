@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use flume::bounded;
+use rumqttc::PublishOptions;
 use rumqttc::mqttbytes::{QoS, v5::AuthProperties};
 use rumqttc::{AsyncClient, AuthAction, AuthContext, AuthError, Authenticator, MqttOptions};
 #[cfg(feature = "auth-scram")]
@@ -195,7 +196,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await
             .unwrap();
         client
-            .publish("rumqtt_auth/topic", QoS::AtLeastOnce, false, "hello world")
+            .publish(
+                "rumqtt_auth/topic",
+                "hello world",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
 

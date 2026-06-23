@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 
-use rumqttc_v4::{AsyncClient, Event, Incoming, MqttOptions, QoS};
+use rumqttc_v4::{AsyncClient, Event, Incoming, MqttOptions, PublishOptions, QoS};
 
 use std::error::Error;
 use std::time::{Duration, Instant};
@@ -30,7 +30,7 @@ pub async fn start(id: &str, payload_size: usize, count: usize) -> Result<(), Bo
             let payload = vec![0; payload_size];
             let qos = QoS::AtLeastOnce;
             client
-                .publish("hello/benchmarks/world", qos, false, payload)
+                .publish("hello/benchmarks/world", payload, PublishOptions::new(qos))
                 .await
                 .unwrap();
         }

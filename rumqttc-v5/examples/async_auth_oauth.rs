@@ -1,3 +1,4 @@
+use rumqttc::PublishOptions;
 use rumqttc::mqttbytes::v5::AuthProperties;
 use rumqttc::{AsyncClient, MqttOptions, mqttbytes::QoS};
 use rumqttc::{TlsConfiguration, Transport};
@@ -33,7 +34,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     task::spawn(async move {
         client.subscribe("topic1", QoS::AtLeastOnce).await.unwrap();
         client
-            .publish("topic1", QoS::AtLeastOnce, false, "hello world")
+            .publish(
+                "topic1",
+                "hello world",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
             .await
             .unwrap();
 

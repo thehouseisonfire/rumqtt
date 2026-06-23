@@ -3,7 +3,7 @@
     reason = "SchemaRead derive from wincode emits mem::forget internally"
 )]
 
-use rumqttc::{Client, Event, Incoming, MqttOptions, QoS};
+use rumqttc::{Client, Event, Incoming, MqttOptions, PublishOptions, QoS};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use wincode::{SchemaRead, SchemaWrite};
@@ -41,9 +41,8 @@ fn main() {
             client
                 .publish(
                     "hello/rumqtt",
-                    QoS::AtLeastOnce,
-                    false,
                     encode_message(&message).unwrap(),
+                    PublishOptions::new(QoS::AtLeastOnce),
                 )
                 .unwrap();
             thread::sleep(Duration::from_millis(100));

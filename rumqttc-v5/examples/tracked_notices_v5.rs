@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::time::Duration;
 
+use rumqttc::PublishOptions;
 use rumqttc::{AsyncClient, MqttOptions, PublishResult, QoS};
 use tokio::{task, time};
 
@@ -27,7 +28,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let publish_notice = client
-        .publish_tracked("hello/tracked", QoS::AtLeastOnce, false, "hello")
+        .publish_tracked(
+            "hello/tracked",
+            "hello",
+            PublishOptions::new(QoS::AtLeastOnce),
+        )
         .await?;
     match publish_notice.wait_async().await? {
         PublishResult::Qos0Flushed => println!("QoS0 publish flushed"),

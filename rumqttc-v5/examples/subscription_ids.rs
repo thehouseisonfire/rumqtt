@@ -2,7 +2,7 @@ use rumqttc::mqttbytes::QoS;
 use rumqttc::mqttbytes::v5::SubscribeProperties;
 use tokio::{task, time};
 
-use rumqttc::{AsyncClient, MqttOptions};
+use rumqttc::{AsyncClient, MqttOptions, PublishOptions};
 use std::error::Error;
 use std::time::Duration;
 
@@ -54,9 +54,8 @@ async fn requests(client: AsyncClient) {
     client
         .publish(
             "hello/world",
-            QoS::AtMostOnce,
-            false,
             "both having subscription IDs!",
+            PublishOptions::new(QoS::AtMostOnce),
         )
         .await
         .unwrap();
@@ -73,9 +72,8 @@ async fn requests(client: AsyncClient) {
     client
         .publish(
             "hello/world",
-            QoS::AtMostOnce,
-            false,
             "Only one with subscription ID!",
+            PublishOptions::new(QoS::AtMostOnce),
         )
         .await
         .unwrap();
