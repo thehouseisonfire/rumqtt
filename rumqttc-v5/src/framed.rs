@@ -524,10 +524,34 @@ mod tests {
 
         let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
-        assert_eq!(
-            response,
-            [0xE0, 0x02, DisconnectReasonCode::PacketTooLarge as u8, 0x00]
-        );
+        // MQTT-3.1.2-24: reason code is the literal 0x95 (Packet too large),
+        // pinned on the wire independently of the DisconnectReasonCode enum.
+        assert_eq!(response, [0xE0, 0x02, 0x95, 0x00]);
+        assert_eq!(response[2], DisconnectReasonCode::PacketTooLarge as u8);
+    }
+
+    #[tokio::test]
+    async fn read_sends_packet_too_large_disconnect_before_returning_error() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(10));
+
+        peer.write_all(&[0x30, 0x14]).await.unwrap();
+
+        let err = network.read().await.unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::PayloadSizeLimitExceeded {
+                pkt_size: 22,
+                max: 10,
+            })
+        ));
+
+        let mut response = [0; 4];
+        peer.read_exact(&mut response).await.unwrap();
+        // MQTT-3.1.2-24: the single-packet read() path also flushes a DISCONNECT
+        // with the literal 0x95 (Packet too large) reason code before erroring.
+        assert_eq!(response, [0xE0, 0x02, 0x95, 0x00]);
+        assert_eq!(response[2], DisconnectReasonCode::PacketTooLarge as u8);
     }
 
     #[tokio::test]

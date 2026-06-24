@@ -3749,6 +3749,106 @@
         "notes": "All three client-applicable obligations are now directly tested. Obligation 1 (CONNECT flag encoding): connect_encoding_sets_clean_start_bit_when_true asserts bit 0x02 is set when clean_start=true, and connect_encoding_clears_clean_start_bit_when_false asserts the bit is clear and survives a parse_fixed_header+Connect::read round-trip (the first test in connect.rs to exercise clean_start=false). Obligation 2 (Client discards any existing local Session): clean_start_does_not_load_or_replay_persisted_session seeds a non-empty persisted session under clean_start=false, flips to clean_start=true, and proves load_persisted_session_if_needed short-circuits (no replay loaded, store untouched). Obligation 3 (Session Present must be 0 when Clean Start=1): connack_reconcile_rejects_clean_start_with_session_present verifies the SessionStateMismatch violation, and connack_reconcile_resets_pending_when_clean_start_gets_new_session verifies pending discard when the server reports a new session. The Server's own session discard is not testable in this client crate."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-24",
+      "section_number": "3.1.2.11.4",
+      "section_title": "Maximum Packet Size",
+      "obligation": "MUST NOT",
+      "summary": "The Server MUST NOT send packets exceeding Maximum Packet Size to the Client. If a Client receives a packet whose size exceeds this limit, this is a Protocol Error, and the Client uses DISCONNECT with Reason Code 0x95 (Packet too large), as described in section 4.13.",
+      "source_anchor": "_Toc471483569",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+        "rumqttc-v5/src/mqttbytes/v5/codec.rs",
+        "rumqttc-v5/src/framed.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The authoritative requirement combines a Server MUST NOT (not applicable to a rumqttc client) with a Client obligation: on receiving a packet larger than the negotiated Maximum Packet Size, the Client MUST treat it as a Protocol Error and send DISCONNECT with Reason Code 0x95 (Packet too large). The v5 codec enforces the limit using the total MQTT Control Packet size (fixed-header bytes included), classifies PayloadSizeLimitExceeded as DisconnectReasonCode::PacketTooLarge (0x95), and the framed Network layer flushes a best-effort DISCONNECT before surfacing the error.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.11.4",
+        "section_title": "Maximum Packet Size",
+        "source_anchor": "_Toc471483569",
+        "summary": "The Server MUST NOT send packets exceeding Maximum Packet Size to the Client. If a Client receives a packet whose size exceeds this limit, this is a Protocol Error; the Client uses DISCONNECT with Reason Code 0x95 (Packet too large). The packet size is the total number of bytes in an MQTT Control Packet (section 2.1.4), and the Client advertises the limit via the Maximum Packet Size CONNECT property."
+      },
+      "authoritative_actor": "Client (receiver / packet decoder); the Server MUST NOT sentence is server-only and not applicable to a rumqttc client",
+      "applicability": "applicable",
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The generated entry correctly captured both the Server MUST NOT sentence and the Client DISCONNECT-with-0x95 consequence, and pointed at the codec/framed paths that implement it. The mapping summary, actor, section, and obligation all match the authoritative text."
+      },
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/mod.rs",
+          "symbols": [
+            "check",
+            "FixedHeader::frame_length"
+          ],
+          "reason": "check() validates the total MQTT Control Packet size (fixed_header.frame_length(), which includes fixed-header bytes) against max_packet_size and returns Error::PayloadSizeLimitExceeded when exceeded. This is the inbound receiver-side enforcement of the Maximum Packet Size limit."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/codec.rs",
+          "symbols": [
+            "Codec",
+            "Codec::decode",
+            "Codec::max_incoming_size"
+          ],
+          "reason": "Codec::decode passes max_incoming_size to Packet::read, which calls check() on every inbound packet so oversized frames are rejected before being handed to the state machine."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "inbound_disconnect_reason",
+            "InboundDisconnect::classify",
+            "Network::handle_incoming_decode_error",
+            "Network::try_send_inbound_disconnect"
+          ],
+          "reason": "inbound_disconnect_reason maps Error::PayloadSizeLimitExceeded to DisconnectReasonCode::PacketTooLarge. handle_incoming_decode_error -> try_send_inbound_disconnect constructs Packet::Disconnect(Disconnect::new(reason)) and flushes it before the decode error is returned, satisfying the Client's obligation to send DISCONNECT with Reason Code 0x95."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/disconnect.rs",
+          "symbols": [
+            "DisconnectReasonCode::PacketTooLarge"
+          ],
+          "reason": "DisconnectReasonCode::PacketTooLarge is defined as 0x95, matching the spec-required reason code for a too-large inbound packet."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectProperties::max_packet_size",
+            "Connect::write"
+          ],
+          "reason": "The client advertises the configured Maximum Packet Size (property id 0x27) in the CONNECT Variable Header properties, informing the Server of the inbound limit it will enforce."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "network_connect",
+            "Network::set_max_outgoing_size"
+          ],
+          "reason": "network_connect wires options.max_incoming_packet_size() into the Network codec for inbound enforcement, and applies the server-reported CONNACK max_packet_size to outgoing packets via network.set_max_outgoing_size (the symmetric MQTT-3.2.2-15 obligation)."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::check_rejects_when_total_packet_size_exceeds_limit",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::check_rejects_oversized_packet_on_partial_frame",
+          "rumqttc-v5/src/mqttbytes/v5/mod.rs::check_accepts_packet_exactly_at_limit",
+          "rumqttc-v5/src/mqttbytes/v5/codec.rs::incoming_max_packet_size_check_happens_on_partial_frame",
+          "rumqttc-v5/src/mqttbytes/v5/codec.rs::incoming_max_packet_size_check_rejects_oversized_suback",
+          "rumqttc-v5/src/mqttbytes/v5/codec.rs::incoming_max_packet_size_check_rejects_oversized_unsuback",
+          "rumqttc-v5/src/framed.rs::readb_sends_packet_too_large_disconnect_before_returning_error",
+          "rumqttc-v5/src/framed.rs::read_sends_packet_too_large_disconnect_before_returning_error"
+        ],
+        "notes": "Unit tests prove the fixed-header bytes count toward the total size (pkt_size=11 for a 0x30 0x09 frame, pkt_size=22 for a 0x30 0x14 frame) and that oversized SUBACK/UNSUBACK frames are rejected. The framed runtime tests prove a DISCONNECT with DisconnectReasonCode::PacketTooLarge (0x95) is flushed before the decode error is surfaced, on both the single-packet read() and batched readb() paths, with the literal 0x95 byte pinned on the wire."
+      },
+      "follow_up": null
     }
   ]
 }
