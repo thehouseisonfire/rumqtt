@@ -4157,6 +4157,94 @@
         "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.3-8",
+      "section_number": "3.1.3.1",
+      "section_title": "Client Identifier (ClientID)",
+      "obligation": "MAY",
+      "summary": "If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection.",
+      "source_anchor": "_Toc473620032",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive. The [MQTT-3.1.3-8] tag is attached to the sentence 'If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection'. The actor is explicitly 'the Server' for both the MAY (send CONNACK 0x85) and the MUST (close the Network Connection). The client has no obligation to validate, reject, encode, decode, store, retransmit, reconcile, or react to this server-side behavior. rumqttc defensively handles CONNACK 0x85 as a ConnectionRefused rejection, but that is client-side defensive handling, not a requirement imposed by MQTT-3.1.3-8.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.3.1",
+        "section_title": "Client Identifier (ClientID)",
+        "source_anchor": "_Toc473620032",
+        "summary": "If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry correctly identified this as a server-only obligation and marked it as not_applicable. The compliance_status, mapping_reason, and summary in the original entry are accurate."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (line 2098, table line 6713) shows [MQTT-3.1.3-8] is attached to 'If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid) as described in section 4.13 Handling errors, and then it MUST close the Network Connection'. The actor is explicitly the Server for both the MAY and MUST clauses. No client obligation is stated or implied by the tagged requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.3-9",
+      "section_number": "3.1.3.2.2",
+      "section_title": "Will Delay Interval",
+      "obligation": "MUST NOT",
+      "summary": "The Server delays publishing the Client's Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message.",
+      "source_anchor": "_Will_Delay_Interval_1",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive. The [MQTT-3.1.3-9] tag is attached to the sentence 'The Server delays publishing the Client's Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message'. The actor is explicitly 'the Server' for both the delay behavior and the MUST NOT prohibition. The client has no obligation to validate, reject, encode, decode, store, retransmit, reconcile, or react to this server-side behavior. rumqttc encodes the Will Delay Interval property in CONNECT Will Properties, but that is client-side encoding, not a requirement imposed by MQTT-3.1.3-9.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.3.2.2",
+        "section_title": "Will Delay Interval",
+        "source_anchor": "_Will_Delay_Interval_1",
+        "summary": "The Server delays publishing the Client's Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry correctly identified this as a server-only obligation and marked it as not_applicable. The compliance_status, mapping_reason, and summary in the original entry are accurate."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (line 2134, table line 6714) shows [MQTT-3.1.3-9] is attached to 'The Server delays publishing the Client's Will Message until the Will Delay Interval has passed or the Session ends, whichever happens first. If a new Network Connection to this Session is made before the Will Delay Interval has passed, the Server MUST NOT send the Will Message'. The actor is explicitly the Server for both the delay behavior and the MUST NOT prohibition. No client obligation is stated or implied by the tagged requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
     }
   ]
 }
