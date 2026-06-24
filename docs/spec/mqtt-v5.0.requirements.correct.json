@@ -4025,6 +4025,94 @@
         "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (setting Topic Alias Maximum in CONNECT and defensively validating inbound aliases) is covered by other requirements."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-27",
+      "section_number": "3.1.2.11.5",
+      "section_title": "Topic Alias Maximum",
+      "obligation": "MUST NOT",
+      "summary": "If Topic Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client.",
+      "source_anchor": "_Toc464547825",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: if Topic Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client. This imposes no rumqttc client obligation. The client sets Topic Alias Maximum in CONNECT, but the obligation to honor that setting belongs solely to the Server.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.11.5",
+        "section_title": "Topic Alias Maximum",
+        "source_anchor": "_Toc464547825",
+        "summary": "If Topic Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry incorrectly marked this as compliant, treating the client's defensive topic-alias validation in handle_incoming_publish as proof of compliance. The authoritative text places the MUST NOT obligation solely on 'the Server'. The client may defensively reject violations, but that is not compliance with this server-only requirement."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 824-825, table line 6692) shows [MQTT-3.1.2-27] is attached to 'If Topic Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client'. The actor is explicitly the Server. No client obligation is stated or implied."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (setting Topic Alias Maximum in CONNECT and defensively validating inbound aliases) is covered by other requirements."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-28",
+      "section_number": "3.1.2.11.6",
+      "section_title": "Request Response Information",
+      "obligation": "MUST NOT",
+      "summary": "A value of 0 indicates that the Server MUST NOT return Response Information.",
+      "source_anchor": "_Request_Response_Information",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: when the client sends Request Response Information = 0, the Server MUST NOT return Response Information in CONNACK. This imposes no rumqttc client obligation. The client sets the value in CONNECT, but the obligation to honor that setting belongs solely to the Server.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.11.6",
+        "section_title": "Request Response Information",
+        "source_anchor": "_Request_Response_Information",
+        "summary": "A value of 0 indicates that the Server MUST NOT return Response Information in the CONNACK."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry incorrectly marked this as compliant, treating the client's defensive CONNACK response_information validation as proof of compliance. The authoritative text places the MUST NOT obligation solely on 'the Server'. The client may defensively reject violations, but that is not compliance with this server-only requirement."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 833-835, table line 6693) shows [MQTT-3.1.2-28] is attached to 'A value of 0 indicates that the Server MUST NOT return Response Information'. The actor is explicitly the Server. No client obligation is stated or implied."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (setting Request Response Information in CONNECT and defensively validating CONNACK response_information) is covered by other requirements."
+      },
+      "follow_up": null
     }
   ]
 }
