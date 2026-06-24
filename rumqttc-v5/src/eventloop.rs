@@ -4784,6 +4784,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disconnect_without_expiry_property_saves_store_when_connect_option_is_nonzero() {
+        // MQTT-3.1.2-23: when the effective Session Expiry Interval is greater than
+        // 0, the client MUST store the Session State after the Network Connection
+        // closes. A DISCONNECT that omits the Session Expiry Interval property must
+        // fall back to the CONNECT option (here 60) via disconnect_expires_session(),
+        // so the persisted session is saved rather than cleared.
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        let disconnect = Disconnect::new(DisconnectReasonCode::NormalDisconnection);
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        let keep_batching = eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain(Request::DisconnectNow(disconnect)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keep_batching, BatchControl::Stop);
+        assert!(should_flush);
+        assert_eq!(checkpoint_action, SessionCheckpointAction::Save);
+
+        eventloop
+            .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+            .await
+            .unwrap();
+
+        let saved = store
+            .current()
+            .expect("session state must be retained when effective expiry is greater than 0");
+        assert_eq!(saved.client_id, "test-client");
+        assert_eq!(saved.session_expiry_interval, Some(60));
+    }
+
+    #[tokio::test]
+    async fn disconnect_with_uint_max_expiry_saves_store() {
+        // MQTT-3.1.2-23 read with 3.1.2.11.2: a Session Expiry Interval of
+        // 0xFFFFFFFF means the Session never expires, so it must be treated as
+        // greater than 0 and stored. This guards the UINT_MAX sentinel boundary
+        // in disconnect_expires_session().
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(u32::MAX))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+        assert!(store.current().is_some());
+
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::NormalDisconnection,
+            crate::mqttbytes::v5::DisconnectProperties {
+                session_expiry_interval: Some(u32::MAX),
+                reason_string: None,
+                user_properties: Vec::new(),
+                server_reference: None,
+            },
+        );
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        let keep_batching = eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain(Request::DisconnectNow(disconnect)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keep_batching, BatchControl::Stop);
+        assert!(should_flush);
+        assert_eq!(checkpoint_action, SessionCheckpointAction::Save);
+
+        eventloop
+            .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+            .await
+            .unwrap();
+
+        let saved = store
+            .current()
+            .expect("session state must be retained when Session Expiry Interval is UINT_MAX");
+        assert_eq!(saved.client_id, "test-client");
+        assert_eq!(saved.session_expiry_interval, Some(u32::MAX));
+    }
+
+    #[tokio::test]
     async fn reconnect_replay_preserves_pending_subscribe_packet_identifier() {
         let mut eventloop = build_eventloop(false);
         eventloop

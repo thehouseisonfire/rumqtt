@@ -3377,26 +3377,30 @@
       "follow_up": null
     },
     {
-      "id": "MQTT-3.1.2-25",
-      "section_number": "3.1.2.11.4",
-      "section_title": "Maximum Packet Size",
+      "id": "MQTT-3.1.2-23",
+      "section_number": "3.1.2.11.2",
+      "section_title": "Session Expiry Interval",
       "obligation": "MUST",
-      "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message.",
-      "source_anchor": "_Toc471483569",
+      "summary": "The Client and Server MUST store the Session State after the Network Connection is closed if the Session Expiry Interval is greater than 0.",
+      "source_anchor": "_Toc471483565",
       "occurrences": 3,
       "candidate_paths": [
-        "rumqttc-v5/src/eventloop.rs"
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/session.rs"
       ],
       "mapping_status": "reviewed",
-      "compliance_status": "not_applicable",
-      "mapping_reason": "Server MUST discard an Application Message without sending it when the packet would be too large to send, and then behave as if sending had completed. This exact requirement is server-side behavior. Client-side Maximum Packet Size enforcement and oversized inbound packet handling are adjacent obligations covered separately.",
+      "compliance_status": "compliant",
+      "mapping_reason": "Authoritative text binds both the Client and Server to store Session State after the Network Connection closes when Session Expiry Interval > 0. For rumqttc-v5 the Client obligation applies: the client must retain its local session state across a network closure so it can resume on reconnect. The v5 EventLoop computes the effective Session Expiry Interval (DISCONNECT property override -> CONNECT option -> 0) via disconnect_expires_session() and, when it is greater than 0, saves the persisted session (or retains in-memory state for non-persistent setups) instead of clearing it. On reconnect, reconcile_connack_session() preserves local pending/outbound state when clean_start=false and session_present=true, and EventLoop::clean()/MqttState retain QoS/queue state for replay. The client-id guard prevents retained state from crossing ClientID boundaries. This satisfies the Client half of the dual-actor requirement; the Server half is out of scope for rumqttc.",
       "authoritative_source": {
         "path": "docs/spec/mqtt-v5.0.md",
-        "section_number": "3.1.2.11.4",
-        "section_title": "Maximum Packet Size",
-        "source_anchor": "_Toc471483569",
-        "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message."
+        "section_number": "3.1.2.11.2",
+        "section_title": "Session Expiry Interval",
+        "source_anchor": "_Toc471483565",
+        "summary": "The Client and Server MUST store the Session State after the Network Connection is closed if the Session Expiry Interval is greater than 0. (If the Session Expiry Interval is absent or 0, the Session ends when the Network Connection is closed; if 0xFFFFFFFF it never expires.)"
       },
+      "authoritative_actor": "Client and Server",
+      "applicability": "applicable",
       "mapping_review": {
         "original_mapping_status": "reviewed",
         "original_mapping_assessment": "correct",
@@ -3404,19 +3408,72 @@
         "fix_attempt_assessment": "absent",
         "wrong_mapping_client_behavior_risk": "no",
         "wrong_mapping_behavior_present_in_code": "not_applicable",
-        "notes": "The generated entry correctly identified this as a server-only obligation and marked it not_applicable. The mapping_reason accurately distinguishes the server's discard obligation from the client's outgoing packet size enforcement."
+        "notes": "The generated entry's summary, obligation (MUST), section (3.1.2.11.2), and actor (Client and Server) match the authoritative text. The dual-actor scope is correctly reduced to the Client half, which is applicable to rumqttc. The cited code paths (CONNECT Session Expiry property plumbing, reconcile_connack_session, client-id guard, EventLoop::clean, MqttState) are the right enforcement locations. No incorrect client behavior was introduced by the original mapping."
       },
       "evidence": [
         {
-          "path": "docs/spec/mqtt-v5.0.md",
-          "symbols": [],
-          "reason": "The authoritative text explicitly assigns the MUST obligation to 'the Server' (MUST discard it without sending it). The preceding requirement [MQTT-3.1.2-24] covers the server's MUST NOT send exceeding Maximum Packet Size and the client's DISCONNECT reaction. This specific tag [MQTT-3.1.2-25] covers only the server-side discard-and-behave-as-if-completed obligation."
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::disconnect_expires_session"
+          ],
+          "reason": "Computes the effective Session Expiry Interval (DISCONNECT properties override -> MqttOptions::session_expiry_interval -> 0) and returns whether the session expires (== 0). This is the exact gating condition: state is stored only when the effective interval is greater than 0."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::dispatch_outgoing_request",
+            "EventLoop::flush_pending_disconnect"
+          ],
+          "reason": "Both outgoing DISCONNECT paths branch on disconnect_expires_session: when the session does NOT expire (expiry > 0) they call save_persisted_session()/persist_session_or_fail_qos0_notices to store the session; when it expires (== 0) they call clear_persisted_session()/SessionCheckpointAction::Clear. This implements the Client-side 'store Session State when Session Expiry Interval > 0' obligation and the complementary 'end Session when 0' rule."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::reconcile_connack_session"
+          ],
+          "reason": "On reconnect, preserves local pending/outbound session state when clean_start=false and the broker reports session_present=true; resets it when session_present=false. This is the resume path that the stored Session State enables."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "EventLoop::clean",
+            "EventLoop::reset_session_state_if_client_id_changed"
+          ],
+          "reason": "EventLoop::clean() moves in-flight QoS state into the pending queue for replay across reconnects, retaining the session across a network closure. The client-id guard clears retained local state when reconnecting under a different ClientID, preventing cross-identity leakage of stored session state."
+        },
+        {
+          "path": "rumqttc-v5/src/mqttbytes/v5/connect.rs",
+          "symbols": [
+            "ConnectProperties::session_expiry_interval",
+            "ConnectProperties::read",
+            "ConnectProperties::write"
+          ],
+          "reason": "Serializes the configured Session Expiry Interval into CONNECT properties (PropertyType::SessionExpiryInterval via Four Byte Integer), advertising the value to the Server so it will retain its half of the session state."
+        },
+        {
+          "path": "rumqttc-v5/src/session.rs",
+          "symbols": [
+            "SessionStore",
+            "PersistedSession"
+          ],
+          "reason": "Optional durable SessionStore checkpoints client session state across a closed connection (load/save/clear keyed by client_id). save is gated by persisted_session_save which is only reached when expiry > 0; clear is invoked when the effective expiry is 0."
         }
       ],
       "test_coverage": {
-        "status": "not_applicable",
-        "tests": [],
-        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's outgoing max-packet-size enforcement is tested separately."
+        "status": "covered",
+        "tests": [
+          "rumqttc-v5/tests/reliability.rs::reconnection_resumes_from_the_previous_state",
+          "rumqttc-v5/tests/reliability.rs::reconnection_resends_unacked_packets_from_the_previous_connection_first",
+          "rumqttc-v5/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_keeps_pending_when_resumed_session_exists",
+          "rumqttc-v5/src/eventloop.rs::connack_reconcile_resets_pending_when_resumed_session_is_missing",
+          "rumqttc-v5/src/eventloop.rs::fresh_connack_clear_marks_session_store_loaded_after_reset",
+          "rumqttc-v5/src/eventloop.rs::clean_start_does_not_load_or_replay_persisted_session",
+          "rumqttc-v5/src/eventloop.rs::disconnect_without_expiry_property_saves_store_when_connect_option_is_nonzero",
+          "rumqttc-v5/src/eventloop.rs::disconnect_with_uint_max_expiry_saves_store",
+          "rumqttc-v5/src/eventloop.rs::disconnect_now_with_expiry_zero_clears_store_after_flush"
+        ],
+        "notes": "Reliability tests configure clean_start=false with Session Expiry Interval = 60 (>0), disconnect, reconnect, and assert QoS state is resumed/replayed (store-when-expiry>0). Unit tests cover CONNACK session reconciliation, the clean_start=false persistence gate, and the disconnect_expires_session() precedence (DISCONNECT property -> CONNECT option -> 0): the >0 store branch is covered by disconnect_without_expiry_property_saves_store_when_connect_option_is_nonzero (or_else fallback to the CONNECT option) and disconnect_with_uint_max_expiry_saves_store (0xFFFFFFFF never-expires sentinel), while the expiry==0 clear branch is asserted by disconnect_now_with_expiry_zero_clears_store_after_flush and fresh_connack_clear_marks_session_store_loaded_after_reset."
       },
       "follow_up": null
     },
