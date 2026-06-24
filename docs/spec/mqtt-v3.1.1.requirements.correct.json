@@ -3401,6 +3401,94 @@
       "follow_up": null
     },
     {
+      "id": "MQTT-3.1.4-4",
+      "section_number": "3.1.4",
+      "section_title": "Response",
+      "obligation": "MUST",
+      "summary": "If CONNECT validation is successful the Server MUST acknowledge the CONNECT Packet with a CONNACK Packet containing a zero return code.",
+      "source_anchor": "_Toc384800405",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT v3.1.1 requirement places the MUST obligation solely on the MQTT Server: the Server must send a CONNACK with a zero return code when CONNECT validation succeeds. This imposes no responsibility on the rumqttc client to validate, reject, encode, decode, store, retransmit, reconcile, or react. The client's observation of CONNACK return codes is governed by separate requirements (e.g., MQTT-3.2.2-*).",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.4",
+        "section_title": "Response",
+        "source_anchor": "_Toc384800405",
+        "summary": "If CONNECT validation is successful the Server MUST acknowledge the CONNECT Packet with a CONNACK Packet containing a zero return code."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "wrong",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original and fix-attempt entries incorrectly treated this as client-applicable by citing client-side CONNACK return code validation. The requirement text explicitly states 'the Server MUST acknowledge' — the obligation belongs solely to the Server. The client's CONNACK handling is covered by other requirements (MQTT-3.2.2-*). Marking as compliant is wrong for a server-only requirement."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v3.1.1.md",
+          "symbols": [],
+          "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement. The text states 'the Server MUST acknowledge the CONNECT Packet with a CONNACK Packet containing a zero return code'. The obligation belongs solely to the Server and imposes no rumqttc client responsibility."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.4-5",
+      "section_number": "3.1.4",
+      "section_title": "Response",
+      "obligation": "MUST NOT",
+      "summary": "If the Server rejects the CONNECT, it MUST NOT process any data sent by the Client after the CONNECT Packet.",
+      "source_anchor": "_Toc384800405",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT v3.1.1 requirement places the MUST NOT obligation solely on the MQTT Server: after rejecting a CONNECT, the Server must not process any subsequent client data. The rumqttc client cannot enforce or verify this server-side behavior. The client can only observe a non-success CONNACK or connection close.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.1.4",
+        "section_title": "Response",
+        "source_anchor": "_Toc384800405",
+        "summary": "If the Server rejects the CONNECT, it MUST NOT process any data sent by the Client after the CONNECT Packet."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original and fix-attempt entries correctly identified this as server-only with compliance_status not_applicable. Both assessed the obligation correctly."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v3.1.1.md",
+          "symbols": [],
+          "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement. The text states 'the Server rejects the CONNECT, it MUST NOT process any data sent by the Client'. The obligation belongs solely to the Server and imposes no rumqttc client responsibility."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
+    },
+    {
       "id": "MQTT-3.2.0-1",
       "section_number": "3.2",
       "section_title": "CONNACK – Acknowledge connection request",
@@ -3704,94 +3792,6 @@
           "path": "docs/spec/mqtt-v3.1.1.md",
           "symbols": [],
           "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement for sending PINGRESP in response to PINGREQ. The client only receives PINGRESP; it does not send it."
-        }
-      ],
-      "test_coverage": {
-        "status": "not_applicable",
-        "tests": [],
-        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
-      },
-      "follow_up": null
-    },
-    {
-      "id": "MQTT-3.1.4-4",
-      "section_number": "3.1.4",
-      "section_title": "Response",
-      "obligation": "MUST",
-      "summary": "If CONNECT validation is successful the Server MUST acknowledge the CONNECT Packet with a CONNACK Packet containing a zero return code.",
-      "source_anchor": "_Toc384800405",
-      "occurrences": 3,
-      "candidate_paths": [
-        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
-      ],
-      "mapping_status": "reviewed",
-      "compliance_status": "not_applicable",
-      "mapping_reason": "The authoritative MQTT v3.1.1 requirement places the MUST obligation solely on the MQTT Server: the Server must send a CONNACK with a zero return code when CONNECT validation succeeds. This imposes no responsibility on the rumqttc client to validate, reject, encode, decode, store, retransmit, reconcile, or react. The client's observation of CONNACK return codes is governed by separate requirements (e.g., MQTT-3.2.2-*).",
-      "authoritative_source": {
-        "path": "docs/spec/mqtt-v3.1.1.md",
-        "section_number": "3.1.4",
-        "section_title": "Response",
-        "source_anchor": "_Toc384800405",
-        "summary": "If CONNECT validation is successful the Server MUST acknowledge the CONNECT Packet with a CONNACK Packet containing a zero return code."
-      },
-      "mapping_review": {
-        "original_mapping_status": "reviewed",
-        "original_mapping_assessment": "wrong",
-        "fix_attempt_status": "reviewed",
-        "fix_attempt_assessment": "wrong",
-        "wrong_mapping_client_behavior_risk": "no",
-        "wrong_mapping_behavior_present_in_code": "not_applicable",
-        "notes": "The original and fix-attempt entries incorrectly treated this as client-applicable by citing client-side CONNACK return code validation. The requirement text explicitly states 'the Server MUST acknowledge' — the obligation belongs solely to the Server. The client's CONNACK handling is covered by other requirements (MQTT-3.2.2-*). Marking as compliant is wrong for a server-only requirement."
-      },
-      "evidence": [
-        {
-          "path": "docs/spec/mqtt-v3.1.1.md",
-          "symbols": [],
-          "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement. The text states 'the Server MUST acknowledge the CONNECT Packet with a CONNACK Packet containing a zero return code'. The obligation belongs solely to the Server and imposes no rumqttc client responsibility."
-        }
-      ],
-      "test_coverage": {
-        "status": "not_applicable",
-        "tests": [],
-        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
-      },
-      "follow_up": null
-    },
-    {
-      "id": "MQTT-3.1.4-5",
-      "section_number": "3.1.4",
-      "section_title": "Response",
-      "obligation": "MUST NOT",
-      "summary": "If the Server rejects the CONNECT, it MUST NOT process any data sent by the Client after the CONNECT Packet.",
-      "source_anchor": "_Toc384800405",
-      "occurrences": 3,
-      "candidate_paths": [
-        "rumqttc-v4/src/mqttbytes/v4/connect.rs"
-      ],
-      "mapping_status": "reviewed",
-      "compliance_status": "not_applicable",
-      "mapping_reason": "The authoritative MQTT v3.1.1 requirement places the MUST NOT obligation solely on the MQTT Server: after rejecting a CONNECT, the Server must not process any subsequent client data. The rumqttc client cannot enforce or verify this server-side behavior. The client can only observe a non-success CONNACK or connection close.",
-      "authoritative_source": {
-        "path": "docs/spec/mqtt-v3.1.1.md",
-        "section_number": "3.1.4",
-        "section_title": "Response",
-        "source_anchor": "_Toc384800405",
-        "summary": "If the Server rejects the CONNECT, it MUST NOT process any data sent by the Client after the CONNECT Packet."
-      },
-      "mapping_review": {
-        "original_mapping_status": "reviewed",
-        "original_mapping_assessment": "correct",
-        "fix_attempt_status": "reviewed",
-        "fix_attempt_assessment": "correct",
-        "wrong_mapping_client_behavior_risk": "no",
-        "wrong_mapping_behavior_present_in_code": "not_applicable",
-        "notes": "The original and fix-attempt entries correctly identified this as server-only with compliance_status not_applicable. Both assessed the obligation correctly."
-      },
-      "evidence": [
-        {
-          "path": "docs/spec/mqtt-v3.1.1.md",
-          "symbols": [],
-          "reason": "Authoritative source shows this is a strictly server-exclusive MQTT Server requirement. The text states 'the Server rejects the CONNECT, it MUST NOT process any data sent by the Client'. The obligation belongs solely to the Server and imposes no rumqttc client responsibility."
         }
       ],
       "test_coverage": {
