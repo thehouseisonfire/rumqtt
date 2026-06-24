@@ -3888,6 +3888,50 @@
         "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.2.2-6",
+      "section_number": "3.2.2.3",
+      "section_title": "Connect Return code",
+      "obligation": "MUST",
+      "summary": "If none of the return codes listed in Table 3.1 – Connect Return code values are deemed applicable, then the Server MUST close the Network Connection without sending a CONNACK.",
+      "source_anchor": "_Table_3.1_-",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v4/src/mqttbytes/v4/connack.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT v3.1.1 requirement is strictly server-exclusive: it obligates the Server to close the Network Connection without sending a CONNACK when no listed return code applies. The client has no control over this decision and only observes the outcome.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v3.1.1.md",
+        "section_number": "3.2.2.3",
+        "section_title": "Connect Return code",
+        "source_anchor": "_Table_3.1_-",
+        "summary": "If none of the return codes listed in Table 3.1 – Connect Return code values are deemed applicable, then the Server MUST close the Network Connection without sending a CONNACK."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "reviewed",
+        "fix_attempt_assessment": "correct",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "Both the original requirements JSON and the fix-attempt JSON correctly identified this as a server-exclusive obligation with compliance_status not_applicable. The summary, actor, and obligation mappings are accurate."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v3.1.1.md",
+          "symbols": [],
+          "reason": "Authoritative source at section 3.2.2.3 states: 'If none of the return codes listed in Table 3.1 – Connect Return code values are deemed applicable, then the Server MUST close the Network Connection without sending a CONNACK [MQTT-3.2.2-6].' The obligation is solely on the Server; the client has no responsibility to validate, reject, or react to this specific server decision."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
     }
   ]
 }
