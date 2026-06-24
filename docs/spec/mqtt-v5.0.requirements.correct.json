@@ -4245,6 +4245,50 @@
         "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.3-10",
+      "section_number": "3.1.3.2.8",
+      "section_title": "User Property",
+      "obligation": "MUST",
+      "summary": "The Server MUST maintain the order of User Properties when forwarding the Application Message.",
+      "source_anchor": "_Toc493772021",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: the Server MUST maintain the order of User Properties when forwarding the Application Message. rumqttc is a client and has no obligation to validate, enforce, or react to server-side user property ordering when forwarding Will Messages.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.3.2.8",
+        "section_title": "User Property",
+        "source_anchor": "_Toc493772021",
+        "summary": "The Server MUST maintain the order of User Properties when forwarding the Application Message."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original entry summary says 'publishing the Will Message' but the authoritative spec says 'forwarding the Application Message'. The original entry also incorrectly attributes section 3.1.3.2.8 to this requirement when the authoritative table lists it without a subsection anchor. The compliance_status and not_applicable conclusion are correct, but the summary text diverges from the authoritative source."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "The authoritative requirement table states: 'The Server MUST maintain the order of User Properties when forwarding the Application Message.' This is a strictly server-exclusive obligation with no client-side counterpart."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
     }
   ]
 }
