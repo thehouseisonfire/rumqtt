@@ -3849,6 +3849,94 @@
         "notes": "Unit tests prove the fixed-header bytes count toward the total size (pkt_size=11 for a 0x30 0x09 frame, pkt_size=22 for a 0x30 0x14 frame) and that oversized SUBACK/UNSUBACK frames are rejected. The framed runtime tests prove a DISCONNECT with DisconnectReasonCode::PacketTooLarge (0x95) is flushed before the decode error is surfaced, on both the single-packet read() and batched readb() paths, with the literal 0x95 byte pinned on the wire."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-5",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Start",
+      "obligation": "MUST",
+      "summary": "If a CONNECT packet is received with Clean Start set to 0 and there is a Session associated with the Client Identifier, the Server MUST resume communications with the Client based on state from the existing Session.",
+      "source_anchor": "_Clean_Start",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: the Server MUST resume communications based on existing Session state when Clean Start=0 and a Session exists. This imposes no rumqttc client obligation to validate, reject, encode beyond the Clean Start flag itself, decode, store, retransmit, reconcile, or react to related behavior.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.4",
+        "section_title": "Clean Start",
+        "source_anchor": "_Clean_Start",
+        "summary": "If a CONNECT packet is received with Clean Start set to 0 and there is a Session associated with the Client Identifier, the Server MUST resume communications with the Client based on state from the existing Session."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry correctly identified this as server-only and marked it not_applicable. The summary was truncated (ending with 'an...') but the mapping_reason and compliance_status were accurate. The generated entry already pointed at client encoding/reconciliation paths as context rather than as obligations."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 597-599, table line 6660) shows [MQTT-3.1.2-5] is attached to 'the Server MUST resume communications with the Client based on state from the existing Session'. The actor is explicitly the Server. No client obligation is stated or implied."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (encoding Clean Start=0, handling CONNACK session_present) is covered by other requirements."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-6",
+      "section_number": "3.1.2.4",
+      "section_title": "Clean Start",
+      "obligation": "MUST",
+      "summary": "If a CONNECT packet is received with Clean Start set to 0 and there is no Session associated with the Client Identifier, the Server MUST create a new Session.",
+      "source_anchor": "_Clean_Start",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: the Server MUST create a new Session when Clean Start=0 and no Session exists. This imposes no rumqttc client obligation to validate, reject, encode beyond the Clean Start flag itself, decode, store, retransmit, reconcile, or react to related behavior.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.4",
+        "section_title": "Clean Start",
+        "source_anchor": "_Clean_Start",
+        "summary": "If a CONNECT packet is received with Clean Start set to 0 and there is no Session associated with the Client Identifier, the Server MUST create a new Session."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry correctly identified this as server-only and marked it not_applicable. The summary was truncated (ending with 'an...') but the mapping_reason and compliance_status were accurate. The original entry described this as a 'duplicate' of MQTT-3.1.2-5; while both are in the same spec paragraph, they address distinct server obligations (resume vs create)."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 599-600, table line 6661) shows [MQTT-3.1.2-6] is attached to 'the Server MUST create a new Session'. The actor is explicitly the Server. No client obligation is stated or implied."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (encoding Clean Start=0, handling CONNACK session_present) is covered by other requirements."
+      },
+      "follow_up": null
     }
   ]
 }
