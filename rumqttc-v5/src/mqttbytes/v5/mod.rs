@@ -884,6 +884,19 @@ mod tests {
         ));
     }
 
+    // MQTT-3.1.2-24: a packet whose total size equals the Maximum Packet Size
+    // (fixed-header bytes included) is legal. The limit is exclusive, so the
+    // exact boundary MUST be accepted to avoid silently dropping valid frames.
+    #[test]
+    fn check_accepts_packet_exactly_at_limit() {
+        // PUBLISH QoS0: fixed header 0x30 + remaining length 0x08 = total size 10.
+        let stream = [0x30, 0x08, 0x00, 0x01, b'a', 0x00, 0x42, 0x00, 0x00, 0x00];
+        let result = super::check(stream.iter(), Some(10));
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().frame_length(), 10);
+    }
+
     // MQTT-2.1.3-1: Reserved flag bits MUST be set to the required value.
     // For most packet types the lower 4 bits of byte 1 must be 0.
     // SUBSCRIBE, UNSUBSCRIBE, and PUBREL require flags == 0b0010.
