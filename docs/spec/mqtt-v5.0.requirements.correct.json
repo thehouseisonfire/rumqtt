@@ -4113,6 +4113,50 @@
         "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (setting Request Response Information in CONNECT and defensively validating CONNACK response_information) is covered by other requirements."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-29",
+      "section_number": "3.1.2.11.7",
+      "section_title": "Request Problem Information",
+      "obligation": "MUST NOT",
+      "summary": "If the value of Request Problem Information is 0, the Server MAY return a Reason String or User Properties on a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT.",
+      "source_anchor": "_Toc464547827",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive. The [MQTT-3.1.2-29] tag is attached to the sentence 'the Server MAY return a Reason String or User Properties on a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT'. The actor is explicitly the Server. The client's complementary behavior (sending DISCONNECT with Protocol Error) is described in the following sentence but is NOT tagged with [MQTT-3.1.2-29] and is not part of this requirement. rumqttc is a client library and has no obligation to enforce this server-side sending restriction.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.11.7",
+        "section_title": "Request Problem Information",
+        "source_anchor": "_Toc464547827",
+        "summary": "If Request Problem Information is 0, the Server MAY return Reason String or User Properties on CONNACK or DISCONNECT, but MUST NOT send them on any other packet."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry correctly identified this as a server-only restriction and marked it as not_applicable. The compliance_status and mapping_reason in the original entry are accurate."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 1982-1984, table line 6694) shows [MQTT-3.1.2-29] is attached to 'the Server MAY return a Reason String or User Properties on a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT'. The actor is explicitly the Server. No client obligation is stated or implied by the tagged requirement."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation."
+      },
+      "follow_up": null
     }
   ]
 }
