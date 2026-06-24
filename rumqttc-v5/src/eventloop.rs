@@ -5181,6 +5181,192 @@ mod tests {
         ));
     }
 
+    // [MQTT-3.1.2-30]: When the CONNECT carries an Authentication Method, the
+    // client MUST NOT send any packet other than AUTH or DISCONNECT before it
+    // receives a CONNACK. This combines the enhanced-auth CONNECT path (which
+    // the *_authentication_method tests exercise without a queued user request)
+    // with a queued user request (which queued_requests_are_withheld_* exercises
+    // without an Authentication Method). The wire must show CONNECT, then only
+    // AUTH packets during the challenge exchange, and the Subscribe must appear
+    // only after CONNACK.
+    //
+    // The exchange is driven across multiple AUTH Continue rounds (SCRAM-style
+    // multi-step auth) so the withholding guarantee holds for the whole exchange,
+    // not only the first round. This guards against a future fast-path that might
+    // flush pending user requests partway through the CONNECT read loop.
+    #[tokio::test]
+    async fn enhanced_auth_withholds_queued_user_request_until_connack() {
+        const AUTH_METHOD: &str = "SCRAM-SHA-256";
+        // Number of AUTH Continue challenge/response rounds before CONNACK. More
+        // than one proves the withholding guarantee holds across a multi-step
+        // exchange, not just the first round.
+        const AUTH_ROUNDS: usize = 3;
+
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some(AUTH_METHOD.to_owned()));
+        // On each AUTH Continue from the broker, reply with AUTH Continue so the
+        // client actually emits an AUTH packet on the wire during CONNECT.
+        options.set_auth_manager(Arc::new(Mutex::new(StaticAuthManager {
+            response: Ok(Some(AuthProperties {
+                method: Some(AUTH_METHOD.to_owned()),
+                ..Default::default()
+            })),
+        })));
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
+        // Queue a user request before the connection is established.
+        request_tx
+            .send(RequestEnvelope::plain(Request::Subscribe(Subscribe::new(
+                Filter::new("hello/topic", QoS::AtMostOnce),
+                None,
+            ))))
+            .unwrap();
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+
+            // First packet must be CONNECT.
+            let connect_bytes = read_packet_bytes(&mut peer).await;
+
+            // Drive several AUTH Continue challenge/response rounds before
+            // CONNACK (SCRAM-style multi-step exchange). Each round the only
+            // packet the client may emit is its AUTH Continue reply.
+            let mut auth_reply_bytes = Vec::with_capacity(AUTH_ROUNDS);
+            for _ in 0..AUTH_ROUNDS {
+                let mut challenge = BytesMut::new();
+                Packet::Auth(Auth::new(
+                    AuthReasonCode::Continue,
+                    Some(AuthProperties {
+                        method: Some(AUTH_METHOD.to_owned()),
+                        ..Default::default()
+                    }),
+                ))
+                .write(&mut challenge, None)
+                .unwrap();
+                peer.write_all(&challenge).await.unwrap();
+
+                // The only packet the client may emit now is its AUTH reply.
+                auth_reply_bytes.push(read_packet_bytes(&mut peer).await);
+            }
+
+            // While still pre-CONNACK, no other packet (notably not the queued
+            // Subscribe) may be observable on the wire.
+            let no_extra_packet_before_connack =
+                time::timeout(Duration::from_millis(50), read_packet_bytes(&mut peer))
+                    .await
+                    .is_err();
+
+            let mut encoded_connack = BytesMut::new();
+            build_connack_with_authentication_method(Some(AUTH_METHOD))
+                .write(&mut encoded_connack)
+                .unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+
+            // After CONNACK the withheld Subscribe is finally sent.
+            let post_connack_bytes = read_packet_bytes(&mut peer).await;
+
+            (
+                connect_bytes,
+                auth_reply_bytes,
+                no_extra_packet_before_connack,
+                post_connack_bytes,
+            )
+        });
+
+        // Drain the auth-lifecycle events and AUTH packets that the CONNECT phase
+        // emits before the ConnAck. Per [MQTT-3.1.2-30], the only packets the
+        // client may send before CONNACK are AUTH or DISCONNECT. The only
+        // permissible pre-CONNACK events are therefore auth lifecycle events and
+        // AUTH-related packets; no outgoing user activity may surface.
+        //
+        // Each AUTH round surfaces several auth-lifecycle/AUTH events, so the
+        // bound scales with the number of rounds.
+        let mut saw_connack = false;
+        for _ in 0..(4 + AUTH_ROUNDS * 4) {
+            match eventloop.poll().await.unwrap() {
+                Event::Auth(_) => continue,
+                Event::Incoming(Packet::Auth(_)) => continue,
+                Event::Outgoing(Outgoing::Auth) => continue,
+                Event::Incoming(Packet::ConnAck(_)) => {
+                    saw_connack = true;
+                    break;
+                }
+                other => {
+                    panic!(
+                        "unexpected event surfaced before CONNACK: {other:?} — \
+                         [MQTT-3.1.2-30] requires that no non-AUTH/DISCONNECT \
+                         packets be sent before CONNACK when Authentication Method is set"
+                    )
+                }
+            }
+        }
+        assert!(saw_connack, "CONNACK was never surfaced by poll()");
+
+        // After CONNACK the auth-success lifecycle event and the withheld Subscribe
+        // are surfaced. Drain auth events first, then assert the Subscribe.
+        loop {
+            match eventloop.poll().await.unwrap() {
+                Event::Auth(_) => continue,
+                Event::Outgoing(Outgoing::Subscribe(_)) => break,
+                other => panic!("unexpected post-CONNACK event: {other:?}"),
+            }
+        }
+
+        let (connect_bytes, auth_reply_bytes, no_extra_packet_before_connack, post_connack_bytes) =
+            broker.await.unwrap();
+
+        let mut stream = BytesMut::from(&connect_bytes[..]);
+        assert!(
+            matches!(
+                Packet::read(&mut stream, Some(1024)).unwrap(),
+                Packet::Connect(..)
+            ),
+            "first packet on the wire must be CONNECT"
+        );
+
+        // Every reply across all AUTH rounds must be an AUTH Continue — never
+        // the queued Subscribe or any other packet type.
+        assert_eq!(
+            auth_reply_bytes.len(),
+            AUTH_ROUNDS,
+            "expected one AUTH reply per challenge round"
+        );
+        for (i, reply) in auth_reply_bytes.iter().enumerate() {
+            let mut stream = BytesMut::from(&reply[..]);
+            assert!(
+                matches!(
+                    Packet::read(&mut stream, Some(1024)).unwrap(),
+                    Packet::Auth(auth) if auth.code == AuthReasonCode::Continue
+                ),
+                "round {}: only AUTH may be sent during the CONNECT auth exchange",
+                i
+            );
+        }
+
+        assert!(
+            no_extra_packet_before_connack,
+            "queued Subscribe was observable on the wire before CONNACK"
+        );
+
+        let mut stream = BytesMut::from(&post_connack_bytes[..]);
+        assert!(
+            matches!(
+                Packet::read(&mut stream, Some(1024)).unwrap(),
+                Packet::Subscribe(..)
+            ),
+            "withheld Subscribe must be sent only after CONNACK"
+        );
+    }
+
     #[tokio::test]
     async fn duplicate_connack_after_connection_establishment_sends_protocol_error_disconnect() {
         let (peer_tx, peer_rx) = flume::bounded(1);
