@@ -3937,6 +3937,94 @@
         "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (encoding Clean Start=0, handling CONNACK session_present) is covered by other requirements."
       },
       "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-25",
+      "section_number": "3.1.2.11.4",
+      "section_title": "Maximum Packet Size",
+      "obligation": "MUST",
+      "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message.",
+      "source_anchor": "_Toc471483569",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: the Server MUST discard packets too large to send and behave as if it had completed sending. This imposes no rumqttc client obligation to validate, reject, encode, decode, store, retransmit, reconcile, or react to related behavior.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.11.4",
+        "section_title": "Maximum Packet Size",
+        "source_anchor": "_Toc471483569",
+        "summary": "Where a Packet is too large to send, the Server MUST discard it without sending it and then behave as if it had completed sending that Application Message."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "correct",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry correctly identified this as server-only and marked it not_applicable. The summary, mapping_reason, and compliance_status were accurate."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 802-803, table line 6690) shows [MQTT-3.1.2-25] is attached to 'the Server MUST discard it without sending it'. The actor is explicitly the Server. No client obligation is stated or implied."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (respecting the server's Maximum Packet Size via MQTT-3.2.2.3.6) is covered by other requirements."
+      },
+      "follow_up": null
+    },
+    {
+      "id": "MQTT-3.1.2-26",
+      "section_number": "3.1.2.11.5",
+      "section_title": "Topic Alias Maximum",
+      "obligation": "MUST NOT",
+      "summary": "The Server MUST NOT send a Topic Alias in a PUBLISH packet to the Client greater than Topic Alias Maximum.",
+      "source_anchor": "_Toc464547825",
+      "occurrences": 3,
+      "candidate_paths": [
+        "rumqttc-v5/src/mqttbytes/v5/connect.rs"
+      ],
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "The authoritative MQTT 5.0 requirement is strictly server-exclusive: the Server MUST NOT send a Topic Alias exceeding the client-declared Topic Alias Maximum. This imposes no rumqttc client obligation. The client sets Topic Alias Maximum in CONNECT, but the obligation to respect that limit belongs solely to the Server.",
+      "authoritative_source": {
+        "path": "docs/spec/mqtt-v5.0.md",
+        "section_number": "3.1.2.11.5",
+        "section_title": "Topic Alias Maximum",
+        "source_anchor": "_Toc464547825",
+        "summary": "The Server MUST NOT send a Topic Alias in a PUBLISH packet to the Client greater than Topic Alias Maximum."
+      },
+      "mapping_review": {
+        "original_mapping_status": "reviewed",
+        "original_mapping_assessment": "wrong",
+        "fix_attempt_status": "absent",
+        "fix_attempt_assessment": "absent",
+        "wrong_mapping_client_behavior_risk": "no",
+        "wrong_mapping_behavior_present_in_code": "not_applicable",
+        "notes": "The original JSON entry incorrectly marked this as compliant, treating the client's defensive topic-alias validation in handle_incoming_publish as proof of compliance. The authoritative text places the MUST NOT obligation solely on 'the Server'. The client may defensively reject violations, but that is not compliance with this server-only requirement."
+      },
+      "evidence": [
+        {
+          "path": "docs/spec/mqtt-v5.0.md",
+          "symbols": [],
+          "reason": "Authoritative source (lines 820-823, table line 6691) shows [MQTT-3.1.2-26] is attached to 'The Server MUST NOT send a Topic Alias in a PUBLISH packet to the Client greater than Topic Alias Maximum'. The actor is explicitly the Server. No client obligation is stated or implied."
+        }
+      ],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No rumqttc client test coverage is required for a strictly server-exclusive MQTT Server obligation. The client's complementary behavior (setting Topic Alias Maximum in CONNECT and defensively validating inbound aliases) is covered by other requirements."
+      },
+      "follow_up": null
     }
   ]
 }
