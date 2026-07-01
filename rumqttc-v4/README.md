@@ -14,6 +14,13 @@ This crate keeps the library target name as `rumqttc` so application code can st
 cargo add rumqttc-v4-next
 ```
 
+## Typed Topics
+
+For applications that want typed topic declarations, generated publish/subscribe
+helpers, and payload serialization on top of this client, use the companion
+`mqtt-typed-client-next` fork with its `rumqttc-v4` feature enabled. See
+`examples/typed_client_v4.rs` in this crate for a runnable integration example.
+
 ## Examples
 
 A simple synchronous publish and subscribe
