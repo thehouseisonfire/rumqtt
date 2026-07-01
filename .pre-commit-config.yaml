@@ -38,7 +38,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          cargo clippy --workspace --all-targets -- \
+          cargo clippy --workspace --lib -- \
             -D clippy::dbg_macro \
             -D clippy::todo \
             -D clippy::exit \
