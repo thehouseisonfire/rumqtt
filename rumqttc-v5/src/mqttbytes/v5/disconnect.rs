@@ -371,7 +371,7 @@ mod test {
     use bytes::BytesMut;
 
     use super::{Disconnect, DisconnectProperties, DisconnectReasonCode};
-    use crate::mqttbytes::{Error, v5::parse_fixed_header};
+    use crate::mqttbytes::{Error, parse_fixed_header};
 
     #[test]
     fn disconnect1_parsing_works() {

@@ -1,10 +1,10 @@
 use super::mqttbytes::v5::{
-    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType, PubAck,
+    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PubAck,
     PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish,
     PublishProperties, RetainForwardRule, SubAck, Subscribe, SubscribeFilter, SubscribeProperties,
     SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe, UnsubscribeProperties,
 };
-use super::mqttbytes::{self, Error as MqttError, QoS};
+use super::mqttbytes::{self, Error as MqttError, PacketType, QoS};
 use crate::auth::{AuthLifecycle, IncomingAuthEffect};
 use crate::notice::{
     AuthNoticeError, DeferredNotice, PublishNoticeTx, PublishResult, SubscribeNoticeTx,
