@@ -103,6 +103,10 @@ name = "auth_v5"
 path = "examples/auth.rs"
 
 [[example]]
+name = "migration_v5"
+path = "examples/migration_v5.rs"
+
+[[example]]
 name = "subscription_ids"
 path = "examples/subscription_ids.rs"
 
