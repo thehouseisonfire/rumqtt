@@ -2,8 +2,8 @@ use super::mqttbytes::v5::{
     Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType,
     PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel,
     PubRelReason, Publish, PublishProperties, RetainForwardRule, SubAck, Subscribe,
-    SubscribeFilter, SubscribeProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
-    UnsubscribeProperties,
+    SubscribeFilter, SubscribeProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+    Unsubscribe, UnsubscribeProperties,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::auth::{AuthLifecycle, IncomingAuthEffect};
@@ -3445,7 +3445,10 @@ mod test {
         let options = persistent_options();
         let mqtt = build_mqttstate();
         let replay_requests = [
-            Request::Subscribe(Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None)),
+            Request::Subscribe(Subscribe::new(
+                SubscribeFilter::new("a/b", QoS::AtMostOnce),
+                None,
+            )),
             Request::Unsubscribe(Unsubscribe::new("c/d", None)),
         ];
 
@@ -4656,7 +4659,8 @@ mod test {
     #[test]
     fn inbound_subscribe_after_connection_establishment_is_protocol_error() {
         let mut mqtt = build_mqttstate();
-        let mut subscribe = Subscribe::new(SubscribeFilter::new("topic/one", QoS::AtLeastOnce), None);
+        let mut subscribe =
+            Subscribe::new(SubscribeFilter::new("topic/one", QoS::AtLeastOnce), None);
         subscribe.pkid = 1;
 
         let err = mqtt

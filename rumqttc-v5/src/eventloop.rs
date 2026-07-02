@@ -1813,8 +1813,8 @@ mod tests {
     use crate::{AckMode, BrokerSessionResumePolicy};
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{
-        ConnAckProperties, PubAck, PubComp, PubCompReason, PubRec, PubRel,
-        PublishProperties, SubAck, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+        ConnAckProperties, PubAck, PubComp, PubCompReason, PubRec, PubRel, PublishProperties,
+        SubAck, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason,
     };
     use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
