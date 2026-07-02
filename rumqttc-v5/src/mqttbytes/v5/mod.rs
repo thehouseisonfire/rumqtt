@@ -572,9 +572,9 @@ mod tests {
 
     use super::{
         Auth, AuthReasonCode, ConnAck, Connect, ConnectAuth, ConnectProperties, ConnectReturnCode,
-        Disconnect, DisconnectReasonCode, Error, Packet, PacketType, PubAck, PubAckReason,
-        PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck,
-        Subscribe, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
+        Disconnect, DisconnectReasonCode, Error, Packet, PacketType, PubAck, PubAckReason, PubComp,
+        PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck, Subscribe,
+        SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
         validate_fixed_header_flags,
     };
 

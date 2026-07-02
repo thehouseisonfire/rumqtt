@@ -6,8 +6,8 @@ use std::time::Duration;
 use super::eventloop::{RequestChannelCapacity, RequestEnvelope};
 use super::mqttbytes::QoS;
 use super::mqttbytes::v5::{
-    Auth, AuthProperties, AuthReasonCode, PubAck, PubRec, Publish, PublishProperties,
-    Subscribe, SubscribeFilter, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
+    Auth, AuthProperties, AuthReasonCode, PubAck, PubRec, Publish, PublishProperties, Subscribe,
+    SubscribeFilter, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
 };
 use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
