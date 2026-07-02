@@ -1813,8 +1813,8 @@ mod tests {
     use crate::{AckMode, BrokerSessionResumePolicy};
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{
-        ConnAckProperties, Filter, PubAck, PubComp, PubCompReason, PubRec, PubRel,
-        PublishProperties, SubAck, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+        ConnAckProperties, PubAck, PubComp, PubCompReason, PubRec, PubRel,
+        PublishProperties, SubAck, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason,
     };
     use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
@@ -3177,7 +3177,7 @@ mod tests {
     }
 
     fn subscribe() -> Subscribe {
-        Subscribe::new(Filter::new("hello/world", QoS::AtMostOnce), None)
+        Subscribe::new(SubscribeFilter::new("hello/world", QoS::AtMostOnce), None)
     }
 
     fn fill_publish_window(eventloop: &mut EventLoop) {
@@ -4174,7 +4174,7 @@ mod tests {
 
         let (request_notice_tx, request_notice) = SubscribeNoticeTx::new();
         let subscribe = Subscribe::new(
-            Filter::new("hello/world", crate::mqttbytes::QoS::AtMostOnce),
+            SubscribeFilter::new("hello/world", crate::mqttbytes::QoS::AtMostOnce),
             None,
         );
         eventloop
@@ -5226,7 +5226,7 @@ mod tests {
         // Queue a user request before the connection is established.
         request_tx
             .send(RequestEnvelope::plain(Request::Subscribe(Subscribe::new(
-                Filter::new("hello/topic", QoS::AtMostOnce),
+                SubscribeFilter::new("hello/topic", QoS::AtMostOnce),
                 None,
             ))))
             .unwrap();
@@ -5558,7 +5558,7 @@ mod tests {
     #[test]
     fn request_enum_has_no_connect_variant() {
         use crate::mqttbytes::v5::{
-            Auth, Filter, SubAck, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+            Auth, SubAck, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason,
         };
         use std::mem::discriminant;
 
@@ -5578,7 +5578,7 @@ mod tests {
             discriminant(&Request::PingReq),
             discriminant(&Request::PingResp),
             discriminant(&Request::Subscribe(Subscribe::new(
-                Filter::new("t", QoS::AtMostOnce),
+                SubscribeFilter::new("t", QoS::AtMostOnce),
                 None,
             ))),
             discriminant(&Request::SubAck(SubAck {

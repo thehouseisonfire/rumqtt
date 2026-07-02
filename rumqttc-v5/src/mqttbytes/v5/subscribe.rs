@@ -8,13 +8,13 @@ use bytes::{Buf, Bytes};
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Subscribe {
     pub pkid: u16,
-    pub filters: Vec<Filter>,
+    pub filters: Vec<SubscribeFilter>,
     pub properties: Option<SubscribeProperties>,
 }
 
 impl Subscribe {
     #[must_use]
-    pub fn new(filter: Filter, properties: Option<SubscribeProperties>) -> Self {
+    pub fn new(filter: SubscribeFilter, properties: Option<SubscribeProperties>) -> Self {
         Self {
             filters: vec![filter],
             properties,
@@ -24,7 +24,7 @@ impl Subscribe {
 
     pub fn new_many<F>(filters: F, properties: Option<SubscribeProperties>) -> Self
     where
-        F: IntoIterator<Item = Filter>,
+        F: IntoIterator<Item = SubscribeFilter>,
     {
         Self {
             filters: filters.into_iter().collect(),
@@ -68,7 +68,7 @@ impl Subscribe {
         let properties = SubscribeProperties::read(&mut bytes)?;
 
         // variable header size = 2 (packet identifier)
-        let filters = Filter::read(&mut bytes)?;
+        let filters = SubscribeFilter::read(&mut bytes)?;
 
         match filters.len() {
             0 => Err(Error::EmptySubscription),
@@ -112,7 +112,7 @@ impl Subscribe {
 
 ///  Subscription filter
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Filter {
+pub struct SubscribeFilter {
     pub path: String,
     pub qos: QoS,
     pub nolocal: bool,
@@ -120,7 +120,7 @@ pub struct Filter {
     pub retain_forward_rule: RetainForwardRule,
 }
 
-impl Filter {
+impl SubscribeFilter {
     pub fn new<T: Into<String>>(topic: T, qos: QoS) -> Self {
         Self {
             path: topic.into(),
@@ -309,7 +309,7 @@ mod test {
         };
 
         let subscribe_pkt = Subscribe::new(
-            Filter::new("hello/world", QoS::AtMostOnce),
+            SubscribeFilter::new("hello/world", QoS::AtMostOnce),
             Some(subscribe_props),
         );
         let subscribe_pkt = Subscribe {
@@ -345,7 +345,7 @@ mod test {
 
     #[test]
     fn subscribe_encoding_rejects_zero_packet_identifier() {
-        let subscribe = Subscribe::new(Filter::new("a", QoS::AtMostOnce), None);
+        let subscribe = Subscribe::new(SubscribeFilter::new("a", QoS::AtMostOnce), None);
         let mut bytes = BytesMut::new();
 
         let result = subscribe.write(&mut bytes);

@@ -13,7 +13,7 @@ pub use self::{
     pubrec::{PubRec, PubRecProperties, PubRecReason},
     pubrel::{PubRel, PubRelProperties, PubRelReason},
     suback::{SubAck, SubAckProperties, SubscribeReasonCode},
-    subscribe::{Filter, RetainForwardRule, Subscribe, SubscribeProperties},
+    subscribe::{RetainForwardRule, Subscribe, SubscribeFilter, SubscribeProperties},
     unsuback::{UnsubAck, UnsubAckProperties, UnsubAckReason},
     unsubscribe::{Unsubscribe, UnsubscribeProperties},
 };
@@ -572,9 +572,9 @@ mod tests {
 
     use super::{
         Auth, AuthReasonCode, ConnAck, Connect, ConnectAuth, ConnectProperties, ConnectReturnCode,
-        Disconnect, DisconnectReasonCode, Error, Filter, Packet, PacketType, PubAck, PubAckReason,
+        Disconnect, DisconnectReasonCode, Error, Packet, PacketType, PubAck, PubAckReason,
         PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck,
-        Subscribe, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
+        Subscribe, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
         validate_fixed_header_flags,
     };
 
@@ -651,7 +651,7 @@ mod tests {
         assert_packet_bytes_round_trip(
             Packet::Subscribe(Subscribe {
                 pkid: 1,
-                filters: vec![Filter::new("a", QoS::AtMostOnce)],
+                filters: vec![SubscribeFilter::new("a", QoS::AtMostOnce)],
                 properties: None,
             }),
             &[0x82, 0x07, 0x00, 0x01, 0x00, 0x00, 0x01, b'a', 0x00],

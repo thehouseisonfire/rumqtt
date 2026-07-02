@@ -1,8 +1,8 @@
 use super::mqttbytes::v5::{
-    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Filter, Packet, PacketType,
+    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType,
     PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel,
     PubRelReason, Publish, PublishProperties, RetainForwardRule, SubAck, Subscribe,
-    SubscribeProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
+    SubscribeFilter, SubscribeProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
     UnsubscribeProperties,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
@@ -2834,7 +2834,7 @@ fn persisted_subscribe(subscribe: &Subscribe) -> PersistedSubscribe {
     }
 }
 
-fn persisted_filter(filter: &Filter) -> PersistedFilter {
+fn persisted_filter(filter: &SubscribeFilter) -> PersistedFilter {
     PersistedFilter {
         path: filter.path.clone(),
         qos: persisted_qos(filter.qos),
@@ -2928,8 +2928,8 @@ fn publish_properties_from_persisted(properties: &PersistedPublishProperties) ->
     }
 }
 
-fn filter_from_persisted(filter: &PersistedFilter) -> Filter {
-    Filter {
+fn filter_from_persisted(filter: &PersistedFilter) -> SubscribeFilter {
+    SubscribeFilter {
         path: filter.path.clone(),
         qos: qos_from_persisted(filter.qos),
         nolocal: filter.nolocal,
@@ -3409,7 +3409,7 @@ mod test {
         let options = persistent_options();
         let mut mqtt = build_mqttstate();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             None,
         )
         .unwrap();
@@ -3445,7 +3445,7 @@ mod test {
         let options = persistent_options();
         let mqtt = build_mqttstate();
         let replay_requests = [
-            Request::Subscribe(Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None)),
+            Request::Subscribe(Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None)),
             Request::Unsubscribe(Unsubscribe::new("c/d", None)),
         ];
 
@@ -3465,7 +3465,7 @@ mod test {
             .session_mode(SessionMode::Persistent)
             .outgoing_inflight_upper_limit(1)
             .build();
-        let mut subscribe = Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None);
+        let mut subscribe = Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None);
         subscribe.pkid = 2;
         let mut unsubscribe = Unsubscribe::new("c/d", None);
         unsubscribe.pkid = 3;
@@ -3636,7 +3636,7 @@ mod test {
     fn clean_replays_untracked_subscribe_and_unsubscribe_without_notices() {
         let mut mqtt = build_mqttstate();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             None,
         )
         .unwrap();
@@ -3669,7 +3669,7 @@ mod test {
         let (sub_tx, _) = SubscribeNoticeTx::new();
         let (unsub_tx, _) = UnsubscribeNoticeTx::new();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             Some(sub_tx),
         )
         .unwrap();
@@ -3740,7 +3740,7 @@ mod test {
         mqtt.outgoing_rel.insert(3);
         mqtt.outgoing_rel.insert(4);
 
-        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let filter = SubscribeFilter::new("a/b", QoS::AtMostOnce);
         let (sub_notice, _) = SubscribeNoticeTx::new();
         mqtt.pending_subscribe.insert(
             5,
@@ -3765,7 +3765,7 @@ mod test {
     #[test]
     fn tracked_request_len_helpers_report_counts() {
         let mut mqtt = MqttState::builder(10).build();
-        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let filter = SubscribeFilter::new("a/b", QoS::AtMostOnce);
         let (sub_notice, _) = SubscribeNoticeTx::new();
         mqtt.pending_subscribe.insert(
             5,
@@ -3798,14 +3798,14 @@ mod test {
         mqtt.pending_subscribe.insert(
             5,
             PendingSubscribe {
-                subscribe: Subscribe::new(Filter::new("tracked", QoS::AtMostOnce), None),
+                subscribe: Subscribe::new(SubscribeFilter::new("tracked", QoS::AtMostOnce), None),
                 notice: Some(sub_notice),
             },
         );
         mqtt.pending_subscribe.insert(
             6,
             PendingSubscribe {
-                subscribe: Subscribe::new(Filter::new("untracked", QoS::AtMostOnce), None),
+                subscribe: Subscribe::new(SubscribeFilter::new("untracked", QoS::AtMostOnce), None),
                 notice: None,
             },
         );
@@ -3827,7 +3827,7 @@ mod test {
     #[test]
     fn drain_tracked_requests_as_failed_reports_session_reset_and_returns_count() {
         let mut mqtt = MqttState::builder(10).build();
-        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let filter = SubscribeFilter::new("a/b", QoS::AtMostOnce);
         let (sub_notice_tx, sub_notice) = SubscribeNoticeTx::new();
         mqtt.pending_subscribe.insert(
             5,
@@ -3865,7 +3865,7 @@ mod test {
         mqtt.pending_subscribe.insert(
             5,
             PendingSubscribe {
-                subscribe: Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+                subscribe: Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
                 notice: None,
             },
         );
@@ -3945,7 +3945,7 @@ mod test {
         let mut mqtt = build_mqttstate();
         let (tx, notice) = SubscribeNoticeTx::new();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             Some(tx),
         )
         .unwrap();
@@ -3977,7 +3977,7 @@ mod test {
         let mut mqtt = build_mqttstate();
         let (tx, notice) = SubscribeNoticeTx::new();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             Some(tx),
         )
         .unwrap();
@@ -4007,7 +4007,7 @@ mod test {
     fn untracked_suback_returns_ack_with_properties_and_preserves_incoming_event() {
         let mut mqtt = build_mqttstate();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             None,
         )
         .unwrap();
@@ -4127,7 +4127,7 @@ mod test {
         mqtt.pending_subscribe.insert(
             pkid,
             PendingSubscribe {
-                subscribe: Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+                subscribe: Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
                 notice: None,
             },
         );
@@ -4183,8 +4183,8 @@ mod test {
 
         let subscribe = Subscribe::new_many(
             [
-                Filter::new("a/b", QoS::AtMostOnce),
-                Filter::new("c/d", QoS::AtLeastOnce),
+                SubscribeFilter::new("a/b", QoS::AtMostOnce),
+                SubscribeFilter::new("c/d", QoS::AtLeastOnce),
             ],
             None,
         );
@@ -4216,7 +4216,7 @@ mod test {
     fn incoming_suback_with_too_many_return_codes_is_protocol_violation() {
         let mut mqtt = build_mqttstate();
 
-        let subscribe = Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None);
+        let subscribe = Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None);
         mqtt.outgoing_subscribe(subscribe, None).unwrap();
         mqtt.events.clear();
 
@@ -4656,7 +4656,7 @@ mod test {
     #[test]
     fn inbound_subscribe_after_connection_establishment_is_protocol_error() {
         let mut mqtt = build_mqttstate();
-        let mut subscribe = Subscribe::new(Filter::new("topic/one", QoS::AtLeastOnce), None);
+        let mut subscribe = Subscribe::new(SubscribeFilter::new("topic/one", QoS::AtLeastOnce), None);
         subscribe.pkid = 1;
 
         let err = mqtt
@@ -4747,7 +4747,7 @@ mod test {
         let mut mqtt = MqttState::builder(4).build();
 
         for pkid in 1..=4 {
-            let filter = Filter::new("a/b", QoS::AtMostOnce);
+            let filter = SubscribeFilter::new("a/b", QoS::AtMostOnce);
             let (notice, _) = SubscribeNoticeTx::new();
             mqtt.pending_subscribe.insert(
                 pkid,
@@ -4772,7 +4772,7 @@ mod test {
         let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
         publish.pkid = 3;
 
-        let filter = Filter::new("a/b", QoS::AtMostOnce);
+        let filter = SubscribeFilter::new("a/b", QoS::AtMostOnce);
         let (notice, _) = SubscribeNoticeTx::new();
         mqtt.pending_subscribe.insert(
             3,
@@ -4820,7 +4820,7 @@ mod test {
     fn outgoing_publish_rejects_packet_identifier_used_by_untracked_control_flow() {
         let mut mqtt = MqttState::builder(10).build();
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             None,
         )
         .unwrap();
@@ -6887,7 +6887,7 @@ mod test {
         let mut mqtt = build_mqttstate();
 
         mqtt.outgoing_subscribe(
-            Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
             None,
         )
         .unwrap();
@@ -6914,7 +6914,7 @@ mod test {
         mqtt.pending_subscribe.insert(
             1,
             PendingSubscribe {
-                subscribe: Subscribe::new(Filter::new("a/b", QoS::AtMostOnce), None),
+                subscribe: Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
                 notice: None,
             },
         );

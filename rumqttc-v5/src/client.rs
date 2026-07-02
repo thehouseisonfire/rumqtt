@@ -6,8 +6,8 @@ use std::time::Duration;
 use super::eventloop::{RequestChannelCapacity, RequestEnvelope};
 use super::mqttbytes::QoS;
 use super::mqttbytes::v5::{
-    Auth, AuthProperties, AuthReasonCode, Filter, PubAck, PubRec, Publish, PublishProperties,
-    Subscribe, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
+    Auth, AuthProperties, AuthReasonCode, PubAck, PubRec, Publish, PublishProperties,
+    Subscribe, SubscribeFilter, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
 };
 use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
@@ -1075,7 +1075,7 @@ impl AsyncClient {
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let filter = Filter::new(topic, qos);
+        let filter = SubscribeFilter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
             return Err(ClientError::Request(Box::new(subscribe.into())));
@@ -1091,7 +1091,7 @@ impl AsyncClient {
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError> {
-        let filter = Filter::new(topic, qos);
+        let filter = SubscribeFilter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
             return Err(ClientError::Request(Box::new(subscribe.into())));
@@ -1162,7 +1162,7 @@ impl AsyncClient {
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let filter = Filter::new(topic, qos);
+        let filter = SubscribeFilter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
@@ -1178,7 +1178,7 @@ impl AsyncClient {
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError> {
-        let filter = Filter::new(topic, qos);
+        let filter = SubscribeFilter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
@@ -1248,7 +1248,7 @@ impl AsyncClient {
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -1266,7 +1266,7 @@ impl AsyncClient {
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -1288,7 +1288,7 @@ impl AsyncClient {
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_subscribe_many(topics, Some(properties)).await
     }
@@ -1305,7 +1305,7 @@ impl AsyncClient {
         properties: SubscribeProperties,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_subscribe_many_tracked(topics, Some(properties))
             .await
@@ -1319,7 +1319,7 @@ impl AsyncClient {
     /// be queued on the event loop.
     pub async fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_subscribe_many(topics, None).await
     }
@@ -1332,7 +1332,7 @@ impl AsyncClient {
     /// be queued on the event loop.
     pub async fn subscribe_many_tracked<T>(&self, topics: T) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_subscribe_many_tracked(topics, None).await
     }
@@ -1344,7 +1344,7 @@ impl AsyncClient {
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -1361,7 +1361,7 @@ impl AsyncClient {
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -1383,7 +1383,7 @@ impl AsyncClient {
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_try_subscribe_many(topics, Some(properties))
     }
@@ -1400,7 +1400,7 @@ impl AsyncClient {
         properties: SubscribeProperties,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_try_subscribe_many_tracked(topics, Some(properties))
     }
@@ -1413,7 +1413,7 @@ impl AsyncClient {
     /// be queued immediately on the event loop.
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_try_subscribe_many(topics, None)
     }
@@ -1426,7 +1426,7 @@ impl AsyncClient {
     /// be queued immediately on the event loop.
     pub fn try_subscribe_many_tracked<T>(&self, topics: T) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_try_subscribe_many_tracked(topics, None)
     }
@@ -2173,7 +2173,7 @@ impl Client {
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let filter = Filter::new(topic, qos);
+        let filter = SubscribeFilter::new(topic, qos);
         let subscribe = Subscribe::new(filter, properties);
         if !subscribe_has_valid_filters(&subscribe) {
             return Err(ClientError::Request(Box::new(subscribe.into())));
@@ -2241,7 +2241,7 @@ impl Client {
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         let subscribe = Subscribe::new_many(topics, properties);
         if !subscribe_has_valid_filters(&subscribe) {
@@ -2264,7 +2264,7 @@ impl Client {
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_subscribe_many(topics, Some(properties))
     }
@@ -2277,7 +2277,7 @@ impl Client {
     /// be queued on the event loop.
     pub fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.handle_subscribe_many(topics, None)
     }
@@ -2294,7 +2294,7 @@ impl Client {
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.client
             .try_subscribe_many_with_properties(topics, properties)
@@ -2308,7 +2308,7 @@ impl Client {
     /// be queued immediately on the event loop.
     pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = Filter>,
+        T: IntoIterator<Item = SubscribeFilter>,
     {
         self.client.try_subscribe_many(topics)
     }
@@ -3669,7 +3669,7 @@ mod test {
             assert!(matches!(err, ClientError::TrackingUnavailable));
 
             let err = client
-                .subscribe_many_tracked(vec![Filter::new("hello/world", QoS::AtLeastOnce)])
+                .subscribe_many_tracked(vec![SubscribeFilter::new("hello/world", QoS::AtLeastOnce)])
                 .await
                 .expect_err("tracked subscribe many should fail without tracked channel");
             assert!(matches!(err, ClientError::TrackingUnavailable));
@@ -3687,7 +3687,7 @@ mod test {
         assert!(matches!(err, ClientError::TrackingUnavailable));
 
         let err = client
-            .try_subscribe_many_tracked(vec![Filter::new("hello/world", QoS::AtLeastOnce)])
+            .try_subscribe_many_tracked(vec![SubscribeFilter::new("hello/world", QoS::AtLeastOnce)])
             .expect_err("tracked try_subscribe_many should fail without tracked channel");
         assert!(matches!(err, ClientError::TrackingUnavailable));
 
@@ -3703,12 +3703,12 @@ mod test {
         let client = Client::from_sender(tx);
 
         let err = client
-            .subscribe_many(Vec::<Filter>::new())
+            .subscribe_many(Vec::<SubscribeFilter>::new())
             .expect_err("Empty subscribe filter list should fail");
         assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Subscribe(_))));
 
         let err = client
-            .try_subscribe_many(Vec::<Filter>::new())
+            .try_subscribe_many(Vec::<SubscribeFilter>::new())
             .expect_err("Empty subscribe filter list should fail");
         assert!(
             matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Subscribe(_)))
@@ -3728,7 +3728,7 @@ mod test {
 
         runtime.block_on(async {
             let err = client
-                .subscribe_many(Vec::<Filter>::new())
+                .subscribe_many(Vec::<SubscribeFilter>::new())
                 .await
                 .expect_err("Empty subscribe filter list should fail");
             assert!(
@@ -3737,7 +3737,7 @@ mod test {
         });
 
         let err = client
-            .try_subscribe_many(Vec::<Filter>::new())
+            .try_subscribe_many(Vec::<SubscribeFilter>::new())
             .expect_err("Empty subscribe filter list should fail");
         assert!(
             matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Subscribe(_)))
