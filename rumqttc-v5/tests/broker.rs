@@ -170,8 +170,8 @@ impl Broker {
 
             match packet {
                 Packet::Publish(publish) => return Some(publish),
-                Packet::PingReq(_) => {
-                    self.framed.write(Packet::PingResp(PingResp)).await.unwrap();
+                Packet::PingReq => {
+                    self.framed.write(Packet::PingResp).await.unwrap();
                 }
                 packet => panic!("Expecting a publish. Received = {packet:?}"),
             }
@@ -253,7 +253,7 @@ impl Broker {
     ///
     /// Panics if writing to the test transport fails unexpectedly.
     pub async fn pingresp(&mut self) {
-        let packet = Packet::PingResp(PingResp);
+        let packet = Packet::PingResp;
         self.framed.write(packet).await.unwrap();
     }
 
@@ -392,8 +392,8 @@ impl Network {
         let outgoing = outgoing(&packet);
         match packet {
             Packet::Publish(packet) => packet.write(&mut self.write)?,
-            Packet::PingReq(_) => PingReq::write(&mut self.write)?,
-            Packet::PingResp(_) => PingResp::write(&mut self.write)?,
+            Packet::PingReq => PingReq::write(&mut self.write)?,
+            Packet::PingResp => PingResp::write(&mut self.write)?,
             Packet::Disconnect(packet) => packet.write(&mut self.write)?,
             Packet::PubAck(packet) => packet.write(&mut self.write)?,
             Packet::PubRec(packet) => packet.write(&mut self.write)?,
@@ -423,8 +423,8 @@ fn outgoing(packet: &Packet) -> Outgoing {
         Packet::PubComp(pubcomp) => Outgoing::PubComp(pubcomp.pkid),
         Packet::Subscribe(subscribe) => Outgoing::Subscribe(subscribe.pkid),
         Packet::Unsubscribe(unsubscribe) => Outgoing::Unsubscribe(unsubscribe.pkid),
-        Packet::PingReq(_) => Outgoing::PingReq,
-        Packet::PingResp(_) => Outgoing::PingResp,
+        Packet::PingReq => Outgoing::PingReq,
+        Packet::PingResp => Outgoing::PingResp,
         Packet::Disconnect(_) => Outgoing::Disconnect,
         Packet::Auth(_) => Outgoing::Auth,
         packet => panic!("Invalid outgoing packet = {packet:?}"),

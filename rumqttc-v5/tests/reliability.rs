@@ -201,7 +201,7 @@ async fn idle_connection_triggers_pings_on_time() {
     for _ in 0..3 {
         let packet = broker.read_packet().await.unwrap();
         match packet {
-            Packet::PingReq(_) => {
+            Packet::PingReq => {
                 count += 1;
                 assert_keep_alive_interval(start.elapsed(), keep_alive);
                 broker.pingresp().await;
@@ -247,7 +247,7 @@ async fn regular_outgoing_packets_delay_keepalive_ping() {
                 publishes += 1;
                 last_publish_at = Instant::now();
             }
-            Event::Incoming(Incoming::PingReq(_)) => {
+            Event::Incoming(Incoming::PingReq) => {
                 panic!(
                     "PINGREQ should not be sent while other Control Packets keep the connection active"
                 )
@@ -257,7 +257,7 @@ async fn regular_outgoing_packets_delay_keepalive_ping() {
     }
 
     match broker.tick().await {
-        Event::Incoming(Incoming::PingReq(_)) => {
+        Event::Incoming(Incoming::PingReq) => {
             assert_keep_alive_interval(last_publish_at.elapsed(), keep_alive);
             broker.pingresp().await;
         }
@@ -298,7 +298,7 @@ async fn some_incoming_and_no_outgoing_should_trigger_pings_on_time() {
     loop {
         let event = broker.tick().await;
 
-        if matches!(event, Event::Incoming(Incoming::PingReq(_))) {
+        if matches!(event, Event::Incoming(Incoming::PingReq)) {
             count += 1;
             assert_keep_alive_interval(start.elapsed(), keep_alive);
             broker.pingresp().await;
@@ -352,7 +352,7 @@ async fn automatic_protocol_responses_delay_keepalive_ping() {
                 last_puback_at = Instant::now();
             }
             Event::Outgoing(_) => {}
-            Event::Incoming(Incoming::PingReq(_)) => {
+            Event::Incoming(Incoming::PingReq) => {
                 panic!(
                     "PINGREQ should not be sent while automatic PUBACK responses keep the connection active"
                 )
@@ -362,7 +362,7 @@ async fn automatic_protocol_responses_delay_keepalive_ping() {
     }
 
     match broker.tick().await {
-        Event::Incoming(Incoming::PingReq(_)) => {
+        Event::Incoming(Incoming::PingReq) => {
             assert_keep_alive_interval(last_puback_at.elapsed(), keep_alive);
             broker.pingresp().await;
         }
@@ -836,7 +836,7 @@ async fn blocked_publish_does_not_trigger_collision_timeout_while_keepalive_prog
         time::timeout(TEST_TIMEOUT, async {
             while pings < 2 {
                 match broker.read_packet().await {
-                    Some(Packet::PingReq(_)) => {
+                    Some(Packet::PingReq) => {
                         pings += 1;
                         broker.pingresp().await;
                     }
@@ -1913,7 +1913,7 @@ async fn client_uses_server_keep_alive_from_connack() {
     for _ in 0..3 {
         let packet = broker.read_packet().await.unwrap();
         match packet {
-            Packet::PingReq(_) => {
+            Packet::PingReq => {
                 count += 1;
                 // PINGREQ must arrive at the *server* keep-alive interval (1s),
                 // not the client's original 60s interval.

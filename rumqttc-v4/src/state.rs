@@ -694,55 +694,55 @@ impl MqttState {
             Err(StateError::InvalidState)
         }
 
-        let result =
-            match request {
-                Request::Publish(publish) => {
-                    let publish_notice = match notice {
-                        Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
-                        | None => None,
-                    };
-                    self.outgoing_publish_with_notice(publish, publish_notice)?
-                }
-                Request::PubRel(pubrel) => {
-                    let publish_notice = match notice {
-                        Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
-                        | None => None,
-                    };
-                    self.outgoing_pubrel_with_notice(pubrel, publish_notice)?
-                }
-                Request::Subscribe(subscribe) => {
-                    let request_notice = match notice {
-                        Some(TrackedNoticeTx::Subscribe(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Unsubscribe(_))
-                        | None => None,
-                    };
-                    (self.outgoing_subscribe(subscribe, request_notice)?, None)
-                }
-                Request::Unsubscribe(unsubscribe) => {
-                    let request_notice = match notice {
-                        Some(TrackedNoticeTx::Unsubscribe(notice)) => Some(notice),
-                        Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Subscribe(_))
-                        | None => None,
-                    };
-                    (
-                        Some(self.outgoing_unsubscribe(unsubscribe, request_notice)?),
-                        None,
-                    )
-                }
-                Request::PingReq(_) => (self.outgoing_ping()?, None),
-                Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
-                    unreachable!("graceful disconnect requests are handled by the event loop")
-                }
-                Request::DisconnectNow(_) => (Some(self.outgoing_disconnect()), None),
-                Request::PubAck(puback) => (Some(self.outgoing_puback(puback)?), None),
-                Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)?), None),
-                Request::PubComp(_)
-                | Request::PingResp(_)
-                | Request::SubAck(_)
-                | Request::UnsubAck(_) => unsupported_outgoing_request(request)?,
-            };
+        let result = match request {
+            Request::Publish(publish) => {
+                let publish_notice = match notice {
+                    Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
+                    Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
+                    | None => None,
+                };
+                self.outgoing_publish_with_notice(publish, publish_notice)?
+            }
+            Request::PubRel(pubrel) => {
+                let publish_notice = match notice {
+                    Some(TrackedNoticeTx::Publish(notice)) => Some(notice),
+                    Some(TrackedNoticeTx::Subscribe(_) | TrackedNoticeTx::Unsubscribe(_))
+                    | None => None,
+                };
+                self.outgoing_pubrel_with_notice(pubrel, publish_notice)?
+            }
+            Request::Subscribe(subscribe) => {
+                let request_notice = match notice {
+                    Some(TrackedNoticeTx::Subscribe(notice)) => Some(notice),
+                    Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Unsubscribe(_)) | None => {
+                        None
+                    }
+                };
+                (self.outgoing_subscribe(subscribe, request_notice)?, None)
+            }
+            Request::Unsubscribe(unsubscribe) => {
+                let request_notice = match notice {
+                    Some(TrackedNoticeTx::Unsubscribe(notice)) => Some(notice),
+                    Some(TrackedNoticeTx::Publish(_) | TrackedNoticeTx::Subscribe(_)) | None => {
+                        None
+                    }
+                };
+                (
+                    Some(self.outgoing_unsubscribe(unsubscribe, request_notice)?),
+                    None,
+                )
+            }
+            Request::PingReq => (self.outgoing_ping()?, None),
+            Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
+                unreachable!("graceful disconnect requests are handled by the event loop")
+            }
+            Request::DisconnectNow(_) => (Some(self.outgoing_disconnect()), None),
+            Request::PubAck(puback) => (Some(self.outgoing_puback(puback)?), None),
+            Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)?), None),
+            Request::PubComp(_) | Request::PingResp | Request::SubAck(_) | Request::UnsubAck(_) => {
+                unsupported_outgoing_request(request)?
+            }
+        };
 
         self.last_outgoing = Instant::now();
         Ok(result)
@@ -3827,9 +3827,7 @@ mod test {
     fn handle_outgoing_packet_rejects_incoming_only_request_variants() {
         let mut mqtt = build_mqttstate();
 
-        let err = mqtt
-            .handle_outgoing_packet(Request::PingResp(PingResp))
-            .unwrap_err();
+        let err = mqtt.handle_outgoing_packet(Request::PingResp).unwrap_err();
 
         assert!(matches!(err, StateError::InvalidState));
     }
