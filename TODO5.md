@@ -12,20 +12,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
   hooks, manual ACKs, websocket/proxy/TLS/custom socket support, strict codec validation, and strong reconnect/session work. The
   most valuable remaining work is consumer adoption, diagnostics, and panic-free/production ergonomics.
 
-  High-Value Improvements
-
-  1. Publish a focused upstream migration guide
-     Problem: The API has several intentional breaks: package names, Client::builder, PublishOptions, ConnectAuth, AckMode,
-     TopicAliasPolicy, Broker, explicit TLS transports.
-     Why it matters: This is likely the largest adoption tax for existing rumqttc users.
-     Change: Add MIGRATION.md plus README links with “old upstream style -> new fork style” examples for common flows.
-     Value: Faster upgrades, fewer issue reports, clearer fork positioning.
-     Complexity: Low.
-     Risk: None.
-     Validate: Compile all migration snippets as doctests or examples/migration_*.
-     Priority: must-have.
-
-  2. Add panic-free constructors/configuration paths
+  1. Add panic-free constructors/configuration paths
      Problem: Some consumer paths can still panic, notably sync ClientBuilder::build() runtime creation and default rustls native-
      cert loading in TlsConfiguration::default_rustls() / default transport helpers. See rumqttc-core/src/lib.rs:112 and rumqttc-
      v4/src/client.rs:385.
@@ -38,7 +25,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Unit tests with injected failing cert loader where possible; docs show fallible path.
      Priority: must-have.
 
-  3. Add MqttOptions::validate() and try_build()
+  2. Add MqttOptions::validate() and try_build()
      Problem: Some invalid combinations are discovered only at connect time, for example broker/transport mismatch, missing
      websocket feature usage patterns, secure URL rejection, packet-size/session settings.
      Why it matters: Consumers want fail-fast config validation during startup, before a reconnect loop hides the root cause.
@@ -49,7 +36,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Table-driven tests over TCP/TLS/WS/WSS/Unix/proxy/url/session combinations.
      Priority: high-value.
 
-  4. Expose structured runtime diagnostics
+  3. Expose structured runtime diagnostics
      Problem: The event loop has important internal state, but consumers mostly get Event, ConnectionError, sparse log output, and
      a few queue length helpers.
      Why it matters: Production MQTT outages are often “why is publish stuck?” or “what is inflight?” not just “connection failed.”
@@ -63,7 +50,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      resume.
      Priority: high-value.
 
-  5. Improve error specificity and messages
+  4. Improve error specificity and messages
      Problem: Some errors are too generic or lose actionable detail: v5 ConnectionError::Timeout, ClientError::Request/TryRequest,
      and websocket ResponseValidation has an empty display string. See rumqttc-v5/src/eventloop.rs:183.
      Why it matters: Operators need to know whether they hit channel full, sender dropped, connect timeout, flush timeout, broker
@@ -76,7 +63,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Error-display snapshot tests and channel-full/disconnected tests.
      Priority: high-value.
 
-  6. Provide an async Stream adapter
+  5. Provide an async Stream adapter
      Problem: Async users must manually loop on eventloop.poll().await; this is correct but not idiomatic for many Tokio/futures
      integrations.
      Why it matters: Consumers often want select!, stream combinators, service loops, and graceful shutdown composition.
@@ -87,7 +74,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Stream polling tests, cancellation-safety tests, README example with tokio::select!.
      Priority: high-value.
 
-  7. Ship a tested session-store companion or feature-gated file store
+  6. Ship a tested session-store companion or feature-gated file store
      Problem: The SessionStore trait is solid, but every production user must implement crash-consistent persistence correctly.
      Why it matters: Restart-safe persistent sessions are a major differentiator, but the hardest part is delegated to consumers.
      Change: Prefer a small companion crate, e.g. rumqttc-session-store-file-next, or optional feature with atomic temp-file +
@@ -98,7 +85,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Crash-style tests for partial writes, corrupt checkpoints, client-id mismatch; example using v4 and v5.
      Priority: high-value.
 
-  8. Add production recipes for common deployments
+  7. Add production recipes for common deployments
      Problem: Existing README examples are useful but mostly minimal. Advanced features exist, but consumers need recipes for TLS
      roots/client certs, WSS headers, proxies, persistent sessions, reconnect resubscribe, bounded channels, manual ACKs, and
      broker-specific quirks.
@@ -110,7 +97,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Compile examples; optional dockerized Mosquitto/EMQX smoke tests.
      Priority: high-value.
 
-  9. Add topic/filter validated newtypes for subscriptions
+  8. Add topic/filter validated newtypes for subscriptions
      Problem: ValidatedTopic helps repeated publishes, but repeated subscriptions still use raw strings or protocol filter structs.
      Why it matters: Consumers building routers often subscribe repeatedly to known filters and want validation once.
      Change: Add ValidatedFilter and accept it in subscribe APIs, mirroring ValidatedTopic.
@@ -120,7 +107,7 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
      Validate: Unit tests for wildcard-valid filters versus publish-topic-invalid filters.
      Priority: nice-to-have.
 
-  10. Make observability integrate with tracing optionally
+  9. Make observability integrate with tracing optionally
      Problem: The crate uses log; modern Tokio services often standardize on tracing spans/fields.
      Why it matters: MQTT connection lifecycle, reconnects, packet-id pressure, and protocol violations benefit from structured
      fields.
@@ -149,13 +136,12 @@ codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
 
   Ranked Roadmap Before Release
 
-  1. MIGRATION.md with compile-tested examples.
-  2. Panic-free try_build() / fallible TLS default constructors.
-  3. MqttOptions::validate() and structured ConfigError.
-  4. EventLoop::diagnostics() snapshot.
-  5. Error-message cleanup and more actionable ClientError/ConnectionError variants.
-  6. Production recipes for TLS/WSS/proxy/session/reconnect/backpressure.
-  7. Async Stream adapter.
-  8. File-backed session-store companion.
-  9. ValidatedFilter.
-  10. Optional tracing integration.
+  1. Panic-free try_build() / fallible TLS default constructors.
+  2. MqttOptions::validate() and structured ConfigError.
+  3. EventLoop::diagnostics() snapshot.
+  4. Error-message cleanup and more actionable ClientError/ConnectionError variants.
+  5. Production recipes for TLS/WSS/proxy/session/reconnect/backpressure.
+  6. Async Stream adapter.
+  7. File-backed session-store companion.
+  8. ValidatedFilter.
+  9. Optional tracing integration.
