@@ -447,7 +447,7 @@ impl LastWill {
                 validate_mqtt_string(&will_topic)?;
                 let will_message = read_mqtt_bytes(bytes)?;
                 let qos_num = (connect_flags & 0b11000) >> 3;
-                let will_qos = qos(qos_num).ok_or(Error::InvalidQoS(qos_num))?;
+                let will_qos = qos(qos_num)?;
                 Some(Self {
                     topic: will_topic,
                     message: will_message,
@@ -722,7 +722,7 @@ const fn validate_connect_flags(connect_flags: u8) -> Result<(), Error> {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
-    use crate::mqttbytes::v5::parse_fixed_header;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::Bytes;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;

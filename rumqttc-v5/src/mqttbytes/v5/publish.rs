@@ -62,7 +62,7 @@ impl Publish {
 
     pub fn read(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
         let qos_num = (fixed_header.byte1 & 0b0110) >> 1;
-        let qos = qos(qos_num).ok_or(Error::MalformedPacket)?;
+        let qos = qos(qos_num).map_err(|_| Error::MalformedPacket)?;
         let dup = (fixed_header.byte1 & 0b1000) != 0;
         let retain = (fixed_header.byte1 & 0b0001) != 0;
         if qos == QoS::AtMostOnce && dup {

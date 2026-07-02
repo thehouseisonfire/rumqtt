@@ -162,7 +162,7 @@ impl SubscribeFilter {
 
             filters.push(Self {
                 path,
-                qos: qos(requested_qos).ok_or(Error::InvalidQoS(requested_qos))?,
+                qos: qos(requested_qos)?,
                 nolocal,
                 preserve_retain,
                 retain_forward_rule,

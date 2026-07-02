@@ -500,7 +500,7 @@ fn connect_code(return_code: ConnectReturnCode) -> u8 {
 mod test {
     use super::super::test::{USER_PROP_KEY, USER_PROP_VAL};
     use super::*;
-    use crate::mqttbytes::v5::parse_fixed_header;
+    use crate::mqttbytes::parse_fixed_header;
     use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
 
