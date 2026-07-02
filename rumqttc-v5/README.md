@@ -8,6 +8,9 @@ The `rumqttc-next` package is a facade that re-exports this crate unchanged.
 
 This crate keeps the library target name as `rumqttc` so application code can stay familiar after migrating package names.
 
+Existing upstream `rumqttc` users should see the workspace [migration guide](../MIGRATION.md) for package names,
+API changes, and porting recipes.
+
 ## Installation
 
 Use the facade package when you want the default MQTT 5 client:

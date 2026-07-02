@@ -54,6 +54,9 @@ cargo add rumqttc-v4-next
 
 For more details, see [rumqttc-next/README.md](./rumqttc-next/README.md), [rumqttc-v5/README.md](./rumqttc-v5/README.md), and [rumqttc-v4/README.md](./rumqttc-v4/README.md).
 
+Existing upstream `rumqttc` users should start with the [migration guide](./MIGRATION.md) for package names,
+API changes, and porting recipes.
+
 ## Features
 
 ### rumqttc-next / rumqttc-v5-next

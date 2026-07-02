@@ -94,6 +94,10 @@ name = "serde"
 path = "examples/serde.rs"
 
 [[example]]
+name = "migration_v4"
+path = "examples/migration_v4.rs"
+
+[[example]]
 name = "syncpubsub"
 path = "examples/syncpubsub.rs"
 

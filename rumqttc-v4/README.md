@@ -8,6 +8,9 @@ Use it when you need MQTT 3.1.1 specifically. If you want the default MQTT 5 cli
 
 This crate keeps the library target name as `rumqttc` so application code can stay familiar after migrating package names.
 
+Existing upstream `rumqttc` users should see the workspace [migration guide](../MIGRATION.md) for package names,
+API changes, and porting recipes.
+
 ## Installation
 
 ```bash
