@@ -60,8 +60,8 @@ pub enum Packet {
     ConnAck(ConnAck),
     Publish(Publish),
     PubAck(PubAck),
-    PingReq(PingReq),
-    PingResp(PingResp),
+    PingReq,
+    PingResp,
     Subscribe(Subscribe),
     SubAck(SubAck),
     PubRec(PubRec),
@@ -94,8 +94,8 @@ impl Packet {
             Self::ConnAck(_) => PacketType::ConnAck,
             Self::Publish(_) => PacketType::Publish,
             Self::PubAck(_) => PacketType::PubAck,
-            Self::PingReq(_) => PacketType::PingReq,
-            Self::PingResp(_) => PacketType::PingResp,
+            Self::PingReq => PacketType::PingReq,
+            Self::PingResp => PacketType::PingResp,
             Self::Subscribe(_) => PacketType::Subscribe,
             Self::SubAck(_) => PacketType::SubAck,
             Self::PubRec(_) => PacketType::PubRec,
@@ -124,8 +124,8 @@ impl Packet {
         if fixed_header.remaining_len == 0 {
             // no payload packets, Disconnect still has a bit more info
             return match packet_type {
-                PacketType::PingReq => Ok(Self::PingReq(PingReq)),
-                PacketType::PingResp => Ok(Self::PingResp(PingResp)),
+                PacketType::PingReq => Ok(Self::PingReq),
+                PacketType::PingResp => Ok(Self::PingResp),
                 PacketType::Disconnect => {
                     Disconnect::read(fixed_header, packet.freeze()).map(Self::Disconnect)
                 }
@@ -179,8 +179,8 @@ impl Packet {
                 let unsuback = UnsubAck::read(fixed_header, packet)?;
                 Self::UnsubAck(unsuback)
             }
-            PacketType::PingReq => Self::PingReq(PingReq),
-            PacketType::PingResp => Self::PingResp(PingResp),
+            PacketType::PingReq => Self::PingReq,
+            PacketType::PingResp => Self::PingResp,
             PacketType::Disconnect => {
                 let disconnect = Disconnect::read(fixed_header, packet)?;
                 Self::Disconnect(disconnect)
@@ -223,8 +223,8 @@ impl Packet {
             Self::PubRel(pubrel) => pubrel.write(write),
             Self::PubComp(pubcomp) => pubcomp.write(write),
             Self::Connect(connect, will, auth) => connect.write(will, auth, write),
-            Self::PingReq(_) => PingReq::write(write),
-            Self::PingResp(_) => PingResp::write(write),
+            Self::PingReq => PingReq::write(write),
+            Self::PingResp => PingResp::write(write),
             Self::Disconnect(disconnect) => disconnect.write(write),
         }
     }
@@ -243,8 +243,8 @@ impl Packet {
             Self::PubRel(pubrel) => pubrel.size(),
             Self::PubComp(pubcomp) => pubcomp.size(),
             Self::Connect(connect, will, auth) => connect.size(will, auth),
-            Self::PingReq(req) => req.size(),
-            Self::PingResp(resp) => resp.size(),
+            Self::PingReq => PingReq.size(),
+            Self::PingResp => PingResp.size(),
             Self::Disconnect(disconnect) => disconnect.size(),
         }
     }

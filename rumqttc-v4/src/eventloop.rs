@@ -10,9 +10,7 @@ use crate::{
 };
 
 use crate::framed::AsyncReadWrite;
-use crate::mqttbytes::v4::{
-    ConnAck, Connect, ConnectReturnCode, PingReq, Publish, Subscribe, Unsubscribe,
-};
+use crate::mqttbytes::v4::{ConnAck, Connect, ConnectReturnCode, Publish, Subscribe, Unsubscribe};
 use crate::session::{PersistedSession, SessionRestoreError, SessionStore, SessionStoreError};
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use rumqttc_core::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
@@ -874,7 +872,7 @@ impl EventLoop {
                     if self.keepalive_timeout.is_some() && !self.mqtt_options.keep_alive.is_zero() => {
                     let (outgoing, _flush_notice) = self
                         .state
-                        .handle_outgoing_packet_with_notice(Request::PingReq(PingReq), None)?;
+                        .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
                     if let Some(outgoing) = outgoing {
                         self.network.as_mut().unwrap().write(outgoing).await?;
                     }
@@ -1651,7 +1649,7 @@ mod tests {
         options.set_clean_session(clean_session);
 
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
-        push_pending(&mut eventloop, Request::PingReq(PingReq));
+        push_pending(&mut eventloop, Request::PingReq);
         eventloop
     }
 
@@ -1757,8 +1755,8 @@ mod tests {
             Some(Request::PubComp(_))
         ));
         assert!(matches!(
-            next_after_blocked_publish(Request::PingReq(PingReq)),
-            Some(Request::PingReq(_))
+            next_after_blocked_publish(Request::PingReq),
+            Some(Request::PingReq)
         ));
         assert!(matches!(
             next_after_blocked_publish(Request::Subscribe(Subscribe::new(
@@ -1911,7 +1909,7 @@ mod tests {
             .send(RequestEnvelope::plain(Request::PubRec(PubRec::new(8))))
             .unwrap();
         request_tx
-            .send(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .send(RequestEnvelope::plain(Request::PingReq))
             .unwrap();
 
         eventloop.clean();
@@ -1919,7 +1917,7 @@ mod tests {
         assert_eq!(eventloop.pending_len(), 1);
         assert!(matches!(
             pending_front_request(&eventloop),
-            Some(Request::PingReq(_))
+            Some(Request::PingReq)
         ));
     }
 
@@ -1935,14 +1933,14 @@ mod tests {
             .push_back(RequestEnvelope::plain(Request::PubRec(PubRec::new(8))));
         eventloop
             .queued
-            .push_back(RequestEnvelope::plain(Request::PingReq(PingReq)));
+            .push_back(RequestEnvelope::plain(Request::PingReq));
 
         eventloop.clean();
 
         assert_eq!(eventloop.pending_len(), 1);
         assert!(matches!(
             pending_front_request(&eventloop),
-            Some(Request::PingReq(_))
+            Some(Request::PingReq)
         ));
     }
 
@@ -2017,7 +2015,7 @@ mod tests {
     async fn async_client_path_reports_requests_done_after_pending_drain() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
-        push_pending(&mut eventloop, Request::PingReq(PingReq));
+        push_pending(&mut eventloop, Request::PingReq);
         drop(request_tx);
 
         let request = EventLoop::next_request(
@@ -2027,7 +2025,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(request.request, Request::PingReq(_)));
+        assert!(matches!(request.request, Request::PingReq));
 
         let err = EventLoop::next_request(
             &mut eventloop.pending,
@@ -2043,7 +2041,7 @@ mod tests {
     async fn next_request_is_cancellation_safe_for_pending_queue() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
-        push_pending(&mut eventloop, Request::PingReq(PingReq));
+        push_pending(&mut eventloop, Request::PingReq);
 
         let delayed = EventLoop::next_request(
             &mut eventloop.pending,
@@ -2055,7 +2053,7 @@ mod tests {
         assert!(timed_out.is_err());
         assert!(matches!(
             pending_front_request(&eventloop),
-            Some(Request::PingReq(_))
+            Some(Request::PingReq)
         ));
     }
 
@@ -2063,7 +2061,7 @@ mod tests {
     async fn try_next_request_applies_pending_throttle_for_followup_pending_item() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 2);
-        push_pending(&mut eventloop, Request::PingReq(PingReq));
+        push_pending(&mut eventloop, Request::PingReq);
         push_pending(&mut eventloop, Request::Disconnect(Disconnect));
 
         let first = EventLoop::next_request(
@@ -2073,7 +2071,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first.request, Request::PingReq(_)));
+        assert!(matches!(first.request, Request::PingReq));
 
         let delayed = EventLoop::try_next_request(
             &mut eventloop.pending,
@@ -2094,7 +2092,7 @@ mod tests {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
         request_tx
-            .send_async(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .send_async(RequestEnvelope::plain(Request::PingReq))
             .await
             .unwrap();
 
@@ -2112,7 +2110,7 @@ mod tests {
         assert!(matches!(
             received,
             Some(RequestEnvelope {
-                request: Request::PingReq(_),
+                request: Request::PingReq,
                 ..
             })
         ));
@@ -2122,9 +2120,9 @@ mod tests {
     async fn next_request_prioritizes_pending_over_channel_messages() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
-        push_pending(&mut eventloop, Request::PingReq(PingReq));
+        push_pending(&mut eventloop, Request::PingReq);
         request_tx
-            .send_async(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .send_async(RequestEnvelope::plain(Request::PingReq))
             .await
             .unwrap();
 
@@ -2135,7 +2133,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first.request, Request::PingReq(_)));
+        assert!(matches!(first.request, Request::PingReq));
         assert!(eventloop.pending.is_empty());
 
         let second = EventLoop::next_request(
@@ -2145,7 +2143,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(second.request, Request::PingReq(_)));
+        assert!(matches!(second.request, Request::PingReq));
     }
 
     #[tokio::test]
@@ -2157,7 +2155,7 @@ mod tests {
             Publish::new("hello/world", crate::mqttbytes::QoS::AtLeastOnce, "payload");
 
         request_tx
-            .send_async(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .send_async(RequestEnvelope::plain(Request::PingReq))
             .await
             .unwrap();
         request_tx
@@ -2179,7 +2177,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(first.request, Request::PingReq(_)));
+        assert!(matches!(first.request, Request::PingReq));
 
         let second = EventLoop::next_request(
             &mut eventloop.pending,
@@ -2493,7 +2491,7 @@ mod tests {
             .push_back(RequestEnvelope::tracked_publish(publish, notice_tx));
         eventloop
             .pending
-            .push_back(RequestEnvelope::plain(Request::PingReq(PingReq)));
+            .push_back(RequestEnvelope::plain(Request::PingReq));
 
         let drained = eventloop.drain_pending_as_failed(NoticeFailureReason::SessionReset);
 
@@ -2969,7 +2967,7 @@ mod tests {
 
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 1);
         request_tx
-            .send(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .send(RequestEnvelope::plain(Request::PingReq))
             .unwrap();
 
         let broker = tokio::spawn(async move {
@@ -3010,7 +3008,7 @@ mod tests {
     // definition is the compile-time evidence that no Connect variant exists.
     #[test]
     fn request_enum_has_no_connect_variant() {
-        use crate::mqttbytes::v4::{PingResp, SubAck, UnsubAck};
+        use crate::mqttbytes::v4::{SubAck, UnsubAck};
         use std::mem::discriminant;
 
         // Explicitly enumerate the current variants to make the request-channel
@@ -3025,8 +3023,8 @@ mod tests {
             discriminant(&Request::PubRec(PubRec::new(1))),
             discriminant(&Request::PubComp(PubComp::new(1))),
             discriminant(&Request::PubRel(PubRel::new(1))),
-            discriminant(&Request::PingReq(PingReq)),
-            discriminant(&Request::PingResp(PingResp)),
+            discriminant(&Request::PingReq),
+            discriminant(&Request::PingResp),
             discriminant(&Request::Subscribe(Subscribe::new("t", QoS::AtMostOnce))),
             discriminant(&Request::SubAck(SubAck::new(1, vec![]))),
             discriminant(&Request::Unsubscribe(Unsubscribe::new("t"))),
@@ -3083,7 +3081,7 @@ mod tests {
             Event::Incoming(Packet::ConnAck(_))
         ));
         request_tx
-            .send(RequestEnvelope::plain(Request::PingReq(PingReq)))
+            .send(RequestEnvelope::plain(Request::PingReq))
             .unwrap();
         assert!(matches!(
             eventloop.poll().await.unwrap(),

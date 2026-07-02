@@ -2617,19 +2617,16 @@ mod tests {
     async fn mqtt_connect_rejects_unexpected_packet_before_connack() {
         let options = MqttOptions::new("test-client", "localhost");
 
-        let result = run_mqtt_connect_with_stale_state_auth_method(
-            options,
-            None,
-            vec![Packet::PingReq(super::super::mqttbytes::v5::PingReq)],
-        )
-        .await;
+        let result =
+            run_mqtt_connect_with_stale_state_auth_method(options, None, vec![Packet::PingReq])
+                .await;
 
         assert!(matches!(
             result,
             Err(ConnectionError::NotConnAck(packet))
                 if matches!(
                     &*packet,
-                    Packet::PingReq(super::super::mqttbytes::v5::PingReq)
+                    Packet::PingReq
                 )
         ));
     }
@@ -5110,7 +5107,7 @@ mod tests {
         ));
         assert!(matches!(
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
-            Packet::PingReq(_)
+            Packet::PingReq
         ));
     }
 
@@ -5177,7 +5174,7 @@ mod tests {
         );
         assert!(matches!(
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
-            Packet::PingReq(_)
+            Packet::PingReq
         ));
     }
 
@@ -5670,7 +5667,7 @@ mod tests {
         ));
         assert!(matches!(
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
-            Packet::PingReq(_)
+            Packet::PingReq
         ));
     }
 }

@@ -13,7 +13,7 @@ use rumqttc::TlsConfiguration;
     )
 ))]
 use rumqttc::Transport;
-use rumqttc::mqttbytes::v5::{ConnAck, ConnectReturnCode, Packet, PingResp};
+use rumqttc::mqttbytes::v5::{ConnAck, ConnectReturnCode, Packet};
 use rumqttc::{AsyncClient, Broker, MqttOptions, QoS};
 #[cfg(all(
     feature = "use-rustls-no-provider",
@@ -142,8 +142,8 @@ async fn process_websocket_connection(
                                 return;
                             }
                         }
-                        Packet::PingReq(_) => {
-                            send_packet(websocket, Packet::PingResp(PingResp)).await;
+                        Packet::PingReq => {
+                            send_packet(websocket, Packet::PingResp).await;
                         }
                         Packet::Disconnect(_) => return,
                         _ => {}

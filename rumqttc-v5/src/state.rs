@@ -1,9 +1,8 @@
 use super::mqttbytes::v5::{
-    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType,
-    PingReq, PubAck, PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel,
-    PubRelReason, Publish, PublishProperties, RetainForwardRule, SubAck, Subscribe,
-    SubscribeFilter, SubscribeProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason,
-    Unsubscribe, UnsubscribeProperties,
+    Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PacketType, PubAck,
+    PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish,
+    PublishProperties, RetainForwardRule, SubAck, Subscribe, SubscribeFilter, SubscribeProperties,
+    SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe, UnsubscribeProperties,
 };
 use super::mqttbytes::{self, Error as MqttError, QoS};
 use crate::auth::{AuthLifecycle, IncomingAuthEffect};
@@ -1266,7 +1265,7 @@ impl MqttState {
         let events_len_before = self.events.len();
         let is_duplicate_incoming_qos2_publish = self.is_duplicate_incoming_qos2_publish(&packet);
         let effects = match &mut packet {
-            Incoming::PingResp(_) => Ok(IncomingPacketEffects::outgoing(
+            Incoming::PingResp => Ok(IncomingPacketEffects::outgoing(
                 self.handle_incoming_pingresp(),
             )),
             Incoming::Publish(publish) => self
@@ -2039,7 +2038,7 @@ impl MqttState {
         let event = Event::Outgoing(Outgoing::PingReq);
         self.events.push_back(event);
 
-        Ok(Some(Packet::PingReq(PingReq)))
+        Ok(Some(Packet::PingReq))
     }
 
     fn outgoing_subscribe(
@@ -4643,9 +4642,7 @@ mod test {
     fn inbound_pingreq_after_connection_establishment_is_protocol_error() {
         let mut mqtt = build_mqttstate();
 
-        let err = mqtt
-            .handle_incoming_packet(Incoming::PingReq(PingReq))
-            .unwrap_err();
+        let err = mqtt.handle_incoming_packet(Incoming::PingReq).unwrap_err();
 
         assert!(matches!(
             err,
@@ -7386,8 +7383,7 @@ mod test {
 
         // should ping
         mqtt.outgoing_ping().unwrap();
-        mqtt.handle_incoming_packet(Incoming::PingResp(PingResp))
-            .unwrap();
+        mqtt.handle_incoming_packet(Incoming::PingResp).unwrap();
 
         // should ping
         mqtt.outgoing_ping().unwrap();

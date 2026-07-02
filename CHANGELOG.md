@@ -16,6 +16,7 @@
   storage API and backend-neutral checkpoint model; applications provide serialization and durable storage, and
   rumqttc does not include a built-in file store.
 ### Changed
+- `rumqttc` v4/v5 (Breaking Change): Normalize `PingReq`/`PingResp` enum variants to unit variants in both `Packet` and `Request` enums across both crates. `Packet::PingReq`, `Packet::PingResp`, `Request::PingReq`, and `Request::PingResp` are now unit variants consistently in v4 and v5. The `PingReq` and `PingResp` structs are preserved for codec use.
 - `rumqttc` v5 (Breaking Change): Rename `Filter` to `SubscribeFilter` for parity with the v4 crate.
 - `rumqttc` v4/v5 (Breaking Change): Unify publish API with `PublishOptions` and `IntoPublishPayload`. Replace scattered publish method variants (`publish`, `publish_bytes`, `publish_with_properties`, `publish_bytes_with_properties` and their tracked/`try_` counterparts) with a single set of publish methods that accept a `PublishOptions` struct and a generic payload implementing `IntoPublishPayload`. `PublishOptions` is a builder-style struct that bundles QoS, retain flag, and optional `PublishProperties`. `IntoPublishPayload` allows callers to pass `&str`, `&[u8]`, `[u8; N]`, `Bytes`, `Vec<u8>`, and `String` directly.
 - `rumqttc` v4 (Breaking Change): Make `EventLoop::network` private for v5 parity, and so downstream code can no longer access the live transport and inject arbitrary MQTT packets, including a second `CONNECT`, on an existing connection.
