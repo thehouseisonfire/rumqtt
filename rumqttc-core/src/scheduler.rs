@@ -51,7 +51,7 @@ impl<T> OutboundScheduler<T> {
         self.queue.clear();
     }
 
-    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = T> {
         self.queue.drain(..)
     }
 
