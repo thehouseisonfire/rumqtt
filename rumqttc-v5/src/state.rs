@@ -324,7 +324,6 @@ impl IncomingPacketEffects {
 }
 
 #[derive(Debug)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct MqttState {
     ping: PingState,
     /// Last incoming packet time

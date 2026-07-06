@@ -1,5 +1,5 @@
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_panics_doc)]
+#![expect(clippy::missing_errors_doc)]
+#![expect(clippy::missing_panics_doc)]
 
 use rumqttc_v4::{Client, Event, Incoming, MqttOptions, PublishOptions, QoS};
 use std::error::Error;

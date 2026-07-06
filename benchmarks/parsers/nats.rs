@@ -1,4 +1,4 @@
-#![allow(clippy::cast_precision_loss)]
+#![expect(clippy::cast_precision_loss)]
 
 use std::io::Cursor;
 use std::io::Write;
@@ -158,7 +158,7 @@ use std::{
 ///
 /// TODO: remove `dead_code` once contents are used, added to silence clippy
 #[derive(Debug)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub(crate) enum ServerOp {
     /// `MSG <subject> <sid> [reply-to] <#bytes>\r\n[payload]\r\n`
     Msg {
@@ -194,7 +194,7 @@ pub(crate) enum ServerOp {
 /// Decodes a single operation from the server.
 ///
 /// If the connection is closed, `None` will be returned.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(crate) fn decode(mut stream: impl BufRead) -> io::Result<Option<ServerOp>> {
     // Read a line, which should be human readable.
     let mut line = Vec::new();

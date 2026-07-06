@@ -44,7 +44,7 @@ fn sync_client_uses_builder_and_publish_options() -> Result<(), rumqttc::ClientE
     Ok(())
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 async fn async_client_uses_builder_and_publish_options() -> Result<(), rumqttc::ClientError> {
     let options = configured_options();
     let (client, _eventloop) = AsyncClient::builder(options).capacity(10).build();

@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![expect(dead_code)]
 use std::{slice::Iter, str::Utf8Error};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -147,7 +147,7 @@ pub const fn qos(num: u8) -> Result<QoS, Error> {
 /// <https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385349207>
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 pub struct FixedHeader {
     /// First byte of the stream. Used to identify packet types and
     /// several flags

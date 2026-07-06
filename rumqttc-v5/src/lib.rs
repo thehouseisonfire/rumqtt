@@ -672,7 +672,6 @@ type FallibleRequestModifierFn = Arc<
 
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct MqttOptions {
     /// broker target that you want to connect to
     broker: Broker,

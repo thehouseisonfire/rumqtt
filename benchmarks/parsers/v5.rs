@@ -1,4 +1,4 @@
-#![allow(clippy::cast_precision_loss)]
+#![expect(clippy::cast_precision_loss)]
 
 use bytes::{Buf, BytesMut};
 use rumqttc_v5::Packet;
