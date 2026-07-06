@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v4/v5: Add `ValidatedTopicFilter`, `TopicFilter`, and `SubscribeFilterInput` for reusable validated MQTT topic filters in subscribe and unsubscribe APIs, plus high-level multi-unsubscribe methods.
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
 - `rumqttc` v4: Add opt-in client-side persistent session storage via `SessionStore`, `PersistedSession`,
   `MqttOptions::set_session_store(...)`, and builder `.session_store(...)`. When configured with

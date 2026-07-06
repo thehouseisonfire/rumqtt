@@ -71,8 +71,9 @@ mod proxy;
 
 pub use client::{
     AsyncClient, AsyncClientBuilder, Client, ClientBuilder, ClientError, Connection,
-    IntoPublishPayload, InvalidTopic, Iter, ManualAck, PublishOptions, PublishTopic, RecvError,
-    RecvTimeoutError, TryRecvError, ValidatedTopic,
+    IntoPublishPayload, InvalidTopic, InvalidTopicFilter, Iter, ManualAck, PublishOptions,
+    PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter, TryRecvError,
+    ValidatedTopic, ValidatedTopicFilter,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v4::*;
