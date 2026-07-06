@@ -79,29 +79,11 @@ repos:
           bash -c '
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
-
-          tmp_v4="$(mktemp)";
-          tmp_v5="$(mktemp)";
-          tmp_lock="$(mktemp)";
-          cp rumqttc-v4/Cargo.toml "$tmp_v4";
-          cp rumqttc-v5/Cargo.toml "$tmp_v5";
-          cp Cargo.lock "$tmp_lock";
-          restore_manifests() {
-            cp "$tmp_v4" rumqttc-v4/Cargo.toml;
-            cp "$tmp_v5" rumqttc-v5/Cargo.toml;
-            cp "$tmp_lock" Cargo.lock;
-            rm -f "$tmp_v4" "$tmp_v5" "$tmp_lock";
-          };
-          trap restore_manifests EXIT;
-          sed -i -e "/^mqtt-typed-client/d" rumqttc-v4/Cargo.toml rumqttc-v5/Cargo.toml;
-
           cargo hack
           --each-feature
           --exclude-all-features
           --optional-deps url
           test
-          --lib
-          --tests
           -p rumqttc-v4-next
           -p rumqttc-v5-next
           '
@@ -117,25 +99,10 @@ repos:
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
 
-          tmp_v4="$(mktemp)";
-          tmp_v5="$(mktemp)";
-          tmp_lock="$(mktemp)";
-          cp rumqttc-v4/Cargo.toml "$tmp_v4";
-          cp rumqttc-v5/Cargo.toml "$tmp_v5";
-          cp Cargo.lock "$tmp_lock";
-          restore_manifests() {
-            cp "$tmp_v4" rumqttc-v4/Cargo.toml;
-            cp "$tmp_v5" rumqttc-v5/Cargo.toml;
-            cp "$tmp_lock" Cargo.lock;
-            rm -f "$tmp_v4" "$tmp_v5" "$tmp_lock";
-          };
-          trap restore_manifests EXIT;
-          sed -i -e "/^mqtt-typed-client/d" rumqttc-v4/Cargo.toml rumqttc-v5/Cargo.toml;
-
-          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-ring" --lib --tests;
-          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring" --lib --tests;
-          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-aws-lc" --lib --tests;
-          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-aws-lc" --lib --tests;
+          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-ring";
+          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring";
+          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-aws-lc";
+          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-aws-lc";
           '
         language: system
         pass_filenames: false
