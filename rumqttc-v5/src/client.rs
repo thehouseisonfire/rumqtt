@@ -6,8 +6,9 @@ use std::time::Duration;
 use super::eventloop::{RequestChannelCapacity, RequestEnvelope};
 use super::mqttbytes::QoS;
 use super::mqttbytes::v5::{
-    Auth, AuthProperties, AuthReasonCode, PubAck, PubRec, Publish, PublishProperties, Subscribe,
-    SubscribeFilter, SubscribeProperties, Unsubscribe, UnsubscribeProperties,
+    Auth, AuthProperties, AuthReasonCode, PubAck, PubRec, Publish, PublishProperties,
+    RetainForwardRule, Subscribe, SubscribeFilter, SubscribeProperties, Unsubscribe,
+    UnsubscribeProperties,
 };
 use super::{
     ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
@@ -109,6 +110,164 @@ impl From<&String> for PublishTopic {
 impl From<Cow<'_, str>> for PublishTopic {
     fn from(topic: Cow<'_, str>) -> Self {
         Self::Unvalidated(topic.into_owned())
+    }
+}
+
+/// An error returned when a topic filter string fails validation against the MQTT specification.
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[error("Invalid MQTT topic filter: '{0}'")]
+pub struct InvalidTopicFilter(String);
+
+/// A newtype wrapper that guarantees its inner `String` is a valid MQTT topic filter.
+///
+/// This type prevents the cost of repeated validation for topic filters that are used
+/// frequently. It can only be constructed via [`ValidatedTopicFilter::new`], which
+/// performs a one-time validation check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedTopicFilter(String);
+
+impl ValidatedTopicFilter {
+    /// Constructs a new `ValidatedTopicFilter` after validating the input string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidTopicFilter`] if the topic filter string does not conform to the MQTT specification.
+    pub fn new<S: Into<String>>(filter: S) -> Result<Self, InvalidTopicFilter> {
+        let filter_string = filter.into();
+        if valid_topic_filter(&filter_string) {
+            Ok(Self(filter_string))
+        } else {
+            Err(InvalidTopicFilter(filter_string))
+        }
+    }
+}
+
+impl From<ValidatedTopicFilter> for String {
+    fn from(filter: ValidatedTopicFilter) -> Self {
+        filter.0
+    }
+}
+
+/// Topic filter argument accepted by subscribe and unsubscribe APIs.
+///
+/// `ValidatedTopicFilter` variants skip per-call validation while string variants are
+/// validated for MQTT topic filter correctness.
+pub enum TopicFilter {
+    /// Raw topic filter input that must be validated before subscribing or unsubscribing.
+    Unvalidated(String),
+    /// Topic filter that has already been validated once.
+    Validated(ValidatedTopicFilter),
+}
+
+impl TopicFilter {
+    fn into_string_and_validation(self) -> (String, bool) {
+        match self {
+            Self::Unvalidated(filter) => (filter, true),
+            Self::Validated(filter) => (filter.0, false),
+        }
+    }
+}
+
+impl From<ValidatedTopicFilter> for TopicFilter {
+    fn from(filter: ValidatedTopicFilter) -> Self {
+        Self::Validated(filter)
+    }
+}
+
+impl From<String> for TopicFilter {
+    fn from(filter: String) -> Self {
+        Self::Unvalidated(filter)
+    }
+}
+
+impl From<&str> for TopicFilter {
+    fn from(filter: &str) -> Self {
+        Self::Unvalidated(filter.to_owned())
+    }
+}
+
+impl From<&String> for TopicFilter {
+    fn from(filter: &String) -> Self {
+        Self::Unvalidated(filter.clone())
+    }
+}
+
+impl From<Cow<'_, str>> for TopicFilter {
+    fn from(filter: Cow<'_, str>) -> Self {
+        Self::Unvalidated(filter.into_owned())
+    }
+}
+
+/// Topic filter argument accepted by multi-subscribe APIs.
+///
+/// Raw `SubscribeFilter` values are validated before use. Filters built from
+/// `ValidatedTopicFilter` skip repeated topic-filter validation.
+pub struct SubscribeFilterInput {
+    inner: SubscribeFilterInputKind,
+}
+
+enum SubscribeFilterInputKind {
+    Unvalidated(SubscribeFilter),
+    Validated(SubscribeFilter),
+}
+
+impl SubscribeFilterInput {
+    /// Creates an unvalidated subscribe filter input.
+    pub fn new<S: Into<String>>(filter: S, qos: QoS) -> Self {
+        Self {
+            inner: SubscribeFilterInputKind::Unvalidated(SubscribeFilter::new(filter, qos)),
+        }
+    }
+
+    /// Creates a subscribe filter input from an already validated topic filter.
+    #[must_use]
+    pub fn validated(filter: ValidatedTopicFilter, qos: QoS) -> Self {
+        Self {
+            inner: SubscribeFilterInputKind::Validated(SubscribeFilter::new(filter.0, qos)),
+        }
+    }
+
+    /// Sets the MQTT 5 No Local subscription option.
+    #[must_use]
+    pub const fn no_local(mut self, no_local: bool) -> Self {
+        self.filter_mut().nolocal = no_local;
+        self
+    }
+
+    /// Sets the MQTT 5 Retain As Published subscription option.
+    #[must_use]
+    pub const fn preserve_retain(mut self, preserve_retain: bool) -> Self {
+        self.filter_mut().preserve_retain = preserve_retain;
+        self
+    }
+
+    /// Sets the MQTT 5 Retain Handling subscription option.
+    #[must_use]
+    pub const fn retain_forward_rule(mut self, retain_forward_rule: RetainForwardRule) -> Self {
+        self.filter_mut().retain_forward_rule = retain_forward_rule;
+        self
+    }
+
+    const fn filter_mut(&mut self) -> &mut SubscribeFilter {
+        match &mut self.inner {
+            SubscribeFilterInputKind::Unvalidated(filter)
+            | SubscribeFilterInputKind::Validated(filter) => filter,
+        }
+    }
+
+    fn into_filter_and_validation(self) -> (SubscribeFilter, bool) {
+        match self.inner {
+            SubscribeFilterInputKind::Unvalidated(filter) => (filter, true),
+            SubscribeFilterInputKind::Validated(filter) => (filter, false),
+        }
+    }
+}
+
+impl From<SubscribeFilter> for SubscribeFilterInput {
+    fn from(filter: SubscribeFilter) -> Self {
+        Self {
+            inner: SubscribeFilterInputKind::Unvalidated(filter),
+        }
     }
 }
 
@@ -1069,15 +1228,14 @@ impl AsyncClient {
     }
 
     /// Sends a MQTT Subscribe to the `EventLoop`
-    async fn handle_subscribe<S: Into<String>>(
+    async fn handle_subscribe<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let filter = SubscribeFilter::new(topic, qos);
-        let subscribe = Subscribe::new(filter, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_topic_filter(topic, qos, properties);
+        if !valid {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
@@ -1085,15 +1243,14 @@ impl AsyncClient {
         Ok(())
     }
 
-    async fn handle_subscribe_tracked<S: Into<String>>(
+    async fn handle_subscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError> {
-        let filter = SubscribeFilter::new(topic, qos);
-        let subscribe = Subscribe::new(filter, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_topic_filter(topic, qos, properties);
+        if !valid {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
@@ -1106,9 +1263,9 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued on the event loop.
-    pub async fn subscribe_with_properties<S: Into<String>>(
+    pub async fn subscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError> {
@@ -1121,9 +1278,9 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued on the event loop.
-    pub async fn subscribe_with_properties_tracked<S: Into<String>>(
+    pub async fn subscribe_with_properties_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: SubscribeProperties,
     ) -> Result<SubscribeNotice, ClientError> {
@@ -1137,7 +1294,11 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued on the event loop.
-    pub async fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
+    pub async fn subscribe<F: Into<TopicFilter>>(
+        &self,
+        topic: F,
+        qos: QoS,
+    ) -> Result<(), ClientError> {
         self.handle_subscribe(topic, qos, None).await
     }
 
@@ -1147,24 +1308,23 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued on the event loop.
-    pub async fn subscribe_tracked<S: Into<String>>(
+    pub async fn subscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
     ) -> Result<SubscribeNotice, ClientError> {
         self.handle_subscribe_tracked(topic, qos, None).await
     }
 
     /// Attempts to send a MQTT Subscribe to the `EventLoop`
-    fn handle_try_subscribe<S: Into<String>>(
+    fn handle_try_subscribe<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let filter = SubscribeFilter::new(topic, qos);
-        let subscribe = Subscribe::new(filter, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_topic_filter(topic, qos, properties);
+        if !valid {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
@@ -1172,15 +1332,14 @@ impl AsyncClient {
         Ok(())
     }
 
-    fn handle_try_subscribe_tracked<S: Into<String>>(
+    fn handle_try_subscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError> {
-        let filter = SubscribeFilter::new(topic, qos);
-        let subscribe = Subscribe::new(filter, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_topic_filter(topic, qos, properties);
+        if !valid {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
@@ -1193,9 +1352,9 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued immediately on the event loop.
-    pub fn try_subscribe_with_properties<S: Into<String>>(
+    pub fn try_subscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError> {
@@ -1208,9 +1367,9 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued immediately on the event loop.
-    pub fn try_subscribe_with_properties_tracked<S: Into<String>>(
+    pub fn try_subscribe_with_properties_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: SubscribeProperties,
     ) -> Result<SubscribeNotice, ClientError> {
@@ -1223,7 +1382,11 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued immediately on the event loop.
-    pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
+    pub fn try_subscribe<F: Into<TopicFilter>>(
+        &self,
+        topic: F,
+        qos: QoS,
+    ) -> Result<(), ClientError> {
         self.handle_try_subscribe(topic, qos, None)
     }
 
@@ -1233,25 +1396,26 @@ impl AsyncClient {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued immediately on the event loop.
-    pub fn try_subscribe_tracked<S: Into<String>>(
+    pub fn try_subscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
     ) -> Result<SubscribeNotice, ClientError> {
         self.handle_try_subscribe_tracked(topic, qos, None)
     }
 
     /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
-    async fn handle_subscribe_many<T>(
+    async fn handle_subscribe_many<T, I>(
         &self,
         topics: T,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
-        let subscribe = Subscribe::new_many(topics, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_filter_inputs(topics, properties);
+        if !valid {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
@@ -1260,16 +1424,17 @@ impl AsyncClient {
         Ok(())
     }
 
-    async fn handle_subscribe_many_tracked<T>(
+    async fn handle_subscribe_many_tracked<T, I>(
         &self,
         topics: T,
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
-        let subscribe = Subscribe::new_many(topics, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_filter_inputs(topics, properties);
+        if !valid {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
@@ -1282,13 +1447,14 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued on the event loop.
-    pub async fn subscribe_many_with_properties<T>(
+    pub async fn subscribe_many_with_properties<T, I>(
         &self,
         topics: T,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_subscribe_many(topics, Some(properties)).await
     }
@@ -1299,13 +1465,14 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued on the event loop.
-    pub async fn subscribe_many_with_properties_tracked<T>(
+    pub async fn subscribe_many_with_properties_tracked<T, I>(
         &self,
         topics: T,
         properties: SubscribeProperties,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_subscribe_many_tracked(topics, Some(properties))
             .await
@@ -1317,9 +1484,10 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued on the event loop.
-    pub async fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
+    pub async fn subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_subscribe_many(topics, None).await
     }
@@ -1330,24 +1498,29 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued on the event loop.
-    pub async fn subscribe_many_tracked<T>(&self, topics: T) -> Result<SubscribeNotice, ClientError>
+    pub async fn subscribe_many_tracked<T, I>(
+        &self,
+        topics: T,
+    ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_subscribe_many_tracked(topics, None).await
     }
 
     /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`
-    fn handle_try_subscribe_many<T>(
+    fn handle_try_subscribe_many<T, I>(
         &self,
         topics: T,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
-        let subscribe = Subscribe::new_many(topics, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_filter_inputs(topics, properties);
+        if !valid {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
@@ -1355,16 +1528,17 @@ impl AsyncClient {
         Ok(())
     }
 
-    fn handle_try_subscribe_many_tracked<T>(
+    fn handle_try_subscribe_many_tracked<T, I>(
         &self,
         topics: T,
         properties: Option<SubscribeProperties>,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
-        let subscribe = Subscribe::new_many(topics, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_filter_inputs(topics, properties);
+        if !valid {
             return Err(ClientError::TryRequest(Box::new(subscribe.into())));
         }
 
@@ -1377,13 +1551,14 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued immediately on the event loop.
-    pub fn try_subscribe_many_with_properties<T>(
+    pub fn try_subscribe_many_with_properties<T, I>(
         &self,
         topics: T,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_try_subscribe_many(topics, Some(properties))
     }
@@ -1394,13 +1569,14 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued immediately on the event loop.
-    pub fn try_subscribe_many_with_properties_tracked<T>(
+    pub fn try_subscribe_many_with_properties_tracked<T, I>(
         &self,
         topics: T,
         properties: SubscribeProperties,
     ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_try_subscribe_many_tracked(topics, Some(properties))
     }
@@ -1411,9 +1587,10 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued immediately on the event loop.
-    pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
+    pub fn try_subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_try_subscribe_many(topics, None)
     }
@@ -1424,31 +1601,87 @@ impl AsyncClient {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued immediately on the event loop.
-    pub fn try_subscribe_many_tracked<T>(&self, topics: T) -> Result<SubscribeNotice, ClientError>
+    pub fn try_subscribe_many_tracked<T, I>(
+        &self,
+        topics: T,
+    ) -> Result<SubscribeNotice, ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_try_subscribe_many_tracked(topics, None)
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`
-    async fn handle_unsubscribe<S: Into<String>>(
+    async fn handle_unsubscribe<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: Option<UnsubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let unsubscribe = Unsubscribe::new(topic, properties);
+        let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic, properties);
+        if !valid {
+            return Err(ClientError::Request(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
         let request = Request::Unsubscribe(unsubscribe);
         self.send_request_async(request).await?;
         Ok(())
     }
 
-    async fn handle_unsubscribe_tracked<S: Into<String>>(
+    async fn handle_unsubscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: Option<UnsubscribeProperties>,
     ) -> Result<UnsubscribeNotice, ClientError> {
-        let unsubscribe = Unsubscribe::new(topic, properties);
+        let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic, properties);
+        if !valid {
+            return Err(ClientError::Request(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
+        self.send_tracked_unsubscribe_async(unsubscribe).await
+    }
+
+    async fn handle_unsubscribe_many<T, F>(
+        &self,
+        topics: T,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics, properties);
+        if !valid {
+            return Err(ClientError::Request(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
+        let request = Request::Unsubscribe(unsubscribe);
+        self.send_request_async(request).await?;
+        Ok(())
+    }
+
+    async fn handle_unsubscribe_many_tracked<T, F>(
+        &self,
+        topics: T,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<UnsubscribeNotice, ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics, properties);
+        if !valid {
+            return Err(ClientError::Request(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
         self.send_tracked_unsubscribe_async(unsubscribe).await
     }
 
@@ -1457,9 +1690,9 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the request cannot be queued on the event loop.
-    pub async fn unsubscribe_with_properties<S: Into<String>>(
+    pub async fn unsubscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: UnsubscribeProperties,
     ) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, Some(properties)).await
@@ -1470,12 +1703,49 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the request cannot be queued on the event loop.
-    pub async fn unsubscribe_with_properties_tracked<S: Into<String>>(
+    pub async fn unsubscribe_with_properties_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: UnsubscribeProperties,
     ) -> Result<UnsubscribeNotice, ClientError> {
         self.handle_unsubscribe_tracked(topic, Some(properties))
+            .await
+    }
+
+    /// Sends a MQTT Unsubscribe for multiple topic filters with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
+    pub async fn unsubscribe_many_with_properties<T, F>(
+        &self,
+        topics: T,
+        properties: UnsubscribeProperties,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_unsubscribe_many(topics, Some(properties)).await
+    }
+
+    /// Sends a tracked MQTT Unsubscribe for multiple topic filters with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
+    pub async fn unsubscribe_many_with_properties_tracked<T, F>(
+        &self,
+        topics: T,
+        properties: UnsubscribeProperties,
+    ) -> Result<UnsubscribeNotice, ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_unsubscribe_many_tracked(topics, Some(properties))
             .await
     }
 
@@ -1484,8 +1754,22 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the request cannot be queued on the event loop.
-    pub async fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
+    pub async fn unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, None).await
+    }
+
+    /// Sends a MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
+    pub async fn unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_unsubscribe_many(topics, None).await
     }
 
     /// Sends a tracked MQTT Unsubscribe to the `EventLoop`.
@@ -1493,31 +1777,100 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the request cannot be queued on the event loop.
-    pub async fn unsubscribe_tracked<S: Into<String>>(
+    pub async fn unsubscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
     ) -> Result<UnsubscribeNotice, ClientError> {
         self.handle_unsubscribe_tracked(topic, None).await
     }
 
-    /// Attempts to send a MQTT Unsubscribe to the `EventLoop`
-    fn handle_try_unsubscribe<S: Into<String>>(
+    /// Sends a tracked MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
+    pub async fn unsubscribe_many_tracked<T, F>(
         &self,
-        topic: S,
+        topics: T,
+    ) -> Result<UnsubscribeNotice, ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_unsubscribe_many_tracked(topics, None).await
+    }
+
+    /// Attempts to send a MQTT Unsubscribe to the `EventLoop`
+    fn handle_try_unsubscribe<F: Into<TopicFilter>>(
+        &self,
+        topic: F,
         properties: Option<UnsubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let unsubscribe = Unsubscribe::new(topic, properties);
+        let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic, properties);
+        if !valid {
+            return Err(ClientError::TryRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
         let request = Request::Unsubscribe(unsubscribe);
         self.try_send_request(request)?;
         Ok(())
     }
 
-    fn handle_try_unsubscribe_tracked<S: Into<String>>(
+    fn handle_try_unsubscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: Option<UnsubscribeProperties>,
     ) -> Result<UnsubscribeNotice, ClientError> {
-        let unsubscribe = Unsubscribe::new(topic, properties);
+        let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic, properties);
+        if !valid {
+            return Err(ClientError::TryRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
+        self.try_send_tracked_unsubscribe(unsubscribe)
+    }
+
+    fn handle_try_unsubscribe_many<T, F>(
+        &self,
+        topics: T,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics, properties);
+        if !valid {
+            return Err(ClientError::TryRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
+        let request = Request::Unsubscribe(unsubscribe);
+        self.try_send_request(request)?;
+        Ok(())
+    }
+
+    fn handle_try_unsubscribe_many_tracked<T, F>(
+        &self,
+        topics: T,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<UnsubscribeNotice, ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics, properties);
+        if !valid {
+            return Err(ClientError::TryRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
         self.try_send_tracked_unsubscribe(unsubscribe)
     }
 
@@ -1527,9 +1880,9 @@ impl AsyncClient {
     ///
     /// Returns an error if the request cannot be queued immediately on the
     /// event loop.
-    pub fn try_unsubscribe_with_properties<S: Into<String>>(
+    pub fn try_unsubscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: UnsubscribeProperties,
     ) -> Result<(), ClientError> {
         self.handle_try_unsubscribe(topic, Some(properties))
@@ -1541,12 +1894,48 @@ impl AsyncClient {
     ///
     /// Returns an error if the request cannot be queued immediately on the
     /// event loop.
-    pub fn try_unsubscribe_with_properties_tracked<S: Into<String>>(
+    pub fn try_unsubscribe_with_properties_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: UnsubscribeProperties,
     ) -> Result<UnsubscribeNotice, ClientError> {
         self.handle_try_unsubscribe_tracked(topic, Some(properties))
+    }
+
+    /// Attempts to send a MQTT Unsubscribe for multiple topic filters with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
+    pub fn try_unsubscribe_many_with_properties<T, F>(
+        &self,
+        topics: T,
+        properties: UnsubscribeProperties,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_try_unsubscribe_many(topics, Some(properties))
+    }
+
+    /// Attempts to send a tracked MQTT Unsubscribe for multiple topic filters with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
+    pub fn try_unsubscribe_many_with_properties_tracked<T, F>(
+        &self,
+        topics: T,
+        properties: UnsubscribeProperties,
+    ) -> Result<UnsubscribeNotice, ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_try_unsubscribe_many_tracked(topics, Some(properties))
     }
 
     /// Attempts to send a MQTT Unsubscribe to the `EventLoop`.
@@ -1555,8 +1944,22 @@ impl AsyncClient {
     ///
     /// Returns an error if the request cannot be queued immediately on the
     /// event loop.
-    pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
+    pub fn try_unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         self.handle_try_unsubscribe(topic, None)
+    }
+
+    /// Attempts to send a MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
+    pub fn try_unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_try_unsubscribe_many(topics, None)
     }
 
     /// Attempts to send a tracked MQTT Unsubscribe to the `EventLoop`.
@@ -1565,11 +1968,28 @@ impl AsyncClient {
     ///
     /// Returns an error if the request cannot be queued immediately on the
     /// event loop.
-    pub fn try_unsubscribe_tracked<S: Into<String>>(
+    pub fn try_unsubscribe_tracked<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
     ) -> Result<UnsubscribeNotice, ClientError> {
         self.handle_try_unsubscribe_tracked(topic, None)
+    }
+
+    /// Attempts to send a tracked MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
+    pub fn try_unsubscribe_many_tracked<T, F>(
+        &self,
+        topics: T,
+    ) -> Result<UnsubscribeNotice, ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_try_unsubscribe_many_tracked(topics, None)
     }
 
     /// Queues a graceful MQTT disconnect barrier with default
@@ -2167,15 +2587,14 @@ impl Client {
     }
 
     /// Sends a MQTT Subscribe to the `EventLoop`
-    fn handle_subscribe<S: Into<String>>(
+    fn handle_subscribe<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let filter = SubscribeFilter::new(topic, qos);
-        let subscribe = Subscribe::new(filter, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_topic_filter(topic, qos, properties);
+        if !valid {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
@@ -2189,9 +2608,9 @@ impl Client {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued on the event loop.
-    pub fn subscribe_with_properties<S: Into<String>>(
+    pub fn subscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError> {
@@ -2204,7 +2623,7 @@ impl Client {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued on the event loop.
-    pub fn subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
+    pub fn subscribe<F: Into<TopicFilter>>(&self, topic: F, qos: QoS) -> Result<(), ClientError> {
         self.handle_subscribe(topic, qos, None)
     }
 
@@ -2214,9 +2633,9 @@ impl Client {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued immediately on the event loop.
-    pub fn try_subscribe_with_properties<S: Into<String>>(
+    pub fn try_subscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         qos: QoS,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError> {
@@ -2230,21 +2649,26 @@ impl Client {
     ///
     /// Returns an error if the topic filter is invalid or if the request
     /// cannot be queued immediately on the event loop.
-    pub fn try_subscribe<S: Into<String>>(&self, topic: S, qos: QoS) -> Result<(), ClientError> {
+    pub fn try_subscribe<F: Into<TopicFilter>>(
+        &self,
+        topic: F,
+        qos: QoS,
+    ) -> Result<(), ClientError> {
         self.client.try_subscribe(topic, qos)
     }
 
     /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
-    fn handle_subscribe_many<T>(
+    fn handle_subscribe_many<T, I>(
         &self,
         topics: T,
         properties: Option<SubscribeProperties>,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
-        let subscribe = Subscribe::new_many(topics, properties);
-        if !subscribe_has_valid_filters(&subscribe) {
+        let (subscribe, valid) = subscribe_from_filter_inputs(topics, properties);
+        if !valid {
             return Err(ClientError::Request(Box::new(subscribe.into())));
         }
 
@@ -2258,13 +2682,14 @@ impl Client {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued on the event loop.
-    pub fn subscribe_many_with_properties<T>(
+    pub fn subscribe_many_with_properties<T, I>(
         &self,
         topics: T,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_subscribe_many(topics, Some(properties))
     }
@@ -2275,9 +2700,10 @@ impl Client {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued on the event loop.
-    pub fn subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
+    pub fn subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.handle_subscribe_many(topics, None)
     }
@@ -2288,13 +2714,14 @@ impl Client {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued immediately on the event loop.
-    pub fn try_subscribe_many_with_properties<T>(
+    pub fn try_subscribe_many_with_properties<T, I>(
         &self,
         topics: T,
         properties: SubscribeProperties,
     ) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.client
             .try_subscribe_many_with_properties(topics, properties)
@@ -2306,20 +2733,48 @@ impl Client {
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
     /// be queued immediately on the event loop.
-    pub fn try_subscribe_many<T>(&self, topics: T) -> Result<(), ClientError>
+    pub fn try_subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
-        T: IntoIterator<Item = SubscribeFilter>,
+        T: IntoIterator<Item = I>,
+        I: Into<SubscribeFilterInput>,
     {
         self.client.try_subscribe_many(topics)
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`
-    fn handle_unsubscribe<S: Into<String>>(
+    fn handle_unsubscribe<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: Option<UnsubscribeProperties>,
     ) -> Result<(), ClientError> {
-        let unsubscribe = Unsubscribe::new(topic, properties);
+        let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic, properties);
+        if !valid {
+            return Err(ClientError::Request(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
+        let request = Request::Unsubscribe(unsubscribe);
+        self.client.send_request(request)?;
+        Ok(())
+    }
+
+    fn handle_unsubscribe_many<T, F>(
+        &self,
+        topics: T,
+        properties: Option<UnsubscribeProperties>,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics, properties);
+        if !valid {
+            return Err(ClientError::Request(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
+        }
+
         let request = Request::Unsubscribe(unsubscribe);
         self.client.send_request(request)?;
         Ok(())
@@ -2330,12 +2785,30 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request cannot be queued on the event loop.
-    pub fn unsubscribe_with_properties<S: Into<String>>(
+    pub fn unsubscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: UnsubscribeProperties,
     ) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, Some(properties))
+    }
+
+    /// Sends a MQTT Unsubscribe for multiple topic filters with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
+    pub fn unsubscribe_many_with_properties<T, F>(
+        &self,
+        topics: T,
+        properties: UnsubscribeProperties,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_unsubscribe_many(topics, Some(properties))
     }
 
     /// Sends a MQTT Unsubscribe to the `EventLoop`.
@@ -2343,8 +2816,22 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request cannot be queued on the event loop.
-    pub fn unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
+    pub fn unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         self.handle_unsubscribe(topic, None)
+    }
+
+    /// Sends a MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued on the event loop.
+    pub fn unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.handle_unsubscribe_many(topics, None)
     }
 
     /// Attempts to send a MQTT Unsubscribe with properties to the `EventLoop`.
@@ -2353,13 +2840,32 @@ impl Client {
     ///
     /// Returns an error if the request cannot be queued immediately on the
     /// event loop.
-    pub fn try_unsubscribe_with_properties<S: Into<String>>(
+    pub fn try_unsubscribe_with_properties<F: Into<TopicFilter>>(
         &self,
-        topic: S,
+        topic: F,
         properties: UnsubscribeProperties,
     ) -> Result<(), ClientError> {
         self.client
             .try_unsubscribe_with_properties(topic, properties)
+    }
+
+    /// Attempts to send a MQTT Unsubscribe for multiple topic filters with properties to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
+    pub fn try_unsubscribe_many_with_properties<T, F>(
+        &self,
+        topics: T,
+        properties: UnsubscribeProperties,
+    ) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.client
+            .try_unsubscribe_many_with_properties(topics, properties)
     }
 
     /// Attempts to send a MQTT Unsubscribe to the `EventLoop`.
@@ -2368,8 +2874,22 @@ impl Client {
     ///
     /// Returns an error if the request cannot be queued immediately on the
     /// event loop.
-    pub fn try_unsubscribe<S: Into<String>>(&self, topic: S) -> Result<(), ClientError> {
+    pub fn try_unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         self.client.try_unsubscribe(topic)
+    }
+
+    /// Attempts to send a MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filter list is invalid or if the request cannot
+    /// be queued immediately on the event loop.
+    pub fn try_unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
+    where
+        T: IntoIterator<Item = F>,
+        F: Into<TopicFilter>,
+    {
+        self.client.try_unsubscribe_many(topics)
     }
 
     /// Queues a graceful MQTT disconnect barrier.
@@ -2692,12 +3212,85 @@ fn empty_topic_without_valid_alias(topic: &str, properties: Option<&PublishPrope
 }
 
 #[must_use]
-fn subscribe_has_valid_filters(subscribe: &Subscribe) -> bool {
-    !subscribe.filters.is_empty()
-        && subscribe
-            .filters
+fn valid_mqtt_string_value(value: &str) -> bool {
+    !value.as_bytes().contains(&0) && u16::try_from(value.len()).is_ok()
+}
+
+#[must_use]
+fn valid_topic_filter(filter: &str) -> bool {
+    valid_filter(filter) && valid_mqtt_string_value(filter)
+}
+
+fn subscribe_from_topic_filter<F: Into<TopicFilter>>(
+    topic: F,
+    qos: QoS,
+    properties: Option<SubscribeProperties>,
+) -> (Subscribe, bool) {
+    let (topic, validate) = topic.into().into_string_and_validation();
+    let filter = SubscribeFilter::new(topic, qos);
+    let valid = !validate || valid_topic_filter(&filter.path);
+
+    (Subscribe::new(filter, properties), valid)
+}
+
+fn subscribe_from_filter_inputs<T, I>(
+    topics: T,
+    properties: Option<SubscribeProperties>,
+) -> (Subscribe, bool)
+where
+    T: IntoIterator<Item = I>,
+    I: Into<SubscribeFilterInput>,
+{
+    let mut filters = Vec::new();
+    let mut valid = true;
+
+    for input in topics {
+        let (filter, validate) = input.into().into_filter_and_validation();
+        valid &= !validate || valid_topic_filter(&filter.path);
+        filters.push(filter);
+    }
+
+    valid &= !filters.is_empty();
+
+    (Subscribe::new_many(filters, properties), valid)
+}
+
+fn unsubscribe_from_topic_filter<F: Into<TopicFilter>>(
+    topic: F,
+    properties: Option<UnsubscribeProperties>,
+) -> (Unsubscribe, bool) {
+    let (topic, validate) = topic.into().into_string_and_validation();
+    let valid = !validate || valid_topic_filter(&topic);
+
+    (Unsubscribe::new(topic, properties), valid)
+}
+
+fn unsubscribe_from_topic_filters<T, F>(
+    topics: T,
+    properties: Option<UnsubscribeProperties>,
+) -> (Unsubscribe, bool)
+where
+    T: IntoIterator<Item = F>,
+    F: Into<TopicFilter>,
+{
+    let topic_filters = topics
+        .into_iter()
+        .map(|topic| topic.into().into_string_and_validation())
+        .collect::<Vec<_>>();
+    let valid = !topic_filters.is_empty()
+        && topic_filters
             .iter()
-            .all(|filter| valid_filter(&filter.path))
+            .all(|(topic, validate)| !*validate || valid_topic_filter(topic));
+    let filters = topic_filters.into_iter().map(|(topic, _)| topic).collect();
+
+    (
+        Unsubscribe {
+            pkid: 0,
+            filters,
+            properties,
+        },
+        valid,
+    )
 }
 
 /// Error type returned by [`Connection::recv`]
@@ -3248,6 +3841,209 @@ mod test {
             ValidatedTopic::new("a/+/b"),
             Err(InvalidTopic("a/+/b".to_string()))
         );
+    }
+
+    #[test]
+    fn validated_topic_filter_accepts_mqtt_topic_filters() {
+        for filter in ["a/b", "a/+/b", "a/#", "#", "+", "/"] {
+            assert_eq!(
+                ValidatedTopicFilter::new(filter),
+                Ok(ValidatedTopicFilter(filter.to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn creating_invalid_validated_topic_filter_fails() {
+        let overlong = "a".repeat(usize::from(u16::MAX) + 1);
+
+        assert_eq!(
+            ValidatedTopicFilter::new(""),
+            Err(InvalidTopicFilter(String::new()))
+        );
+        assert_eq!(
+            ValidatedTopicFilter::new("a/#/b"),
+            Err(InvalidTopicFilter("a/#/b".to_owned()))
+        );
+        assert_eq!(
+            ValidatedTopicFilter::new("a/b#"),
+            Err(InvalidTopicFilter("a/b#".to_owned()))
+        );
+        assert_eq!(
+            ValidatedTopicFilter::new("a/+b"),
+            Err(InvalidTopicFilter("a/+b".to_owned()))
+        );
+        assert_eq!(
+            ValidatedTopicFilter::new("a\0b"),
+            Err(InvalidTopicFilter("a\0b".to_owned()))
+        );
+        assert_eq!(
+            ValidatedTopicFilter::new(overlong.clone()),
+            Err(InvalidTopicFilter(overlong))
+        );
+    }
+
+    #[test]
+    fn subscribing_accepts_raw_and_validated_topic_filters() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+
+        client
+            .subscribe("a/+/b", QoS::AtLeastOnce)
+            .expect("raw wildcard filter should subscribe");
+        client
+            .try_subscribe(ValidatedTopicFilter::new("c/#").unwrap(), QoS::ExactlyOnce)
+            .expect("validated wildcard filter should subscribe");
+
+        match rx.try_recv().expect("Should have raw subscribe") {
+            Request::Subscribe(subscribe) => {
+                assert_eq!(subscribe.filters[0].path, "a/+/b");
+                assert_eq!(subscribe.filters[0].qos, QoS::AtLeastOnce);
+            }
+            request => panic!("Expected Subscribe request, got {request:?}"),
+        }
+
+        match rx.try_recv().expect("Should have validated subscribe") {
+            Request::Subscribe(subscribe) => {
+                assert_eq!(subscribe.filters[0].path, "c/#");
+                assert_eq!(subscribe.filters[0].qos, QoS::ExactlyOnce);
+            }
+            request => panic!("Expected Subscribe request, got {request:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribing_invalid_raw_topic_filter_fails() {
+        let (tx, rx) = flume::bounded(3);
+        let client = Client::from_sender(tx);
+        let overlong = "a".repeat(usize::from(u16::MAX) + 1);
+
+        let err = client
+            .subscribe("a/#/b", QoS::AtLeastOnce)
+            .expect_err("Invalid wildcard placement should fail");
+        assert!(matches!(err, ClientError::Request(req) if matches!(*req, Request::Subscribe(_))));
+
+        let err = client
+            .try_subscribe("a\0b", QoS::AtLeastOnce)
+            .expect_err("NUL should fail");
+        assert!(
+            matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Subscribe(_)))
+        );
+
+        let err = client
+            .try_subscribe(overlong, QoS::AtLeastOnce)
+            .expect_err("Overlong filter should fail");
+        assert!(
+            matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Subscribe(_)))
+        );
+
+        assert!(rx.is_empty());
+    }
+
+    #[test]
+    fn subscribe_many_accepts_raw_protocol_and_validated_filters_with_options() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+        let properties = SubscribeProperties {
+            id: Some(7),
+            user_properties: vec![("source".to_owned(), "unit-test".to_owned())],
+        };
+
+        client
+            .subscribe_many(vec![SubscribeFilter::new("raw/+/filter", QoS::AtLeastOnce)])
+            .expect("raw protocol filter should subscribe");
+        client
+            .try_subscribe_many_with_properties(
+                vec![
+                    SubscribeFilterInput::new("raw/#", QoS::AtMostOnce),
+                    SubscribeFilterInput::validated(
+                        ValidatedTopicFilter::new("validated/+").unwrap(),
+                        QoS::ExactlyOnce,
+                    )
+                    .no_local(true)
+                    .preserve_retain(true)
+                    .retain_forward_rule(RetainForwardRule::Never),
+                ],
+                properties.clone(),
+            )
+            .expect("validated filter input should subscribe with options");
+
+        match rx.try_recv().expect("Should have raw subscribe many") {
+            Request::Subscribe(subscribe) => {
+                assert_eq!(subscribe.filters.len(), 1);
+                assert_eq!(subscribe.filters[0].path, "raw/+/filter");
+            }
+            request => panic!("Expected Subscribe request, got {request:?}"),
+        }
+
+        match rx.try_recv().expect("Should have validated subscribe many") {
+            Request::Subscribe(subscribe) => {
+                assert_eq!(subscribe.properties, Some(properties));
+                assert_eq!(subscribe.filters.len(), 2);
+                assert_eq!(subscribe.filters[0].path, "raw/#");
+                let validated = &subscribe.filters[1];
+                assert_eq!(validated.path, "validated/+");
+                assert_eq!(validated.qos, QoS::ExactlyOnce);
+                assert!(validated.nolocal);
+                assert!(validated.preserve_retain);
+                assert_eq!(validated.retain_forward_rule, RetainForwardRule::Never);
+            }
+            request => panic!("Expected Subscribe request, got {request:?}"),
+        }
+    }
+
+    #[test]
+    fn unsubscribe_validates_topic_filters_and_supports_many_with_properties() {
+        let (tx, rx) = flume::bounded(2);
+        let client = Client::from_sender(tx);
+        let properties = UnsubscribeProperties {
+            user_properties: vec![("source".to_owned(), "unit-test".to_owned())],
+        };
+
+        let err = client
+            .unsubscribe("a/#/b")
+            .expect_err("Invalid wildcard placement should fail");
+        assert!(
+            matches!(err, ClientError::Request(req) if matches!(*req, Request::Unsubscribe(_)))
+        );
+
+        let err = client.try_unsubscribe("a\0b").expect_err("NUL should fail");
+        assert!(
+            matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Unsubscribe(_)))
+        );
+
+        let err = client
+            .try_unsubscribe_many(Vec::<TopicFilter>::new())
+            .expect_err("Empty unsubscribe list should fail");
+        assert!(
+            matches!(err, ClientError::TryRequest(req) if matches!(*req, Request::Unsubscribe(_)))
+        );
+
+        client
+            .unsubscribe(ValidatedTopicFilter::new("a/+/b").unwrap())
+            .expect("validated unsubscribe should enqueue");
+        client
+            .try_unsubscribe_many_with_properties(
+                vec![
+                    TopicFilter::from("raw/#"),
+                    TopicFilter::from(ValidatedTopicFilter::new("validated/+").unwrap()),
+                ],
+                properties.clone(),
+            )
+            .expect("multi-unsubscribe should enqueue");
+
+        match rx.try_recv().expect("Should have unsubscribe") {
+            Request::Unsubscribe(unsubscribe) => assert_eq!(unsubscribe.filters, vec!["a/+/b"]),
+            request => panic!("Expected Unsubscribe request, got {request:?}"),
+        }
+
+        match rx.try_recv().expect("Should have unsubscribe many") {
+            Request::Unsubscribe(unsubscribe) => {
+                assert_eq!(unsubscribe.filters, vec!["raw/#", "validated/+"]);
+                assert_eq!(unsubscribe.properties, Some(properties));
+            }
+            request => panic!("Expected Unsubscribe request, got {request:?}"),
+        }
     }
 
     #[test]
