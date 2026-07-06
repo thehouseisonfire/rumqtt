@@ -91,7 +91,7 @@ repos:
             cp "$tmp_v5" rumqttc-v5/Cargo.toml;
             cp "$tmp_lock" Cargo.lock;
             rm -f "$tmp_v4" "$tmp_v5" "$tmp_lock";
-          }
+          };
           trap restore_manifests EXIT;
           sed -i -e "/^mqtt-typed-client/d" rumqttc-v4/Cargo.toml rumqttc-v5/Cargo.toml;
 
@@ -128,7 +128,7 @@ repos:
             cp "$tmp_v5" rumqttc-v5/Cargo.toml;
             cp "$tmp_lock" Cargo.lock;
             rm -f "$tmp_v4" "$tmp_v5" "$tmp_lock";
-          }
+          };
           trap restore_manifests EXIT;
           sed -i -e "/^mqtt-typed-client/d" rumqttc-v4/Cargo.toml rumqttc-v5/Cargo.toml;
 
