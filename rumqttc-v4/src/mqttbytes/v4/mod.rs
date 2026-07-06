@@ -6,31 +6,31 @@ use super::{
 
 #[allow(clippy::missing_errors_doc)]
 mod codec;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod connack;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod connect;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod disconnect;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod ping;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod puback;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod pubcomp;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod publish;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod pubrec;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod pubrel;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod suback;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod subscribe;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod unsuback;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod unsubscribe;
 
 pub use codec::*;

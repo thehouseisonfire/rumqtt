@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use super::{
     Error, FixedHeader, PacketType, QoS, check, qos, read_mqtt_bytes, read_u8, read_u16, view_str,
@@ -620,7 +620,7 @@ pub mod subscribe {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn write(
         filters: Vec<SubscribeFilter>,
         pkid: u16,
@@ -715,7 +715,7 @@ pub mod suback {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn write(
         return_codes: Vec<SubscribeReasonCode>,
         pkid: u16,

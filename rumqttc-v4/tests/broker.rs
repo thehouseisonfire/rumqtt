@@ -1,5 +1,5 @@
-#![allow(dead_code)]
-#![allow(clippy::missing_errors_doc)]
+#![expect(dead_code)]
+#![expect(clippy::missing_errors_doc)]
 
 use rumqttc::mqttbytes::v4::*;
 use rumqttc::mqttbytes::*;
@@ -29,7 +29,7 @@ impl Broker {
     ///
     /// Panics if the test listener cannot be bound or if the initial CONNECT
     /// handshake cannot be completed.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub async fn new(port: u16, connack: u8, session_saved: bool) -> Self {
         let addr = format!("127.0.0.1:{port}");
         let listener = TcpListener::bind(&addr).await.unwrap();

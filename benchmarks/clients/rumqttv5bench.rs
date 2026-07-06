@@ -1,6 +1,6 @@
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::too_many_lines)]
+#![expect(clippy::cast_possible_truncation)]
+#![expect(clippy::cast_precision_loss)]
+#![expect(clippy::too_many_lines)]
 
 use clap::{Parser, ValueEnum};
 use rumqttc_v5::Transport;

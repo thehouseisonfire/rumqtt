@@ -1,7 +1,6 @@
 /// Quality of service
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Default)]
-#[allow(clippy::enum_variant_names)]
 pub enum QoS {
     #[default]
     AtMostOnce = 0,

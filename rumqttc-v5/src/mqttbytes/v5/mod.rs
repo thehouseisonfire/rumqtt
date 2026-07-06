@@ -23,35 +23,35 @@ use super::{
 };
 use bytes::{Buf, BufMut, BytesMut};
 
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod auth;
 #[allow(clippy::missing_errors_doc)]
 mod codec;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod connack;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod connect;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod disconnect;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod ping;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod puback;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod pubcomp;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod publish;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod pubrec;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod pubrel;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod suback;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod subscribe;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod unsuback;
-#[allow(clippy::missing_errors_doc)]
+#[expect(clippy::missing_errors_doc)]
 mod unsubscribe;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -344,9 +344,9 @@ const fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Resu
 
 mod test {
     // These are used in tests by packets
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub const USER_PROP_KEY: &str = "property";
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub const USER_PROP_VAL: &str = "a value thats really long............................................................................................................";
 }
 

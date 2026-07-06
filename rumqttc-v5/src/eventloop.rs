@@ -294,7 +294,7 @@ pub struct EventLoop {
 
 /// Events which can be yielded by the event loop
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum Event {
     Incoming(Incoming),
     Outgoing(Outgoing),
@@ -866,7 +866,6 @@ impl EventLoop {
     }
 
     /// Select on network and requests and generate keepalive pings when necessary
-    #[allow(clippy::too_many_lines)]
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         loop {
             if let Some(event) = self.state.events.pop_front() {
@@ -1488,7 +1487,7 @@ async fn connect(
     Ok((network, connack))
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionError> {
     let max_incoming_pkt_size = options.max_incoming_packet_size();
     let transport = options.transport();

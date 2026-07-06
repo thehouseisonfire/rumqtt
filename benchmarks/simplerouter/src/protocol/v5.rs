@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use std::fmt;
 
@@ -620,7 +620,7 @@ pub mod connack {
             len
         }
 
-        #[allow(clippy::too_many_lines)]
+        #[expect(clippy::too_many_lines)]
         pub fn extract(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
             let mut session_expiry_interval = None;
             let mut receive_max = None;
@@ -1107,7 +1107,7 @@ pub mod puback {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn write(
         pkid: u16,
         reason: PubAckReason,
@@ -1372,7 +1372,7 @@ pub mod subscribe {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn write(
         filters: Vec<SubscribeFilter>,
         pkid: u16,
@@ -1644,7 +1644,7 @@ pub mod suback {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn write(
         return_codes: Vec<SubscribeReasonCode>,
         pkid: u16,
