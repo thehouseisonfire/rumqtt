@@ -10,39 +10,43 @@
 
 ## What is rumqtt?
 
-rumqtt is an opensource set of libraries written in rust-lang to implement the MQTT standard while striving to be simple, robust and performant.
+rumqtt is an open source set of Rust libraries for MQTT clients and packet handling, built to stay simple,
+robust, and performant.
 
-| Crate | Description | Version |
+| Package | Description | Version |
 | -- | -- | -- |
 | [rumqttc-next](./rumqttc-next/) | Facade crate that re-exports the MQTT 5 client API | [![crates.io page](https://img.shields.io/crates/v/rumqttc-next.svg)](https://crates.io/crates/rumqttc-next) |
-| [rumqttc-v5](./rumqttc-v5/) | Explicit MQTT 5 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v5-next.svg)](https://crates.io/crates/rumqttc-v5-next) |
-| [rumqttc-v4](./rumqttc-v4/) | Explicit MQTT 3.1.1 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v4-next.svg)](https://crates.io/crates/rumqttc-v4-next) |
-| [rumqttc-core](./rumqttc-core/) | Shared transport and connection plumbing for the client crates | [![crates.io page](https://img.shields.io/crates/v/rumqttc-core-next.svg)](https://crates.io/crates/rumqttc-core-next) |
-| [mqttbytes-core](./mqttbytes-core/) | Shared MQTT packet primitives for the client crates | [![crates.io page](https://img.shields.io/crates/v/mqttbytes-core-next.svg)](https://crates.io/crates/mqttbytes-core-next) |
+| [rumqttc-v5-next](./rumqttc-v5/) | Explicit MQTT 5 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v5-next.svg)](https://crates.io/crates/rumqttc-v5-next) |
+| [rumqttc-v4-next](./rumqttc-v4/) | Explicit MQTT 3.1.1 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v4-next.svg)](https://crates.io/crates/rumqttc-v4-next) |
+| [rumqttc-core-next](./rumqttc-core/) | Shared transport and connection plumbing for the client crates | [![crates.io page](https://img.shields.io/crates/v/rumqttc-core-next.svg)](https://crates.io/crates/rumqttc-core-next) |
+| [mqttbytes-core-next](./mqttbytes-core/) | Shared MQTT packet primitives for the client crates | [![crates.io page](https://img.shields.io/crates/v/mqttbytes-core-next.svg)](https://crates.io/crates/mqttbytes-core-next) |
+
+rumqttc-next is a maintained fork of rumqtt with a variety of extra features.
+
+The client crates are published with `*-next` package names on crates.io, but their Rust library target is
+still named `rumqttc`. After adding a dependency, application code can use familiar imports such as
+`use rumqttc::MqttOptions;`.
 
 ## Installation and Usage
 
-### MQTT 5, preferred package
+### Choose a client package
 
-Use the facade package when you want the default MQTT 5 client:
+| Use case | Package |
+| -- | -- |
+| Default MQTT 5 client | `rumqttc-next` |
+| Explicit MQTT 5 package name | `rumqttc-v5-next` |
+| MQTT 3.1.1 client | `rumqttc-v4-next` |
+
+Run one of these, depending on the protocol package you want:
 
 ```bash
+# Default MQTT 5 client
 cargo add rumqttc-next
-```
 
-### MQTT 5, explicit protocol package
-
-Use the explicit MQTT 5 package when you want the protocol-scoped crate name:
-
-```bash
+# Explicit MQTT 5 package
 cargo add rumqttc-v5-next
-```
 
-### MQTT 3.1.1
-
-Use the explicit MQTT 3.1.1 package when you need the older protocol:
-
-```bash
+# MQTT 3.1.1 package
 cargo add rumqttc-v4-next
 ```
 
@@ -67,8 +71,8 @@ API changes, and porting recipes.
 
 ## Spec Compliance Docs
 
-- [MQTT 3.1.1 compliance digest](./docs/spec/mqtt-v3.1.1.requirements.correct.json)
-- [MQTT 5.0 compliance digest](./docs/spec/mqtt-v5.0.requirements.correct.json)
+- [MQTT 3.1.1 spec notes](./docs/spec/mqtt-v3.1.1.md) and [requirement index (full compliance verification ongoing)](./docs/spec/mqtt-v3.1.1.requirements.json)
+- [MQTT 5.0 spec notes](./docs/spec/mqtt-v5.0.md) and [requirement index (ongoing)](./docs/spec/mqtt-v5.0.requirements.json)
 
 ## License
 
