@@ -103,17 +103,8 @@ What is your assessment on this recommendation? Would it be possible and legitim
      Validate: Compile examples; optional dockerized Mosquitto/EMQX smoke tests.
      Priority: high-value.
 
-  8. Add topic/filter validated newtypes for subscriptions
-     Problem: ValidatedTopic helps repeated publishes, but repeated subscriptions still use raw strings or protocol filter structs.
-     Why it matters: Consumers building routers often subscribe repeatedly to known filters and want validation once.
-     Change: Add ValidatedFilter and accept it in subscribe APIs, mirroring ValidatedTopic.
-     Value: Better ergonomics and discoverability, minor performance win.
-     Complexity: Low.
-     Risk: Low, additive.
-     Validate: Unit tests for wildcard-valid filters versus publish-topic-invalid filters.
-     Priority: nice-to-have.
 
-  9. Make observability integrate with tracing optionally
+  8. Make observability integrate with tracing optionally
      Problem: The crate uses log; modern Tokio services often standardize on tracing spans/fields.
      Why it matters: MQTT connection lifecycle, reconnects, packet-id pressure, and protocol violations benefit from structured
      fields.
@@ -149,5 +140,4 @@ What is your assessment on this recommendation? Would it be possible and legitim
   5. Production recipes for TLS/WSS/proxy/session/reconnect/backpressure.
   6. Async Stream adapter.
   7. File-backed session-store companion.
-  8. ValidatedFilter.
-  9. Optional tracing integration.
+  8. Optional tracing integration.
