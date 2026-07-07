@@ -11,8 +11,8 @@ use super::mqttbytes::v5::{
     UnsubscribeProperties,
 };
 use super::{
-    ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event, EventLoop,
-    MqttOptions, Request,
+    ConfigError, ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event,
+    EventLoop, MqttOptions, Request,
 };
 use crate::notice::{AuthNoticeTx, PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
 use crate::{
@@ -397,6 +397,15 @@ pub enum ClientError {
     TrackingUnavailable,
 }
 
+/// Error returned by fallible client builders.
+#[derive(Debug, thiserror::Error)]
+pub enum ClientBuildError {
+    #[error("Invalid MQTT client configuration: {0}")]
+    Config(#[from] ConfigError),
+    #[error("Failed to create Tokio runtime: {0}")]
+    Runtime(#[source] std::io::Error),
+}
+
 impl From<SendError<Request>> for ClientError {
     fn from(e: SendError<Request>) -> Self {
         Self::Request(Box::new(e.into_inner()))
@@ -557,16 +566,28 @@ impl ClientBuilder {
     /// Panics if the current-thread Tokio runtime cannot be created.
     #[must_use]
     pub fn build(self) -> (Client, Connection) {
+        self.try_build()
+            .expect("could not build synchronous MQTT client")
+    }
+
+    /// Try to build a synchronous client and connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientBuildError`] if options validation fails or the
+    /// current-thread Tokio runtime cannot be created.
+    pub fn try_build(self) -> Result<(Client, Connection), ClientBuildError> {
+        self.options.validate()?;
         let (client, eventloop) = build_async_client(self.options, self.capacity);
         let client = Client { client };
 
         let runtime = runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .unwrap();
+            .map_err(ClientBuildError::Runtime)?;
 
         let connection = Connection::new(eventloop, runtime);
-        (client, connection)
+        Ok((client, connection))
     }
 }
 
@@ -601,7 +622,18 @@ impl AsyncClientBuilder {
     /// terminal `build()` method matches the entry point that created it.
     #[must_use]
     pub fn build(self) -> (AsyncClient, EventLoop) {
-        build_async_client(self.options, self.capacity)
+        self.try_build()
+            .expect("could not build asynchronous MQTT client")
+    }
+
+    /// Try to build an asynchronous client and event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientBuildError`] if options validation fails.
+    pub fn try_build(self) -> Result<(AsyncClient, EventLoop), ClientBuildError> {
+        self.options.validate()?;
+        Ok(build_async_client(self.options, self.capacity))
     }
 }
 

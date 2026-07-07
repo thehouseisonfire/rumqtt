@@ -51,10 +51,10 @@ mod websockets;
 mod proxy;
 
 pub use client::{
-    AsyncClient, AsyncClientBuilder, Client, ClientBuilder, ClientError, Connection,
-    IntoPublishPayload, InvalidTopic, InvalidTopicFilter, Iter, ManualAck, PublishOptions,
-    PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter, TryRecvError,
-    ValidatedTopic, ValidatedTopicFilter,
+    AsyncClient, AsyncClientBuilder, Client, ClientBuildError, ClientBuilder, ClientError,
+    Connection, IntoPublishPayload, InvalidTopic, InvalidTopicFilter, Iter, ManualAck,
+    PublishOptions, PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter,
+    TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v5::*;
@@ -830,6 +830,39 @@ impl MqttOptions {
     /// Broker target
     pub const fn broker(&self) -> &Broker {
         &self.broker
+    }
+
+    /// Validate locally-checkable MQTT option invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] for invalid broker/transport combinations or
+    /// option values that can be detected before opening a network connection.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !broker_transport_matches(&self.broker, &self.transport) {
+            return Err(ConfigError::BrokerTransportMismatch);
+        }
+
+        if matches!(self.receive_maximum(), Some(0)) {
+            return Err(ConfigError::ReceiveMaximum);
+        }
+
+        if matches!(self.max_packet_size(), Some(0)) {
+            return Err(ConfigError::MaxPacketSize);
+        }
+
+        if matches!(
+            self.incoming_packet_size_limit,
+            IncomingPacketSizeLimit::Bytes(0)
+        ) {
+            return Err(ConfigError::MaxPacketSize);
+        }
+
+        if matches!(self.outgoing_inflight_upper_limit, Some(0)) {
+            return Err(ConfigError::OutgoingInflightUpperLimit);
+        }
+
+        Ok(())
     }
 
     pub fn set_last_will(&mut self, will: LastWill) -> &mut Self {
@@ -1662,6 +1695,16 @@ impl MqttOptionsBuilder {
         self.options
     }
 
+    /// Try to build the configured [`MqttOptions`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the configured options are locally invalid.
+    pub fn try_build(self) -> Result<MqttOptions, ConfigError> {
+        self.options.validate()?;
+        Ok(self.options)
+    }
+
     /// Set the last will.
     #[must_use]
     pub fn last_will(mut self, will: LastWill) -> Self {
@@ -2005,6 +2048,36 @@ impl MqttOptionsBuilder {
     }
 }
 
+fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
+    match transport {
+        Transport::Tcp => broker.tcp_address().is_some(),
+        #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+        Transport::Tls(_) => broker.tcp_address().is_some(),
+        #[cfg(unix)]
+        Transport::Unix => broker.unix_path().is_some(),
+        #[cfg(feature = "websocket")]
+        Transport::Ws => broker.websocket_url().is_some(),
+        #[cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        ))]
+        Transport::Wss(_) => broker.websocket_url().is_some(),
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    #[error("Broker target is incompatible with the selected transport")]
+    BrokerTransportMismatch,
+    #[error("Invalid receive-maximum value")]
+    ReceiveMaximum,
+    #[error("Invalid maximum-packet-size value")]
+    MaxPacketSize,
+    #[error("Invalid outgoing-inflight-upper-limit value")]
+    OutgoingInflightUpperLimit,
+}
+
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OptionError {
@@ -2061,6 +2134,9 @@ pub enum OptionError {
 
     #[error("Invalid conn-timeout value.")]
     ConnTimeout,
+
+    #[error("Invalid configuration: {0}")]
+    Config(#[from] ConfigError),
 
     #[error("Unknown option: {0}")]
     Unknown(String),
@@ -2186,6 +2262,7 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
         }
 
         options.set_connect_properties(connect_props);
+        options.validate()?;
         Ok(options)
     }
 }
@@ -2891,6 +2968,75 @@ mod test {
         options.set_session_mode(SessionMode::Clean);
         assert!(options.clean_start());
         assert_eq!(options.session_expiry_interval(), None);
+    }
+
+    #[test]
+    fn validate_rejects_zero_receive_maximum() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_receive_maximum(Some(0));
+        assert_eq!(options.validate(), Err(ConfigError::ReceiveMaximum));
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_packet_size() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_max_packet_size(Some(0));
+        assert_eq!(options.validate(), Err(ConfigError::MaxPacketSize));
+    }
+
+    #[test]
+    fn validate_rejects_zero_outgoing_inflight_upper_limit() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_outgoing_inflight_upper_limit(0);
+        assert_eq!(
+            options.validate(),
+            Err(ConfigError::OutgoingInflightUpperLimit)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_rejects_unix_broker_with_tcp_transport() {
+        let mut options = MqttOptions::new("client_id", Broker::unix("/tmp/mqtt.sock"));
+        options.set_transport(Transport::tcp());
+        assert_eq!(
+            options.validate(),
+            Err(ConfigError::BrokerTransportMismatch)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "websocket")]
+    fn validate_rejects_tcp_broker_with_websocket_transport() {
+        let mut options = MqttOptions::new("client_id", "localhost");
+        options.set_transport(Transport::ws());
+        assert_eq!(
+            options.validate(),
+            Err(ConfigError::BrokerTransportMismatch)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "websocket")]
+    fn async_client_try_build_rejects_invalid_options() {
+        let mut options = MqttOptions::new("client_id", "localhost");
+        options.set_transport(Transport::ws());
+
+        assert!(matches!(
+            AsyncClient::builder(options).try_build(),
+            Err(ClientBuildError::Config(
+                ConfigError::BrokerTransportMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "url")]
+    fn parse_url_errors_on_zero_inflight() {
+        assert!(matches!(
+            MqttOptions::parse_url("mqtt://127.0.0.1?client_id=client&inflight_num=0"),
+            Err(OptionError::Config(ConfigError::ReceiveMaximum))
+        ));
     }
 
     #[test]

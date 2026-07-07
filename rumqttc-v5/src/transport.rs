@@ -1,29 +1,14 @@
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-use rumqttc_core::TlsConfiguration;
-#[cfg(feature = "use-rustls-no-provider")]
-use rustls_native_certs::load_native_certs;
-#[cfg(feature = "use-rustls-no-provider")]
-use std::sync::Arc;
-#[cfg(feature = "use-rustls-no-provider")]
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use rumqttc_core::{TlsConfiguration, TlsError};
 
 #[cfg(feature = "use-rustls-no-provider")]
-fn default_tls_configuration() -> TlsConfiguration {
-    let mut root_cert_store = RootCertStore::empty();
-    for cert in load_native_certs().expect("could not load platform certs") {
-        root_cert_store.add(cert).unwrap();
-    }
-
-    let tls_config = ClientConfig::builder()
-        .with_root_certificates(root_cert_store)
-        .with_no_client_auth();
-
-    TlsConfiguration::Rustls(Arc::new(tls_config))
+fn default_tls_configuration() -> Result<TlsConfiguration, TlsError> {
+    TlsConfiguration::try_default_rustls()
 }
 
 #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
-const fn default_tls_configuration() -> TlsConfiguration {
-    TlsConfiguration::Native
+const fn default_tls_configuration() -> Result<TlsConfiguration, TlsError> {
+    Ok(TlsConfiguration::Native)
 }
 
 /// Transport methods. Defaults to TCP.
@@ -67,13 +52,24 @@ impl Transport {
     #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
     #[must_use]
     pub const fn tls_with_default_config() -> Self {
-        Self::tls_with_config(default_tls_configuration())
+        Self::tls_with_config(TlsConfiguration::Native)
     }
 
     #[cfg(feature = "use-rustls-no-provider")]
     #[must_use]
     pub fn tls_with_default_config() -> Self {
-        Self::tls_with_config(default_tls_configuration())
+        Self::try_tls_with_default_config()
+            .expect("could not build default TLS transport configuration")
+    }
+
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    /// Try to use secure tcp with the default TLS configuration as transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if the default TLS configuration cannot be built.
+    pub fn try_tls_with_default_config() -> Result<Self, TlsError> {
+        Ok(Self::tls_with_config(default_tls_configuration()?))
     }
 
     /// Use secure tcp with tls as transport
@@ -160,12 +156,37 @@ impl Transport {
         )))
     )]
     pub fn wss_with_default_config() -> Self {
-        Self::Wss(default_tls_configuration())
+        Self::try_wss_with_default_config()
+            .expect("could not build default WSS transport configuration")
+    }
+
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        )))
+    )]
+    /// Try to use secure websockets with the default TLS configuration as transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if the default TLS configuration cannot be built.
+    pub fn try_wss_with_default_config() -> Result<Self, TlsError> {
+        Ok(Self::Wss(default_tls_configuration()?))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
+    const NATIVE_TLS_DEFAULT_TRANSPORT: super::Transport =
+        super::Transport::tls_with_default_config();
+
     #[cfg(all(
         feature = "use-rustls-no-provider",
         any(feature = "use-rustls-aws-lc", feature = "use-rustls-ring")
@@ -178,11 +199,32 @@ mod tests {
         }
     }
 
+    #[cfg(all(
+        feature = "use-rustls-no-provider",
+        any(feature = "use-rustls-aws-lc", feature = "use-rustls-ring")
+    ))]
+    #[test]
+    fn try_tls_default_config_uses_rustls() {
+        match super::Transport::try_tls_with_default_config() {
+            Ok(super::Transport::Tls(rumqttc_core::TlsConfiguration::Rustls(_))) => {}
+            _ => panic!("expected rustls default tls configuration"),
+        }
+    }
+
     #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
     #[test]
     fn tls_default_config_uses_native_tls_when_rustls_is_disabled() {
-        match super::Transport::tls_with_default_config() {
+        match NATIVE_TLS_DEFAULT_TRANSPORT {
             super::Transport::Tls(rumqttc_core::TlsConfiguration::Native) => {}
+            _ => panic!("expected native-tls default tls configuration"),
+        }
+    }
+
+    #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
+    #[test]
+    fn try_tls_default_config_uses_native_tls_when_rustls_is_disabled() {
+        match super::Transport::try_tls_with_default_config() {
+            Ok(super::Transport::Tls(rumqttc_core::TlsConfiguration::Native)) => {}
             _ => panic!("expected native-tls default tls configuration"),
         }
     }
@@ -202,6 +244,19 @@ mod tests {
 
     #[cfg(all(
         feature = "websocket",
+        feature = "use-rustls-no-provider",
+        any(feature = "use-rustls-aws-lc", feature = "use-rustls-ring")
+    ))]
+    #[test]
+    fn try_wss_default_config_uses_rustls() {
+        match super::Transport::try_wss_with_default_config() {
+            Ok(super::Transport::Wss(rumqttc_core::TlsConfiguration::Rustls(_))) => {}
+            _ => panic!("expected rustls default wss configuration"),
+        }
+    }
+
+    #[cfg(all(
+        feature = "websocket",
         feature = "use-native-tls",
         not(feature = "use-rustls-no-provider")
     ))]
@@ -209,6 +264,19 @@ mod tests {
     fn wss_default_config_uses_native_tls_when_rustls_is_disabled() {
         match super::Transport::wss_with_default_config() {
             super::Transport::Wss(rumqttc_core::TlsConfiguration::Native) => {}
+            _ => panic!("expected native-tls default wss configuration"),
+        }
+    }
+
+    #[cfg(all(
+        feature = "websocket",
+        feature = "use-native-tls",
+        not(feature = "use-rustls-no-provider")
+    ))]
+    #[test]
+    fn try_wss_default_config_uses_native_tls_when_rustls_is_disabled() {
+        match super::Transport::try_wss_with_default_config() {
+            Ok(super::Transport::Wss(rumqttc_core::TlsConfiguration::Native)) => {}
             _ => panic!("expected native-tls default wss configuration"),
         }
     }
