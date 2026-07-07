@@ -115,21 +115,6 @@ What is your assessment on this recommendation? Would it be possible and legitim
      Validate: Feature matrix build and tests asserting key spans/events via test subscriber.
      Priority: nice-to-have.
 
-  Avoid Adding
-
-  Avoid native async-std/smol support in the core crates right now. The code is deeply Tokio-based; abstraction would be high-
-  maintenance and low near-term value.
-
-  Avoid putting database-backed session stores in the main crate. A file store or companion crate is enough; Postgres/Redis/Sled
-  adapters belong outside.
-
-  Avoid a high-level typed-topic DSL inside rumqttc. The repo already points users to mqtt-typed-client-next; duplicating it would
-  split ownership.
-
-  Avoid building a broker/router API into these client crates. Keep benchmark/router tooling separate.
-
-  Avoid automatic reconnect policy DSLs unless there is concrete demand. The externally-polled event loop is a core design
-  strength; document recipes first.
 
   Ranked Roadmap Before Release
 
