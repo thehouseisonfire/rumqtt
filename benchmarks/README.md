@@ -77,6 +77,8 @@ Each scenario declares:
 - `primary_metric`
 - `higher_is_better`
 - `requires_broker`
+- `[quality]` gates for success rate, run count, primary-metric noise, and
+  comparison CI width
 
 The runner validates these fields and fails if a benchmark result does not
 include the scenario's primary metric.
@@ -86,9 +88,21 @@ The runner writes generated reports under `benchmarks/results/`:
 - `summary.json`
 - `summary.csv`
 - `report.html`
+- `raw/current/*.json` for `run`
+- `raw/baseline/*.json` and `raw/target/*.json` for `compare`
 
 Reports classify comparisons with the scenario's metric direction:
 `improvement`, `regression`, or `inconclusive`.
+
+Branch comparisons are paired by measured run index after warmups. The runner
+reports medians, MAD, CV, success rate, paired sample count, confidence interval
+width, and scenario quality status. Quality failures are advisory in normal
+runs: they are recorded as `pass`, `warn`, or `fail` but do not change the exit
+code unless a benchmark command fails or emits invalid JSON.
+
+Summaries include the command template, git refs, scenario file SHA-256, rustc,
+OS, CPU count, and pointers to raw run records. Raw records keep the parsed
+benchmark payloads so results can be audited without rerunning the benchmark.
 
 ## Output Contract
 

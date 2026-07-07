@@ -6,6 +6,13 @@ primary_metric = "throughput_msg_sec"
 higher_is_better = true
 requires_broker = true
 
+[quality]
+min_success_rate = 0.95
+min_measured_runs = 5
+max_primary_cv_pct = 25.0
+max_primary_mad_pct = 15.0
+max_relative_ci_width_pct = 25.0
+
 [args]
 protocol = "v4"
 duration_sec = 10
