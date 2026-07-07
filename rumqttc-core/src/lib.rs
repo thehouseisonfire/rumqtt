@@ -116,16 +116,33 @@ impl TlsConfiguration {
     /// Panics if loading native certificates fails or a certificate cannot be
     /// inserted into the root store.
     pub fn default_rustls() -> Self {
+        Self::try_default_rustls().expect("could not build rustls platform cert configuration")
+    }
+
+    #[cfg(feature = "use-rustls-no-provider")]
+    /// Tries to build a rustls client configuration backed by the platform root store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if loading native certificates fails or a certificate
+    /// cannot be inserted into the root store.
+    pub fn try_default_rustls() -> Result<Self, TlsError> {
+        let builder = tls::rustls_client_config_builder()?;
         let mut root_cert_store = RootCertStore::empty();
-        for cert in load_native_certs().expect("could not load platform certs") {
-            root_cert_store.add(cert).unwrap();
+        let certs = load_native_certs();
+        if !certs.errors.is_empty() {
+            return Err(TlsError::NativeCerts(certs.errors));
         }
 
-        let tls_config = ClientConfig::builder()
+        for cert in certs.certs {
+            root_cert_store.add(cert)?;
+        }
+
+        let tls_config = builder
             .with_root_certificates(root_cert_store)
             .with_no_client_auth();
 
-        Self::Rustls(Arc::new(tls_config))
+        Ok(Self::Rustls(Arc::new(tls_config)))
     }
 
     #[cfg(feature = "use-native-tls")]
@@ -350,6 +367,31 @@ mod tests {
         assert!(matches!(
             TlsConfiguration::default_rustls(),
             TlsConfiguration::Rustls(_)
+        ));
+    }
+
+    #[cfg(all(
+        feature = "use-rustls-no-provider",
+        any(feature = "use-rustls-aws-lc", feature = "use-rustls-ring")
+    ))]
+    #[test]
+    fn try_default_rustls_returns_rustls_variant() {
+        assert!(matches!(
+            TlsConfiguration::try_default_rustls(),
+            Ok(TlsConfiguration::Rustls(_))
+        ));
+    }
+
+    #[cfg(all(
+        feature = "use-rustls-no-provider",
+        not(feature = "use-rustls-aws-lc"),
+        not(feature = "use-rustls-ring")
+    ))]
+    #[test]
+    fn try_default_rustls_errors_without_crypto_provider() {
+        assert!(matches!(
+            TlsConfiguration::try_default_rustls(),
+            Err(super::TlsError::CryptoProviderUnavailable)
         ));
     }
 

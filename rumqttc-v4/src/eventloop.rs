@@ -1376,11 +1376,7 @@ async fn network_connect(
         ),
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         Transport::Tls(tls_config) => {
-            let (host, port) = options
-                .broker()
-                .tcp_address()
-                .expect("tls transport requires a tcp broker");
-            let socket = tls::tls_connect(host, port, &tls_config, tcp_stream).await?;
+            let socket = tls::tls_connect(&domain, port, &tls_config, tcp_stream).await?;
             Network::new(
                 socket,
                 options.max_incoming_packet_size,
@@ -1394,7 +1390,7 @@ async fn network_connect(
             let mut request = options
                 .broker()
                 .websocket_url()
-                .expect("ws transport requires a websocket broker")
+                .ok_or(ConnectionError::BrokerTransportMismatch)?
                 .into_client_request()?;
             request
                 .headers_mut()
@@ -1426,7 +1422,7 @@ async fn network_connect(
             let mut request = options
                 .broker()
                 .websocket_url()
-                .expect("wss transport requires a websocket broker")
+                .ok_or(ConnectionError::BrokerTransportMismatch)?
                 .into_client_request()?;
             request
                 .headers_mut()

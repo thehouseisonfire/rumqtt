@@ -70,10 +70,10 @@ type FallibleRequestModifierFn = Arc<
 mod proxy;
 
 pub use client::{
-    AsyncClient, AsyncClientBuilder, Client, ClientBuilder, ClientError, Connection,
-    IntoPublishPayload, InvalidTopic, InvalidTopicFilter, Iter, ManualAck, PublishOptions,
-    PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter, TryRecvError,
-    ValidatedTopic, ValidatedTopicFilter,
+    AsyncClient, AsyncClientBuilder, Client, ClientBuildError, ClientBuilder, ClientError,
+    Connection, IntoPublishPayload, InvalidTopic, InvalidTopicFilter, Iter, ManualAck,
+    PublishOptions, PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter,
+    TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
 pub use eventloop::{ConnectionError, Event, EventLoop};
 pub use mqttbytes::v4::*;
@@ -665,6 +665,36 @@ impl MqttOptions {
         &self.broker
     }
 
+    /// Validate locally-checkable MQTT option invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] for invalid broker/transport combinations or
+    /// option values that can be detected before opening a network connection.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !broker_transport_matches(&self.broker, &self.transport) {
+            return Err(ConfigError::BrokerTransportMismatch);
+        }
+
+        if !self.clean_session && self.client_id.is_empty() {
+            return Err(ConfigError::PersistentSessionRequiresClientId);
+        }
+
+        if self.inflight == 0 {
+            return Err(ConfigError::Inflight);
+        }
+
+        if self.max_incoming_packet_size == 0 {
+            return Err(ConfigError::MaxIncomingPacketSize);
+        }
+
+        if self.max_outgoing_packet_size == 0 {
+            return Err(ConfigError::MaxOutgoingPacketSize);
+        }
+
+        Ok(())
+    }
+
     pub fn set_last_will(&mut self, will: LastWill) -> &mut Self {
         self.last_will = Some(will);
         self
@@ -672,6 +702,21 @@ impl MqttOptions {
 
     pub fn last_will(&self) -> Option<LastWill> {
         self.last_will.clone()
+    }
+
+    /// Try to set the client identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if `client_id`
+    /// is empty when `clean_session` is false.
+    pub fn try_set_client_id(&mut self, client_id: String) -> Result<&mut Self, ConfigError> {
+        if client_id.is_empty() && !self.clean_session {
+            return Err(ConfigError::PersistentSessionRequiresClientId);
+        }
+
+        self.client_id = client_id;
+        Ok(self)
     }
 
     /// Set the client identifier.
@@ -687,12 +732,8 @@ impl MqttOptions {
     /// options.set_client_id("".to_owned());
     /// ```
     pub fn set_client_id(&mut self, client_id: String) -> &mut Self {
-        assert!(
-            !client_id.is_empty() || self.clean_session,
-            "Cannot set empty client id when clean session is false"
-        );
-        self.client_id = client_id;
-        self
+        self.try_set_client_id(client_id)
+            .expect("Cannot set empty client id when clean session is false")
     }
 
     #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
@@ -748,6 +789,29 @@ impl MqttOptions {
     /// operations on the client when reconnection with same `client_id`
     /// happens. Local queue state is also held to retransmit packets after reconnection.
     ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if
+    /// `clean_session` is false when `client_id` is empty.
+    pub const fn try_set_clean_session(
+        &mut self,
+        clean_session: bool,
+    ) -> Result<&mut Self, ConfigError> {
+        if self.client_id.is_empty() && !clean_session {
+            return Err(ConfigError::PersistentSessionRequiresClientId);
+        }
+
+        self.clean_session = clean_session;
+        Ok(self)
+    }
+
+    /// `clean_session = true` removes all the state from queues & instructs the broker
+    /// to clean all the client state when client disconnects.
+    ///
+    /// When set `false`, broker will hold the client state and performs pending
+    /// operations on the client when reconnection with same `client_id`
+    /// happens. Local queue state is also held to retransmit packets after reconnection.
+    ///
     /// # Panics
     ///
     /// Panics if `clean_session` is false when `client_id` is empty.
@@ -758,12 +822,21 @@ impl MqttOptions {
     /// options.set_clean_session(false);
     /// ```
     pub fn set_clean_session(&mut self, clean_session: bool) -> &mut Self {
-        assert!(
-            !self.client_id.is_empty() || clean_session,
-            "Cannot unset clean session when client id is empty"
-        );
-        self.clean_session = clean_session;
-        self
+        self.try_set_clean_session(clean_session)
+            .expect("Cannot unset clean session when client id is empty")
+    }
+
+    /// Try to set whether this client uses a clean or persistent session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if mode is
+    /// [`SessionMode::Persistent`] when `client_id` is empty.
+    pub const fn try_set_session_mode(
+        &mut self,
+        mode: SessionMode,
+    ) -> Result<&mut Self, ConfigError> {
+        self.try_set_clean_session(matches!(mode, SessionMode::Clean))
     }
 
     /// Set whether this client uses a clean or persistent session.
@@ -772,7 +845,8 @@ impl MqttOptions {
     ///
     /// Panics if mode is [`SessionMode::Persistent`] when `client_id` is empty.
     pub fn set_session_mode(&mut self, mode: SessionMode) -> &mut Self {
-        self.set_clean_session(matches!(mode, SessionMode::Clean))
+        self.try_set_session_mode(mode)
+            .expect("Cannot unset clean session when client id is empty")
     }
 
     /// Clean session
@@ -919,16 +993,28 @@ impl MqttOptions {
         self.pending_throttle
     }
 
+    /// Try to set number of concurrent in flight messages
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Inflight`] if `inflight` is zero.
+    pub const fn try_set_inflight(&mut self, inflight: u16) -> Result<&mut Self, ConfigError> {
+        if inflight == 0 {
+            return Err(ConfigError::Inflight);
+        }
+
+        self.inflight = inflight;
+        Ok(self)
+    }
+
     /// Set number of concurrent in flight messages
     ///
     /// # Panics
     ///
     /// Panics if `inflight` is zero.
     pub fn set_inflight(&mut self, inflight: u16) -> &mut Self {
-        assert!(inflight != 0, "zero in flight is not allowed");
-
-        self.inflight = inflight;
-        self
+        self.try_set_inflight(inflight)
+            .expect("zero in flight is not allowed")
     }
 
     /// Number of concurrent in flight messages
@@ -1128,6 +1214,16 @@ impl MqttOptionsBuilder {
     #[must_use]
     pub fn build(self) -> MqttOptions {
         self.options
+    }
+
+    /// Try to build the configured [`MqttOptions`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the configured options are locally invalid.
+    pub fn try_build(self) -> Result<MqttOptions, ConfigError> {
+        self.options.validate()?;
+        Ok(self.options)
     }
 
     /// Set the last will.
@@ -1343,6 +1439,38 @@ impl MqttOptionsBuilder {
     }
 }
 
+fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
+    match transport {
+        Transport::Tcp => broker.tcp_address().is_some(),
+        #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+        Transport::Tls(_) => broker.tcp_address().is_some(),
+        #[cfg(unix)]
+        Transport::Unix => broker.unix_path().is_some(),
+        #[cfg(feature = "websocket")]
+        Transport::Ws => broker.websocket_url().is_some(),
+        #[cfg(all(
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+            feature = "websocket"
+        ))]
+        Transport::Wss(_) => broker.websocket_url().is_some(),
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    #[error("Broker target is incompatible with the selected transport")]
+    BrokerTransportMismatch,
+    #[error("MQTT 3.1.1 persistent sessions require a non-empty client ID")]
+    PersistentSessionRequiresClientId,
+    #[error("Invalid max-incoming-packet-size value")]
+    MaxIncomingPacketSize,
+    #[error("Invalid max-outgoing-packet-size value")]
+    MaxOutgoingPacketSize,
+    #[error("Invalid inflight value")]
+    Inflight,
+}
+
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OptionError {
@@ -1397,6 +1525,9 @@ pub enum OptionError {
     #[error("Invalid inflight value.")]
     Inflight,
 
+    #[error("Invalid configuration: {0}")]
+    Config(#[from] ConfigError),
+
     #[error("Unknown option: {0}")]
     Unknown(String),
 
@@ -1449,7 +1580,7 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             .map(|v| v.parse::<bool>().map_err(|_| OptionError::CleanSession))
             .transpose()?
         {
-            options.set_clean_session(clean_session);
+            options.try_set_clean_session(clean_session)?;
         }
 
         set_url_credentials(&mut options, &url);
@@ -1513,12 +1644,14 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             .map(|v| v.parse::<u16>().map_err(|_| OptionError::Inflight))
             .transpose()?
         {
-            options.set_inflight(inflight);
+            options.try_set_inflight(inflight)?;
         }
 
         if let Some((opt, _)) = queries.into_iter().next() {
             return Err(OptionError::Unknown(opt.into_owned()));
         }
+
+        options.validate()?;
 
         Ok(options)
     }
@@ -2287,6 +2420,70 @@ mod test {
     }
 
     #[test]
+    fn try_set_clean_session_reports_empty_client_id_error() {
+        let mut options = MqttOptions::new("", "127.0.0.1");
+        assert!(matches!(
+            options.try_set_clean_session(false),
+            Err(ConfigError::PersistentSessionRequiresClientId)
+        ));
+    }
+
+    #[test]
+    fn try_set_inflight_reports_zero_error() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        assert!(matches!(
+            options.try_set_inflight(0),
+            Err(ConfigError::Inflight)
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_zero_packet_sizes() {
+        let mut options = MqttOptions::new("client_id", "127.0.0.1");
+        options.set_max_packet_size(0, 1024);
+        assert_eq!(options.validate(), Err(ConfigError::MaxIncomingPacketSize));
+
+        options.set_max_packet_size(1024, 0);
+        assert_eq!(options.validate(), Err(ConfigError::MaxOutgoingPacketSize));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_rejects_unix_broker_with_tcp_transport() {
+        let mut options = MqttOptions::new("client_id", Broker::unix("/tmp/mqtt.sock"));
+        options.set_transport(Transport::tcp());
+        assert_eq!(
+            options.validate(),
+            Err(ConfigError::BrokerTransportMismatch)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "websocket")]
+    fn validate_rejects_tcp_broker_with_websocket_transport() {
+        let mut options = MqttOptions::new("client_id", "localhost");
+        options.set_transport(Transport::ws());
+        assert_eq!(
+            options.validate(),
+            Err(ConfigError::BrokerTransportMismatch)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "websocket")]
+    fn async_client_try_build_rejects_invalid_options() {
+        let mut options = MqttOptions::new("client_id", "localhost");
+        options.set_transport(Transport::ws());
+
+        assert!(matches!(
+            AsyncClient::builder(options).try_build(),
+            Err(ClientBuildError::Config(
+                ConfigError::BrokerTransportMismatch
+            ))
+        ));
+    }
+
+    #[test]
     fn read_batch_size_defaults_to_adaptive() {
         let options = MqttOptions::new("client_id", "127.0.0.1");
         assert_eq!(options.read_batch_size(), 0);
@@ -2327,11 +2524,24 @@ mod test {
         );
     }
 
-    /// MQTT-3.1.3-7: URL parsing with empty client_id and clean_session=false must panic.
+    /// MQTT-3.1.3-7: URL parsing with empty client_id and clean_session=false must error.
     #[test]
     #[cfg(feature = "url")]
-    #[should_panic(expected = "Cannot unset clean session when client id is empty")]
-    fn parse_url_panics_on_clean_session_false_with_empty_client_id() {
-        MqttOptions::parse_url("mqtt://127.0.0.1?client_id=&clean_session=false").unwrap();
+    fn parse_url_errors_on_clean_session_false_with_empty_client_id() {
+        assert!(matches!(
+            MqttOptions::parse_url("mqtt://127.0.0.1?client_id=&clean_session=false"),
+            Err(OptionError::Config(
+                ConfigError::PersistentSessionRequiresClientId
+            ))
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "url")]
+    fn parse_url_errors_on_zero_inflight() {
+        assert!(matches!(
+            MqttOptions::parse_url("mqtt://127.0.0.1?client_id=client&inflight_num=0"),
+            Err(OptionError::Config(ConfigError::Inflight))
+        ));
     }
 }

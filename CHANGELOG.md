@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v4/v5: Add fallible TLS defaults, MQTT option validation, fallible option/client builders, and v4 fallible setters for configuration paths that can fail before connecting.
 - `rumqttc` v4/v5: Add `ValidatedTopicFilter`, `TopicFilter`, and `SubscribeFilterInput` for reusable validated MQTT topic filters in subscribe and unsubscribe APIs, plus high-level multi-unsubscribe methods.
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.
 - `rumqttc` v4: Add opt-in client-side persistent session storage via `SessionStore`, `PersistedSession`,
@@ -32,6 +33,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Return a TLS error from fallible rustls default configuration helpers when no `CryptoProvider` is available, instead of panicking in `ClientConfig::builder()`.
 - `rumqttc` v5: Complete tracked publish/subscribe/unsubscribe notices only after updated persistent session state is saved. If the configured `SessionStore` fails at this durability barrier, notices now report `SessionPersistence(...)` errors instead of success.
 - `rumqttc` v5: Enforce CONNACK `Retain Available = 0` per MQTT-3.2.2-14 by rejecting retained outbound publishes, including reconnect replays, without dropping the active connection; tracked publishes report `PublishNoticeError::RetainNotSupported`.
 - `rumqttc` v4/v5: Fix graceful disconnect after subscribe/unsubscribe packet-id gaps so completed publishes do not leave stale outbound drain tracking and prevent MQTT `DISCONNECT`.

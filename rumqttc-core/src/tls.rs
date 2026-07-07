@@ -2,7 +2,8 @@
 use tokio_rustls::TlsConnector as RustlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
 use tokio_rustls::rustls::{
-    self, ClientConfig, RootCertStore,
+    self, ClientConfig, ConfigBuilder, RootCertStore, WantsVerifier,
+    crypto::CryptoProvider,
     pki_types::{CertificateDer, InvalidDnsNameError, PrivateKeyDer, ServerName, pem::PemObject},
 };
 
@@ -43,6 +44,16 @@ pub enum Error {
     #[error("TLS error: {0}")]
     TLS(#[from] rustls::Error),
     #[cfg(feature = "use-rustls-no-provider")]
+    /// Errors returned while loading platform-native certificates.
+    #[error("Native certificate loading failed: {0:?}")]
+    NativeCerts(Vec<rustls_native_certs::Error>),
+    #[cfg(feature = "use-rustls-no-provider")]
+    /// No rustls crypto provider is available for implicit configuration.
+    #[error(
+        "No rustls CryptoProvider is available; install a process default provider or enable exactly one rustls provider feature"
+    )]
+    CryptoProviderUnavailable,
+    #[cfg(feature = "use-rustls-no-provider")]
     #[error("PEM parsing error: {0}")]
     Pem(#[from] rustls::pki_types::pem::Error),
     #[cfg(feature = "use-rustls-no-provider")]
@@ -66,6 +77,48 @@ pub enum Error {
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
+type RustlsClientConfigBuilder = ConfigBuilder<ClientConfig, WantsVerifier>;
+
+#[cfg(feature = "use-rustls-no-provider")]
+fn rustls_crypto_provider() -> Result<Arc<CryptoProvider>, Error> {
+    if let Some(provider) = CryptoProvider::get_default() {
+        return Ok(Arc::clone(provider));
+    }
+
+    let provider: Option<CryptoProvider> = {
+        #[cfg(all(feature = "use-rustls-ring", not(feature = "use-rustls-aws-lc")))]
+        {
+            Some(rustls::crypto::ring::default_provider())
+        }
+
+        #[cfg(all(feature = "use-rustls-aws-lc", not(feature = "use-rustls-ring")))]
+        {
+            Some(rustls::crypto::aws_lc_rs::default_provider())
+        }
+
+        #[cfg(not(any(
+            all(feature = "use-rustls-ring", not(feature = "use-rustls-aws-lc")),
+            all(feature = "use-rustls-aws-lc", not(feature = "use-rustls-ring"))
+        )))]
+        {
+            None
+        }
+    };
+
+    provider
+        .map(Arc::new)
+        .ok_or(Error::CryptoProviderUnavailable)
+}
+
+#[cfg(feature = "use-rustls-no-provider")]
+pub(crate) fn rustls_client_config_builder() -> Result<RustlsClientConfigBuilder, Error> {
+    Ok(
+        ClientConfig::builder_with_provider(rustls_crypto_provider()?)
+            .with_safe_default_protocol_versions()?,
+    )
+}
+
+#[cfg(feature = "use-rustls-no-provider")]
 pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector, Error> {
     let config = match tls_config {
         TlsConfiguration::Simple {
@@ -83,7 +136,7 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
                 return Err(Error::NoValidCertInChain);
             }
 
-            let config = ClientConfig::builder().with_root_certificates(root_cert_store);
+            let config = rustls_client_config_builder()?.with_root_certificates(root_cert_store);
 
             // Add der encoded client cert and key
             let mut config = if let Some(client) = client_auth.as_ref() {
