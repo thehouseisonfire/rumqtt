@@ -31,10 +31,13 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macOS-latest
+          - macos-15
           - windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - name: Clone sibling mqtt-typed-client-next repo
+        run: git clone --depth 1 https://github.com/thehouseisonfire/mqtt-typed-client-next.git ${{ github.workspace }}/../mqtt-typed-client-next
 
       # use mold linker instead of the default linker only on linux
       - uses: rui314/setup-mold@v1
