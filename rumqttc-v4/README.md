@@ -21,8 +21,9 @@ cargo add rumqttc-v4-next
 
 For applications that want typed topic declarations, generated publish/subscribe
 helpers, and payload serialization on top of this client, use the companion
-`mqtt-typed-client-next` fork with its `rumqttc-v4` feature enabled. See
-`examples/typed_client_v4.rs` in this crate for a runnable integration example.
+[`mqtt-typed-client-next`](https://github.com/thehouseisonfire/mqtt-typed-client-next)
+crate with its `rumqttc-v4` feature enabled. See the `rumqttc_v4_typed_client`
+example in that repo for a runnable integration sample.
 
 ## Examples
 
