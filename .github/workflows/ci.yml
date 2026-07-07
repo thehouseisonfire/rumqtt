@@ -7,6 +7,7 @@ on:
       - '**.rs'
       - 'Cargo.*'
       - '*/Cargo.*'
+      - 'benchmarks/**'
       - '.github/workflows/*'
   push:
     branches:
@@ -161,6 +162,39 @@ jobs:
           file: ./coverage.lcov
           parallel: true
           flag-name: run-${{ matrix.os }}-cargo
+
+  benchmark-broker-fixture:
+    name: Benchmark broker fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: Linux-cargo-benchmark-fixture
+
+      - name: Check benchmark fixture
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+            cargo check -p benchmarks --features websocket --all-targets
+            python3 -m compileall benchmarks/runner.py benchmarks/broker_fixture.py
+            python3 -m unittest benchmarks/tests/test_runner.py benchmarks/tests/test_broker_fixture.py
+
+      - name: Validate websocket benchmark scenarios
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+            python3 benchmarks/broker_fixture.py validate \
+              --transport websocket \
+              --scenario client-v4-throughput-websocket-qos1-1kib-1p1s \
+              --scenario client-v5-throughput-websocket-qos1-1kib-1p1s \
+              --runs 1 \
+              --warmup-runs 0 \
+              --cargo-profile dev \
+              --output-dir /tmp/rumqtt-bench-websocket-fixture
 
   finish-coverage:
     needs: [test]

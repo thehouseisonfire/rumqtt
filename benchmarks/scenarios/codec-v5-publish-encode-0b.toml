@@ -1,0 +1,21 @@
+name = "codec-v5-publish-encode-0b"
+group = "codec"
+command = "encode"
+description = "MQTT 5 publish packet encode throughput with a 0 byte payload."
+primary_metric = "messages_sec"
+higher_is_better = true
+requires_broker = false
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 5
+max_primary_cv_pct = 10.0
+max_primary_mad_pct = 5.0
+max_relative_ci_width_pct = 10.0
+
+[args]
+protocol = "v5"
+messages = 100000
+payload_size = 0
+qos = 1
+topic = "bench/codec/v5/encode/0b"

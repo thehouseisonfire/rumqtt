@@ -24,6 +24,8 @@ from typing import Any
 
 OUTPUT_SCHEMA_VERSION = 1
 VALID_CARGO_PROFILES = {"dev", "release"}
+VALID_TRANSPORTS = {"tcp", "tls", "websocket"}
+VALID_CARGO_FEATURES = {"url", "websocket"}
 QUALITY_FIELDS = {
     "min_success_rate",
     "min_measured_runs",
@@ -112,21 +114,48 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
     for key in ("higher_is_better", "requires_broker"):
         if not isinstance(scenario.get(key), bool):
             raise RuntimeError(f"{path}: missing boolean field '{key}'")
-    if scenario["group"] not in {"client", "codec"}:
-        raise RuntimeError(f"{path}: group must be 'client' or 'codec'")
+    if scenario["group"] not in {"client", "codec", "options"}:
+        raise RuntimeError(f"{path}: group must be 'client', 'codec', or 'options'")
     commands = {
         "client": {"throughput", "latency", "connections"},
         "codec": {"encode", "decode", "roundtrip"},
+        "options": {"parse-url"},
     }
     if scenario["command"] not in commands[scenario["group"]]:
         raise RuntimeError(f"{path}: unsupported command for group '{scenario['group']}'")
     if "args" in scenario and not isinstance(scenario["args"], dict):
         raise RuntimeError(f"{path}: args must be a table")
+    validate_transport(path, scenario)
+    validate_cargo_features(path, scenario.get("cargo_features"))
     expected_requires_broker = scenario["group"] == "client"
     if scenario["requires_broker"] != expected_requires_broker:
         expected = "true" if expected_requires_broker else "false"
         raise RuntimeError(f"{path}: requires_broker must be {expected} for {scenario['group']} scenarios")
     validate_quality(path, scenario.get("quality"))
+
+
+def validate_transport(path: Path, scenario: dict[str, Any]) -> None:
+    transport = scenario.get("transport")
+    if transport is None:
+        return
+    if scenario["group"] != "client":
+        raise RuntimeError(f"{path}: transport is only supported for client scenarios")
+    if not isinstance(transport, str) or transport not in VALID_TRANSPORTS:
+        allowed = ", ".join(sorted(VALID_TRANSPORTS))
+        raise RuntimeError(f"{path}: transport must be one of: {allowed}")
+
+
+def validate_cargo_features(path: Path, features: Any) -> None:
+    if features is None:
+        return
+    if not isinstance(features, list):
+        raise RuntimeError(f"{path}: cargo_features must be an array")
+    for feature in features:
+        if not isinstance(feature, str) or not feature:
+            raise RuntimeError(f"{path}: cargo_features entries must be non-empty strings")
+        if feature not in VALID_CARGO_FEATURES:
+            allowed = ", ".join(sorted(VALID_CARGO_FEATURES))
+            raise RuntimeError(f"{path}: unsupported cargo feature '{feature}', expected one of: {allowed}")
 
 
 def validate_quality(path: Path, quality: Any) -> None:
@@ -157,7 +186,7 @@ def validate_quality(path: Path, quality: Any) -> None:
 
 
 def scenario_metadata(scenario: dict[str, Any]) -> dict[str, Any]:
-    return {
+    metadata = {
         "name": scenario["name"],
         "description": scenario["description"],
         "primary_metric": scenario["primary_metric"],
@@ -167,12 +196,37 @@ def scenario_metadata(scenario: dict[str, Any]) -> dict[str, Any]:
         "group": scenario["group"],
         "command": scenario["command"],
     }
+    if "transport" in scenario:
+        metadata["transport"] = scenario["transport"]
+    if "cargo_features" in scenario:
+        metadata["cargo_features"] = list(scenario["cargo_features"])
+    return metadata
 
 
 def validate_broker_requirement(scenario: dict[str, Any], broker_url: str | None) -> None:
     if scenario["requires_broker"] and broker_url is None:
+        example_scheme = {
+            "tcp": "mqtt",
+            "tls": "mqtts",
+            "websocket": "ws",
+        }.get(scenario.get("transport"), "mqtt")
         raise RuntimeError(
-            f"{scenario['name']} requires an external broker; pass --broker-url mqtt://host:port"
+            f"{scenario['name']} requires an external broker; "
+            f"pass --broker-url {example_scheme}://host:port"
+        )
+    if broker_url is None or "transport" not in scenario:
+        return
+    scheme = broker_url.split(":", 1)[0].lower()
+    expected_schemes = {
+        "tcp": {"mqtt"},
+        "tls": {"mqtts", "ssl"},
+        "websocket": {"ws"},
+    }[scenario["transport"]]
+    if scheme not in expected_schemes:
+        expected = ", ".join(f"{value}://" for value in sorted(expected_schemes))
+        raise RuntimeError(
+            f"{scenario['name']} expects {scenario['transport']} broker transport; "
+            f"use one of: {expected}"
         )
 
 
@@ -190,6 +244,9 @@ def scenario_command(
     cmd = ["cargo", "run"]
     if cargo_profile == "release":
         cmd.append("--release")
+    cargo_features = sorted(set(scenario.get("cargo_features", [])))
+    if cargo_features:
+        cmd.extend(["--features", ",".join(cargo_features)])
     cmd.extend([
         "-p",
         "benchmarks",
@@ -453,6 +510,10 @@ def metric_higher_is_better(scenario: dict[str, Any], metric: str) -> bool:
         metric == "elapsed_sec"
         or metric == "failed"
         or metric.startswith("connect_")
+        or metric.endswith("_us")
+        or (metric.startswith("rss_") and metric.endswith("_bytes"))
+        or metric.endswith("_growth_bytes")
+        or metric.endswith("_collapse_pct")
         or metric in {"min", "max", "mean", "p50", "p90", "p95", "p99"}
     )
     return not lower_is_better

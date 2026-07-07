@@ -1,7 +1,7 @@
-name = "client-v5-connections-tcp"
+name = "client-v4-connections-tcp"
 group = "client"
 command = "connections"
-description = "MQTT 5 TCP connect/disconnect churn against an external broker."
+description = "MQTT 3.1.1 TCP connect/disconnect churn against an external broker."
 primary_metric = "connections_sec"
 higher_is_better = true
 requires_broker = true
@@ -15,6 +15,6 @@ max_primary_mad_pct = 20.0
 max_relative_ci_width_pct = 30.0
 
 [args]
-protocol = "v5"
+protocol = "v4"
 duration_sec = 10
 concurrency = 10
