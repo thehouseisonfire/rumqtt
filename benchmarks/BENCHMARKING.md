@@ -40,8 +40,12 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
   intervals.
 - Keep `--runs`, `--warmup-runs`, scenario arguments, broker URL, and cargo
   profile identical across baseline and target.
-- Prefer `compare` for regressions because it alternates branch order by
-  default, reducing bias from temperature and background drift.
+- Prefer `compare` for regressions. It alternates branch order by default and
+  compares paired measured runs after warmups, reducing bias from temperature
+  and background drift.
+- Treat each scenario's `[quality]` table as part of the benchmark definition.
+  Do not loosen gates after seeing a result; change them only when the scenario
+  itself changes or experience shows the threshold is unrealistic.
 
 ## Interpreting Results
 
@@ -50,7 +54,11 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
 - `improvement` and `regression` classifications use the configured metric
   direction. For latency scenarios, lower is better. For throughput and
   connection-rate scenarios, higher is better.
-- Treat `inconclusive` as "run more or reduce noise", not as "no change".
-- Keep the generated `summary.json` with any claim; it records the scenario,
-  command, raw run payloads, git refs, and environment fields emitted by the
-  benchmark binary.
+- Treat `inconclusive` as "run more or reduce noise", not as "no change". A
+  result can be inconclusive because the confidence interval crosses zero or
+  because its CI width exceeds the scenario quality gate.
+- Check MAD and CV before trusting a median. High MAD or CV means the scenario
+  is noisy even if the point estimate looks large.
+- Keep the generated `summary.json` and `raw/` directory with any claim. The
+  summary records scenario hash, command, git refs, rustc, OS, CPU count, and
+  quality status; raw files keep the full parsed benchmark payloads.
