@@ -6,7 +6,6 @@ This repo is a Rust workspace. Main members are:
 - `rumqttc-v5/`: MQTT 5 client crate.
 - `benchmarks/` and `benchmarks/simplerouter/`: performance tooling and benchmark helpers.
 - `docs/`: design notes and contributor conduct docs.
-- `utils/mqttverifier/`: Node.js scripts to generating bytes for protocol verification.
 
 Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.
 
