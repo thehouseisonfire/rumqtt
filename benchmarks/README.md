@@ -65,14 +65,50 @@ python3 benchmarks/runner.py compare \
   --warmup-runs 1
 ```
 
+The runner uses `cargo run --release` by default. Use `--cargo-profile dev`
+only when debugging the harness itself.
+
 For client scenarios, pass `--broker-url mqtt://host:port`. For TLS, use
 `mqtts://host:port` and pass `--ca-cert /path/to/ca.pem`.
+
+Each scenario declares:
+
+- `description`
+- `primary_metric`
+- `higher_is_better`
+- `requires_broker`
+
+The runner validates these fields and fails if a benchmark result does not
+include the scenario's primary metric.
 
 The runner writes generated reports under `benchmarks/results/`:
 
 - `summary.json`
 - `summary.csv`
 - `report.html`
+
+Reports classify comparisons with the scenario's metric direction:
+`improvement`, `regression`, or `inconclusive`.
+
+## Output Contract
+
+`rumqtt-bench` emits JSON schema version 1. The machine-readable contract is
+`benchmarks/schema/rumqtt-bench-output-v1.schema.json`. The runner validates the
+same stable top-level shape:
+
+- `schema_version` must be `1`
+- `run_id` and `scenario` are non-empty strings
+- `started_at_unix` and `finished_at_unix` are Unix timestamp integers
+- `config`, `metrics`, `samples`, and `environment` are objects
+- every metric value is numeric
+- every sample series is an array of numbers
+
+## Running Meaningful Benchmarks
+
+Read `benchmarks/BENCHMARKING.md` before using results for performance claims.
+In short: use release mode, an idle machine, stable CPU frequency, consistent
+broker placement, warmup runs, and enough repeated runs to avoid drawing
+conclusions from noise.
 
 ## CI Contract
 

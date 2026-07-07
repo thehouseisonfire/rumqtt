@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bytebeamio/rumqtt/benchmarks/schema/rumqtt-bench-output-v1.schema.json",
+  "title": "rumqtt-bench output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "scenario",
+    "started_at_unix",
+    "finished_at_unix",
+    "config",
+    "metrics",
+    "samples",
+    "environment"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenario": {
+      "type": "string",
+      "minLength": 1
+    },
+    "started_at_unix": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "finished_at_unix": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "config": {
+      "type": "object"
+    },
+    "metrics": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "samples": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "git_commit",
+        "rustc",
+        "target",
+        "os",
+        "arch",
+        "cpu_count"
+      ],
+      "properties": {
+        "git_commit": {
+          "type": ["string", "null"]
+        },
+        "rustc": {
+          "type": ["string", "null"]
+        },
+        "target": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "cpu_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

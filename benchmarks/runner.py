@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 
+OUTPUT_SCHEMA_VERSION = 1
+VALID_CARGO_PROFILES = {"dev", "release"}
+
+
 def run_process(
     cmd: list[str],
     *,
@@ -70,9 +74,14 @@ def load_scenario(root: Path, scenario: str) -> tuple[Path, dict[str, Any]]:
 
 
 def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
-    for key in ("name", "group", "command"):
+    for key in ("name", "group", "command", "description", "primary_metric"):
         if not isinstance(scenario.get(key), str):
             raise RuntimeError(f"{path}: missing string field '{key}'")
+        if not scenario[key].strip():
+            raise RuntimeError(f"{path}: field '{key}' must not be empty")
+    for key in ("higher_is_better", "requires_broker"):
+        if not isinstance(scenario.get(key), bool):
+            raise RuntimeError(f"{path}: missing boolean field '{key}'")
     if scenario["group"] not in {"client", "codec"}:
         raise RuntimeError(f"{path}: group must be 'client' or 'codec'")
     commands = {
@@ -83,6 +92,29 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
         raise RuntimeError(f"{path}: unsupported command for group '{scenario['group']}'")
     if "args" in scenario and not isinstance(scenario["args"], dict):
         raise RuntimeError(f"{path}: args must be a table")
+    expected_requires_broker = scenario["group"] == "client"
+    if scenario["requires_broker"] != expected_requires_broker:
+        expected = "true" if expected_requires_broker else "false"
+        raise RuntimeError(f"{path}: requires_broker must be {expected} for {scenario['group']} scenarios")
+
+
+def scenario_metadata(scenario: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": scenario["name"],
+        "description": scenario["description"],
+        "primary_metric": scenario["primary_metric"],
+        "higher_is_better": scenario["higher_is_better"],
+        "requires_broker": scenario["requires_broker"],
+        "group": scenario["group"],
+        "command": scenario["command"],
+    }
+
+
+def validate_broker_requirement(scenario: dict[str, Any], broker_url: str | None) -> None:
+    if scenario["requires_broker"] and broker_url is None:
+        raise RuntimeError(
+            f"{scenario['name']} requires an external broker; pass --broker-url mqtt://host:port"
+        )
 
 
 def scenario_command(
@@ -91,10 +123,15 @@ def scenario_command(
     run_id: str,
     broker_url: str | None,
     ca_cert: str | None,
+    cargo_profile: str = "release",
 ) -> list[str]:
-    cmd = [
-        "cargo",
-        "run",
+    if cargo_profile not in VALID_CARGO_PROFILES:
+        raise RuntimeError(f"unsupported cargo profile: {cargo_profile}")
+
+    cmd = ["cargo", "run"]
+    if cargo_profile == "release":
+        cmd.append("--release")
+    cmd.extend([
         "-p",
         "benchmarks",
         "--bin",
@@ -102,7 +139,7 @@ def scenario_command(
         "--",
         scenario["group"],
         scenario["command"],
-    ]
+    ])
     args = dict(scenario.get("args", {}))
     args["run-id"] = run_id
     if broker_url is not None and scenario["group"] == "client":
@@ -121,13 +158,51 @@ def scenario_command(
     return cmd
 
 
-def read_benchmark_json(stdout: str) -> dict[str, Any]:
+def numeric_metric(metrics: dict[str, Any], metric: str) -> float:
+    value = metrics.get(metric)
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise RuntimeError(f"benchmark metric '{metric}' must be a finite number")
+    return float(value)
+
+
+def validate_benchmark_payload(data: dict[str, Any], scenario: dict[str, Any]) -> None:
+    if data.get("schema_version") != OUTPUT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"benchmark JSON schema_version must be {OUTPUT_SCHEMA_VERSION}, got {data.get('schema_version')!r}"
+        )
+    for key in ("run_id", "scenario"):
+        if not isinstance(data.get(key), str) or not data[key]:
+            raise RuntimeError(f"benchmark JSON field '{key}' must be a non-empty string")
+    for key in ("started_at_unix", "finished_at_unix"):
+        if isinstance(data.get(key), bool) or not isinstance(data.get(key), int):
+            raise RuntimeError(f"benchmark JSON field '{key}' must be an integer")
+    for key in ("config", "metrics", "samples", "environment"):
+        if not isinstance(data.get(key), dict):
+            raise RuntimeError(f"benchmark JSON field '{key}' must be an object")
+
+    metrics = data["metrics"]
+    for metric in metrics:
+        numeric_metric(metrics, metric)
+    numeric_metric(metrics, scenario["primary_metric"])
+
+    for sample_name, values in data["samples"].items():
+        if not isinstance(sample_name, str):
+            raise RuntimeError("benchmark sample names must be strings")
+        if not isinstance(values, list):
+            raise RuntimeError(f"benchmark samples.{sample_name} must be an array")
+        for value in values:
+            if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+                raise RuntimeError(f"benchmark samples.{sample_name} must contain only finite numbers")
+
+
+def read_benchmark_json(stdout: str, scenario: dict[str, Any]) -> dict[str, Any]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"benchmark stdout was not JSON: {exc}") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("metrics"), dict):
-        raise RuntimeError("benchmark JSON must be an object with a metrics object")
+    if not isinstance(data, dict):
+        raise RuntimeError("benchmark JSON must be an object")
+    validate_benchmark_payload(data, scenario)
     return data
 
 
@@ -138,6 +213,7 @@ def run_once(
     run_id: str,
     broker_url: str | None,
     ca_cert: str | None,
+    cargo_profile: str,
     timeout: int,
 ) -> dict[str, Any]:
     cmd = scenario_command(
@@ -145,6 +221,7 @@ def run_once(
         run_id=run_id,
         broker_url=broker_url,
         ca_cert=ca_cert,
+        cargo_profile=cargo_profile,
     )
     proc = run_process(cmd, cwd=root, timeout=timeout)
     result: dict[str, Any] = {
@@ -157,13 +234,7 @@ def run_once(
         result["ok"] = False
         result["error"] = proc.stderr.strip() or proc.stdout.strip()
         return result
-    try:
-        payload = read_benchmark_json(proc.stdout)
-    except RuntimeError as exc:
-        result["ok"] = False
-        result["error"] = str(exc)
-        result["stdout"] = proc.stdout
-        return result
+    payload = read_benchmark_json(proc.stdout, scenario)
 
     result["ok"] = True
     result["payload"] = payload
@@ -223,6 +294,7 @@ def bootstrap_delta(
     samples: int,
     confidence: float,
     rng: random.Random,
+    higher_is_better: bool,
 ) -> dict[str, Any]:
     if not baseline or not target:
         return {"error": "missing baseline or target values"}
@@ -249,24 +321,43 @@ def bootstrap_delta(
     high = deltas[hi_idx]
     point = ((target_median - base_median) / base_median) * 100.0
     classification = "inconclusive"
-    if low > 0:
-        classification = "increase"
+    if higher_is_better:
+        if low > 0:
+            classification = "improvement"
+        elif high < 0:
+            classification = "regression"
     elif high < 0:
-        classification = "decrease"
+        classification = "improvement"
+    elif low > 0:
+        classification = "regression"
     return {
         "baseline_median": base_median,
         "target_median": target_median,
         "relative_delta_pct": point,
         "relative_delta_ci_low_pct": low,
         "relative_delta_ci_high_pct": high,
+        "higher_is_better": higher_is_better,
         "classification": classification,
     }
+
+
+def metric_higher_is_better(scenario: dict[str, Any], metric: str) -> bool:
+    if metric == scenario["primary_metric"]:
+        return scenario["higher_is_better"]
+    lower_is_better = (
+        metric == "elapsed_sec"
+        or metric == "failed"
+        or metric.startswith("connect_")
+        or metric in {"min", "max", "mean", "p50", "p90", "p95", "p99"}
+    )
+    return not lower_is_better
 
 
 def compare_summaries(
     baseline_runs: list[dict[str, Any]],
     target_runs: list[dict[str, Any]],
     *,
+    scenario: dict[str, Any],
     bootstrap_samples: int,
     confidence: float,
 ) -> dict[str, Any]:
@@ -283,6 +374,7 @@ def compare_summaries(
             samples=bootstrap_samples,
             confidence=confidence,
             rng=random.Random(metric),
+            higher_is_better=metric_higher_is_better(scenario, metric),
         )
         for metric in metric_names
     }
@@ -297,6 +389,10 @@ def write_report(output_dir: Path, summary: dict[str, Any]) -> None:
     with (output_dir / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["section", "metric", "field", "value"])
+        metadata = summary.get("scenario_metadata", {})
+        if isinstance(metadata, dict):
+            for field, value in metadata.items():
+                writer.writerow(["metadata", "", field, value])
         for section in ("summary", "baseline", "target"):
             data = summary.get(section)
             if not isinstance(data, dict):
@@ -313,17 +409,28 @@ def write_report(output_dir: Path, summary: dict[str, Any]) -> None:
                 writer.writerow(["comparison", metric, field, value])
 
     html_rows = []
+    primary_metric = ""
+    metadata = summary.get("scenario_metadata", {})
+    if isinstance(metadata, dict):
+        primary_metric = str(metadata.get("primary_metric", ""))
     for metric, fields in summary.get("comparison", {}).items():
+        direction = "higher" if fields.get("higher_is_better") else "lower"
+        primary = "yes" if metric == primary_metric else ""
         html_rows.append(
             "<tr>"
             f"<td>{html.escape(metric)}</td>"
+            f"<td>{primary}</td>"
+            f"<td>{direction}</td>"
             f"<td>{fields.get('baseline_median', '-')}</td>"
             f"<td>{fields.get('target_median', '-')}</td>"
             f"<td>{fields.get('relative_delta_pct', '-')}</td>"
             f"<td>{html.escape(str(fields.get('classification', '-')))}</td>"
             "</tr>"
         )
-    html_body = "\n".join(html_rows) or "<tr><td colspan='5'>No comparison data</td></tr>"
+    html_body = "\n".join(html_rows) or "<tr><td colspan='7'>No comparison data</td></tr>"
+    description = ""
+    if isinstance(metadata, dict):
+        description = str(metadata.get("description", ""))
     (output_dir / "report.html").write_text(
         f"""<!doctype html>
 <html>
@@ -339,9 +446,10 @@ def write_report(output_dir: Path, summary: dict[str, Any]) -> None:
 </head>
 <body>
   <h1>{html.escape(summary.get("scenario", "rumqtt benchmark"))}</h1>
+  <p>{html.escape(description)}</p>
   <table>
     <thead>
-      <tr><th>Metric</th><th>Baseline median</th><th>Target median</th><th>Delta %</th><th>Class</th></tr>
+      <tr><th>Metric</th><th>Primary</th><th>Better</th><th>Baseline median</th><th>Target median</th><th>Delta %</th><th>Class</th></tr>
     </thead>
     <tbody>{html_body}</tbody>
   </table>
@@ -363,6 +471,7 @@ def default_output_dir(root: Path, kind: str) -> Path:
 def command_run(args: argparse.Namespace) -> None:
     root = repo_root()
     scenario_path, scenario = load_scenario(root, args.scenario)
+    validate_broker_requirement(scenario, args.broker_url)
     output_dir = Path(args.output_dir).resolve() if args.output_dir else default_output_dir(root, "runs")
     runs = []
     total = args.warmup_runs + args.runs
@@ -374,6 +483,7 @@ def command_run(args: argparse.Namespace) -> None:
             run_id=run_id,
             broker_url=args.broker_url,
             ca_cert=args.ca_cert,
+            cargo_profile=args.cargo_profile,
             timeout=args.timeout_sec,
         )
         run["is_warmup"] = index < args.warmup_runs
@@ -381,6 +491,7 @@ def command_run(args: argparse.Namespace) -> None:
     measured = [run for run in runs if not run["is_warmup"]]
     summary = {
         "scenario": scenario["name"],
+        "scenario_metadata": scenario_metadata(scenario),
         "scenario_path": str(scenario_path),
         "mode": "run",
         "runs": runs,
@@ -403,6 +514,7 @@ def remove_worktree(root: Path, path: Path) -> None:
 def command_compare(args: argparse.Namespace) -> None:
     root = repo_root()
     scenario_path, scenario = load_scenario(root, args.scenario)
+    validate_broker_requirement(scenario, args.broker_url)
     baseline_ref = resolve_ref(root, args.baseline_ref or current_ref(root))
     target_ref = resolve_ref(root, args.target_ref)
     output_dir = (
@@ -427,6 +539,7 @@ def command_compare(args: argparse.Namespace) -> None:
                     run_id=run_id,
                     broker_url=args.broker_url,
                     ca_cert=args.ca_cert,
+                    cargo_profile=args.cargo_profile,
                     timeout=args.timeout_sec,
                 )
                 run["is_warmup"] = index < args.warmup_runs
@@ -436,6 +549,7 @@ def command_compare(args: argparse.Namespace) -> None:
         target_measured = [run for run in runs["target"] if not run["is_warmup"]]
         summary = {
             "scenario": scenario["name"],
+            "scenario_metadata": scenario_metadata(scenario),
             "scenario_path": str(scenario_path),
             "mode": "compare",
             "baseline_ref": baseline_ref,
@@ -445,6 +559,7 @@ def command_compare(args: argparse.Namespace) -> None:
             "comparison": compare_summaries(
                 baseline_measured,
                 target_measured,
+                scenario=scenario,
                 bootstrap_samples=args.bootstrap_samples,
                 confidence=args.confidence,
             ),
@@ -468,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--warmup-runs", type=int, default=1)
     run.add_argument("--broker-url")
     run.add_argument("--ca-cert")
+    run.add_argument("--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release")
     run.add_argument("--timeout-sec", type=int, default=300)
     run.add_argument("--output-dir")
     run.set_defaults(func=command_run)
@@ -480,6 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--warmup-runs", type=int, default=1)
     compare.add_argument("--broker-url")
     compare.add_argument("--ca-cert")
+    compare.add_argument("--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release")
     compare.add_argument("--timeout-sec", type=int, default=300)
     compare.add_argument("--bootstrap-samples", type=int, default=1000)
     compare.add_argument("--confidence", type=float, default=0.95)
