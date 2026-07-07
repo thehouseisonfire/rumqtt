@@ -11,7 +11,7 @@ This crate keeps the library target name as `rumqttc` so application code can st
 Existing upstream `rumqttc` users should see the workspace [migration guide](../MIGRATION.md) for package names,
 API changes, and porting recipes.
 
-For production deployment patterns covering TLS, WebSockets, proxies,
+For production deployment patterns covering TLS, `WebSockets`, proxies,
 persistent sessions, reconnect handling, bounded channels, manual ACKs, and
 common brokers, see the workspace [recipe guide](../docs/recipes/README.md).
 
