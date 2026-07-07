@@ -58,15 +58,15 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y mosquitto
 
-      # - name: Check benchmarks
-      #   uses: actions-rs/cargo@v1
-      #   env:
-      #     RUSTFLAGS: "-D warnings"
-      #   # NOTE: benchmarks are limited to compiling only on non windows systems, without any features enabled.
-      #   if: ${{ matrix.os != 'windows-latest' && matrix.features == '--no-default-features' }}
-      #   with:
-      #     command: clippy
-      #     args: --verbose --all-targets -p benchmarks
+      - name: Check benchmarks
+        if: ${{ matrix.os != 'windows-latest' && matrix.features == '--no-default-features' }}
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+            cargo check -p benchmarks --all-targets
+            cargo test -p benchmarks --test codec_smoke
+            python3 -m compileall benchmarks/runner.py
+            python3 -m unittest benchmarks/tests/test_runner.py
 
       - name: Check rumqttc
         env:
