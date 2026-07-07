@@ -17,7 +17,7 @@ readme = "README.md"
 name = "rumqttc"
 
 [package.metadata.docs.rs]
-features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "url"]
+features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "url", "stream"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -30,8 +30,10 @@ use-native-tls = ["dep:tokio-native-tls", "dep:native-tls", "async-tungstenite?/
 websocket = ["dep:async-tungstenite", "dep:futures-io", "dep:http", "rumqttc-core/websocket"]
 proxy = ["dep:async-http-proxy", "rumqttc-core/proxy"]
 url = ["dep:url", "dep:percent-encoding"]
+stream = ["dep:futures-core"]
 
 [dependencies]
+futures-core = { version = "0.3", default-features = false, optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 futures-io = { version = "0.3", optional = true }
 tokio = { version = "1.40", features = ["rt", "macros", "io-util", "net", "time", "sync"] }
