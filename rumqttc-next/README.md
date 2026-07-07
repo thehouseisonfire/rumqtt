@@ -31,5 +31,6 @@ This crate forwards the MQTT 5 client features from `rumqttc-v5-next`, including
 - `proxy`
 - `auth-scram`
 - `url`
+- `stream`
 
 See the `rumqttc-v5-next` documentation for the full API and examples.

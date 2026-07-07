@@ -93,6 +93,46 @@ while let Ok(notification) = eventloop.poll().await {
 }
 ```
 
+Async stream adapter
+------------------------------
+
+Enable the `stream` feature to drive the event loop through
+`futures_core::Stream` while keeping the same externally-polled behavior.
+
+```rust,ignore
+use futures_util::{StreamExt, pin_mut};
+use rumqttc::{AsyncClient, Event, MqttOptions, Outgoing, QoS};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+let mqttoptions = MqttOptions::new("rumqtt-stream", "test.mosquitto.org");
+let (client, eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
+
+client.subscribe("hello/rumqtt", QoS::AtMostOnce).await.unwrap();
+
+let stream = eventloop.into_stream();
+pin_mut!(stream);
+let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+pin_mut!(shutdown_rx);
+let mut disconnecting = false;
+
+loop {
+    tokio::select! {
+        event = stream.next() => match event {
+            Some(Ok(Event::Outgoing(Outgoing::Disconnect))) => break,
+            Some(Ok(notification)) => println!("Received = {:?}", notification),
+            Some(Err(error)) => eprintln!("Event loop error = {error}"),
+            None => break,
+        },
+        _ = &mut shutdown_rx, if !disconnecting => {
+            client.disconnect().await.unwrap();
+            disconnecting = true;
+        }
+    }
+}
+}
+```
+
 Tracked protocol results
 ------------------------------
 

@@ -782,6 +782,22 @@ impl EventLoop {
         }
     }
 
+    /// Converts this event loop into an async [`Stream`](futures_core::Stream).
+    ///
+    /// The stream owns and drives the event loop by repeatedly calling [`poll`](Self::poll).
+    /// `ConnectionError::RequestsDone` terminates the stream; all other poll results are
+    /// yielded so callers can continue polling for the usual reconnect behavior.
+    #[cfg(feature = "stream")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "stream")))]
+    pub fn into_stream(self) -> impl futures_core::Stream<Item = Result<Event, ConnectionError>> {
+        futures_util::stream::unfold(self, |mut eventloop| async move {
+            match eventloop.poll().await {
+                Err(ConnectionError::RequestsDone) => None,
+                result => Some((result, eventloop)),
+            }
+        })
+    }
+
     /// Select on network and requests and generate keepalive pings when necessary
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         loop {
@@ -1657,6 +1673,92 @@ mod tests {
         active.pkid = 1;
         eventloop.state.outgoing_pub[1] = Some(active);
         eventloop.state.inflight = 1;
+    }
+
+    #[cfg(feature = "stream")]
+    fn eventloop_with_network() -> (EventLoop, Sender<RequestEnvelope>, DuplexStream) {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+        let (client, peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, 1024, 1024));
+        (eventloop, request_tx, peer)
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn eventloop_stream_yields_pending_event() {
+        use futures_util::{StreamExt, pin_mut};
+
+        let (mut eventloop, _request_tx, _peer) = eventloop_with_network();
+        eventloop
+            .state
+            .events
+            .push_back(Event::Outgoing(Outgoing::PingReq));
+
+        let stream = eventloop.into_stream();
+        pin_mut!(stream);
+
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        );
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn eventloop_stream_ends_on_requests_done() {
+        use futures_util::{StreamExt, pin_mut};
+
+        let (eventloop, request_tx, _peer) = eventloop_with_network();
+        drop(request_tx);
+
+        let stream = eventloop.into_stream();
+        pin_mut!(stream);
+
+        assert!(stream.next().await.is_none());
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn eventloop_stream_remains_usable_after_cancelled_next() {
+        use futures_util::{StreamExt, pin_mut};
+
+        let (eventloop, request_tx, _peer) = eventloop_with_network();
+        let stream = eventloop.into_stream();
+        pin_mut!(stream);
+
+        {
+            let next = stream.next();
+            tokio::pin!(next);
+            tokio::select! {
+                result = &mut next => panic!("stream unexpectedly completed: {result:?}"),
+                () = time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+
+        request_tx
+            .send_async(RequestEnvelope::plain(Request::PingReq))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        );
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn eventloop_stream_yields_non_terminal_errors() {
+        use futures_util::{StreamExt, pin_mut};
+
+        let (eventloop, _request_tx, peer) = eventloop_with_network();
+        drop(peer);
+
+        let stream = eventloop.into_stream();
+        pin_mut!(stream);
+
+        assert!(matches!(stream.next().await, Some(Err(_))));
     }
 
     fn next_after_blocked_publish(request: Request) -> Option<Request> {
