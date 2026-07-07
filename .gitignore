@@ -56,9 +56,8 @@ __pycache__/
 # ================
 # BENCHMARKS
 # ================
-benchmarks/results/regressions
+benchmarks/results/
 benchmarks/__pycache__
-benchmarks/results/cross-library
 
 
 # Runtime data

@@ -1,0 +1,8 @@
+name = "client-v5-connections-tcp"
+group = "client"
+command = "connections"
+
+[args]
+protocol = "v5"
+duration_sec = 10
+concurrency = 10

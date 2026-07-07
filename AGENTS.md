@@ -4,7 +4,7 @@
 This repo is a Rust workspace. Main members are:
 - `rumqttc-v4/`: MQTT 3.1.1 client crate.
 - `rumqttc-v5/`: MQTT 5 client crate.
-- `benchmarks/` and `benchmarks/simplerouter/`: performance tooling and benchmark helpers.
+- `benchmarks/`: maintained performance harness and benchmark scenarios.
 - `docs/`: design notes and contributor conduct docs.
 
 Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.

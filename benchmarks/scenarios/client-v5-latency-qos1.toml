@@ -1,0 +1,12 @@
+name = "client-v5-latency-qos1"
+group = "client"
+command = "latency"
+
+[args]
+protocol = "v5"
+duration_sec = 10
+warmup_sec = 2
+payload_size = 64
+qos = 1
+topic = "bench/latency/v5"
+rate = 1000

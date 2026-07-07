@@ -1,0 +1,10 @@
+name = "codec-v4-publish-roundtrip"
+group = "codec"
+command = "roundtrip"
+
+[args]
+protocol = "v4"
+messages = 100000
+payload_size = 64
+qos = 1
+topic = "bench/codec"
