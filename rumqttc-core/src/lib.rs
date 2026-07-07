@@ -43,7 +43,10 @@ pub use tls::websocket_tls_connector;
 ))]
 pub use tls::websocket_tls_connector;
 #[cfg(feature = "websocket")]
-pub use websockets::{UrlError, ValidationError, WsAdapter, split_url, validate_response_headers};
+pub use websockets::{
+    UrlError, ValidationError, WsAdapter, split_url, split_url_with_default_port,
+    validate_response_headers,
+};
 
 #[cfg(not(feature = "websocket"))]
 pub trait AsyncReadWrite:

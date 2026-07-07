@@ -251,7 +251,8 @@ rumqttc supports two TLS backends:
 When both `use-rustls-no-provider` and `use-native-tls` features are enabled:
 
 - Configure TLS explicitly with `MqttOptions::set_transport(Transport::tls_with_config(...))`
-- Configure secure websockets explicitly with `Broker::websocket("ws://...")` plus `MqttOptions::set_transport(Transport::wss_with_config(...))`
+- Prefer `MqttOptions::websocket_with_tls_config("client-id", "wss://...", tls_config)` for secure websockets
+- For lower-level overrides, `Broker::websocket("ws://...")` plus `MqttOptions::set_transport(Transport::wss_with_config(...))` remains supported
 
 Secure websocket connections upgrade the TCP stream using the selected `TlsConfiguration` before the websocket handshake, so backend selection follows the provided TLS configuration.
 

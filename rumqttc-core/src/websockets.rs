@@ -123,9 +123,16 @@ pub fn validate_response_headers(
 }
 
 pub fn split_url(url: &str) -> Result<(String, u16), UrlError> {
+    split_url_with_default_port(url, None)
+}
+
+pub fn split_url_with_default_port(
+    url: &str,
+    default_port: Option<u16>,
+) -> Result<(String, u16), UrlError> {
     let uri = url.parse::<http::Uri>()?;
     let domain = domain(&uri).ok_or(UrlError::Protocol)?;
-    let port = port(&uri).ok_or(UrlError::Host)?;
+    let port = port(&uri, default_port).ok_or(UrlError::Host)?;
     Ok((domain, port))
 }
 
@@ -146,10 +153,56 @@ fn domain(uri: &http::Uri) -> Option<String> {
     })
 }
 
-fn port(uri: &http::Uri) -> Option<u16> {
+fn port(uri: &http::Uri, default_port: Option<u16>) -> Option<u16> {
     uri.port_u16().or_else(|| match uri.scheme_str() {
+        _ if default_port.is_some() => default_port,
         Some("wss") => Some(443),
         Some("ws") => Some(80),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{split_url, split_url_with_default_port};
+
+    #[test]
+    fn split_url_uses_url_scheme_default_ports() {
+        assert_eq!(
+            split_url("ws://example.com/mqtt").unwrap(),
+            ("example.com".to_owned(), 80)
+        );
+        assert_eq!(
+            split_url("wss://example.com/mqtt").unwrap(),
+            ("example.com".to_owned(), 443)
+        );
+    }
+
+    #[test]
+    fn split_url_with_default_port_overrides_implicit_scheme_port() {
+        assert_eq!(
+            split_url_with_default_port("ws://example.com/mqtt", Some(443)).unwrap(),
+            ("example.com".to_owned(), 443)
+        );
+    }
+
+    #[test]
+    fn split_url_with_default_port_preserves_explicit_port() {
+        assert_eq!(
+            split_url_with_default_port("ws://example.com:80/mqtt", Some(443)).unwrap(),
+            ("example.com".to_owned(), 80)
+        );
+        assert_eq!(
+            split_url_with_default_port("wss://example.com:8443/mqtt", Some(443)).unwrap(),
+            ("example.com".to_owned(), 8443)
+        );
+    }
+
+    #[test]
+    fn split_url_strips_ipv6_brackets() {
+        assert_eq!(
+            split_url_with_default_port("ws://[::1]/mqtt", Some(443)).unwrap(),
+            ("::1".to_owned(), 443)
+        );
+    }
 }

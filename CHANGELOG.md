@@ -156,6 +156,7 @@
 ### Added
 - `rumqttc` v4/v5: Add `NetworkOptions::set_bind_addr(SocketAddr)` to bind outgoing TCP sockets to a specific local address before connect.
 - `rumqttc` v4/v5: Add `TlsConfiguration::simple_native(...)` for native-tls client configuration, including secure websocket transports.
+- `rumqttc` v4/v5: Add `MqttOptions::websocket_with_tls_config(...)` and `MqttOptions::try_websocket_with_default_tls(...)` so secure websocket clients can be created directly from `wss://` endpoints.
 ### Changed
 - `rumqttc`: Bump workspace MSRV from Rust `1.85` to `1.89` and inherit `rust-version` from the workspace manifest so member crates stay aligned.
 ### Deprecated
@@ -164,6 +165,7 @@
 - `rumqttc` v4/v5: Add `SessionStateMismatch` error and `reconcile_connack_session()` validation to reject broker replies where `session_present` contradicts the client's `clean_session`/`clean_start` setting.
 - `rumqttc` v4/v5: Default multi-address TCP dialing now starts resolved connection attempts with a small stagger, so a stalled first route no longer prevents later resolved addresses from being tried within the outer connect timeout.
 - `rumqttc` v4/v5: Clarify that `NetworkOptions::set_bind_addr(...:fixed_port)` trades away same-family staggered fallback. With a fixed local port, the default dialer keeps one active candidate at a time until it completes or the overall connect timeout expires.
+- `rumqttc` v4/v5: Secure websocket transport now defaults an implicit websocket URL port to `443` when `Transport::Wss(...)` is selected, while preserving explicit ports.
 - `rumqttc` v5: Classify inbound malformed/protocol-invalid decode failures more precisely and attempt the corresponding MQTT 5 `DISCONNECT` reason code (`0x81`, `0x82`, `0x95`) before terminating. The outbound `DISCONNECT` is best-effort under write-side backpressure so protocol-error handling does not hang waiting for a non-reading peer.
 ### Security
 - `rumqttc` v5 `auth-scram`: switch SCRAM backend dependency from `scram-2` to the maintained `scram-rs` crate.

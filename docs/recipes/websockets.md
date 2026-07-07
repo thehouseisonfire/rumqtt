@@ -18,9 +18,8 @@ Compile-checked examples:
 
 ## Secure WebSockets
 
-Secure WebSockets use a websocket broker URL plus explicit WSS transport. Use a
-`ws://` URL in `Broker::websocket(...)`; the TLS upgrade is selected by
-`Transport::wss_with_config(...)`.
+Secure WebSockets can be configured directly from a `wss://` endpoint when the
+TLS configuration is known up front.
 
 Compile-checked example:
 
@@ -28,14 +27,18 @@ Compile-checked example:
 - v5: `rumqttc-v5/examples/wss_v5.rs`
 
 ```rust,no_run
-use rumqttc::{Broker, MqttOptions, TlsConfiguration, Transport};
+use rumqttc::{MqttOptions, TlsConfiguration};
 
-let mut options = MqttOptions::new(
+let options = MqttOptions::websocket_with_tls_config(
     "client-id",
-    Broker::websocket("ws://broker.example.com:443/mqtt").expect("valid websocket URL"),
-);
-options.set_transport(Transport::wss_with_config(TlsConfiguration::default_rustls()));
+    "wss://broker.example.com/mqtt",
+    TlsConfiguration::default_rustls(),
+)
+.expect("valid secure websocket options");
 ```
+
+For lower-level transport overrides, `Broker::websocket("ws://...")` plus
+`MqttOptions::set_transport(Transport::wss_with_config(...))` remains supported.
 
 ## Custom Headers
 

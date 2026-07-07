@@ -431,6 +431,28 @@ impl Broker {
         }
     }
 
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
+    fn secure_websocket<S: Into<String>>(url: S) -> Result<Self, OptionError> {
+        let url = url.into();
+        let uri = url
+            .parse::<http::Uri>()
+            .map_err(|_| OptionError::WebsocketUrl)?;
+
+        match uri.scheme_str() {
+            Some("wss") => {
+                rumqttc_core::split_url(&url).map_err(|_| OptionError::WebsocketUrl)?;
+                Ok(Self {
+                    inner: BrokerInner::Websocket { url },
+                })
+            }
+            Some("ws") => Err(OptionError::WssUrlRequired),
+            _ => Err(OptionError::Scheme),
+        }
+    }
+
     #[must_use]
     pub const fn tcp_address(&self) -> Option<(&str, u16)> {
         match &self.inner {
@@ -770,6 +792,47 @@ impl MqttOptions {
             authenticator: None,
             session_store: None,
         }
+    }
+
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
+    /// Create [`MqttOptions`] for a secure websocket endpoint with explicit TLS configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OptionError`] if `url` is not a valid `wss://` websocket URL.
+    pub fn websocket_with_tls_config<S: Into<String>, U: Into<String>>(
+        id: S,
+        url: U,
+        tls_config: TlsConfiguration,
+    ) -> Result<Self, OptionError> {
+        let broker = Broker::secure_websocket(url)?;
+        let mut options = Self::new(id, broker);
+        options.set_transport(Transport::wss_with_config(tls_config));
+        Ok(options)
+    }
+
+    #[cfg(all(
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "websocket"
+    ))]
+    /// Create [`MqttOptions`] for a secure websocket endpoint with the default TLS configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebsocketTlsOptionsError`] if `url` is not a valid `wss://` websocket URL or the
+    /// default TLS configuration cannot be built.
+    pub fn try_websocket_with_default_tls<S: Into<String>, U: Into<String>>(
+        id: S,
+        url: U,
+    ) -> Result<Self, WebsocketTlsOptionsError> {
+        let broker = Broker::secure_websocket(url)?;
+        let transport = Transport::try_wss_with_default_config()?;
+        let mut options = Self::new(id, broker);
+        options.set_transport(transport);
+        Ok(options)
     }
 
     /// Create a builder for [`MqttOptions`].
@@ -2056,13 +2119,20 @@ fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
         #[cfg(unix)]
         Transport::Unix => broker.unix_path().is_some(),
         #[cfg(feature = "websocket")]
-        Transport::Ws => broker.websocket_url().is_some(),
+        Transport::Ws => websocket_url_scheme(broker) == Some("ws"),
         #[cfg(all(
             any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
             feature = "websocket"
         ))]
-        Transport::Wss(_) => broker.websocket_url().is_some(),
+        Transport::Wss(_) => matches!(websocket_url_scheme(broker), Some("ws" | "wss")),
     }
+}
+
+#[cfg(feature = "websocket")]
+fn websocket_url_scheme(broker: &Broker) -> Option<&str> {
+    broker
+        .websocket_url()
+        .and_then(|url| url.split_once(':').map(|(scheme, _)| scheme))
 }
 
 #[non_exhaustive]
@@ -2105,6 +2175,10 @@ pub enum OptionError {
     )]
     WssRequiresExplicitTransport,
 
+    #[cfg(feature = "websocket")]
+    #[error("Secure websocket options require a wss:// URL.")]
+    WssUrlRequired,
+
     #[error("Invalid keep-alive value.")]
     KeepAlive,
 
@@ -2144,6 +2218,18 @@ pub enum OptionError {
     #[cfg(feature = "url")]
     #[error("Couldn't parse option from url: {0}")]
     Parse(#[from] url::ParseError),
+}
+
+#[cfg(all(
+    any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+    feature = "websocket"
+))]
+#[derive(Debug, thiserror::Error)]
+pub enum WebsocketTlsOptionsError {
+    #[error(transparent)]
+    Option(#[from] OptionError),
+    #[error(transparent)]
+    Tls(#[from] TlsError),
 }
 
 #[cfg(feature = "url")]
@@ -2669,6 +2755,84 @@ mod test {
                 "ws://a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host"
             )
         );
+    }
+
+    #[test]
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    fn secure_websocket_options_accept_wss_url() {
+        use crate::{TlsConfiguration, Transport};
+
+        let options = MqttOptions::websocket_with_tls_config(
+            "client_a",
+            "wss://example.com/mqtt",
+            TlsConfiguration::Simple {
+                ca: Vec::from("Test CA"),
+                client_auth: None,
+                alpn: None,
+            },
+        )
+        .expect("valid secure websocket options");
+
+        assert_eq!(
+            options.broker().websocket_url(),
+            Some("wss://example.com/mqtt")
+        );
+        assert!(matches!(options.transport(), Transport::Wss(_)));
+        assert_eq!(options.validate(), Ok(()));
+    }
+
+    #[test]
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    fn secure_websocket_options_reject_ws_url() {
+        use crate::TlsConfiguration;
+
+        assert!(matches!(
+            MqttOptions::websocket_with_tls_config(
+                "client_a",
+                "ws://example.com/mqtt",
+                TlsConfiguration::Simple {
+                    ca: Vec::from("Test CA"),
+                    client_auth: None,
+                    alpn: None,
+                },
+            ),
+            Err(OptionError::WssUrlRequired)
+        ));
+    }
+
+    #[test]
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    fn secure_websocket_options_reject_plain_ws_transport() {
+        use crate::{TlsConfiguration, Transport};
+
+        let mut options = MqttOptions::websocket_with_tls_config(
+            "client_a",
+            "wss://example.com/mqtt",
+            TlsConfiguration::Simple {
+                ca: Vec::from("Test CA"),
+                client_auth: None,
+                alpn: None,
+            },
+        )
+        .expect("valid secure websocket options");
+
+        options.set_transport(Transport::Ws);
+
+        assert_eq!(
+            options.validate(),
+            Err(ConfigError::BrokerTransportMismatch)
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
+    fn try_secure_websocket_options_reject_ws_url_before_default_tls() {
+        assert!(matches!(
+            MqttOptions::try_websocket_with_default_tls("client_a", "ws://example.com/mqtt"),
+            Err(WebsocketTlsOptionsError::Option(
+                OptionError::WssUrlRequired
+            ))
+        ));
     }
 
     #[test]
