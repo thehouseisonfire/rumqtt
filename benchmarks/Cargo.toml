@@ -8,6 +8,11 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+url = ["rumqttc_v4/url", "rumqttc_v5/url"]
+websocket = ["rumqttc_v4/websocket", "rumqttc_v5/websocket"]
+
 [dependencies]
 bytes = "1"
 anyhow = "1"

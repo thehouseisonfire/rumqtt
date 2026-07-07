@@ -1,7 +1,7 @@
-name = "client-v4-throughput-qos1"
+name = "client-v5-throughput-qos1-1kib-4p1s"
 group = "client"
 command = "throughput"
-description = "MQTT 3.1.1 QoS 1 publish/subscribe throughput through an external TCP broker."
+description = "MQTT 5 QoS 1 throughput with 4 publisher(s) and 1 subscriber(s)."
 primary_metric = "throughput_msg_sec"
 higher_is_better = true
 requires_broker = true
@@ -15,11 +15,11 @@ max_primary_mad_pct = 15.0
 max_relative_ci_width_pct = 25.0
 
 [args]
-protocol = "v4"
+protocol = "v5"
 duration_sec = 10
 warmup_sec = 2
-payload_size = 64
+payload_size = 1024
 qos = 1
-topic = "bench/throughput/v4"
-publishers = 1
+topic = "bench/throughput/v5/qos1/1kib/4p1s"
+publishers = 4
 subscribers = 1

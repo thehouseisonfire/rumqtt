@@ -1,7 +1,7 @@
-name = "client-v5-latency-qos1"
+name = "client-v4-latency-qos1-rate-1000"
 group = "client"
 command = "latency"
-description = "MQTT 5 QoS 1 publish/subscribe end-to-end latency through an external TCP broker."
+description = "MQTT 3.1.1 QoS 1 p50/p95/p99 latency at 1000 publishes per second."
 primary_metric = "p99_us"
 higher_is_better = false
 requires_broker = true
@@ -15,10 +15,10 @@ max_primary_mad_pct = 20.0
 max_relative_ci_width_pct = 35.0
 
 [args]
-protocol = "v5"
+protocol = "v4"
 duration_sec = 10
 warmup_sec = 2
 payload_size = 64
 qos = 1
-topic = "bench/latency/v5"
+topic = "bench/latency/v4/qos1/rate-1000"
 rate = 1000

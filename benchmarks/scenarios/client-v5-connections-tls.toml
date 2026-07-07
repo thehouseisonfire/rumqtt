@@ -1,11 +1,11 @@
-name = "client-v5-connections-tcp"
+name = "client-v5-connections-tls"
 group = "client"
 command = "connections"
-description = "MQTT 5 TCP connect/disconnect churn against an external broker."
+description = "MQTT 5 TLS connect/disconnect churn against an external broker."
 primary_metric = "connections_sec"
 higher_is_better = true
 requires_broker = true
-transport = "tcp"
+transport = "tls"
 
 [quality]
 min_success_rate = 0.95

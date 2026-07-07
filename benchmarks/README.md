@@ -32,6 +32,14 @@ Supported workload groups:
 
 - `codec encode|decode|roundtrip`
 - `client throughput|latency|connections`
+- `options parse-url`
+
+`options parse-url` requires the benchmark crate `url` feature:
+
+```bash
+cargo run -p benchmarks --features url --bin rumqtt-bench -- \
+  options parse-url --protocol v5 --parses 100000
+```
 
 Every workload prints a single JSON object with:
 
@@ -70,6 +78,64 @@ only when debugging the harness itself.
 
 For client scenarios, pass `--broker-url mqtt://host:port`. For TLS, use
 `mqtts://host:port` and pass `--ca-cert /path/to/ca.pem`.
+For websocket scenarios, use `ws://host:port/path`; the scenario automatically
+enables the benchmark crate `websocket` feature.
+
+## Broker Fixture
+
+Use the broker fixture when you need a reproducible local Mosquitto for
+broker-backed validation. The default backend is Docker with
+`eclipse-mosquitto:2.0`, configured with TCP, TLS, and websocket listeners on
+free localhost ports:
+
+```bash
+python3 benchmarks/broker_fixture.py validate \
+  --transport all \
+  --runs 1 \
+  --warmup-runs 0 \
+  --cargo-profile dev \
+  --output-dir /tmp/rumqtt-bench-fixture
+```
+
+The fixture is intended for smoke validation, not statistical benchmarking. It
+starts Mosquitto, runs selected scenarios through `benchmarks/runner.py`, writes
+`broker-validation-summary.json`, and removes the broker container on success or
+failure. The summary records the backend, Docker image, listener ports,
+completed/failed/skipped scenarios, and each scenario's runner output
+directory.
+
+Run only the two websocket throughput scenarios:
+
+```bash
+python3 benchmarks/broker_fixture.py validate \
+  --transport websocket \
+  --scenario client-v4-throughput-websocket-qos1-1kib-1p1s \
+  --scenario client-v5-throughput-websocket-qos1-1kib-1p1s \
+  --runs 1 \
+  --warmup-runs 0 \
+  --cargo-profile dev \
+  --output-dir /tmp/rumqtt-bench-websocket-fixture
+```
+
+Soak scenarios are skipped by default because they run for longer. Add
+`--include-soak` when you explicitly want to validate them.
+
+Override the Docker image with `RUMQTT_BENCH_MOSQUITTO_IMAGE`. A system
+Mosquitto can be used for TCP/TLS fallback with `--backend system`, but local
+Mosquitto packages are often built without websocket support. If websocket
+scenarios are selected, the fixture probes the binary and fails with a clear
+message when `protocol websockets` is not supported.
+
+The maintained scenario set covers:
+
+- codec encode, decode, and roundtrip for MQTT 3.1.1 and MQTT 5 across 0 B,
+  64 B, 1 KiB, and 16 KiB payloads
+- client throughput for MQTT 3.1.1 and MQTT 5 across QoS 0/1, representative
+  payload sizes, and 1p1s, 4p1s, and 1p4s topologies
+- bounded-rate latency tails with p50/p95/p99 metrics
+- TCP and TLS connection churn
+- sustained throughput soaks with collapse and RSS-growth diagnostics
+- feature-sensitive TLS, websocket, and URL parsing scenarios
 
 Each scenario declares:
 
@@ -77,11 +143,14 @@ Each scenario declares:
 - `primary_metric`
 - `higher_is_better`
 - `requires_broker`
+- optional `transport = "tcp" | "tls" | "websocket"` for client scenarios
+- optional `cargo_features = [...]` for feature-gated scenarios
 - `[quality]` gates for success rate, run count, primary-metric noise, and
   comparison CI width
 
 The runner validates these fields and fails if a benchmark result does not
-include the scenario's primary metric.
+include the scenario's primary metric. When `transport` is set, the runner also
+checks the broker URL scheme before starting the benchmark.
 
 The runner writes generated reports under `benchmarks/results/`:
 
@@ -93,6 +162,12 @@ The runner writes generated reports under `benchmarks/results/`:
 
 Reports classify comparisons with the scenario's metric direction:
 `improvement`, `regression`, or `inconclusive`.
+
+Latency metrics ending in `_us`, connection failures, connect latencies,
+throughput-collapse percentage, and RSS growth are classified as
+lower-is-better. Throughput, byte rate, parse rate, and connection rate are
+classified as higher-is-better unless the scenario primary metric says
+otherwise.
 
 Branch comparisons are paired by measured run index after warmups. The runner
 reports medians, MAD, CV, success rate, paired sample count, confidence interval

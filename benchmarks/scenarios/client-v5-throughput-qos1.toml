@@ -1,10 +1,11 @@
 name = "client-v5-throughput-qos1"
 group = "client"
 command = "throughput"
-description = "MQTT 5 QoS 1 publish/subscribe throughput through an external broker."
+description = "MQTT 5 QoS 1 publish/subscribe throughput through an external TCP broker."
 primary_metric = "throughput_msg_sec"
 higher_is_better = true
 requires_broker = true
+transport = "tcp"
 
 [quality]
 min_success_rate = 0.95

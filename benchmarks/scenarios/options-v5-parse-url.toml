@@ -1,0 +1,20 @@
+name = "options-v5-parse-url"
+group = "options"
+command = "parse-url"
+description = "MQTT 5 URL parsing throughput for MqttOptions::parse_url."
+primary_metric = "parses_sec"
+higher_is_better = true
+requires_broker = false
+cargo_features = ["url"]
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 5
+max_primary_cv_pct = 10.0
+max_primary_mad_pct = 5.0
+max_relative_ci_width_pct = 10.0
+
+[args]
+protocol = "v5"
+parses = 100000
+url = "mqtt://localhost:1883?client_id=bench-v5&keep_alive_secs=30"

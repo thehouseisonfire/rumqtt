@@ -16,6 +16,8 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
 
+const BENCH_MAX_PACKET_SIZE: usize = 256 * 1024;
+
 #[derive(Parser, Debug)]
 #[command(name = "rumqtt-bench")]
 #[command(about = "Maintained benchmark harness for rumqtt client and codec performance")]
@@ -34,6 +36,10 @@ enum CommandGroup {
         #[command(subcommand)]
         command: CodecCommand,
     },
+    Options {
+        #[command(subcommand)]
+        command: OptionsCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -48,6 +54,11 @@ enum CodecCommand {
     Encode(CodecArgs),
     Decode(CodecArgs),
     Roundtrip(CodecArgs),
+}
+
+#[derive(Subcommand, Debug)]
+enum OptionsCommand {
+    ParseUrl(OptionsParseUrlArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
@@ -165,8 +176,22 @@ struct CodecArgs {
     topic: String,
 }
 
+#[derive(Args, Debug, Clone)]
+struct OptionsParseUrlArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    #[arg(long, default_value = "100000")]
+    parses: usize,
+
+    #[arg(long, default_value = "mqtt://localhost:1883?client_id=bench-url")]
+    url: String,
+}
+
 #[derive(Debug, Clone)]
 struct BrokerEndpoint {
+    #[cfg_attr(not(feature = "websocket"), expect(dead_code))]
+    url: String,
     host: String,
     port: u16,
     transport: TransportKind,
@@ -177,6 +202,8 @@ struct BrokerEndpoint {
 enum TransportKind {
     Tcp,
     Tls,
+    #[cfg_attr(not(feature = "websocket"), expect(dead_code))]
+    Websocket,
 }
 
 impl TransportKind {
@@ -184,6 +211,7 @@ impl TransportKind {
         match self {
             Self::Tcp => "tcp",
             Self::Tls => "tls",
+            Self::Websocket => "websocket",
         }
     }
 }
@@ -224,6 +252,9 @@ async fn main() -> anyhow::Result<()> {
             CodecCommand::Encode(args) => run_codec(args, CodecMode::Encode),
             CodecCommand::Decode(args) => run_codec(args, CodecMode::Decode),
             CodecCommand::Roundtrip(args) => run_codec(args, CodecMode::Roundtrip),
+        },
+        CommandGroup::Options { command } => match command {
+            OptionsCommand::ParseUrl(args) => run_options_parse_url(args),
         },
     }
 }
@@ -323,6 +354,8 @@ async fn run_client_throughput(args: ClientThroughputArgs) -> anyhow::Result<()>
     received.store(0, Ordering::SeqCst);
     published.store(0, Ordering::SeqCst);
 
+    let rss_initial = resident_set_bytes();
+    let mut rss_max = rss_initial;
     let measure_start = Instant::now();
     let mut last_received = 0;
     let mut next_sample = measure_start + Duration::from_secs(1);
@@ -334,6 +367,9 @@ async fn run_client_throughput(args: ClientThroughputArgs) -> anyhow::Result<()>
             samples.push(current.saturating_sub(last_received) as f64);
             last_received = current;
             next_sample += Duration::from_secs(1);
+            if let Some(current_rss) = resident_set_bytes() {
+                rss_max = Some(rss_max.map_or(current_rss, |max| max.max(current_rss)));
+            }
         }
     }
 
@@ -351,6 +387,15 @@ async fn run_client_throughput(args: ClientThroughputArgs) -> anyhow::Result<()>
         "throughput_msg_sec".to_owned(),
         total_received as f64 / elapsed_sec,
     );
+    insert_throughput_stability_metrics(&mut metrics, &samples);
+    if let (Some(initial), Some(max)) = (rss_initial, rss_max) {
+        metrics.insert("rss_initial_bytes".to_owned(), initial as f64);
+        metrics.insert("rss_max_bytes".to_owned(), max as f64);
+        metrics.insert(
+            "rss_growth_bytes".to_owned(),
+            max.saturating_sub(initial) as f64,
+        );
+    }
 
     let mut samples_out = BTreeMap::new();
     samples_out.insert("received_per_sec".to_owned(), samples);
@@ -669,6 +714,56 @@ fn run_codec(args: CodecArgs, mode: CodecMode) -> anyhow::Result<()> {
         samples: BTreeMap::new(),
         environment: environment(),
     })
+}
+
+fn run_options_parse_url(args: OptionsParseUrlArgs) -> anyhow::Result<()> {
+    #[cfg(not(feature = "url"))]
+    {
+        let _ = args;
+        bail!("options parse-url requires building benchmarks with --features url");
+    }
+
+    #[cfg(feature = "url")]
+    {
+        let started_at = unix_secs();
+        let run_id = run_id(args.common.run_id.as_deref(), "options-parse-url");
+        let started = Instant::now();
+        match args.common.protocol {
+            Protocol::V4 => {
+                for _ in 0..args.parses {
+                    let options = rumqttc_v4::MqttOptions::parse_url(args.url.clone())?;
+                    std::hint::black_box(options);
+                }
+            }
+            Protocol::V5 => {
+                for _ in 0..args.parses {
+                    let options = rumqttc_v5::MqttOptions::parse_url(args.url.clone())?;
+                    std::hint::black_box(options);
+                }
+            }
+        }
+        let elapsed_sec = started.elapsed().as_secs_f64();
+        let mut metrics = BTreeMap::new();
+        metrics.insert("parses".to_owned(), args.parses as f64);
+        metrics.insert("elapsed_sec".to_owned(), elapsed_sec);
+        metrics.insert("parses_sec".to_owned(), args.parses as f64 / elapsed_sec);
+
+        print_output(BenchOutput {
+            schema_version: 1,
+            run_id,
+            scenario: format!("options-parse-url-{}", args.common.protocol.as_str()),
+            started_at_unix: started_at,
+            finished_at_unix: unix_secs(),
+            config: json!({
+                "protocol": args.common.protocol,
+                "parses": args.parses,
+                "url": args.url,
+            }),
+            metrics,
+            samples: BTreeMap::new(),
+            environment: environment(),
+        })
+    }
 }
 
 struct CodecResult {
@@ -1100,9 +1195,9 @@ fn new_v4_client(
     ca_pem: Option<&[u8]>,
     capacity: usize,
 ) -> (rumqttc_v4::AsyncClient, rumqttc_v4::EventLoop) {
-    let mut options =
-        rumqttc_v4::MqttOptions::new(client_id, (endpoint.host.clone(), endpoint.port));
+    let mut options = v4_options(client_id, endpoint);
     options.set_keep_alive(30);
+    options.set_max_packet_size(BENCH_MAX_PACKET_SIZE, BENCH_MAX_PACKET_SIZE);
     if endpoint.transport == TransportKind::Tls {
         if let Some(ca_pem) = ca_pem {
             options.set_transport(rumqttc_v4::Transport::tls(ca_pem.to_vec(), None, None));
@@ -1115,15 +1210,30 @@ fn new_v4_client(
         .build()
 }
 
+fn v4_options(client_id: String, endpoint: &BrokerEndpoint) -> rumqttc_v4::MqttOptions {
+    match endpoint.transport {
+        #[cfg(feature = "websocket")]
+        TransportKind::Websocket => rumqttc_v4::MqttOptions::new(
+            client_id,
+            rumqttc_v4::Broker::websocket(endpoint.url.clone()).expect("validated websocket URL"),
+        ),
+        TransportKind::Tcp | TransportKind::Tls => {
+            rumqttc_v4::MqttOptions::new(client_id, (endpoint.host.clone(), endpoint.port))
+        }
+        #[cfg(not(feature = "websocket"))]
+        TransportKind::Websocket => unreachable!("websocket endpoint requires websocket feature"),
+    }
+}
+
 fn new_v5_client(
     client_id: String,
     endpoint: &BrokerEndpoint,
     ca_pem: Option<&[u8]>,
     capacity: usize,
 ) -> (rumqttc_v5::AsyncClient, rumqttc_v5::EventLoop) {
-    let mut options =
-        rumqttc_v5::MqttOptions::new(client_id, (endpoint.host.clone(), endpoint.port));
+    let mut options = v5_options(client_id, endpoint);
     options.set_keep_alive(30);
+    options.set_max_packet_size(Some(BENCH_MAX_PACKET_SIZE as u32));
     if endpoint.transport == TransportKind::Tls {
         if let Some(ca_pem) = ca_pem {
             options.set_transport(rumqttc_v5::Transport::tls(ca_pem.to_vec(), None, None));
@@ -1136,12 +1246,94 @@ fn new_v5_client(
         .build()
 }
 
+fn v5_options(client_id: String, endpoint: &BrokerEndpoint) -> rumqttc_v5::MqttOptions {
+    match endpoint.transport {
+        #[cfg(feature = "websocket")]
+        TransportKind::Websocket => rumqttc_v5::MqttOptions::new(
+            client_id,
+            rumqttc_v5::Broker::websocket(endpoint.url.clone()).expect("validated websocket URL"),
+        ),
+        TransportKind::Tcp | TransportKind::Tls => {
+            rumqttc_v5::MqttOptions::new(client_id, (endpoint.host.clone(), endpoint.port))
+        }
+        #[cfg(not(feature = "websocket"))]
+        TransportKind::Websocket => unreachable!("websocket endpoint requires websocket feature"),
+    }
+}
+
 async fn abort_all(handles: Vec<tokio::task::JoinHandle<()>>) {
     for handle in &handles {
         handle.abort();
     }
     for handle in handles {
         drop(handle.await);
+    }
+}
+
+fn insert_throughput_stability_metrics(metrics: &mut BTreeMap<String, f64>, samples: &[f64]) {
+    if samples.is_empty() {
+        metrics.insert("throughput_min_msg_sec".to_owned(), 0.0);
+        metrics.insert("throughput_first_half_median_msg_sec".to_owned(), 0.0);
+        metrics.insert("throughput_second_half_median_msg_sec".to_owned(), 0.0);
+        metrics.insert("throughput_collapse_pct".to_owned(), 0.0);
+        return;
+    }
+
+    let split = (samples.len() / 2).max(1);
+    let (first_half, second_half) = samples.split_at(split);
+    let first_median = median_f64(first_half);
+    let second_median = median_f64(if second_half.is_empty() {
+        first_half
+    } else {
+        second_half
+    });
+    let collapse_pct = if first_median > 0.0 {
+        ((first_median - second_median) / first_median * 100.0).max(0.0)
+    } else {
+        0.0
+    };
+
+    metrics.insert(
+        "throughput_min_msg_sec".to_owned(),
+        samples.iter().copied().fold(f64::INFINITY, f64::min),
+    );
+    metrics.insert(
+        "throughput_first_half_median_msg_sec".to_owned(),
+        first_median,
+    );
+    metrics.insert(
+        "throughput_second_half_median_msg_sec".to_owned(),
+        second_median,
+    );
+    metrics.insert("throughput_collapse_pct".to_owned(), collapse_pct);
+}
+
+fn median_f64(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
+fn resident_set_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                let value_kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+                return Some(value_kib * 1024);
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 
@@ -1203,6 +1395,16 @@ fn parse_endpoint(url: &str) -> anyhow::Result<BrokerEndpoint> {
         (TransportKind::Tls, rest)
     } else if let Some(rest) = url.strip_prefix("ssl://") {
         (TransportKind::Tls, rest)
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        #[cfg(not(feature = "websocket"))]
+        {
+            let _ = rest;
+            bail!("ws:// broker URLs require building benchmarks with --features websocket");
+        }
+        #[cfg(feature = "websocket")]
+        {
+            (TransportKind::Websocket, rest)
+        }
     } else {
         bail!("unsupported broker URL scheme: {url}");
     };
@@ -1216,6 +1418,7 @@ fn parse_endpoint(url: &str) -> anyhow::Result<BrokerEndpoint> {
         .with_context(|| format!("invalid broker port in URL: {url}"))?;
 
     Ok(BrokerEndpoint {
+        url: url.to_owned(),
         host: host.to_owned(),
         port,
         transport,

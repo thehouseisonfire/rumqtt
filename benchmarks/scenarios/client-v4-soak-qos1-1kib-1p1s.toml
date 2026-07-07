@@ -1,0 +1,25 @@
+name = "client-v4-soak-qos1-1kib-1p1s"
+group = "client"
+command = "throughput"
+description = "MQTT 3.1.1 sustained QoS 1 throughput soak with collapse and RSS growth diagnostics."
+primary_metric = "throughput_collapse_pct"
+higher_is_better = false
+requires_broker = true
+transport = "tcp"
+
+[quality]
+min_success_rate = 0.95
+min_measured_runs = 3
+max_primary_cv_pct = 40.0
+max_primary_mad_pct = 25.0
+max_relative_ci_width_pct = 40.0
+
+[args]
+protocol = "v4"
+duration_sec = 120
+warmup_sec = 10
+payload_size = 1024
+qos = 1
+topic = "bench/soak/v4/qos1/1kib/1p1s"
+publishers = 1
+subscribers = 1
