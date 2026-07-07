@@ -1,5 +1,5 @@
 use rumqttc::mqttbytes::QoS;
-use rumqttc::{AsyncClient, Broker, MqttOptions, PublishOptions, TlsConfiguration, Transport};
+use rumqttc::{AsyncClient, MqttOptions, PublishOptions, TlsConfiguration};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
 
@@ -7,14 +7,12 @@ use tokio::{task, time};
 async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
 
-    let mut mqttoptions = MqttOptions::new(
+    let mut mqttoptions = MqttOptions::websocket_with_tls_config(
         "rumqtt-wss-v5",
-        Broker::websocket("ws://broker.example.com:443/mqtt").expect("valid websocket URL"),
-    );
-    mqttoptions.set_keep_alive(60);
-    mqttoptions.set_transport(Transport::wss_with_config(
+        "wss://broker.example.com/mqtt",
         TlsConfiguration::default_rustls(),
-    ));
+    )?;
+    mqttoptions.set_keep_alive(60);
 
     let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
 

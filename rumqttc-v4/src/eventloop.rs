@@ -36,6 +36,12 @@ use {
     async_tungstenite::tungstenite::client::IntoClientRequest,
 };
 
+#[cfg(all(
+    any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+    feature = "websocket"
+))]
+use crate::websockets::split_url_with_default_port;
+
 #[cfg(feature = "proxy")]
 use crate::proxy::ProxyError;
 
@@ -1349,11 +1355,12 @@ async fn network_connect(
             any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
             feature = "websocket"
         ))]
-        Transport::Wss(_) => split_url(
+        Transport::Wss(_) => split_url_with_default_port(
             options
                 .broker()
                 .websocket_url()
                 .ok_or(ConnectionError::BrokerTransportMismatch)?,
+            Some(443),
         )?,
         _ => options
             .broker()
