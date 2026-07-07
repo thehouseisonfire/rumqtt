@@ -129,6 +129,16 @@ name = "tracked_notices_v5"
 path = "examples/tracked_notices_v5.rs"
 
 [[example]]
+name = "tls_v5"
+path = "examples/tls_v5.rs"
+required-features = ["use-rustls"]
+
+[[example]]
+name = "tls_client_auth_v5"
+path = "examples/tls_client_auth_v5.rs"
+required-features = ["use-rustls"]
+
+[[example]]
 name = "resubscribe_on_reconnect_v5"
 path = "examples/resubscribe_on_reconnect_v5.rs"
 
@@ -139,3 +149,23 @@ path = "examples/persistent_session_file_store_v5.rs"
 [[example]]
 name = "unbounded_v5"
 path = "examples/unbounded.rs"
+
+[[example]]
+name = "websocket_v5"
+path = "examples/websocket_v5.rs"
+required-features = ["websocket"]
+
+[[example]]
+name = "websocket_proxy_v5"
+path = "examples/websocket_proxy_v5.rs"
+required-features = ["websocket", "proxy"]
+
+[[example]]
+name = "websocket_headers_v5"
+path = "examples/websocket_headers_v5.rs"
+required-features = ["websocket"]
+
+[[example]]
+name = "wss_v5"
+path = "examples/wss_v5.rs"
+required-features = ["websocket", "use-rustls"]
