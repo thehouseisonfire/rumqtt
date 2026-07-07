@@ -55,6 +55,10 @@ For more details, see [rumqttc-next/README.md](./rumqttc-next/README.md), [rumqt
 Existing upstream `rumqttc` users should start with the [migration guide](./MIGRATION.md) for package names,
 API changes, and porting recipes.
 
+Production deployment examples for TLS, WebSockets, proxies, persistent
+sessions, reconnect handling, bounded channels, manual ACKs, and broker-specific
+setup notes are in the [recipe guide](./docs/recipes/README.md).
+
 ## Features
 
 ### rumqttc-next / rumqttc-v5-next
