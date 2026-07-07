@@ -1,6 +1,10 @@
 name = "client-v5-connections-tcp"
 group = "client"
 command = "connections"
+description = "MQTT 5 TCP connection establishment rate against an external broker."
+primary_metric = "connections_sec"
+higher_is_better = true
+requires_broker = true
 
 [args]
 protocol = "v5"

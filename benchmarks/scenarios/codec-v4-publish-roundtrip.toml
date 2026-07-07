@@ -1,6 +1,10 @@
 name = "codec-v4-publish-roundtrip"
 group = "codec"
 command = "roundtrip"
+description = "MQTT 3.1.1 publish packet encode/decode roundtrip throughput."
+primary_metric = "messages_sec"
+higher_is_better = true
+requires_broker = false
 
 [args]
 protocol = "v4"

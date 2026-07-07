@@ -1,6 +1,10 @@
 name = "codec-v5-publish-roundtrip"
 group = "codec"
 command = "roundtrip"
+description = "MQTT 5 publish packet encode/decode roundtrip throughput."
+primary_metric = "messages_sec"
+higher_is_better = true
+requires_broker = false
 
 [args]
 protocol = "v5"
