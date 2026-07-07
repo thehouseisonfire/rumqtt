@@ -23,31 +23,7 @@ What are your assessments on these recommendation? Would they be possible and le
   hooks, manual ACKs, websocket/proxy/TLS/custom socket support, strict codec validation, and strong reconnect/session work. The
   most valuable remaining work is consumer adoption, diagnostics, and panic-free/production ergonomics.
 
-  1. Add panic-free constructors/configuration paths
-     Problem: Some consumer paths can still panic, notably sync ClientBuilder::build() runtime creation and default rustls native-
-     cert loading in TlsConfiguration::default_rustls() / default transport helpers. See rumqttc-core/src/lib.rs:112 and rumqttc-
-     v4/src/client.rs:385.
-     Why it matters: Libraries used in production services should let callers handle host TLS/runtime failures.
-     Change: Add try_build(), TlsConfiguration::try_default_rustls(), and Transport::try_tls_with_default_config() equivalents
-     while keeping old APIs.
-     Value: Better reliability in daemons, embedded gateways, containers with unusual cert stores.
-     Complexity: Low-medium.
-     Risk: Low, additive.
-     Validate: Unit tests with injected failing cert loader where possible; docs show fallible path.
-     Priority: must-have.
-
-  2. Add MqttOptions::validate() and try_build()
-     Problem: Some invalid combinations are discovered only at connect time, for example broker/transport mismatch, missing
-     websocket feature usage patterns, secure URL rejection, packet-size/session settings.
-     Why it matters: Consumers want fail-fast config validation during startup, before a reconnect loop hides the root cause.
-     Change: Add a structured ConfigError and MqttOptions::validate() -> Result<(), ConfigError>, then have try_build() call it.
-     Value: Better deployment diagnostics and safer config-file driven apps.
-     Complexity: Medium.
-     Risk: Low if additive.
-     Validate: Table-driven tests over TCP/TLS/WS/WSS/Unix/proxy/url/session combinations.
-     Priority: high-value.
-
-  3. Expose structured runtime diagnostics
+  1. Expose structured runtime diagnostics
      Problem: The event loop has important internal state, but consumers mostly get Event, ConnectionError, sparse log output, and
      a few queue length helpers.
      Why it matters: Production MQTT outages are often “why is publish stuck?” or “what is inflight?” not just “connection failed.”
@@ -61,7 +37,7 @@ What are your assessments on these recommendation? Would they be possible and le
      resume.
      Priority: high-value.
 
-  4. Improve error specificity and messages
+  2. Improve error specificity and messages
      Problem: Some errors are too generic or lose actionable detail: v5 ConnectionError::Timeout, ClientError::Request/TryRequest,
      and websocket ResponseValidation has an empty display string. See rumqttc-v5/src/eventloop.rs:183.
      Why it matters: Operators need to know whether they hit channel full, sender dropped, connect timeout, flush timeout, broker
@@ -74,7 +50,7 @@ What are your assessments on these recommendation? Would they be possible and le
      Validate: Error-display snapshot tests and channel-full/disconnected tests.
      Priority: high-value.
 
-  5. Provide an async Stream adapter
+  3. Provide an async Stream adapter
      Problem: Async users must manually loop on eventloop.poll().await; this is correct but not idiomatic for many Tokio/futures
      integrations.
      Why it matters: Consumers often want select!, stream combinators, service loops, and graceful shutdown composition.
@@ -85,7 +61,7 @@ What are your assessments on these recommendation? Would they be possible and le
      Validate: Stream polling tests, cancellation-safety tests, README example with tokio::select!.
      Priority: high-value.
 
-  6. Ship a tested session-store companion or feature-gated file store
+  4. Ship a tested session-store companion or feature-gated file store
      Problem: The SessionStore trait is solid, but every production user must implement crash-consistent persistence correctly.
      Why it matters: Restart-safe persistent sessions are a major differentiator, but the hardest part is delegated to consumers.
      Change: Prefer a small companion crate, e.g. rumqttc-session-store-file-next, or optional feature with atomic temp-file +
@@ -96,7 +72,7 @@ What are your assessments on these recommendation? Would they be possible and le
      Validate: Crash-style tests for partial writes, corrupt checkpoints, client-id mismatch; example using v4 and v5.
      Priority: high-value.
 
-  7. Add production recipes for common deployments
+  5. Add production recipes for common deployments
      Problem: Existing README examples are useful but mostly minimal. Advanced features exist, but consumers need recipes for TLS
      roots/client certs, WSS headers, proxies, persistent sessions, reconnect resubscribe, bounded channels, manual ACKs, and
      broker-specific quirks.
@@ -109,7 +85,7 @@ What are your assessments on these recommendation? Would they be possible and le
      Priority: high-value.
 
 
-  8. Make observability integrate with tracing optionally
+  6. Make observability integrate with tracing optionally
      Problem: The crate uses log; modern Tokio services often standardize on tracing spans/fields.
      Why it matters: MQTT connection lifecycle, reconnects, packet-id pressure, and protocol violations benefit from structured
      fields.
@@ -123,11 +99,9 @@ What are your assessments on these recommendation? Would they be possible and le
 
   Ranked Roadmap Before Release
 
-  1. Panic-free try_build() / fallible TLS default constructors.
-  2. MqttOptions::validate() and structured ConfigError.
-  3. EventLoop::diagnostics() snapshot.
-  4. Error-message cleanup and more actionable ClientError/ConnectionError variants.
-  5. Production recipes for TLS/WSS/proxy/session/reconnect/backpressure.
-  6. Async Stream adapter.
-  7. File-backed session-store companion.
-  8. Optional tracing integration.
+  1. EventLoop::diagnostics() snapshot.
+  2. Error-message cleanup and more actionable ClientError/ConnectionError variants.
+  3. Production recipes for TLS/WSS/proxy/session/reconnect/backpressure.
+  4. Async Stream adapter.
+  5. File-backed session-store companion.
+  6. Optional tracing integration.
