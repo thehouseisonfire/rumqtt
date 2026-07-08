@@ -1,6 +1,3 @@
-#![expect(dead_code)]
-#![expect(clippy::missing_errors_doc)]
-
 use bytes::BytesMut;
 use flume::{Receiver, Sender, bounded};
 use rumqttc::mqttbytes::v5::{
@@ -45,7 +42,7 @@ impl Broker {
     ///
     /// Panics if the test listener cannot be bound or if the initial CONNECT
     /// handshake cannot be completed.
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     pub async fn new(port: u16, behavior: ConnectBehavior) -> Self {
         let addr = format!("127.0.0.1:{port}");
         let listener = TcpListener::bind(&addr).await.unwrap();

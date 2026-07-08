@@ -342,11 +342,9 @@ const fn validate_fixed_header_flags(packet_type: PacketType, byte1: u8) -> Resu
     }
 }
 
+#[cfg(test)]
 mod test {
-    // These are used in tests by packets
-    #[expect(dead_code)]
     pub const USER_PROP_KEY: &str = "property";
-    #[expect(dead_code)]
     pub const USER_PROP_VAL: &str = "a value thats really long............................................................................................................";
 }
 
