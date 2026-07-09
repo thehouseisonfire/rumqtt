@@ -423,6 +423,7 @@ impl MqttState {
             .iter()
             .filter(|publish| publish.is_some())
             .count()
+            + usize::from(self.collision.is_some())
             + self.outgoing_rel.ones().count()
             + self.pending_subscribe.len()
             + self.pending_unsubscribe.len()
@@ -505,6 +506,13 @@ impl MqttState {
             } else {
                 _ = notice.take();
             }
+        }
+
+        if let Some(publish) = self.collision.take() {
+            pending.push((
+                Request::Publish(publish),
+                self.collision_notice.take().map(TrackedNoticeTx::Publish),
+            ));
         }
 
         // remove and collect pending releases
@@ -4026,6 +4034,51 @@ mod test {
             } else {
                 unreachable!()
             }
+        }
+    }
+
+    #[test]
+    fn clean_recovers_collision_stashed_publish() {
+        let mut mqtt = build_mqttstate();
+
+        let mut publish = build_outgoing_publish(QoS::AtLeastOnce);
+        publish.pkid = 1;
+        mqtt.collision = Some(publish);
+
+        let requests = mqtt.clean();
+
+        assert!(mqtt.collision.is_none());
+        match requests.as_slice() {
+            [Request::Publish(publish)] => assert_eq!(publish.pkid, 1),
+            requests => panic!("unexpected pending requests: {requests:?}"),
+        }
+    }
+
+    #[test]
+    fn clean_replays_tracked_publish_before_collision_stashed_publish() {
+        let mut mqtt = build_mqttstate();
+
+        let mut original = build_outgoing_publish(QoS::AtLeastOnce);
+        original.pkid = 1;
+        original.payload = Bytes::from_static(b"original");
+        mqtt.outgoing_pub[1] = Some(original);
+
+        let mut collision = build_outgoing_publish(QoS::AtLeastOnce);
+        collision.pkid = 1;
+        collision.payload = Bytes::from_static(b"collision");
+        mqtt.collision = Some(collision);
+
+        let requests = mqtt.clean();
+
+        assert!(mqtt.collision.is_none());
+        match requests.as_slice() {
+            [Request::Publish(original), Request::Publish(collision)] => {
+                assert_eq!(original.pkid, 1);
+                assert_eq!(original.payload, Bytes::from_static(b"original"));
+                assert_eq!(collision.pkid, 1);
+                assert_eq!(collision.payload, Bytes::from_static(b"collision"));
+            }
+            requests => panic!("unexpected pending requests: {requests:?}"),
         }
     }
 }
