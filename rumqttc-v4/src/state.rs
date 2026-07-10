@@ -419,7 +419,7 @@ impl MqttState {
             && !self.packet_identifier_in_use(publish.pkid)
     }
 
-    pub(crate) fn control_packet_identifier_available(&self) -> bool {
+    pub(crate) const fn control_packet_identifier_available(&self) -> bool {
         self.outbound_pkid_count < u16::MAX
     }
 
