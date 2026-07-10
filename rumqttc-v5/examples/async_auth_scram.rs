@@ -39,9 +39,7 @@ impl ScramCbHelper for ScramCredentials<'_> {}
 
 #[derive(Debug)]
 struct ScramAuthManager<'a> {
-    #[expect(dead_code)]
     user: &'a str,
-    #[expect(dead_code)]
     password: &'a str,
     #[cfg(feature = "auth-scram")]
     scram: Option<ScramSha256Client<'a>>,
