@@ -3200,6 +3200,7 @@ mod tests {
         active.pkid = 1;
         eventloop.state.outgoing_pub[1] = Some(active);
         eventloop.state.inflight = 1;
+        eventloop.state.rebuild_outbound_pkid_index();
     }
 
     #[cfg(feature = "stream")]
