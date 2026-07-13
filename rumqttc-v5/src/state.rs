@@ -284,6 +284,13 @@ pub struct PendingUnsubscribe {
     notice: Option<UnsubscribeNoticeTx>,
 }
 
+#[derive(Debug)]
+pub struct CleanRequest {
+    pub(crate) request: Request,
+    pub(crate) notice: Option<TrackedNoticeTx>,
+    pub(crate) replay: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct IncomingPacketEffects {
     pub(crate) outgoing: Option<Packet>,
@@ -544,6 +551,37 @@ impl MqttState {
         publish.pkid != 0
             && publish.pkid <= self.max_outgoing_inflight
             && !self.packet_identifier_in_use(publish.pkid)
+    }
+
+    pub(crate) fn can_send_replayed_publish(&self, publish: &Publish) -> bool {
+        if publish.qos == QoS::AtMostOnce {
+            return true;
+        }
+
+        if self.inflight >= self.max_outgoing_inflight || self.collision.is_some() {
+            return false;
+        }
+
+        let pkid = publish.pkid;
+        self.validate_outgoing_pkid_bound(pkid).is_ok()
+            && self.packet_identifier_in_use(pkid)
+            && self
+                .outgoing_pub
+                .get(usize::from(pkid))
+                .is_some_and(Option::is_none)
+            && !self.outgoing_rel.contains(usize::from(pkid))
+            && !self.outgoing_rel_replay.contains(usize::from(pkid))
+            && !self.pending_subscribe.contains_key(&pkid)
+            && !self.pending_unsubscribe.contains_key(&pkid)
+    }
+
+    pub(crate) fn can_send_replayed_control_packet(&self, pkid: u16) -> bool {
+        pkid != 0
+            && self.packet_identifier_in_use(pkid)
+            && !self.outgoing_rel.contains(usize::from(pkid))
+            && !self.outgoing_rel_replay.contains(usize::from(pkid))
+            && !self.pending_subscribe.contains_key(&pkid)
+            && !self.pending_unsubscribe.contains_key(&pkid)
     }
 
     pub(crate) const fn control_packet_identifier_available(&self) -> bool {
@@ -834,6 +872,20 @@ impl MqttState {
     }
 
     pub(crate) fn clean_with_notices(&mut self) -> Vec<(Request, Option<TrackedNoticeTx>)> {
+        self.clean_with_notices_internal(false)
+            .into_iter()
+            .map(|clean| (clean.request, clean.notice))
+            .collect()
+    }
+
+    pub(crate) fn clean_with_notices_for_reconnect(&mut self) -> Vec<CleanRequest> {
+        self.clean_with_notices_internal(true)
+    }
+
+    fn clean_with_notices_internal(
+        &mut self,
+        keep_replay_pkids_reserved: bool,
+    ) -> Vec<CleanRequest> {
         let mut pending = Vec::with_capacity(self.clean_pending_capacity());
         let mut released_publish_pkids = Vec::new();
         let (first_half, second_half) = self
@@ -856,9 +908,15 @@ impl MqttState {
                 {
                     publish.dup = true;
                 }
-                released_publish_pkids.push(publish.pkid);
+                if !keep_replay_pkids_reserved {
+                    released_publish_pkids.push(publish.pkid);
+                }
                 let request = Request::Publish(publish);
-                pending.push((request, notice.take().map(TrackedNoticeTx::Publish)));
+                pending.push(CleanRequest {
+                    request,
+                    notice: notice.take().map(TrackedNoticeTx::Publish),
+                    replay: true,
+                });
             } else {
                 _ = notice.take();
             }
@@ -868,22 +926,24 @@ impl MqttState {
         }
 
         if let Some(publish) = self.collision.take() {
-            pending.push((
-                Request::Publish(publish),
-                self.collision_notice.take().map(TrackedNoticeTx::Publish),
-            ));
+            pending.push(CleanRequest {
+                request: Request::Publish(publish),
+                notice: self.collision_notice.take().map(TrackedNoticeTx::Publish),
+                replay: false,
+            });
         }
 
         // remove and collect pending releases
         for pkid in self.outgoing_rel.ones() {
             let pkid = u16::try_from(pkid).expect("fixedbitset index always fits in u16");
             let request = Request::PubRel(PubRel::new(pkid, None));
-            pending.push((
+            pending.push(CleanRequest {
                 request,
-                self.outgoing_rel_notice[usize::from(pkid)]
+                notice: self.outgoing_rel_notice[usize::from(pkid)]
                     .take()
                     .map(TrackedNoticeTx::Publish),
-            ));
+                replay: true,
+            });
         }
         self.outgoing_rel_replay = self.outgoing_rel.clone();
         self.outgoing_rel.clear();
@@ -892,19 +952,25 @@ impl MqttState {
 
         for (pkid, mut pending_subscribe) in std::mem::take(&mut self.pending_subscribe) {
             pending_subscribe.subscribe.pkid = pkid;
-            self.release_outbound_pkid(pkid);
-            pending.push((
-                Request::Subscribe(pending_subscribe.subscribe),
-                pending_subscribe.notice.map(TrackedNoticeTx::Subscribe),
-            ));
+            if !keep_replay_pkids_reserved {
+                self.release_outbound_pkid(pkid);
+            }
+            pending.push(CleanRequest {
+                request: Request::Subscribe(pending_subscribe.subscribe),
+                notice: pending_subscribe.notice.map(TrackedNoticeTx::Subscribe),
+                replay: true,
+            });
         }
         for (pkid, mut pending_unsubscribe) in std::mem::take(&mut self.pending_unsubscribe) {
             pending_unsubscribe.unsubscribe.pkid = pkid;
-            self.release_outbound_pkid(pkid);
-            pending.push((
-                Request::Unsubscribe(pending_unsubscribe.unsubscribe),
-                pending_unsubscribe.notice.map(TrackedNoticeTx::Unsubscribe),
-            ));
+            if !keep_replay_pkids_reserved {
+                self.release_outbound_pkid(pkid);
+            }
+            pending.push(CleanRequest {
+                request: Request::Unsubscribe(pending_unsubscribe.unsubscribe),
+                notice: pending_unsubscribe.notice.map(TrackedNoticeTx::Unsubscribe),
+                replay: true,
+            });
         }
 
         // QoS 1 receives are not part of the client session state. Incomplete QoS 2
@@ -1185,7 +1251,11 @@ impl MqttState {
                     )
                     | None => None,
                 };
-                self.outgoing_publish_with_notice(publish, publish_notice)?
+                if replay {
+                    self.replay_outgoing_publish_with_notice(publish, publish_notice)?
+                } else {
+                    self.outgoing_publish_with_notice(publish, publish_notice)?
+                }
             }
             Request::PubRel(pubrel) => {
                 let publish_notice = match notice {
@@ -1883,8 +1953,25 @@ impl MqttState {
 
     fn outgoing_publish_with_notice(
         &mut self,
+        publish: Publish,
+        notice: Option<PublishNoticeTx>,
+    ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        self.outgoing_publish_with_notice_internal(publish, notice, false)
+    }
+
+    fn replay_outgoing_publish_with_notice(
+        &mut self,
+        publish: Publish,
+        notice: Option<PublishNoticeTx>,
+    ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        self.outgoing_publish_with_notice_internal(publish, notice, true)
+    }
+
+    fn outgoing_publish_with_notice_internal(
+        &mut self,
         mut publish: Publish,
         notice: Option<PublishNoticeTx>,
+        replay: bool,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
         if publish.retain && !self.retain_available {
             return Err(StateError::RetainNotSupported);
@@ -1896,6 +1983,9 @@ impl MqttState {
 
         if publish.qos != QoS::AtMostOnce {
             if publish.pkid == 0 {
+                if replay {
+                    return Err(StateError::InvalidState);
+                }
                 publish.pkid = self.next_pkid().ok_or(StateError::InvalidState)?;
             }
 
@@ -1928,7 +2018,11 @@ impl MqttState {
 
             // if there is an existing publish at this pkid, this implies that broker hasn't acked this
             // packet yet. This error is possible only when broker isn't acking sequentially
-            self.reserve_outbound_pkid(pkid)?;
+            if replay {
+                self.accept_replayed_outbound_pkid(pkid)?;
+            } else {
+                self.reserve_outbound_pkid(pkid)?;
+            }
             let replay_publish = self.publish_for_replay_tracking(&publish);
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
             self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
@@ -2095,7 +2189,7 @@ impl MqttState {
             return Err(StateError::EmptySubscription);
         }
 
-        self.reserve_replay_control_pkid(subscription.pkid)?;
+        self.accept_replayed_outbound_pkid(subscription.pkid)?;
         Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
     }
 
@@ -2138,7 +2232,7 @@ impl MqttState {
         unsub: Unsubscribe,
         notice: Option<UnsubscribeNoticeTx>,
     ) -> Result<Packet, StateError> {
-        self.reserve_replay_control_pkid(unsub.pkid)?;
+        self.accept_replayed_outbound_pkid(unsub.pkid)?;
         Ok(self.save_outgoing_unsubscribe(unsub, notice))
     }
 
@@ -2164,10 +2258,6 @@ impl MqttState {
         );
 
         Packet::Unsubscribe(unsub)
-    }
-
-    fn reserve_replay_control_pkid(&mut self, pkid: u16) -> Result<(), StateError> {
-        self.reserve_outbound_pkid(pkid)
     }
 
     fn outgoing_disconnect(&mut self, disconnect: Disconnect) -> Packet {
@@ -2341,6 +2431,14 @@ impl MqttState {
         Ok(())
     }
 
+    fn accept_replayed_outbound_pkid(&self, pkid: u16) -> Result<(), StateError> {
+        if pkid == 0 || !self.packet_identifier_in_use(pkid) {
+            return Err(StateError::InvalidState);
+        }
+
+        Ok(())
+    }
+
     fn release_outbound_pkid(&mut self, pkid: u16) {
         if pkid == 0 || !self.packet_identifier_in_use(pkid) {
             return;
@@ -2353,6 +2451,27 @@ impl MqttState {
             .expect("reserved packet identifier count should not underflow");
     }
 
+    pub(crate) fn discard_replayed_request(&mut self, request: &Request) {
+        match request {
+            Request::Publish(publish) if publish.qos != QoS::AtMostOnce => {
+                self.release_outbound_pkid(publish.pkid);
+            }
+            Request::PubRel(pubrel) => {
+                self.outgoing_rel_replay
+                    .set(usize::from(pubrel.pkid), false);
+                self.release_outbound_pkid(pubrel.pkid);
+            }
+            Request::Subscribe(subscribe) => {
+                self.release_outbound_pkid(subscribe.pkid);
+            }
+            Request::Unsubscribe(unsubscribe) => {
+                self.release_outbound_pkid(unsubscribe.pkid);
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn rebuild_outbound_pkid_index(&mut self) {
         self.outbound_pkid_in_use.clear();
 
@@ -2762,12 +2881,24 @@ impl MqttState {
         }
 
         for request in &session.replay {
-            if let PersistedRequest::PubRel(pubrel) = request {
-                self.ensure_outgoing_tracking_capacity(usize::from(pubrel.pkid) + 1);
-                self.outgoing_rel_replay.insert(usize::from(pubrel.pkid));
-            }
+            let pkid = match request {
+                PersistedRequest::Publish(publish) => {
+                    self.ensure_outgoing_tracking_capacity(usize::from(publish.pkid) + 1);
+                    publish.pkid
+                }
+                PersistedRequest::PubRel(pubrel) => {
+                    self.ensure_outgoing_tracking_capacity(usize::from(pubrel.pkid) + 1);
+                    self.outgoing_rel_replay.insert(usize::from(pubrel.pkid));
+                    pubrel.pkid
+                }
+                PersistedRequest::Subscribe(subscribe) => subscribe.pkid,
+                PersistedRequest::Unsubscribe(unsubscribe) => unsubscribe.pkid,
+            };
+            self.outbound_pkid_in_use.insert(usize::from(pkid));
         }
-        self.rebuild_outbound_pkid_index();
+        self.outbound_pkid_in_use.set(0, false);
+        self.outbound_pkid_count = u16::try_from(self.outbound_pkid_in_use.ones().count())
+            .expect("non-zero MQTT packet identifier count fits in u16");
 
         session
             .replay
@@ -3479,8 +3610,10 @@ mod test {
             .expect("persisted session should restore");
 
         assert_eq!(replay.len(), 1);
+        assert!(restored.packet_identifier_in_use(1));
         match &replay[0] {
             Request::Publish(publish) => {
+                assert!(restored.can_send_replayed_publish(publish));
                 assert_eq!(publish.pkid, 1);
                 assert!(publish.dup);
                 assert_eq!(publish.qos, QoS::AtLeastOnce);
@@ -3549,6 +3682,8 @@ mod test {
             .expect("persisted session should restore");
 
         assert_eq!(replay.len(), 2);
+        assert!(restored.packet_identifier_in_use(1));
+        assert!(restored.packet_identifier_in_use(2));
         for request in replay {
             let packet = restored
                 .handle_replayed_outgoing_packet_with_notice(request, None)
@@ -7171,7 +7306,7 @@ mod test {
         .unwrap();
 
         assert!(!mqtt.packet_identifier_in_use(1));
-        mqtt.reserve_replay_control_pkid(1).unwrap();
+        mqtt.reserve_outbound_pkid(1).unwrap();
         assert!(mqtt.packet_identifier_in_use(1));
     }
 

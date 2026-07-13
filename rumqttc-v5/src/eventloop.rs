@@ -55,13 +55,6 @@ pub struct RequestEnvelope {
 }
 
 impl RequestEnvelope {
-    pub(crate) const fn replay_from_parts(
-        request: Request,
-        notice: Option<TrackedNoticeTx>,
-    ) -> Self {
-        Self::from_parts_with_replay(request, notice, true)
-    }
-
     const fn from_parts_with_replay(
         request: Request,
         notice: Option<TrackedNoticeTx>,
@@ -465,9 +458,9 @@ impl EventLoop {
         self.pending_disconnect = None;
         let mut replay_topic_aliases = self.state.replay_topic_aliases();
 
-        for (request, notice) in self.state.clean_with_notices() {
+        for clean in self.state.clean_with_notices_for_reconnect() {
             self.push_replay_envelope(
-                RequestEnvelope::replay_from_parts(request, notice),
+                RequestEnvelope::from_parts_with_replay(clean.request, clean.notice, clean.replay),
                 &mut replay_topic_aliases,
             );
         }
@@ -512,6 +505,9 @@ impl EventLoop {
             &mut envelope.request,
             replay_topic_aliases,
         ) {
+            if envelope.replay {
+                self.state.discard_replayed_request(&envelope.request);
+            }
             if let Some(TrackedNoticeTx::Publish(notice)) = envelope.notice {
                 notice.error(err);
             }
@@ -675,7 +671,11 @@ impl EventLoop {
             return SessionSave(None);
         };
 
-        let pending_replay = self.pending.iter().map(|envelope| &envelope.request);
+        let pending_replay = self
+            .pending
+            .iter()
+            .filter(|envelope| envelope.replay)
+            .map(|envelope| &envelope.request);
         let queued_replay = self
             .queued
             .iter()
@@ -1056,14 +1056,14 @@ impl EventLoop {
     fn next_scheduled_request(&mut self) -> Option<RequestEnvelope> {
         let state = &self.state;
         self.queued
-            .pop_next(|envelope| classify_request(state, &envelope.request))
+            .pop_next(|envelope| classify_envelope(state, envelope))
     }
 
     fn normal_request_admission_allowed(&self) -> bool {
         self.queued.is_empty()
             || self
                 .queued
-                .has_ready(|envelope| classify_request(&self.state, &envelope.request))
+                .has_ready(|envelope| classify_envelope(&self.state, envelope))
     }
 
     async fn try_admit_existing_normal_requests(&mut self) {
@@ -1129,12 +1129,18 @@ impl EventLoop {
             replay,
         } = envelope;
         if self.broker_only_session_resume && request_allocates_client_packet_id(&request) {
+            if replay {
+                self.state.discard_replayed_request(&request);
+            }
             reject_broker_only_session_request(&request, notice);
             return Ok(BatchControl::Continue);
         }
         if matches!(&request, Request::Publish(publish) if publish.retain)
             && !self.state.retain_available()
         {
+            if replay {
+                self.state.discard_replayed_request(&request);
+            }
             reject_unsupported_retained_publish(&request, notice);
             return Ok(BatchControl::Continue);
         }
@@ -1409,12 +1415,46 @@ impl EventLoop {
     }
 }
 
+fn classify_envelope(state: &MqttState, envelope: &RequestEnvelope) -> ScheduledRequest {
+    if envelope.replay {
+        classify_replay_request(state, &envelope.request)
+    } else {
+        classify_request(state, &envelope.request)
+    }
+}
+
 fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
+    classify_publish_or_control_request(
+        request,
+        |publish| state.can_send_publish(publish),
+        || state.control_packet_identifier_available(),
+    )
+}
+
+fn classify_replay_request(state: &MqttState, request: &Request) -> ScheduledRequest {
+    classify_publish_or_control_request(
+        request,
+        |publish| state.can_send_replayed_publish(publish),
+        || match request {
+            Request::Subscribe(subscribe) => state.can_send_replayed_control_packet(subscribe.pkid),
+            Request::Unsubscribe(unsubscribe) => {
+                state.can_send_replayed_control_packet(unsubscribe.pkid)
+            }
+            _ => true,
+        },
+    )
+}
+
+fn classify_publish_or_control_request(
+    request: &Request,
+    can_send_publish: impl FnOnce(&Publish) -> bool,
+    can_send_control: impl FnOnce() -> bool,
+) -> ScheduledRequest {
     match request {
         Request::Publish(publish) if publish.qos != crate::mqttbytes::QoS::AtMostOnce => {
             ScheduledRequest {
                 class: RequestClass::FlowControlledPublish,
-                readiness: if state.can_send_publish(publish) {
+                readiness: if can_send_publish(publish) {
                     RequestReadiness::Ready
                 } else {
                     RequestReadiness::Blocked
@@ -1427,7 +1467,7 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
         },
         request if request_needs_fresh_client_packet_id(request) => ScheduledRequest {
             class: RequestClass::Control,
-            readiness: if state.control_packet_identifier_available() {
+            readiness: if can_send_control() {
                 RequestReadiness::Ready
             } else {
                 RequestReadiness::Blocked
@@ -4514,6 +4554,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broker_only_session_resume_rejection_releases_replay_packet_identifier() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.reconcile_connack_session(true).unwrap();
+        let mut subscribe = subscribe();
+        subscribe.pkid = 7;
+        eventloop.state.outbound_pkid_in_use.insert(7);
+        eventloop.state.outbound_pkid_count = 1;
+
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+        let keep_batching = eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain_replay(Request::Subscribe(subscribe)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keep_batching, BatchControl::Continue);
+        assert!(!eventloop.state.outbound_pkid_in_use.contains(7));
+        assert_eq!(eventloop.state.outbound_pkid_count, 0);
+    }
+
+    #[tokio::test]
     async fn unsupported_retained_publish_is_rejected_without_dropping_connection() {
         let mut eventloop = build_eventloop(true);
         let (client, _peer) = tokio::io::duplex(1024);
@@ -4572,6 +4643,38 @@ mod tests {
             eventloop.state.events.back(),
             Some(Event::Outgoing(Outgoing::Publish(0)))
         ));
+    }
+
+    #[tokio::test]
+    async fn unsupported_retained_replay_releases_reserved_packet_identifier() {
+        let mut eventloop = build_eventloop(true);
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_retain_available(0)))
+            .unwrap();
+        eventloop.state.events.clear();
+        let mut retained = publish(QoS::AtLeastOnce);
+        retained.pkid = 7;
+        retained.retain = true;
+        eventloop.state.outbound_pkid_in_use.insert(7);
+        eventloop.state.outbound_pkid_count = 1;
+
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+        let keep_batching = eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain_replay(Request::Publish(retained)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keep_batching, BatchControl::Continue);
+        assert!(!eventloop.state.outbound_pkid_in_use.contains(7));
+        assert_eq!(eventloop.state.outbound_pkid_count, 0);
     }
 
     #[test]
@@ -4706,6 +4809,70 @@ mod tests {
             &session.replay[0],
             crate::PersistedRequest::Subscribe(subscribe) if subscribe.pkid == 7
         ));
+    }
+
+    #[tokio::test]
+    async fn persist_session_includes_pending_replay_requests_only() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let mut replay_subscribe = subscribe();
+        replay_subscribe.pkid = 7;
+        let mut fresh_subscribe = subscribe();
+        fresh_subscribe.pkid = 8;
+
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain_replay(Request::Subscribe(
+                replay_subscribe,
+            )));
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain(Request::Subscribe(fresh_subscribe)));
+
+        eventloop.persisted_session_save().save().await.unwrap();
+
+        let session = store.current().expect("session should be saved");
+        assert_eq!(session.replay.len(), 1);
+        assert!(matches!(
+            &session.replay[0],
+            crate::PersistedRequest::Subscribe(subscribe) if subscribe.pkid == 7
+        ));
+    }
+
+    #[tokio::test]
+    async fn persist_session_excludes_pending_collision_retry_after_clean() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        fill_publish_window(&mut eventloop);
+        let mut collision = Publish::new("collision/topic", QoS::AtLeastOnce, "collision", None);
+        collision.pkid = 1;
+        eventloop.state.collision = Some(collision);
+
+        eventloop.clean();
+        eventloop.persisted_session_save().save().await.unwrap();
+
+        let session = store.current().expect("session should be saved");
+        let publishes: Vec<_> = session
+            .replay
+            .iter()
+            .filter_map(|request| match request {
+                crate::PersistedRequest::Publish(publish) => Some(publish),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(publishes.len(), 1);
+        assert_eq!(publishes[0].pkid, 1);
+        assert_eq!(publishes[0].topic, b"hello/world");
     }
 
     #[tokio::test]
