@@ -1,74 +1,357 @@
+# TODO
+
+## Resume Codex Session
+
+```bash
 codex resume 019f1f7a-b9f2-71d2-b6e5-9560ab76063c
+```
 
+---
 
+## Reusable Evaluation Prompts
 
-What is your assessment on this recommendation? Would it be possible and legitimately beneficial?
+### Evaluate a Single Recommendation
 
+What is your assessment of this recommendation?
 
-What is your assessment on this recommendation? Would it be possible and legitimately beneficial? Especially, would you have a counter proposal or alternative path you see as more beneficial, idiomatic or correct?
+Determine whether it is technically feasible and whether it would provide legitimate, meaningful value.
 
-What are your assessments on these recommendation? Would they be possible and legitimately beneficial? Especially, would you have a counter proposal or alternative path you see as more beneficial, idiomatic or correct?
+Do not assume the recommendation is correct. Identify its benefits, drawbacks, implementation complexity, compatibility risks, and likely maintenance cost.
 
+### Evaluate a Recommendation and Propose Alternatives
 
+What is your assessment of this recommendation?
 
+Determine whether it is technically feasible and whether it would provide legitimate, meaningful value.
 
+Pay particular attention to whether there is a better alternative or counterproposal that would be more beneficial, idiomatic, maintainable, or technically correct in the context of the current codebase.
 
-1. Expose structured runtime diagnostics
-    Problem: The event loop has important internal state, but consumers mostly get Event, ConnectionError, sparse log output, and a few queue length helpers.
-    Why it matters: Production MQTT outages are often “why is publish stuck?” or “what is inflight?” not just “connection failed.”
-    Change: Add EventLoop::diagnostics() returning a non-exhaustive snapshot: connected/disconnected, pending/queued/request-channel lengths, inflight, packet-id pressure, disconnect-drain state, session-store state, broker-only resume, read/write
-    batch config.
-    Value: Makes support dashboards, health checks, and bug reports much better.
-    Complexity: Medium.
-    Risk: Low if snapshot type is non-exhaustive.
-    Validate: Unit tests for diagnostic values during blocked publish, graceful disconnect, reconnect replay, broker-only session resume.
-    Priority: high-value.
+Do not implement anything yet.
 
-2. Improve error specificity and messages
-    Problem: Some errors are too generic or lose actionable detail: v5 ConnectionError::Timeout, ClientError::Request/TryRequest, and websocket ResponseValidation has an empty display string. See rumqttc-v5/src/eventloop.rs:183.
-    Why it matters: Operators need to know whether they hit channel full, sender dropped, connect timeout, flush timeout, broker protocol violation, or config mismatch.
-    Change: Add more structured variants or fields while keeping existing non-exhaustive enums; preserve send failure cause where possible.
-    Value: Faster debugging and better retry/drop policies.
-    Complexity: Medium.
-    Risk: Medium if pattern matching users rely on current variants, but enums are already non_exhaustive.
-    Validate: Error-display snapshot tests and channel-full/disconnected tests.
-    Priority: high-value.
+### Evaluate Multiple Recommendations
 
-3. Ship a tested session-store companion or feature-gated file store
-    Problem: The SessionStore trait is solid, but every production user must implement crash-consistent persistence correctly.
-    Why it matters: Restart-safe persistent sessions are a major differentiator, but the hardest part is delegated to consumers.
-    Change: Prefer a small companion crate, e.g. rumqttc-session-store-file-next, or optional feature with atomic temp-file + rename semantics. Avoid database adapters in the main crate.
-    Value: Makes strict persistent sessions immediately usable.
-    Complexity: Medium.
-    Risk: Low if outside the main crate.
-    Validate: Crash-style tests for partial writes, corrupt checkpoints, client-id mismatch; example using v4 and v5.
-    Priority: high-value.
+Assess each of the following recommendations independently.
 
-4. Add production recipes for common deployments
-     Problem: Existing README examples are useful but mostly minimal. Advanced features exist, but consumers need recipes for TLS roots/client certs, WSS headers, proxies, persistent sessions, reconnect resubscribe, bounded channels, manual ACKs, and broker-specific quirks.
-    Why it matters: MQTT adoption often happens against AWS IoT, EMQX, HiveMQ, Mosquitto, or corporate proxies.
-    Change: Add docs/recipes/ with copy-pasteable, tested recipes and a feature matrix.
-    Value: Reduces integration time and support load.
-    Complexity: Low-medium.
-    Risk: None.
-    Validate: Compile examples; optional dockerized Mosquitto/EMQX smoke tests.
-    Priority: high-value.
+For each recommendation:
 
+1. Determine whether it is technically feasible.
+2. Evaluate whether it would provide meaningful value to crate consumers.
+3. Identify implementation complexity, compatibility risks, and maintenance costs.
+4. Challenge the proposed solution rather than assuming it is correct.
+5. Suggest a more beneficial, idiomatic, maintainable, or technically correct alternative where appropriate.
+6. Recommend whether to adopt, modify, defer, or reject it.
 
-5. Make observability integrate with tracing optionally
-    Problem: The crate uses log; modern Tokio services often standardize on tracing spans/fields.
-    Why it matters: MQTT connection lifecycle, reconnects, packet-id pressure, and protocol violations benefit from structured fields.
-    Change: Add optional tracing feature or convert key diagnostics through tracing while preserving log compatibility if desired. Value: Better production telemetry.
-    Complexity: Medium.
-    Risk: Low if feature-gated.
-    Validate: Feature matrix build and tests asserting key spans/events via test subscriber.
-    Priority: nice-to-have.
+Conclude with a ranked roadmap based on consumer value, implementation cost, risk, and suitability before release.
 
+Do not implement anything yet.
 
-Ranked Roadmap Before Release
+---
 
-1. EventLoop::diagnostics() snapshot.
-2. Error-message cleanup and more actionable ClientError/ConnectionError variants.
-3. Production recipes for TLS/WSS/proxy/session/reconnect/backpressure.
-4. File-backed session-store companion.
-5. Optional tracing integration.
+## Candidate Improvements
+
+### 1. Expose Structured Runtime Diagnostics
+
+**Problem**
+
+The event loop maintains important internal state, but consumers primarily receive:
+
+* `Event`
+* `ConnectionError`
+* Sparse log output
+* A small number of queue-length helpers
+
+This makes it difficult to diagnose operational problems such as:
+
+* Why is a publish request blocked?
+* How many packets are currently in flight?
+* Is the request channel full?
+* Is the client draining before disconnect?
+* Is a persistent session being restored or replayed?
+
+**Proposed change**
+
+Add an `EventLoop::diagnostics()` method that returns a non-exhaustive diagnostic snapshot.
+
+Potential fields include:
+
+* Connection state
+* Pending request count
+* Queued request count
+* Request-channel capacity and utilization
+* In-flight packet count
+* Packet-identifier utilization or pressure
+* Graceful-disconnect drain state
+* Session-store state
+* Broker-only session-resume state
+* Read-batch configuration
+* Write-batch configuration
+
+**Expected value**
+
+Provides structured data for:
+
+* Health checks
+* Support dashboards
+* Operational debugging
+* Bug reports
+* Automated monitoring
+
+**Complexity:** Medium
+**Risk:** Low, provided the snapshot type is non-exhaustive and avoids exposing unstable implementation details.
+
+**Validation**
+
+Add tests covering diagnostic values during:
+
+* Blocked publishing
+* Graceful disconnect
+* Reconnection and replay
+* Broker-only session resume
+* Request-channel saturation
+
+**Priority:** High value
+
+---
+
+### 2. Improve Error Specificity and Messages
+
+**Problem**
+
+Some errors are overly generic or discard actionable context.
+
+Examples include:
+
+* MQTT v5 `ConnectionError::Timeout`
+* `ClientError::Request`
+* `ClientError::TryRequest`
+* WebSocket `ResponseValidation`, whose display message is currently empty
+
+See:
+
+```text
+rumqttc-v5/src/eventloop.rs:183
+```
+
+Operators may need to distinguish between:
+
+* Request channel full
+* Request receiver dropped
+* Connection timeout
+* Flush timeout
+* Broker protocol violation
+* Invalid configuration
+* WebSocket handshake validation failure
+* Graceful-disconnect timeout
+
+**Proposed change**
+
+Improve error structure and display messages.
+
+Possible changes include:
+
+* Adding more specific variants
+* Adding structured fields to existing variants
+* Preserving the underlying send failure where possible
+* Distinguishing timeout phases
+* Including relevant protocol or configuration context
+
+Existing enums should remain non-exhaustive.
+
+**Expected value**
+
+Enables:
+
+* Faster debugging
+* Better retry policies
+* Better decisions about dropping or replaying requests
+* More actionable logs and user-facing errors
+
+**Complexity:** Medium
+**Risk:** Medium, because downstream users may still pattern-match on existing variants despite the enums being non-exhaustive.
+
+**Validation**
+
+Add:
+
+* Error-display snapshot tests
+* Request-channel-full tests
+* Request-channel-disconnected tests
+* Connection-timeout tests
+* Flush-timeout tests
+* WebSocket response-validation tests
+
+**Priority:** High value
+
+---
+
+### 3. Add Production Deployment Recipes
+
+**Problem**
+
+The existing README examples are useful, but they are primarily minimal examples.
+
+The crates support several advanced production features whose correct composition may not be obvious to consumers:
+
+* Custom TLS roots
+* Mutual TLS and client certificates
+* Secure WebSockets
+* Custom WebSocket headers
+* HTTP or SOCKS proxies
+* Persistent sessions
+* Reconnection and resubscription
+* Bounded request channels
+* Backpressure
+* Manual acknowledgements
+* Broker-specific behavior
+
+**Proposed change**
+
+Add a structured documentation section under:
+
+```text
+docs/recipes/
+```
+
+Provide copy-pasteable, tested recipes for common production deployments, along with a feature matrix.
+
+Potential targets include:
+
+* Mosquitto
+* EMQX
+* HiveMQ
+* AWS IoT Core
+* Corporate proxy environments
+
+**Expected value**
+
+Reduces:
+
+* Integration time
+* Configuration mistakes
+* Support requests
+* Reliance on incomplete external examples
+
+**Complexity:** Low to medium
+**Risk:** Minimal
+
+**Validation**
+
+* Compile every recipe in CI.
+* Use Dockerized Mosquitto or EMQX smoke tests where practical.
+* Validate relevant feature combinations.
+* Check documentation links and commands.
+
+**Priority:** High value
+
+---
+
+### 4. Ship a Tested File-Backed Session Store
+
+**Problem**
+
+The `SessionStore` trait provides the required abstraction, but every production consumer must independently implement crash-consistent persistence.
+
+Correct persistent-session storage requires careful handling of:
+
+* Partial writes
+* Atomic replacement
+* Corrupted checkpoints
+* Client-identifier mismatches
+* Schema evolution
+* Interrupted shutdowns
+
+**Proposed change**
+
+Prefer a small companion crate, such as:
+
+```text
+rumqttc-session-store-file-next
+```
+
+An optional feature in the main crate is another possibility, but a companion crate would avoid expanding the main crate's dependency and maintenance surface.
+
+The implementation should use atomic temporary-file and rename semantics where supported.
+
+Database-specific adapters should remain outside the main crate.
+
+**Expected value**
+
+Makes restart-safe persistent sessions directly usable without requiring every consumer to design and validate its own storage implementation.
+
+**Complexity:** Medium
+**Risk:** Low if implemented as a separate companion crate.
+
+**Validation**
+
+Add crash-oriented tests covering:
+
+* Partial writes
+* Interrupted replacement
+* Corrupt checkpoints
+* Client-identifier mismatch
+* Unsupported checkpoint versions
+* Recovery after restart
+
+Provide working MQTT v4 and MQTT v5 examples.
+
+**Priority:** High value
+
+---
+
+### 5. Add Optional `tracing` Integration
+
+**Problem**
+
+The crates currently use `log`, while many modern Tokio applications standardize on `tracing` for structured events and spans.
+
+Important MQTT lifecycle events would benefit from structured fields, including:
+
+* Connection attempts
+* Successful connections
+* Reconnects
+* Disconnect causes
+* Packet-identifier pressure
+* Session restoration
+* Replay state
+* Protocol violations
+* Backpressure
+
+**Proposed change**
+
+Add feature-gated `tracing` integration.
+
+Possible approaches:
+
+1. Emit `tracing` events directly behind an optional feature.
+2. Preserve existing `log` compatibility while adding structured tracing events for key lifecycle operations.
+3. Use an adapter strategy only if it preserves useful structured fields.
+
+Avoid duplicating every low-level log statement without a clear observability benefit.
+
+**Expected value**
+
+Improves integration with production telemetry, distributed diagnostics, and structured log aggregation.
+
+**Complexity:** Medium
+**Risk:** Low if feature-gated and carefully scoped.
+
+**Validation**
+
+* Test the complete feature matrix.
+* Capture events using a test subscriber.
+* Assert that key lifecycle events and structured fields are emitted.
+* Verify that disabling the feature introduces no tracing dependency.
+
+**Priority:** Nice to have
+
+---
+
+## Preliminary Ranked Roadmap
+
+1. Add `EventLoop::diagnostics()` with a stable, non-exhaustive snapshot.
+2. Improve error messages and introduce more actionable `ClientError` and `ConnectionError` variants.
+3. Add tested production recipes for TLS, WSS, proxies, sessions, reconnection, and backpressure.
+4. Publish a file-backed session-store companion crate.
+5. Add optional structured `tracing` integration.
+
+The final ranking should be revised after evaluating API stability, implementation overlap, consumer demand, and release scope.
