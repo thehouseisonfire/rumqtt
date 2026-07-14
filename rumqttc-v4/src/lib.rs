@@ -89,7 +89,8 @@ pub use rumqttc_core::default_socket_connect;
 pub use session::{
     PersistedAckMode, PersistedFilter, PersistedIncomingQos2, PersistedPubRel, PersistedPublish,
     PersistedQoS, PersistedRequest, PersistedSession, PersistedSubscribe, PersistedUnsubscribe,
-    SessionRestoreError, SessionStore, SessionStoreError,
+    SessionDecodeError, SessionEncodeError, SessionRestoreError, SessionStore, SessionStoreError,
+    SessionStoreKey,
 };
 pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -568,6 +569,8 @@ pub struct MqttOptions {
     ack_mode: AckMode,
     /// Optional durable storage for MQTT 3.1.1 persistent client session state.
     session_store: Option<Arc<dyn SessionStore>>,
+    /// Application-defined scope for durable session storage keys.
+    session_store_scope: String,
     #[cfg(feature = "proxy")]
     /// Proxy configuration.
     proxy: Option<Proxy>,
@@ -617,6 +620,7 @@ impl MqttOptions {
             last_will: None,
             ack_mode: AckMode::Automatic,
             session_store: None,
+            session_store_scope: String::new(),
             #[cfg(feature = "proxy")]
             proxy: None,
             #[cfg(feature = "websocket")]
@@ -1148,6 +1152,34 @@ impl MqttOptions {
         self.session_store.clone()
     }
 
+    /// Set the application-defined scope for durable session storage keys.
+    ///
+    /// The empty default scope is appropriate only when the configured store is
+    /// already scoped externally, such as by using a dedicated file directory
+    /// for one broker/environment/client profile. Shared stores should use a
+    /// stable scope that distinguishes broker clusters, tenants, environments,
+    /// or connection profiles that may reuse the same MQTT Client Identifier.
+    pub fn set_session_store_scope<S: Into<String>>(&mut self, scope: S) -> &mut Self {
+        self.session_store_scope = scope.into();
+        self
+    }
+
+    /// Clear the application-defined durable session storage scope.
+    pub fn clear_session_store_scope(&mut self) -> &mut Self {
+        self.session_store_scope.clear();
+        self
+    }
+
+    /// Returns the application-defined durable session storage scope.
+    pub fn session_store_scope(&self) -> &str {
+        &self.session_store_scope
+    }
+
+    /// Returns the durable session storage key for the current client id.
+    pub fn session_store_key(&self) -> SessionStoreKey {
+        SessionStoreKey::new(self.session_store_scope.clone(), self.client_id())
+    }
+
     #[cfg(feature = "proxy")]
     pub fn set_proxy(&mut self, proxy: Proxy) -> &mut Self {
         self.proxy = Some(proxy);
@@ -1464,6 +1496,15 @@ impl MqttOptionsBuilder {
     #[must_use]
     pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.options.set_session_store_arc(store);
+        self
+    }
+
+    /// Set the application-defined scope for durable session storage keys.
+    ///
+    /// See [`MqttOptions::set_session_store_scope`] for scope semantics.
+    #[must_use]
+    pub fn session_store_scope<S: Into<String>>(mut self, scope: S) -> Self {
+        self.options.set_session_store_scope(scope);
         self
     }
 
@@ -2658,6 +2699,18 @@ mod test {
     fn read_batch_size_defaults_to_adaptive() {
         let options = MqttOptions::new("client_id", "127.0.0.1");
         assert_eq!(options.read_batch_size(), 0);
+    }
+
+    #[test]
+    fn session_store_scope_feeds_session_store_key() {
+        let options = MqttOptions::builder("client_id", "127.0.0.1")
+            .session_store_scope("tenant-a/broker-1")
+            .build();
+        let key = options.session_store_key();
+
+        assert_eq!(options.session_store_scope(), "tenant-a/broker-1");
+        assert_eq!(key.scope(), "tenant-a/broker-1");
+        assert_eq!(key.client_id(), "client_id");
     }
 
     #[test]

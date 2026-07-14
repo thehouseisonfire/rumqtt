@@ -160,16 +160,22 @@ enum SessionStoreResetAction {
     Clear,
 }
 
-struct SessionSave(Option<(Arc<dyn SessionStore>, PersistedSession)>);
+struct SessionSave(
+    Option<(
+        Arc<dyn SessionStore>,
+        crate::SessionStoreKey,
+        PersistedSession,
+    )>,
+);
 
 impl SessionSave {
     async fn save(self) -> Result<bool, ConnectionError> {
-        let Some((store, session)) = self.0 else {
+        let Some((store, key, session)) = self.0 else {
             return Ok(false);
         };
 
         store
-            .save(&session)
+            .save(&key, &session)
             .await
             .map_err(ConnectionError::SessionStore)?;
         Ok(true)
@@ -283,6 +289,8 @@ pub struct EventLoop {
     no_sleep: Option<Pin<Box<Sleep>>>,
     /// `ClientId` associated with the currently retained local session state.
     session_client_id: Option<String>,
+    /// Store key associated with the currently retained local session state.
+    session_store_key: Option<crate::SessionStoreKey>,
     /// Current connection resumed broker state without matching local packet-id ownership.
     broker_only_session_resume: bool,
     /// Persistent session store lifecycle flags.
@@ -302,7 +310,7 @@ pub enum Event {
 
 impl EventLoop {
     fn has_local_session_state(&self) -> bool {
-        self.session_client_id.as_deref() == Some(self.options.client_id().as_str())
+        self.session_store_key.as_ref() == Some(&self.options.session_store_key())
     }
 
     fn reconcile_connack_session(&mut self, session_present: bool) -> Result<(), ConnectionError> {
@@ -437,6 +445,7 @@ impl EventLoop {
             keepalive_timeout: None,
             no_sleep: None,
             session_client_id: None,
+            session_store_key: None,
             broker_only_session_resume: false,
             session_store: SessionStoreState::new(),
             pending_disconnect: None,
@@ -600,6 +609,7 @@ impl EventLoop {
         self.state.fail_reauth_exchange_due_to_session_reset();
         self.state.reset_session_state();
         self.session_client_id = None;
+        self.session_store_key = None;
         self.broker_only_session_resume = false;
         self.session_store.loaded = false;
         if store_reset == SessionStoreResetAction::Clear {
@@ -608,15 +618,16 @@ impl EventLoop {
     }
 
     fn reset_session_state_if_client_id_changed(&mut self) {
-        let current_client_id = self.options.client_id();
-        if self.session_client_id.as_deref() == Some(current_client_id.as_str()) {
+        let current_key = self.options.session_store_key();
+        if self.session_store_key.as_ref() == Some(&current_key) {
             return;
         }
 
-        if self.session_client_id.is_some() {
+        if self.session_store_key.is_some() {
             self.reset_session_state_without_store_invalidation();
         }
         self.session_client_id = None;
+        self.session_store_key = None;
         self.session_store.loaded = false;
     }
 
@@ -642,9 +653,10 @@ impl EventLoop {
             return Ok(());
         };
 
-        let client_id = self.options.client_id();
+        let key = self.options.session_store_key();
+        let client_id = key.client_id().to_owned();
         let Some(session) = store
-            .load(&client_id)
+            .load(&key)
             .await
             .map_err(ConnectionError::SessionStore)?
         else {
@@ -658,6 +670,7 @@ impl EventLoop {
         self.pending
             .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
         self.session_client_id = Some(client_id);
+        self.session_store_key = Some(key);
         self.session_store.loaded = true;
         Ok(())
     }
@@ -684,7 +697,7 @@ impl EventLoop {
         let session = self
             .state
             .persisted_session(&self.options, pending_replay.chain(queued_replay));
-        SessionSave(Some((store, session)))
+        SessionSave(Some((store, self.options.session_store_key(), session)))
     }
 
     async fn save_persisted_session(&mut self) -> Result<(), ConnectionError> {
@@ -725,9 +738,9 @@ impl EventLoop {
             return Ok(());
         };
 
-        let client_id = self.options.client_id();
+        let key = self.options.session_store_key();
         store
-            .clear(&client_id)
+            .clear(&key)
             .await
             .map_err(ConnectionError::SessionStore)?;
         self.session_store.loaded = true;
@@ -830,6 +843,7 @@ impl EventLoop {
             }
             if !self.broker_only_session_resume {
                 self.session_client_id = Some(self.options.client_id());
+                self.session_store_key = Some(self.options.session_store_key());
             }
             self.network = Some(network);
 
@@ -1889,7 +1903,7 @@ mod tests {
     impl crate::SessionStore for FailingSessionStore {
         fn load<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
@@ -1902,6 +1916,7 @@ mod tests {
 
         fn save<'a>(
             &'a self,
+            _key: &'a crate::SessionStoreKey,
             _session: &'a PersistedSession,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
@@ -1913,7 +1928,7 @@ mod tests {
 
         fn clear<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
             Box::pin(async { Ok(()) })
@@ -1926,7 +1941,7 @@ mod tests {
     impl crate::SessionStore for SuccessfulSessionStore {
         fn load<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
@@ -1939,6 +1954,7 @@ mod tests {
 
         fn save<'a>(
             &'a self,
+            _key: &'a crate::SessionStoreKey,
             _session: &'a PersistedSession,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
@@ -1947,7 +1963,7 @@ mod tests {
 
         fn clear<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
             Box::pin(async { Ok(()) })
@@ -1974,7 +1990,7 @@ mod tests {
     impl crate::SessionStore for CapturingSessionStore {
         fn load<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
@@ -1987,6 +2003,7 @@ mod tests {
 
         fn save<'a>(
             &'a self,
+            _key: &'a crate::SessionStoreKey,
             session: &'a PersistedSession,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
@@ -1998,7 +2015,7 @@ mod tests {
 
         fn clear<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
             Box::pin(async {
@@ -2034,7 +2051,7 @@ mod tests {
     impl crate::SessionStore for ClearFailingSessionStore {
         fn load<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
@@ -2050,6 +2067,7 @@ mod tests {
 
         fn save<'a>(
             &'a self,
+            _key: &'a crate::SessionStoreKey,
             session: &'a PersistedSession,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
@@ -2061,7 +2079,7 @@ mod tests {
 
         fn clear<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
             Box::pin(async {
@@ -2069,6 +2087,11 @@ mod tests {
                     as crate::SessionStoreError)
             })
         }
+    }
+
+    fn mark_local_session(eventloop: &mut EventLoop) {
+        eventloop.session_client_id = Some(eventloop.options.client_id());
+        eventloop.session_store_key = Some(eventloop.options.session_store_key());
     }
 
     #[derive(Debug)]
@@ -4443,7 +4466,7 @@ mod tests {
     #[test]
     fn connack_reconcile_rejects_clean_start_with_session_present() {
         let mut eventloop = build_eventloop_with_pending(true);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
 
         let err = eventloop.reconcile_connack_session(true).unwrap_err();
 
@@ -4717,7 +4740,7 @@ mod tests {
             .set_session_expiry_interval(Some(60))
             .set_session_store(SuccessfulSessionStore);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
         eventloop.session_store.loaded = true;
 
         eventloop.reconcile_connack_session(false).unwrap();
@@ -4744,7 +4767,7 @@ mod tests {
         eventloop.persisted_session_save().save().await.unwrap();
         assert!(store.current().is_some());
 
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
         eventloop.session_store.loaded = true;
         eventloop.reconcile_connack_session(false).unwrap();
 
@@ -4771,7 +4794,7 @@ mod tests {
     #[test]
     fn connack_reconcile_keeps_pending_when_resumed_session_exists() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
 
         eventloop.reconcile_connack_session(true).unwrap();
 
@@ -5204,7 +5227,7 @@ mod tests {
     #[test]
     fn connack_reconcile_keeps_incomplete_incoming_qos2_when_resumed_session_exists() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
         let mut publish = publish(QoS::ExactlyOnce);
         publish.pkid = 7;
         eventloop
@@ -5226,7 +5249,7 @@ mod tests {
     #[test]
     fn connack_reconcile_clears_incomplete_incoming_qos2_when_resumed_session_is_missing() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
         let mut publish = publish(QoS::ExactlyOnce);
         publish.pkid = 7;
         eventloop
@@ -5251,7 +5274,7 @@ mod tests {
     #[test]
     fn reset_session_state_clears_local_session_marker() {
         let mut eventloop = build_eventloop(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
 
         eventloop.reset_session_state();
 
@@ -5261,7 +5284,7 @@ mod tests {
     #[test]
     fn client_id_guard_keeps_state_when_client_id_is_unchanged() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
 
         eventloop.reset_session_state_if_client_id_changed();
 
@@ -5270,15 +5293,31 @@ mod tests {
     }
 
     #[test]
+    fn session_key_guard_resets_state_when_store_scope_changes() {
+        let mut eventloop = build_eventloop_with_pending(false);
+        eventloop.options.set_session_store_scope("scope-a");
+        mark_local_session(&mut eventloop);
+        eventloop.options.set_session_store_scope("scope-b");
+
+        eventloop.reset_session_state_if_client_id_changed();
+
+        assert!(eventloop.pending_is_empty());
+        assert_eq!(eventloop.session_client_id, None);
+        assert_eq!(eventloop.session_store_key, None);
+        assert!(!eventloop.session_store.loaded);
+    }
+
+    #[test]
     fn client_id_guard_resets_state_when_client_id_changes() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
         eventloop.options.set_client_id("other-client".to_owned());
 
         eventloop.reset_session_state_if_client_id_changed();
 
         assert!(eventloop.pending_is_empty());
         assert_eq!(eventloop.session_client_id, None);
+        assert_eq!(eventloop.session_store_key, None);
     }
 
     // MQTT-3.1.0-1: After a Network Connection is established by a Client to a Server,
@@ -5759,7 +5798,7 @@ mod tests {
         seeded.pkid = 1;
         eventloop.state.outgoing_pub[1] = Some(seeded);
         eventloop.state.inflight = 1;
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
 
         let broker = tokio::spawn(async move {
             // First connection: CONNACK with session_present=true (session resumed).

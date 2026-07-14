@@ -139,16 +139,22 @@ enum SessionStoreResetAction {
     Clear,
 }
 
-struct SessionSave(Option<(Arc<dyn SessionStore>, PersistedSession)>);
+struct SessionSave(
+    Option<(
+        Arc<dyn SessionStore>,
+        crate::SessionStoreKey,
+        PersistedSession,
+    )>,
+);
 
 impl SessionSave {
     async fn save(self) -> Result<bool, ConnectionError> {
-        let Some((store, session)) = self.0 else {
+        let Some((store, key, session)) = self.0 else {
             return Ok(false);
         };
 
         store
-            .save(&session)
+            .save(&key, &session)
             .await
             .map_err(ConnectionError::SessionStore)?;
         Ok(true)
@@ -264,6 +270,8 @@ pub struct EventLoop {
     no_sleep: Option<Pin<Box<Sleep>>>,
     /// `ClientId` associated with the currently retained local session state.
     session_client_id: Option<String>,
+    /// Store key associated with the currently retained local session state.
+    session_store_key: Option<crate::SessionStoreKey>,
     /// Persistent session store lifecycle flags.
     session_store: SessionStoreState,
     pub network_options: NetworkOptions,
@@ -395,6 +403,7 @@ impl EventLoop {
             keepalive_timeout: None,
             no_sleep: None,
             session_client_id: None,
+            session_store_key: None,
             session_store: SessionStoreState::new(),
             network_options: NetworkOptions::new(),
             pending_disconnect: None,
@@ -526,6 +535,7 @@ impl EventLoop {
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.reset_session_state();
         self.session_client_id = None;
+        self.session_store_key = None;
         self.session_store.loaded = false;
         if store_reset == SessionStoreResetAction::Clear {
             self.session_store.clear_pending = true;
@@ -533,15 +543,16 @@ impl EventLoop {
     }
 
     fn reset_session_state_if_client_id_changed(&mut self) {
-        let current_client_id = self.mqtt_options.client_id();
-        if self.session_client_id.as_deref() == Some(current_client_id.as_str()) {
+        let current_key = self.mqtt_options.session_store_key();
+        if self.session_store_key.as_ref() == Some(&current_key) {
             return;
         }
 
-        if self.session_client_id.is_some() {
+        if self.session_store_key.is_some() {
             self.reset_session_state_without_store_invalidation();
         }
         self.session_client_id = None;
+        self.session_store_key = None;
         self.session_store.loaded = false;
     }
 
@@ -562,9 +573,10 @@ impl EventLoop {
             return Ok(());
         };
 
-        let client_id = self.mqtt_options.client_id();
+        let key = self.mqtt_options.session_store_key();
+        let client_id = key.client_id().to_owned();
         let Some(session) = store
-            .load(&client_id)
+            .load(&key)
             .await
             .map_err(ConnectionError::SessionStore)?
         else {
@@ -578,6 +590,7 @@ impl EventLoop {
         self.pending
             .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
         self.session_client_id = Some(client_id);
+        self.session_store_key = Some(key);
         self.session_store.loaded = true;
         Ok(())
     }
@@ -604,7 +617,11 @@ impl EventLoop {
         let session = self
             .state
             .persisted_session(&self.mqtt_options, pending_replay.chain(queued_replay));
-        SessionSave(Some((store, session)))
+        SessionSave(Some((
+            store,
+            self.mqtt_options.session_store_key(),
+            session,
+        )))
     }
 
     async fn save_persisted_session(&mut self) -> Result<(), ConnectionError> {
@@ -645,9 +662,9 @@ impl EventLoop {
             return Ok(());
         };
 
-        let client_id = self.mqtt_options.client_id();
+        let key = self.mqtt_options.session_store_key();
         store
-            .clear(&client_id)
+            .clear(&key)
             .await
             .map_err(ConnectionError::SessionStore)?;
         self.session_store.loaded = true;
@@ -751,6 +768,7 @@ impl EventLoop {
                 self.clear_persisted_session_or_block_reload().await?;
             }
             self.session_client_id = Some(self.mqtt_options.client_id());
+            self.session_store_key = Some(self.mqtt_options.session_store_key());
             self.network = Some(network);
 
             if self.keepalive_timeout.is_none() && !self.mqtt_options.keep_alive.is_zero() {
@@ -1576,7 +1594,7 @@ mod tests {
     impl SessionStore for MemorySessionStore {
         fn load<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Option<PersistedSession>, SessionStoreError>>
@@ -1589,6 +1607,7 @@ mod tests {
 
         fn save<'a>(
             &'a self,
+            _key: &'a crate::SessionStoreKey,
             session: &'a PersistedSession,
         ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
             Box::pin(async move {
@@ -1599,13 +1618,18 @@ mod tests {
 
         fn clear<'a>(
             &'a self,
-            _client_id: &'a str,
+            _key: &'a crate::SessionStoreKey,
         ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
             Box::pin(async {
                 *self.session.lock().unwrap() = None;
                 Ok(())
             })
         }
+    }
+
+    fn mark_local_session(eventloop: &mut EventLoop) {
+        eventloop.session_client_id = Some(eventloop.mqtt_options.client_id());
+        eventloop.session_store_key = Some(eventloop.mqtt_options.session_store_key());
     }
 
     fn persisted_qos1_session(client_id: &str) -> PersistedSession {
@@ -2985,7 +3009,7 @@ mod tests {
     #[test]
     fn client_id_guard_keeps_state_when_client_id_is_unchanged() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
 
         eventloop.reset_session_state_if_client_id_changed();
 
@@ -2994,9 +3018,24 @@ mod tests {
     }
 
     #[test]
+    fn session_key_guard_resets_state_when_store_scope_changes() {
+        let mut eventloop = build_eventloop_with_pending(false);
+        eventloop.mqtt_options.set_session_store_scope("scope-a");
+        mark_local_session(&mut eventloop);
+        eventloop.mqtt_options.set_session_store_scope("scope-b");
+
+        eventloop.reset_session_state_if_client_id_changed();
+
+        assert!(eventloop.pending_is_empty());
+        assert_eq!(eventloop.session_client_id, None);
+        assert_eq!(eventloop.session_store_key, None);
+        assert!(!eventloop.session_store.loaded);
+    }
+
+    #[test]
     fn client_id_guard_resets_state_when_client_id_changes() {
         let mut eventloop = build_eventloop_with_pending(false);
-        eventloop.session_client_id = Some("test-client".to_owned());
+        mark_local_session(&mut eventloop);
         eventloop
             .mqtt_options
             .set_client_id("other-client".to_owned());
@@ -3005,6 +3044,7 @@ mod tests {
 
         assert!(eventloop.pending_is_empty());
         assert_eq!(eventloop.session_client_id, None);
+        assert_eq!(eventloop.session_store_key, None);
     }
 
     // MQTT-3.1.3-2: The ClientId MUST be used by Clients and by Servers to identify

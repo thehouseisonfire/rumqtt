@@ -30,9 +30,19 @@ Compile-checked examples:
 MQTT 3.1.1 uses `clean_session(false)`. MQTT 5 uses `clean_start(false)` plus a
 non-zero session expiry interval or `SessionMode::Persistent`.
 
-The built-in crate provides the `SessionStore` trait and persisted data model.
-Applications own serialization, file/database layout, encryption, and
-crash-consistent writes.
+The built-in crate provides the `SessionStore` trait, scoped `SessionStoreKey`,
+persisted data model, and canonical `PersistedSession::encode`/`decode` helpers.
+Applications own file/database layout, encryption, and crash-consistent writes.
+Use `MqttOptions::set_session_store_scope(...)` when a store is shared by
+multiple brokers, tenants, environments, or connection profiles that may reuse
+the same MQTT Client Identifier.
+
+Exactly one active `EventLoop` may own and modify a session-store key at a time.
+The core `SessionStore` API does not provide leases, fencing, compare-and-swap,
+or active/passive failover coordination. `save` and `clear` must be atomic:
+after success, and even after cancellation with indeterminate completion status,
+a later `load` must see either the complete previous state or the complete new
+state, never a torn checkpoint.
 
 `SessionStore` persists MQTT protocol recovery state that has already been
 admitted into the client state machine. This includes in-flight QoS flows,

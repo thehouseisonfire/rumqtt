@@ -205,8 +205,11 @@ out side the library and `Eventloop` is accessible, users can
 - For restart-safe MQTT 3.1.1 persistent sessions, configure
   `MqttOptions::set_session_store(...)` or builder `.session_store(...)`
   together with `clean_session(false)`. rumqttc provides the backend-neutral
-  `SessionStore` trait and `PersistedSession` data model; the application owns
-  serialization and durable storage. The store is saved before tracked
+  `SessionStore` trait, scoped `SessionStoreKey`, `PersistedSession` data
+  model, and canonical `PersistedSession::encode`/`decode` helpers; the
+  application owns durable storage layout. Configure
+  `set_session_store_scope(...)` when one store is shared across brokers,
+  tenants, environments, or connection profiles. The store is saved before tracked
   publish/subscribe/unsubscribe notices report completion when losing the saved
   state would make recovery ambiguous. A save failure is reported through the
   corresponding `SessionPersistence(...)` notice error and
@@ -218,6 +221,12 @@ out side the library and `Eventloop` is accessible, users can
   broker-retained session unless it restores the local client session state.
   See `examples/persistent_session_file_store.rs` for a complete file-backed
   `SessionStore` implementation owned by application code.
+
+- Exactly one active `EventLoop` may own and modify a session-store key at a
+  time. `SessionStore` does not provide leases, fencing, compare-and-swap, or
+  active/passive failover coordination. `save` and `clear` must be atomic: a
+  later load must never observe a torn checkpoint, even if cancellation leaves
+  completion status indeterminate.
 
 - This crate is intentionally protocol-specific. It does not expose MQTT 5
   features such as AUTH packets, topic aliases, or MQTT 5 property handling.

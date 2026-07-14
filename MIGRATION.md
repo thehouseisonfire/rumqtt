@@ -404,8 +404,11 @@ persistent.set_session_mode(SessionMode::Persistent);
 
 For restart-safe local session resume, configure a `SessionStore` with
 `set_session_store(...)` or builder `.session_store(...)`. The client crate
-provides the trait and persisted data model; application code owns durable
-storage and serialization. See:
+provides the trait, scoped `SessionStoreKey`, persisted data model, and
+canonical `PersistedSession::encode`/`decode` helpers; application code owns
+durable storage layout. Use `set_session_store_scope(...)` when one store is
+shared across brokers, tenants, environments, or connection profiles that may
+reuse the same MQTT Client Identifier. See:
 
 - `rumqttc-v4/examples/persistent_session_file_store.rs`
 - `rumqttc-v5/examples/persistent_session_file_store_v5.rs`
