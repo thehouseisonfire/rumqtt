@@ -10,14 +10,16 @@
   `clean_session(false)`, the event loop can restore local QoS/session state across newly constructed clients or
   process restarts, including in-flight publishes, `PUBREL`, `SUBSCRIBE`, and `UNSUBSCRIBE` requests. This is a
   storage API and backend-neutral checkpoint model; applications provide serialization and durable storage, and
-  rumqttc does not include a built-in file store.
+  rumqttc does not include a built-in file store. `SessionStore` persists MQTT protocol recovery state, not a
+  durable application outbox for every submitted request.
 - `rumqttc` v5: Add `MqttStateBuilder::client_topic_alias_max(u16)` builder method and `MqttState::set_client_topic_alias_max(Option<u16>)` to configure the incoming Topic Alias Maximum, propagated from `MqttOptions::topic_alias_max()` at connect time.
 - `rumqttc` v5: Add opt-in client-side persistent session storage via `SessionStore`, `PersistedSession`,
   `MqttOptions::set_session_store(...)`, and builder `.session_store(...)`. When configured with
   `clean_start(false)`, the event loop can restore local QoS/session state across newly constructed clients or
   process restarts, including in-flight publishes, `PUBREL`, `SUBSCRIBE`, and `UNSUBSCRIBE` requests. This is a
   storage API and backend-neutral checkpoint model; applications provide serialization and durable storage, and
-  rumqttc does not include a built-in file store.
+  rumqttc does not include a built-in file store. `SessionStore` persists MQTT protocol recovery state, not a
+  durable application outbox for every submitted request.
 ### Changed
 - `rumqttc` v5 (Breaking Change): Flatten redundant `mqttbytes::v5` module nesting. `PacketType`, `FixedHeader`, `Error`, `check()`, `qos()`, and codec helper functions now live at `mqttbytes::` instead of `mqttbytes::v5::`, matching the v4 crate's layout. `mqttbytes::v5::` still exists and re-exports packet-level types (`Packet`, `Connect`, `Publish`, etc.).
 - `rumqttc` v4/v5 (Breaking Change): Normalize `PingReq`/`PingResp` enum variants to unit variants in both `Packet` and `Request` enums across both crates. `Packet::PingReq`, `Packet::PingResp`, `Request::PingReq`, and `Request::PingResp` are now unit variants consistently in v4 and v5. The `PingReq` and `PingResp` structs are preserved for codec use.

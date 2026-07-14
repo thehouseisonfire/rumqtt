@@ -121,9 +121,17 @@ tracked QoS 2 publishes complete on `PUBCOMP`, tracked subscribes complete on
 
 The event loop reconnects when polling continues after a recoverable network
 failure. It keeps local session state for in-flight MQTT work and can persist
-session checkpoints through a configured `SessionStore`. On reconnect, pending
-work is replayed according to MQTT rules and the broker's reported session
-state.
+session checkpoints through a configured `SessionStore`. The checkpoint covers
+MQTT protocol recovery state already admitted into the client state machine:
+in-flight QoS flows, packet-ID ownership and progress, SUBSCRIBE/UNSUBSCRIBE
+state, and incoming QoS 2 state. Protocol replay requests retain their packet
+IDs and replay semantics across restoration.
+
+Accepted but not-yet-admitted application requests remain recoverable across
+ordinary live reconnects while the same `EventLoop` remains alive. They are not
+persisted in `SessionStore`, so they can be lost if the process exits, crashes,
+or the `EventLoop` is dropped. Applications that need every submitted request
+to survive restart must maintain their own durable outbound queue.
 
 Persistent sessions are available in both crates. MQTT 5 additionally has
 policy for broker-only session resumes, because a broker can report a retained

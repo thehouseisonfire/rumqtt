@@ -11,6 +11,11 @@ pub type SessionStoreFuture<'a, T> =
 
 /// Durable storage for MQTT 5 client session checkpoints.
 ///
+/// `SessionStore` persists MQTT protocol recovery state that has already been
+/// admitted into the client state machine. This includes in-flight `QoS`
+/// flows, packet identifier ownership and progress, pending
+/// SUBSCRIBE/UNSUBSCRIBE protocol state, and incoming `QoS` 2 state.
+///
 /// Implementations must make `save` crash-consistent. A later `load` should
 /// return either the last complete checkpoint or no checkpoint, never a
 /// partially written session. The crate intentionally does not prescribe a
@@ -21,6 +26,13 @@ pub type SessionStoreFuture<'a, T> =
 /// reset, when the broker reports that no previous session is present, or when
 /// the effective MQTT session expiry is zero at disconnect. A failed `load`,
 /// `save`, or `clear` is surfaced as [`crate::ConnectionError::SessionStore`].
+///
+/// This is not a durable application outbox. Requests accepted by the client
+/// but not yet admitted into MQTT protocol state are retried across ordinary
+/// live reconnects while the same `EventLoop` remains alive, but they are not
+/// part of this checkpoint and can be lost if the process exits, crashes, or
+/// the `EventLoop` is dropped. Applications that need every submitted request
+/// to survive process restart must keep their own durable outbound queue.
 pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
     /// Loads the last complete session checkpoint for `client_id`.
     fn load<'a>(&'a self, client_id: &'a str) -> SessionStoreFuture<'a, Option<PersistedSession>>;
@@ -42,6 +54,8 @@ pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
 ///
 /// This type contains protocol state required to resume local client ownership
 /// of in-flight `QoS` and control-packet flows after recreating an `EventLoop`.
+/// Requests in [`PersistedSession::replay`] retain their packet identifiers and
+/// MQTT replay semantics across restoration.
 ///
 /// The structure is intentionally public so applications can serialize it with
 /// their own format and compatibility policy. Restore validates that the
@@ -70,6 +84,9 @@ pub struct PersistedSession {
     /// Last contiguous completed outgoing publish packet identifier.
     pub last_puback: u16,
     /// Outgoing publish/control requests that must be replayed after reconnect.
+    ///
+    /// These requests have already been admitted into MQTT protocol state and
+    /// retain their packet identifiers across restoration.
     pub replay: Vec<PersistedRequest>,
     /// Incoming `QoS` 2 publishes for which PUBREC has already been sent.
     pub incoming_qos2: Vec<PersistedIncomingQos2>,
