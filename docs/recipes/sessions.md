@@ -34,6 +34,19 @@ The built-in crate provides the `SessionStore` trait and persisted data model.
 Applications own serialization, file/database layout, encryption, and
 crash-consistent writes.
 
+`SessionStore` persists MQTT protocol recovery state that has already been
+admitted into the client state machine. This includes in-flight QoS flows,
+packet-ID ownership and progress, SUBSCRIBE/UNSUBSCRIBE state, and incoming QoS
+2 state. Requests marked for protocol replay keep their packet IDs and replay
+semantics after restoration.
+
+It is not a durable application outbox. Requests accepted by the client but not
+yet admitted into MQTT protocol state remain recoverable across ordinary live
+reconnects while the same `EventLoop` remains alive, but they are not persisted.
+They may be lost if the process exits, crashes, or the `EventLoop` is dropped.
+Applications that require every submitted request to survive process restart
+must maintain their own durable outbound queue.
+
 ## Broker-Only Session Resume
 
 MQTT 5 strict mode rejects a broker response that reports `Session Present = 1`

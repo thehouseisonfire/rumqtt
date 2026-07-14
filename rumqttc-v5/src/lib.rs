@@ -1183,6 +1183,19 @@ impl MqttOptions {
     /// `Session Present = 1` rather than continuing a session it cannot
     /// reconcile.
     ///
+    /// The stored checkpoint covers MQTT protocol recovery state already
+    /// admitted into the client state machine: in-flight `QoS` flows, packet
+    /// identifier ownership and progress, SUBSCRIBE/UNSUBSCRIBE state, and
+    /// incoming `QoS` 2 state. Protocol replay requests keep their packet
+    /// identifiers and replay semantics across restoration.
+    ///
+    /// This is not a durable application outbox. Requests accepted by the
+    /// client but not yet admitted into MQTT protocol state can be retried
+    /// across ordinary live reconnects while the same `EventLoop` remains
+    /// alive, but they are not persisted. Applications that need every
+    /// submitted request to survive process restart must keep their own durable
+    /// outbound queue.
+    ///
     /// The event loop saves checkpoints after local session state changes,
     /// loads a checkpoint before reconnecting a newly constructed event loop,
     /// and clears the store when the broker starts a fresh session or the
