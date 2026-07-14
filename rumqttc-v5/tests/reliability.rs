@@ -41,7 +41,7 @@ impl MemorySessionStore {
 impl SessionStore for MemorySessionStore {
     fn load<'a>(
         &'a self,
-        _client_id: &'a str,
+        _key: &'a SessionStoreKey,
     ) -> Pin<
         Box<dyn Future<Output = Result<Option<PersistedSession>, SessionStoreError>> + Send + 'a>,
     > {
@@ -50,6 +50,7 @@ impl SessionStore for MemorySessionStore {
 
     fn save<'a>(
         &'a self,
+        _key: &'a SessionStoreKey,
         session: &'a PersistedSession,
     ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
         Box::pin(async move {
@@ -60,7 +61,7 @@ impl SessionStore for MemorySessionStore {
 
     fn clear<'a>(
         &'a self,
-        _client_id: &'a str,
+        _key: &'a SessionStoreKey,
     ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
         Box::pin(async move {
             *self.session.lock().unwrap() = None;

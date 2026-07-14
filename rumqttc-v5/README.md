@@ -198,10 +198,13 @@ out side the library and `Eventloop` is accessible, users can
 - To resume local MQTT session state across newly constructed clients or process
   restarts, configure `MqttOptions::set_session_store(...)` or builder
   `.session_store(...)` together with `clean_start(false)`. rumqttc provides the
-  backend-neutral `SessionStore` trait and `PersistedSession` data model; the
-  application supplies the storage backend and serialization format. No file or
-  database adapter is built into the client crate. Store implementations should
-  make `save(...)` crash-consistent. Tracked publish, subscribe, and unsubscribe
+  backend-neutral `SessionStore` trait, scoped `SessionStoreKey`,
+  `PersistedSession` data model, and canonical `PersistedSession::encode`/
+  `decode` helpers; the application supplies the storage backend and layout. No
+  file or database adapter is built into the client crate. Configure
+  `set_session_store_scope(...)` when one store is shared across brokers,
+  tenants, environments, or connection profiles. Store implementations should
+  make `save(...)` and `clear(...)` atomic. Tracked publish, subscribe, and unsubscribe
   notices are completed only after the updated session checkpoint is saved; a
   save failure is reported through the corresponding `SessionPersistence(...)`
   notice error. rumqttc clears the configured store when the broker starts a
@@ -218,6 +221,12 @@ out side the library and `Eventloop` is accessible, users can
   strict by rejecting broker-only resume after a new process or newly constructed
   `EventLoop`, but it cannot strictly continue that resumed session because the
   local client state was not restored.
+
+- Exactly one active `EventLoop` may own and modify a session-store key at a
+  time. `SessionStore` does not provide leases, fencing, compare-and-swap, or
+  active/passive failover coordination. A later load must never observe a torn
+  checkpoint, even if cancellation leaves `save` or `clear` completion status
+  indeterminate.
 
 - Applications that intentionally rely on broker-retained messages after local
   state loss can opt into non-strict MQTT 5 compatibility mode with

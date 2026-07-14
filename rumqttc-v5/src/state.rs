@@ -2897,8 +2897,12 @@ impl MqttState {
             self.outbound_pkid_in_use.insert(usize::from(pkid));
         }
         self.outbound_pkid_in_use.set(0, false);
-        self.outbound_pkid_count = u16::try_from(self.outbound_pkid_in_use.ones().count())
-            .expect("non-zero MQTT packet identifier count fits in u16");
+        let outbound_pkid_count = self.outbound_pkid_in_use.ones().count();
+        self.outbound_pkid_count = u16::try_from(outbound_pkid_count).map_err(|_| {
+            SessionRestoreError::OutgoingPacketIdentifierCountOutOfRange {
+                count: outbound_pkid_count,
+            }
+        })?;
 
         session
             .replay
