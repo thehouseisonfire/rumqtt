@@ -964,8 +964,15 @@ impl EventLoop {
     /// Converts this event loop into an async [`Stream`](futures_core::Stream).
     ///
     /// The stream owns and drives the event loop by repeatedly calling [`poll`](Self::poll).
-    /// `ConnectionError::RequestsDone` terminates the stream; all other poll results are
-    /// yielded so callers can continue polling for the usual reconnect behavior.
+    /// This is an integration adapter for APIs and codebases that work with streams;
+    /// direct [`poll`](Self::poll) calls can still be used with `tokio::select!`.
+    ///
+    /// [`ConnectionError::RequestsDone`] terminates the stream; all other poll results,
+    /// including connection errors, are yielded as stream items. Continue polling after
+    /// those errors to allow the event loop to reconnect.
+    ///
+    /// Fallible-stream combinators such as `TryStreamExt::try_for_each` stop on the first
+    /// error. Use them only when fail-fast behavior is intended.
     #[cfg(feature = "stream")]
     #[cfg_attr(docsrs, doc(cfg(feature = "stream")))]
     pub fn into_stream(self) -> impl futures_core::Stream<Item = Result<Event, ConnectionError>> {
@@ -3538,6 +3545,74 @@ mod tests {
         pin_mut!(stream);
 
         assert!(matches!(stream.next().await, Some(Err(_))));
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn eventloop_stream_reconnects_after_non_terminal_error() {
+        use futures_util::{StreamExt, pin_mut};
+
+        let (peer_tx, peer_rx) = flume::bounded(2);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_clean_start(false);
+        options.set_keep_alive(0);
+        options.set_socket_connector(move |_host, _network_options| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(1024);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        let mut seeded = publish(QoS::AtLeastOnce);
+        seeded.pkid = 1;
+        eventloop.state.outgoing_pub[1] = Some(seeded);
+        eventloop.state.inflight = 1;
+        mark_local_session(&mut eventloop);
+
+        let broker = tokio::spawn(async move {
+            let connack = ConnAck {
+                session_present: true,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            };
+
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            drop(peer);
+
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+        });
+
+        let stream = eventloop.into_stream();
+        pin_mut!(stream);
+
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(Event::Incoming(Packet::ConnAck(ref connack)))) if connack.session_present
+        ));
+
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(error)) if !matches!(error, ConnectionError::RequestsDone)
+        ));
+
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(Event::Incoming(Packet::ConnAck(ref connack)))) if connack.session_present
+        ));
+
+        broker.await.unwrap();
     }
 
     fn next_after_blocked_publish(request: Request) -> Option<Request> {
