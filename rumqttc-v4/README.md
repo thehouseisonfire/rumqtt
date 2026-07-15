@@ -89,10 +89,16 @@ Async stream adapter
 
 Enable the `stream` feature to drive the event loop through
 `futures_core::Stream` while keeping the same externally-polled behavior.
+This is an adapter for APIs and codebases that work with streams; direct
+`eventloop.poll()` calls can still be used with `tokio::select!`.
+Stream errors other than `ConnectionError::RequestsDone` are non-terminal;
+continue polling after an error to allow reconnects. Use fail-fast
+`TryStreamExt` combinators only when stopping on the first connection error is
+intended.
 
 ```rust,ignore
 use futures_util::{StreamExt, pin_mut};
-use rumqttc::{AsyncClient, Event, MqttOptions, Outgoing, QoS};
+use rumqttc::{AsyncClient, ClientError, Event, MqttOptions, Outgoing, QoS};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -105,9 +111,18 @@ let stream = eventloop.into_stream();
 pin_mut!(stream);
 let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 pin_mut!(shutdown_rx);
+let mut shutdown_requested = false;
 let mut disconnecting = false;
 
 loop {
+    if shutdown_requested && !disconnecting {
+        match client.try_disconnect() {
+            Ok(()) => disconnecting = true,
+            Err(ClientError::RequestChannelFull(_)) => {}
+            Err(error) => panic!("failed to request disconnect: {error}"),
+        }
+    }
+
     tokio::select! {
         event = stream.next() => match event {
             Some(Ok(Event::Outgoing(Outgoing::Disconnect))) => break,
@@ -115,9 +130,8 @@ loop {
             Some(Err(error)) => eprintln!("Event loop error = {error}"),
             None => break,
         },
-        _ = &mut shutdown_rx, if !disconnecting => {
-            client.disconnect().await.unwrap();
-            disconnecting = true;
+        _ = &mut shutdown_rx, if !shutdown_requested => {
+            shutdown_requested = true;
         }
     }
 }
