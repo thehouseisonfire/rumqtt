@@ -365,19 +365,15 @@ pub enum ClientBuildError {
     Runtime(#[source] std::io::Error),
 }
 
-impl From<SendError<Request>> for ClientError {
-    fn from(e: SendError<Request>) -> Self {
-        Self::RequestChannelDisconnected(Box::new(e.into_inner()))
-    }
+fn map_plain_send_error(error: SendError<Request>) -> ClientError {
+    ClientError::RequestChannelDisconnected(Box::new(error.into_inner()))
 }
 
-impl From<TrySendError<Request>> for ClientError {
-    fn from(e: TrySendError<Request>) -> Self {
-        match e {
-            TrySendError::Full(request) => Self::RequestChannelFull(Box::new(request)),
-            TrySendError::Disconnected(request) => {
-                Self::RequestChannelDisconnected(Box::new(request))
-            }
+fn map_plain_try_send_error(error: TrySendError<Request>) -> ClientError {
+    match error {
+        TrySendError::Full(request) => ClientError::RequestChannelFull(Box::new(request)),
+        TrySendError::Disconnected(request) => {
+            ClientError::RequestChannelDisconnected(Box::new(request))
         }
     }
 }
@@ -627,7 +623,7 @@ impl AsyncClient {
 
     async fn send_request_async(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
-            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(ClientError::from),
+            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(map_plain_send_error),
             RequestSender::WithNotice {
                 requests,
                 control_requests,
@@ -647,7 +643,7 @@ impl AsyncClient {
 
     fn try_send_request(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
-            RequestSender::Plain(tx) => tx.try_send(request).map_err(ClientError::from),
+            RequestSender::Plain(tx) => tx.try_send(request).map_err(map_plain_try_send_error),
             RequestSender::WithNotice {
                 requests,
                 control_requests,
@@ -666,7 +662,7 @@ impl AsyncClient {
 
     fn send_request(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
-            RequestSender::Plain(tx) => tx.send(request).map_err(ClientError::from),
+            RequestSender::Plain(tx) => tx.send(request).map_err(map_plain_send_error),
             RequestSender::WithNotice {
                 requests,
                 control_requests,
@@ -685,7 +681,7 @@ impl AsyncClient {
 
     async fn send_immediate_disconnect_async(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
-            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(ClientError::from),
+            RequestSender::Plain(tx) => tx.send_async(request).await.map_err(map_plain_send_error),
             RequestSender::WithNotice {
                 immediate_disconnect,
                 ..
@@ -698,7 +694,7 @@ impl AsyncClient {
 
     fn try_send_immediate_disconnect(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
-            RequestSender::Plain(tx) => tx.try_send(request).map_err(ClientError::from),
+            RequestSender::Plain(tx) => tx.try_send(request).map_err(map_plain_try_send_error),
             RequestSender::WithNotice {
                 immediate_disconnect,
                 ..
@@ -710,7 +706,7 @@ impl AsyncClient {
 
     fn send_immediate_disconnect(&self, request: Request) -> Result<(), ClientError> {
         match &self.request_tx {
-            RequestSender::Plain(tx) => tx.send(request).map_err(ClientError::from),
+            RequestSender::Plain(tx) => tx.send(request).map_err(map_plain_send_error),
             RequestSender::WithNotice {
                 immediate_disconnect,
                 ..
@@ -2243,6 +2239,33 @@ mod test {
 
         assert!(matches!(
             client.try_publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce)),
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+    }
+
+    #[test]
+    fn try_publish_reports_full_plain_request_channel() {
+        let (tx, _rx) = flume::bounded(1);
+        let client = AsyncClient::from_senders(tx);
+        client
+            .try_publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
+            .expect("first request should fit bounded channel");
+
+        assert!(matches!(
+            client.try_publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce)),
+            Err(ClientError::RequestChannelFull(request)) if matches!(*request, Request::Publish(_))
+        ));
+    }
+
+    #[test]
+    fn blocking_publish_reports_disconnected_plain_request_channel() {
+        let (tx, rx) = flume::bounded(1);
+        drop(rx);
+        let client = Client::from_sender(tx);
+
+        assert!(matches!(
+            client.publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce)),
             Err(ClientError::RequestChannelDisconnected(request))
                 if matches!(*request, Request::Publish(_))
         ));

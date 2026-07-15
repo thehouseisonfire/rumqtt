@@ -43,6 +43,9 @@
   MQTT requests while still recovering the original request.
 ### Deprecated
 ### Removed
+- `rumqttc` v4/v5 (Breaking Change): Remove public conversions from
+  `flume::SendError<Request>` and `flume::TrySendError<Request>` to `ClientError`. Client request-channel failures
+  continue to be reported through crate-owned `ClientError` variants.
 ### Fixed
 - `rumqttc` v4/v5: Return a TLS error from fallible rustls default configuration helpers when no `CryptoProvider` is available, instead of panicking in `ClientConfig::builder()`.
 - `rumqttc` v5: Complete tracked publish/subscribe/unsubscribe notices only after updated persistent session state is saved. If the configured `SessionStore` fails at this durability barrier, notices now report `SessionPersistence(...)` errors instead of success.
