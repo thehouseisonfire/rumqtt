@@ -73,8 +73,12 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
-            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next
-            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5-next
+            fix_args=()
+            if [[ "${{ matrix.os }}" != 'windows-latest' ]]; then
+              fix_args=(--fix --allow-dirty)
+            fi
+            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next
+            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5-next
 
       - name: Check standalone crates
         env:
