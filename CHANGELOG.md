@@ -41,6 +41,9 @@
   `ClientError::TryRequest` with `RequestChannelFull`, `RequestChannelDisconnected`, and
   `InvalidRequest` so callers can distinguish backpressure, closed event loops, and locally rejected
   MQTT requests while still recovering the original request.
+- `rumqttc` v4/v5: Clarify that `AsyncClient::from_senders(...)` and `Client::from_sender(...)`
+  create low-level Flume request-sink clients without tracked operations, priority routing, or
+  automatic event-loop and protocol behavior.
 ### Deprecated
 ### Removed
 - `rumqttc` v4/v5 (Breaking Change): Remove public conversions from

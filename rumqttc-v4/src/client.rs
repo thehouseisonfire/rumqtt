@@ -427,13 +427,15 @@ impl ManualAck {
     }
 }
 
-/// An asynchronous client, communicates with MQTT `EventLoop`.
+/// An asynchronous MQTT client.
 ///
 /// This is cloneable and can be used to asynchronously [`publish`](`AsyncClient::publish`),
-/// [`subscribe`](`AsyncClient::subscribe`) through the `EventLoop`, which is to be polled parallelly.
+/// [`subscribe`](`AsyncClient::subscribe`) and enqueue other MQTT requests.
 ///
-/// **NOTE**: The `EventLoop` must be regularly polled in order to send, receive and process packets
-/// from the broker, i.e. move ahead.
+/// Clients created through [`Self::builder`] are paired with an [`EventLoop`] that must be
+/// polled regularly to send, receive, and process packets. Clients created through
+/// [`Self::from_senders`] instead enqueue public [`Request`] values on a caller-supplied
+/// Flume channel and do not have the full event-loop-backed behavior described below.
 ///
 /// Bounded clients apply backpressure through the client request channel. If the
 /// same task that drives [`EventLoop::poll`](crate::EventLoop::poll) awaits
@@ -610,10 +612,42 @@ impl AsyncClient {
         AsyncClientBuilder::new(options)
     }
 
-    /// Create a new `AsyncClient` from a channel `Sender`.
+    /// Constructs an [`AsyncClient`] that sends generated requests through the supplied
+    /// Flume sender.
     ///
-    /// This is mostly useful for creating a test instance where you can
-    /// listen on the corresponding receiver.
+    /// This is a low-level request-sink constructor intended primarily for testing
+    /// client-side request construction and for bespoke integrations that consume public
+    /// [`Request`] values directly.
+    ///
+    /// This constructor does not create or return a matching [`EventLoop`]. The caller owns
+    /// the corresponding receiver and is responsible for receiving and processing requests.
+    /// Supported untracked client operations perform their normal client-side validation and
+    /// request construction before sending the resulting [`Request`] through the supplied
+    /// channel. Invalid inputs return their normal validation error without enqueueing a
+    /// request.
+    ///
+    /// Channel capacity and backpressure are determined by the supplied Flume channel.
+    /// Asynchronous methods wait asynchronously for capacity, synchronous methods block, and
+    /// nonblocking methods report full or disconnected channels through [`ClientError`]. Those
+    /// channel errors retain the request that was not sent.
+    ///
+    /// # Limitations
+    ///
+    /// Clients created through this constructor do not have feature parity with clients created
+    /// through [`Self::builder`]:
+    ///
+    /// - otherwise-valid tracked operations return [`ClientError::TrackingUnavailable`] and do
+    ///   not enqueue a request;
+    /// - publish, control, and immediate-disconnect requests share one channel;
+    /// - [`Self::disconnect_now`] is not prioritized over requests already in that channel; and
+    /// - no connection, protocol-state, broker acknowledgement, notice completion, reconnection,
+    ///   persistence, replay, or event-loop behavior is performed automatically.
+    ///
+    /// A successful method result confirms only that the generated request was accepted by the
+    /// supplied channel. It does not confirm that the MQTT operation was executed or completed.
+    /// rumqttc provides no supported API for attaching the corresponding receiver to a normally
+    /// constructed [`EventLoop`]. Operations that require tracking, completion notices, priority
+    /// routing, or other event-loop-specific capabilities may be unavailable in this mode.
     #[must_use]
     pub const fn from_senders(request_tx: Sender<Request>) -> Self {
         Self {
@@ -830,7 +864,7 @@ impl AsyncClient {
         Ok(notice)
     }
 
-    /// Sends a MQTT Publish to the `EventLoop`.
+    /// Queues an MQTT Publish through this client.
     async fn handle_publish<T, P>(
         &self,
         topic: T,
@@ -878,12 +912,12 @@ impl AsyncClient {
         self.send_tracked_publish_async(publish).await
     }
 
-    /// Sends a MQTT Publish to the `EventLoop`.
+    /// Queues an MQTT Publish through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic is invalid or if the request cannot be
-    /// queued on the event loop.
+    /// queued through this client.
     pub async fn publish<T, P>(
         &self,
         topic: T,
@@ -897,12 +931,15 @@ impl AsyncClient {
         self.handle_publish(topic, payload, options).await
     }
 
-    /// Sends a MQTT Publish to the `EventLoop` and returns a notice which resolves on MQTT ack milestone.
+    /// Queues an MQTT Publish through this client and returns a notice which resolves on MQTT ack milestone.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic is invalid or if the request cannot be
-    /// queued on the event loop.
+    /// queued through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub async fn publish_tracked<T, P>(
         &self,
         topic: T,
@@ -916,7 +953,7 @@ impl AsyncClient {
         self.handle_publish_tracked(topic, payload, options).await
     }
 
-    /// Attempts to send a MQTT Publish to the `EventLoop`.
+    /// Attempts to queue an MQTT Publish through this client.
     fn handle_try_publish<T, P>(
         &self,
         topic: T,
@@ -964,7 +1001,7 @@ impl AsyncClient {
         self.try_send_tracked_publish(publish)
     }
 
-    /// Attempts to send a MQTT Publish to the `EventLoop`.
+    /// Attempts to queue an MQTT Publish through this client.
     ///
     /// This is the non-blocking publish API for overload policies that may drop
     /// outgoing publishes. If the bounded request channel is full, this returns
@@ -973,7 +1010,7 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the topic is invalid or if the request cannot be
-    /// queued immediately on the event loop.
+    /// queued immediately through this client.
     pub fn try_publish<T, P>(
         &self,
         topic: T,
@@ -987,7 +1024,7 @@ impl AsyncClient {
         self.handle_try_publish(topic, payload, options)
     }
 
-    /// Attempts to send a MQTT Publish to the `EventLoop` and returns a notice.
+    /// Attempts to queue an MQTT Publish through this client and returns a notice.
     ///
     /// This is the non-blocking tracked publish API for overload policies that
     /// may drop outgoing publishes. If the bounded request channel is full, this
@@ -996,7 +1033,10 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the topic is invalid or if the request cannot be
-    /// queued immediately on the event loop.
+    /// queued immediately through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub fn try_publish_tracked<T, P>(
         &self,
         topic: T,
@@ -1017,7 +1057,7 @@ impl AsyncClient {
         prepare_ack(publish)
     }
 
-    /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    /// Queues a prepared MQTT PubAck/PubRec through this client.
     ///
     /// This is useful when [`AckMode::Manual`](crate::AckMode::Manual) is enabled and
     /// acknowledgement must be deferred.
@@ -1028,25 +1068,24 @@ impl AsyncClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the acknowledgement cannot be queued on the event
-    /// loop.
+    /// Returns an error if the acknowledgement cannot be queued through this client.
     pub async fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.send_request_async(ack.into_request()).await?;
         Ok(())
     }
 
-    /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    /// Attempts to send a prepared MQTT PubAck/PubRec through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the acknowledgement cannot be queued immediately on
-    /// the event loop.
+    /// the client's request channel.
     pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.try_send_request(ack.into_request())?;
         Ok(())
     }
 
-    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
+    /// Queues an MQTT PubAck/PubRec through this client based on publish `QoS`.
     /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
     ///
     /// Applications using manual ACK mode must acknowledge every incoming `QoS` 1/`QoS` 2
@@ -1055,7 +1094,7 @@ impl AsyncClient {
     /// # Errors
     ///
     /// Returns an error if the derived acknowledgement cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub async fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack).await?;
@@ -1063,13 +1102,13 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
+    /// Attempts to queue an MQTT PubAck/PubRec through this client based on publish `QoS`.
     /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
     ///
     /// # Errors
     ///
     /// Returns an error if the derived acknowledgement cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -1077,12 +1116,12 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a MQTT Subscribe to the `EventLoop`
+    /// Queues an MQTT Subscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued on the event loop.
+    /// cannot be queued through this client.
     pub async fn subscribe<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1097,12 +1136,15 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a tracked MQTT Subscribe to the `EventLoop`.
+    /// Queues a tracked MQTT Subscribe through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued on the event loop.
+    /// cannot be queued through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub async fn subscribe_tracked<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1116,12 +1158,12 @@ impl AsyncClient {
         self.send_tracked_subscribe_async(subscribe).await
     }
 
-    /// Attempts to send a MQTT Subscribe to the `EventLoop`
+    /// Attempts to queue an MQTT Subscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued immediately on the event loop.
+    /// cannot be queued immediately through this client.
     pub fn try_subscribe<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1136,12 +1178,15 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a tracked MQTT Subscribe to the `EventLoop`.
+    /// Attempts to queue a tracked MQTT Subscribe through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued immediately on the event loop.
+    /// cannot be queued immediately through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub fn try_subscribe_tracked<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1155,12 +1200,12 @@ impl AsyncClient {
         self.try_send_tracked_subscribe(subscribe)
     }
 
-    /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
+    /// Queues an MQTT Subscribe for multiple topics through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued on the event loop.
+    /// be queued through this client.
     pub async fn subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = I>,
@@ -1175,12 +1220,15 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a tracked MQTT Subscribe for multiple topics to the `EventLoop`.
+    /// Queues a tracked MQTT Subscribe for multiple topics through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued on the event loop.
+    /// be queued through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub async fn subscribe_many_tracked<T, I>(
         &self,
         topics: T,
@@ -1197,12 +1245,12 @@ impl AsyncClient {
         self.send_tracked_subscribe_async(subscribe).await
     }
 
-    /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`
+    /// Attempts to queue an MQTT Subscribe for multiple topics through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued immediately on the event loop.
+    /// be queued immediately through this client.
     pub fn try_subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = I>,
@@ -1216,12 +1264,15 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a tracked MQTT Subscribe for multiple topics to the `EventLoop`.
+    /// Attempts to queue a tracked MQTT Subscribe for multiple topics through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued immediately on the event loop.
+    /// be queued immediately through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub fn try_subscribe_many_tracked<T, I>(
         &self,
         topics: T,
@@ -1238,12 +1289,12 @@ impl AsyncClient {
         self.try_send_tracked_subscribe(subscribe)
     }
 
-    /// Sends a MQTT Unsubscribe to the `EventLoop`
+    /// Queues an MQTT Unsubscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued on the event loop.
+    /// cannot be queued through this client.
     pub async fn unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
@@ -1257,12 +1308,12 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a MQTT Unsubscribe for multiple topic filters to the `EventLoop`
+    /// Queues an MQTT Unsubscribe for multiple topic filters through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued on the event loop.
+    /// be queued through this client.
     pub async fn unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = F>,
@@ -1280,12 +1331,15 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Sends a tracked MQTT Unsubscribe to the `EventLoop`.
+    /// Queues a tracked MQTT Unsubscribe through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued on the event loop.
+    /// cannot be queued through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub async fn unsubscribe_tracked<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1300,12 +1354,15 @@ impl AsyncClient {
         self.send_tracked_unsubscribe_async(unsubscribe).await
     }
 
-    /// Sends a tracked MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    /// Queues a tracked MQTT Unsubscribe for multiple topic filters through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued on the event loop.
+    /// be queued through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub async fn unsubscribe_many_tracked<T, F>(
         &self,
         topics: T,
@@ -1324,12 +1381,12 @@ impl AsyncClient {
         self.send_tracked_unsubscribe_async(unsubscribe).await
     }
 
-    /// Attempts to send a MQTT Unsubscribe to the `EventLoop`
+    /// Attempts to queue an MQTT Unsubscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued immediately on the event loop.
+    /// cannot be queued immediately through this client.
     pub fn try_unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
@@ -1343,12 +1400,12 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a MQTT Unsubscribe for multiple topic filters to the `EventLoop`
+    /// Attempts to queue an MQTT Unsubscribe for multiple topic filters through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued immediately on the event loop.
+    /// be queued immediately through this client.
     pub fn try_unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = F>,
@@ -1366,12 +1423,15 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to send a tracked MQTT Unsubscribe to the `EventLoop`.
+    /// Attempts to queue a tracked MQTT Unsubscribe through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued immediately on the event loop.
+    /// cannot be queued immediately through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub fn try_unsubscribe_tracked<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1386,12 +1446,15 @@ impl AsyncClient {
         self.try_send_tracked_unsubscribe(unsubscribe)
     }
 
-    /// Attempts to send a tracked MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    /// Attempts to queue a tracked MQTT Unsubscribe for multiple topic filters through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued immediately on the event loop.
+    /// be queued immediately through this client.
+    ///
+    /// Otherwise-valid calls return [`ClientError::TrackingUnavailable`] when this client was
+    /// created through [`Self::from_senders`].
     pub fn try_unsubscribe_many_tracked<T, F>(
         &self,
         topics: T,
@@ -1424,11 +1487,13 @@ impl AsyncClient {
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
+    /// Clients created through [`Self::from_senders`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub async fn disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
         self.send_request_async(request).await?;
@@ -1452,27 +1517,30 @@ impl AsyncClient {
     /// This request uses the normal client request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
+    /// Clients created through [`Self::from_senders`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub async fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
         let request = Request::DisconnectWithTimeout(Disconnect, timeout);
         self.send_request_async(request).await?;
         Ok(())
     }
 
-    /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
+    /// Queues an MQTT disconnect immediately without waiting for in-flight requests.
     ///
-    /// This request uses a dedicated immediate shutdown channel, not the normal
-    /// application request channel. It may bypass queued application work and
-    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_senders`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub async fn disconnect_now(&self) -> Result<(), ClientError> {
         let request = Request::DisconnectNow(Disconnect);
         self.send_immediate_disconnect_async(request).await?;
@@ -1491,11 +1559,13 @@ impl AsyncClient {
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
+    /// Clients created through [`Self::from_senders`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
         self.try_send_request(request)?;
@@ -1519,11 +1589,13 @@ impl AsyncClient {
     /// This request uses the normal client request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
+    /// Clients created through [`Self::from_senders`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
         let request = Request::DisconnectWithTimeout(Disconnect, timeout);
         self.try_send_request(request)?;
@@ -1532,14 +1604,15 @@ impl AsyncClient {
 
     /// Attempts to queue an immediate MQTT disconnect.
     ///
-    /// This request uses a dedicated immediate shutdown channel, not the normal
-    /// application request channel. It may bypass queued application work and
-    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_senders`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
         let request = Request::DisconnectNow(Disconnect);
         self.try_send_immediate_disconnect(request)?;
@@ -1556,16 +1629,16 @@ const fn prepare_ack(publish: &Publish) -> Option<ManualAck> {
     Some(ack)
 }
 
-/// A synchronous client, communicates with MQTT `EventLoop`.
+/// A synchronous MQTT client.
 ///
 /// This is cloneable and can be used to synchronously [`publish`](`AsyncClient::publish`),
 /// [`subscribe`](`AsyncClient::subscribe`) through the `EventLoop`/`Connection`, which is to be polled in parallel
 /// by iterating over the object returned by [`Connection.iter()`](Connection::iter) in a separate thread.
 ///
-/// **NOTE**: The `EventLoop`/`Connection` must be regularly polled(`.next()` in case of `Connection`) in order
-/// to send, receive and process packets from the broker, i.e. move ahead.
-///
-/// An asynchronous channel handle can also be extracted if necessary.
+/// Clients created through [`Self::builder`] are paired with a `Connection`, which must be
+/// regularly polled to send, receive, and process packets. Clients created through
+/// [`Self::from_sender`] instead use a caller-supplied request channel and have the limitations
+/// documented on [`AsyncClient::from_senders`].
 #[derive(Clone)]
 pub struct Client {
     client: AsyncClient,
@@ -1582,10 +1655,10 @@ impl Client {
         ClientBuilder::new(options)
     }
 
-    /// Create a new `Client` from a channel `Sender`.
+    /// Constructs a synchronous [`Client`] backed by a caller-supplied Flume request sender.
     ///
-    /// This is mostly useful for creating a test instance where you can
-    /// listen on the corresponding receiver.
+    /// This is the synchronous equivalent of [`AsyncClient::from_senders`] and has the same
+    /// request-sink behavior and limitations.
     #[must_use]
     pub const fn from_sender(request_tx: Sender<Request>) -> Self {
         Self {
@@ -1593,12 +1666,12 @@ impl Client {
         }
     }
 
-    /// Sends a MQTT Publish to the `EventLoop`
+    /// Queues an MQTT Publish through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic is invalid or if the request cannot be
-    /// queued on the event loop.
+    /// queued through this client.
     pub fn publish<T, P>(
         &self,
         topic: T,
@@ -1621,12 +1694,12 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT Publish to the `EventLoop`.
+    /// Attempts to queue an MQTT Publish through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the topic is invalid or if the request cannot be
-    /// queued immediately on the event loop.
+    /// queued immediately through this client.
     pub fn try_publish<T, P>(
         &self,
         topic: T,
@@ -1648,29 +1721,28 @@ impl Client {
         self.client.prepare_ack(publish)
     }
 
-    /// Sends a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    /// Queues a prepared MQTT PubAck/PubRec through this client.
     ///
     /// # Errors
     ///
-    /// Returns an error if the acknowledgement cannot be queued on the event
-    /// loop.
+    /// Returns an error if the acknowledgement cannot be queued through this client.
     pub fn manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.client.send_request(ack.into_request())?;
         Ok(())
     }
 
-    /// Attempts to send a prepared MQTT PubAck/PubRec to the `EventLoop`.
+    /// Attempts to send a prepared MQTT PubAck/PubRec through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the acknowledgement cannot be queued immediately on
-    /// the event loop.
+    /// the client's request channel.
     pub fn try_manual_ack(&self, ack: ManualAck) -> Result<(), ClientError> {
         self.client.try_manual_ack(ack)?;
         Ok(())
     }
 
-    /// Sends a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
+    /// Queues an MQTT PubAck/PubRec through this client based on publish `QoS`.
     /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
     ///
     /// Applications using manual ACK mode must acknowledge every incoming `QoS` 1/`QoS` 2
@@ -1679,7 +1751,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the derived acknowledgement cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub fn ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.manual_ack(ack)?;
@@ -1687,13 +1759,13 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT PubAck/PubRec to the `EventLoop` based on publish `QoS`.
+    /// Attempts to queue an MQTT PubAck/PubRec through this client based on publish `QoS`.
     /// Only needed if [`AckMode::Manual`](crate::AckMode::Manual) is configured.
     ///
     /// # Errors
     ///
     /// Returns an error if the derived acknowledgement cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_ack(&self, publish: &Publish) -> Result<(), ClientError> {
         if let Some(ack) = self.prepare_ack(publish) {
             self.try_manual_ack(ack)?;
@@ -1701,12 +1773,12 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT Subscribe to the `EventLoop`
+    /// Queues an MQTT Subscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued on the event loop.
+    /// cannot be queued through this client.
     pub fn subscribe<F: Into<TopicFilter>>(&self, topic: F, qos: QoS) -> Result<(), ClientError> {
         let (subscribe, valid) = subscribe_from_topic_filter(topic, qos);
         if !valid {
@@ -1717,12 +1789,12 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT Subscribe to the `EventLoop`
+    /// Queues an MQTT Subscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued immediately on the event loop.
+    /// cannot be queued immediately through this client.
     pub fn try_subscribe<F: Into<TopicFilter>>(
         &self,
         topic: F,
@@ -1732,12 +1804,12 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT Subscribe for multiple topics to the `EventLoop`
+    /// Queues an MQTT Subscribe for multiple topics through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued on the event loop.
+    /// be queued through this client.
     pub fn subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = I>,
@@ -1752,12 +1824,12 @@ impl Client {
         Ok(())
     }
 
-    /// Attempts to send a MQTT Subscribe for multiple topics to the `EventLoop`.
+    /// Attempts to queue an MQTT Subscribe for multiple topics through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued immediately on the event loop.
+    /// be queued immediately through this client.
     pub fn try_subscribe_many<T, I>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = I>,
@@ -1766,12 +1838,12 @@ impl Client {
         self.client.try_subscribe_many(topics)
     }
 
-    /// Sends a MQTT Unsubscribe to the `EventLoop`
+    /// Queues an MQTT Unsubscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued on the event loop.
+    /// cannot be queued through this client.
     pub fn unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
@@ -1785,12 +1857,12 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT Unsubscribe for multiple topic filters to the `EventLoop`
+    /// Queues an MQTT Unsubscribe for multiple topic filters through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued on the event loop.
+    /// be queued through this client.
     pub fn unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = F>,
@@ -1808,23 +1880,23 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a MQTT Unsubscribe to the `EventLoop`
+    /// Queues an MQTT Unsubscribe through this client
     ///
     /// # Errors
     ///
     /// Returns an error if the topic filter is invalid or if the request
-    /// cannot be queued immediately on the event loop.
+    /// cannot be queued immediately through this client.
     pub fn try_unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         self.client.try_unsubscribe(topic)?;
         Ok(())
     }
 
-    /// Attempts to send a MQTT Unsubscribe for multiple topic filters to the `EventLoop`.
+    /// Attempts to queue an MQTT Unsubscribe for multiple topic filters through this client.
     ///
     /// # Errors
     ///
     /// Returns an error if the filter list is invalid or if the request cannot
-    /// be queued immediately on the event loop.
+    /// be queued immediately through this client.
     pub fn try_unsubscribe_many<T, F>(&self, topics: T) -> Result<(), ClientError>
     where
         T: IntoIterator<Item = F>,
@@ -1846,11 +1918,13 @@ impl Client {
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
+    /// Clients created through [`Self::from_sender`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub fn disconnect(&self) -> Result<(), ClientError> {
         let request = Request::Disconnect(Disconnect);
         self.client.send_request(request)?;
@@ -1874,27 +1948,30 @@ impl Client {
     /// This request uses the normal client request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
+    /// Clients created through [`Self::from_sender`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
         let request = Request::DisconnectWithTimeout(Disconnect, timeout);
         self.client.send_request(request)?;
         Ok(())
     }
 
-    /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
+    /// Queues an MQTT disconnect immediately without waiting for in-flight requests.
     ///
-    /// This request uses a dedicated immediate shutdown channel, not the normal
-    /// application request channel. It may bypass queued application work and
-    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_sender`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued on the
-    /// event loop.
+    /// client's request channel.
     pub fn disconnect_now(&self) -> Result<(), ClientError> {
         let request = Request::DisconnectNow(Disconnect);
         self.client.send_immediate_disconnect(request)?;
@@ -1913,11 +1990,13 @@ impl Client {
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
+    /// Clients created through [`Self::from_sender`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
         self.client.try_disconnect()?;
         Ok(())
@@ -1940,26 +2019,29 @@ impl Client {
     /// This request uses the normal client request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
+    /// Clients created through [`Self::from_sender`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
         self.client.try_disconnect_with_timeout(timeout)?;
         Ok(())
     }
 
-    /// Sends a MQTT disconnect immediately without waiting for in-flight requests.
+    /// Queues an MQTT disconnect immediately without waiting for in-flight requests.
     ///
-    /// This request uses a dedicated immediate shutdown channel, not the normal
-    /// application request channel. It may bypass queued application work and
-    /// does not wait for unresolved `QoS` 1/ `QoS` 2 publish handshakes.
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_sender`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
     ///
     /// Returns an error if the disconnect request cannot be queued
-    /// immediately on the event loop.
+    /// immediately through this client.
     pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
         self.client.try_disconnect_now()?;
         Ok(())
@@ -2268,6 +2350,27 @@ mod test {
             client.publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce)),
             Err(ClientError::RequestChannelDisconnected(request))
                 if matches!(*request, Request::Publish(_))
+        ));
+    }
+
+    #[test]
+    fn disconnect_now_is_not_prioritized_on_plain_request_channel() {
+        let (tx, rx) = flume::bounded(2);
+        let client = AsyncClient::from_senders(tx);
+        client
+            .try_publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
+            .expect("publish should fit bounded channel");
+        client
+            .try_disconnect_now()
+            .expect("disconnect should fit bounded channel");
+
+        assert!(matches!(
+            rx.try_recv().expect("publish should be queued first"),
+            Request::Publish(_)
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("disconnect should be queued second"),
+            Request::DisconnectNow(_)
         ));
     }
 
