@@ -35,6 +35,8 @@ mod auth;
 mod client;
 mod eventloop;
 mod framed;
+#[cfg(feature = "tracing")]
+mod instrumentation;
 pub mod mqttbytes;
 mod notice;
 mod session;

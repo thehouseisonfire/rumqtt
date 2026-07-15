@@ -28,6 +28,8 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 mod client;
 mod eventloop;
 mod framed;
+#[cfg(feature = "tracing")]
+mod instrumentation;
 pub mod mqttbytes;
 mod notice;
 mod session;

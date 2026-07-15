@@ -17,7 +17,7 @@ readme = "README.md"
 name = "rumqttc"
 
 [package.metadata.docs.rs]
-features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "url", "stream"]
+features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "url", "stream", "tracing", "tracing-log-compat"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -31,6 +31,8 @@ websocket = ["dep:async-tungstenite", "dep:futures-io", "dep:http", "rumqttc-cor
 proxy = ["dep:async-http-proxy", "rumqttc-core/proxy"]
 url = ["dep:url", "dep:percent-encoding"]
 stream = ["dep:futures-core"]
+tracing = ["dep:tracing"]
+tracing-log-compat = ["tracing", "tracing/log"]
 
 [dependencies]
 futures-core = { version = "0.3", default-features = false, optional = true }
@@ -63,6 +65,7 @@ url = { version = "2", default-features = false, optional = true }
 # proxy
 async-http-proxy = { version = "1.2.5", features = ["runtime-tokio", "basic-auth"], optional = true }
 fixedbitset = "0.5.7"
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 wincode = { version = "0.5.1", features = ["derive"] }
@@ -75,6 +78,7 @@ serde_json = "1"
 tokio-tungstenite = "0.30"
 rcgen = "0.14"
 criterion = "0.8.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 
 [[example]]
 name = "async_manual_acks"
@@ -154,3 +158,8 @@ required-features = ["websocket"]
 name = "wss"
 path = "examples/wss.rs"
 required-features = ["websocket", "use-rustls"]
+
+[[test]]
+name = "tracing_log_compat"
+path = "tests/tracing_log_compat.rs"
+required-features = ["tracing-log-compat"]

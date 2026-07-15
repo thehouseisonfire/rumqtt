@@ -365,6 +365,7 @@ impl MqttState {
             && self.outbound_pkid_count == 0
     }
 
+    #[cfg_attr(feature = "tracing", allow(dead_code))]
     pub(crate) fn outbound_drain_diagnostics(&self) -> String {
         let diagnostics = self.outbound_diagnostics();
         format!(
@@ -964,12 +965,18 @@ impl MqttState {
                 ProtocolViolation::DuplicateConnAck,
             )),
             _ => {
+                #[cfg(not(feature = "tracing"))]
                 error!("Invalid incoming packet = {packet:?}");
                 Err(StateError::ProtocolViolation(
                     ProtocolViolation::UnexpectedIncomingPacket(packet.packet_type()),
                 ))
             }
         };
+
+        #[cfg(feature = "tracing")]
+        if let Err(StateError::ProtocolViolation(violation)) = &outgoing {
+            crate::instrumentation::protocol_violation(violation);
+        }
 
         let effects = outgoing?;
         // Preserve original event ordering (Incoming first, derived Outgoing next)
@@ -1010,6 +1017,7 @@ impl MqttState {
         let expected = pending_subscribe.subscribe.filters.len();
         let actual = suback.return_codes.len();
         if expected != actual {
+            #[cfg(not(feature = "tracing"))]
             error!(
                 "Suback return code count mismatch for pkid {:?}: expected {:?}, got {:?}",
                 suback.pkid, expected, actual
