@@ -4139,6 +4139,7 @@ mod test {
                 notice: Some(unsub_notice),
             },
         );
+        mqtt.rebuild_outbound_pkid_index();
 
         let diagnostics = mqtt.outbound_diagnostics();
 
