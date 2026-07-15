@@ -2,6 +2,8 @@
 
 ### Added
 - `rumqttc` v4/v5: Add an opt-in `stream` feature with `EventLoop::into_stream()` for driving async event loops through `futures_core::Stream`.
+- `rumqttc` v4/v5: Add structured runtime diagnostics via `EventLoop::diagnostics()` and
+  `MqttState::outbound_diagnostics()` for observing connection, queue, session, batching, and outbound protocol state.
 - `rumqttc` v4/v5: Add fallible TLS defaults, MQTT option validation, fallible option/client builders, and v4 fallible setters for configuration paths that can fail before connecting.
 - `rumqttc` v4/v5: Add `ValidatedTopicFilter`, `TopicFilter`, and `SubscribeFilterInput` for reusable validated MQTT topic filters in subscribe and unsubscribe APIs, plus high-level multi-unsubscribe methods.
 - `rumqttc` v4: Add `is_mqtt_minimum_client_id(...)`, an advisory helper for checking whether a ClientId fits the MQTT 3.1.1 1-23 byte ASCII alphanumeric profile that every compliant server must accept.

@@ -56,7 +56,10 @@ pub use client::{
     PublishOptions, PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter,
     TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
-pub use eventloop::{ConnectionError, Event, EventLoop};
+pub use eventloop::{
+    ConnectionError, Event, EventLoop, EventLoopDiagnostics, QueueDiagnostics,
+    RuntimeConfigDiagnostics, SessionDiagnostics,
+};
 pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
 pub use notice::{
@@ -75,7 +78,7 @@ pub use session::{
     PersistedUnsubscribeProperties, SessionDecodeError, SessionEncodeError, SessionRestoreError,
     SessionStore, SessionStoreError, SessionStoreKey,
 };
-pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
+pub use state::{MqttState, MqttStateBuilder, OutboundDiagnostics, ProtocolViolation, StateError};
 pub use transport::Transport;
 
 /// Policy used for MQTT 5 client-side topic alias assignment.
