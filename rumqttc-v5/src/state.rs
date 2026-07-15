@@ -794,6 +794,7 @@ impl MqttState {
             && self.outbound_pkid_count == 0
     }
 
+    #[cfg_attr(feature = "tracing", allow(dead_code))]
     pub(crate) fn outbound_drain_diagnostics(&self) -> String {
         let diagnostics = self.outbound_diagnostics();
         format!(
@@ -1438,12 +1439,18 @@ impl MqttState {
                 .handle_incoming_auth(auth)
                 .map(IncomingPacketEffects::outgoing),
             _ => {
+                #[cfg(not(feature = "tracing"))]
                 error!("Invalid incoming packet = {packet:?}");
                 Err(StateError::ProtocolViolation(
                     ProtocolViolation::UnexpectedIncomingPacket(packet.packet_type()),
                 ))
             }
         };
+
+        #[cfg(feature = "tracing")]
+        if let Err(StateError::ProtocolViolation(violation)) = &effects {
+            crate::instrumentation::protocol_violation(violation);
+        }
 
         let skip_incoming_event = matches!(
             (&packet, &effects),

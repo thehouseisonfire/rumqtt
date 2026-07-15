@@ -342,6 +342,8 @@ pub struct EventLoop {
     session_store: SessionStoreState,
     pending_disconnect: Option<PendingDisconnect>,
     disconnect_complete: bool,
+    #[cfg(feature = "tracing")]
+    telemetry: crate::instrumentation::ConnectionTelemetry,
 }
 
 /// Events which can be yielded by the event loop
@@ -495,6 +497,8 @@ impl EventLoop {
             session_store: SessionStoreState::new(),
             pending_disconnect: None,
             disconnect_complete: false,
+            #[cfg(feature = "tracing")]
+            telemetry: crate::instrumentation::ConnectionTelemetry::default(),
         }
     }
 
@@ -507,6 +511,8 @@ impl EventLoop {
     /// > Use [`pending_len`](Self::pending_len) or [`pending_is_empty`](Self::pending_is_empty)
     /// > for observation-only checks.
     pub fn clean(&mut self) {
+        #[cfg(feature = "tracing")]
+        self.telemetry.finish_established_connection();
         self.network = None;
         self.keepalive_timeout = None;
         self.pending_disconnect = None;
@@ -544,6 +550,12 @@ impl EventLoop {
                 self.push_replay_envelope(envelope, &mut replay_topic_aliases);
             }
         }
+
+        #[cfg(feature = "tracing")]
+        crate::instrumentation::replay_prepared(
+            self.telemetry.connection_generation(),
+            &self.diagnostics(),
+        );
 
         self.state.fail_auth_exchange_due_to_session_reset();
         self.state.reset_connection_scoped_state();
@@ -743,11 +755,18 @@ impl EventLoop {
         let replay = self
             .state
             .restore_persisted_session(&self.options, &session)?;
+        #[cfg(feature = "tracing")]
+        let replay_count = replay.len();
         self.pending
             .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
         self.session_client_id = Some(client_id);
         self.session_store_key = Some(key);
         self.session_store.loaded = true;
+        #[cfg(feature = "tracing")]
+        crate::instrumentation::session_restored(
+            self.telemetry.connection_generation(),
+            replay_count,
+        );
         Ok(())
     }
 
@@ -908,13 +927,63 @@ impl EventLoop {
             self.reset_session_state_if_client_id_changed();
             self.load_persisted_session_if_needed().await?;
 
-            let (network, connack) = time::timeout(
+            #[cfg(feature = "tracing")]
+            let attempt = {
+                let attempt = self.telemetry.begin_attempt();
+                crate::instrumentation::connection_attempt(attempt);
+                attempt
+            };
+
+            let (network, connack) = match time::timeout(
                 self.options.connect_timeout(),
                 connect(&mut self.options, &mut self.state),
             )
-            .await??;
+            .await
+            {
+                Ok(Ok(connection)) => connection,
+                Ok(Err(failure)) => {
+                    #[cfg(feature = "tracing")]
+                    crate::instrumentation::connection_attempt_failed(
+                        attempt,
+                        failure.phase,
+                        &failure.error,
+                    );
+                    return Err(failure.error);
+                }
+                Err(elapsed) => {
+                    let error = ConnectionError::Timeout(elapsed);
+                    #[cfg(feature = "tracing")]
+                    crate::instrumentation::connection_attempt_failed(
+                        attempt,
+                        "connection",
+                        &error,
+                    );
+                    return Err(error);
+                }
+            };
+            #[cfg(feature = "tracing")]
+            self.reconcile_connack_session(connack.session_present)
+                .inspect_err(|error| {
+                    crate::instrumentation::connection_attempt_failed(
+                        attempt,
+                        "session_reconciliation",
+                        error,
+                    );
+                })?;
+            #[cfg(not(feature = "tracing"))]
             self.reconcile_connack_session(connack.session_present)?;
             if !connack.session_present {
+                #[cfg(feature = "tracing")]
+                self.clear_persisted_session_or_block_reload()
+                    .await
+                    .inspect_err(|error| {
+                        crate::instrumentation::connection_attempt_failed(
+                            attempt,
+                            "session_reconciliation",
+                            error,
+                        );
+                    })?;
+                #[cfg(not(feature = "tracing"))]
                 self.clear_persisted_session_or_block_reload().await?;
             }
             if !self.broker_only_session_resume {
@@ -927,14 +996,41 @@ impl EventLoop {
                 self.keepalive_timeout = Some(Box::pin(time::sleep(self.options.keep_alive)));
             }
 
-            self.state
-                .handle_incoming_packet(Incoming::ConnAck(connack))?;
+            if let Err(source) = self
+                .state
+                .handle_incoming_packet(Incoming::ConnAck(connack.clone()))
+            {
+                let error = ConnectionError::MqttState(source);
+                #[cfg(feature = "tracing")]
+                crate::instrumentation::connection_attempt_failed(
+                    attempt,
+                    "mqtt_handshake",
+                    &error,
+                );
+                return Err(error);
+            }
             self.reconcile_outgoing_tracking_after_connack();
+            #[cfg(feature = "tracing")]
+            {
+                self.telemetry.mark_connection_established();
+                crate::instrumentation::connection_established(attempt, connack.session_present);
+            }
         }
 
         match self.select().await {
             Ok(v) => Ok(v),
             Err(ConnectionError::DisconnectTimeout) => {
+                let error = ConnectionError::DisconnectTimeout;
+                #[cfg(feature = "tracing")]
+                {
+                    crate::instrumentation::connection_lost(
+                        self.telemetry.last_attempt(),
+                        &error,
+                        &self.diagnostics(),
+                    );
+                    self.telemetry.finish_established_connection();
+                }
+                #[cfg(not(feature = "tracing"))]
                 warn!(
                     "Graceful disconnect timed out before outbound protocol state drained: {}; \
                      pending={}, queued={}, requests_rx={}, control_requests_rx={}",
@@ -949,9 +1045,15 @@ impl EventLoop {
                 self.pending_disconnect = None;
                 self.drop_unprocessed_requests();
                 self.disconnect_complete = true;
-                Err(ConnectionError::DisconnectTimeout)
+                Err(error)
             }
             Err(e) => {
+                #[cfg(feature = "tracing")]
+                crate::instrumentation::connection_lost(
+                    self.telemetry.last_attempt(),
+                    &e,
+                    &self.diagnostics(),
+                );
                 // MQTT requires that packets pending acknowledgement should be republished on session resume.
                 // Move pending messages from state to eventloop.
                 self.clean();
@@ -1633,15 +1735,37 @@ const fn is_disconnect_request(request: &Request) -> bool {
 /// the stream.
 /// This function (for convenience) includes internal delays for users to perform internal sleeps
 /// between re-connections so that cancel semantics can be used during this sleep
+struct ConnectFailure {
+    error: ConnectionError,
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+    phase: &'static str,
+}
+
+impl ConnectFailure {
+    const fn new(error: ConnectionError, phase: &'static str) -> Self {
+        Self { error, phase }
+    }
+}
+
 async fn connect(
     options: &mut MqttOptions,
     state: &mut MqttState,
-) -> Result<(Network, ConnAck), ConnectionError> {
+) -> Result<(Network, ConnAck), ConnectFailure> {
     // connect to the broker
-    let mut network = network_connect(options).await?;
+    let mut network = network_connect(options).await.map_err(|error| {
+        let phase = match error {
+            ConnectionError::BrokerTransportMismatch => "target_setup",
+            #[cfg(feature = "websocket")]
+            ConnectionError::InvalidUrl(_) | ConnectionError::RequestModifier(_) => "target_setup",
+            _ => "transport",
+        };
+        ConnectFailure::new(error, phase)
+    })?;
 
     // make MQTT connection request (which internally awaits for ack)
-    let connack = mqtt_connect(options, &mut network, state).await?;
+    let connack = mqtt_connect(options, &mut network, state)
+        .await
+        .map_err(|error| ConnectFailure::new(error, "mqtt_handshake"))?;
 
     Ok((network, connack))
 }
@@ -3411,6 +3535,27 @@ mod tests {
             diagnostics.config.max_request_batch,
             eventloop.options.max_request_batch()
         );
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn public_clean_advances_generation_once_after_establishment() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+
+        eventloop.clean();
+        assert_eq!(eventloop.telemetry.connection_generation(), 0);
+
+        eventloop.telemetry.begin_attempt();
+        eventloop.telemetry.mark_connection_established();
+        eventloop.clean();
+        eventloop.clean();
+
+        assert_eq!(eventloop.telemetry.connection_generation(), 1);
+        let reconnect = eventloop.telemetry.begin_attempt();
+        assert_eq!(reconnect.connection_generation, 1);
+        assert_eq!(reconnect.attempt_in_generation, 1);
+        assert!(reconnect.connection_generation > 0);
     }
 
     #[test]

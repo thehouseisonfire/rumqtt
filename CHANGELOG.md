@@ -1,6 +1,10 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v4/v5: Add opt-in `tracing` lifecycle events for connection attempts,
+  establishment and loss, session restoration, replay preparation, and typed
+  protocol violations. Add a separate `tracing-log-compat` feature for textual
+  fallback through `log` when no tracing subscriber is active.
 - `rumqttc` v4/v5: Add an opt-in `stream` feature with `EventLoop::into_stream()` for driving async event loops through `futures_core::Stream`.
 - `rumqttc` v4/v5: Add structured runtime diagnostics via `EventLoop::diagnostics()` and
   `MqttState::outbound_diagnostics()` for observing connection, queue, session, batching, and outbound protocol state.

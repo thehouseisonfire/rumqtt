@@ -32,5 +32,7 @@ This crate forwards the MQTT 5 client features from `rumqttc-v5-next`, including
 - `auth-scram`
 - `url`
 - `stream`
+- `tracing`
+- `tracing-log-compat`
 
 See the `rumqttc-v5-next` documentation for the full API and examples.

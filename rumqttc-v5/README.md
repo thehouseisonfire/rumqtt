@@ -171,6 +171,34 @@ it on those `CONNACK`s.
 
 See `examples/resubscribe_on_reconnect_v5.rs` for a runnable async example.
 
+Structured lifecycle tracing
+----------------------------
+
+Enable the `tracing` feature to emit low-frequency structured lifecycle events
+under the `rumqttc::lifecycle` target. The crate emits events for connection
+attempts, failed attempts, established and lost connections, restored sessions,
+prepared replay state, and typed MQTT protocol violations. It does not install a
+subscriber; applications remain responsible for choosing and configuring one.
+
+```toml
+[dependencies]
+rumqttc-v5-next = { version = "0.33", features = ["tracing"] }
+```
+
+Enable `tracing-log-compat` instead when tracing events should fall back to
+`log::Record`s if no tracing subscriber is active. This enables `tracing/log` on
+Cargo's unified dependency graph, and fallback fields are textual rather than
+typed. Existing applications that only need the current `log` statements do not
+need either feature.
+
+The event schema uses stable primitive classifications such as `protocol`,
+`attempt_id`, `connection_generation`, `attempt_in_generation`, `reconnect`,
+`phase`, `error_kind`, and `violation_kind`. Human-readable errors are included
+separately. Client IDs, broker URLs, topics, payloads, credentials, and user
+properties are not recorded. A cancelled `EventLoop::poll()` may leave a
+`mqtt.connection_attempt` without a matching terminal event; the next attempt
+receives a new `attempt_id`.
+
 Quick overview of features
 - Eventloop orchestrates outgoing/incoming packets concurrently and handles the state
 - Pings the broker when necessary and detects client side half open connections as well
