@@ -75,7 +75,10 @@ pub use client::{
     PublishOptions, PublishTopic, RecvError, RecvTimeoutError, SubscribeFilterInput, TopicFilter,
     TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
-pub use eventloop::{ConnectionError, Event, EventLoop};
+pub use eventloop::{
+    ConnectionError, Event, EventLoop, EventLoopDiagnostics, QueueDiagnostics,
+    RuntimeConfigDiagnostics, SessionDiagnostics,
+};
 pub use mqttbytes::v4::*;
 pub use mqttbytes::*;
 pub use notice::{
@@ -92,7 +95,7 @@ pub use session::{
     SessionDecodeError, SessionEncodeError, SessionRestoreError, SessionStore, SessionStoreError,
     SessionStoreKey,
 };
-pub use state::{MqttState, MqttStateBuilder, ProtocolViolation, StateError};
+pub use state::{MqttState, MqttStateBuilder, OutboundDiagnostics, ProtocolViolation, StateError};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::Error as TlsError;
 #[cfg(feature = "use-native-tls")]

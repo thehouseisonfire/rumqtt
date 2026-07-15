@@ -259,6 +259,51 @@ impl SessionStoreState {
     }
 }
 
+/// Observation-only snapshot of an [`EventLoop`].
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLoopDiagnostics {
+    pub connected: bool,
+    pub disconnecting: bool,
+    pub disconnect_complete: bool,
+    pub queues: QueueDiagnostics,
+    pub outbound: crate::OutboundDiagnostics,
+    pub session: SessionDiagnostics,
+    pub config: RuntimeConfigDiagnostics,
+}
+
+/// Queue lengths observed by an [`EventLoop`].
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueDiagnostics {
+    pub pending_replay_len: usize,
+    pub queued_len: usize,
+    pub pending_len: usize,
+    pub requests_rx_len: usize,
+    pub control_requests_rx_len: usize,
+    pub immediate_disconnect_rx_len: usize,
+}
+
+/// Session-related event-loop diagnostics.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionDiagnostics {
+    pub session_store_configured: bool,
+    pub session_store_loaded: bool,
+    pub session_store_clear_pending: bool,
+    pub local_session_state_matches_client_id: bool,
+    pub broker_only_session_resume: bool,
+}
+
+/// Runtime batching configuration observed by an [`EventLoop`].
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeConfigDiagnostics {
+    pub configured_read_batch_size: usize,
+    pub effective_read_batch_size: usize,
+    pub max_request_batch: usize,
+}
+
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
     /// Options of the current mqtt connection
@@ -534,6 +579,37 @@ impl EventLoop {
     /// Returns true when there are no pending requests queued for retransmission.
     pub fn pending_is_empty(&self) -> bool {
         self.pending.is_empty() && self.queued.is_empty()
+    }
+
+    /// Returns an observation-only snapshot of event-loop runtime state.
+    pub fn diagnostics(&self) -> EventLoopDiagnostics {
+        EventLoopDiagnostics {
+            connected: self.network.is_some(),
+            disconnecting: self.pending_disconnect.is_some(),
+            disconnect_complete: self.disconnect_complete,
+            queues: QueueDiagnostics {
+                pending_replay_len: self.pending.len(),
+                queued_len: self.queued.len(),
+                pending_len: self.pending_len(),
+                requests_rx_len: self.requests_rx.len(),
+                control_requests_rx_len: self.control_requests_rx.len(),
+                immediate_disconnect_rx_len: self.immediate_disconnect_rx.len(),
+            },
+            outbound: self.state.outbound_diagnostics(),
+            session: SessionDiagnostics {
+                session_store_configured: self.options.session_store().is_some(),
+                session_store_loaded: self.session_store.loaded,
+                session_store_clear_pending: self.session_store.clear_pending,
+                local_session_state_matches_client_id: self.session_client_id.as_deref()
+                    == Some(self.options.client_id().as_str()),
+                broker_only_session_resume: self.broker_only_session_resume,
+            },
+            config: RuntimeConfigDiagnostics {
+                configured_read_batch_size: self.options.read_batch_size(),
+                effective_read_batch_size: self.effective_read_batch_size(),
+                max_request_batch: self.options.max_request_batch(),
+            },
+        }
     }
 
     /// Returns true when all request sources are drained and no more work remains.
@@ -3264,6 +3340,90 @@ mod tests {
         eventloop.state.outgoing_pub[1] = Some(active);
         eventloop.state.inflight = 1;
         eventloop.state.rebuild_outbound_pkid_index();
+    }
+
+    #[test]
+    fn diagnostics_reports_fresh_eventloop_state() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (eventloop, _request_tx) = EventLoop::new_for_async_client(options, 4);
+
+        let diagnostics = eventloop.diagnostics();
+
+        assert!(!diagnostics.connected);
+        assert!(!diagnostics.disconnecting);
+        assert!(!diagnostics.disconnect_complete);
+        assert_eq!(diagnostics.queues.pending_replay_len, 0);
+        assert_eq!(diagnostics.queues.queued_len, 0);
+        assert_eq!(diagnostics.queues.pending_len, 0);
+        assert_eq!(diagnostics.queues.requests_rx_len, 0);
+        assert_eq!(diagnostics.queues.control_requests_rx_len, 0);
+        assert_eq!(diagnostics.queues.immediate_disconnect_rx_len, 0);
+        assert!(diagnostics.outbound.outbound_drained);
+        assert!(!diagnostics.session.session_store_configured);
+        assert!(!diagnostics.session.session_store_loaded);
+        assert!(!diagnostics.session.session_store_clear_pending);
+        assert!(!diagnostics.session.local_session_state_matches_client_id);
+        assert!(!diagnostics.session.broker_only_session_resume);
+        assert_eq!(
+            diagnostics.config.configured_read_batch_size,
+            eventloop.options.read_batch_size()
+        );
+        assert_eq!(
+            diagnostics.config.effective_read_batch_size,
+            eventloop.effective_read_batch_size()
+        );
+        assert_eq!(
+            diagnostics.config.max_request_batch,
+            eventloop.options.max_request_batch()
+        );
+    }
+
+    #[test]
+    fn diagnostics_reports_eventloop_queues_and_connection_state() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx, control_request_tx, immediate_disconnect_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(4),
+            );
+        request_tx
+            .try_send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+        control_request_tx
+            .try_send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+        immediate_disconnect_tx
+            .try_send(RequestEnvelope::plain(Request::DisconnectNow(
+                Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            )))
+            .unwrap();
+        push_pending(&mut eventloop, Request::PingReq);
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PingReq));
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            None,
+        ));
+        eventloop.session_client_id = Some("test-client".to_owned());
+        eventloop.session_store.loaded = true;
+        eventloop.broker_only_session_resume = true;
+
+        let diagnostics = eventloop.diagnostics();
+
+        assert!(diagnostics.connected);
+        assert!(diagnostics.disconnecting);
+        assert_eq!(diagnostics.queues.pending_replay_len, 1);
+        assert_eq!(diagnostics.queues.queued_len, 1);
+        assert_eq!(diagnostics.queues.pending_len, 2);
+        assert_eq!(diagnostics.queues.requests_rx_len, 1);
+        assert_eq!(diagnostics.queues.control_requests_rx_len, 1);
+        assert_eq!(diagnostics.queues.immediate_disconnect_rx_len, 1);
+        assert!(diagnostics.session.session_store_loaded);
+        assert!(diagnostics.session.local_session_state_matches_client_id);
+        assert!(diagnostics.session.broker_only_session_resume);
     }
 
     #[cfg(feature = "stream")]
