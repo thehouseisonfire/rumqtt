@@ -49,78 +49,7 @@ Do not implement anything yet.
 
 ## Candidate Improvements
 
-### 1. Improve Error Specificity and Messages
-
-**Problem**
-
-Some errors are overly generic or discard actionable context.
-
-Examples include:
-
-* MQTT v5 `ConnectionError::Timeout`
-* `ClientError::Request`
-* `ClientError::TryRequest`
-* WebSocket `ResponseValidation`, whose display message is currently empty
-
-See:
-
-```text
-rumqttc-v5/src/eventloop.rs:183
-```
-
-Operators may need to distinguish between:
-
-* Request channel full
-* Request receiver dropped
-* Connection timeout
-* Flush timeout
-* Broker protocol violation
-* Invalid configuration
-* WebSocket handshake validation failure
-* Graceful-disconnect timeout
-
-**Proposed change**
-
-Improve error structure and display messages.
-
-Possible changes include:
-
-* Adding more specific variants
-* Adding structured fields to existing variants
-* Preserving the underlying send failure where possible
-* Distinguishing timeout phases
-* Including relevant protocol or configuration context
-
-Existing enums should remain non-exhaustive.
-
-**Expected value**
-
-Enables:
-
-* Faster debugging
-* Better retry policies
-* Better decisions about dropping or replaying requests
-* More actionable logs and user-facing errors
-
-**Complexity:** Medium
-**Risk:** Medium, because downstream users may still pattern-match on existing variants despite the enums being non-exhaustive.
-
-**Validation**
-
-Add:
-
-* Error-display snapshot tests
-* Request-channel-full tests
-* Request-channel-disconnected tests
-* Connection-timeout tests
-* Flush-timeout tests
-* WebSocket response-validation tests
-
-**Priority:** High value
-
----
-
-### 2. Add Production Deployment Recipes
+### 1. Add Production Deployment Recipes
 
 **Problem**
 
@@ -181,7 +110,7 @@ Reduces:
 
 ---
 
-### 3. Ship a Tested File-Backed Session Store
+### 2. Ship a Tested File-Backed Session Store
 
 **Problem**
 
@@ -234,7 +163,7 @@ Provide working MQTT v4 and MQTT v5 examples.
 
 ---
 
-### 4. Add Optional `tracing` Integration
+### 3. Add Optional `tracing` Integration
 
 **Problem**
 
@@ -284,9 +213,8 @@ Improves integration with production telemetry, distributed diagnostics, and str
 
 ## Preliminary Ranked Roadmap
 
-1. Improve error messages and introduce more actionable `ClientError` and `ConnectionError` variants.
-2. Add tested production recipes for TLS, WSS, proxies, sessions, reconnection, and backpressure.
-3. Publish a file-backed session-store companion crate.
-4. Add optional structured `tracing` integration.
+1. Add tested production recipes for TLS, WSS, proxies, sessions, reconnection, and backpressure.
+2. Publish a file-backed session-store companion crate.
+3. Add optional structured `tracing` integration.
 
 The final ranking should be revised after evaluating API stability, implementation overlap, consumer demand, and release scope.
