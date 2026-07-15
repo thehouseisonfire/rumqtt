@@ -188,7 +188,7 @@ impl SessionSave {
 pub enum ConnectionError {
     #[error("Mqtt state: {0}")]
     MqttState(#[from] StateError),
-    #[error("Timeout")]
+    #[error("Connection timeout")]
     Timeout(#[from] Elapsed),
     #[error("Graceful disconnect timed out before outbound protocol state drained")]
     DisconnectTimeout,
@@ -231,7 +231,7 @@ pub enum ConnectionError {
     #[error("Proxy Connect: {0}")]
     Proxy(#[from] ProxyError),
     #[cfg(feature = "websocket")]
-    #[error("Websocket response validation error: ")]
+    #[error("Websocket response validation error: {0}")]
     ResponseValidation(#[from] crate::websockets::ValidationError),
     #[cfg(feature = "websocket")]
     #[error("Websocket request modifier failed: {0}")]
@@ -1972,6 +1972,34 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+
+    #[tokio::test]
+    async fn connection_timeout_display_is_specific() {
+        let elapsed = tokio::time::timeout(
+            std::time::Duration::from_millis(0),
+            futures_util::future::pending::<()>(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            ConnectionError::Timeout(elapsed).to_string(),
+            "Connection timeout"
+        );
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_response_validation_display_includes_source() {
+        let error = ConnectionError::ResponseValidation(
+            crate::websockets::ValidationError::SubprotocolHeaderMissing,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "Websocket response validation error: Websocket response does not contain subprotocol header"
+        );
+    }
 
     #[derive(Debug)]
     struct FailingSessionStore;

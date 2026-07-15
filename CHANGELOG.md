@@ -37,11 +37,17 @@
 - `rumqttc` v5 (Breaking Change): Validate incoming topic aliases against the client's advertised Topic Alias Maximum per [MQTT-3.1.2-26]/[MQTT-3.1.2-27]. Servers sending aliases exceeding the limit (or any alias when the maximum is 0/absent) now trigger a `DISCONNECT(TopicAliasInvalid)` and close the connection. Previously, any incoming alias was accepted without validation.
 - `rumqttc` v4/v5 (Breaking Change): Replace boolean manual acknowledgement configuration with `AckMode::{Automatic, Manual}` via `MqttOptions::set_ack_mode(...)`, `MqttOptions::ack_mode()`, and builder `.ack_mode(...)`.
 - `rumqttc` v5 (Breaking Change): Replace broker-only session resume and automatic topic-alias booleans with explicit policies: `BrokerSessionResumePolicy::{Strict, AllowBrokerOnly}` and `TopicAliasPolicy::{Disabled, Monotonic, Lru}`.
+- `rumqttc` v4/v5 (Breaking Change): Replace generic `ClientError::Request` and
+  `ClientError::TryRequest` with `RequestChannelFull`, `RequestChannelDisconnected`, and
+  `InvalidRequest` so callers can distinguish backpressure, closed event loops, and locally rejected
+  MQTT requests while still recovering the original request.
 ### Deprecated
 ### Removed
 ### Fixed
 - `rumqttc` v4/v5: Return a TLS error from fallible rustls default configuration helpers when no `CryptoProvider` is available, instead of panicking in `ClientConfig::builder()`.
 - `rumqttc` v5: Complete tracked publish/subscribe/unsubscribe notices only after updated persistent session state is saved. If the configured `SessionStore` fails at this durability barrier, notices now report `SessionPersistence(...)` errors instead of success.
+- `rumqttc` v4/v5: Include the underlying WebSocket response validation reason in
+  `ConnectionError::ResponseValidation` display output.
 - `rumqttc` v5: Enforce CONNACK `Retain Available = 0` per MQTT-3.2.2-14 by rejecting retained outbound publishes, including reconnect replays, without dropping the active connection; tracked publishes report `PublishNoticeError::RetainNotSupported`.
 - `rumqttc` v4/v5: Fix graceful disconnect after subscribe/unsubscribe packet-id gaps so completed publishes do not leave stale outbound drain tracking and prevent MQTT `DISCONNECT`.
 - `rumqttc` v4/v5: Fix graceful disconnect drain handling so queued but unsent flow-controlled publishes do not prevent MQTT `DISCONNECT` after actual outbound protocol state has completed.
