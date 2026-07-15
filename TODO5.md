@@ -49,71 +49,7 @@ Do not implement anything yet.
 
 ## Candidate Improvements
 
-### 1. Expose Structured Runtime Diagnostics
-
-**Problem**
-
-The event loop maintains important internal state, but consumers primarily receive:
-
-* `Event`
-* `ConnectionError`
-* Sparse log output
-* A small number of queue-length helpers
-
-This makes it difficult to diagnose operational problems such as:
-
-* Why is a publish request blocked?
-* How many packets are currently in flight?
-* Is the request channel full?
-* Is the client draining before disconnect?
-* Is a persistent session being restored or replayed?
-
-**Proposed change**
-
-Add an `EventLoop::diagnostics()` method that returns a non-exhaustive diagnostic snapshot.
-
-Potential fields include:
-
-* Connection state
-* Pending request count
-* Queued request count
-* Request-channel capacity and utilization
-* In-flight packet count
-* Packet-identifier utilization or pressure
-* Graceful-disconnect drain state
-* Session-store state
-* Broker-only session-resume state
-* Read-batch configuration
-* Write-batch configuration
-
-**Expected value**
-
-Provides structured data for:
-
-* Health checks
-* Support dashboards
-* Operational debugging
-* Bug reports
-* Automated monitoring
-
-**Complexity:** Medium
-**Risk:** Low, provided the snapshot type is non-exhaustive and avoids exposing unstable implementation details.
-
-**Validation**
-
-Add tests covering diagnostic values during:
-
-* Blocked publishing
-* Graceful disconnect
-* Reconnection and replay
-* Broker-only session resume
-* Request-channel saturation
-
-**Priority:** High value
-
----
-
-### 2. Improve Error Specificity and Messages
+### 1. Improve Error Specificity and Messages
 
 **Problem**
 
@@ -184,7 +120,7 @@ Add:
 
 ---
 
-### 3. Add Production Deployment Recipes
+### 2. Add Production Deployment Recipes
 
 **Problem**
 
@@ -245,7 +181,7 @@ Reduces:
 
 ---
 
-### 4. Ship a Tested File-Backed Session Store
+### 3. Ship a Tested File-Backed Session Store
 
 **Problem**
 
@@ -298,7 +234,7 @@ Provide working MQTT v4 and MQTT v5 examples.
 
 ---
 
-### 5. Add Optional `tracing` Integration
+### 4. Add Optional `tracing` Integration
 
 **Problem**
 
@@ -348,10 +284,9 @@ Improves integration with production telemetry, distributed diagnostics, and str
 
 ## Preliminary Ranked Roadmap
 
-1. Add `EventLoop::diagnostics()` with a stable, non-exhaustive snapshot.
-2. Improve error messages and introduce more actionable `ClientError` and `ConnectionError` variants.
-3. Add tested production recipes for TLS, WSS, proxies, sessions, reconnection, and backpressure.
-4. Publish a file-backed session-store companion crate.
-5. Add optional structured `tracing` integration.
+1. Improve error messages and introduce more actionable `ClientError` and `ConnectionError` variants.
+2. Add tested production recipes for TLS, WSS, proxies, sessions, reconnection, and backpressure.
+3. Publish a file-backed session-store companion crate.
+4. Add optional structured `tracing` integration.
 
 The final ranking should be revised after evaluating API stability, implementation overlap, consumer demand, and release scope.
