@@ -346,10 +346,12 @@ impl IntoPublishPayload for &'_ str {
 #[non_exhaustive]
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ClientError {
-    #[error("Failed to send mqtt requests to eventloop")]
-    Request(Request),
-    #[error("Failed to send mqtt requests to eventloop")]
-    TryRequest(Request),
+    #[error("Request channel is full")]
+    RequestChannelFull(Box<Request>),
+    #[error("Request channel is disconnected")]
+    RequestChannelDisconnected(Box<Request>),
+    #[error("Invalid MQTT request")]
+    InvalidRequest(Box<Request>),
     #[error("Tracked request API is unavailable for this client instance")]
     TrackingUnavailable,
 }
@@ -365,13 +367,18 @@ pub enum ClientBuildError {
 
 impl From<SendError<Request>> for ClientError {
     fn from(e: SendError<Request>) -> Self {
-        Self::Request(e.into_inner())
+        Self::RequestChannelDisconnected(Box::new(e.into_inner()))
     }
 }
 
 impl From<TrySendError<Request>> for ClientError {
     fn from(e: TrySendError<Request>) -> Self {
-        Self::TryRequest(e.into_inner())
+        match e {
+            TrySendError::Full(request) => Self::RequestChannelFull(Box::new(request)),
+            TrySendError::Disconnected(request) => {
+                Self::RequestChannelDisconnected(Box::new(request))
+            }
+        }
     }
 }
 
@@ -390,13 +397,16 @@ fn into_request(envelope: RequestEnvelope) -> Request {
 }
 
 fn map_send_envelope_error(err: SendError<RequestEnvelope>) -> ClientError {
-    ClientError::Request(into_request(err.into_inner()))
+    ClientError::RequestChannelDisconnected(Box::new(into_request(err.into_inner())))
 }
 
 fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientError {
     match err {
-        TrySendError::Full(envelope) | TrySendError::Disconnected(envelope) => {
-            ClientError::TryRequest(into_request(envelope))
+        TrySendError::Full(envelope) => {
+            ClientError::RequestChannelFull(Box::new(into_request(envelope)))
+        }
+        TrySendError::Disconnected(envelope) => {
+            ClientError::RequestChannelDisconnected(Box::new(into_request(envelope)))
         }
     }
 }
@@ -842,7 +852,7 @@ impl AsyncClient {
         let publish = Request::Publish(publish);
 
         if invalid_topic {
-            return Err(ClientError::Request(publish));
+            return Err(ClientError::InvalidRequest(Box::new(publish)));
         }
 
         self.send_request_async(publish).await?;
@@ -866,7 +876,7 @@ impl AsyncClient {
         let request = Request::Publish(publish.clone());
 
         if invalid_topic {
-            return Err(ClientError::Request(request));
+            return Err(ClientError::InvalidRequest(Box::new(request)));
         }
 
         self.send_tracked_publish_async(publish).await
@@ -928,7 +938,7 @@ impl AsyncClient {
         let publish = Request::Publish(publish);
 
         if invalid_topic {
-            return Err(ClientError::TryRequest(publish));
+            return Err(ClientError::InvalidRequest(Box::new(publish)));
         }
 
         self.try_send_request(publish)?;
@@ -952,7 +962,7 @@ impl AsyncClient {
         let request = Request::Publish(publish.clone());
 
         if invalid_topic {
-            return Err(ClientError::TryRequest(request));
+            return Err(ClientError::InvalidRequest(Box::new(request)));
         }
 
         self.try_send_tracked_publish(publish)
@@ -1084,7 +1094,7 @@ impl AsyncClient {
     ) -> Result<(), ClientError> {
         let (subscribe, valid) = subscribe_from_topic_filter(topic, qos);
         if !valid {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.send_request_async(subscribe.into()).await?;
@@ -1104,7 +1114,7 @@ impl AsyncClient {
     ) -> Result<SubscribeNotice, ClientError> {
         let (subscribe, valid) = subscribe_from_topic_filter(topic, qos);
         if !valid {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.send_tracked_subscribe_async(subscribe).await
@@ -1123,7 +1133,7 @@ impl AsyncClient {
     ) -> Result<(), ClientError> {
         let (subscribe, valid) = subscribe_from_topic_filter(topic, qos);
         if !valid {
-            return Err(ClientError::TryRequest(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.try_send_request(subscribe.into())?;
@@ -1143,7 +1153,7 @@ impl AsyncClient {
     ) -> Result<SubscribeNotice, ClientError> {
         let (subscribe, valid) = subscribe_from_topic_filter(topic, qos);
         if !valid {
-            return Err(ClientError::TryRequest(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.try_send_tracked_subscribe(subscribe)
@@ -1162,7 +1172,7 @@ impl AsyncClient {
     {
         let (subscribe, valid) = subscribe_from_filter_inputs(topics);
         if !valid {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.send_request_async(subscribe.into()).await?;
@@ -1185,7 +1195,7 @@ impl AsyncClient {
     {
         let (subscribe, valid) = subscribe_from_filter_inputs(topics);
         if !valid {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.send_tracked_subscribe_async(subscribe).await
@@ -1204,7 +1214,7 @@ impl AsyncClient {
     {
         let (subscribe, valid) = subscribe_from_filter_inputs(topics);
         if !valid {
-            return Err(ClientError::TryRequest(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
         self.try_send_request(subscribe.into())?;
         Ok(())
@@ -1226,7 +1236,7 @@ impl AsyncClient {
     {
         let (subscribe, valid) = subscribe_from_filter_inputs(topics);
         if !valid {
-            return Err(ClientError::TryRequest(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.try_send_tracked_subscribe(subscribe)
@@ -1241,7 +1251,9 @@ impl AsyncClient {
     pub async fn unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
-            return Err(ClientError::Request(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         let request = Request::Unsubscribe(unsubscribe);
@@ -1262,7 +1274,9 @@ impl AsyncClient {
     {
         let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics);
         if !valid {
-            return Err(ClientError::Request(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         let request = Request::Unsubscribe(unsubscribe);
@@ -1282,7 +1296,9 @@ impl AsyncClient {
     ) -> Result<UnsubscribeNotice, ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
-            return Err(ClientError::Request(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         self.send_tracked_unsubscribe_async(unsubscribe).await
@@ -1304,7 +1320,9 @@ impl AsyncClient {
     {
         let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics);
         if !valid {
-            return Err(ClientError::Request(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         self.send_tracked_unsubscribe_async(unsubscribe).await
@@ -1319,7 +1337,9 @@ impl AsyncClient {
     pub fn try_unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
-            return Err(ClientError::TryRequest(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         let request = Request::Unsubscribe(unsubscribe);
@@ -1340,7 +1360,9 @@ impl AsyncClient {
     {
         let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics);
         if !valid {
-            return Err(ClientError::TryRequest(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         let request = Request::Unsubscribe(unsubscribe);
@@ -1360,7 +1382,9 @@ impl AsyncClient {
     ) -> Result<UnsubscribeNotice, ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
-            return Err(ClientError::TryRequest(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         self.try_send_tracked_unsubscribe(unsubscribe)
@@ -1382,7 +1406,9 @@ impl AsyncClient {
     {
         let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics);
         if !valid {
-            return Err(ClientError::TryRequest(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         self.try_send_tracked_unsubscribe(unsubscribe)
@@ -1593,7 +1619,7 @@ impl Client {
         publish.retain = options.retain();
         let publish = Request::Publish(publish);
         if invalid_topic {
-            return Err(ClientError::Request(publish));
+            return Err(ClientError::InvalidRequest(Box::new(publish)));
         }
         self.client.send_request(publish)?;
         Ok(())
@@ -1688,7 +1714,7 @@ impl Client {
     pub fn subscribe<F: Into<TopicFilter>>(&self, topic: F, qos: QoS) -> Result<(), ClientError> {
         let (subscribe, valid) = subscribe_from_topic_filter(topic, qos);
         if !valid {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.client.send_request(subscribe.into())?;
@@ -1723,7 +1749,7 @@ impl Client {
     {
         let (subscribe, valid) = subscribe_from_filter_inputs(topics);
         if !valid {
-            return Err(ClientError::Request(subscribe.into()));
+            return Err(ClientError::InvalidRequest(Box::new(subscribe.into())));
         }
 
         self.client.send_request(subscribe.into())?;
@@ -1753,7 +1779,9 @@ impl Client {
     pub fn unsubscribe<F: Into<TopicFilter>>(&self, topic: F) -> Result<(), ClientError> {
         let (unsubscribe, valid) = unsubscribe_from_topic_filter(topic);
         if !valid {
-            return Err(ClientError::Request(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         let request = Request::Unsubscribe(unsubscribe);
@@ -1774,7 +1802,9 @@ impl Client {
     {
         let (unsubscribe, valid) = unsubscribe_from_topic_filters(topics);
         if !valid {
-            return Err(ClientError::Request(Request::Unsubscribe(unsubscribe)));
+            return Err(ClientError::InvalidRequest(Box::new(Request::Unsubscribe(
+                unsubscribe,
+            ))));
         }
 
         let request = Request::Unsubscribe(unsubscribe);
@@ -2163,7 +2193,7 @@ mod test {
             .expect("first request should fit configured capacity");
         assert!(matches!(
             client.try_publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce)),
-            Err(ClientError::TryRequest(Request::Publish(_)))
+            Err(ClientError::RequestChannelFull(request)) if matches!(*request, Request::Publish(_))
         ));
     }
 
@@ -2190,7 +2220,7 @@ mod test {
             .expect("second request should fit overridden capacity");
         assert!(matches!(
             client.try_publish("hello/world", "three", PublishOptions::new(QoS::AtMostOnce)),
-            Err(ClientError::TryRequest(Request::Publish(_)))
+            Err(ClientError::RequestChannelFull(request)) if matches!(*request, Request::Publish(_))
         ));
     }
 
@@ -2201,8 +2231,37 @@ mod test {
 
         assert!(matches!(
             client.try_publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce)),
-            Err(ClientError::TryRequest(Request::Publish(_)))
+            Err(ClientError::RequestChannelFull(request)) if matches!(*request, Request::Publish(_))
         ));
+    }
+
+    #[test]
+    fn try_publish_reports_disconnected_request_channel() {
+        let (tx, rx) = flume::bounded(1);
+        drop(rx);
+        let client = AsyncClient::from_senders(tx);
+
+        assert!(matches!(
+            client.try_publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce)),
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+    }
+
+    #[test]
+    fn client_error_display_messages_are_specific() {
+        assert_eq!(
+            ClientError::RequestChannelFull(Box::new(Request::PingReq)).to_string(),
+            "Request channel is full"
+        );
+        assert_eq!(
+            ClientError::RequestChannelDisconnected(Box::new(Request::PingReq)).to_string(),
+            "Request channel is disconnected"
+        );
+        assert_eq!(
+            ClientError::InvalidRequest(Box::new(Request::PingReq)).to_string(),
+            "Invalid MQTT request"
+        );
     }
 
     #[test]
@@ -2475,7 +2534,9 @@ mod test {
                 PublishOptions::new(QoS::ExactlyOnce),
             )
             .expect_err("Invalid publish topic should fail");
-        assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+        assert!(
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
+        );
     }
 
     #[test]
@@ -2572,20 +2633,22 @@ mod test {
         let err = client
             .subscribe("a/#/b", QoS::AtLeastOnce)
             .expect_err("Invalid wildcard placement should fail");
-        assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Subscribe(_))));
+        assert!(
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
+        );
 
         let err = client
             .try_subscribe("a\0b", QoS::AtLeastOnce)
             .expect_err("NUL should fail");
         assert!(
-            matches!(err, ClientError::TryRequest(req) if matches!(req, Request::Subscribe(_)))
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
         );
 
         let err = client
             .try_subscribe(overlong, QoS::AtLeastOnce)
             .expect_err("Overlong filter should fail");
         assert!(
-            matches!(err, ClientError::TryRequest(req) if matches!(req, Request::Subscribe(_)))
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
         );
 
         assert!(rx.is_empty());
@@ -2639,12 +2702,14 @@ mod test {
         let err = client
             .unsubscribe("a/#/b")
             .expect_err("Invalid wildcard placement should fail");
-        assert!(matches!(err, ClientError::Request(Request::Unsubscribe(_))));
+        assert!(
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Unsubscribe(_)))
+        );
 
         let err = client.try_unsubscribe("a\0b").expect_err("NUL should fail");
         assert!(matches!(
             err,
-            ClientError::TryRequest(Request::Unsubscribe(_))
+            ClientError::InvalidRequest(req) if matches!(*req, Request::Unsubscribe(_))
         ));
 
         let err = client
@@ -2652,7 +2717,7 @@ mod test {
             .expect_err("Empty unsubscribe list should fail");
         assert!(matches!(
             err,
-            ClientError::TryRequest(Request::Unsubscribe(_))
+            ClientError::InvalidRequest(req) if matches!(*req, Request::Unsubscribe(_))
         ));
 
         client
@@ -2685,12 +2750,16 @@ mod test {
         let err = client
             .publish("a/+/b", "good bye", PublishOptions::new(QoS::ExactlyOnce))
             .expect_err("Invalid publish topic should fail");
-        assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+        assert!(
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
+        );
 
         let err = client
             .publish("", "good bye", PublishOptions::new(QoS::ExactlyOnce))
             .expect_err("Empty publish topic should fail");
-        assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+        assert!(
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
+        );
     }
 
     #[test]
@@ -2701,13 +2770,15 @@ mod test {
         let err = client
             .subscribe_many(Vec::<SubscribeFilter>::new())
             .expect_err("Empty subscribe filter list should fail");
-        assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Subscribe(_))));
+        assert!(
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
+        );
 
         let err = client
             .try_subscribe_many(Vec::<SubscribeFilter>::new())
             .expect_err("Empty subscribe filter list should fail");
         assert!(
-            matches!(err, ClientError::TryRequest(req) if matches!(req, Request::Subscribe(_)))
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
         );
 
         assert!(rx.is_empty());
@@ -2760,7 +2831,7 @@ mod test {
                 .publish("a/+/b", "good bye", PublishOptions::new(QoS::ExactlyOnce))
                 .await
                 .expect_err("Invalid publish topic should fail");
-            assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+            assert!(matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_))));
 
             let err = client
                 .publish(
@@ -2770,13 +2841,13 @@ mod test {
                 )
                 .await
                 .expect_err("Invalid publish topic should fail");
-            assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+            assert!(matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_))));
 
             let err = client
                 .publish("", "good bye", PublishOptions::new(QoS::ExactlyOnce))
                 .await
                 .expect_err("Empty publish topic should fail");
-            assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+            assert!(matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_))));
 
             let err = client
                 .publish(
@@ -2786,7 +2857,7 @@ mod test {
                 )
                 .await
                 .expect_err("Empty publish topic should fail");
-            assert!(matches!(err, ClientError::Request(req) if matches!(req, Request::Publish(_))));
+            assert!(matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_))));
         });
     }
 
@@ -2805,7 +2876,7 @@ mod test {
                 .await
                 .expect_err("Empty subscribe filter list should fail");
             assert!(
-                matches!(err, ClientError::Request(req) if matches!(req, Request::Subscribe(_)))
+                matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
             );
         });
 
@@ -2813,7 +2884,7 @@ mod test {
             .try_subscribe_many(Vec::<SubscribeFilter>::new())
             .expect_err("Empty subscribe filter list should fail");
         assert!(
-            matches!(err, ClientError::TryRequest(req) if matches!(req, Request::Subscribe(_)))
+            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Subscribe(_)))
         );
 
         assert!(rx.is_empty());

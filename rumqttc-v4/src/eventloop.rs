@@ -212,7 +212,7 @@ pub enum ConnectionError {
     #[error("Proxy Connect: {0}")]
     Proxy(#[from] ProxyError),
     #[cfg(feature = "websocket")]
-    #[error("Websocket response validation error: ")]
+    #[error("Websocket response validation error: {0}")]
     ResponseValidation(#[from] crate::websockets::ValidationError),
     #[cfg(feature = "websocket")]
     #[error("Websocket request modifier failed: {0}")]
@@ -1647,6 +1647,19 @@ mod tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, DuplexStream};
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_response_validation_display_includes_source() {
+        let error = ConnectionError::ResponseValidation(
+            crate::websockets::ValidationError::SubprotocolHeaderMissing,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "Websocket response validation error: Websocket response does not contain subprotocol header"
+        );
+    }
 
     #[derive(Clone, Debug)]
     struct MemorySessionStore {

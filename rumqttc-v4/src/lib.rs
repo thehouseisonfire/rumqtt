@@ -2614,7 +2614,7 @@ mod test {
             .expect("first request should fit configured capacity");
         assert!(matches!(
             client.try_publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce)),
-            Err(ClientError::TryRequest(Request::Publish(_)))
+            Err(ClientError::RequestChannelFull(request)) if matches!(*request, Request::Publish(_))
         ));
     }
 
