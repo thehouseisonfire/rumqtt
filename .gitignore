@@ -1,5 +1,7 @@
 # Certificates
 *.pem
+!tests/fixtures/native_tls_localhost_cert.pem
+!tests/fixtures/native_tls_localhost_key_pkcs8.pem
 *.der
 *.pb
 # Performance analysis

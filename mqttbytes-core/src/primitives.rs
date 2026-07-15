@@ -225,6 +225,7 @@ pub fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize
 
     while !done {
         // `x % 128` is always in 0..=127 and therefore fits in u8.
+        #[allow(clippy::cast_possible_truncation)]
         let mut byte = (x % 128) as u8;
         x /= 128;
         if x > 0 {
