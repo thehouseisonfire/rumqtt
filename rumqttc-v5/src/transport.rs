@@ -2,13 +2,15 @@
 use rumqttc_core::{TlsConfiguration, TlsError};
 
 #[cfg(feature = "use-rustls-no-provider")]
-fn default_tls_configuration() -> Result<TlsConfiguration, TlsError> {
+fn try_default_tls_configuration() -> Result<TlsConfiguration, TlsError> {
     TlsConfiguration::try_default_rustls()
 }
 
 #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
-const fn default_tls_configuration() -> Result<TlsConfiguration, TlsError> {
-    Ok(TlsConfiguration::Native)
+fn try_default_tls_configuration() -> Result<TlsConfiguration, TlsError> {
+    Ok(TlsConfiguration::NativeConnector(
+        native_tls::TlsConnector::new()?,
+    ))
 }
 
 /// Transport methods. Defaults to TCP.
@@ -57,6 +59,11 @@ impl Transport {
 
     #[cfg(feature = "use-rustls-no-provider")]
     #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default TLS configuration cannot be built. Use
+    /// [`Self::try_tls_with_default_config`] to handle that error explicitly.
     pub fn tls_with_default_config() -> Self {
         Self::try_tls_with_default_config()
             .expect("could not build default TLS transport configuration")
@@ -69,7 +76,7 @@ impl Transport {
     ///
     /// Returns [`TlsError`] if the default TLS configuration cannot be built.
     pub fn try_tls_with_default_config() -> Result<Self, TlsError> {
-        Ok(Self::tls_with_config(default_tls_configuration()?))
+        Ok(Self::tls_with_config(try_default_tls_configuration()?))
     }
 
     /// Use secure tcp with tls as transport
@@ -140,21 +147,31 @@ impl Transport {
             feature = "websocket"
         )))
     )]
-    pub fn wss_with_config(tls_config: TlsConfiguration) -> Self {
+    #[must_use]
+    pub const fn wss_with_config(tls_config: TlsConfiguration) -> Self {
         Self::Wss(tls_config)
     }
 
     #[cfg(all(
-        any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+        feature = "use-native-tls",
+        not(feature = "use-rustls-no-provider"),
         feature = "websocket"
     ))]
+    #[must_use]
+    pub const fn wss_with_default_config() -> Self {
+        Self::wss_with_config(TlsConfiguration::Native)
+    }
+
+    #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(all(
-            any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
-            feature = "websocket"
-        )))
+        doc(cfg(all(feature = "use-rustls-no-provider", feature = "websocket")))
     )]
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default TLS configuration cannot be built. Use
+    /// [`Self::try_wss_with_default_config`] to handle that error explicitly.
     pub fn wss_with_default_config() -> Self {
         Self::try_wss_with_default_config()
             .expect("could not build default WSS transport configuration")
@@ -177,7 +194,7 @@ impl Transport {
     ///
     /// Returns [`TlsError`] if the default TLS configuration cannot be built.
     pub fn try_wss_with_default_config() -> Result<Self, TlsError> {
-        Ok(Self::Wss(default_tls_configuration()?))
+        Ok(Self::Wss(try_default_tls_configuration()?))
     }
 }
 
@@ -224,7 +241,7 @@ mod tests {
     #[test]
     fn try_tls_default_config_uses_native_tls_when_rustls_is_disabled() {
         match super::Transport::try_tls_with_default_config() {
-            Ok(super::Transport::Tls(rumqttc_core::TlsConfiguration::Native)) => {}
+            Ok(super::Transport::Tls(rumqttc_core::TlsConfiguration::NativeConnector(_))) => {}
             _ => panic!("expected native-tls default tls configuration"),
         }
     }
@@ -276,7 +293,7 @@ mod tests {
     #[test]
     fn try_wss_default_config_uses_native_tls_when_rustls_is_disabled() {
         match super::Transport::try_wss_with_default_config() {
-            Ok(super::Transport::Wss(rumqttc_core::TlsConfiguration::Native)) => {}
+            Ok(super::Transport::Wss(rumqttc_core::TlsConfiguration::NativeConnector(_))) => {}
             _ => panic!("expected native-tls default wss configuration"),
         }
     }

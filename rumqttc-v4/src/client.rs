@@ -584,6 +584,11 @@ impl AsyncClientBuilder {
     ///
     /// This builder always produces the asynchronous client pair so the
     /// terminal `build()` method matches the entry point that created it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the MQTT options fail validation. Use [`Self::try_build`] to
+    /// handle validation errors explicitly.
     #[must_use]
     pub fn build(self) -> (AsyncClient, EventLoop) {
         self.try_build()

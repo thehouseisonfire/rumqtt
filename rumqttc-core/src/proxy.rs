@@ -40,6 +40,12 @@ pub enum ProxyError {
 }
 
 impl Proxy {
+    /// Connects to a broker through this proxy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProxyError`] if the proxy socket, TLS handshake, or HTTP
+    /// CONNECT request fails.
     pub async fn connect(
         self,
         broker_addr: &str,
@@ -79,7 +85,7 @@ impl ProxyAuth {
                 async_http_proxy::http_connect_tokio_with_basic_auth(
                     tcp_stream, host, port, &username, &password,
                 )
-                .await?
+                .await?;
             }
         }
         Ok(())

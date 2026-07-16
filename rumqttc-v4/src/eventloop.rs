@@ -267,6 +267,7 @@ pub struct QueueDiagnostics {
 
 /// Session-related event-loop diagnostics.
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDiagnostics {
     pub session_store_configured: bool,
@@ -821,68 +822,57 @@ impl EventLoop {
         ConnectionError::MqttState(source)
     }
 
-    /// Yields Next notification or outgoing request and periodically pings
-    /// the broker. Continuing to poll will reconnect to the broker if there is
-    /// a disconnection.
-    /// **NOTE** Don't block this while iterating
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ConnectionError`] if connecting, reading, writing, or
-    /// protocol handling fails.
-    pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
-        if self.disconnect_complete {
-            return Err(ConnectionError::RequestsDone);
-        }
+    async fn establish_connection(&mut self) -> Result<Event, ConnectionError> {
+        self.reset_session_state_if_client_id_changed();
+        self.load_persisted_session_if_needed().await?;
 
-        if self.network.is_none() {
-            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
-                self.disconnect_complete = true;
-                if let Some(notice) = envelope.notice {
-                    drop(notice);
-                }
-                return Err(ConnectionError::RequestsDone);
+        #[cfg(feature = "tracing")]
+        let attempt = {
+            let attempt = self.telemetry.begin_attempt();
+            crate::instrumentation::connection_attempt(attempt);
+            attempt
+        };
+
+        let (network, connack) = match time::timeout(
+            Duration::from_secs(self.network_options.connection_timeout()),
+            connect(&self.mqtt_options, self.network_options.clone()),
+        )
+        .await
+        {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(failure)) => {
+                #[cfg(feature = "tracing")]
+                crate::instrumentation::connection_attempt_failed(
+                    attempt,
+                    failure.phase,
+                    &failure.error,
+                );
+                return Err(failure.error);
             }
+            Err(_) => {
+                let error = ConnectionError::NetworkTimeout;
+                #[cfg(feature = "tracing")]
+                crate::instrumentation::connection_attempt_failed(attempt, "connection", &error);
+                return Err(error);
+            }
+        };
 
-            self.reset_session_state_if_client_id_changed();
-            self.load_persisted_session_if_needed().await?;
+        #[cfg(feature = "tracing")]
+        self.reconcile_connack_session(connack.session_present)
+            .inspect_err(|error| {
+                crate::instrumentation::connection_attempt_failed(
+                    attempt,
+                    "session_reconciliation",
+                    error,
+                );
+            })?;
+        #[cfg(not(feature = "tracing"))]
+        self.reconcile_connack_session(connack.session_present)?;
 
+        if !connack.session_present {
             #[cfg(feature = "tracing")]
-            let attempt = {
-                let attempt = self.telemetry.begin_attempt();
-                crate::instrumentation::connection_attempt(attempt);
-                attempt
-            };
-
-            let (network, connack) = match time::timeout(
-                Duration::from_secs(self.network_options.connection_timeout()),
-                connect(&self.mqtt_options, self.network_options.clone()),
-            )
-            .await
-            {
-                Ok(Ok(connection)) => connection,
-                Ok(Err(failure)) => {
-                    #[cfg(feature = "tracing")]
-                    crate::instrumentation::connection_attempt_failed(
-                        attempt,
-                        failure.phase,
-                        &failure.error,
-                    );
-                    return Err(failure.error);
-                }
-                Err(_) => {
-                    let error = ConnectionError::NetworkTimeout;
-                    #[cfg(feature = "tracing")]
-                    crate::instrumentation::connection_attempt_failed(
-                        attempt,
-                        "connection",
-                        &error,
-                    );
-                    return Err(error);
-                }
-            };
-            #[cfg(feature = "tracing")]
-            self.reconcile_connack_session(connack.session_present)
+            self.clear_persisted_session_or_block_reload()
+                .await
                 .inspect_err(|error| {
                     crate::instrumentation::connection_attempt_failed(
                         attempt,
@@ -891,39 +881,31 @@ impl EventLoop {
                     );
                 })?;
             #[cfg(not(feature = "tracing"))]
-            self.reconcile_connack_session(connack.session_present)?;
-            if !connack.session_present {
-                #[cfg(feature = "tracing")]
-                self.clear_persisted_session_or_block_reload()
-                    .await
-                    .inspect_err(|error| {
-                        crate::instrumentation::connection_attempt_failed(
-                            attempt,
-                            "session_reconciliation",
-                            error,
-                        );
-                    })?;
-                #[cfg(not(feature = "tracing"))]
-                self.clear_persisted_session_or_block_reload().await?;
-            }
-            self.session_client_id = Some(self.mqtt_options.client_id());
-            self.session_store_key = Some(self.mqtt_options.session_store_key());
-            self.network = Some(network);
-
-            #[cfg(feature = "tracing")]
-            {
-                self.telemetry.mark_connection_established();
-                crate::instrumentation::connection_established(attempt, connack.session_present);
-            }
-
-            if self.keepalive_timeout.is_none() && !self.mqtt_options.keep_alive.is_zero() {
-                self.keepalive_timeout = Some(Box::pin(time::sleep(self.mqtt_options.keep_alive)));
-            }
-
-            return Ok(Event::Incoming(Packet::ConnAck(connack)));
+            self.clear_persisted_session_or_block_reload().await?;
         }
 
-        match self.select().await {
+        self.session_client_id = Some(self.mqtt_options.client_id());
+        self.session_store_key = Some(self.mqtt_options.session_store_key());
+        self.network = Some(network);
+
+        #[cfg(feature = "tracing")]
+        {
+            self.telemetry.mark_connection_established();
+            crate::instrumentation::connection_established(attempt, connack.session_present);
+        }
+
+        if self.keepalive_timeout.is_none() && !self.mqtt_options.keep_alive.is_zero() {
+            self.keepalive_timeout = Some(Box::pin(time::sleep(self.mqtt_options.keep_alive)));
+        }
+
+        Ok(Event::Incoming(Packet::ConnAck(connack)))
+    }
+
+    async fn handle_network_result(
+        &mut self,
+        result: Result<Event, ConnectionError>,
+    ) -> Result<Event, ConnectionError> {
+        match result {
             Ok(v) => Ok(v),
             Err(ConnectionError::DisconnectTimeout) => {
                 let error = ConnectionError::DisconnectTimeout;
@@ -967,6 +949,33 @@ impl EventLoop {
                 Err(e)
             }
         }
+    }
+
+    /// Yields Next notification or outgoing request and periodically pings
+    /// the broker. Continuing to poll will reconnect to the broker if there is
+    /// a disconnection.
+    /// **NOTE** Don't block this while iterating
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConnectionError`] if connecting, reading, writing, or
+    /// protocol handling fails.
+    pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
+        if self.disconnect_complete {
+            return Err(ConnectionError::RequestsDone);
+        }
+
+        if self.network.is_none() {
+            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
+                self.disconnect_complete = true;
+                drop(envelope.notice);
+                return Err(ConnectionError::RequestsDone);
+            }
+            return self.establish_connection().await;
+        }
+
+        let result = self.select().await;
+        self.handle_network_result(result).await
     }
 
     /// Converts this event loop into an async [`Stream`](futures_core::Stream).
@@ -1368,7 +1377,14 @@ impl EventLoop {
         self.network_options.clone()
     }
 
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     pub fn set_network_options(&mut self, network_options: NetworkOptions) -> &mut Self {
+        self.network_options = network_options;
+        self
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
+    pub const fn set_network_options(&mut self, network_options: NetworkOptions) -> &mut Self {
         self.network_options = network_options;
         self
     }
@@ -1683,7 +1699,7 @@ async fn network_connect(
 
             let (socket, response) =
                 async_tungstenite::tokio::client_async(request, tcp_stream).await?;
-            validate_response_headers(response)?;
+            validate_response_headers(&response)?;
 
             Network::new(
                 WsAdapter::new(socket),
@@ -1716,7 +1732,7 @@ async fn network_connect(
             let tls_stream = tls::tls_connect(&domain, port, &tls_config, tcp_stream).await?;
             let (socket, response) =
                 async_tungstenite::tokio::client_async(request, tls_stream).await?;
-            validate_response_headers(response)?;
+            validate_response_headers(&response)?;
 
             Network::new(
                 WsAdapter::new(socket),

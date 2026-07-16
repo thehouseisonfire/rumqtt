@@ -29,6 +29,7 @@
   not include a built-in file store. `SessionStore` persists MQTT protocol recovery state, not a durable application
   outbox for every submitted request. Exactly one active event loop may own a session-store key at a time.
 ### Changed
+- `rumqttc-core` (Breaking Change): Change `validate_response_headers(...)` to borrow its WebSocket response instead of consuming it.
 - `rumqttc` v5 (Breaking Change): Flatten redundant `mqttbytes::v5` module nesting. `PacketType`, `FixedHeader`, `Error`, `check()`, `qos()`, and codec helper functions now live at `mqttbytes::` instead of `mqttbytes::v5::`, matching the v4 crate's layout. `mqttbytes::v5::` still exists and re-exports packet-level types (`Packet`, `Connect`, `Publish`, etc.).
 - `rumqttc` v4/v5 (Breaking Change): Normalize `PingReq`/`PingResp` enum variants to unit variants in both `Packet` and `Request` enums across both crates. `Packet::PingReq`, `Packet::PingResp`, `Request::PingReq`, and `Request::PingResp` are now unit variants consistently in v4 and v5. The `PingReq` and `PingResp` structs are preserved for codec use.
 - `rumqttc` v5 (Breaking Change): Rename `Filter` to `SubscribeFilter` for parity with the v4 crate.

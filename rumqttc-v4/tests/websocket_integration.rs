@@ -289,12 +289,13 @@ fn make_rustls_wss_acceptor_and_ca() -> (RustlsTlsAcceptor, Vec<u8>) {
 
 #[cfg(feature = "use-native-tls")]
 fn make_native_wss_acceptor_and_ca() -> (NativeTlsAcceptor, Vec<u8>) {
+    let ca_pem = include_bytes!("../../tests/fixtures/native_tls_test_ca.pem");
     let cert_pem = include_bytes!("../../tests/fixtures/native_tls_localhost_cert.pem");
     let key_pem = include_bytes!("../../tests/fixtures/native_tls_localhost_key_pkcs8.pem");
     let identity = Identity::from_pkcs8(cert_pem, key_pem).unwrap();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
 
-    (NativeTlsAcceptor::from(acceptor), cert_pem.to_vec())
+    (NativeTlsAcceptor::from(acceptor), ca_pem.to_vec())
 }
 
 #[cfg(all(
