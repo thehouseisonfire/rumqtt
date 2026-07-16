@@ -79,6 +79,7 @@ tokio-tungstenite = "0.30"
 rcgen = "0.14"
 criterion = "0.8.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+turmoil = "0.7.2"
 
 [[example]]
 name = "async_manual_acks"

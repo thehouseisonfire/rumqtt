@@ -1262,10 +1262,10 @@ impl MqttOptions {
     /// If the connector already performs TLS/proxy work, configure `MqttOptions` transport/proxy
     /// to avoid layering those concerns twice.
     ///
-    /// Custom connectors are also responsible for honoring `network_options` themselves. To keep
-    /// `NetworkOptions` behavior such as `set_bind_addr(...)`, forward `network_options` into
-    /// `rumqttc::default_socket_connect(...)` or apply the equivalent socket configuration before
-    /// connecting.
+    /// Once a custom connector is selected, it owns socket creation and rumqttc does not apply
+    /// `network_options` after the connector returns. A connector that still uses rumqttc's TCP
+    /// dialer should pass those options unchanged to [`default_socket_connect`]. Connectors for
+    /// other transports, including simulated networks such as Turmoil, decide which options apply.
     ///
     /// # Example
     /// ```
