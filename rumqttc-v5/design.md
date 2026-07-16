@@ -20,7 +20,7 @@ A successful CONNACK can alter the current connection or session:
 | Receive Maximum | Caps outgoing QoS 1/2 PUBLISH packets to the smaller broker or client limit. |
 | Maximum Packet Size | Makes the encoder reject packets larger than the server accepts. |
 | Topic Alias Maximum | Limits client-to-server aliases for this network connection. |
-| Session Expiry Interval | Overrides the requested interval used for session persistence decisions. |
+| Session Expiry Interval | Becomes the effective interval used for current-session persistence decisions. |
 | Retain Available | Causes unsupported retained publishes to be rejected locally. |
 | Assigned Client Identifier | Replaces an empty identifier when the server supplies a valid assignment. |
 
@@ -28,6 +28,12 @@ The client can advertise its Receive Maximum, Maximum Packet Size, and Topic
 Alias Maximum in CONNECT. Configured incoming packet-size limits are enforced
 by the decoder. The implementation enforces the broker's outgoing packet-size
 and publish-quota limits.
+
+The configured CONNECT Session Expiry Interval remains the application's
+baseline request for every connection. A broker value returned in CONNACK is
+tracked separately as the effective interval for the current connection and is
+used for checkpoint and connection-closure decisions; it does not replace the
+value requested on a later reconnect.
 
 Baseline restoration and enforcement of all connection-scoped limits in both
 directions remain under audit in [`TODO6.md`](../TODO6.md). Server Keep Alive,

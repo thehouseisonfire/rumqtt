@@ -2840,6 +2840,7 @@ impl MqttState {
     pub(crate) fn persisted_session<'a>(
         &self,
         options: &MqttOptions,
+        session_expiry_interval: Option<u32>,
         replay_requests: impl IntoIterator<Item = &'a Request>,
     ) -> PersistedSession {
         let mut replay = self.persisted_replay_requests();
@@ -2853,7 +2854,7 @@ impl MqttState {
             format_version: 1,
             client_id: options.client_id(),
             clean_start: options.clean_start(),
-            session_expiry_interval: options.session_expiry_interval(),
+            session_expiry_interval,
             outgoing_inflight_upper_limit: options.get_outgoing_inflight_upper_limit(),
             ack_mode: persisted_ack_mode(options.ack_mode()),
             last_pkid: self.last_pkid,
@@ -3670,7 +3671,11 @@ mod test {
             .unwrap();
         mqtt.mark_outgoing_publishes_flush_attempted();
 
-        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let session = mqtt.persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
         let mut restored = build_mqttstate();
         let replay = restored
             .restore_persisted_session(&options, &session)
@@ -3694,7 +3699,11 @@ mod test {
     fn persisted_session_allows_broker_overridden_session_expiry_interval() {
         let mut options = persistent_options();
         options.set_session_expiry_interval(Some(120));
-        let mut session = build_mqttstate().persisted_session(&options, std::iter::empty());
+        let mut session = build_mqttstate().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
         session.session_expiry_interval = Some(60);
         let mut restored = build_mqttstate();
 
@@ -3713,7 +3722,11 @@ mod test {
             .unwrap();
         mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
 
-        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let session = mqtt.persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
         let mut restored = build_mqttstate();
         let mut replay = restored
             .restore_persisted_session(&options, &session)
@@ -3742,7 +3755,11 @@ mod test {
         mqtt.outgoing_unsubscribe(Unsubscribe::new("c/d", None), None)
             .unwrap();
 
-        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let session = mqtt.persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
         let mut restored = build_mqttstate();
         let replay = restored
             .restore_persisted_session(&options, &session)
@@ -3780,7 +3797,11 @@ mod test {
             Request::Unsubscribe(Unsubscribe::new("c/d", None)),
         ];
 
-        let session = mqtt.persisted_session(&options, replay_requests.iter());
+        let session = mqtt.persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            replay_requests.iter(),
+        );
 
         assert!(session.replay.is_empty());
         let mut restored = build_mqttstate();
@@ -3935,7 +3956,11 @@ mod test {
         let mut publish = build_incoming_publish(QoS::ExactlyOnce, 7);
         mqtt.handle_incoming_publish(&mut publish).unwrap();
 
-        let session = mqtt.persisted_session(&options, std::iter::empty());
+        let session = mqtt.persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
         let mut restored = build_mqttstate();
         let replay = restored
             .restore_persisted_session(&options, &session)

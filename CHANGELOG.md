@@ -54,6 +54,12 @@
   `flume::SendError<Request>` and `flume::TrySendError<Request>` to `ClientError`. Client request-channel failures
   continue to be reported through crate-owned `ClientError` variants.
 ### Fixed
+- `rumqttc` v5: Record a graceful client DISCONNECT Session Expiry Interval override in the persisted
+  checkpoint, preserve it across transient post-flush store failures, and clear stale checkpoints after
+  abrupt connection loss or graceful-disconnect timeout when the effective expiry is zero. Nonzero-expiry
+  disconnect timeouts preserve complete replay state before replacing the durable checkpoint.
+- `rumqttc` v5: Keep the application-configured CONNECT Session Expiry Interval as the reconnect baseline
+  after a broker CONNACK override while tracking the broker value separately for current-session persistence.
 - `rumqttc` v4/v5: Return a TLS error from fallible rustls default configuration helpers when no `CryptoProvider` is available, instead of panicking in `ClientConfig::builder()`.
 - `rumqttc` v5: Complete tracked publish/subscribe/unsubscribe notices only after updated persistent session state is saved. If the configured `SessionStore` fails at this durability barrier, notices now report `SessionPersistence(...)` errors instead of success.
 - `rumqttc` v4/v5: Include the underlying WebSocket response validation reason in

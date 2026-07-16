@@ -123,10 +123,11 @@ pub struct PersistedSession {
     pub client_id: String,
     /// `clean_start` value the checkpoint was created under.
     pub clean_start: bool,
-    /// CONNECT Session Expiry Interval associated with this checkpoint.
+    /// Effective Session Expiry Interval governing this checkpoint.
     ///
-    /// This records the effective option value at save time, including any
-    /// server override received in CONNACK before the checkpoint was written.
+    /// This is normally the CONNECT value, including any server override
+    /// received in CONNACK. A checkpoint saved after a graceful client
+    /// DISCONNECT records its Session Expiry Interval override instead.
     pub session_expiry_interval: Option<u32>,
     /// Configured outgoing inflight upper limit, if any.
     pub outgoing_inflight_upper_limit: Option<u16>,

@@ -151,7 +151,7 @@ impl PendingDisconnect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionCheckpointAction {
     Save,
-    Clear,
+    ApplySessionExpiry(Option<u32>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -336,6 +336,8 @@ pub struct EventLoop {
     session_client_id: Option<String>,
     /// Store key associated with the currently retained local session state.
     session_store_key: Option<crate::SessionStoreKey>,
+    /// Session Expiry Interval governing the current or most recently closed connection.
+    effective_session_expiry_interval: Option<u32>,
     /// Current connection resumed broker state without matching local packet-id ownership.
     broker_only_session_resume: bool,
     /// Persistent session store lifecycle flags.
@@ -466,6 +468,7 @@ impl EventLoop {
         let ack_mode = options.ack_mode;
         let topic_alias_policy = options.topic_alias_policy();
         let client_topic_alias_max = options.topic_alias_max().unwrap_or(0);
+        let effective_session_expiry_interval = options.session_expiry_interval();
 
         let authenticator = options.authenticator();
         let authentication_method = options.authentication_method();
@@ -493,6 +496,7 @@ impl EventLoop {
             no_sleep: None,
             session_client_id: None,
             session_store_key: None,
+            effective_session_expiry_interval,
             broker_only_session_resume: false,
             session_store: SessionStoreState::new(),
             pending_disconnect: None,
@@ -770,7 +774,10 @@ impl EventLoop {
         Ok(())
     }
 
-    fn persisted_session_save(&self) -> SessionSave {
+    fn persisted_session_save_with_expiry(
+        &self,
+        session_expiry_interval: Option<u32>,
+    ) -> SessionSave {
         if self.options.clean_start() {
             return SessionSave(None);
         }
@@ -789,10 +796,16 @@ impl EventLoop {
             .iter()
             .filter(|envelope| envelope.replay)
             .map(|envelope| &envelope.request);
-        let session = self
-            .state
-            .persisted_session(&self.options, pending_replay.chain(queued_replay));
+        let session = self.state.persisted_session(
+            &self.options,
+            session_expiry_interval,
+            pending_replay.chain(queued_replay),
+        );
         SessionSave(Some((store, self.options.session_store_key(), session)))
+    }
+
+    fn persisted_session_save(&self) -> SessionSave {
+        self.persisted_session_save_with_expiry(self.effective_session_expiry_interval)
     }
 
     async fn save_persisted_session(&mut self) -> Result<(), ConnectionError> {
@@ -848,14 +861,32 @@ impl EventLoop {
         self.clear_persisted_session().await
     }
 
-    fn disconnect_expires_session(&self, disconnect: &Disconnect) -> bool {
+    fn disconnect_session_expiry_interval(&self, disconnect: &Disconnect) -> Option<u32> {
+        self.disconnect_session_expiry_override(disconnect)
+            .or(self.effective_session_expiry_interval)
+    }
+
+    fn disconnect_session_expiry_override(&self, disconnect: &Disconnect) -> Option<u32> {
         disconnect
             .properties
             .as_ref()
             .and_then(|properties| properties.session_expiry_interval)
-            .or_else(|| self.options.session_expiry_interval())
-            .unwrap_or(0)
-            == 0
+    }
+
+    async fn checkpoint_after_connection_loss(&mut self) -> Result<(), ConnectionError> {
+        if self.effective_session_expiry_interval.unwrap_or(0) == 0 {
+            self.clear_persisted_session().await
+        } else {
+            self.save_persisted_session().await
+        }
+    }
+
+    fn apply_connack_session_expiry_interval(&mut self, connack: &ConnAck) {
+        self.effective_session_expiry_interval = connack
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.session_expiry_interval)
+            .or_else(|| self.options.session_expiry_interval());
     }
 
     async fn complete_read_batch(
@@ -961,6 +992,7 @@ impl EventLoop {
                     return Err(error);
                 }
             };
+            self.apply_connack_session_expiry_interval(&connack);
             #[cfg(feature = "tracing")]
             self.reconcile_connack_session(connack.session_present)
                 .inspect_err(|error| {
@@ -1028,7 +1060,6 @@ impl EventLoop {
                         &error,
                         &self.diagnostics(),
                     );
-                    self.telemetry.finish_established_connection();
                 }
                 #[cfg(not(feature = "tracing"))]
                 warn!(
@@ -1040,11 +1071,13 @@ impl EventLoop {
                     self.requests_rx.len(),
                     self.control_requests_rx.len()
                 );
-                self.network = None;
-                self.keepalive_timeout = None;
-                self.pending_disconnect = None;
-                self.drop_unprocessed_requests();
+                // The timeout closes the network without sending DISCONNECT. Normalize
+                // all in-flight protocol state into replay envelopes before replacing
+                // the durable checkpoint, then discard terminal in-memory work.
+                self.clean();
                 self.disconnect_complete = true;
+                self.checkpoint_after_connection_loss().await?;
+                self.drop_unprocessed_requests();
                 Err(error)
             }
             Err(e) => {
@@ -1057,7 +1090,7 @@ impl EventLoop {
                 // MQTT requires that packets pending acknowledgement should be republished on session resume.
                 // Move pending messages from state to eventloop.
                 self.clean();
-                self.save_persisted_session().await?;
+                self.checkpoint_after_connection_loss().await?;
                 Err(e)
             }
         }
@@ -1357,15 +1390,15 @@ impl EventLoop {
             }
             Request::DisconnectNow(disconnect) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
-                let session_expires = self.disconnect_expires_session(&disconnect);
+                let session_expiry_interval = self.disconnect_session_expiry_interval(&disconnect);
+                let session_expiry_override = self.disconnect_session_expiry_override(&disconnect);
                 let (outgoing, _) = self.state.handle_outgoing_packet_with_notice(
                     Request::DisconnectNow(disconnect),
                     notice,
                 )?;
-                if session_expires {
-                    *checkpoint_action = SessionCheckpointAction::Clear;
-                } else {
-                    self.save_persisted_session().await?;
+                if session_expiry_interval.unwrap_or(0) == 0 || session_expiry_override.is_some() {
+                    *checkpoint_action =
+                        SessionCheckpointAction::ApplySessionExpiry(session_expiry_interval);
                 }
                 if let Some(outgoing) = outgoing {
                     if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
@@ -1407,8 +1440,12 @@ impl EventLoop {
         checkpoint_action: SessionCheckpointAction,
     ) -> Result<(), ConnectionError> {
         if !should_flush {
-            if checkpoint_action == SessionCheckpointAction::Clear {
-                self.clear_persisted_session().await?;
+            match checkpoint_action {
+                SessionCheckpointAction::Save => {}
+                SessionCheckpointAction::ApplySessionExpiry(session_expiry_interval) => {
+                    self.effective_session_expiry_interval = session_expiry_interval;
+                    self.checkpoint_after_connection_loss().await?;
+                }
             }
             return Ok(());
         }
@@ -1446,9 +1483,16 @@ impl EventLoop {
     ) -> Result<(), ConnectionError> {
         match checkpoint_action {
             SessionCheckpointAction::Save => self.flush_network().await,
-            SessionCheckpointAction::Clear => {
-                self.network.as_mut().unwrap().flush().await?;
-                self.clear_persisted_session().await
+            SessionCheckpointAction::ApplySessionExpiry(session_expiry_interval) => {
+                // Preserve current resumable state before exposing a nonzero
+                // DISCONNECT override. A zero interval will clear it after flush.
+                if session_expiry_interval.unwrap_or(0) == 0 {
+                    self.network.as_mut().unwrap().flush().await?;
+                } else {
+                    self.flush_network().await?;
+                }
+                self.effective_session_expiry_interval = session_expiry_interval;
+                self.checkpoint_after_connection_loss().await
             }
         }
     }
@@ -1507,7 +1551,9 @@ impl EventLoop {
             .take()
             .expect("pending disconnect checked by caller")
             .disconnect;
-        let clear_persisted_session = self.disconnect_expires_session(&disconnect);
+        let session_expiry_interval = self.disconnect_session_expiry_interval(&disconnect);
+        let session_expiry_override = self.disconnect_session_expiry_override(&disconnect);
+        let clear_persisted_session = session_expiry_interval.unwrap_or(0) == 0;
         let (outgoing, _) = self
             .state
             .handle_outgoing_packet_with_notice(Request::DisconnectNow(disconnect), None)?;
@@ -1519,14 +1565,14 @@ impl EventLoop {
             } else {
                 self.flush_network().await?;
             }
+
+            if clear_persisted_session || session_expiry_override.is_some() {
+                self.effective_session_expiry_interval = session_expiry_interval;
+            }
         }
 
         self.drop_unprocessed_requests();
-        if clear_persisted_session {
-            self.clear_persisted_session().await?;
-        } else {
-            self.save_persisted_session().await?;
-        }
+        self.checkpoint_after_connection_loss().await?;
         self.disconnect_complete = true;
         Ok(self.state.events.pop_front().unwrap())
     }
@@ -2004,11 +2050,6 @@ async fn mqtt_connect_inner(
                     }
 
                     network.set_max_outgoing_size(props.max_packet_size);
-
-                    // Override local session_expiry_interval value if set by server.
-                    if props.session_expiry_interval.is_some() {
-                        options.set_session_expiry_interval(props.session_expiry_interval);
-                    }
                 } else if sent_client_id.is_empty() {
                     send_protocol_error_disconnect(network).await;
                     return Err(StateError::Deserialization(
@@ -2254,6 +2295,81 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
             Box::pin(async {
+                *self.session.lock().unwrap() = None;
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TransientSessionStore {
+        session: Arc<Mutex<Option<PersistedSession>>>,
+        save_calls: Arc<Mutex<usize>>,
+        clear_calls: Arc<Mutex<usize>>,
+    }
+
+    impl TransientSessionStore {
+        fn new() -> Self {
+            Self {
+                session: Arc::new(Mutex::new(None)),
+                save_calls: Arc::new(Mutex::new(0)),
+                clear_calls: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn current(&self) -> Option<PersistedSession> {
+            self.session.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::SessionStore for TransientSessionStore {
+        fn load<'a>(
+            &'a self,
+            _key: &'a crate::SessionStoreKey,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<PersistedSession>, crate::SessionStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(self.session.lock().unwrap().clone()) })
+        }
+
+        fn save<'a>(
+            &'a self,
+            _key: &'a crate::SessionStoreKey,
+            session: &'a PersistedSession,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                let mut calls = self.save_calls.lock().unwrap();
+                *calls += 1;
+                if *calls == 2 {
+                    return Err(
+                        Box::new(std::io::Error::other("transient session save failure"))
+                            as crate::SessionStoreError,
+                    );
+                }
+                *self.session.lock().unwrap() = Some(session.clone());
+                Ok(())
+            })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _key: &'a crate::SessionStoreKey,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
+        {
+            Box::pin(async {
+                let mut calls = self.clear_calls.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    return Err(
+                        Box::new(std::io::Error::other("transient session clear failure"))
+                            as crate::SessionStoreError,
+                    );
+                }
                 *self.session.lock().unwrap() = None;
                 Ok(())
             })
@@ -3216,6 +3332,53 @@ mod tests {
             Packet::Connect(connect, _, _) => {
                 assert_eq!(connect.client_id, "server-assigned-client");
             }
+            packet => panic!("expected CONNECT packet, got {packet:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_reuses_configured_session_expiry_after_connack_override() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_session_expiry_interval(Some(60));
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().session_expiry_interval = Some(300);
+
+        let (result, mut options) =
+            run_successful_mqtt_connect_with_connack_and_return_options(options, connack).await;
+        result.unwrap();
+        assert_eq!(options.session_expiry_interval(), Some(60));
+
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            AckMode::Automatic,
+            options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+        let connack = build_connack_with_receive_max(10);
+        let broker = async {
+            let connect_bytes = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            connack.write(&mut encoded_connack).unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+            connect_bytes
+        };
+
+        let (result, connect_bytes) =
+            tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+        result.unwrap();
+        let mut stream = BytesMut::from(&connect_bytes[..]);
+
+        match Packet::read(&mut stream, Some(1024)).unwrap() {
+            Packet::Connect(connect, _, _) => assert_eq!(
+                connect
+                    .properties
+                    .and_then(|properties| properties.session_expiry_interval),
+                Some(60)
+            ),
             packet => panic!("expected CONNECT packet, got {packet:?}"),
         }
     }
@@ -5243,6 +5406,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connack_session_expiry_override_is_effective_without_replacing_configuration() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().session_expiry_interval = Some(300);
+
+        eventloop.apply_connack_session_expiry_interval(&connack);
+        eventloop.save_persisted_session().await.unwrap();
+
+        assert_eq!(eventloop.options.session_expiry_interval(), Some(60));
+        assert_eq!(eventloop.effective_session_expiry_interval, Some(300));
+        assert_eq!(store.current().unwrap().session_expiry_interval, Some(300));
+    }
+
+    #[tokio::test]
     async fn persist_session_includes_pending_replay_requests_only() {
         let store = CapturingSessionStore::new();
         let mut options = MqttOptions::new("test-client", "localhost");
@@ -5420,7 +5603,7 @@ mod tests {
         eventloop.persisted_session_save().save().await.unwrap();
         assert!(store.current().is_some());
 
-        eventloop.options.set_session_expiry_interval(Some(0));
+        eventloop.effective_session_expiry_interval = Some(0);
         eventloop.pending_disconnect = Some(PendingDisconnect::new(
             Disconnect::new(DisconnectReasonCode::NormalDisconnection),
             None,
@@ -5472,7 +5655,10 @@ mod tests {
 
         assert_eq!(keep_batching, BatchControl::Stop);
         assert!(should_flush);
-        assert_eq!(checkpoint_action, SessionCheckpointAction::Clear);
+        assert_eq!(
+            checkpoint_action,
+            SessionCheckpointAction::ApplySessionExpiry(Some(0))
+        );
         assert!(store.current().is_some());
 
         eventloop
@@ -5484,11 +5670,298 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disconnect_now_records_session_expiry_override_after_flush() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::NormalDisconnection,
+            crate::mqttbytes::v5::DisconnectProperties {
+                session_expiry_interval: Some(300),
+                reason_string: None,
+                user_properties: Vec::new(),
+                server_reference: None,
+            },
+        );
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain(Request::DisconnectNow(disconnect)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert!(should_flush);
+        assert_eq!(
+            checkpoint_action,
+            SessionCheckpointAction::ApplySessionExpiry(Some(300))
+        );
+        assert!(store.current().is_none());
+
+        eventloop
+            .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+            .await
+            .unwrap();
+
+        assert_eq!(store.current().unwrap().session_expiry_interval, Some(300));
+        assert_eq!(eventloop.options.session_expiry_interval(), Some(60));
+    }
+
+    #[tokio::test]
+    async fn disconnect_now_does_not_record_session_expiry_override_when_flush_fails() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.network = Some(Network::new(FlushFailingIo, Some(1024)));
+
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::NormalDisconnection,
+            crate::mqttbytes::v5::DisconnectProperties {
+                session_expiry_interval: Some(300),
+                reason_string: None,
+                user_properties: Vec::new(),
+                server_reference: None,
+            },
+        );
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+        eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain(Request::DisconnectNow(disconnect)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        let err = eventloop
+            .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConnectionError::MqttState(StateError::Deserialization(_))
+        ));
+        assert_eq!(store.current().unwrap().session_expiry_interval, Some(60));
+    }
+
+    #[tokio::test]
+    async fn pending_disconnect_records_session_expiry_override_after_flush() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new_with_properties(
+                DisconnectReasonCode::NormalDisconnection,
+                crate::mqttbytes::v5::DisconnectProperties {
+                    session_expiry_interval: Some(300),
+                    reason_string: None,
+                    user_properties: Vec::new(),
+                    server_reference: None,
+                },
+            ),
+            None,
+        ));
+
+        let event = eventloop.send_pending_disconnect().await.unwrap();
+
+        assert_eq!(event, Event::Outgoing(Outgoing::Disconnect));
+        assert_eq!(store.current().unwrap().session_expiry_interval, Some(300));
+        assert_eq!(eventloop.options.session_expiry_interval(), Some(60));
+    }
+
+    #[tokio::test]
+    async fn abrupt_connection_loss_clears_store_when_effective_expiry_is_zero() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.save_persisted_session().await.unwrap();
+        assert!(store.current().is_some());
+
+        eventloop.effective_session_expiry_interval = Some(0);
+        eventloop.checkpoint_after_connection_loss().await.unwrap();
+
+        assert!(store.current().is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_timeout_clears_store_when_effective_expiry_is_zero() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.save_persisted_session().await.unwrap();
+        assert!(store.current().is_some());
+
+        eventloop.effective_session_expiry_interval = Some(0);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish(QoS::AtLeastOnce)))
+            .unwrap();
+        eventloop.state.events.clear();
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            Some(Duration::ZERO),
+        ));
+
+        let err = eventloop.poll().await.unwrap_err();
+
+        assert!(matches!(err, ConnectionError::DisconnectTimeout));
+        assert!(eventloop.disconnect_complete);
+        assert!(store.current().is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_timeout_preserves_replay_checkpoint_when_expiry_is_nonzero() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let restore_options = options.clone();
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish(QoS::AtLeastOnce)))
+            .unwrap();
+        eventloop.state.mark_outgoing_publishes_flush_attempted();
+
+        // Model a previous connection loss: the complete PUBLISH now lives in a
+        // replay envelope while MqttState retains its packet-id reservation.
+        eventloop.clean();
+        assert!(matches!(
+            pending_front_request(&eventloop),
+            Some(Request::Publish(publish)) if publish.pkid == 1
+        ));
+        assert!(!eventloop.state.outbound_requests_drained());
+
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            Some(Duration::ZERO),
+        ));
+
+        let err = eventloop.poll().await.unwrap_err();
+
+        assert!(matches!(err, ConnectionError::DisconnectTimeout));
+        assert!(eventloop.pending_is_empty());
+        let checkpoint = store.current().expect("timeout should save the session");
+        assert!(matches!(
+            checkpoint.replay.as_slice(),
+            [crate::PersistedRequest::Publish(publish)]
+                if publish.pkid == 1 && publish.payload == b"payload"
+        ));
+
+        let (mut restored, _request_tx) = EventLoop::new_for_async_client(restore_options, 1);
+        restored.load_persisted_session_if_needed().await.unwrap();
+
+        assert!(matches!(
+            pending_front_request(&restored),
+            Some(Request::Publish(publish))
+                if publish.pkid == 1 && publish.payload.as_ref() == b"payload" && publish.dup
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_post_flush_save_retries_with_disconnect_expiry_override() {
+        let store = TransientSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        let err = eventloop
+            .flush_network_with_checkpoint_action(SessionCheckpointAction::ApplySessionExpiry(
+                Some(300),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        assert_eq!(eventloop.effective_session_expiry_interval, Some(300));
+        assert_eq!(store.current().unwrap().session_expiry_interval, Some(60));
+
+        eventloop.checkpoint_after_connection_loss().await.unwrap();
+
+        assert_eq!(store.current().unwrap().session_expiry_interval, Some(300));
+    }
+
+    #[tokio::test]
+    async fn failed_post_flush_clear_retries_with_zero_disconnect_expiry() {
+        let store = TransientSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.save_persisted_session().await.unwrap();
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+
+        let err = eventloop
+            .flush_network_with_checkpoint_action(SessionCheckpointAction::ApplySessionExpiry(
+                Some(0),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ConnectionError::SessionStore(_)));
+        assert_eq!(eventloop.effective_session_expiry_interval, Some(0));
+        assert!(store.current().is_some());
+
+        eventloop.checkpoint_after_connection_loss().await.unwrap();
+
+        assert!(store.current().is_none());
+    }
+
+    #[tokio::test]
     async fn disconnect_without_expiry_property_saves_store_when_connect_option_is_nonzero() {
         // MQTT-3.1.2-23: when the effective Session Expiry Interval is greater than
         // 0, the client MUST store the Session State after the Network Connection
         // closes. A DISCONNECT that omits the Session Expiry Interval property must
-        // fall back to the CONNECT option (here 60) via disconnect_expires_session(),
+        // fall back to the CONNECT option (here 60),
         // so the persisted session is saved rather than cleared.
         let store = CapturingSessionStore::new();
         let mut options = MqttOptions::new("test-client", "localhost");
@@ -5539,7 +6012,7 @@ mod tests {
         // MQTT-3.1.2-23 read with 3.1.2.11.2: a Session Expiry Interval of
         // 0xFFFFFFFF means the Session never expires, so it must be treated as
         // greater than 0 and stored. This guards the UINT_MAX sentinel boundary
-        // in disconnect_expires_session().
+        // in the disconnect expiry decision.
         let store = CapturingSessionStore::new();
         let mut options = MqttOptions::new("test-client", "localhost");
         options
@@ -5578,7 +6051,10 @@ mod tests {
 
         assert_eq!(keep_batching, BatchControl::Stop);
         assert!(should_flush);
-        assert_eq!(checkpoint_action, SessionCheckpointAction::Save);
+        assert_eq!(
+            checkpoint_action,
+            SessionCheckpointAction::ApplySessionExpiry(Some(u32::MAX))
+        );
 
         eventloop
             .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
