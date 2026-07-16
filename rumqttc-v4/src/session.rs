@@ -272,6 +272,11 @@ impl PersistedSession {
     ///
     /// The byte stream contains its own magic, MQTT protocol marker, and codec
     /// version. Storage backends can persist these bytes as an opaque value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEncodeError::FieldTooLarge`] if a persisted string,
+    /// binary value, or collection exceeds the session format limits.
     pub fn encode(&self) -> Result<Vec<u8>, SessionEncodeError> {
         let mut writer = SessionWriter { bytes: Vec::new() };
         writer.bytes.extend_from_slice(SESSION_MAGIC);
@@ -293,6 +298,11 @@ impl PersistedSession {
     }
 
     /// Decodes a checkpoint emitted by [`PersistedSession::encode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionDecodeError`] if the checkpoint is malformed,
+    /// unsupported, truncated, or exceeds the session format limits.
     pub fn decode(bytes: &[u8]) -> Result<Self, SessionDecodeError> {
         let mut reader = SessionReader { bytes, position: 0 };
         reader.magic()?;
@@ -349,13 +359,17 @@ impl SessionWriter {
     }
 
     fn bytes(&mut self, field: &'static str, value: &[u8]) -> Result<(), SessionEncodeError> {
-        if value.len() > MAX_BINARY_LEN || value.len() > u32::MAX as usize {
+        if value.len() > MAX_BINARY_LEN {
             return Err(SessionEncodeError::FieldTooLarge {
                 field,
                 len: value.len(),
             });
         }
-        self.u32(value.len() as u32);
+        let len = u32::try_from(value.len()).map_err(|_| SessionEncodeError::FieldTooLarge {
+            field,
+            len: value.len(),
+        })?;
+        self.u32(len);
         self.bytes.extend_from_slice(value);
         Ok(())
     }
@@ -370,13 +384,17 @@ impl SessionWriter {
         values: &[T],
         mut write: impl FnMut(&mut Self, &T) -> Result<(), SessionEncodeError>,
     ) -> Result<(), SessionEncodeError> {
-        if values.len() > MAX_COLLECTION_LEN || values.len() > u32::MAX as usize {
+        if values.len() > MAX_COLLECTION_LEN {
             return Err(SessionEncodeError::FieldTooLarge {
                 field,
                 len: values.len(),
             });
         }
-        self.u32(values.len() as u32);
+        let len = u32::try_from(values.len()).map_err(|_| SessionEncodeError::FieldTooLarge {
+            field,
+            len: values.len(),
+        })?;
+        self.u32(len);
         for value in values {
             write(self, value)?;
         }

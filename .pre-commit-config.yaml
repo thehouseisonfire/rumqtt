@@ -103,6 +103,8 @@ repos:
           cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring";
           cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-aws-lc";
           cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-aws-lc";
+          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-native-tls" --lib transport::tests::wss_default_config_uses_native_tls_when_rustls_is_disabled -- --exact;
+          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-native-tls" --lib transport::tests::wss_default_config_uses_native_tls_when_rustls_is_disabled -- --exact;
           '
         language: system
         pass_filenames: false

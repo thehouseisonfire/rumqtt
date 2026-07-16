@@ -102,8 +102,14 @@ pub enum ValidationError {
     HeaderToStr(#[from] ToStrError),
 }
 
+/// Validates the MQTT subprotocol in a WebSocket handshake response.
+///
+/// # Errors
+///
+/// Returns [`ValidationError`] if the subprotocol header is missing, invalid,
+/// or does not select MQTT.
 pub fn validate_response_headers(
-    response: Response<Option<Vec<u8>>>,
+    response: &Response<Option<Vec<u8>>>,
 ) -> Result<(), ValidationError> {
     let subprotocol = response
         .headers()
@@ -122,10 +128,21 @@ pub fn validate_response_headers(
     Ok(())
 }
 
+/// Splits a WebSocket URL into its host and explicitly specified port.
+///
+/// # Errors
+///
+/// Returns [`UrlError`] if the URL is invalid or has no host or port.
 pub fn split_url(url: &str) -> Result<(String, u16), UrlError> {
     split_url_with_default_port(url, None)
 }
 
+/// Splits a WebSocket URL into its host and port, using a fallback port.
+///
+/// # Errors
+///
+/// Returns [`UrlError`] if the URL is invalid, has no host, or has neither an
+/// explicit port nor `default_port`.
 pub fn split_url_with_default_port(
     url: &str,
     default_port: Option<u16>,

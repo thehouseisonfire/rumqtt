@@ -111,7 +111,7 @@ fn rustls_crypto_provider() -> Result<Arc<CryptoProvider>, Error> {
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
-pub(crate) fn rustls_client_config_builder() -> Result<RustlsClientConfigBuilder, Error> {
+pub fn rustls_client_config_builder() -> Result<RustlsClientConfigBuilder, Error> {
     Ok(
         ClientConfig::builder_with_provider(rustls_crypto_provider()?)
             .with_safe_default_protocol_versions()?,
@@ -175,9 +175,7 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
 }
 
 #[cfg(feature = "use-native-tls")]
-pub async fn native_tls_connector(
-    tls_config: &TlsConfiguration,
-) -> Result<NativeTlsConnector, Error> {
+pub fn native_tls_connector(tls_config: &TlsConfiguration) -> Result<NativeTlsConnector, Error> {
     let connector = match tls_config {
         TlsConfiguration::SimpleNative { ca, client_auth } => {
             let cert = native_tls::Certificate::from_pem(ca)?;
@@ -208,6 +206,13 @@ pub async fn native_tls_connector(
     feature = "use-native-tls",
     not(feature = "use-rustls-no-provider")
 ))]
+/// Builds the native-TLS connector used by secure WebSocket transports.
+///
+/// # Errors
+///
+/// Returns [`Error::NativeTls`] if certificates, identities, or the platform
+/// connector cannot be built, and [`Error::UnsupportedBackendConfiguration`]
+/// for a non-native TLS configuration.
 pub fn websocket_tls_connector(
     tls_config: &TlsConfiguration,
 ) -> Result<tokio_native_tls::TlsConnector, Error> {
@@ -236,7 +241,7 @@ pub fn websocket_tls_connector(
             Ok(connector.into())
         }
         #[allow(unreachable_patterns)]
-        _ => panic!("Unknown or not enabled TLS backend configuration"),
+        _ => Err(Error::UnsupportedBackendConfiguration),
     }
 }
 
@@ -284,7 +289,7 @@ pub async fn tls_connect(
         TlsConfiguration::Native
         | TlsConfiguration::NativeConnector(_)
         | TlsConfiguration::SimpleNative { .. } => {
-            let connector = native_tls_connector(tls_config).await?;
+            let connector = native_tls_connector(tls_config)?;
             Box::new(connector.connect(addr, tcp).await?)
         }
         #[allow(unreachable_patterns)]

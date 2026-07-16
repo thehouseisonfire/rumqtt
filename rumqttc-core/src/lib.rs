@@ -104,7 +104,7 @@ pub enum TlsConfiguration {
     /// Use default native-tls configuration
     Native,
     #[cfg(feature = "use-native-tls")]
-    /// Injected native-tls TlsConnector for TLS, to allow more customisation.
+    /// Injected native-tls `TlsConnector` for TLS, to allow more customisation.
     NativeConnector(TlsConnector),
 }
 
@@ -152,13 +152,13 @@ impl TlsConfiguration {
     #[must_use]
     /// Builds a native-tls configuration from PEM CA bytes and optional
     /// PKCS#12 client identity data.
-    pub fn simple_native(ca: Vec<u8>, client_auth: Option<(Vec<u8>, String)>) -> Self {
+    pub const fn simple_native(ca: Vec<u8>, client_auth: Option<(Vec<u8>, String)>) -> Self {
         Self::SimpleNative { ca, client_auth }
     }
 
     #[cfg(feature = "use-native-tls")]
     #[must_use]
-    pub fn default_native() -> Self {
+    pub const fn default_native() -> Self {
         Self::Native
     }
 }
@@ -187,7 +187,7 @@ impl From<ClientConfig> for TlsConfiguration {
 #[cfg(feature = "use-native-tls")]
 impl From<TlsConnector> for TlsConfiguration {
     fn from(connector: TlsConnector) -> Self {
-        TlsConfiguration::NativeConnector(connector)
+        Self::NativeConnector(connector)
     }
 }
 

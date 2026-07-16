@@ -268,6 +268,7 @@ impl From<mqttbytes::Error> for StateError {
 
 /// Observation-only snapshot of outbound protocol state.
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboundDiagnostics {
     pub inflight: u16,

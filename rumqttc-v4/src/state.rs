@@ -121,6 +121,7 @@ impl PingState {
 
 /// Observation-only snapshot of outbound protocol state.
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboundDiagnostics {
     pub inflight: u16,
@@ -1460,7 +1461,7 @@ impl MqttState {
             self.reserve_control_pkid(subscription.pkid)?;
         }
 
-        Ok(self.save_outgoing_subscribe(subscription, notice))
+        Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
     }
 
     fn replay_outgoing_subscribe(
@@ -1473,14 +1474,14 @@ impl MqttState {
         }
 
         self.accept_replayed_outbound_pkid(subscription.pkid)?;
-        Ok(self.save_outgoing_subscribe(subscription, notice))
+        Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
     }
 
     fn save_outgoing_subscribe(
         &mut self,
         subscription: Subscribe,
         notice: Option<SubscribeNoticeTx>,
-    ) -> Option<Packet> {
+    ) -> Packet {
         debug!(
             "Subscribe. Topics = {:?}, Pkid = {:?}",
             subscription.filters, subscription.pkid
@@ -1496,7 +1497,7 @@ impl MqttState {
             },
         );
 
-        Some(Packet::Subscribe(subscription))
+        Packet::Subscribe(subscription)
     }
 
     fn outgoing_unsubscribe(
