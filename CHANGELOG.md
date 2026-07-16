@@ -502,7 +502,3 @@ To update your code simply remove `Key::ECC()` or `Key::RSA()` from the initiali
 - `options` in `Eventloop` now is called `mqtt_options` (#545)
 - `ConnectionError` now has specific variant for type of `Timeout`, `FlushTimeout` and `NetworkTimeout` instead of generic `Timeout` for both (#545)
 - `conn_timeout` is moved into `NetworkOptions` (#545)
-
----
-
-Old changelog entries can be found at [CHANGELOG.md](../CHANGELOG.md)
