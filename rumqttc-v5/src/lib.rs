@@ -13,6 +13,7 @@ use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -391,6 +392,7 @@ enum BrokerInner {
     #[cfg(feature = "websocket")]
     Websocket {
         url: String,
+        secure: bool,
     },
 }
 
@@ -429,7 +431,7 @@ impl Broker {
             Some("ws") => {
                 rumqttc_core::split_url(&url).map_err(|_| OptionError::WebsocketUrl)?;
                 Ok(Self {
-                    inner: BrokerInner::Websocket { url },
+                    inner: BrokerInner::Websocket { url, secure: false },
                 })
             }
             Some("wss") => Err(OptionError::WssRequiresExplicitTransport),
@@ -451,7 +453,7 @@ impl Broker {
             Some("wss") => {
                 rumqttc_core::split_url(&url).map_err(|_| OptionError::WebsocketUrl)?;
                 Ok(Self {
-                    inner: BrokerInner::Websocket { url },
+                    inner: BrokerInner::Websocket { url, secure: true },
                 })
             }
             Some("ws") => Err(OptionError::WssUrlRequired),
@@ -485,7 +487,7 @@ impl Broker {
     #[must_use]
     pub const fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
-            BrokerInner::Websocket { url } => Some(url.as_str()),
+            BrokerInner::Websocket { url, .. } => Some(url.as_str()),
             BrokerInner::Tcp { .. } => None,
             #[cfg(unix)]
             BrokerInner::Unix { .. } => None,
@@ -913,7 +915,7 @@ impl MqttOptions {
     ///
     /// Returns [`ConfigError`] for invalid broker/transport combinations or
     /// option values that can be detected before opening a network connection.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    pub const fn validate(&self) -> Result<(), ConfigError> {
         if !broker_transport_matches(&self.broker, &self.transport) {
             return Err(ConfigError::BrokerTransportMismatch);
         }
@@ -1727,7 +1729,14 @@ impl MqttOptions {
         self.network_options.clone()
     }
 
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     pub fn set_network_options(&mut self, network_options: NetworkOptions) -> &mut Self {
+        self.network_options = network_options;
+        self
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
+    pub const fn set_network_options(&mut self, network_options: NetworkOptions) -> &mut Self {
         self.network_options = network_options;
         self
     }
@@ -2137,8 +2146,17 @@ impl MqttOptionsBuilder {
     }
 
     /// Set network options.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[must_use]
     pub fn network_options(mut self, network_options: NetworkOptions) -> Self {
+        self.options.set_network_options(network_options);
+        self
+    }
+
+    /// Set network options.
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
+    #[must_use]
+    pub const fn network_options(mut self, network_options: NetworkOptions) -> Self {
         self.options.set_network_options(network_options);
         self
     }
@@ -2173,28 +2191,21 @@ impl MqttOptionsBuilder {
     }
 }
 
-fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
+const fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
     match transport {
-        Transport::Tcp => broker.tcp_address().is_some(),
+        Transport::Tcp => matches!(broker.inner, BrokerInner::Tcp { .. }),
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-        Transport::Tls(_) => broker.tcp_address().is_some(),
+        Transport::Tls(_) => matches!(broker.inner, BrokerInner::Tcp { .. }),
         #[cfg(unix)]
-        Transport::Unix => broker.unix_path().is_some(),
+        Transport::Unix => matches!(broker.inner, BrokerInner::Unix { .. }),
         #[cfg(feature = "websocket")]
-        Transport::Ws => websocket_url_scheme(broker) == Some("ws"),
+        Transport::Ws => matches!(broker.inner, BrokerInner::Websocket { secure: false, .. }),
         #[cfg(all(
             any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
             feature = "websocket"
         ))]
-        Transport::Wss(_) => matches!(websocket_url_scheme(broker), Some("ws" | "wss")),
+        Transport::Wss(_) => matches!(broker.inner, BrokerInner::Websocket { .. }),
     }
-}
-
-#[cfg(feature = "websocket")]
-fn websocket_url_scheme(broker: &Broker) -> Option<&str> {
-    broker
-        .websocket_url()
-        .and_then(|url| url.split_once(':').map(|(scheme, _)| scheme))
 }
 
 #[non_exhaustive]
