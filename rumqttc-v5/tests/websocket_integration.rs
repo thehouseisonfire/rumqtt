@@ -2,6 +2,11 @@
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
+#[cfg(feature = "use-native-tls")]
+use rcgen::{
+    BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose,
+};
 use rumqttc::PublishOptions;
 #[cfg(feature = "use-native-tls")]
 use rumqttc::TlsConfiguration;
@@ -25,6 +30,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
+#[cfg(feature = "use-native-tls")]
+use std::time::SystemTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
@@ -293,13 +300,39 @@ fn make_rustls_wss_acceptor_and_ca() -> (RustlsTlsAcceptor, Vec<u8>) {
 
 #[cfg(feature = "use-native-tls")]
 fn make_native_wss_acceptor_and_ca() -> (NativeTlsAcceptor, Vec<u8>) {
-    let ca_pem = include_bytes!("../../tests/fixtures/native_tls_test_ca.pem");
-    let cert_pem = include_bytes!("../../tests/fixtures/native_tls_localhost_cert.pem");
     let key_pem = include_bytes!("../../tests/fixtures/native_tls_localhost_key_pkcs8.pem");
-    let identity = Identity::from_pkcs8(cert_pem, key_pem).unwrap();
+    let now = SystemTime::now();
+    let not_before = (now - Duration::from_secs(24 * 60 * 60)).into();
+    let not_after = (now + Duration::from_secs(365 * 24 * 60 * 60)).into();
+
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "rumqtt test CA");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.not_before = not_before;
+    ca_params.not_after = not_after;
+    let ca = CertifiedIssuer::self_signed(ca_params, KeyPair::generate().unwrap()).unwrap();
+
+    let leaf_key = KeyPair::from_pem(std::str::from_utf8(key_pem).unwrap()).unwrap();
+    let mut leaf_params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+    leaf_params
+        .distinguished_name
+        .push(DnType::CommonName, "localhost");
+    leaf_params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    leaf_params.not_before = not_before;
+    leaf_params.not_after = not_after;
+    let cert_pem = leaf_params.signed_by(&leaf_key, &ca).unwrap().pem();
+
+    let identity = Identity::from_pkcs8(cert_pem.as_bytes(), key_pem).unwrap();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
 
-    (NativeTlsAcceptor::from(acceptor), ca_pem.to_vec())
+    (NativeTlsAcceptor::from(acceptor), ca.pem().into_bytes())
 }
 
 #[cfg(all(
