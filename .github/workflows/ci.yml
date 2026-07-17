@@ -114,8 +114,8 @@ jobs:
 
       - name: Test rumqttc
         run: |
-            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v4-next --no-report nextest
-            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov -p rumqttc-v5-next --no-report nextest
+            cargo hack --each-feature --exclude-all-features --optional-deps url nextest run -p rumqttc-v4-next
+            cargo hack --each-feature --exclude-all-features --optional-deps url nextest run -p rumqttc-v5-next
 
       - name: Test standalone crates
         run: |
@@ -158,17 +158,6 @@ jobs:
       - name: Check workspace
         run: cargo check --workspace
 
-      - name: Combine coverage
-        run: cargo llvm-cov report --lcov --output-path coverage.lcov
-
-      - name: Upload Coverage Report
-        uses: coverallsapp/github-action@v2.2.3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./coverage.lcov
-          parallel: true
-          flag-name: run-${{ matrix.os }}-cargo
-
   benchmark-broker-fixture:
     name: Benchmark broker fixture
     runs-on: ubuntu-latest
@@ -202,12 +191,38 @@ jobs:
               --cargo-profile dev \
               --output-dir /tmp/rumqtt-bench-websocket-fixture
 
-  finish-coverage:
-    needs: [test]
+  coverage:
+    name: Test coverage
     runs-on: ubuntu-latest
     steps:
-      - name: Finish Coverage Report
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: Linux-cargo-coverage
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack,cargo-llvm-cov,nextest
+
+      - name: Install Mosquitto
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y mosquitto
+
+      - name: Generate coverage report
+        run: |
+            cargo llvm-cov clean --workspace
+            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov --no-clean -p rumqttc-v4-next nextest
+            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov --no-clean -p rumqttc-v5-next nextest
+            cargo llvm-cov report --lcov --output-path coverage.lcov
+
+      - name: Upload coverage report
         uses: coverallsapp/github-action@v2.2.3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          parallel-finished: true
+          file: ./coverage.lcov
