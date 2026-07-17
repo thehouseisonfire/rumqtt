@@ -38,7 +38,7 @@ Rust edition is `2024` (workspace-level). Follow `.editorconfig`: LF endings, sp
 Keep protocol behavior changes consistent between MQTT v4 and v5 paths when applicable.
 
 ## Documentation
-User facing changes to the API must be documented in `CHANGELOG.md`.
+User facing changes to the API must be documented in `CHANGELOG.md`. If they would impact the examples and recipes provided, such should also be updated appropriately.
 
 ## Testing Guidelines
 Write integration tests in the relevant crate `tests/` directory with behavior-focused names (for example, `reconnection_resumes_from_the_previous_state`). Prefer targeted runs while iterating, then run full crate tests before opening a PR. If feature-sensitive code changes, run the `cargo hack` matrix command used in CI.
