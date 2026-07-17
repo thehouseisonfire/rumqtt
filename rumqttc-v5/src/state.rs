@@ -267,28 +267,58 @@ impl From<mqttbytes::Error> for StateError {
 }
 
 /// Observation-only snapshot of outbound protocol state.
+///
+/// Counts are exact for the [`MqttState`] at the time of the call. This snapshot is not an event
+/// history. Constructing it scans tracking vectors and bitsets whose sizes scale with configured
+/// and previously reached protocol state. Incoming publish tracking bitsets span the MQTT
+/// packet-identifier range. The outbound reservation count is maintained incrementally and read
+/// directly.
 #[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboundDiagnostics {
+    /// Number of outgoing `QoS` 1 and `QoS` 2 publishes currently in flight.
     pub inflight: u16,
+    /// Current maximum outgoing inflight publishes after broker limits are applied.
     pub max_inflight: u16,
+    /// Whether `inflight` has reached `max_inflight`.
     pub publish_window_full: bool,
+    /// Number of non-zero packet identifiers reserved by outbound publish, `PUBREL`,
+    /// `SUBSCRIBE`, `UNSUBSCRIBE`, or replay work.
     pub packet_identifiers_in_use: usize,
+    /// Whether an outgoing publish is held because its packet identifier collided with
+    /// incomplete protocol state.
     pub collision: bool,
+    /// Whether that held collision publish has a completion notice attached.
     pub collision_notice: bool,
+    /// `SUBSCRIBE` requests waiting for `SUBACK`.
     pub pending_subscribe: usize,
+    /// `UNSUBSCRIBE` requests waiting for `UNSUBACK`.
     pub pending_unsubscribe: usize,
+    /// Stored outgoing `QoS` 1 and `QoS` 2 publishes not yet completed.
     pub outgoing_publish: usize,
+    /// Stored outgoing publishes with completion notices attached.
     pub outgoing_publish_notices: usize,
+    /// Stored outgoing publish packet identifiers included in a network flush attempt.
     pub outgoing_pub_flush_attempted: usize,
+    /// Publish acknowledgements received out of order and retained until the contiguous
+    /// acknowledgement frontier advances.
     pub outgoing_puback_waiting: usize,
+    /// Outgoing `QoS` 2 flows in the `PUBREL`/`PUBCOMP` phase.
     pub outgoing_pubrel: usize,
+    /// Outgoing `PUBREL` packets retained for replay after reconnect.
     pub outgoing_pubrel_replay: usize,
+    /// Stored outgoing `PUBREL` flows with completion notices attached.
     pub outgoing_pubrel_notices: usize,
+    /// Incoming `QoS` 1 publishes whose `PUBACK` has not yet been processed as outgoing.
     pub incoming_puback: usize,
+    /// Incoming `QoS` 2 publish packet identifiers retained for duplicate detection.
     pub incoming_pub: usize,
+    /// Incoming `QoS` 2 publishes for which `PUBREC` has been sent and `PUBREL` is pending.
     pub incoming_pubrec: usize,
+    /// Whether all outbound protocol work represented above has drained.
+    ///
+    /// Incoming publish acknowledgement state is deliberately excluded.
     pub outbound_drained: bool,
 }
 
@@ -1048,41 +1078,71 @@ impl MqttState {
     }
 
     /// Returns an observation-only snapshot of outbound protocol state.
+    ///
+    /// The method performs no allocation or formatting, but scans outbound tracking vectors and
+    /// bitsets whose sizes scale with configured and previously reached protocol state. Incoming
+    /// publish tracking bitsets span the MQTT packet-identifier range. The outbound reservation
+    /// count is read in constant time.
+    #[must_use]
     pub fn outbound_diagnostics(&self) -> OutboundDiagnostics {
+        let packet_identifiers_in_use = usize::from(self.outbound_pkid_count);
+        let collision = self.collision.is_some();
+        let collision_notice = self.collision_notice.is_some();
+        let pending_subscribe = self.pending_subscribe.len();
+        let pending_unsubscribe = self.pending_unsubscribe.len();
+        let outgoing_publish = self
+            .outgoing_pub
+            .iter()
+            .filter(|publish| publish.is_some())
+            .count();
+        let outgoing_publish_notices = self
+            .outgoing_pub_notice
+            .iter()
+            .filter(|notice| notice.is_some())
+            .count();
+        let outgoing_pub_flush_attempted = self.outgoing_pub_flush_attempted.ones().count();
+        let outgoing_puback_waiting = self.outgoing_pub_ack.ones().count();
+        let outgoing_pubrel = self.outgoing_rel.ones().count();
+        let outgoing_pubrel_replay = self.outgoing_rel_replay.ones().count();
+        let outgoing_pubrel_notices = self
+            .outgoing_rel_notice
+            .iter()
+            .filter(|notice| notice.is_some())
+            .count();
+        let outbound_drained = self.inflight == 0
+            && !collision
+            && !collision_notice
+            && pending_subscribe == 0
+            && pending_unsubscribe == 0
+            && outgoing_publish == 0
+            && outgoing_publish_notices == 0
+            && outgoing_pub_flush_attempted == 0
+            && outgoing_puback_waiting == 0
+            && outgoing_pubrel == 0
+            && outgoing_pubrel_replay == 0
+            && outgoing_pubrel_notices == 0
+            && packet_identifiers_in_use == 0;
+
         OutboundDiagnostics {
             inflight: self.inflight,
             max_inflight: self.max_outgoing_inflight,
             publish_window_full: self.inflight >= self.max_outgoing_inflight,
-            packet_identifiers_in_use: (1..=u16::MAX)
-                .filter(|&pkid| self.packet_identifier_in_use(pkid))
-                .count(),
-            collision: self.collision.is_some(),
-            collision_notice: self.collision_notice.is_some(),
-            pending_subscribe: self.pending_subscribe.len(),
-            pending_unsubscribe: self.pending_unsubscribe.len(),
-            outgoing_publish: self
-                .outgoing_pub
-                .iter()
-                .filter(|publish| publish.is_some())
-                .count(),
-            outgoing_publish_notices: self
-                .outgoing_pub_notice
-                .iter()
-                .filter(|notice| notice.is_some())
-                .count(),
-            outgoing_pub_flush_attempted: self.outgoing_pub_flush_attempted.ones().count(),
-            outgoing_puback_waiting: self.outgoing_pub_ack.ones().count(),
-            outgoing_pubrel: self.outgoing_rel.ones().count(),
-            outgoing_pubrel_replay: self.outgoing_rel_replay.ones().count(),
-            outgoing_pubrel_notices: self
-                .outgoing_rel_notice
-                .iter()
-                .filter(|notice| notice.is_some())
-                .count(),
+            packet_identifiers_in_use,
+            collision,
+            collision_notice,
+            pending_subscribe,
+            pending_unsubscribe,
+            outgoing_publish,
+            outgoing_publish_notices,
+            outgoing_pub_flush_attempted,
+            outgoing_puback_waiting,
+            outgoing_pubrel,
+            outgoing_pubrel_replay,
+            outgoing_pubrel_notices,
             incoming_puback: self.incoming_puback.ones().count(),
             incoming_pub: self.incoming_pub.ones().count(),
             incoming_pubrec: self.incoming_pubrec.ones().count(),
-            outbound_drained: self.outbound_requests_drained(),
+            outbound_drained,
         }
     }
 
@@ -3412,6 +3472,15 @@ mod test {
             .build()
     }
 
+    fn assert_outbound_pkid_count_consistent(mqtt: &MqttState) {
+        let indexed = mqtt.outbound_pkid_in_use.ones().count();
+        assert_eq!(usize::from(mqtt.outbound_pkid_count), indexed);
+        assert_eq!(
+            mqtt.outbound_diagnostics().packet_identifiers_in_use,
+            indexed
+        );
+    }
+
     fn build_lru_auto_alias_mqttstate(max_inflight: u16, broker_topic_alias_max: u16) -> MqttState {
         let mut mqtt = MqttState::builder(max_inflight)
             .topic_alias_policy(TopicAliasPolicy::Lru)
@@ -4133,6 +4202,10 @@ mod test {
         assert_eq!(diagnostics.pending_unsubscribe, 0);
         assert_eq!(diagnostics.outgoing_publish, 0);
         assert!(diagnostics.outbound_drained);
+        assert_eq!(
+            diagnostics.outbound_drained,
+            mqtt.outbound_requests_drained()
+        );
     }
 
     #[test]
@@ -4195,7 +4268,63 @@ mod test {
         assert_eq!(diagnostics.incoming_pub, 1);
         assert_eq!(diagnostics.incoming_pubrec, 1);
         assert!(!diagnostics.outbound_drained);
-        assert!(mqtt.outbound_drain_diagnostics().contains("inflight=2"));
+        assert_eq!(
+            diagnostics.outbound_drained,
+            mqtt.outbound_requests_drained()
+        );
+        let text = mqtt.outbound_drain_diagnostics();
+        assert!(text.contains("inflight=2"));
+        assert!(text.contains("pending_subscribe=1"));
+        assert!(text.contains("outgoing_rel_replay=1"));
+    }
+
+    #[test]
+    fn maintained_packet_identifier_count_tracks_protocol_transitions() {
+        let mut mqtt = MqttState::builder(10).build();
+        assert_outbound_pkid_count_consistent(&mqtt);
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        assert_outbound_pkid_count_consistent(&mqtt);
+        assert_eq!(mqtt.outbound_diagnostics().packet_identifiers_in_use, 1);
+
+        assert!(matches!(
+            mqtt.reserve_outbound_pkid(1),
+            Err(StateError::InvalidState)
+        ));
+        assert_outbound_pkid_count_consistent(&mqtt);
+
+        mqtt.outgoing_subscribe(
+            Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
+            None,
+        )
+        .unwrap();
+        assert_outbound_pkid_count_consistent(&mqtt);
+        assert_eq!(mqtt.outbound_diagnostics().packet_identifiers_in_use, 2);
+
+        mqtt.handle_incoming_suback(&SubAck {
+            pkid: 2,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        })
+        .unwrap();
+        assert_outbound_pkid_count_consistent(&mqtt);
+        assert_eq!(mqtt.outbound_diagnostics().packet_identifiers_in_use, 1);
+
+        mqtt.handle_incoming_puback(&PubAck::new(1, None)).unwrap();
+        assert_outbound_pkid_count_consistent(&mqtt);
+        assert_eq!(mqtt.outbound_diagnostics().packet_identifiers_in_use, 0);
+
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        let replay = mqtt.clean_with_notices_for_reconnect();
+        assert_eq!(replay.len(), 1);
+        assert_outbound_pkid_count_consistent(&mqtt);
+        assert_eq!(mqtt.outbound_diagnostics().packet_identifiers_in_use, 1);
+
+        mqtt.reset_session_state();
+        assert_outbound_pkid_count_consistent(&mqtt);
+        assert_eq!(mqtt.outbound_diagnostics().packet_identifiers_in_use, 0);
     }
 
     #[test]
