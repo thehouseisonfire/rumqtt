@@ -181,3 +181,8 @@ required-features = ["websocket", "use-rustls"]
 name = "tracing_log_compat"
 path = "tests/tracing_log_compat.rs"
 required-features = ["tracing-log-compat"]
+
+[[test]]
+name = "tracing_behavior"
+path = "tests/tracing_behavior.rs"
+required-features = ["tracing"]
