@@ -6,7 +6,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          cargo fmt --all
+          cargo fmt --all --check
           '
         language: system
         pass_filenames: false
@@ -20,7 +20,10 @@ repos:
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
-          cargo hack clippy --fix --allow-dirty
+
+          cargo hack clippy
+          --fix
+          --allow-dirty
           --each-feature
           --exclude-all-features
           --no-dev-deps
@@ -38,7 +41,9 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
+
           cargo clippy --workspace --lib -- \
+            -D warnings \
             -D clippy::dbg_macro \
             -D clippy::todo \
             -D clippy::exit \
@@ -79,6 +84,8 @@ repos:
           bash -c '
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
+          export RUSTFLAGS="-D warnings";
+
           cargo hack
           --each-feature
           --exclude-all-features
@@ -98,13 +105,45 @@ repos:
           bash -c '
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
+          export RUSTFLAGS="-D warnings";
 
-          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-ring";
-          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-ring";
-          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-rustls-aws-lc";
-          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-rustls-aws-lc";
-          cargo test -p rumqttc-v4-next --no-default-features --features "websocket,use-native-tls" --lib transport::tests::wss_default_config_uses_native_tls_when_rustls_is_disabled -- --exact;
-          cargo test -p rumqttc-v5-next --no-default-features --features "websocket,use-native-tls" --lib transport::tests::wss_default_config_uses_native_tls_when_rustls_is_disabled -- --exact;
+          cargo test \
+            -p rumqttc-v4-next \
+            --no-default-features \
+            --features "websocket,use-rustls-ring";
+
+          cargo test \
+            -p rumqttc-v5-next \
+            --no-default-features \
+            --features "websocket,use-rustls-ring";
+
+          cargo test \
+            -p rumqttc-v4-next \
+            --no-default-features \
+            --features "websocket,use-rustls-aws-lc";
+
+          cargo test \
+            -p rumqttc-v5-next \
+            --no-default-features \
+            --features "websocket,use-rustls-aws-lc";
+
+          cargo test \
+            -p rumqttc-v4-next \
+            --no-default-features \
+            --features "websocket,use-native-tls" \
+            --lib \
+            transport::tests::wss_default_config_uses_native_tls_when_rustls_is_disabled \
+            -- \
+            --exact;
+
+          cargo test \
+            -p rumqttc-v5-next \
+            --no-default-features \
+            --features "websocket,use-native-tls" \
+            --lib \
+            transport::tests::wss_default_config_uses_native_tls_when_rustls_is_disabled \
+            -- \
+            --exact;
           '
         language: system
         pass_filenames: false
@@ -118,12 +157,22 @@ repos:
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
 
-          if cargo check -p rumqttc-v4-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then
+          if cargo check \
+            -p rumqttc-v4-next \
+            --no-default-features \
+            --features "use-rustls-aws-lc,use-rustls-ring" \
+            2>/dev/null;
+          then
             echo "ERROR - rumqttc-v4-next rustls provider conflict guard failed";
             exit 1;
           fi;
 
-          if cargo check -p rumqttc-v5-next --no-default-features --features "use-rustls-aws-lc,use-rustls-ring" 2>/dev/null; then
+          if cargo check \
+            -p rumqttc-v5-next \
+            --no-default-features \
+            --features "use-rustls-aws-lc,use-rustls-ring" \
+            2>/dev/null;
+          then
             echo "ERROR - rumqttc-v5-next rustls provider conflict guard failed";
             exit 1;
           fi;
