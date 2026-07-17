@@ -275,10 +275,10 @@ impl PublishOptions {
         self
     }
 
-    /// Marks the publish as not retained by the broker.
+    /// Sets whether the publish is retained by the broker.
     #[must_use]
-    pub const fn not_retained(mut self) -> Self {
-        self.retain = false;
+    pub const fn retain(mut self, retain: bool) -> Self {
+        self.retain = retain;
         self
     }
 
@@ -286,7 +286,7 @@ impl PublishOptions {
         self.qos
     }
 
-    const fn retain(self) -> bool {
+    const fn retain_flag(self) -> bool {
         self.retain
     }
 }
@@ -883,7 +883,7 @@ impl AsyncClient {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
         let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, options.qos(), payload.into_publish_payload());
-        publish.retain = options.retain();
+        publish.retain = options.retain_flag();
         let publish = Request::Publish(publish);
 
         if invalid_topic {
@@ -907,7 +907,7 @@ impl AsyncClient {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
         let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, options.qos(), payload.into_publish_payload());
-        publish.retain = options.retain();
+        publish.retain = options.retain_flag();
         let request = Request::Publish(publish.clone());
 
         if invalid_topic {
@@ -972,7 +972,7 @@ impl AsyncClient {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
         let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, options.qos(), payload.into_publish_payload());
-        publish.retain = options.retain();
+        publish.retain = options.retain_flag();
         let publish = Request::Publish(publish);
 
         if invalid_topic {
@@ -996,7 +996,7 @@ impl AsyncClient {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
         let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, options.qos(), payload.into_publish_payload());
-        publish.retain = options.retain();
+        publish.retain = options.retain_flag();
         let request = Request::Publish(publish.clone());
 
         if invalid_topic {
@@ -1690,7 +1690,7 @@ impl Client {
         let (topic, needs_validation) = topic.into().into_string_and_validation();
         let invalid_topic = needs_validation && !valid_publish_topic(&topic);
         let mut publish = Publish::from_bytes(topic, options.qos(), payload.into_publish_payload());
-        publish.retain = options.retain();
+        publish.retain = options.retain_flag();
         let publish = Request::Publish(publish);
         if invalid_topic {
             return Err(ClientError::InvalidRequest(Box::new(publish)));
@@ -2252,6 +2252,17 @@ impl Iterator for Iter<'_> {
 mod test {
     use super::*;
     use crate::LastWill;
+
+    #[test]
+    fn publish_options_configure_retain_policy() {
+        let default = PublishOptions::new(QoS::AtLeastOnce);
+        assert!(!default.retain);
+
+        assert!(default.retained().retain);
+        assert!(default.retain(true).retain);
+        assert!(!default.retain(false).retain);
+        assert!(!default.retained().retain(false).retain);
+    }
 
     #[test]
     fn calling_iter_twice_on_connection_shouldnt_panic() {

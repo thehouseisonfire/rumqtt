@@ -315,10 +315,10 @@ impl PublishOptions {
         self
     }
 
-    /// Marks the publish as not retained by the broker.
+    /// Sets whether the publish is retained by the broker.
     #[must_use]
-    pub const fn not_retained(mut self) -> Self {
-        self.retain = false;
+    pub const fn retain(mut self, retain: bool) -> Self {
+        self.retain = retain;
         self
     }
 
@@ -3605,6 +3605,25 @@ mod test {
     };
 
     use super::*;
+
+    #[test]
+    fn publish_options_configure_retain_policy_and_properties() {
+        let default = PublishOptions::new(QoS::AtLeastOnce);
+        assert!(!default.retain);
+        assert!(default.properties.is_none());
+
+        assert!(default.clone().retained().retain);
+        assert!(default.clone().retain(true).retain);
+        assert!(!default.clone().retain(false).retain);
+        assert!(!default.clone().retained().retain(false).retain);
+
+        let with_properties = default
+            .retain(true)
+            .properties(PublishProperties::default())
+            .retain(false);
+        assert!(!with_properties.retain);
+        assert!(with_properties.properties.is_some());
+    }
 
     #[test]
     fn calling_iter_twice_on_connection_shouldnt_panic() {

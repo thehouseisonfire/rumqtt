@@ -113,6 +113,19 @@ let qos1 = PublishOptions::at_least_once();
 let qos2_retained = PublishOptions::new(QoS::ExactlyOnce).retained();
 ```
 
+Options can be named and reused as publish policies. Use `retained()` when the
+policy is always retained and `retain(bool)` when it is selected dynamically:
+
+```rust,ignore
+let telemetry = PublishOptions::new(QoS::AtLeastOnce);
+let state = PublishOptions::new(QoS::AtLeastOnce).retained();
+let dynamic = PublishOptions::new(QoS::AtLeastOnce).retain(is_retained);
+
+client.publish("telemetry/temp", temp, telemetry).await?;
+client.publish("state/online", "true", state).await?;
+client.publish("dynamic/topic", payload, dynamic).await?;
+```
+
 Accepted payloads include `&str`, `String`, `&[u8]`, `[u8; N]`, `Vec<u8>`, and
 `bytes::Bytes`.
 

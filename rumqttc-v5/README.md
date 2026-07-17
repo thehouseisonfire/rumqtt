@@ -93,6 +93,24 @@ while let Ok(notification) = eventloop.poll().await {
 }
 ```
 
+Reusable publish options
+------------------------
+
+Name options when the same publish policy is used for multiple messages. The
+constructor is non-retained by default, `retained()` is the readable constant
+case, and `retain(bool)` supports a runtime choice. MQTT 5 properties can be
+added to the same builder:
+
+```rust,ignore
+let telemetry = PublishOptions::new(QoS::AtLeastOnce);
+let state = PublishOptions::new(QoS::AtLeastOnce).retained();
+let dynamic = PublishOptions::new(QoS::AtLeastOnce).retain(is_retained);
+
+client.publish("telemetry/temp", temp, telemetry).await?;
+client.publish("state/online", "true", state).await?;
+client.publish("dynamic/topic", payload, dynamic).await?;
+```
+
 Async stream adapter
 ------------------------------
 
