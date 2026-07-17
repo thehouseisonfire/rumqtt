@@ -260,27 +260,53 @@ impl SessionStoreState {
 }
 
 /// Observation-only snapshot of an [`EventLoop`].
+///
+/// The fields are read sequentially while [`EventLoop::diagnostics`] runs. Internal event-loop
+/// state cannot change during the call, but request-channel producers can change the channel
+/// lengths concurrently, so the channel lengths are observational and do not form a transactional
+/// view. A snapshot describes one observation; it is not an event history.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLoopDiagnostics {
+    /// Whether an MQTT transport has been established and its initial `CONNACK` accepted.
+    ///
+    /// This remains `true` while a graceful disconnect is draining and until a transport failure
+    /// is detected. It does not probe the broker or guarantee that the transport is still usable.
     pub connected: bool,
+    /// Whether a graceful disconnect has been requested and is waiting for outbound work to drain.
     pub disconnecting: bool,
+    /// Whether disconnect processing has completed and further polling will return
+    /// [`ConnectionError::RequestsDone`].
     pub disconnect_complete: bool,
+    /// Request and replay queue depths observed by the event loop.
     pub queues: QueueDiagnostics,
+    /// Outbound MQTT protocol state.
     pub outbound: crate::OutboundDiagnostics,
+    /// Local persistent-session lifecycle state.
     pub session: SessionDiagnostics,
+    /// Configured and effective event-loop batching limits.
     pub config: RuntimeConfigDiagnostics,
 }
 
 /// Queue lengths observed by an [`EventLoop`].
+///
+/// `pending_len` is the sum of `pending_replay_len` and `queued_len`; it must not be added to
+/// those component fields. The receiver lengths can change immediately because cloned clients
+/// can enqueue requests concurrently.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueDiagnostics {
+    /// Requests retained for replay, including work recovered after a disconnect.
     pub pending_replay_len: usize,
+    /// Requests admitted by the event loop but not yet passed to the MQTT state machine.
     pub queued_len: usize,
+    /// Combined internal pending work: `pending_replay_len + queued_len`.
     pub pending_len: usize,
+    /// Requests waiting in the normal client request channel.
     pub requests_rx_len: usize,
+    /// Requests waiting in the control-request channel.
     pub control_requests_rx_len: usize,
+    /// Immediate-disconnect requests waiting to be observed.
     pub immediate_disconnect_rx_len: usize,
 }
 
@@ -289,10 +315,17 @@ pub struct QueueDiagnostics {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDiagnostics {
+    /// Whether a durable session store is configured.
     pub session_store_configured: bool,
+    /// Whether this event loop has loaded a session-store checkpoint.
     pub session_store_loaded: bool,
+    /// Whether a failed store-clear operation must succeed before another checkpoint can load.
     pub session_store_clear_pending: bool,
+    /// Whether retained local session state belongs to the currently configured client ID.
+    ///
+    /// This reports identity agreement only; it does not mean the broker resumed the session.
     pub local_session_state_matches_client_id: bool,
+    /// Whether this connection resumed broker state without a matching restored local checkpoint.
     pub broker_only_session_resume: bool,
 }
 
@@ -300,8 +333,11 @@ pub struct SessionDiagnostics {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeConfigDiagnostics {
+    /// Configured network read batch size. Zero selects adaptive batching.
     pub configured_read_batch_size: usize,
+    /// Network read batch size the next read would use for the current connection state.
     pub effective_read_batch_size: usize,
+    /// Maximum client requests admitted in one event-loop batch.
     pub max_request_batch: usize,
 }
 
@@ -599,26 +635,51 @@ impl EventLoop {
     }
 
     /// Returns an observation-only snapshot of event-loop runtime state.
+    ///
+    /// The snapshot is captured synchronously during this call and does not record state changes
+    /// before or after it. Request-channel lengths may change while their fields are read because
+    /// client handles can enqueue concurrently. Constructing the nested outbound snapshot scans
+    /// protocol tracking vectors and bitsets whose sizes scale with active/configured protocol
+    /// state. Incoming publish tracking bitsets span the MQTT packet-identifier range; the
+    /// outbound packet-identifier reservation count itself is maintained incrementally.
+    ///
+    /// Code that owns and drives the event loop can inspect it between polls:
+    ///
+    /// ```no_run
+    /// # use rumqttc::{AsyncClient, ConnectionError, MqttOptions};
+    /// # async fn inspect_once() -> Result<(), ConnectionError> {
+    /// let options = MqttOptions::new("diagnostics-example", "localhost");
+    /// let (_client, mut eventloop) = AsyncClient::builder(options).build();
+    ///
+    /// let _event = eventloop.poll().await?;
+    /// let snapshot = eventloop.diagnostics();
+    /// println!("connected={}, inflight={}", snapshot.connected, snapshot.outbound.inflight);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
     pub fn diagnostics(&self) -> EventLoopDiagnostics {
+        let pending_replay_len = self.pending.len();
+        let queued_len = self.queued.len();
         EventLoopDiagnostics {
             connected: self.network.is_some(),
             disconnecting: self.pending_disconnect.is_some(),
             disconnect_complete: self.disconnect_complete,
             queues: QueueDiagnostics {
-                pending_replay_len: self.pending.len(),
-                queued_len: self.queued.len(),
-                pending_len: self.pending_len(),
+                pending_replay_len,
+                queued_len,
+                pending_len: pending_replay_len + queued_len,
                 requests_rx_len: self.requests_rx.len(),
                 control_requests_rx_len: self.control_requests_rx.len(),
                 immediate_disconnect_rx_len: self.immediate_disconnect_rx.len(),
             },
             outbound: self.state.outbound_diagnostics(),
             session: SessionDiagnostics {
-                session_store_configured: self.options.session_store().is_some(),
+                session_store_configured: self.options.session_store.is_some(),
                 session_store_loaded: self.session_store.loaded,
                 session_store_clear_pending: self.session_store.clear_pending,
                 local_session_state_matches_client_id: self.session_client_id.as_deref()
-                    == Some(self.options.client_id().as_str()),
+                    == Some(self.options.client_id.as_str()),
                 broker_only_session_resume: self.broker_only_session_resume,
             },
             config: RuntimeConfigDiagnostics {
@@ -3770,6 +3831,10 @@ mod tests {
         assert_eq!(diagnostics.queues.pending_replay_len, 1);
         assert_eq!(diagnostics.queues.queued_len, 1);
         assert_eq!(diagnostics.queues.pending_len, 2);
+        assert_eq!(
+            diagnostics.queues.pending_len,
+            diagnostics.queues.pending_replay_len + diagnostics.queues.queued_len
+        );
         assert_eq!(diagnostics.queues.requests_rx_len, 1);
         assert_eq!(diagnostics.queues.control_requests_rx_len, 1);
         assert_eq!(diagnostics.queues.immediate_disconnect_rx_len, 1);
