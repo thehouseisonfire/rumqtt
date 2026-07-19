@@ -13,6 +13,13 @@ repos:
         always_run: false
         require_serial: true
 
+      - id: markdown-links
+        name: markdown links
+        entry: python3 scripts/check-markdown-links.py
+        language: system
+        files: '(^|/).*\.md$|^scripts/check-markdown-links\.py$'
+        pass_filenames: false
+
       - id: clippy
         name: clippy
         entry: >

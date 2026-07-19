@@ -5,9 +5,11 @@ on:
       - mqtt5-client
     paths:
       - '**.rs'
+      - '**.md'
       - 'Cargo.*'
       - '*/Cargo.*'
       - 'benchmarks/**'
+      - 'scripts/check-markdown-links.py'
       - '.github/workflows/*'
   push:
     branches:
@@ -36,6 +38,10 @@ jobs:
           - windows-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Check documentation links
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: python3 scripts/check-markdown-links.py
 
       # use mold linker instead of the default linker only on linux
       - uses: rui314/setup-mold@v1

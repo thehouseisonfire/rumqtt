@@ -236,16 +236,14 @@ assert_release_not_present() {
 }
 
 verify_release() {
-    cargo generate-lockfile
-
-    cargo check --locked \
+    cargo check \
         -p mqttbytes-core-next \
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \
         -p rumqttc-next
 
-    cargo test --doc \
+    cargo test --locked --doc \
         -p mqttbytes-core-next \
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
