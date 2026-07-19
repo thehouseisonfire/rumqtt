@@ -87,7 +87,6 @@
 - `rumqttc` v5: Reject outgoing `PublishProperties` with topic alias 0, returning `Error::ProtocolViolation(TopicAliasInvalid)` instead of silently encoding an invalid alias.
 - `rumqttc` v5: Fix `check()` to compare total packet size (including fixed header) against `max_packet_size` instead of only the remaining length, matching the MQTT v5 spec definition of Maximum Packet Size.
 - `rumqttc` v5: Fix DISCONNECT encoding for non-normal reason codes without properties to include an explicit zero Property Length byte, instead of omitting it. Only `NormalDisconnection` without properties may use the compact 2-byte form per the MQTT v5 spec.
-- Spec generator: recover obligation keywords only from tightly local split clauses (adjacent unfinished paragraph fragments or the same table row), and only allow section `7` conformance duplicates to backfill earlier `UNSPECIFIED` requirements when the original occurrence is just a placeholder bare-ID reference. This preserves correct labels such as `MQTT-3.1.3-5 = MUST` and the v3 QoS 1/2 reference-only entries, without reintroducing wrapper bleed-through or appendix-driven mislabeling such as `MQTT-3.1.2-12` in v5.
 
 ### Security
 
