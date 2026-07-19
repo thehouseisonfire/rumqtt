@@ -6703,8 +6703,7 @@ mod tests {
                     Packet::read(&mut stream, Some(1024)).unwrap(),
                     Packet::Auth(auth) if auth.code == AuthReasonCode::Continue
                 ),
-                "round {}: only AUTH may be sent during the CONNECT auth exchange",
-                i
+                "round {i}: only AUTH may be sent during the CONNECT auth exchange"
             );
         }
 

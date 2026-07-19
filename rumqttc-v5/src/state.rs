@@ -5866,7 +5866,7 @@ mod test {
         ));
     }
 
-    /// [MQTT-3.1.2-27] When client_topic_alias_max is 0, the incoming
+    /// [MQTT-3.1.2-27] When `client_topic_alias_max` is 0, the incoming
     /// PUBLISH with a topic alias should not be surfaced to the user.
     #[test]
     fn handle_incoming_packet_does_not_surface_publish_with_alias_exceeding_client_max() {
@@ -5976,7 +5976,7 @@ mod test {
         assert_eq!(second.topic, Bytes::from_static(b"hello/world"));
     }
 
-    /// Verify that set_client_topic_alias_max updates the validation limit.
+    /// Verify that `set_client_topic_alias_max` updates the validation limit.
     #[test]
     fn set_client_topic_alias_max_updates_incoming_validation() {
         let mut mqtt = MqttState::builder(u16::MAX).build();
@@ -8137,7 +8137,7 @@ mod test {
         );
 
         let err = mqtt
-            .handle_incoming_packet(Incoming::Disconnect(disconnect.clone()))
+            .handle_incoming_packet(Incoming::Disconnect(disconnect))
             .unwrap_err();
 
         assert!(matches!(

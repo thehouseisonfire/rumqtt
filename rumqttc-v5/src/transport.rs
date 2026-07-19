@@ -122,7 +122,8 @@ impl Transport {
         docsrs,
         doc(cfg(all(feature = "use-rustls-no-provider", feature = "websocket")))
     )]
-    pub fn wss(
+    #[must_use]
+    pub const fn wss(
         ca: Vec<u8>,
         client_auth: Option<(Vec<u8>, Vec<u8>)>,
         alpn: Option<Vec<Vec<u8>>>,
@@ -172,6 +173,7 @@ impl Transport {
     ///
     /// Panics if the default TLS configuration cannot be built. Use
     /// [`Self::try_wss_with_default_config`] to handle that error explicitly.
+    #[must_use]
     pub fn wss_with_default_config() -> Self {
         Self::try_wss_with_default_config()
             .expect("could not build default WSS transport configuration")

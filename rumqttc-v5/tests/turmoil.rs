@@ -47,7 +47,7 @@ async fn write_packet(stream: &mut TcpStream, packet: Packet) -> turmoil::Result
     Ok(())
 }
 
-fn connack(session_present: bool) -> ConnAck {
+const fn connack(session_present: bool) -> ConnAck {
     ConnAck {
         session_present,
         code: ConnectReturnCode::Success,
