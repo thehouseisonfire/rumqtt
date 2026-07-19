@@ -6,7 +6,7 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          cargo fmt --all --check
+          cargo fmt --all
           '
         language: system
         pass_filenames: false
