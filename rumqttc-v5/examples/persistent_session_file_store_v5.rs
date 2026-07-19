@@ -80,9 +80,10 @@ impl SessionStore for FileSessionStore {
 async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
 
-    let store_directory = std::env::var_os("RUMQTTC_SESSION_STORE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("rumqttc-v5-session-store-example"));
+    let store_directory = std::env::var_os("RUMQTTC_SESSION_STORE").map_or_else(
+        || std::env::temp_dir().join("rumqttc-v5-session-store-example"),
+        PathBuf::from,
+    );
 
     println!("Using persistent session store at {store_directory:?}");
 

@@ -46,7 +46,7 @@ struct ScramAuthManager<'a> {
 }
 
 impl<'a> ScramAuthManager<'a> {
-    fn new(user: &'a str, password: &'a str) -> ScramAuthManager<'a> {
+    const fn new(user: &'a str, password: &'a str) -> Self {
         ScramAuthManager {
             user,
             password,
@@ -90,7 +90,7 @@ impl<'a> ScramAuthManager<'a> {
     }
 }
 
-impl<'a> Authenticator for ScramAuthManager<'a> {
+impl Authenticator for ScramAuthManager<'_> {
     fn start(&mut self, _context: AuthContext<'_>) -> Result<Option<AuthProperties>, AuthError> {
         self.auth_start()
             .map(|data| {
@@ -214,13 +214,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         match notification {
             Ok(event) => {
-                println!("Event = {:?}", event);
+                println!("Event = {event:?}");
                 if let rumqttc::Event::Incoming(rumqttc::Incoming::ConnAck(_)) = event {
                     tx.send_async("Connected").await.unwrap();
                 }
             }
             Err(e) => {
-                println!("Error = {:?}", e);
+                println!("Error = {e:?}");
                 break;
             }
         }

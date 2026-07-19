@@ -656,7 +656,7 @@ async fn graceful_disconnect_with_unsent_backlog_suppresses_will() {
     );
 }
 
-fn normal_disconnect_properties() -> (DisconnectReasonCode, DisconnectProperties) {
+const fn normal_disconnect_properties() -> (DisconnectReasonCode, DisconnectProperties) {
     (
         DisconnectReasonCode::NormalDisconnection,
         DisconnectProperties {

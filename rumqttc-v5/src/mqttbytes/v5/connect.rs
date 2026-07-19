@@ -857,7 +857,7 @@ mod test {
 
     /// MQTT-3.1.3-5: the server-required acceptance profile (1-23 UTF-8 bytes,
     /// ASCII alphanumeric only) is a server-side obligation, not a client-side
-    /// outbound restriction. The codec must not reject a ClientID merely for
+    /// outbound restriction. The codec must not reject a `ClientID` merely for
     /// being longer than 23 bytes or for containing characters outside that
     /// 62-character set.
     #[test]
@@ -1292,8 +1292,8 @@ mod test {
         assert_eq!(decoded.user_properties, properties.user_properties);
     }
 
-    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-2]: The ClientID MUST be a UTF-8 Encoded
-    /// String. Verify that decoding a CONNECT with U+0000 in the client_id
+    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-2]: The `ClientID` MUST be a UTF-8 Encoded
+    /// String. Verify that decoding a CONNECT with U+0000 in the `client_id`
     /// is rejected.
     #[test]
     fn connect_parsing_rejects_null_character_in_client_id() {
@@ -1319,8 +1319,8 @@ mod test {
         assert!(matches!(packet, Err(Error::MalformedPacket)));
     }
 
-    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-1]: The ClientID MUST be a UTF-8 Encoded
-    /// String. Verify that encoding a CONNECT with U+0000 in the client_id
+    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-1]: The `ClientID` MUST be a UTF-8 Encoded
+    /// String. Verify that encoding a CONNECT with U+0000 in the `client_id`
     /// is rejected.
     #[test]
     fn connect_encoding_rejects_null_character_in_client_id() {
@@ -1337,9 +1337,9 @@ mod test {
         assert!(matches!(result, Err(Error::MalformedPacket)));
     }
 
-    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-1]: The ClientID MUST be a UTF-8 Encoded
+    /// [MQTT-3.1.3-4] / [MQTT-1.5.4-1]: The `ClientID` MUST be a UTF-8 Encoded
     /// String. Verify that decoding a CONNECT with a surrogate code point
-    /// (U+D800) in the client_id is rejected.
+    /// (U+D800) in the `client_id` is rejected.
     #[test]
     fn connect_parsing_rejects_surrogate_in_client_id() {
         // CONNECT with client_id containing U+D800 (CESU-8: 0xED 0xA0 0x80)
@@ -1714,7 +1714,7 @@ mod test {
     }
 
     /// MQTT-3.1.2-9 / MQTT-3.1.2-11 / MQTT-3.1.2-13: When no last will is set,
-    /// the Will Flag, Will QoS, and Will Retain bits in the CONNECT flags
+    /// the Will Flag, Will `QoS`, and Will Retain bits in the CONNECT flags
     /// MUST all be zero.
     #[test]
     fn connect_encoding_without_last_will_emits_zero_will_bits() {
@@ -1807,7 +1807,7 @@ mod test {
         assert_eq!(decoded.properties, None);
     }
 
-    /// MQTT-3.1.2-11: If the Will Flag is set to 0, the Will QoS fields in
+    /// MQTT-3.1.2-11: If the Will Flag is set to 0, the Will `QoS` fields in
     /// the Connect Flags MUST be set to zero.
     #[test]
     fn connect_parsing_rejects_will_flag_zero_with_will_qos_1() {
@@ -1883,7 +1883,7 @@ mod test {
         assert!(matches!(packet, Err(Error::IncorrectPacketFormat)));
     }
 
-    /// MQTT-3.1.2-12: Will QoS values 0, 1, and 2 MUST encode into the correct
+    /// MQTT-3.1.2-12: Will `QoS` values 0, 1, and 2 MUST encode into the correct
     /// bit positions in the CONNECT flags (bit 3 = LSB, bit 4 = MSB).
     #[test]
     fn connect_encoding_emits_correct_will_qos_bits() {
@@ -1927,7 +1927,7 @@ mod test {
         }
     }
 
-    /// MQTT-3.1.2-12: Will QoS 0, 1, and 2 MUST round-trip through
+    /// MQTT-3.1.2-12: Will `QoS` 0, 1, and 2 MUST round-trip through
     /// encode and decode without alteration.
     #[test]
     fn connect_roundtrips_all_valid_will_qos_levels() {
@@ -1958,7 +1958,7 @@ mod test {
         }
     }
 
-    /// MQTT-3.1.2-12: A Will QoS value of 3 (0x03) is a Malformed Packet.
+    /// MQTT-3.1.2-12: A Will `QoS` value of 3 (0x03) is a Malformed Packet.
     #[test]
     fn connect_parsing_rejects_will_qos_3() {
         // CONNECT with Will Flag=1 and Will QoS=3 (bits 3-4 = 0b11)
@@ -2098,7 +2098,7 @@ mod test {
 
     /// MQTT-3.1.2-19: If the Password Flag is set to 1, a Password MUST be
     /// present in the Payload. Verify that decoding a CONNECT with
-    /// password_flag=1 but no password data is rejected.
+    /// `password_flag=1` but no password data is rejected.
     #[test]
     fn connect_parsing_rejects_password_flag_set_without_password() {
         // CONNECT with username_flag=1, password_flag=1, but payload truncated
@@ -2250,7 +2250,7 @@ mod test {
         assert_eq!(buf.len(), password_start + 4);
     }
 
-    /// MQTT-3.1.3-3: zero-byte ClientID is still serialized as the first payload field.
+    /// MQTT-3.1.3-3: zero-byte `ClientID` is still serialized as the first payload field.
     #[test]
     fn connect_encoding_emits_zero_byte_client_id_first_in_payload() {
         let connect = Connect {
