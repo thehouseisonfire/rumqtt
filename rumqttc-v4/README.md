@@ -245,21 +245,28 @@ out side the library and `Eventloop` is accessible, users can
   `try_publish()` and treat a full-channel error as the drop signal.
 
 - Use `client.disconnect()`/`try_disconnect()` for MQTT-level graceful shutdown.
-  The event loop first flushes previously accepted `QoS` 0 publishes and drains
-  previously accepted `QoS` 1/ `QoS` 2 publish and tracked subscribe/unsubscribe
-  state (`SUBACK`/`UNSUBACK`), then sends terminal DISCONNECT. Use
+  Once the event loop processes the barrier from the control-request lane, it
+  flushes `QoS` 0 publishes already admitted to protocol processing and drains
+  `QoS` 1/ `QoS` 2 publish and tracked subscribe/unsubscribe state already in
+  progress (`SUBACK`/`UNSUBACK`), then sends terminal DISCONNECT. Queued but
+  unsent flow-controlled publishes are not part of that drain. Use
   `disconnect_with_timeout()` to bound this drain; if the timeout expires first,
   polling returns `ConnectionError::DisconnectTimeout` and DISCONNECT is not
-  sent. Use `disconnect_now()` to send DISCONNECT immediately and abandon
-  unresolved in-flight work. Dropping or aborting the transport closes locally
-  without sending DISCONNECT and may trigger Will publication.
+  sent. Use `disconnect_now()` to prioritize DISCONNECT without draining
+  unresolved in-flight work. This priority is observed at event-loop scheduling
+  points; it does not interrupt connection setup, a write/flush already in
+  progress, buffered events, or blocked event-loop polling. Dropping or aborting
+  the transport closes locally without sending DISCONNECT and may trigger Will
+  publication.
 
-- Disconnect requests use the normal client request channel. If the event loop
-  is not currently reading new requests because the outbound `QoS` 1/ `QoS` 2
-  publish inflight window is full or a packet-id collision is pending, a queued
-  `disconnect_with_timeout()` timeout starts only after the event loop observes
-  the disconnect request, and `disconnect_now()` is not an out-of-band transport
-  abort.
+- Builder-created clients route graceful disconnect through the bounded
+  control-request lane, so it may pass an earlier flow-controlled publish that
+  is not currently sendable. The drain timeout starts only after the event loop
+  processes the barrier, not when the client queues it. A successful client call
+  confirms channel admission only; cloned clients can still enqueue work before
+  they observe terminal shutdown, and that work will not run after the barrier.
+  `disconnect_now()` uses a separate priority lane but is not an out-of-band
+  transport abort.
 
 - For restart-safe MQTT 3.1.1 persistent sessions, configure
   `MqttOptions::set_session_store(...)` or builder `.session_store(...)`

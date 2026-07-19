@@ -186,15 +186,21 @@ their own durable outbound queue.
 
 ## Disconnect and Shutdown
 
-`disconnect` is a terminal graceful barrier. Once the event loop observes it,
-new application work is no longer admitted; previously accepted QoS 0 work is
-flushed, and outstanding QoS 1, QoS 2, tracked SUBSCRIBE, and tracked
-UNSUBSCRIBE exchanges are drained before DISCONNECT is written and flushed.
+`disconnect` is a terminal graceful barrier carried by the control-request lane.
+Once the event loop processes it, new application work is no longer admitted to
+protocol processing; QoS 0 work already admitted to protocol processing is
+flushed, and outstanding QoS 1, QoS 2, tracked SUBSCRIBE, and tracked UNSUBSCRIBE
+exchanges are drained before DISCONNECT is written and flushed. Queued but
+unsent flow-controlled publishes are not part of that drain. Because cloned
+clients do not share an admission gate, a concurrent send can still be accepted
+by its channel after the barrier and then discarded without protocol processing.
 
 `disconnect_with_timeout` applies the same behavior with a deadline. If the
 deadline expires, the event loop returns `DisconnectTimeout` and does not send
-DISCONNECT. `disconnect_now` uses a dedicated path that may bypass queued work
-and does not wait for unresolved handshakes.
+DISCONNECT. `disconnect_now` uses a dedicated priority path that may bypass
+queued work and does not wait for unresolved handshakes. It is observed at
+event-loop scheduling points and does not interrupt connection setup, work
+already executing, buffered events, or an application that is not polling.
 
 MQTT defines no server acknowledgement for a client DISCONNECT. Graceful
 shutdown waits for earlier work, not for a response to DISCONNECT itself.

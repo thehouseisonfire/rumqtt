@@ -4167,6 +4167,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn immediate_disconnect_waits_for_buffered_public_event() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, _request_tx, _control_request_tx, immediate_disconnect_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(1),
+            );
+        let (client, _peer) = tokio::io::duplex(64);
+        eventloop.network = Some(Network::new(client, Some(64)));
+        eventloop
+            .state
+            .events
+            .push_back(Event::Outgoing(Outgoing::PingResp));
+        immediate_disconnect_tx
+            .send_async(RequestEnvelope::plain(Request::DisconnectNow(
+                Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            )))
+            .await
+            .unwrap();
+
+        let buffered = eventloop.select().await.unwrap();
+        let disconnect = eventloop.select().await.unwrap();
+
+        assert_eq!(buffered, Event::Outgoing(Outgoing::PingResp));
+        assert_eq!(disconnect, Event::Outgoing(Outgoing::Disconnect));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finite_request_flood_eventually_allows_ready_network_read() {
+        const REQUEST_COUNT: usize = 1_024;
+        const CHANNEL_CAPACITY: usize = 10;
+
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_max_request_batch(1);
+        let (mut eventloop, request_tx, _control_request_tx, _immediate_disconnect_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(CHANNEL_CAPACITY),
+            );
+        let (client, mut peer) = tokio::io::duplex(64 * 1024);
+        let mut network = Network::new(client, Some(64 * 1024));
+        network.set_max_outgoing_size(Some(64 * 1024));
+        eventloop.network = Some(network);
+
+        for _ in 0..CHANNEL_CAPACITY {
+            request_tx
+                .try_send(RequestEnvelope::plain(Request::Publish(publish(
+                    QoS::AtMostOnce,
+                ))))
+                .unwrap();
+        }
+        let producer = tokio::spawn(async move {
+            for _ in CHANNEL_CAPACITY..REQUEST_COUNT {
+                request_tx
+                    .send_async(RequestEnvelope::plain(Request::Publish(publish(
+                        QoS::AtMostOnce,
+                    ))))
+                    .await
+                    .unwrap();
+            }
+        });
+        peer.write_all(&[0xD0, 0x00]).await.unwrap();
+        let drain = tokio::spawn(async move {
+            let mut bytes = [0; 4096];
+            while peer.read(&mut bytes).await.unwrap_or(0) != 0 {}
+        });
+
+        let mut outgoing_before_read = 0;
+        loop {
+            let event = time::timeout(Duration::from_secs(5), eventloop.select())
+                .await
+                .expect("request flood should make finite progress")
+                .expect("event loop should process request flood");
+            match event {
+                Event::Outgoing(Outgoing::Publish(0)) => outgoing_before_read += 1,
+                Event::Incoming(Packet::PingResp) => break,
+                event => panic!("unexpected event during request flood: {event:?}"),
+            }
+        }
+        drain.abort();
+        producer.abort();
+
+        assert!(
+            (CHANNEL_CAPACITY..=REQUEST_COUNT).contains(&outgoing_before_read),
+            "ready network read should make progress during or immediately after the finite request flood; \
+             observed {outgoing_before_read} requests"
+        );
+    }
+
+    #[tokio::test]
     async fn select_admits_control_request_after_ready_publish_backlog_snapshot() {
         let mut options = MqttOptions::new("test-client", "localhost");
         options.set_max_request_batch(1);

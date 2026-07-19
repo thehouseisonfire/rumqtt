@@ -451,6 +451,10 @@ impl ManualAck {
 /// guarantee. Under publish flow-control pressure, non-`PUBLISH` control
 /// packets can pass earlier `QoS` 1/ `QoS` 2 publishes that are not currently
 /// sendable. Application publishes preserve FIFO with other publishes.
+/// A successful send confirms channel admission, not protocol processing. Once
+/// the event loop processes a graceful disconnect barrier, concurrently queued
+/// work from another clone can still be accepted by its channel and then
+/// discarded without being sent.
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
     request_tx: RequestSender,
@@ -1481,14 +1485,14 @@ impl AsyncClient {
     /// Queues a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and
-    /// waits for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and
+    /// waits for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and
     /// tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
     /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
     /// `UNSUBACK`. It then sends and flushes MQTT `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. Under publish
+    /// For builder-created clients, this request uses the control-request channel. Under publish
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
@@ -1508,8 +1512,8 @@ impl AsyncClient {
     /// Queues a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
     /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
     /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
@@ -1519,7 +1523,7 @@ impl AsyncClient {
     /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
     /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
     ///
-    /// This request uses the normal client request channel. The timeout starts
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
     /// Clients created through [`Self::from_senders`] only enqueue
@@ -1535,11 +1539,13 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Queues an MQTT disconnect immediately without waiting for in-flight requests.
+    /// Queues a priority MQTT disconnect without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
     /// shutdown channel, may bypass queued application work, and does not wait for unresolved
-    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_senders`]
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_senders`]
     /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
@@ -1555,12 +1561,12 @@ impl AsyncClient {
     /// Attempts to queue a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. Under publish
+    /// For builder-created clients, this request uses the control-request channel. Under publish
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
@@ -1580,8 +1586,8 @@ impl AsyncClient {
     /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
     /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
     /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
@@ -1591,7 +1597,7 @@ impl AsyncClient {
     /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
     /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
     ///
-    /// This request uses the normal client request channel. The timeout starts
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
     /// Clients created through [`Self::from_senders`] only enqueue
@@ -1607,11 +1613,13 @@ impl AsyncClient {
         Ok(())
     }
 
-    /// Attempts to queue an immediate MQTT disconnect.
+    /// Attempts to queue a priority MQTT disconnect.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
     /// shutdown channel, may bypass queued application work, and does not wait for unresolved
-    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_senders`]
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_senders`]
     /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
@@ -1914,12 +1922,12 @@ impl Client {
     /// Queues a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. Under publish
+    /// For builder-created clients, this request uses the control-request channel. Under publish
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
@@ -1939,8 +1947,8 @@ impl Client {
     /// Queues a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
     /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
     /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
@@ -1950,7 +1958,7 @@ impl Client {
     /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
     /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
     ///
-    /// This request uses the normal client request channel. The timeout starts
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
     /// Clients created through [`Self::from_sender`] only enqueue
@@ -1966,11 +1974,13 @@ impl Client {
         Ok(())
     }
 
-    /// Queues an MQTT disconnect immediately without waiting for in-flight requests.
+    /// Queues a priority MQTT disconnect without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
     /// shutdown channel, may bypass queued application work, and does not wait for unresolved
-    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_sender`]
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_sender`]
     /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
@@ -1986,12 +1996,12 @@ impl Client {
     /// Attempts to queue a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// for previously accepted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
     /// subscribe/unsubscribe requests to complete before sending MQTT
     /// `DISCONNECT`.
     ///
-    /// This request uses the normal client request channel. Under publish
+    /// For builder-created clients, this request uses the control-request channel. Under publish
     /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
     /// that are not currently sendable; once observed, it becomes the graceful
     /// drain barrier.
@@ -2010,8 +2020,8 @@ impl Client {
     /// Attempts to queue a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
-    /// application work, flushes previously accepted `QoS` 0 publishes, and waits
-    /// up to `timeout` for previously accepted outbound `QoS` 1/ `QoS` 2 publishes
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
     /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
     /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
     /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
@@ -2021,7 +2031,7 @@ impl Client {
     /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
     /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
     ///
-    /// This request uses the normal client request channel. The timeout starts
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
     /// only after the event loop observes this request, not necessarily when
     /// this method queues it.
     /// Clients created through [`Self::from_sender`] only enqueue
@@ -2036,11 +2046,13 @@ impl Client {
         Ok(())
     }
 
-    /// Queues an MQTT disconnect immediately without waiting for in-flight requests.
+    /// Queues a priority MQTT disconnect without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
     /// shutdown channel, may bypass queued application work, and does not wait for unresolved
-    /// `QoS` 1/ `QoS` 2 publish handshakes. Clients created through [`Self::from_sender`]
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_sender`]
     /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
     ///
     /// # Errors
@@ -3129,5 +3141,30 @@ mod test {
             .try_recv()
             .expect("tracked unsubscribe should use control channel");
         assert!(matches!(&envelope.request, Request::Unsubscribe(_)));
+    }
+
+    #[test]
+    fn graceful_disconnect_uses_control_request_channel() {
+        let (requests, requests_rx) = flume::bounded(1);
+        let (control_requests, control_requests_rx) = flume::bounded(1);
+        let (immediate_disconnect, immediate_disconnect_rx) = flume::unbounded();
+        let client = AsyncClient {
+            request_tx: RequestSender::WithNotice {
+                requests,
+                control_requests,
+                immediate_disconnect,
+            },
+        };
+
+        client
+            .try_disconnect()
+            .expect("graceful disconnect should enqueue");
+
+        assert!(requests_rx.is_empty());
+        assert!(immediate_disconnect_rx.is_empty());
+        let envelope = control_requests_rx
+            .try_recv()
+            .expect("graceful disconnect should use control channel");
+        assert!(matches!(&envelope.request, Request::Disconnect(_)));
     }
 }
