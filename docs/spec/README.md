@@ -8,14 +8,27 @@ This directory contains generated, compliance-oriented references for MQTT 3.1.1
 - `mqtt-v5.0.md`: Markdown compliance digest for MQTT 5.0.
 - `mqtt-v3.1.1.requirements.json`: Machine-readable requirement index for MQTT 3.1.1.
 - `mqtt-v5.0.requirements.json`: Machine-readable requirement index for MQTT 5.0.
+- `*.requirements.correct.json`: reviewed audit overlays retained for historical
+  evidence and comparison with the canonical indexes.
+- `mqtt-v3.1.1.requirements.fix-attempt.json`: an abandoned extraction attempt
+  retained only for audit comparison.
 
 ## Source of Truth
 
-`mqtt-v3.1.1.md`, `mqtt-v3.1.1.requirements.correct.json` `mqtt-v5.0.md` and `mqtt-v5.0.requirements.correct.json` are authoritative.
+For repository compliance work, the primary documents are `mqtt-v3.1.1.md`
+and `mqtt-v5.0.md`. The canonical machine-readable indexes are
+`mqtt-v3.1.1.requirements.json` and `mqtt-v5.0.requirements.json`.
 
-The generated requirements JSON files at `mqtt-v3.1.1.requirements.correct.json`, `mqtt-v3.1.1.requirements.fix-attempt.json` and `mqtt-v5.0.requirements.correct.json` are useful as indexes and mapping hints, but they may contain incorrect summaries, duplicated requirements, wrong actors, or adjacent requirement mappings. Audit passes must verify reviewed requirements against the authoritative source text.
+The `*.requirements.correct.json` and `*.requirements.fix-attempt.json` files
+are non-canonical review artifacts. They can provide mapping hints and evidence
+from earlier audit passes, but may contain incomplete coverage, incorrect
+summaries, duplicated requirements, wrong actors, or adjacent requirement
+mappings. Do not substitute them for the canonical indexes.
 
-Do not modify the generated requirements files during hardening unless explicitly instructed. Add corrected reviewed entries to `mqtt-v3.1.1.requirements.correct.json` and `mqtt-v5.0.requirements.correct.json`.
+When changing a compliance document or index, verify the affected requirement
+against the corresponding OASIS specification and update the Markdown digest
+and canonical unsuffixed JSON index together. Changes to the reviewed audit
+overlays should be made only when extending or correcting their audit evidence.
 
 ## JSON Schema
 
@@ -40,7 +53,7 @@ Each generated `requirements[]` item includes:
 - `mapping_status`: extraction/review status.
 - `mapping_reason`: explanation of mapping heuristic used.
 
-Reviewed entries in `mqtt-v3.1.1.requirements.correct.json` may also include:
+Reviewed entries in the `*.requirements.correct.json` audit overlays may also include:
 
 - `authoritative_source`: source file, section, title, and anchor checked.
 - `authoritative_summary`: corrected summary from the authoritative source.

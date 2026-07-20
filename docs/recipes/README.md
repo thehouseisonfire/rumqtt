@@ -21,6 +21,8 @@ deployment.
 | Reconnect resubscribe | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
 | Bounded client channels | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Backpressure](./backpressure.md) |
 | Manual ACKs | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Manual ACKs](./manual-acks.md) |
+| Structured lifecycle tracing | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `tracing` | [Tracing](./tracing.md) |
+| Runtime diagnostics snapshots | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Diagnostics](./diagnostics.md) |
 | Broker-specific setup notes | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | varies | [Broker notes](./brokers.md) |
 
 ## Compile-Checked Examples
@@ -33,6 +35,8 @@ features, for example:
 cargo run -p rumqttc-v5-next --features websocket --example websocket_v5
 cargo run -p rumqttc-v5-next --features websocket,proxy --example websocket_proxy_v5
 cargo run -p rumqttc-v5-next --features use-rustls --example tls_v5
+cargo run -p rumqttc-v5-next --features tracing --example lifecycle_tracing_v5
+cargo run -p rumqttc-v5-next --example diagnostics_snapshot_v5
 ```
 
 Use package names such as `rumqttc-v5-next` in Cargo commands. Application code
