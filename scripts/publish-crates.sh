@@ -6,6 +6,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 EXPECTED_GITHUB_USER="${EXPECTED_GITHUB_USER:-thehouseisonfire}"
+CRATES_IO_USER_AGENT="${CRATES_IO_USER_AGENT:-rumqtt-release-script/1.0}"
 
 PACKAGE_NAMES=(
   "mqttbytes-core-next"
@@ -276,7 +277,9 @@ wait_for_crate_version() {
   local attempt
 
   for attempt in $(seq 1 30); do
-    if curl -fsS "https://crates.io/api/v1/crates/${package}/${version}" >/dev/null 2>&1; then
+    if curl --max-time 15 -fsS \
+      --user-agent "$CRATES_IO_USER_AGENT" \
+      "https://crates.io/api/v1/crates/${package}/${version}" >/dev/null 2>&1; then
       return 0
     fi
 
