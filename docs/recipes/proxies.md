@@ -3,7 +3,7 @@
 Enable the `proxy` feature when the client must connect through an HTTP proxy.
 
 ```toml
-rumqttc-v5-next = { version = "0.33", features = ["proxy"] }
+rumqttc-v5-next = { version = "0.34.0-alpha", features = ["proxy"] }
 ```
 
 ## HTTP Proxy

@@ -8,25 +8,25 @@ The `rumqttc-next` package is a facade that re-exports this crate unchanged.
 
 This crate keeps the library target name as `rumqttc` so application code can stay familiar after migrating package names.
 
-Existing upstream `rumqttc` users should see the workspace [migration guide](../MIGRATION.md) for package names,
+Existing upstream `rumqttc` users should see the workspace [migration guide](https://github.com/thehouseisonfire/rumqtt/blob/main/MIGRATION.md) for package names,
 API changes, and porting recipes.
 
 For production deployment patterns covering TLS, `WebSockets`, proxies,
 persistent sessions, reconnect handling, bounded channels, manual ACKs, and
-common brokers, see the workspace [recipe guide](../docs/recipes/README.md).
+common brokers, see the workspace [recipe guide](https://github.com/thehouseisonfire/rumqtt/blob/main/docs/recipes/README.md).
 
 ## Installation
 
 Use the facade package when you want the default MQTT 5 client:
 
 ```bash
-cargo add rumqttc-next
+cargo add rumqttc-next@0.34.0-alpha
 ```
 
 Use this package directly when you want the protocol-scoped crate name:
 
 ```bash
-cargo add rumqttc-v5-next
+cargo add rumqttc-v5-next@0.34.0-alpha
 ```
 
 ## Typed Topics
@@ -200,7 +200,7 @@ subscriber; applications remain responsible for choosing and configuring one.
 
 ```toml
 [dependencies]
-rumqttc-v5-next = { version = "0.33", features = ["tracing"] }
+rumqttc-v5-next = { version = "0.34.0-alpha", features = ["tracing"] }
 ```
 
 Enable `tracing-log-compat` instead when tracing events should fall back to
@@ -220,7 +220,7 @@ receives a new `attempt_id`.
 Quick overview of features
 - Eventloop orchestrates outgoing/incoming packets concurrently and handles the state
 - Pings the broker when necessary and detects client side half open connections as well
-- Throttling of outgoing packets (todo)
+- Protocol-aware outgoing flow control with configurable in-flight limits
 - Queue size based flow control on outgoing packets
 - Automatic reconnections by just continuing the `eventloop.poll()/connection.iter()` loop
 - Natural backpressure to client APIs during bad network
@@ -233,7 +233,7 @@ Quick overview of features
 In short, everything necessary to maintain a robust connection
 
 Since the eventloop is externally polled (with `iter()/poll()` in a loop)
-out side the library and `Eventloop` is accessible, users can
+outside the library and `EventLoop` is accessible, users can
 - Distribute incoming messages based on topics
 - Stop it when required
 - Access internal state for use cases like graceful shutdown or to modify options before reconnection

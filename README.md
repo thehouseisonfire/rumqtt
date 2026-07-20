@@ -41,13 +41,13 @@ Run one of these, depending on the protocol package you want:
 
 ```bash
 # Default MQTT 5 client
-cargo add rumqttc-next
+cargo add rumqttc-next@0.34.0-alpha
 
 # Explicit MQTT 5 package
-cargo add rumqttc-v5-next
+cargo add rumqttc-v5-next@0.34.0-alpha
 
 # MQTT 3.1.1 package
-cargo add rumqttc-v4-next
+cargo add rumqttc-v4-next@0.34.0-alpha
 ```
 
 For more details, see [rumqttc-next/README.md](./rumqttc-next/README.md), [rumqttc-v5/README.md](./rumqttc-v5/README.md), and [rumqttc-v4/README.md](./rumqttc-v4/README.md).

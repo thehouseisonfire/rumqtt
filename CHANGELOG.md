@@ -70,7 +70,6 @@
   `ConnectionError::ResponseValidation` display output.
 - `rumqttc` v5: Enforce CONNACK `Retain Available = 0` per MQTT-3.2.2-14 by rejecting retained outbound publishes, including reconnect replays, without dropping the active connection; tracked publishes report `PublishNoticeError::RetainNotSupported`.
 - `rumqttc` v4/v5: Fix graceful disconnect after subscribe/unsubscribe packet-id gaps so completed publishes do not leave stale outbound drain tracking and prevent MQTT `DISCONNECT`.
-- `rumqttc` v4/v5: Fix graceful disconnect drain handling so queued but unsent flow-controlled publishes do not prevent MQTT `DISCONNECT` after actual outbound protocol state has completed.
 - `rumqttc` v4/v5: Reset retained local session state before reconnecting with a changed ClientId so pending state from one MQTT identity is not reused under another.
 - `rumqttc` v4/v5 codecs: Return `PayloadTooLong` instead of panicking when encoding MQTT strings or binary fields that exceed the MQTT two-byte length prefix limit.
 - `rumqttc` v4/v5 codecs: Enforce MQTT UTF-8 string validation on read/write paths, rejecting malformed UTF-8 and U+0000 in MQTT strings, including publish topics, will topics, subscribe filters, and unsubscribe filters.
@@ -92,7 +91,20 @@
 
 ---
 
-## [rumqttc-next 0.33.1] - 17-05-2026
+## [rumqttc-next 0.33.2] - 23-05-2026
+
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+- `rumqttc` v4/v5: Fix graceful disconnect drain handling so queued but unsent flow-controlled publishes do not prevent MQTT `DISCONNECT` after actual outbound protocol state has completed.
+### Security
+
+---
+
+## [rumqttc-next 0.33.1] - 16-05-2026
 
 
 ### Added
