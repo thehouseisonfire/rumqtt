@@ -8,7 +8,7 @@ use crate::mqttbytes::v4::{
 };
 use crate::mqttbytes::{self, QoS};
 use fixedbitset::FixedBitSet;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::{io, time::Instant};
 
 /// Errors during state handling
@@ -85,6 +85,10 @@ pub struct MqttState {
     pub(crate) tracked_subscribe: BTreeMap<u16, (Subscribe, SubscribeNoticeTx)>,
     /// Tracked unsubscribe requests waiting for `UnsubAck`
     pub(crate) tracked_unsubscribe: BTreeMap<u16, (Unsubscribe, UnsubscribeNoticeTx)>,
+    /// All subscribe packet identifiers waiting for `SubAck`.
+    pending_subscribe: BTreeSet<u16>,
+    /// All unsubscribe packet identifiers waiting for `UnsubAck`.
+    pending_unsubscribe: BTreeSet<u16>,
     /// Buffered incoming packets
     pub events: VecDeque<Event>,
     /// Indicates if acknowledgements should be send immediately
@@ -177,6 +181,8 @@ impl MqttState {
         self.inflight == 0
             && self.collision.is_none()
             && self.collision_notice.is_none()
+            && self.pending_subscribe.is_empty()
+            && self.pending_unsubscribe.is_empty()
             && self.tracked_subscribe.is_empty()
             && self.tracked_unsubscribe.is_empty()
             && self.outgoing_pub.iter().all(Option::is_none)
@@ -184,6 +190,31 @@ impl MqttState {
             && self.outgoing_rel_notice.iter().all(Option::is_none)
             && self.outgoing_pub_ack.ones().next().is_none()
             && self.outgoing_rel.ones().next().is_none()
+    }
+
+    pub(crate) fn outbound_drain_diagnostics(&self) -> String {
+        format!(
+            "inflight={}, collision={}, collision_notice={}, pending_subscribe={}, \
+             pending_unsubscribe={}, tracked_subscribe={}, tracked_unsubscribe={}, \
+             outgoing_publish={}, outgoing_notice={}, outgoing_puback={}, outgoing_pubrel={}",
+            self.inflight,
+            self.collision.is_some(),
+            self.collision_notice.is_some(),
+            self.pending_subscribe.len(),
+            self.pending_unsubscribe.len(),
+            self.tracked_subscribe.len(),
+            self.tracked_unsubscribe.len(),
+            self.outgoing_pub
+                .iter()
+                .filter(|slot| slot.is_some())
+                .count(),
+            self.outgoing_pub_notice
+                .iter()
+                .filter(|slot| slot.is_some())
+                .count(),
+            self.outgoing_pub_ack.ones().count(),
+            self.outgoing_rel.ones().count(),
+        )
     }
 
     fn maybe_shrink_outgoing_tracking_capacity(&mut self) {
@@ -221,8 +252,8 @@ impl MqttState {
         let index = usize::from(pkid);
         self.outgoing_pub.get(index).is_some_and(Option::is_some)
             || self.outgoing_rel.contains(index)
-            || self.tracked_subscribe.contains_key(&pkid)
-            || self.tracked_unsubscribe.contains_key(&pkid)
+            || self.pending_subscribe.contains(&pkid)
+            || self.pending_unsubscribe.contains(&pkid)
     }
 
     pub(crate) fn can_send_publish(&self, publish: &Publish) -> bool {
@@ -288,6 +319,8 @@ impl MqttState {
             collision_notice: None,
             tracked_subscribe: BTreeMap::new(),
             tracked_unsubscribe: BTreeMap::new(),
+            pending_subscribe: BTreeSet::new(),
+            pending_unsubscribe: BTreeSet::new(),
             events: VecDeque::with_capacity(Self::initial_events_capacity()),
             manual_acks,
         }
@@ -344,6 +377,8 @@ impl MqttState {
                 Some(TrackedNoticeTx::Unsubscribe(notice)),
             ));
         }
+        self.pending_subscribe.clear();
+        self.pending_unsubscribe.clear();
 
         // remove packet ids of incoming qos2 publishes
         self.incoming_pub.clear();
@@ -383,11 +418,13 @@ impl MqttState {
 
     pub fn drain_tracked_requests_as_failed(&mut self, reason: NoticeFailureReason) -> usize {
         let mut drained = 0;
-        for (_, (_, notice)) in std::mem::take(&mut self.tracked_subscribe) {
+        for (pkid, (_, notice)) in std::mem::take(&mut self.tracked_subscribe) {
+            self.pending_subscribe.remove(&pkid);
             drained += 1;
             notice.error(reason.subscribe_error());
         }
-        for (_, (_, notice)) in std::mem::take(&mut self.tracked_unsubscribe) {
+        for (pkid, (_, notice)) in std::mem::take(&mut self.tracked_unsubscribe) {
+            self.pending_unsubscribe.remove(&pkid);
             drained += 1;
             notice.error(reason.unsubscribe_error());
         }
@@ -414,6 +451,8 @@ impl MqttState {
         }
 
         self.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
+        self.pending_subscribe.clear();
+        self.pending_unsubscribe.clear();
         self.clear_collision();
         self.maybe_shrink_outgoing_tracking_capacity();
     }
@@ -540,6 +579,9 @@ impl MqttState {
     }
 
     fn handle_incoming_suback(&mut self, suback: &SubAck) -> Option<Packet> {
+        if self.pending_subscribe.remove(&suback.pkid) {
+            self.mark_control_packet_id_complete(suback.pkid);
+        }
         if let Some((_, notice)) = self.tracked_subscribe.remove(&suback.pkid) {
             notice.success(suback.clone());
         }
@@ -547,6 +589,9 @@ impl MqttState {
     }
 
     fn handle_incoming_unsuback(&mut self, unsuback: &UnsubAck) -> Option<Packet> {
+        if self.pending_unsubscribe.remove(&unsuback.pkid) {
+            self.mark_control_packet_id_complete(unsuback.pkid);
+        }
         if let Some((_, notice)) = self.tracked_unsubscribe.remove(&unsuback.pkid) {
             notice.success(unsuback.clone());
         }
@@ -805,6 +850,7 @@ impl MqttState {
 
         let pkid = self.next_control_pkid()?;
         subscription.pkid = pkid;
+        self.pending_subscribe.insert(pkid);
 
         debug!(
             "Subscribe. Topics = {:?}, Pkid = {:?}",
@@ -828,6 +874,7 @@ impl MqttState {
     ) -> Result<Packet, StateError> {
         let pkid = self.next_control_pkid()?;
         unsub.pkid = pkid;
+        self.pending_unsubscribe.insert(pkid);
 
         debug!(
             "Unsubscribe. Topics = {:?}, Pkid = {:?}",
@@ -907,6 +954,20 @@ impl MqttState {
     fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
         self.outgoing_pub_ack.set(pkid as usize, true);
         self.advance_last_puback_frontier();
+    }
+
+    fn mark_control_packet_id_complete(&mut self, pkid: u16) {
+        if self.control_packet_id_needs_frontier_completion(pkid) {
+            self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
+            self.mark_outgoing_packet_id_complete(pkid);
+        }
+    }
+
+    const fn control_packet_id_needs_frontier_completion(&self, pkid: u16) -> bool {
+        pkid != 0
+            && pkid <= self.max_inflight
+            && pkid != self.last_puback
+            && (self.last_puback >= self.max_inflight || pkid > self.last_puback)
     }
 
     fn advance_last_puback_frontier(&mut self) {
@@ -993,6 +1054,8 @@ impl Clone for MqttState {
             collision_notice: None,
             tracked_subscribe: BTreeMap::new(),
             tracked_unsubscribe: BTreeMap::new(),
+            pending_subscribe: self.pending_subscribe.clone(),
+            pending_unsubscribe: self.pending_unsubscribe.clone(),
             events: self.events.clone(),
             manual_acks: self.manual_acks,
         }
@@ -1533,6 +1596,41 @@ mod test {
 
         mqtt.handle_incoming_puback(&PubAck::new(3)).unwrap();
         assert_eq!(mqtt.last_puback, 3);
+    }
+
+    #[test]
+    fn control_packet_id_gap_does_not_leave_completed_publish_undrained() {
+        let mut mqtt = build_mqttstate();
+
+        mqtt.outgoing_subscribe(Subscribe::new("a/b", QoS::AtMostOnce), None)
+            .unwrap();
+        assert!(!mqtt.outbound_requests_drained());
+        mqtt.handle_incoming_suback(&SubAck::new(
+            1,
+            vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+        ));
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        mqtt.handle_incoming_puback(&PubAck::new(2)).unwrap();
+
+        assert_eq!(mqtt.inflight, 0);
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
+    }
+
+    #[test]
+    fn replayed_control_packet_id_behind_frontier_does_not_leave_stale_ack_bit() {
+        let mut mqtt = build_mqttstate();
+        mqtt.last_puback = 10;
+        mqtt.last_pkid = 10;
+        mqtt.pending_subscribe.insert(1);
+        mqtt.handle_incoming_suback(&SubAck::new(
+            1,
+            vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+        ));
+
+        assert!(mqtt.outbound_requests_drained());
+        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
     }
 
     #[test]

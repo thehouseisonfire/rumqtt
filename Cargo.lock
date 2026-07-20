@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "mqttbytes-core-next"
-version = "0.33.2"
+version = "0.33.3"
 dependencies = [
  "bytes",
  "thiserror 2.0.18",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "rumqttc-core-next"
-version = "0.33.2"
+version = "0.33.3"
 dependencies = [
  "async-http-proxy",
  "async-tungstenite",
@@ -1984,14 +1984,14 @@ dependencies = [
 
 [[package]]
 name = "rumqttc-next"
-version = "0.33.2"
+version = "0.33.3"
 dependencies = [
  "rumqttc-v5-next",
 ]
 
 [[package]]
 name = "rumqttc-v4-next"
-version = "0.33.2"
+version = "0.33.3"
 dependencies = [
  "async-http-proxy",
  "async-tungstenite",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "rumqttc-v5-next"
-version = "0.33.2"
+version = "0.33.3"
 dependencies = [
  "async-http-proxy",
  "async-tungstenite",

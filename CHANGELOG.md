@@ -5,6 +5,7 @@
 ### Deprecated
 ### Removed
 ### Fixed
+- `rumqttc` v4/v5: Complete the 0.33.x graceful-disconnect fixes. SUBSCRIBE and UNSUBSCRIBE packet IDs now advance outbound completion tracking only after their matching acknowledgments, preventing subscribed publishers from timing out while draining across packet-ID gaps. Disconnect timeout errors also report the remaining outbound state.
 ### Security
 
 ---
