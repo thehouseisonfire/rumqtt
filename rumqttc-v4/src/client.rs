@@ -295,6 +295,7 @@ impl PublishOptions {
 ///
 /// Owned payloads are converted without copying where possible. Borrowed
 /// payloads are copied into the queued publish packet.
+/// Consumers may implement this trait for their own payload types.
 pub trait IntoPublishPayload {
     /// Converts the payload into bytes owned by the publish packet.
     fn into_publish_payload(self) -> Bytes;
