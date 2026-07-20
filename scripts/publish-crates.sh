@@ -6,6 +6,8 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 EXPECTED_GITHUB_USER="${EXPECTED_GITHUB_USER:-thehouseisonfire}"
+EXPECTED_GITHUB_REPO="${EXPECTED_GITHUB_REPO:-thehouseisonfire/rumqtt}"
+CRATES_IO_USER_AGENT="${CRATES_IO_USER_AGENT:-rumqtt-release-script/1.0}"
 
 PACKAGE_NAMES=(
     "mqttbytes-core-next"
@@ -79,6 +81,22 @@ require_github_user() {
     if [[ "$actual_user" != "$EXPECTED_GITHUB_USER" ]]; then
         echo "error: GitHub CLI is logged in as '$actual_user', expected '$EXPECTED_GITHUB_USER'" >&2
         echo "run: gh auth switch --user '$EXPECTED_GITHUB_USER'" >&2
+        exit 1
+    fi
+}
+
+require_github_repo() {
+    local origin_url origin_repo
+
+    origin_url="$(git remote get-url origin)"
+    if ! origin_repo="$(gh repo view "$origin_url" --json nameWithOwner --jq .nameWithOwner 2>/dev/null)"; then
+        echo "error: cannot resolve GitHub repository for origin ($origin_url)" >&2
+        exit 1
+    fi
+
+    if [[ "$origin_repo" != "$EXPECTED_GITHUB_REPO" ]]; then
+        echo "error: origin resolves to '$origin_repo', expected '$EXPECTED_GITHUB_REPO'" >&2
+        echo "override with EXPECTED_GITHUB_REPO=owner/repository when intentional" >&2
         exit 1
     fi
 }
@@ -239,6 +257,7 @@ confirm_release() {
         echo "Next version    : $next"
     fi
     echo "Branch          : $branch"
+    echo "GitHub repo     : $EXPECTED_GITHUB_REPO"
     echo "Changelog title : rumqttc-next $next"
     if [[ -f RELEASE-NOTES.md ]] && grep -q '[^[:space:]]' RELEASE-NOTES.md; then
         echo "Release notes   : RELEASE-NOTES.md followed by CHANGELOG.md"
@@ -385,7 +404,9 @@ wait_for_crate_version() {
     local attempt
 
     for attempt in $(seq 1 30); do
-        if curl -fsS "https://crates.io/api/v1/crates/${package}/${version}" >/dev/null 2>&1; then
+        if curl --max-time 15 -fsS \
+            --user-agent "$CRATES_IO_USER_AGENT" \
+            "https://crates.io/api/v1/crates/${package}/${version}" >/dev/null 2>&1; then
             return 0
         fi
 
@@ -463,6 +484,7 @@ create_github_release() {
     echo "Creating GitHub release rumqttc-next-${version}"
     build_github_release_notes "$version" |
         gh release create "rumqttc-next-${version}" \
+            --repo "$EXPECTED_GITHUB_REPO" \
             --verify-tag \
             --title "rumqttc-next ${version}" \
             --notes-file -
@@ -492,6 +514,7 @@ main() {
 
     require_tool gh
     require_github_user
+    require_github_repo
     require_tools
     require_clean_tree
 
