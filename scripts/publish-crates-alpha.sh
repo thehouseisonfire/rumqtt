@@ -164,10 +164,10 @@ confirm_documented_package_versions() {
         "${VERSIONED_DOCUMENTS[@]}" || true)"
     stale="$(printf '%s\n' "$references" | grep -Fv "$expected" || true)"
 
-    if [[ -f RELEASE_NOTES.md ]] && grep -q '[^[:space:]]' RELEASE_NOTES.md; then
-        notes_heading="$(grep -m 1 '^# rumqttc-next ' RELEASE_NOTES.md || true)"
+    if [[ -f RELEASE-NOTES.md ]] && grep -q '[^[:space:]]' RELEASE-NOTES.md; then
+        notes_heading="$(grep -m 1 '^# rumqttc-next ' RELEASE-NOTES.md || true)"
         if [[ -n "$notes_heading" && "$notes_heading" != "# rumqttc-next ${expected}" ]]; then
-            stale="${stale}${stale:+$'\n'}RELEASE_NOTES.md: ${notes_heading}"
+            stale="${stale}${stale:+$'\n'}RELEASE-NOTES.md: ${notes_heading}"
         fi
     fi
 
@@ -240,8 +240,8 @@ confirm_release() {
     fi
     echo "Branch          : $branch"
     echo "Changelog title : rumqttc-next $next"
-    if [[ -f RELEASE_NOTES.md ]] && grep -q '[^[:space:]]' RELEASE_NOTES.md; then
-        echo "Release notes   : RELEASE_NOTES.md followed by CHANGELOG.md"
+    if [[ -f RELEASE-NOTES.md ]] && grep -q '[^[:space:]]' RELEASE-NOTES.md; then
+        echo "Release notes   : RELEASE-NOTES.md followed by CHANGELOG.md"
     else
         echo "Release notes   : CHANGELOG.md"
     fi
@@ -426,8 +426,8 @@ build_github_release_notes() {
         return 1
     fi
 
-    if [[ -f RELEASE_NOTES.md ]] && grep -q '[^[:space:]]' RELEASE_NOTES.md; then
-        perl -0pe 's/[[:space:]]+\z/\n/' RELEASE_NOTES.md
+    if [[ -f RELEASE-NOTES.md ]] && grep -q '[^[:space:]]' RELEASE-NOTES.md; then
+        perl -0pe 's/[[:space:]]+\z/\n/' RELEASE-NOTES.md
         echo
     fi
 

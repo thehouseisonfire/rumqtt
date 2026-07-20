@@ -14,7 +14,7 @@ publication, tags, and the GitHub Release.
   changes.
 - Confirm every user-facing API or behavior change is reflected in rustdoc,
   examples, recipes, and `MIGRATION.md` where applicable.
-- Rewrite `RELEASE_NOTES.md` for this release, or remove it when no custom
+- Rewrite `RELEASE-NOTES.md` for this release, or remove it when no custom
   introduction is wanted. Never leave notes from the previous release in place.
 - Confirm the full CI and feature matrix are green for the commit being
   released, especially Clippy and each-feature tests beyond the script's
