@@ -29,15 +29,6 @@ Use this package directly when you want the protocol-scoped crate name:
 cargo add rumqttc-v5-next@0.34.0-alpha
 ```
 
-## Typed Topics
-
-For applications that want typed topic declarations, generated publish/subscribe
-helpers, payload serialization, and MQTT 5 property pass-through on top of this
-client, use the companion [`mqtt-typed-client-next`](https://github.com/thehouseisonfire/mqtt-typed-client-next)
-crate with its `rumqttc-v5` feature enabled. See the `rumqttc_v5_connect_properties`
-and `rumqttc_v5_publish_properties` examples in that repo for runnable integration
-samples.
-
 ## Examples
 
 A simple synchronous publish and subscribe
