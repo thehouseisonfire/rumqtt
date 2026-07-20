@@ -5,6 +5,9 @@ members = [
   "rumqttc-next",
   "rumqttc-v4",
   "rumqttc-v5",
+  "rumqttc-session-store-file-core-next",
+  "rumqttc-v4-session-store-file-next",
+  "rumqttc-v5-session-store-file-next",
   "benchmarks",
 ]
 resolver = "3"

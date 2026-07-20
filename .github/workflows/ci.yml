@@ -93,6 +93,7 @@ jobs:
             cargo clippy --fix --allow-dirty --verbose --all-targets -p mqttbytes-core-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
+            cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-session-store-file-core-next -p rumqttc-v4-session-store-file-next -p rumqttc-v5-session-store-file-next
 
       - name: Check docs
         if: ${{ matrix.os != 'windows-latest' }}
@@ -106,6 +107,7 @@ jobs:
             cargo doc --verbose --no-deps -p mqttbytes-core-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
+            cargo doc --verbose --no-deps -p rumqttc-session-store-file-core-next -p rumqttc-v4-session-store-file-next -p rumqttc-v5-session-store-file-next
 
       - name: Doctests
         run: |
@@ -117,6 +119,7 @@ jobs:
             cargo test --doc -p mqttbytes-core-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-next
+            cargo test --doc -p rumqttc-session-store-file-core-next -p rumqttc-v4-session-store-file-next -p rumqttc-v5-session-store-file-next
 
       - name: Test rumqttc
         run: |
@@ -128,6 +131,7 @@ jobs:
             cargo test -p mqttbytes-core-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-next
+            cargo test -p rumqttc-session-store-file-core-next -p rumqttc-v4-session-store-file-next -p rumqttc-v5-session-store-file-next
 
       - name: Test native-tls WSS integration
         run: |

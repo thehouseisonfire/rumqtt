@@ -1,0 +1,29 @@
+[package]
+name = "rumqttc-session-store-file-core-next"
+version = "0.34.0-alpha"
+publish = true
+description = "Protocol-neutral file-backed persistent session storage for rumqttc-next"
+keywords = ["mqtt", "persistence", "session"]
+categories = ["filesystem"]
+rust-version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+blake3 = { version = "1.8", features = ["pure"] }
+crc32c = "0.6"
+thiserror = "2.0.8"
+tokio = { version = "1.40", features = ["rt", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+atomic-write-file = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

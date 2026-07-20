@@ -1,0 +1,23 @@
+[package]
+name = "rumqttc-v4-session-store-file-next"
+version = "0.34.0-alpha"
+publish = true
+description = "File-backed MQTT 3.1.1 persistent session store for rumqttc-next"
+keywords = ["mqtt", "persistence", "session"]
+categories = ["filesystem", "network-programming"]
+rust-version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+rumqttc = { package = "rumqttc-v4-next", path = "../rumqttc-v4", version = "0.34.0-alpha", default-features = false }
+rumqttc-session-store-file-core-next = { path = "../rumqttc-session-store-file-core-next", version = "0.34.0-alpha" }
+thiserror = "2.0.8"
+
+[dev-dependencies]
+crc32c = "0.6"
+tempfile = "3"
+tokio = { version = "1.40", features = ["macros", "rt"] }

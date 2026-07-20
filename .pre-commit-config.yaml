@@ -36,7 +36,15 @@ repos:
           --no-dev-deps
           --optional-deps url
           -p rumqttc-v4-next
-          -p rumqttc-v5-next
+          -p rumqttc-v5-next;
+
+          cargo clippy
+          --fix
+          --allow-dirty
+          --all-targets
+          -p rumqttc-session-store-file-core-next
+          -p rumqttc-v4-session-store-file-next
+          -p rumqttc-v5-session-store-file-next
           '
         language: system
         pass_filenames: false
@@ -157,7 +165,12 @@ repos:
           --optional-deps url
           test
           -p rumqttc-v4-next
-          -p rumqttc-v5-next
+          -p rumqttc-v5-next;
+
+          cargo test
+          -p rumqttc-session-store-file-core-next
+          -p rumqttc-v4-session-store-file-next
+          -p rumqttc-v5-session-store-file-next
           '
         language: system
         pass_filenames: false

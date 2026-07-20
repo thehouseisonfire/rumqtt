@@ -1,0 +1,145 @@
+use rumqttc::SessionStoreKey;
+#[cfg(unix)]
+use rumqttc::{PersistedAckMode, PersistedSession, SessionDecodeError, SessionStore};
+#[cfg(unix)]
+use rumqttc_session_store_file_core_next::FileStoreError;
+
+use super::*;
+
+#[cfg(unix)]
+fn session(client_id: &str, last_pkid: u16) -> PersistedSession {
+    PersistedSession {
+        format_version: 1,
+        client_id: client_id.to_owned(),
+        clean_start: false,
+        session_expiry_interval: Some(60),
+        outgoing_inflight_upper_limit: Some(10),
+        ack_mode: PersistedAckMode::Automatic,
+        last_pkid,
+        last_puback: 0,
+        replay: Vec::new(),
+        incoming_qos2: Vec::new(),
+    }
+}
+
+#[test]
+fn golden_key_bytes_and_filename_are_stable() {
+    let key = SessionStoreKey::new("scope", "client");
+    assert_eq!(
+        encode_session_store_key(&key).unwrap(),
+        b"\x01\x05\x00\x00\x00\x05scope\x00\x00\x00\x06client"
+    );
+    assert_eq!(
+        session_filename(&key).unwrap(),
+        "0d9d0d150464f826fe9632a8ecd5520e381e3b04490afb307e47da3da7f6c198.session"
+    );
+}
+
+#[test]
+fn key_encoding_is_unambiguous_safe_and_protocol_tagged() {
+    let identifiers = [
+        "a/b",
+        "a\\b",
+        "..",
+        "x:y",
+        "客户端",
+        "CON",
+        "client",
+        "Client",
+    ];
+    for identifier in identifiers {
+        let key = SessionStoreKey::new("scope", identifier);
+        let bytes = encode_session_store_key(&key).unwrap();
+        assert_eq!(&bytes[..2], &[1, 5]);
+        let filename = session_filename(&key).unwrap();
+        assert_eq!(filename.len(), 72);
+        assert!(!filename.contains(identifier));
+        assert!(!filename.contains('/'));
+        assert!(!filename.contains('\\'));
+    }
+    let long = "z".repeat(128 * 1024);
+    let key = SessionStoreKey::new("scope", &long);
+    assert_eq!(
+        encode_session_store_key(&key).unwrap().len(),
+        long.len() + 15
+    );
+    assert_ne!(
+        encode_session_store_key(&SessionStoreKey::new("ab", "c")).unwrap(),
+        encode_session_store_key(&SessionStoreKey::new("a", "bc")).unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn adapter_round_trip_replace_clear_missing_and_semantics_remain_external() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::open(root.path()).await.unwrap();
+    let key = SessionStoreKey::new("scope", "client");
+    assert_eq!(store.load(&key).await.unwrap(), None);
+    store.save(&key, &session("client", 1)).await.unwrap();
+    assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 1);
+    store
+        .save(&key, &session("different-client", 2))
+        .await
+        .unwrap();
+    let loaded = store.load(&key).await.unwrap().unwrap();
+    assert_eq!(loaded.client_id, "different-client");
+    assert_eq!(loaded.last_pkid, 2);
+    store.clear(&key).await.unwrap();
+    assert_eq!(store.load(&key).await.unwrap(), None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn envelope_and_codec_errors_remain_distinct() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::open(root.path()).await.unwrap();
+    let key = SessionStoreKey::new("scope", "client");
+    store.save(&key, &session("client", 1)).await.unwrap();
+    let path = store.checkpoint_path(&key).unwrap();
+
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[18] ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    let error = store.load(&key).await.unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<SessionFileStoreError>(),
+        Some(SessionFileStoreError::FileStore(
+            FileStoreError::ChecksumMismatch { .. }
+        ))
+    ));
+
+    store.save(&key, &session("client", 1)).await.unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[18] ^= 1;
+    recompute_outer_crc(&mut bytes);
+    std::fs::write(&path, &bytes).unwrap();
+    let error = store.load(&key).await.unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<SessionFileStoreError>(),
+        Some(SessionFileStoreError::SessionDecode(
+            SessionDecodeError::InvalidMagic
+        ))
+    ));
+
+    store.save(&key, &session("client", 1)).await.unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[18 + 8] = 0;
+    bytes[18 + 9] = 2;
+    recompute_outer_crc(&mut bytes);
+    std::fs::write(path, &bytes).unwrap();
+    let error = store.load(&key).await.unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<SessionFileStoreError>(),
+        Some(SessionFileStoreError::SessionDecode(
+            SessionDecodeError::UnsupportedCodecVersion { actual: 2 }
+        ))
+    ));
+}
+
+#[cfg(unix)]
+fn recompute_outer_crc(bytes: &mut [u8]) {
+    let checksum = crc32c::crc32c(&bytes[..bytes.len() - 4]);
+    let offset = bytes.len() - 4;
+    bytes[offset..].copy_from_slice(&checksum.to_be_bytes());
+}

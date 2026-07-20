@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Added
+- Add Unix file-backed persistent session stores for MQTT v4 and v5, backed by a
+  shared protocol-neutral, checksummed, bounded, cancellation-safe core using
+  `atomic-write-file` for atomic replacement.
 ### Changed
 ### Deprecated
 ### Removed
