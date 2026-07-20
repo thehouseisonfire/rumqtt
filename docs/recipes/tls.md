@@ -10,7 +10,7 @@ unambiguous.
 Use the default `use-rustls` feature for most deployments:
 
 ```toml
-rumqttc-v5-next = { version = "0.33", features = ["use-rustls"] }
+rumqttc-v5-next = { version = "0.34.0-alpha", features = ["use-rustls"] }
 ```
 
 The compile-checked examples are:

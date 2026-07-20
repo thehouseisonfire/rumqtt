@@ -6,7 +6,7 @@
 `rumqttc-next` is the default MQTT 5 client crate in the rumqtt family.
 It is a facade over `rumqttc-v5-next` and re-exports that crate's public API unchanged.
 
-Existing upstream `rumqttc` users should see the workspace [migration guide](../MIGRATION.md) for package names,
+Existing upstream `rumqttc` users should see the workspace [migration guide](https://github.com/thehouseisonfire/rumqtt/blob/main/MIGRATION.md) for package names,
 API changes, and porting recipes.
 
 ## Scope
@@ -18,7 +18,7 @@ API changes, and porting recipes.
 ## Installation
 
 ```bash
-cargo add rumqttc-next
+cargo add rumqttc-next@0.34.0-alpha
 ```
 
 ## Features

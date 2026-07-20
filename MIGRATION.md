@@ -16,13 +16,13 @@ owned by this fork:
 
 ```toml
 # MQTT 5 facade; re-exports rumqttc-v5-next
-rumqttc = { package = "rumqttc-next", version = "0.33" }
+rumqttc = { package = "rumqttc-next", version = "0.34.0-alpha" }
 
 # MQTT 5 explicit package
-rumqttc = { package = "rumqttc-v5-next", version = "0.33" }
+rumqttc = { package = "rumqttc-v5-next", version = "0.34.0-alpha" }
 
 # MQTT 3.1.1 explicit package
-rumqttc = { package = "rumqttc-v4-next", version = "0.33" }
+rumqttc = { package = "rumqttc-v4-next", version = "0.34.0-alpha" }
 ```
 
 Each package's library target is still named `rumqttc`, so Rust imports remain

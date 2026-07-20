@@ -3,7 +3,7 @@
 Enable the `websocket` feature for `ws://` and `wss://` broker transports.
 
 ```toml
-rumqttc-v5-next = { version = "0.33", features = ["websocket"] }
+rumqttc-v5-next = { version = "0.34.0-alpha", features = ["websocket"] }
 ```
 
 ## Plain WebSockets
