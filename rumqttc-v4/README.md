@@ -21,14 +21,6 @@ common brokers, see the workspace [recipe guide](https://github.com/thehouseison
 cargo add rumqttc-v4-next@0.34.0-alpha
 ```
 
-## Typed Topics
-
-For applications that want typed topic declarations, generated publish/subscribe
-helpers, and payload serialization on top of this client, use the companion
-[`mqtt-typed-client-next`](https://github.com/thehouseisonfire/mqtt-typed-client-next)
-crate with its `rumqttc-v4` feature enabled. See the `rumqttc_v4_typed_client`
-example in that repo for a runnable integration sample.
-
 ## Examples
 
 A simple synchronous publish and subscribe
