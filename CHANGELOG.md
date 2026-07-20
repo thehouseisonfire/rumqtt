@@ -1,6 +1,18 @@
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+---
+
+## [rumqttc-next 0.34.0-alpha] - 19-07-2026
+
+
+### Added
 - `rumqttc` v4/v5: Add opt-in `tracing` lifecycle events for connection attempts,
   establishment and loss, session restoration, replay preparation, and typed
   protocol violations. Add a separate `tracing-log-compat` feature for textual
