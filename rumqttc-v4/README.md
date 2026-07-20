@@ -225,6 +225,42 @@ outside the library and `EventLoop` is accessible, users can
 - Stop it when required
 - Access internal state for use cases like graceful shutdown or to modify options before reconnection
 
+## TLS Support
+
+rumqttc supports two TLS backends:
+
+- **`use-rustls`** (default): Uses [rustls](https://github.com/rustls/rustls) with `aws-lc` as the crypto provider and native platform certificates
+- **`use-native-tls`**: Uses the platform's native TLS implementation (Secure Transport on macOS, `SChannel` on Windows, OpenSSL on Linux)
+
+### TLS Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `use-rustls` | Enable rustls with `aws-lc` provider (recommended default) |
+| `use-rustls-no-provider` | Enable rustls without selecting a crypto provider |
+| `use-rustls-aws-lc` | Enable rustls with `aws-lc` provider |
+| `use-rustls-ring` | Enable rustls with `ring` provider |
+| `use-native-tls` | Enable native-tls backend |
+
+`use-rustls-aws-lc` and `use-rustls-ring` are mutually exclusive. Enabling both results in a compile error.
+
+### Important: Using Both TLS Features
+
+When both `use-rustls-no-provider` and `use-native-tls` features are enabled:
+
+- Configure TLS explicitly with `MqttOptions::set_transport(Transport::tls_with_config(...))`
+- Prefer `MqttOptions::websocket_with_tls_config("client-id", "wss://...", tls_config)` for secure websockets
+- For lower-level overrides, `Broker::websocket("ws://...")` plus `MqttOptions::set_transport(Transport::wss_with_config(...))` remains supported
+
+Secure websocket connections upgrade the TCP stream using the selected `TlsConfiguration` before the websocket handshake, so backend selection follows the provided TLS configuration.
+
+In dual-backend dependency graphs, avoid relying on `TlsConfiguration::default()`, because default backend selection must be explicit.
+Use `TlsConfiguration::default_rustls()` or `TlsConfiguration::default_native()` (when available) or pass an explicit configuration to
+`Transport::tls_with_config(...)` / `Transport::wss_with_config(...)`.
+
+Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` or a custom CA / identity via
+`TlsConfiguration::simple_native(...)`.
+
 ### Important notes
 
 - Looping on `connection.iter()`/`eventloop.poll()` is necessary to run the
@@ -301,39 +337,3 @@ outside the library and `EventLoop` is accessible, users can
   `MqttOptions::new(..., Broker::unix(...))`. When the `url` feature is enabled,
   `MqttOptions::parse_url("unix:///tmp/mqtt.sock?client_id=...")` is also
   supported.
-
-## TLS Support
-
-rumqttc supports two TLS backends:
-
-- **`use-rustls`** (default): Uses [rustls](https://github.com/rustls/rustls) with `aws-lc` as the crypto provider and native platform certificates
-- **`use-native-tls`**: Uses the platform's native TLS implementation (Secure Transport on macOS, `SChannel` on Windows, OpenSSL on Linux)
-
-### TLS Feature Flags
-
-| Feature | Description |
-|---------|-------------|
-| `use-rustls` | Enable rustls with `aws-lc` provider (recommended default) |
-| `use-rustls-no-provider` | Enable rustls without selecting a crypto provider |
-| `use-rustls-aws-lc` | Enable rustls with `aws-lc` provider |
-| `use-rustls-ring` | Enable rustls with `ring` provider |
-| `use-native-tls` | Enable native-tls backend |
-
-`use-rustls-aws-lc` and `use-rustls-ring` are mutually exclusive. Enabling both results in a compile error.
-
-### Important: Using Both TLS Features
-
-When both `use-rustls-no-provider` and `use-native-tls` features are enabled:
-
-- Configure TLS explicitly with `MqttOptions::set_transport(Transport::tls_with_config(...))`
-- Prefer `MqttOptions::websocket_with_tls_config("client-id", "wss://...", tls_config)` for secure websockets
-- For lower-level overrides, `Broker::websocket("ws://...")` plus `MqttOptions::set_transport(Transport::wss_with_config(...))` remains supported
-
-Secure websocket connections upgrade the TCP stream using the selected `TlsConfiguration` before the websocket handshake, so backend selection follows the provided TLS configuration.
-
-In dual-backend dependency graphs, avoid relying on `TlsConfiguration::default()`, because default backend selection must be explicit.
-Use `TlsConfiguration::default_rustls()` or `TlsConfiguration::default_native()` (when available) or pass an explicit configuration to
-`Transport::tls_with_config(...)` / `Transport::wss_with_config(...)`.
-
-Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` or a custom CA / identity via
-`TlsConfiguration::simple_native(...)`.
