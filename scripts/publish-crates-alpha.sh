@@ -31,6 +31,18 @@ MANIFESTS=(
     "rumqttc-next/Cargo.toml"
 )
 
+VERSIONED_DOCUMENTS=(
+    "README.md"
+    "MIGRATION.md"
+    "docs/recipes/proxies.md"
+    "docs/recipes/tls.md"
+    "docs/recipes/tracing.md"
+    "docs/recipes/websockets.md"
+    "rumqttc-next/README.md"
+    "rumqttc-v4/README.md"
+    "rumqttc-v5/README.md"
+)
+
 require_clean_tree() {
     if [[ -n "$(git status --porcelain)" ]]; then
         echo "error: git working tree is not clean" >&2
@@ -50,7 +62,7 @@ require_tool() {
 
 require_tools() {
     local tool
-    for tool in cargo cargo-audit curl git perl; do
+    for tool in awk cargo cargo-audit curl git grep perl python3 rg; do
         require_tool "$tool"
     done
 }
@@ -85,6 +97,91 @@ assert_versions_match() {
             exit 1
         fi
     done
+}
+
+assert_unreleased_has_changes() {
+    if ! awk '
+    NR == 1 && $0 != "## [Unreleased]" { exit 1 }
+    NR > 1 && $0 == "---" { exit found ? 0 : 1 }
+    NR > 1 && /^- / { found = 1 }
+    END { if (!found) exit 1 }
+  ' CHANGELOG.md; then
+        echo "error: CHANGELOG.md has no entries in its Unreleased section" >&2
+        exit 1
+    fi
+}
+
+assert_release_channel() {
+    local version="$1"
+
+    if [[ "$version" != *-* ]]; then
+        echo "error: ${version} is not a prerelease; use ./scripts/publish-crates.sh" >&2
+        exit 1
+    fi
+}
+
+confirm_unmanaged_version_references() {
+    local old="$1"
+    local matches
+
+    matches="$(git grep -n -F "$old" -- . \
+        ':(exclude)Cargo.lock' \
+        ':(exclude)CHANGELOG.md' \
+        ':(exclude)mqttbytes-core/Cargo.toml' \
+        ':(exclude)rumqttc-core/Cargo.toml' \
+        ':(exclude)rumqttc-v4/Cargo.toml' \
+        ':(exclude)rumqttc-v5/Cargo.toml' \
+        ':(exclude)rumqttc-next/Cargo.toml' \
+        ':(exclude)README.md' \
+        ':(exclude)MIGRATION.md' \
+        ':(exclude)docs/recipes/proxies.md' \
+        ':(exclude)docs/recipes/tls.md' \
+        ':(exclude)docs/recipes/tracing.md' \
+        ':(exclude)docs/recipes/websockets.md' \
+        ':(exclude)rumqttc-next/README.md' \
+        ':(exclude)rumqttc-v4/README.md' \
+        ':(exclude)rumqttc-v5/README.md' || true)"
+
+    if [[ -z "$matches" ]]; then
+        return 0
+    fi
+
+    echo >&2
+    echo "warning: references to the old version remain in files the release script does not rewrite:" >&2
+    echo "$matches" >&2
+    echo >&2
+    printf 'Proceed without changing these references? [y/N]: ' >&2
+    read -r reply
+    [[ "$reply" == "y" || "$reply" == "Y" ]]
+}
+
+confirm_documented_package_versions() {
+    local expected="$1"
+    local references stale notes_heading
+
+    references="$(rg -n \
+        '(cargo add (rumqttc-next|rumqttc-v[45]-next)@|package = "rumqttc-(next|v[45]-next)"|rumqttc-(next|v[45]-next) = \{)' \
+        "${VERSIONED_DOCUMENTS[@]}" || true)"
+    stale="$(printf '%s\n' "$references" | grep -Fv "$expected" || true)"
+
+    if [[ -f RELEASE_NOTES.md ]] && grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+        notes_heading="$(grep -m 1 '^# rumqttc-next ' RELEASE_NOTES.md || true)"
+        if [[ -n "$notes_heading" && "$notes_heading" != "# rumqttc-next ${expected}" ]]; then
+            stale="${stale}${stale:+$'\n'}RELEASE_NOTES.md: ${notes_heading}"
+        fi
+    fi
+
+    if [[ -z "$stale" ]]; then
+        return 0
+    fi
+
+    echo >&2
+    echo "warning: consumer-facing release references do not use version ${expected}:" >&2
+    echo "$stale" >&2
+    echo >&2
+    printf 'Proceed with these documentation versions? [y/N]: ' >&2
+    read -r reply
+    [[ "$reply" == "y" || "$reply" == "Y" ]]
 }
 
 next_version() {
@@ -143,6 +240,11 @@ confirm_release() {
     fi
     echo "Branch          : $branch"
     echo "Changelog title : rumqttc-next $next"
+    if [[ -f RELEASE_NOTES.md ]] && grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+        echo "Release notes   : RELEASE_NOTES.md followed by CHANGELOG.md"
+    else
+        echo "Release notes   : CHANGELOG.md"
+    fi
     echo "Publish order   : ${PUBLISH_ORDER[*]}"
     echo
     printf 'Continue with this release? [y/N]: '
@@ -173,6 +275,12 @@ replace_all_versions() {
     s/^version = "\Q'"$old"'\E"/version = "'"$new"'"/m;
     s/(rumqttc_v5 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
   ' rumqttc-next/Cargo.toml
+
+    if [[ "$old" != "$new" ]]; then
+        OLD_VERSION="$old" NEW_VERSION="$new" perl -0pi -e '
+      s/\Q$ENV{OLD_VERSION}\E/$ENV{NEW_VERSION}/g
+    ' "${VERSIONED_DOCUMENTS[@]}"
+    fi
 }
 
 cut_changelog() {
@@ -236,6 +344,9 @@ assert_release_not_present() {
 }
 
 verify_release() {
+    cargo fmt --all --check
+    python3 scripts/check-markdown-links.py
+
     cargo check \
         -p mqttbytes-core-next \
         -p rumqttc-core-next \
@@ -263,7 +374,7 @@ verify_release() {
 
 commit_release() {
     local version="$1"
-    git add CHANGELOG.md Cargo.lock "${MANIFESTS[@]}"
+    git add CHANGELOG.md Cargo.lock "${MANIFESTS[@]}" "${VERSIONED_DOCUMENTS[@]}"
     git commit -m "release(packages): cut ${version}" \
         -m "Prepare the coordinated rumqttc-next crates for release ${version}, cut the changelog, and verify the publishable packages."
 }
@@ -307,19 +418,74 @@ create_tags() {
     done
 }
 
-maybe_push() {
-    local branch="$1"
+build_github_release_notes() {
+    local version="$1"
+
+    if ! grep -Fq "## [rumqttc-next ${version}] - " CHANGELOG.md; then
+        echo "error: CHANGELOG.md has no release section for rumqttc-next ${version}" >&2
+        return 1
+    fi
+
+    if [[ -f RELEASE_NOTES.md ]] && grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+        perl -0pe 's/[[:space:]]+\z/\n/' RELEASE_NOTES.md
+        echo
+    fi
+
+    echo '## Changelog'
+    echo
+    awk -v heading="## [rumqttc-next ${version}]" '
+    index($0, heading) == 1 {
+        found = 1
+        next
+    }
+    found && $0 == "---" {
+        exit
+    }
+    found {
+        if (!started && $0 == "") {
+            next
+        }
+        started = 1
+        print
+    }
+    END {
+        if (!found) {
+            exit 1
+        }
+    }
+  ' CHANGELOG.md
+}
+
+create_github_release() {
+    local version="$1"
 
     echo
-    printf 'Push branch and tags to origin now? [y/N]: '
+    echo "Creating GitHub prerelease rumqttc-next-${version}"
+    build_github_release_notes "$version" |
+        gh release create "rumqttc-next-${version}" \
+            --verify-tag \
+            --title "rumqttc-next ${version}" \
+            --notes-file - \
+            --prerelease \
+            --latest=false
+}
+
+maybe_push_and_release() {
+    local branch="$1"
+    local version="$2"
+
+    echo
+    printf 'Push branch and tags, then create the GitHub prerelease now? [y/N]: '
     read -r reply
     if [[ "$reply" == "y" || "$reply" == "Y" ]]; then
         git push origin "$branch"
         git push origin --tags
+        create_github_release "$version"
     else
-        echo "Skipped pushing. Push later with:"
+        echo "Skipped GitHub publication. Push later with:"
         echo "  git push origin ${branch}"
         echo "  git push origin --tags"
+        echo "Then create the GitHub prerelease from tag rumqttc-next-${version}."
     fi
 }
 
@@ -335,12 +501,19 @@ main() {
     current="$(current_version)"
 
     assert_versions_match "$current"
+    assert_unreleased_has_changes
 
     release_type="$(prompt_release_type)"
     next="$(next_version "$current" "$release_type")"
     today="$(date +%d-%m-%Y)"
 
+    assert_release_channel "$next"
     assert_release_not_present "$next"
+
+    if [[ "$current" != "$next" ]] && ! confirm_unmanaged_version_references "$current"; then
+        echo "aborted"
+        exit 1
+    fi
 
     if ! confirm_release "$branch" "$current" "$next" "$release_type"; then
         echo "aborted"
@@ -348,13 +521,19 @@ main() {
     fi
 
     replace_all_versions "$current" "$next"
+
+    if ! confirm_documented_package_versions "$next"; then
+        echo "aborted; review the generated version changes before retrying"
+        exit 1
+    fi
+
     cut_changelog "$next" "$today"
 
     verify_release
     commit_release "$next"
     publish_release "$next"
     create_tags "$next"
-    maybe_push "$branch"
+    maybe_push_and_release "$branch" "$next"
 
     echo
     echo "Published coordinated release ${next}."
