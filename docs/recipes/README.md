@@ -17,6 +17,7 @@ deployment.
 | Secure WebSockets | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `websocket` plus TLS feature | [WebSockets](./websockets.md) |
 | WebSocket headers | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `websocket` | [WebSockets](./websockets.md) |
 | HTTP/HTTPS proxy | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `proxy`, plus TLS feature for HTTPS proxy | [Proxies](./proxies.md) |
+| Multipath TCP | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none; Linux only | [Multipath TCP](./mptcp.md) |
 | Persistent sessions | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
 | Reconnect resubscribe | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
 | Bounded client channels | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Backpressure](./backpressure.md) |

@@ -201,6 +201,8 @@ pub struct NetworkOptions {
     bind_addr: Option<SocketAddr>,
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     bind_device: Option<String>,
+    #[cfg(target_os = "linux")]
+    mptcp: bool,
 }
 
 impl NetworkOptions {
@@ -214,6 +216,8 @@ impl NetworkOptions {
             bind_addr: None,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             bind_device: None,
+            #[cfg(target_os = "linux")]
+            mptcp: false,
         }
     }
 
@@ -271,6 +275,71 @@ impl NetworkOptions {
         self.bind_device = Some(bind_device.to_string());
         self
     }
+
+    /// Select Multipath TCP (MPTCP, RFC 8684) for outgoing connections.
+    ///
+    /// The default socket connector creates sockets with `IPPROTO_MPTCP`. If the local kernel
+    /// reports that MPTCP is unavailable or disabled, it falls back to a regular TCP socket.
+    /// Once an MPTCP socket has been created, connection errors are returned normally; peer and
+    /// middlebox compatibility is handled by the kernel's MPTCP negotiation.
+    ///
+    /// Custom socket connectors receive this option but decide whether and how to honor it.
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
+    pub const fn set_mptcp(&mut self, mptcp: bool) -> &mut Self {
+        self.mptcp = mptcp;
+        self
+    }
+
+    /// Returns whether the default socket connector should use Multipath TCP.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
+    pub const fn mptcp(&self) -> bool {
+        self.mptcp
+    }
+}
+
+fn new_tcp_socket(addr: SocketAddr, network_options: &NetworkOptions) -> io::Result<TcpSocket> {
+    #[cfg(target_os = "linux")]
+    if network_options.mptcp {
+        match create_mptcp_socket(addr) {
+            Ok(socket) => {
+                socket.set_nonblocking(true)?;
+                return Ok(TcpSocket::from_std_stream(socket.into()));
+            }
+            Err(error) if is_mptcp_unavailable(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = network_options;
+
+    match addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4(),
+        SocketAddr::V6(_) => TcpSocket::new_v6(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn create_mptcp_socket(addr: SocketAddr) -> io::Result<socket2::Socket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let domain = match addr {
+        SocketAddr::V4(_) => Domain::IPV4,
+        SocketAddr::V6(_) => Domain::IPV6,
+    };
+    Socket::new(domain, Type::STREAM, Some(Protocol::MPTCP))
+}
+
+#[cfg(target_os = "linux")]
+fn is_mptcp_unavailable(error: &io::Error) -> bool {
+    error.raw_os_error().is_some_and(|error_code| {
+        matches!(
+            error_code,
+            libc::EINVAL | libc::EPROTONOSUPPORT | libc::ENOPROTOOPT
+        )
+    })
 }
 
 fn configure_tcp_socket(socket: &TcpSocket, network_options: &NetworkOptions) -> io::Result<()> {
@@ -309,10 +378,7 @@ pub async fn connect_socket_addr(
     addr: SocketAddr,
     network_options: NetworkOptions,
 ) -> io::Result<TcpStream> {
-    let socket = match addr {
-        SocketAddr::V4(_) => TcpSocket::new_v4()?,
-        SocketAddr::V6(_) => TcpSocket::new_v6()?,
-    };
+    let socket = new_tcp_socket(addr, &network_options)?;
 
     configure_tcp_socket(&socket, &network_options)?;
     socket.connect(addr).await
@@ -526,5 +592,91 @@ mod tests {
         network_options.set_bind_addr(bind_addr);
 
         assert_eq!(network_options.bind_addr(), Some(bind_addr));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mptcp_defaults_to_disabled_and_can_be_enabled() {
+        let mut network_options = NetworkOptions::new();
+        assert!(!network_options.mptcp());
+
+        network_options.set_mptcp(true);
+        assert!(network_options.mptcp());
+
+        network_options.set_mptcp(false);
+        assert!(!network_options.mptcp());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mptcp_fallback_is_limited_to_unavailable_protocol_errors() {
+        for error_code in [libc::EINVAL, libc::EPROTONOSUPPORT, libc::ENOPROTOOPT] {
+            let error = io::Error::from_raw_os_error(error_code);
+            assert!(super::is_mptcp_unavailable(&error));
+        }
+
+        let unrelated_error = io::Error::from_raw_os_error(libc::EMFILE);
+        assert!(!super::is_mptcp_unavailable(&unrelated_error));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn mptcp_connects_to_plain_ipv4_listener_and_preserves_socket_options() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let listener_addr = listener.local_addr().unwrap();
+
+        let accept = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            drop(stream);
+            peer_addr
+        });
+
+        let mut network_options = NetworkOptions::new();
+        network_options.set_mptcp(true);
+        network_options.set_tcp_nodelay(true);
+        network_options.set_bind_addr(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)));
+
+        let stream = connect_socket_addr(listener_addr, network_options)
+            .await
+            .unwrap();
+        let local_addr = stream.local_addr().unwrap();
+        assert!(stream.nodelay().unwrap());
+        assert_eq!(local_addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        drop(stream);
+
+        assert_eq!(accept.await.unwrap().ip(), local_addr.ip());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn mptcp_connects_to_plain_ipv6_listener_when_available() {
+        let Ok(listener) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await else {
+            return;
+        };
+        let listener_addr = listener.local_addr().unwrap();
+
+        let accept = tokio::spawn(async move {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            drop(stream);
+            peer_addr
+        });
+
+        let mut network_options = NetworkOptions::new();
+        network_options.set_mptcp(true);
+        network_options.set_bind_addr(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::LOCALHOST,
+            0,
+            0,
+            0,
+        )));
+
+        let stream = connect_socket_addr(listener_addr, network_options)
+            .await
+            .unwrap();
+        let local_addr = stream.local_addr().unwrap();
+        assert_eq!(local_addr.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+        drop(stream);
+
+        assert_eq!(accept.await.unwrap().ip(), local_addr.ip());
     }
 }

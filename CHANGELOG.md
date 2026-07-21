@@ -4,6 +4,9 @@
 - Add Unix file-backed persistent session stores for MQTT v4 and v5, backed by a
   shared protocol-neutral, checksummed, bounded, cancellation-safe core using
   `atomic-write-file` for atomic replacement.
+- `rumqttc` v4/v5: Add Linux-only `NetworkOptions::set_mptcp(...)` for opt-in
+  Multipath TCP connections, with regular TCP fallback when the local kernel
+  reports MPTCP as unavailable or disabled.
 ### Changed
 ### Deprecated
 ### Removed

@@ -59,6 +59,9 @@ Production deployment examples for TLS, WebSockets, proxies, persistent
 sessions, reconnect handling, bounded channels, manual ACKs, and broker-specific
 setup notes are in the [recipe guide](./docs/recipes/README.md).
 
+On Linux, both clients support opt-in Multipath TCP through
+`NetworkOptions::set_mptcp`; see the [MPTCP recipe](./docs/recipes/mptcp.md).
+
 ## Features
 
 ### rumqttc-next / rumqttc-v5-next
