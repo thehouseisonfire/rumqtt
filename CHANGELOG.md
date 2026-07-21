@@ -10,17 +10,9 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
-- Move the persistent-session file-store examples into their adapter packages,
-  keeping client crate packages independent of unpublished adapter releases.
-  Requested local recovery now stops before reconnecting persistently so broker
-  state can be deliberately realigned first.
 ### Deprecated
 ### Removed
 ### Fixed
-- Preserve the committed quarantine diagnostic path when a Unix namespace sync
-  fails after the checkpoint has already been moved.
-- Make Windows clear-staging cleanup age start when clear begins instead of
-  inheriting the canonical checkpoint payload's last-write time.
 ### Security
 
 ---
