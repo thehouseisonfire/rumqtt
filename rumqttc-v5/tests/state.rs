@@ -23,13 +23,12 @@ fn queue_outgoing_publish(state: &mut MqttState, qos: QoS) -> Packet {
 }
 
 #[test]
-fn direct_state_users_can_mark_flushed_qos1_publish_for_dup_replay() {
+fn direct_state_clean_marks_qos1_publish_for_dup_replay() {
     let mut state = MqttState::builder(10).build();
     let packet = queue_outgoing_publish(&mut state, QoS::AtLeastOnce);
 
     assert!(matches!(packet, Packet::Publish(_)));
 
-    state.mark_outgoing_publishes_flush_attempted();
     let replay = replayed_publish_from_clean(state.clean());
 
     assert!(replay.dup);
@@ -37,13 +36,12 @@ fn direct_state_users_can_mark_flushed_qos1_publish_for_dup_replay() {
 }
 
 #[test]
-fn direct_state_users_can_mark_flushed_qos2_publish_for_dup_replay() {
+fn direct_state_clean_marks_qos2_publish_for_dup_replay() {
     let mut state = MqttState::builder(10).build();
     let packet = queue_outgoing_publish(&mut state, QoS::ExactlyOnce);
 
     assert!(matches!(packet, Packet::Publish(_)));
 
-    state.mark_outgoing_publishes_flush_attempted();
     let replay = replayed_publish_from_clean(state.clean());
 
     assert!(replay.dup);
@@ -51,12 +49,12 @@ fn direct_state_users_can_mark_flushed_qos2_publish_for_dup_replay() {
 }
 
 #[test]
-fn direct_state_clean_leaves_unflushed_qos1_publish_without_dup() {
+fn direct_state_clean_marks_unflushed_qos1_publish_for_conservative_replay() {
     let mut state = MqttState::builder(10).build();
     queue_outgoing_publish(&mut state, QoS::AtLeastOnce);
 
     let replay = replayed_publish_from_clean(state.clean());
 
-    assert!(!replay.dup);
+    assert!(replay.dup);
     assert_eq!(replay.qos, QoS::AtLeastOnce);
 }

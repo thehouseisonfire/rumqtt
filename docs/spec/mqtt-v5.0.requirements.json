@@ -4120,24 +4120,17 @@
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "Client-side resend handling marks unacknowledged QoS 1/2 PUBLISH packets as duplicates before reconnect replay. First-send packets still start with dup=false, and QoS 0 DUP handling is covered separately by MQTT-3.3.1-2.",
+      "mapping_reason": "Admission keeps the first live QoS 1/2 PUBLISH at DUP=0 while snapshots store a conservative recovery copy with DUP=1. Reconnect cleanup and restore, including compatible legacy checkpoints containing DUP=0, prepare every retransmission with DUP=1. QoS 0 remains covered separately by MQTT-3.3.1-2.",
       "compliance_status": "compliant",
       "evidence": [
         {
-          "path": "rumqttc-v5/src/eventloop.rs",
-          "symbols": [
-            "EventLoop::flush_network",
-            "EventLoop::clean"
-          ],
-          "reason": "The event loop records outgoing publishes as having reached a network flush attempt before cleanup moves unacknowledged state into the reconnect replay queue."
-        },
-        {
           "path": "rumqttc-v5/src/state.rs",
           "symbols": [
-            "MqttState::mark_outgoing_publishes_flush_attempted",
+            "persisted_publish",
+            "request_from_persisted_request",
             "MqttState::clean_with_notices"
           ],
-          "reason": "Reconnect cleanup sets publish.dup = true for unacknowledged QoS 1/2 publishes whose packet ids were included in a flush attempt before re-enqueuing them for replay."
+          "reason": "Snapshots, restore normalization, and reconnect cleanup prepare outgoing QoS 1/2 recovery PUBLISH packets with DUP=1 without mutating the separate first live packet."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
@@ -4151,13 +4144,14 @@
         "status": "covered",
         "tests": [
           "rumqttc-v5/src/state.rs::clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
-          "rumqttc-v5/src/state.rs::clean_does_not_mark_unflushed_qos1_publish_dup_for_reconnect_replay",
-          "rumqttc-v5/tests/state.rs::direct_state_users_can_mark_flushed_qos1_publish_for_dup_replay",
-          "rumqttc-v5/tests/state.rs::direct_state_users_can_mark_flushed_qos2_publish_for_dup_replay",
-          "rumqttc-v5/tests/state.rs::direct_state_clean_leaves_unflushed_qos1_publish_without_dup",
+          "rumqttc-v5/src/state.rs::old_dup_false_checkpoints_restore_qos1_and_qos2_as_replays",
+          "rumqttc-v5/src/eventloop.rs::admission_checkpoint_is_duplicate_but_first_wire_publish_is_not",
+          "rumqttc-v5/tests/state.rs::direct_state_clean_marks_qos1_publish_for_dup_replay",
+          "rumqttc-v5/tests/state.rs::direct_state_clean_marks_qos2_publish_for_dup_replay",
+          "rumqttc-v5/tests/state.rs::direct_state_clean_marks_unflushed_qos1_publish_for_conservative_replay",
           "rumqttc-v5/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"
         ],
-        "notes": "State-level coverage verifies DUP is applied only after a flush attempt, including public MqttState usage for QoS 1 and QoS 2 replay. Reliability coverage verifies a replayed QoS 1 publish is sent with DUP=1 after reconnect."
+        "notes": "State, byte-level event-loop, compatibility, direct-state, and reliability coverage distinguish the DUP=0 live first send from the DUP=1 durable/replayed representation."
       },
       "follow_up": null
     },

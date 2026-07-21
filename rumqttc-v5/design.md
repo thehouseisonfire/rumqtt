@@ -95,6 +95,12 @@ discarded before the connection continues. When it is `1`, compatible
 unfinished PUBLISH, PUBREL, SUBSCRIBE, and UNSUBSCRIBE exchanges retain their
 packet identifiers and are replayed according to MQTT rules.
 
+Persisted outgoing QoS 1/2 PUBLISH packets are conservative recovery
+transmissions with `DUP=1`; the separate first live packet remains `DUP=0`.
+Admission, normalized topic data, and packet-ID ownership are durable before
+transport visibility. Topic aliases remain connection-scoped, and QoS 2 PUBREL
+and terminal completion keep their independent durability barriers.
+
 The store is also cleared after a graceful DISCONNECT whose effective Session
 Expiry Interval is zero. A Session Expiry Interval on the client DISCONNECT
 overrides the CONNECT or CONNACK-derived value for that transition.

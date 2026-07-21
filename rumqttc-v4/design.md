@@ -55,3 +55,9 @@ acknowledgement mode, packet-identifier progress, replayable outbound exchanges,
 and incomplete incoming QoS 2 state. Restoration is enabled only for
 `clean_session = false` and validates that the checkpoint belongs to the
 configured Client Identifier and compatible local options.
+
+Persisted outgoing QoS 1/2 PUBLISH packets are recovery transmissions and use
+`DUP=1` even if admission completed before the first live send. The separately
+returned live packet remains `DUP=0`. Admission and packet-ID ownership are
+saved before transport visibility; QoS 2 PUBREL and terminal completion retain
+their independent durability barriers.

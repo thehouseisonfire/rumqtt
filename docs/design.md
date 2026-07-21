@@ -126,11 +126,13 @@ Incoming acknowledgement packets remain visible as events even when they also
 resolve a notice.
 
 A timeout or transport failure cannot prove that a packet partially or fully
-written to the network was not delivered. After an uncertain flush, replayed
-QoS 1 and QoS 2 publishes use MQTT retransmission semantics, including `DUP`
-where required. `DUP` is set only after a network flush was attempted; a packet
-admitted locally but never included in a flush attempt is not falsely marked as
-a retransmission.
+written to the network was not delivered. The durable checkpoint is a recovery
+instruction rather than an exact transcript: admission stores QoS 1 and QoS 2
+PUBLISH entries with `DUP=1`, while the separate uninterrupted first wire
+packet keeps `DUP=0`. This makes every restart or reconnect replay conservative,
+including recovery before the first physical send. MQTT-3.3.1-1 requires
+re-delivery to use `DUP=1`, and a receiver cannot assume that `DUP=1` proves an
+earlier copy was received.
 
 ## Keepalive
 

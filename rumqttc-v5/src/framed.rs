@@ -289,6 +289,11 @@ impl Network {
             .await
             .map_err(StateError::Deserialization)
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_backpressure_boundary(&mut self, boundary: usize) {
+        self.framed.set_backpressure_boundary(boundary);
+    }
 }
 
 #[cfg(test)]

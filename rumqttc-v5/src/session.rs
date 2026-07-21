@@ -172,6 +172,9 @@ pub enum PersistedRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistedPublish {
     /// MQTT DUP flag to use when replaying the publish.
+    ///
+    /// New checkpoints emit `true`. Restore also treats `false` from an older
+    /// compatible checkpoint as `true` before retransmission.
     pub dup: bool,
     /// Publish `QoS`.
     pub qos: PersistedQoS,

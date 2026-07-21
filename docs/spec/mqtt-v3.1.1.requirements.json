@@ -2825,15 +2825,17 @@
                 "rumqttc-v4/src/mqttbytes/v4/publish.rs"
             ],
             "mapping_status": "reviewed",
-            "mapping_reason": "Client-side resend handling now marks unacknowledged QoS 1/2 PUBLISH packets as duplicates before they are queued for reconnect replay, which matches the client-applicable DUP requirement for re-delivery. First-send packets still start with dup=false, and QoS 0 sends remain covered separately by MQTT-3.3.1-2.",
+            "mapping_reason": "Admission keeps the first live QoS 1/2 PUBLISH at DUP=0 while snapshots store a conservative recovery copy with DUP=1. Reconnect cleanup and restore, including compatible legacy checkpoints containing DUP=0, prepare every retransmission with DUP=1. QoS 0 remains covered separately by MQTT-3.3.1-2.",
             "compliance_status": "compliant",
             "evidence": [
                 {
                     "path": "rumqttc-v4/src/state.rs",
                     "symbols": [
+                        "persisted_publish",
+                        "request_from_persisted_request",
                         "clean_with_notices"
                     ],
-                    "reason": "Reconnect replay now sets publish.dup = true for unacknowledged QoS 1/2 publishes before they are re-enqueued."
+                    "reason": "Snapshots, restore normalization, and reconnect cleanup prepare outgoing QoS 1/2 recovery PUBLISH packets with DUP=1 without mutating the separate first live packet."
                 },
                 {
                     "path": "rumqttc-v4/src/mqttbytes/v4/publish.rs",
@@ -2847,9 +2849,12 @@
                 "status": "covered",
                 "tests": [
                     "clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
+                    "clean_marks_unflushed_qos1_publish_dup_for_conservative_replay",
+                    "old_dup_false_checkpoints_restore_qos1_and_qos2_as_replays",
+                    "admission_checkpoint_is_duplicate_but_first_wire_publish_is_not",
                     "reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"
                 ],
-                "notes": "State-level and integration coverage now assert that replayed QoS 1 publishes are marked duplicate before resend."
+                "notes": "State, byte-level event-loop, compatibility, and integration coverage distinguish the DUP=0 live first send from the DUP=1 durable/replayed representation."
             },
             "follow_up": null
         },

@@ -152,8 +152,6 @@ pub struct OutboundDiagnostics {
     pub outgoing_publish: usize,
     /// Stored outgoing publishes with completion notices attached.
     pub outgoing_publish_notices: usize,
-    /// Stored outgoing publish packet identifiers included in a network flush attempt.
-    pub outgoing_pub_flush_attempted: usize,
     /// Publish acknowledgements received out of order and retained until the contiguous
     /// acknowledgement frontier advances.
     pub outgoing_puback_waiting: usize,
@@ -252,8 +250,6 @@ pub struct MqttState {
     pub(crate) outgoing_pub: Vec<Option<Publish>>,
     /// Notice handles for outgoing `QoS` 1, 2 publishes
     pub(crate) outgoing_pub_notice: Vec<Option<PublishNoticeTx>>,
-    /// Packet ids of outgoing publishes included in a network flush attempt.
-    pub(crate) outgoing_pub_flush_attempted: FixedBitSet,
     /// Packet ids acked by broker while waiting to advance last contiguous ack boundary
     pub(crate) outgoing_pub_ack: FixedBitSet,
     /// Packet ids of released `QoS` 2 publishes
@@ -363,10 +359,6 @@ impl MqttState {
             self.outgoing_rel_notice.resize_with(target_len, || None);
         }
 
-        if self.outgoing_pub_flush_attempted.len() < target_len {
-            self.outgoing_pub_flush_attempted.grow(target_len);
-        }
-
         if self.outgoing_pub_ack.len() < target_len {
             self.outgoing_pub_ack.grow(target_len);
         }
@@ -388,7 +380,6 @@ impl MqttState {
             && self.pending_unsubscribe.is_empty()
             && self.outgoing_pub.iter().all(Option::is_none)
             && self.outgoing_pub_notice.iter().all(Option::is_none)
-            && self.outgoing_pub_flush_attempted.ones().next().is_none()
             && self.outgoing_rel_notice.iter().all(Option::is_none)
             && self.outgoing_pub_ack.ones().next().is_none()
             && self.outgoing_rel.ones().next().is_none()
@@ -402,7 +393,7 @@ impl MqttState {
         format!(
             "inflight={}, collision={}, collision_notice={}, pending_subscribe={}, \
              pending_unsubscribe={}, outgoing_pub={}, outgoing_pub_notice={}, \
-             outgoing_pub_flush_attempted={}, outgoing_rel_notice={}, outgoing_pub_ack={}, \
+             outgoing_rel_notice={}, outgoing_pub_ack={}, \
              outgoing_rel={}, outgoing_rel_replay={}, incoming_pub={}, incoming_puback={}, incoming_pubrec={}",
             diagnostics.inflight,
             diagnostics.collision,
@@ -411,7 +402,6 @@ impl MqttState {
             diagnostics.pending_unsubscribe,
             diagnostics.outgoing_publish,
             diagnostics.outgoing_publish_notices,
-            diagnostics.outgoing_pub_flush_attempted,
             diagnostics.outgoing_pubrel_notices,
             diagnostics.outgoing_puback_waiting,
             diagnostics.outgoing_pubrel,
@@ -431,7 +421,6 @@ impl MqttState {
         self.outgoing_pub.truncate(target_len);
         self.outgoing_pub_notice.truncate(target_len);
         self.outgoing_rel_notice.truncate(target_len);
-        self.outgoing_pub_flush_attempted = FixedBitSet::with_capacity(target_len);
         self.outgoing_pub_ack = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel = FixedBitSet::with_capacity(target_len);
         self.last_pkid = 0;
@@ -544,7 +533,6 @@ impl MqttState {
             // index 0 is wasted as 0 is not a valid packet id
             outgoing_pub: std::iter::repeat_with(|| None).take(tracking_len).collect(),
             outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
-            outgoing_pub_flush_attempted: FixedBitSet::with_capacity(tracking_len),
             outgoing_pub_ack: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_replay: FixedBitSet::with_capacity(tracking_len),
@@ -603,11 +591,7 @@ impl MqttState {
             .chain(first_half.iter_mut().zip(notice_first_half.iter_mut()))
         {
             if let Some(mut publish) = publish.take() {
-                if publish.qos != QoS::AtMostOnce
-                    && self
-                        .outgoing_pub_flush_attempted
-                        .contains(usize::from(publish.pkid))
-                {
+                if publish.qos != QoS::AtMostOnce {
                     publish.dup = true;
                 }
                 if !keep_replay_pkids_reserved {
@@ -652,7 +636,6 @@ impl MqttState {
         }
         self.outgoing_rel_replay = self.outgoing_rel.clone();
         self.outgoing_rel.clear();
-        self.outgoing_pub_flush_attempted.clear();
         self.outgoing_pub_ack.clear();
 
         for (pkid, mut pending_subscribe) in std::mem::take(&mut self.pending_subscribe) {
@@ -691,14 +674,6 @@ impl MqttState {
         pending
     }
 
-    pub(crate) fn mark_outgoing_publishes_flush_attempted(&mut self) {
-        for (pkid, publish) in self.outgoing_pub.iter().enumerate() {
-            if publish.is_some() {
-                self.outgoing_pub_flush_attempted.set(pkid, true);
-            }
-        }
-    }
-
     /// Returns inflight outgoing packets and clears internal queues
     pub fn clean(&mut self) -> Vec<Request> {
         self.clean_with_notices()
@@ -734,7 +709,6 @@ impl MqttState {
             .iter()
             .filter(|notice| notice.is_some())
             .count();
-        let outgoing_pub_flush_attempted = self.outgoing_pub_flush_attempted.ones().count();
         let outgoing_puback_waiting = self.outgoing_pub_ack.ones().count();
         let outgoing_pubrel = self.outgoing_rel.ones().count();
         let outgoing_pubrel_replay = self.outgoing_rel_replay.ones().count();
@@ -750,7 +724,6 @@ impl MqttState {
             && pending_unsubscribe == 0
             && outgoing_publish == 0
             && outgoing_publish_notices == 0
-            && outgoing_pub_flush_attempted == 0
             && outgoing_puback_waiting == 0
             && outgoing_pubrel == 0
             && outgoing_pubrel_replay == 0
@@ -768,7 +741,6 @@ impl MqttState {
             pending_unsubscribe,
             outgoing_publish,
             outgoing_publish_notices,
-            outgoing_pub_flush_attempted,
             outgoing_puback_waiting,
             outgoing_pubrel,
             outgoing_pubrel_replay,
@@ -1178,8 +1150,6 @@ impl MqttState {
             error!("Unsolicited puback packet: {:?}", puback.pkid);
             return Err(StateError::Unsolicited(puback.pkid));
         }
-        self.outgoing_pub_flush_attempted
-            .set(usize::from(puback.pkid), false);
         self.mark_outgoing_packet_id_complete(puback.pkid);
         self.release_outbound_pkid(puback.pkid);
 
@@ -1219,8 +1189,6 @@ impl MqttState {
             error!("Unsolicited pubrec packet: {:?}", pubrec.pkid);
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
-        self.outgoing_pub_flush_attempted
-            .set(usize::from(pubrec.pkid), false);
 
         let notice = self
             .outgoing_pub_notice
@@ -1386,8 +1354,6 @@ impl MqttState {
             }
             self.outgoing_pub[usize::from(pkid)] = Some(publish.clone());
             self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
-            self.outgoing_pub_flush_attempted
-                .set(usize::from(pkid), false);
             self.outgoing_pub_ack.set(usize::from(pkid), false);
             self.inflight += 1;
         }
@@ -1659,8 +1625,6 @@ impl MqttState {
                 .expect("collision replay packet identifier should have been released");
             self.outgoing_pub[usize::from(publish_pkid)] = Some(publish.clone());
             self.outgoing_pub_notice[usize::from(publish_pkid)] = notice;
-            self.outgoing_pub_flush_attempted
-                .set(usize::from(publish_pkid), false);
             self.inflight += 1;
 
             let event = Event::Outgoing(Outgoing::Publish(publish_pkid));
@@ -1903,15 +1867,7 @@ impl MqttState {
             .split_at(usize::from(self.last_puback) + 1);
 
         for publish in second_half.iter().chain(first_half.iter()).flatten() {
-            let mut publish = publish.clone();
-            if publish.qos != QoS::AtMostOnce
-                && self
-                    .outgoing_pub_flush_attempted
-                    .contains(usize::from(publish.pkid))
-            {
-                publish.dup = true;
-            }
-            if let Some(persisted) = persisted_publish(&publish) {
+            if let Some(persisted) = persisted_publish(publish) {
                 replay.push(PersistedRequest::Publish(persisted));
             }
         }
@@ -2129,7 +2085,10 @@ fn persisted_publish(publish: &Publish) -> Option<PersistedPublish> {
     }
 
     Some(PersistedPublish {
-        dup: publish.dup,
+        // A checkpoint is a recovery instruction, not a transcript of the first
+        // live send. MQTT-3.3.1-1 requires any replay to use DUP=1, while the
+        // separate packet returned from fresh admission keeps DUP=0.
+        dup: true,
         qos: persisted_qos(publish.qos),
         retain: publish.retain,
         topic: publish.topic.to_vec(),
@@ -2166,7 +2125,8 @@ fn request_from_persisted_request(
         PersistedRequest::Publish(publish) => {
             validate_pkid(publish.pkid)?;
             Ok(Request::Publish(Publish {
-                dup: publish.dup,
+                // Normalize checkpoints written by older clients before replay.
+                dup: true,
                 qos: qos_from_persisted(publish.qos),
                 retain: publish.retain,
                 topic: Bytes::from(publish.topic.clone()),
@@ -2219,7 +2179,6 @@ impl Clone for MqttState {
             max_inflight: self.max_inflight,
             outgoing_pub: self.outgoing_pub.clone(),
             outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
-            outgoing_pub_flush_attempted: self.outgoing_pub_flush_attempted.clone(),
             outgoing_pub_ack: self.outgoing_pub_ack.clone(),
             outgoing_rel: self.outgoing_rel.clone(),
             outgoing_rel_replay: self.outgoing_rel_replay.clone(),
@@ -2411,7 +2370,6 @@ mod test {
         mqtt.outgoing_pub[1] = Some(build_outgoing_publish(QoS::AtLeastOnce));
         let (publish_notice, _) = PublishNoticeTx::new();
         mqtt.outgoing_pub_notice[1] = Some(publish_notice);
-        mqtt.outgoing_pub_flush_attempted.insert(1);
         mqtt.outgoing_pub_ack.insert(1);
         mqtt.outgoing_rel.insert(2);
         mqtt.outgoing_rel_replay.insert(2);
@@ -2455,7 +2413,6 @@ mod test {
         assert_eq!(diagnostics.pending_unsubscribe, 1);
         assert_eq!(diagnostics.outgoing_publish, 1);
         assert_eq!(diagnostics.outgoing_publish_notices, 1);
-        assert_eq!(diagnostics.outgoing_pub_flush_attempted, 1);
         assert_eq!(diagnostics.outgoing_puback_waiting, 1);
         assert_eq!(diagnostics.outgoing_pubrel, 1);
         assert_eq!(diagnostics.outgoing_pubrel_replay, 1);
@@ -2673,8 +2630,6 @@ mod test {
         let mut mqtt = build_mqttstate();
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
         queue_publish_with_notice(&mut mqtt, publish);
-        mqtt.mark_outgoing_publishes_flush_attempted();
-
         let pending = mqtt.clean_with_notices();
 
         let replay = pending
@@ -2690,7 +2645,7 @@ mod test {
     }
 
     #[test]
-    fn clean_does_not_mark_unflushed_qos1_publish_dup_for_reconnect_replay() {
+    fn clean_marks_unflushed_qos1_publish_dup_for_conservative_replay() {
         let mut mqtt = build_mqttstate();
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
         queue_publish_with_notice(&mut mqtt, publish);
@@ -2705,7 +2660,7 @@ mod test {
             })
             .expect("expected pending publish replay");
 
-        assert!(!replay.dup);
+        assert!(replay.dup);
         assert_eq!(replay.qos, QoS::AtLeastOnce);
     }
 
@@ -4148,8 +4103,6 @@ mod test {
         let mut mqtt = build_mqttstate();
         mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
             .unwrap();
-        mqtt.mark_outgoing_publishes_flush_attempted();
-
         let session = mqtt.persisted_session(&options, std::iter::empty());
         let mut restored = build_mqttstate();
         let replay = restored
@@ -4167,6 +4120,33 @@ mod test {
                 assert_eq!(publish.topic.as_ref(), b"hello/world");
             }
             request => panic!("expected restored publish replay, got {request:?}"),
+        }
+    }
+
+    #[test]
+    fn old_dup_false_checkpoints_restore_qos1_and_qos2_as_replays() {
+        let options = persistent_options();
+
+        for qos in [QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let mut mqtt = build_mqttstate();
+            mqtt.outgoing_publish(build_outgoing_publish(qos)).unwrap();
+            let mut session = mqtt.persisted_session(&options, std::iter::empty());
+            let PersistedRequest::Publish(persisted) = &mut session.replay[0] else {
+                panic!("expected persisted publish");
+            };
+            persisted.dup = false;
+
+            let decoded = PersistedSession::decode(&session.encode().unwrap()).unwrap();
+            let mut restored = build_mqttstate();
+            let replay = restored
+                .restore_persisted_session(&options, &decoded)
+                .expect("old checkpoint should restore");
+
+            assert!(restored.packet_identifier_in_use(1));
+            assert!(matches!(
+                &replay[0],
+                Request::Publish(publish) if publish.dup && publish.qos == qos && publish.pkid == 1
+            ));
         }
     }
 

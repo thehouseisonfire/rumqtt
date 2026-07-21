@@ -956,7 +956,6 @@ impl EventLoop {
         batch: ReadBatch,
     ) -> Result<ReadBatchOutcome, ConnectionError> {
         let ReadBatch { outcome, notices } = batch;
-        self.state.mark_outgoing_publishes_flush_attempted();
         if let Err(err) = self.save_persisted_session().await {
             let error = err.to_string();
             for notice in notices {
@@ -1541,8 +1540,6 @@ impl EventLoop {
     }
 
     async fn flush_network(&mut self) -> Result<(), ConnectionError> {
-        self.state.mark_outgoing_publishes_flush_attempted();
-        self.save_persisted_session().await?;
         self.network.as_mut().unwrap().flush().await?;
         Ok(())
     }
@@ -1559,6 +1556,7 @@ impl EventLoop {
                 if session_expiry_interval.unwrap_or(0) == 0 {
                     self.network.as_mut().unwrap().flush().await?;
                 } else {
+                    self.save_persisted_session().await?;
                     self.flush_network().await?;
                 }
                 self.effective_session_expiry_interval = session_expiry_interval;
@@ -2319,17 +2317,29 @@ mod tests {
     #[derive(Clone, Debug)]
     struct CapturingSessionStore {
         session: Arc<Mutex<Option<PersistedSession>>>,
+        history: Arc<Mutex<Vec<PersistedSession>>>,
+        fail_next_save: Arc<Mutex<bool>>,
     }
 
     impl CapturingSessionStore {
         fn new() -> Self {
             Self {
                 session: Arc::new(Mutex::new(None)),
+                history: Arc::new(Mutex::new(Vec::new())),
+                fail_next_save: Arc::new(Mutex::new(false)),
             }
         }
 
         fn current(&self) -> Option<PersistedSession> {
             self.session.lock().unwrap().clone()
+        }
+
+        fn history(&self) -> Vec<PersistedSession> {
+            self.history.lock().unwrap().clone()
+        }
+
+        fn fail_next_save(&self) {
+            *self.fail_next_save.lock().unwrap() = true;
         }
     }
 
@@ -2354,7 +2364,12 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::SessionStoreError>> + Send + 'a>>
         {
             Box::pin(async {
+                if std::mem::take(&mut *self.fail_next_save.lock().unwrap()) {
+                    return Err(Box::new(std::io::Error::other("session save failed"))
+                        as crate::SessionStoreError);
+                }
                 *self.session.lock().unwrap() = Some(session.clone());
+                self.history.lock().unwrap().push(session.clone());
                 Ok(())
             })
         }
@@ -2366,6 +2381,7 @@ mod tests {
         {
             Box::pin(async {
                 *self.session.lock().unwrap() = None;
+                self.history.lock().unwrap().clear();
                 Ok(())
             })
         }
@@ -2690,6 +2706,490 @@ mod tests {
         packet.extend(remaining_len_bytes);
         packet.extend(payload);
         packet
+    }
+
+    #[tokio::test]
+    async fn admission_checkpoint_is_duplicate_but_first_wire_publish_is_not() {
+        for qos in [QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let store = CapturingSessionStore::new();
+            let mut options = MqttOptions::new("test-client", "localhost");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(60))
+                .set_session_store(store.clone());
+            let restore_options = options.clone();
+            let (mut eventloop, _) = EventLoop::new_for_async_client(options, 4);
+            let (client, mut peer) = tokio::io::duplex(1024);
+            eventloop.network = Some(Network::new(client, Some(1024)));
+
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::plain(Request::Publish(Publish::new(
+                        "checkpoint/live",
+                        qos,
+                        vec![1, 2, 3],
+                        None,
+                    ))),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+
+            let checkpoints = store.history();
+            assert_eq!(
+                checkpoints.len(),
+                1,
+                "admission must be the only pre-ack save"
+            );
+            let decoded = PersistedSession::decode(&checkpoints[0].encode().unwrap()).unwrap();
+            let persisted = decoded
+                .replay
+                .iter()
+                .find_map(|request| match request {
+                    crate::PersistedRequest::Publish(publish) => Some(publish),
+                    _ => None,
+                })
+                .expect("admission checkpoint must contain the publish");
+            assert!(persisted.dup);
+            assert_ne!(persisted.pkid, 0);
+
+            // The live packet has been fed, but the explicit batch flush has not happened.
+            // The admission checkpoint alone must already be a valid replay.
+            let mut restored_before_flush = MqttState::builder(4).build();
+            let replay = restored_before_flush
+                .restore_persisted_session(&restore_options, &decoded)
+                .unwrap();
+            assert!(matches!(&replay[0], Request::Publish(publish) if publish.dup));
+            assert_eq!(
+                restored_before_flush
+                    .outbound_diagnostics()
+                    .packet_identifiers_in_use,
+                1
+            );
+
+            eventloop
+                .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.history().len(),
+                1,
+                "flush must not promote DUP with another save"
+            );
+
+            let mut bytes = BytesMut::from(read_packet_bytes(&mut peer).await.as_slice());
+            match Packet::read(&mut bytes, Some(1024)).unwrap() {
+                Packet::Publish(publish) => {
+                    assert!(!publish.dup);
+                    assert_eq!(publish.qos, qos);
+                    assert_eq!(publish.pkid, persisted.pkid);
+                }
+                packet => panic!("expected live PUBLISH, got {packet:?}"),
+            }
+
+            let mut restored_after_flush = MqttState::builder(4).build();
+            let replay = restored_after_flush
+                .restore_persisted_session(&restore_options, &decoded)
+                .unwrap();
+            assert!(matches!(&replay[0], Request::Publish(publish) if publish.dup));
+            assert_eq!(
+                restored_after_flush
+                    .outbound_diagnostics()
+                    .packet_identifiers_in_use,
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_batch_has_conservative_checkpoints_without_flush_save() {
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_max_request_batch(3)
+            .set_session_store(store.clone());
+        let (mut eventloop, _) = EventLoop::new_for_async_client(options, 4);
+        let (client, mut peer) = tokio::io::duplex(4096);
+        eventloop.network = Some(Network::new(client, Some(4096)));
+
+        for index in 0_u8..3 {
+            eventloop
+                .queued
+                .push_back(RequestEnvelope::plain(Request::Publish(Publish::new(
+                    format!("batch/{index}"),
+                    QoS::AtLeastOnce,
+                    vec![index; usize::from(index) + 1],
+                    None,
+                ))));
+        }
+
+        assert!(eventloop.handle_ready_requests().await.unwrap());
+        let checkpoints = store.history();
+        assert_eq!(checkpoints.len(), 3);
+        let publishes: Vec<_> = checkpoints
+            .last()
+            .unwrap()
+            .replay
+            .iter()
+            .filter_map(|request| match request {
+                crate::PersistedRequest::Publish(publish) => Some(publish),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(publishes.len(), 3);
+        assert!(publishes.iter().all(|publish| publish.dup));
+        let mut pkids: Vec<_> = publishes.iter().map(|publish| publish.pkid).collect();
+        pkids.sort_unstable();
+        pkids.dedup();
+        assert_eq!(pkids.len(), 3);
+        assert_eq!(
+            eventloop
+                .state
+                .outbound_diagnostics()
+                .packet_identifiers_in_use,
+            3
+        );
+
+        for _ in 0..3 {
+            let mut bytes = BytesMut::from(read_packet_bytes(&mut peer).await.as_slice());
+            assert!(matches!(
+                Packet::read(&mut bytes, Some(4096)).unwrap(),
+                Packet::Publish(publish) if !publish.dup
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_can_advance_earlier_publish_only_after_its_checkpoint() {
+        struct ObservingIo {
+            checkpoints: Arc<Mutex<Vec<PersistedSession>>>,
+            observed_checkpoint_counts: Arc<Mutex<Vec<usize>>>,
+        }
+
+        impl AsyncRead for ObservingIo {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        impl AsyncWrite for ObservingIo {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                self.observed_checkpoint_counts
+                    .lock()
+                    .unwrap()
+                    .push(self.checkpoints.lock().unwrap().len());
+                Poll::Ready(Ok(buf.len()))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let store = CapturingSessionStore::new();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let io = ObservingIo {
+            checkpoints: Arc::clone(&store.history),
+            observed_checkpoint_counts: Arc::clone(&observed),
+        };
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_max_request_batch(2)
+            .set_session_store(store.clone());
+        let (mut eventloop, _) = EventLoop::new_for_async_client(options, 2);
+        let mut network = Network::new(io, Some(4096));
+        network.set_backpressure_boundary(1);
+        eventloop.network = Some(network);
+        for topic in ["ready/first", "ready/second"] {
+            eventloop
+                .queued
+                .push_back(RequestEnvelope::plain(Request::Publish(Publish::new(
+                    topic,
+                    QoS::AtLeastOnce,
+                    vec![1],
+                    None,
+                ))));
+        }
+
+        eventloop.handle_ready_requests().await.unwrap();
+
+        let observed = observed.lock().unwrap();
+        assert!(!observed.is_empty());
+        assert!(observed.iter().all(|count| *count >= 1));
+        assert!(store.history()[0].replay.iter().any(
+            |request| matches!(request, crate::PersistedRequest::Publish(publish) if publish.dup)
+        ));
+    }
+
+    #[tokio::test]
+    async fn isolated_qos_exchanges_keep_terminal_and_pubrel_save_counts() {
+        for qos in [QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let store = CapturingSessionStore::new();
+            let mut options = MqttOptions::new("test-client", "localhost");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(60))
+                .set_session_store(store.clone());
+            let (mut eventloop, _) = EventLoop::new_for_async_client(options, 1);
+            let (client, _peer) = tokio::io::duplex(4096);
+            eventloop.network = Some(Network::new(client, Some(4096)));
+
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::plain(Request::Publish(Publish::new(
+                        "save/count",
+                        qos,
+                        vec![1],
+                        None,
+                    ))),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+            eventloop
+                .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+                .await
+                .unwrap();
+            assert_eq!(store.history().len(), 1);
+
+            if qos == QoS::AtLeastOnce {
+                let effects = eventloop
+                    .state
+                    .handle_incoming_packet_with_effects(Incoming::PubAck(PubAck::new(1, None)))
+                    .unwrap();
+                eventloop
+                    .complete_read_batch(ReadBatch {
+                        outcome: ReadBatchOutcome::NoResponseWritten,
+                        notices: effects.notices,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(store.history().len(), 2);
+            } else {
+                let effects = eventloop
+                    .state
+                    .handle_incoming_packet_with_effects(Incoming::PubRec(PubRec::new(1, None)))
+                    .unwrap();
+                eventloop
+                    .network
+                    .as_mut()
+                    .unwrap()
+                    .write(effects.outgoing.expect("PUBREC must produce PUBREL"))
+                    .await
+                    .unwrap();
+                eventloop
+                    .complete_read_batch(ReadBatch {
+                        outcome: ReadBatchOutcome::ResponseWritten,
+                        notices: effects.notices,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(store.history().len(), 2);
+                assert!(matches!(
+                    store.history()[1].replay.as_slice(),
+                    [crate::PersistedRequest::PubRel(crate::PersistedPubRel {
+                        pkid: 1
+                    })]
+                ));
+
+                let effects = eventloop
+                    .state
+                    .handle_incoming_packet_with_effects(Incoming::PubComp(PubComp::new(1, None)))
+                    .unwrap();
+                eventloop
+                    .complete_read_batch(ReadBatch {
+                        outcome: ReadBatchOutcome::NoResponseWritten,
+                        notices: effects.notices,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(store.history().len(), 3);
+            }
+
+            assert!(store.current().unwrap().replay.is_empty());
+            assert_eq!(
+                eventloop
+                    .state
+                    .outbound_diagnostics()
+                    .packet_identifiers_in_use,
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_save_failure_keeps_durable_owner_and_blocks_notice() {
+        for qos in [QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let store = CapturingSessionStore::new();
+            let mut options = MqttOptions::new("test-client", "localhost");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(60))
+                .set_session_store(store.clone());
+            let (mut eventloop, _) = EventLoop::new_for_async_client(options, 1);
+            let (client, _peer) = tokio::io::duplex(4096);
+            eventloop.network = Some(Network::new(client, Some(4096)));
+            let (notice_tx, notice) = PublishNoticeTx::new();
+
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::tracked_publish(
+                        Publish::new("terminal/failure", qos, vec![1], None),
+                        notice_tx,
+                    ),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+            eventloop
+                .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+                .await
+                .unwrap();
+
+            if qos == QoS::ExactlyOnce {
+                let effects = eventloop
+                    .state
+                    .handle_incoming_packet_with_effects(Incoming::PubRec(PubRec::new(1, None)))
+                    .unwrap();
+                eventloop
+                    .network
+                    .as_mut()
+                    .unwrap()
+                    .write(effects.outgoing.unwrap())
+                    .await
+                    .unwrap();
+                eventloop
+                    .complete_read_batch(ReadBatch {
+                        outcome: ReadBatchOutcome::ResponseWritten,
+                        notices: effects.notices,
+                    })
+                    .await
+                    .unwrap();
+            }
+
+            let effects = if qos == QoS::AtLeastOnce {
+                eventloop
+                    .state
+                    .handle_incoming_packet_with_effects(Incoming::PubAck(PubAck::new(1, None)))
+                    .unwrap()
+            } else {
+                eventloop
+                    .state
+                    .handle_incoming_packet_with_effects(Incoming::PubComp(PubComp::new(1, None)))
+                    .unwrap()
+            };
+            store.fail_next_save();
+            assert!(
+                eventloop
+                    .complete_read_batch(ReadBatch {
+                        outcome: ReadBatchOutcome::NoResponseWritten,
+                        notices: effects.notices,
+                    })
+                    .await
+                    .is_err()
+            );
+
+            assert!(matches!(
+                notice.wait_async().await,
+                Err(PublishNoticeError::SessionPersistence(_))
+            ));
+            let checkpoint = store.current().unwrap();
+            if qos == QoS::AtLeastOnce {
+                assert!(matches!(
+                    checkpoint.replay.as_slice(),
+                    [crate::PersistedRequest::Publish(publish)] if publish.pkid == 1
+                ));
+            } else {
+                assert!(matches!(
+                    checkpoint.replay.as_slice(),
+                    [crate::PersistedRequest::PubRel(crate::PersistedPubRel {
+                        pkid: 1
+                    })]
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn flush_failure_needs_no_dup_promotion_checkpoint() {
+        for qos in [QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let store = CapturingSessionStore::new();
+            let mut options = MqttOptions::new("test-client", "localhost");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(60))
+                .set_session_store(store.clone());
+            let restore_options = options.clone();
+            let (mut eventloop, _) = EventLoop::new_for_async_client(options, 1);
+            eventloop.network = Some(Network::new(FlushFailingIo, Some(1024)));
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::plain(Request::Publish(Publish::new(
+                        "flush/failure",
+                        qos,
+                        vec![1],
+                        None,
+                    ))),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+
+            assert!(
+                eventloop
+                    .flush_request_batch(should_flush, qos0_notices, checkpoint_action)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(store.history().len(), 1);
+            let checkpoint = store.current().unwrap();
+            assert!(matches!(
+                checkpoint.replay.as_slice(),
+                [crate::PersistedRequest::Publish(publish)] if publish.dup && publish.pkid == 1
+            ));
+            let mut restored = MqttState::builder(1).build();
+            let replay = restored
+                .restore_persisted_session(&restore_options, &checkpoint)
+                .unwrap();
+            assert!(matches!(&replay[0], Request::Publish(publish) if publish.dup));
+            assert_eq!(restored.outbound_diagnostics().packet_identifiers_in_use, 1);
+        }
     }
 
     async fn run_mqtt_connect_with_connack(
@@ -6024,8 +6524,6 @@ mod tests {
             .state
             .handle_outgoing_packet(Request::Publish(publish(QoS::AtLeastOnce)))
             .unwrap();
-        eventloop.state.mark_outgoing_publishes_flush_attempted();
-
         // Model a previous connection loss: the complete PUBLISH now lives in a
         // replay envelope while MqttState retains its packet-id reservation.
         eventloop.clean();

@@ -21,8 +21,15 @@
   and `ProxyAuth` configuration with `Proxy::http(...)`, `Proxy::https(...)`,
   `Proxy::socks5(...)`, and `.with_credentials(...)`; proxy debug output now
   redacts passwords.
+- `rumqttc` v4/v5: Persist admitted outgoing QoS 1/2 PUBLISH recovery entries with `DUP=1`
+  while keeping the uninterrupted first wire transmission at `DUP=0`. Restored legacy entries
+  are normalized to `DUP=1`, removing the separate pre-flush DUP-promotion checkpoint without
+  changing packet-ID, PUBREL, or terminal-completion durability barriers.
 ### Deprecated
 ### Removed
+- `rumqttc` v4/v5 (Breaking Change): Remove the obsolete outgoing publish flush-attempt
+  diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
+  reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
 ### Security
 

@@ -70,6 +70,13 @@ and total checkpoint bytes. MQTT reports should include save count, submitted
 checkpoint bytes, logical state changes, throughput, publish latency, and
 barrier latency.
 
+For an isolated successful outgoing exchange, the expected production save
+sequence is admission plus terminal completion for QoS 1 (two saves), and
+admission, durable PUBREL transition, plus terminal completion for QoS 2
+(three saves). The admission checkpoint stores the recovery PUBLISH with
+`DUP = 1`; the uninterrupted first wire transmission remains `DUP = 0`.
+Batching can share independently required checkpoints and produce lower counts.
+
 Results are specific to the measured hardware and filesystem. File and
 directory synchronization dominate on many systems. Do not infer physical
 flash write amplification from submitted checkpoint bytes. Windows, macOS,

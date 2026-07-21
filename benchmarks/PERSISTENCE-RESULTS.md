@@ -84,6 +84,53 @@ change the result.
 
 ## MQTT persistence behavior
 
+### Conservative replay-PUBLISH checkpoint optimization
+
+On 2026-07-21, the isolated inflight-1 MQTT fixtures were run immediately
+before and after changing admission checkpoints to store outgoing QoS 1/2
+PUBLISH recovery packets with `DUP = 1`. Each run used 100 measured messages,
+10 warmup messages, a 1 KiB payload, the production file-backed store, and
+local Mosquitto 2.1.2 on loopback. File and directory synchronization remained
+enabled.
+
+| Workload | Saves/message before → after | Throughput msg/s before → after | Submitted bytes before → after | Barrier p50/p95/p99 before → after |
+| --- | ---: | ---: | ---: | ---: |
+| v4 QoS 1 | 3 → 2 | 9,937 → 16,715 | 239,500 → 124,300 | 22.1/26.1/39.4 µs → 15.4/17.8/20.5 µs |
+| v4 QoS 2 | 4 → 3 | 6,287 → 9,544 | 249,300 → 134,300 | 23.8/28.5/54.4 µs → 14.4/27.9/63.5 µs |
+| v5 QoS 1 | 3 → 2 | 9,939 → 14,860 | 240,900 → 125,800 | 21.5/26.0/31.6 µs → 15.2/22.8/37.2 µs |
+| v5 QoS 2 | 4 → 3 | 8,122 → 7,489 | 251,900 → 136,200 | 14.3/28.5/45.9 µs → 23.4/27.9/34.0 µs |
+
+Final checkpoint sizes before/after were 95/94 bytes (v4 QoS 1), 95/95 bytes
+(v4 QoS 2), 99/101 bytes (v5 QoS 1), and 101/101 bytes (v5 QoS 2). The
+structural codec and file envelope did not change; small final-size differences
+reflect the benchmark's terminal session metadata, not a new format.
+
+The matching persistence-disabled context runs measured 33,227 → 32,863 msg/s
+for v4 QoS 1 and 23,895 → 18,039 msg/s for v5 QoS 2. These are single, short
+loopback samples. The v5 QoS 2 enabled result did not improve despite one fewer
+durable save, and the disabled result also moved substantially, so no
+proportional throughput claim is warranted.
+
+Additional enabled post-change runs demonstrate checkpoint sharing at higher
+inflight limits. V4 QoS 1 made 200 saves at both inflight 10 and 100 (15,346
+and 13,667 msg/s; 1,073,800 and 10,568,800 submitted bytes). V5 QoS 2 made 220
+and 210 saves (239 and 2,022 msg/s; 626,030 and 1,990,950 submitted bytes). The
+approximately 40 ms broker/TCP acknowledgement behavior noted below strongly
+affects these higher-inflight figures.
+
+The paired command shape was:
+
+```bash
+cargo run --quiet --release -p benchmarks --bin rumqtt-bench -- persistence mqtt \
+  --protocol v4 --qos 1 --persistence enabled \
+  --broker-url mqtt://127.0.0.1:18883 --messages 100 --warmup-messages 10 --inflight 1
+```
+
+Protocol, QoS, persistence mode, and inflight were varied for the other rows.
+Removing the DUP-promotion save reduced submitted full-checkpoint bytes, but it
+did not alter synchronization semantics, the PUBREL barrier, terminal barriers,
+or persistence-disabled execution.
+
 At inflight 1, v4 QoS 1 completed 32,496 messages/s without persistence and
 11,930 messages/s with persistence. The enabled run made exactly three saves
 per publish; barrier p50/p95/p99 were 18.5/21.9/38.8 µs.
