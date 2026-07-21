@@ -9,6 +9,9 @@
 - `rumqttc` v4/v5: Add Linux-only `NetworkOptions::set_mptcp(...)` for opt-in
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
+- Add reproducible persistent-session envelope, codec, durable file-store,
+  coordination, checkpoint-growth, and MQTT QoS 1/QoS 2 benchmarks with
+  machine-readable latency distributions and persistence-disabled baselines.
 ### Changed
 ### Deprecated
 ### Removed

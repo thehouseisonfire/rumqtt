@@ -1224,23 +1224,36 @@ fn hit_test_stage(
 }
 
 #[cfg(any(unix, windows))]
+#[cfg_attr(not(any(test, feature = "bench-instrumentation")), allow(dead_code))]
 fn encode_envelope(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreError> {
+    let (header, checksum) = envelope_parts(payload, maximum)?;
+    let mut envelope = Vec::with_capacity(header.len() + payload.len() + checksum.len());
+    envelope.extend_from_slice(&header);
+    envelope.extend_from_slice(payload);
+    envelope.extend_from_slice(&checksum);
+    Ok(envelope)
+}
+
+#[cfg(any(unix, windows))]
+fn envelope_parts(
+    payload: &[u8],
+    maximum: u64,
+) -> Result<([u8; HEADER_LEN], [u8; CHECKSUM_LEN]), FileStoreError> {
     let size = u64::try_from(payload.len())
         .map_err(|_| FileStoreError::InvalidPayloadLength { declared: u64::MAX })?;
     if size > maximum {
         return Err(FileStoreError::CheckpointTooLarge { size, maximum });
     }
-    let capacity = payload
+    payload
         .len()
         .checked_add(HEADER_LEN + CHECKSUM_LEN)
         .ok_or(FileStoreError::InvalidPayloadLength { declared: size })?;
-    let mut envelope = Vec::with_capacity(capacity);
-    envelope.extend_from_slice(MAGIC);
-    envelope.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
-    envelope.extend_from_slice(&size.to_be_bytes());
-    envelope.extend_from_slice(payload);
-    envelope.extend_from_slice(&crc32c::crc32c(&envelope).to_be_bytes());
-    Ok(envelope)
+    let mut header = [0; HEADER_LEN];
+    header[..MAGIC.len()].copy_from_slice(MAGIC);
+    header[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&ENVELOPE_VERSION.to_be_bytes());
+    header[MAGIC.len() + 2..].copy_from_slice(&size.to_be_bytes());
+    let checksum = crc32c::crc32c_append(crc32c::crc32c(&header), payload).to_be_bytes();
+    Ok((header, checksum))
 }
 
 #[cfg(any(unix, windows))]
@@ -1348,6 +1361,29 @@ fn read_section(
     }
 }
 
+/// Benchmark-only access to the stable production envelope implementation.
+///
+/// This module is deliberately feature-gated so ordinary consumers do not
+/// acquire an additional public surface. Its functions call the same encoder
+/// and bounded reader used by [`FileStore`].
+#[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
+#[doc(hidden)]
+pub mod bench_instrumentation {
+    use std::io::Read;
+
+    use super::{CHECKSUM_LEN, FileStoreError, HEADER_LEN, decode_reader, encode_envelope};
+
+    pub const ENVELOPE_OVERHEAD: usize = HEADER_LEN + CHECKSUM_LEN;
+
+    pub fn encode(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreError> {
+        encode_envelope(payload, maximum)
+    }
+
+    pub fn decode(reader: &mut impl Read, maximum: u64) -> Result<Vec<u8>, FileStoreError> {
+        decode_reader(reader, maximum)
+    }
+}
+
 #[cfg(any(unix, windows))]
 fn ensure_namespace_available(config: &StoreConfig) -> Result<(), FileStoreError> {
     match std::fs::metadata(&config.namespace) {
@@ -1376,7 +1412,10 @@ fn save_checkpoint(
         TestStage::BeforeEnvelope,
         FileOperation::WriteEnvelope,
     )?;
+    #[cfg(test)]
     let envelope = encode_envelope(payload, config.maximum)?;
+    #[cfg(not(test))]
+    let (header, checksum) = envelope_parts(payload, config.maximum)?;
     #[cfg(all(test, unix))]
     hit_test_stage(
         config,
@@ -1415,12 +1454,14 @@ fn save_checkpoint(
             })?;
     }
     #[cfg(not(test))]
-    writer
-        .write_all(&envelope)
-        .map_err(|source| FileStoreError::Io {
-            operation: FileOperation::WriteEnvelope,
-            source,
-        })?;
+    for section in [&header[..], payload, &checksum[..]] {
+        writer
+            .write_all(section)
+            .map_err(|source| FileStoreError::Io {
+                operation: FileOperation::WriteEnvelope,
+                source,
+            })?;
+    }
     #[cfg(all(test, unix))]
     hit_test_stage(
         config,
@@ -1763,7 +1804,12 @@ fn delete_file(path: &Path) -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
-fn create_windows_staging(path: &Path, contents: &[u8]) -> Result<(), FileStoreError> {
+fn create_windows_staging(
+    path: &Path,
+    header: &[u8],
+    payload: &[u8],
+    checksum: &[u8],
+) -> Result<(), FileStoreError> {
     use std::io::Write;
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -1792,11 +1838,13 @@ fn create_windows_staging(path: &Path, contents: &[u8]) -> Result<(), FileStoreE
     }
     // SAFETY: the successful CreateFileW call returned an owned handle.
     let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
-    file.write_all(contents)
-        .map_err(|source| FileStoreError::Io {
-            operation: FileOperation::WriteEnvelope,
-            source,
-        })?;
+    for section in [header, payload, checksum] {
+        file.write_all(section)
+            .map_err(|source| FileStoreError::Io {
+                operation: FileOperation::WriteEnvelope,
+                source,
+            })?;
+    }
     // SAFETY: the file still owns a live handle.
     if unsafe { FlushFileBuffers(handle) } == 0 {
         return Err(FileStoreError::Io {
@@ -1885,7 +1933,7 @@ fn save_checkpoint(
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let envelope = encode_envelope(payload, config.maximum)?;
+    let (header, checksum) = envelope_parts(payload, config.maximum)?;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -1895,7 +1943,7 @@ fn save_checkpoint(
         let staging = config
             .namespace
             .join(format!("{hash}.session.tmp-v1.save.{identifier}"));
-        match create_windows_staging(&staging, &envelope) {
+        match create_windows_staging(&staging, &header, payload, &checksum) {
             Ok(()) => {}
             Err(FileStoreError::Io { source, .. })
                 if source.kind() == io::ErrorKind::AlreadyExists =>

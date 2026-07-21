@@ -66,11 +66,11 @@ jobs:
             sudo apt-get install -y mosquitto
 
       - name: Check benchmarks
-        if: ${{ matrix.os != 'windows-latest' && matrix.features == '--no-default-features' }}
         env:
           RUSTFLAGS: "-D warnings"
         run: |
             cargo check -p benchmarks --all-targets
+            cargo clippy -p benchmarks --all-targets -- -D warnings
             cargo test -p benchmarks --test codec_smoke
             python3 -m compileall benchmarks/runner.py
             python3 -m unittest benchmarks/tests/test_runner.py

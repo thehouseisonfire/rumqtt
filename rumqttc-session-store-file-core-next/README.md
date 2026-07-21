@@ -86,6 +86,44 @@ measures when clear began rather than when the checkpoint payload was saved.
 behind a cancellation-safe store-wide FIFO barrier. Unix cleanup returns
 `CleanupUnsupported` and does not parse `atomic-write-file` private names.
 
+## Performance characteristics
+
+Configuring and using a file-backed session store adds an awaited durability
+barrier whenever the MQTT event loop checkpoints protocol state. Clients that
+do not configure persistent storage do not pay this cost.
+
+In one local steady-state characterization with a fast local SSD and a
+loopback broker, single-inflight workloads produced these results:
+
+| Workload | Persistence disabled | Persistence enabled | Observed impact |
+| --- | ---: | ---: | ---: |
+| MQTT 3.1.1 QoS 1 | about 32,500 messages/s | about 11,900 messages/s | about 63% lower throughput |
+| MQTT 5 QoS 2 | about 19,400 messages/s | about 7,300 messages/s | about 62% lower throughput |
+
+Individual durable-save barriers were commonly tens of microseconds on that
+system. The larger client-level effect came primarily from save frequency: the
+measured QoS 1 workload made approximately three full-checkpoint saves per
+publish, while QoS 2 made approximately four. Checkpoints are full snapshots,
+not deltas, so serialization, bytes submitted, and durable-write cost grow with
+payload size and inflight state. A fixture containing 1,000 inflight publishes
+with 1 KiB payloads produced a checkpoint of about 1.05 MiB.
+
+Production saves avoid constructing a redundant complete envelope buffer by
+writing the stable header, canonical payload, and checksum directly to the
+atomic writer. For a 1 MiB replacement this improved the measured median from
+about 324 to 311 microseconds, while leaving synchronization, atomic
+replacement, checksum validation, ordering, and cancellation behavior intact.
+
+These measurements characterize one system; they are not performance
+guarantees. Synchronization latency varies substantially with the operating
+system, filesystem, storage device, and workload. Applications with high
+message rates, large inflight sessions, or storage constraints should measure
+representative traffic on their deployment hardware. This store protects MQTT
+protocol recovery state and is not a replacement for an application outbox or
+durable business-message queue. See the
+[benchmark methodology](../benchmarks/PERSISTENCE.md) and
+[recorded results](../benchmarks/PERSISTENCE-RESULTS.md) for details.
+
 ## Trust and support boundary
 
 The configured root must already exist and be a directory. Its ancestors and
@@ -106,6 +144,7 @@ containing-directory synchronization, and ordinary drop cleanup. Tests observe
 the public commit boundary; they do not claim failpoint coverage inside private
 dependency stages.
 
-Other builds compile, but construction returns `UnsupportedPlatform`. The store is intended for ordinary
-local filesystems and makes no certification about filesystems, mounts,
-controllers, caches, virtual disks, containers, or arbitrary power loss.
+Other builds compile, but construction returns `UnsupportedPlatform`. The store
+is intended for ordinary local filesystems and makes no certification about
+filesystems, mounts, controllers, caches, virtual disks, containers, or
+arbitrary power loss.

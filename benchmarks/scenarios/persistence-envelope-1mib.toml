@@ -1,0 +1,20 @@
+name = "persistence-envelope-1mib"
+group = "persistence"
+command = "envelope"
+description = "Production envelope encode for a 1 MiB payload"
+primary_metric = "bytes_sec"
+higher_is_better = true
+requires_broker = false
+
+[args]
+mode = "encode"
+payload_size = 1048576
+samples = 50
+operations_per_sample = 4
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 3
+max_primary_cv_pct = 20.0
+max_primary_mad_pct = 15.0
+max_relative_ci_width_pct = 30.0

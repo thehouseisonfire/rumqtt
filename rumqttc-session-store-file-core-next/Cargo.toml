@@ -12,6 +12,10 @@ license.workspace = true
 authors.workspace = true
 readme = "README.md"
 
+[features]
+default = []
+bench-instrumentation = []
+
 [dependencies]
 blake3 = { version = "1.8", features = ["pure"] }
 crc32c = "0.6"

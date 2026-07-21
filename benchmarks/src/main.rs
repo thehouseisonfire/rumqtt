@@ -1,5 +1,7 @@
 #![expect(clippy::cast_precision_loss)]
 #![expect(clippy::too_many_lines)]
+#![expect(clippy::too_many_arguments)]
+#![expect(clippy::manual_is_multiple_of)]
 
 use anyhow::{Context, bail};
 use bytes::{Bytes, BytesMut};
@@ -15,6 +17,8 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
+
+mod persistence;
 
 const BENCH_MAX_PACKET_SIZE: usize = 256 * 1024;
 
@@ -39,6 +43,10 @@ enum CommandGroup {
     Options {
         #[command(subcommand)]
         command: OptionsCommand,
+    },
+    Persistence {
+        #[command(subcommand)]
+        command: persistence::PersistenceCommand,
     },
 }
 
@@ -256,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
         CommandGroup::Options { command } => match command {
             OptionsCommand::ParseUrl(args) => run_options_parse_url(args),
         },
+        CommandGroup::Persistence { command } => persistence::run(command).await,
     }
 }
 

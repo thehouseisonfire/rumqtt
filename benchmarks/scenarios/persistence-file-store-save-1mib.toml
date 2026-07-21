@@ -1,0 +1,19 @@
+name = "persistence-file-store-save-1mib"
+group = "persistence"
+command = "file-store"
+description = "Durable replacement of a 1 MiB production checkpoint"
+primary_metric = "latency_p50_ns"
+higher_is_better = false
+requires_broker = false
+
+[args]
+operation = "save-replace"
+payload_size = 1048576
+samples = 50
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 3
+max_primary_cv_pct = 30.0
+max_primary_mad_pct = 20.0
+max_relative_ci_width_pct = 40.0

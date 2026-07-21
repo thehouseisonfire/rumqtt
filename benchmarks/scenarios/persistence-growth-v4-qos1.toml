@@ -1,0 +1,19 @@
+name = "persistence-growth-v4-qos1"
+group = "persistence"
+command = "growth"
+description = "MQTT 3.1.1 QoS 1 canonical checkpoint growth"
+primary_metric = "thousand_inflight_checkpoint_bytes"
+higher_is_better = false
+requires_broker = false
+
+[args]
+protocol = "v4"
+payload_size = 1024
+qos = 1
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 1
+max_primary_cv_pct = 0.0
+max_primary_mad_pct = 0.0
+max_relative_ci_width_pct = 0.0

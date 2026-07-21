@@ -1,0 +1,22 @@
+name = "persistence-codec-v4-qos1"
+group = "persistence"
+command = "codec"
+description = "Canonical MQTT 3.1.1 session encoding with 100 QoS 1 publishes"
+primary_metric = "bytes_sec"
+higher_is_better = true
+requires_broker = false
+
+[args]
+protocol = "v4"
+mode = "encode"
+inflight = 100
+payload_size = 1024
+qos = 1
+samples = 100
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 3
+max_primary_cv_pct = 20.0
+max_primary_mad_pct = 15.0
+max_relative_ci_width_pct = 30.0

@@ -1,0 +1,91 @@
+{
+  "date": "2026-07-21",
+  "git_commit_before_changes": "2b193391c769bd65871df516a79aa947cfe9df2b",
+  "environment": {
+    "os": "Linux 7.1.3-2-cachyos",
+    "architecture": "x86_64",
+    "cpu": "13th Gen Intel Core i5-13500H",
+    "logical_cpus": 16,
+    "filesystem": "btrfs",
+    "mount_options": "rw,noatime,compress=zstd:3,ssd,discard=async,space_cache=v2,commit=120",
+    "device": "SOLIDIGM SSDPFINW512GZL NVMe SSD",
+    "rustc": "1.96.1",
+    "workspace_msrv": "1.89",
+    "profile": "release (LTO, codegen-units=1)",
+    "atomic_write_file": "0.3.0",
+    "mosquitto": "2.1.2",
+    "transport": "loopback TCP"
+  },
+  "results": {
+    "envelope_1mib": {
+      "encode_p50_ns": 85232,
+      "encode_p95_ns": 197768,
+      "decode_p50_ns": 264692,
+      "decode_p95_ns": 344295,
+      "crc32c_p50_ns": 172384
+    },
+    "envelope_payload_sweep_later_run": {
+      "payload_bytes": [0, 1024, 16384, 262144, 1048576, 4194304],
+      "encode_p50_ns": [51, 247, 2758, 19484, 180850, 368334],
+      "decode_p50_ns": [33, 237, 3195, 52013, 106153, 464124],
+      "crc32c_p50_ns": [9, 90, 2350, 34824, 59163, 234879],
+      "samples": 20,
+      "operations_per_sample": 3
+    },
+    "codec_100_inflight_1kib": {
+      "v4_qos1_encode_p50_ns": 13905,
+      "v4_qos1_decode_p50_ns": 13693,
+      "v5_qos2_encode_p50_ns": 6559,
+      "v5_qos2_decode_p50_ns": 15344
+    },
+    "file_store": {
+      "save_create_1kib_p50_ns": 19879,
+      "save_replace_1kib_before_p50_ns": 20345,
+      "save_replace_1mib_before_p50_ns": 324197,
+      "save_replace_1mib_before_mean_ns": 382829,
+      "save_replace_1mib_after_p50_ns": 311270,
+      "save_replace_1mib_after_mean_ns": 334477,
+      "load_1mib_warm_p50_ns": 155295,
+      "clear_present_p50_ns": 14285,
+      "inspect_present_p50_ns": 10102,
+      "quarantine_present_p50_ns": 15937,
+      "save_growing_1mib_later_p50_ns": 481902,
+      "save_shrinking_1mib_later_p50_ns": 418002,
+      "load_missing_later_p50_ns": 10899,
+      "clear_missing_later_p50_ns": 10079,
+      "inspect_missing_later_p50_ns": 10432,
+      "quarantine_missing_later_p50_ns": 13129
+    },
+    "coordination": {
+      "same_key_operations_sec": 181210,
+      "same_key_p50_ns": 41837,
+      "different_key_operations_sec": 385986,
+      "different_key_p50_ns": 15291
+    },
+    "checkpoint_growth_1kib_payload": {
+      "v4_qos1_minimal_bytes": 73,
+      "v4_qos1_1000_inflight_bytes": 1055073,
+      "v5_qos2_minimal_bytes": 79,
+      "v5_qos2_1000_inflight_bytes": 1056079
+    },
+    "mqtt_inflight_1": {
+      "v4_qos1_disabled_messages_sec": 32496,
+      "v4_qos1_enabled_messages_sec": 11930,
+      "v4_qos1_enabled_barrier_p50_ns": 18506,
+      "v4_qos1_enabled_saves_per_message": 3.0,
+      "v5_qos2_disabled_messages_sec": 19397,
+      "v5_qos2_enabled_messages_sec": 7277,
+      "v5_qos2_enabled_barrier_p50_ns": 19854,
+      "v5_qos2_enabled_saves_per_message": 4.0,
+      "v4_qos1_final_checkpoint_bytes_later_run": 94,
+      "v5_qos2_final_checkpoint_bytes_later_run": 99
+    }
+  },
+  "limitations": [
+    "Warm-cache loads only",
+    "No macOS, Windows, or edge-device execution environment",
+    "No physical-device write-amplification measurement",
+    "Inflight 10 loopback baselines showed approximately 40 ms TCP acknowledgement batching and are not used for the primary enabled/disabled comparison",
+    "MQTT checkpoint-byte accounting performs one benchmark-only canonical encode"
+  ]
+}

@@ -33,6 +33,10 @@ Supported workload groups:
 - `codec encode|decode|roundtrip`
 - `client throughput|latency|connections`
 - `options parse-url`
+- `persistence envelope|codec|file-store|coordination|growth|mqtt`
+
+Persistent-session methodology, fixture definitions, and baseline reporting are
+documented in [`PERSISTENCE.md`](PERSISTENCE.md).
 
 `options parse-url` requires the benchmark crate `url` feature:
 

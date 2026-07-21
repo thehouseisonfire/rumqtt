@@ -114,12 +114,13 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
     for key in ("higher_is_better", "requires_broker"):
         if not isinstance(scenario.get(key), bool):
             raise RuntimeError(f"{path}: missing boolean field '{key}'")
-    if scenario["group"] not in {"client", "codec", "options"}:
-        raise RuntimeError(f"{path}: group must be 'client', 'codec', or 'options'")
+    if scenario["group"] not in {"client", "codec", "options", "persistence"}:
+        raise RuntimeError(f"{path}: unsupported benchmark group")
     commands = {
         "client": {"throughput", "latency", "connections"},
         "codec": {"encode", "decode", "roundtrip"},
         "options": {"parse-url"},
+        "persistence": {"envelope", "codec", "file-store", "coordination", "growth", "mqtt"},
     }
     if scenario["command"] not in commands[scenario["group"]]:
         raise RuntimeError(f"{path}: unsupported command for group '{scenario['group']}'")
@@ -127,7 +128,9 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
         raise RuntimeError(f"{path}: args must be a table")
     validate_transport(path, scenario)
     validate_cargo_features(path, scenario.get("cargo_features"))
-    expected_requires_broker = scenario["group"] == "client"
+    expected_requires_broker = scenario["group"] == "client" or (
+        scenario["group"] == "persistence" and scenario["command"] == "mqtt"
+    )
     if scenario["requires_broker"] != expected_requires_broker:
         expected = "true" if expected_requires_broker else "false"
         raise RuntimeError(f"{path}: requires_broker must be {expected} for {scenario['group']} scenarios")
@@ -138,8 +141,10 @@ def validate_transport(path: Path, scenario: dict[str, Any]) -> None:
     transport = scenario.get("transport")
     if transport is None:
         return
-    if scenario["group"] != "client":
-        raise RuntimeError(f"{path}: transport is only supported for client scenarios")
+    if scenario["group"] != "client" and not (
+        scenario["group"] == "persistence" and scenario["command"] == "mqtt"
+    ):
+        raise RuntimeError(f"{path}: transport is only supported for client or persistence MQTT scenarios")
     if not isinstance(transport, str) or transport not in VALID_TRANSPORTS:
         allowed = ", ".join(sorted(VALID_TRANSPORTS))
         raise RuntimeError(f"{path}: transport must be one of: {allowed}")
@@ -258,7 +263,7 @@ def scenario_command(
     ])
     args = dict(scenario.get("args", {}))
     args["run-id"] = run_id
-    if broker_url is not None and scenario["group"] == "client":
+    if broker_url is not None and (scenario["group"] == "client" or scenario["command"] == "mqtt"):
         args["broker-url"] = broker_url
     if ca_cert is not None and scenario["group"] == "client":
         args["ca-cert"] = ca_cert
