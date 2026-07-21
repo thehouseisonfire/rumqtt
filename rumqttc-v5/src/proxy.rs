@@ -1,1 +1,1 @@
-pub use rumqttc_core::{Proxy, ProxyAuth, ProxyError, ProxyType};
+pub use rumqttc_core::{Proxy, ProxyError, ProxyProtocol};

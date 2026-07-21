@@ -44,7 +44,7 @@ use {
 ))]
 use crate::websockets::split_url_with_default_port;
 
-#[cfg(feature = "proxy")]
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 use crate::proxy::ProxyError;
 
 #[derive(Debug)]
@@ -227,7 +227,7 @@ pub enum ConnectionError {
     #[cfg(feature = "websocket")]
     #[error("Invalid Url: {0}")]
     InvalidUrl(#[from] UrlError),
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     #[error("Proxy Connect: {0}")]
     Proxy(#[from] ProxyError),
     #[cfg(feature = "websocket")]
@@ -1931,7 +1931,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
     };
 
     let tcp_stream: Box<dyn AsyncReadWrite> = {
-        #[cfg(feature = "proxy")]
+        #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
         if let Some(proxy) = options.proxy() {
             proxy
                 .connect(
@@ -1947,7 +1947,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 .socket_connect(addr, options.network_options())
                 .await?
         }
-        #[cfg(not(feature = "proxy"))]
+        #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
         {
             let addr = format!("{domain}:{port}");
             options

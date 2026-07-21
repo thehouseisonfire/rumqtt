@@ -7,6 +7,8 @@ use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
     KeyPair, KeyUsagePurpose,
 };
+#[cfg(feature = "socks-proxy")]
+use rumqttc::Proxy;
 use rumqttc::PublishOptions;
 #[cfg(feature = "use-native-tls")]
 use rumqttc::TlsConfiguration;
@@ -33,7 +35,11 @@ use std::time::Duration;
 #[cfg(feature = "use-native-tls")]
 use std::time::SystemTime;
 use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(feature = "socks-proxy")]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+#[cfg(feature = "socks-proxy")]
+use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 #[cfg(feature = "use-native-tls")]
 use tokio_native_tls::{
@@ -187,6 +193,53 @@ async fn wait_for_at_least(counter: &AtomicUsize, value: usize, timeout_duration
     })
     .await
     .unwrap();
+}
+
+#[cfg(feature = "socks-proxy")]
+async fn spawn_socks5_relay() -> (u16, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        let (mut downstream, _) = listener.accept().await.unwrap();
+
+        assert_eq!(downstream.read_u8().await.unwrap(), 5);
+        let method_count = downstream.read_u8().await.unwrap() as usize;
+        let mut methods = vec![0; method_count];
+        downstream.read_exact(&mut methods).await.unwrap();
+        assert_eq!(methods, [0]);
+        downstream.write_all(&[5, 0]).await.unwrap();
+
+        assert_eq!(downstream.read_u8().await.unwrap(), 5);
+        assert_eq!(downstream.read_u8().await.unwrap(), 1);
+        assert_eq!(downstream.read_u8().await.unwrap(), 0);
+        let address_type = downstream.read_u8().await.unwrap();
+        let host = match address_type {
+            1 => {
+                let mut octets = [0; 4];
+                downstream.read_exact(&mut octets).await.unwrap();
+                std::net::Ipv4Addr::from(octets).to_string()
+            }
+            3 => {
+                let length = downstream.read_u8().await.unwrap() as usize;
+                let mut domain = vec![0; length];
+                downstream.read_exact(&mut domain).await.unwrap();
+                String::from_utf8(domain).unwrap()
+            }
+            other => panic!("unexpected SOCKS5 address type {other}"),
+        };
+        let target_port = downstream.read_u16().await.unwrap();
+        let mut upstream = TcpStream::connect((host.as_str(), target_port))
+            .await
+            .unwrap();
+        downstream
+            .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+            .await
+            .unwrap();
+        tokio::io::copy_bidirectional(&mut downstream, &mut upstream)
+            .await
+            .unwrap();
+    });
+    (port, task)
 }
 
 #[tokio::test]
@@ -382,6 +435,52 @@ async fn wss_client_publishes_over_tls_websocket() {
     server_task.await.unwrap();
 
     assert_eq!(publish_count.load(Ordering::SeqCst), 10);
+}
+
+#[cfg(all(
+    feature = "socks-proxy",
+    feature = "use-rustls-no-provider",
+    any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
+))]
+#[tokio::test]
+async fn wss_client_publishes_through_socks5() {
+    let (tls_acceptor, cert_pem) = make_rustls_wss_acceptor_and_ca();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let broker_port = listener.local_addr().unwrap().port();
+    let (proxy_port, proxy_task) = spawn_socks5_relay().await;
+
+    let publish_count = Arc::new(AtomicUsize::new(0));
+    let server_publish_count = Arc::clone(&publish_count);
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let tls_stream = tls_acceptor.accept(stream).await.unwrap();
+        let mut websocket = accept_hdr_async(tls_stream, websocket_handshake_callback)
+            .await
+            .unwrap();
+        process_websocket_connection(&mut websocket, &server_publish_count, None).await;
+    });
+
+    let mut mqtt_options = MqttOptions::new(
+        "wss-socks5-test",
+        Broker::websocket(format!("ws://localhost:{broker_port}/mqtt"))
+            .expect("valid websocket broker"),
+    );
+    mqtt_options.set_transport(Transport::wss(cert_pem, None, None));
+    mqtt_options.set_proxy(Proxy::socks5("127.0.0.1", proxy_port));
+
+    let (client, mut eventloop) = AsyncClient::builder(mqtt_options).capacity(10).build();
+    let eventloop_task = tokio::spawn(async move {
+        loop {
+            drop(eventloop.poll().await);
+        }
+    });
+    publish_with_retry(&client, [0x53, 0x35]).await;
+    wait_for_at_least(&publish_count, 1, Duration::from_secs(10)).await;
+
+    eventloop_task.abort();
+    assert!(eventloop_task.await.is_err());
+    server_task.await.unwrap();
+    proxy_task.await.unwrap();
 }
 
 #[cfg(feature = "use-native-tls")]

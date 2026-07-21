@@ -50,7 +50,7 @@ mod tls;
 #[cfg(feature = "websocket")]
 mod websockets;
 
-#[cfg(feature = "proxy")]
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 
 pub use client::{
@@ -152,8 +152,8 @@ const PERSISTENT_SESSION_EXPIRY_INTERVAL: u32 = u32::MAX;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use crate::tls::Error as TlsError;
 
-#[cfg(feature = "proxy")]
-pub use crate::proxy::{Proxy, ProxyAuth, ProxyType};
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+pub use crate::proxy::{Proxy, ProxyProtocol};
 
 #[cfg(feature = "use-native-tls")]
 pub use tokio_native_tls;
@@ -745,7 +745,7 @@ pub struct MqttOptions {
     /// Controls how incoming publish acknowledgements are handled.
     ack_mode: AckMode,
     network_options: NetworkOptions,
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     /// Proxy configuration.
     proxy: Option<Proxy>,
     /// Upper limit on maximum number of inflight requests.
@@ -794,7 +794,7 @@ impl MqttOptions {
             topic_alias_policy: TopicAliasPolicy::Disabled,
             ack_mode: AckMode::Automatic,
             network_options: NetworkOptions::new(),
-            #[cfg(feature = "proxy")]
+            #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
             proxy: None,
             outgoing_inflight_upper_limit: None,
             #[cfg(feature = "websocket")]
@@ -1741,13 +1741,13 @@ impl MqttOptions {
         self
     }
 
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     pub fn set_proxy(&mut self, proxy: Proxy) -> &mut Self {
         self.proxy = Some(proxy);
         self
     }
 
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     pub fn proxy(&self) -> Option<Proxy> {
         self.proxy.clone()
     }
@@ -2162,7 +2162,7 @@ impl MqttOptionsBuilder {
     }
 
     /// Set proxy configuration.
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     #[must_use]
     pub fn proxy(mut self, proxy: Proxy) -> Self {
         self.options.set_proxy(proxy);

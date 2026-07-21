@@ -16,7 +16,7 @@ deployment.
 | WebSocket transport | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `websocket` | [WebSockets](./websockets.md) |
 | Secure WebSockets | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `websocket` plus TLS feature | [WebSockets](./websockets.md) |
 | WebSocket headers | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `websocket` | [WebSockets](./websockets.md) |
-| HTTP/HTTPS proxy | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `proxy`, plus TLS feature for HTTPS proxy | [Proxies](./proxies.md) |
+| HTTP/HTTPS/SOCKS5 proxy | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `http-proxy` or `socks-proxy`; `proxy` enables both; add a TLS feature for HTTPS | [Proxies](./proxies.md) |
 | Multipath TCP | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none; Linux only | [Multipath TCP](./mptcp.md) |
 | Persistent sessions | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
 | Reconnect resubscribe | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
@@ -34,7 +34,7 @@ features, for example:
 
 ```bash
 cargo run -p rumqttc-v5-next --features websocket --example websocket_v5
-cargo run -p rumqttc-v5-next --features websocket,proxy --example websocket_proxy_v5
+cargo run -p rumqttc-v5-next --features websocket,http-proxy --example websocket_proxy_v5
 cargo run -p rumqttc-v5-next --features use-rustls --example tls_v5
 cargo run -p rumqttc-v5-next --features tracing --example lifecycle_tracing_v5
 cargo run -p rumqttc-v5-next --example diagnostics_snapshot_v5

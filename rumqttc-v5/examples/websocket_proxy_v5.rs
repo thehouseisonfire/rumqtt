@@ -1,5 +1,5 @@
 use rumqttc::mqttbytes::QoS;
-use rumqttc::{AsyncClient, Broker, MqttOptions, Proxy, ProxyAuth, ProxyType, PublishOptions};
+use rumqttc::{AsyncClient, Broker, MqttOptions, Proxy, PublishOptions};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
 
@@ -12,12 +12,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Broker::websocket("ws://broker.mqttdashboard.com:8000/mqtt").expect("valid websocket URL"),
     );
     mqttoptions.set_keep_alive(60);
-    mqttoptions.set_proxy(Proxy {
-        ty: ProxyType::Http,
-        auth: ProxyAuth::None,
-        addr: "127.0.0.1".into(),
-        port: 8100,
-    });
+    mqttoptions.set_proxy(Proxy::http("127.0.0.1", 8100));
 
     let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
 

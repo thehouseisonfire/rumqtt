@@ -16,7 +16,7 @@ readme = "README.md"
 name = "rumqttc"
 
 [package.metadata.docs.rs]
-features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "auth-scram", "url", "stream", "tracing", "tracing-log-compat"]
+features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "http-proxy", "socks-proxy", "auth-scram", "url", "stream", "tracing", "tracing-log-compat"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -28,6 +28,8 @@ use-rustls-aws-lc = ["rumqttc_v5/use-rustls-aws-lc"]
 use-native-tls = ["rumqttc_v5/use-native-tls"]
 websocket = ["rumqttc_v5/websocket"]
 proxy = ["rumqttc_v5/proxy"]
+http-proxy = ["rumqttc_v5/http-proxy"]
+socks-proxy = ["rumqttc_v5/socks-proxy"]
 auth-scram = ["rumqttc_v5/auth-scram"]
 url = ["rumqttc_v5/url"]
 stream = ["rumqttc_v5/stream"]

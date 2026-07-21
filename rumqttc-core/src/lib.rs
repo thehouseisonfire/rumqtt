@@ -15,7 +15,7 @@ use tokio_native_tls::native_tls::TlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
-#[cfg(feature = "proxy")]
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 mod scheduler;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -23,8 +23,8 @@ mod tls;
 #[cfg(feature = "websocket")]
 mod websockets;
 
-#[cfg(feature = "proxy")]
-pub use proxy::{Proxy, ProxyAuth, ProxyError, ProxyType};
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+pub use proxy::{Proxy, ProxyError, ProxyProtocol};
 pub use scheduler::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::Error as TlsError;

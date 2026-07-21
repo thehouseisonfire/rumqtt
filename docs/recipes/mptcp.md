@@ -23,5 +23,5 @@ path-manager configuration on the endpoints. A peer that does not negotiate
 MPTCP uses the connection as ordinary TCP. If the local kernel reports MPTCP as
 unsupported or disabled, rumqttc creates an ordinary TCP socket instead.
 
-When an HTTP proxy is configured, MPTCP applies to the client-to-proxy
+When a proxy is configured, MPTCP applies to the client-to-proxy
 connection; the proxy owns its connection to the broker.

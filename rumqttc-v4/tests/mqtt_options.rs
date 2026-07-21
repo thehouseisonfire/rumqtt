@@ -37,6 +37,65 @@ async fn v4_custom_socket_connector_is_invoked() {
     );
 }
 
+#[cfg(feature = "socks-proxy")]
+async fn spawn_socks5_mqtt_peer() -> (u16, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+
+        assert_eq!(stream.read_u8().await.unwrap(), 5);
+        let method_count = stream.read_u8().await.unwrap() as usize;
+        let mut methods = vec![0; method_count];
+        stream.read_exact(&mut methods).await.unwrap();
+        assert_eq!(methods, [0]);
+        stream.write_all(&[5, 0]).await.unwrap();
+
+        assert_eq!(stream.read_u8().await.unwrap(), 5);
+        assert_eq!(stream.read_u8().await.unwrap(), 1);
+        assert_eq!(stream.read_u8().await.unwrap(), 0);
+        assert_eq!(stream.read_u8().await.unwrap(), 3);
+        let domain_len = stream.read_u8().await.unwrap() as usize;
+        let mut domain = vec![0; domain_len];
+        stream.read_exact(&mut domain).await.unwrap();
+        assert_eq!(&domain, b"broker.proxy.test");
+        assert_eq!(stream.read_u16().await.unwrap(), 1883);
+        stream
+            .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+            .await
+            .unwrap();
+
+        let mut connect = [0; 1024];
+        let read = stream.read(&mut connect).await.unwrap();
+        assert!(read > 0);
+        assert_eq!(connect[0], 0x10);
+        stream.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+    });
+    (port, task)
+}
+
+#[cfg(feature = "socks-proxy")]
+#[tokio::test]
+async fn v4_connects_through_socks5_with_remote_dns() {
+    use rumqttc::{Event, Packet, Proxy};
+    use tokio::time::{Duration, timeout};
+
+    let (proxy_port, peer) = spawn_socks5_mqtt_peer().await;
+    let mut options = rumqttc::MqttOptions::new("socks-v4", "broker.proxy.test");
+    options.set_proxy(Proxy::socks5("127.0.0.1", proxy_port));
+    let (_client, mut eventloop) = rumqttc::AsyncClient::builder(options).capacity(10).build();
+
+    let event = timeout(Duration::from_secs(3), eventloop.poll())
+        .await
+        .expect("SOCKS5 connection timed out")
+        .expect("SOCKS5 connection failed");
+    assert!(matches!(event, Event::Incoming(Packet::ConnAck(_))));
+    peer.await.unwrap();
+}
+
 #[cfg(feature = "websocket")]
 #[derive(Debug)]
 struct RequestModifierTestError(&'static str);

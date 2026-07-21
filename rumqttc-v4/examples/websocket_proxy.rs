@@ -1,5 +1,5 @@
 use rumqttc::PublishOptions;
-use rumqttc::{AsyncClient, Broker, Proxy, ProxyAuth, ProxyType, QoS};
+use rumqttc::{AsyncClient, Broker, Proxy, QoS};
 use std::{error::Error, time::Duration};
 use tokio::{task, time};
 
@@ -16,12 +16,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     mqttoptions.set_keep_alive(60);
     // Presumes that there is a proxy server already set up listening on 127.0.0.1:8100
-    mqttoptions.set_proxy(Proxy {
-        ty: ProxyType::Http,
-        auth: ProxyAuth::None,
-        addr: "127.0.0.1".into(),
-        port: 8100,
-    });
+    mqttoptions.set_proxy(Proxy::http("127.0.0.1", 8100));
 
     let (client, mut eventloop) = AsyncClient::builder(mqttoptions).capacity(10).build();
     task::spawn(async move {

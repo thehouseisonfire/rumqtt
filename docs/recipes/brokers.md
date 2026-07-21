@@ -37,7 +37,8 @@ and confirm the exact requirements in your broker deployment.
 
 ## Corporate Proxies
 
-- Use `ProxyType::Http` for ordinary HTTP CONNECT proxies.
-- Use `ProxyAuth::Basic` only when required; do not log proxy credentials.
+- Use `Proxy::http(...)` for ordinary HTTP CONNECT proxies and
+  `Proxy::socks5(...)` for SOCKS5 proxies.
+- Add `.with_credentials(...)` only when required; do not log proxy credentials.
 - For TLS-intercepting proxies, install the corporate CA in the OS trust store or
   pass it explicitly in the TLS configuration selected by the recipe.

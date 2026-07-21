@@ -69,7 +69,7 @@ type FallibleRequestModifierFn = Arc<
         + Sync,
 >;
 
-#[cfg(feature = "proxy")]
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 
 pub use client::{
@@ -107,8 +107,8 @@ pub use tokio_native_tls;
 pub use tokio_rustls;
 pub use transport::Transport;
 
-#[cfg(feature = "proxy")]
-pub use proxy::{Proxy, ProxyAuth, ProxyType};
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+pub use proxy::{Proxy, ProxyProtocol};
 
 pub type Incoming = Packet;
 
@@ -581,7 +581,7 @@ pub struct MqttOptions {
     session_store: Option<Arc<dyn SessionStore>>,
     /// Application-defined scope for durable session storage keys.
     session_store_scope: String,
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     /// Proxy configuration.
     proxy: Option<Proxy>,
     #[cfg(feature = "websocket")]
@@ -631,7 +631,7 @@ impl MqttOptions {
             ack_mode: AckMode::Automatic,
             session_store: None,
             session_store_scope: String::new(),
-            #[cfg(feature = "proxy")]
+            #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
             proxy: None,
             #[cfg(feature = "websocket")]
             request_modifier: None,
@@ -1190,13 +1190,13 @@ impl MqttOptions {
         SessionStoreKey::new(self.session_store_scope.clone(), self.client_id())
     }
 
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     pub fn set_proxy(&mut self, proxy: Proxy) -> &mut Self {
         self.proxy = Some(proxy);
         self
     }
 
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     pub fn proxy(&self) -> Option<Proxy> {
         self.proxy.clone()
     }
@@ -1519,7 +1519,7 @@ impl MqttOptionsBuilder {
     }
 
     /// Set proxy configuration.
-    #[cfg(feature = "proxy")]
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     #[must_use]
     pub fn proxy(mut self, proxy: Proxy) -> Self {
         self.options.set_proxy(proxy);

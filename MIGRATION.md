@@ -278,21 +278,24 @@ an unintended TLS backend.
 
 ## Proxy and custom sockets
 
-With the `proxy` feature enabled, configure proxies on `MqttOptions`:
+Enable `http-proxy` or `socks-proxy` for only the required protocol, or `proxy`
+as a compatibility umbrella that enables both. Then configure the proxy on
+`MqttOptions`:
+
+The previously stable `proxy` feature enabled only HTTP(S) proxying. It now also
+enables SOCKS5 proxying and therefore pulls in the dependencies required by
+both implementations. Existing users that only need HTTP(S) proxy support
+should replace `proxy` with `http-proxy` in their Cargo features to retain the
+previous dependency scope. Use `socks-proxy` when only SOCKS5 support is needed.
 
 ```rust,ignore
-use rumqttc::{MqttOptions, Proxy, ProxyAuth, ProxyType};
+use rumqttc::{MqttOptions, Proxy};
 
 let mut options = MqttOptions::new("proxy-client", "broker.example.com");
-options.set_proxy(Proxy {
-    ty: ProxyType::Http,
-    auth: ProxyAuth::Basic {
-        username: "proxy-user".into(),
-        password: "proxy-password".into(),
-    },
-    addr: "127.0.0.1".into(),
-    port: 8080,
-});
+options.set_proxy(
+    Proxy::http("127.0.0.1", 8080)
+        .with_credentials("proxy-user", "proxy-password"),
+);
 ```
 
 For custom base socket creation, use `set_socket_connector`. The connector runs

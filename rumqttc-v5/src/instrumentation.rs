@@ -200,7 +200,7 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         ConnectionError::AuthProcessingError => "authentication",
         #[cfg(feature = "websocket")]
         ConnectionError::InvalidUrl(_) | ConnectionError::RequestModifier(_) => "configuration",
-        #[cfg(feature = "proxy")]
+        #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
         ConnectionError::Proxy(_) => "proxy",
         ConnectionError::MqttState(_) => "state",
     }
