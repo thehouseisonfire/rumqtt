@@ -1,16 +1,26 @@
 ## [Unreleased]
 
 ### Added
-- Add Unix file-backed persistent session stores for MQTT v4 and v5, backed by a
+- Add Unix and Windows file-backed persistent session stores for MQTT v4 and v5, backed by a
   shared protocol-neutral, checksummed, bounded, cancellation-safe core using
-  `atomic-write-file` for atomic replacement.
+  `atomic-write-file` 0.3.0 on Unix and native `windows-sys` 0.61 wide-path
+  commits on Windows. Add inspection, quarantine, exact legacy detection,
+  operator clear, and cancellation-safe owned-staging cleanup APIs.
 - `rumqttc` v4/v5: Add Linux-only `NetworkOptions::set_mptcp(...)` for opt-in
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- Move the persistent-session file-store examples into their adapter packages,
+  keeping client crate packages independent of unpublished adapter releases.
+  Requested local recovery now stops before reconnecting persistently so broker
+  state can be deliberately realigned first.
 ### Deprecated
 ### Removed
 ### Fixed
+- Preserve the committed quarantine diagnostic path when a Unix namespace sync
+  fails after the checkpoint has already been moved.
+- Make Windows clear-staging cleanup age start when clear begins instead of
+  inheriting the canonical checkpoint payload's last-write time.
 ### Security
 
 ---

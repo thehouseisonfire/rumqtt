@@ -1,7 +1,7 @@
 # rumqttc session file-store core
 
 This protocol-neutral crate stores opaque `rumqttc-next` session checkpoints on
-ordinary trusted local Unix filesystems. MQTT adapters own key encoding and the
+ordinary trusted local Unix and Windows filesystems. MQTT adapters own key encoding and the
 canonical session codec; the event loop continues to own client and
 configuration compatibility validation.
 
@@ -25,16 +25,20 @@ Corruption, unsupported versions, oversized files, trailing bytes, and adapter
 decoder failures fail closed without changing the file. Only absence of the
 canonical `.session` path is a cache miss. Temporary files are ignored.
 
-The store does not discover, promote, migrate, quarantine, or remove stale
-dependency-owned temporary files. Ordinary drop-time cleanup performed by
-`atomic-write-file` is dependency behavior and is not part of this store's
-correctness contract.
+Inspection is metadata-only. Quarantine uses a randomized same-directory
+diagnostic name without overwriting. Exact legacy detection checks only the
+adapter-supplied filename directly below the root and never scans or migrates.
+If the quarantine rename succeeds but synchronizing the namespace fails, the
+error includes the committed `QuarantineInfo`, so its diagnostic path is not
+lost. The canonical checkpoint has already been moved in that case.
+If that generated component is unrepresentable on the filesystem, the legacy
+candidate is necessarily absent and canonical loading continues normally.
 
 Canonical filenames are the full 32-byte BLAKE3 hash of adapter-owned canonical
 key bytes, rendered as 64 lowercase hexadecimal characters plus `.session`.
 Raw key fields never become path components.
 
-## Unix save, clear, and ordering
+## Platform save, clear, and ordering
 
 The resolved atomic-save dependency is `atomic-write-file` 0.3.0, with its
 normal named same-directory temporary files. Every save uses
@@ -71,6 +75,17 @@ the canonical checkpoint may still contain the previous complete value or may
 already contain the new complete value. Reload the canonical path to determine
 observable state; the error cannot identify the failed internal stage.
 
+On Windows, `windows-sys` 0.61 uses lossless extended-length wide paths.
+`CreateFileW` creates exclusive same-directory staging files with no sharing,
+inherited directory ACLs, and write-through; `FlushFileBuffers` precedes
+`MoveFileExW`. Replacement is enabled only after an exists error. Clear first
+makes the canonical last-write time current and flushes it, then moves canonical
+state to a unique owned name and calls `DeleteFileW`. Cleanup age therefore
+measures when clear began rather than when the checkpoint payload was saved.
+`ReplaceFileW` is deliberately not used. Windows owned-staging cleanup runs
+behind a cancellation-safe store-wide FIFO barrier. Unix cleanup returns
+`CleanupUnsupported` and does not parse `atomic-write-file` private names.
+
 ## Trust and support boundary
 
 The configured root must already exist and be a directory. Its ancestors and
@@ -91,7 +106,6 @@ containing-directory synchronization, and ordinary drop cleanup. Tests observe
 the public commit boundary; they do not claim failpoint coverage inside private
 dependency stages.
 
-Non-Unix builds compile, but construction returns `UnsupportedPlatform`.
-Windows persistence is not implemented. The store is intended for ordinary
+Other builds compile, but construction returns `UnsupportedPlatform`. The store is intended for ordinary
 local filesystems and makes no certification about filesystems, mounts,
 controllers, caches, virtual disks, containers, or arbitrary power loss.

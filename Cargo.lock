@@ -1773,10 +1773,13 @@ dependencies = [
  "atomic-write-file",
  "blake3",
  "crc32c",
+ "getrandom 0.4.3",
  "libc",
+ "rustix",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1826,6 +1829,7 @@ name = "rumqttc-v4-session-store-file-next"
 version = "0.34.0-alpha"
 dependencies = [
  "crc32c",
+ "pretty_env_logger",
  "rumqttc-session-store-file-core-next",
  "rumqttc-v4-next",
  "tempfile",
@@ -1881,6 +1885,7 @@ name = "rumqttc-v5-session-store-file-next"
 version = "0.34.0-alpha"
 dependencies = [
  "crc32c",
+ "pretty_env_logger",
  "rumqttc-session-store-file-core-next",
  "rumqttc-v5-next",
  "tempfile",

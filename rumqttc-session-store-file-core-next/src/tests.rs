@@ -220,6 +220,219 @@ fn filename_is_full_lowercase_blake3_and_contains_no_key_text() {
     assert!(!filename.contains('\\'));
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let unicode_root = root.path().join("sessões-客户端");
+    std::fs::create_dir(&unicode_root).unwrap();
+    let store = FileStore::open(&unicode_root, "v5", FileStoreOptions::default())
+        .await
+        .unwrap();
+    let key = "ключ/客户端".as_bytes();
+    store.save(key, b"old".to_vec()).await.unwrap();
+    store.save(key, b"new".to_vec()).await.unwrap();
+    assert_eq!(store.load(key).await.unwrap(), Some(b"new".to_vec()));
+    assert_eq!(
+        store.inspect(key).await.unwrap().state,
+        CheckpointState::Present
+    );
+    let quarantine = store.quarantine(key).await.unwrap();
+    assert!(quarantine.diagnostic_path.is_file());
+    assert_eq!(store.load(key).await.unwrap(), None);
+    store.clear(key).await.unwrap();
+
+    let hash = "0".repeat(64);
+    let owned = unicode_root
+        .join("v5")
+        .join(format!("{hash}.session.tmp-v1.clear.{}", "1".repeat(64)));
+    let unrelated = unicode_root.join("v5").join("unrelated.tmp");
+    std::fs::write(&owned, b"owned").unwrap();
+    std::fs::write(&unrelated, b"unrelated").unwrap();
+    let report = store
+        .cleanup_stale_temporary_files_before_use(Duration::from_secs(3600))
+        .await
+        .unwrap();
+    assert_eq!(
+        report.skipped,
+        vec![owned.file_name().unwrap().to_string_lossy()]
+    );
+    assert!(unrelated.is_file());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_new_clear_staging_uses_the_clear_time_for_cleanup_age() {
+    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        .await
+        .unwrap();
+    let canonical = store.checkpoint_path(b"old-checkpoint");
+    std::fs::write(&canonical, b"old checkpoint").unwrap();
+    let old = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&canonical)
+        .unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(old))
+        .unwrap();
+    drop(file);
+
+    refresh_windows_clear_age(&canonical).unwrap();
+    let hash = canonical.file_stem().unwrap().to_string_lossy();
+    let staging = root
+        .path()
+        .join("v4")
+        .join(format!("{hash}.session.tmp-v1.clear.{}", "1".repeat(64)));
+    move_file(&canonical, &staging, MOVEFILE_WRITE_THROUGH).unwrap();
+
+    let report = store
+        .cleanup_stale_temporary_files_before_use(Duration::from_secs(60 * 60))
+        .await
+        .unwrap();
+    assert!(report.removed.is_empty());
+    assert_eq!(
+        report.skipped,
+        vec![staging.file_name().unwrap().to_string_lossy()]
+    );
+    assert!(staging.is_file());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_quarantine_does_not_report_a_missing_namespace_as_a_missing_checkpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.quarantine(b"absent-key").await,
+        Err(FileStoreError::QuarantineSourceMissing)
+    ));
+    std::fs::remove_dir(root.path().join("v4")).unwrap();
+
+    assert!(matches!(
+        store.quarantine(b"absent-key").await,
+        Err(FileStoreError::Io {
+            operation: FileOperation::InspectNamespace,
+            source,
+        }) if source.kind() == io::ErrorKind::NotFound
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_relative_root_child() {
+    let Some(root) = std::env::var_os("RUMQTTC_WINDOWS_RELATIVE_ROOT_CHILD") else {
+        return;
+    };
+    std::env::set_current_dir(root).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let store = FileStore::open(
+            Path::new(".").join("unused").join(".."),
+            "v4",
+            FileStoreOptions::default(),
+        )
+        .await
+        .unwrap();
+        let checkpoint = store.checkpoint_path(b"relative-key");
+        assert!(checkpoint.is_absolute());
+        assert!(
+            !checkpoint
+                .components()
+                .any(|component| { matches!(component, Component::CurDir | Component::ParentDir) })
+        );
+
+        store.save(b"relative-key", b"old".to_vec()).await.unwrap();
+        store.save(b"relative-key", b"new".to_vec()).await.unwrap();
+        assert_eq!(
+            store.load(b"relative-key").await.unwrap(),
+            Some(b"new".to_vec())
+        );
+        store.quarantine(b"relative-key").await.unwrap();
+        store
+            .save(b"relative-key", b"clear-me".to_vec())
+            .await
+            .unwrap();
+        store.clear(b"relative-key").await.unwrap();
+        assert_eq!(store.load(b"relative-key").await.unwrap(), None);
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_relative_root_support_is_exercised_in_an_isolated_process() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("unused")).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::windows_relative_root_child",
+            "--nocapture",
+        ])
+        .env("RUMQTTC_WINDOWS_RELATIVE_ROOT_CHILD", root.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_extended_paths_preserve_non_unicode_wide_units() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    const BS: u16 = 92;
+
+    let source = [
+        u16::from(b'C'),
+        u16::from(b':'),
+        u16::from(b'/'),
+        0xd800,
+        u16::from(b'/'),
+        u16::from(b'f'),
+    ];
+    let path = PathBuf::from(OsString::from_wide(&source));
+    assert_eq!(
+        wide_path(&path),
+        [
+            BS,
+            BS,
+            u16::from(b'?'),
+            BS,
+            u16::from(b'C'),
+            u16::from(b':'),
+            BS,
+            0xd800,
+            BS,
+            u16::from(b'f'),
+            0,
+        ]
+    );
+
+    let unc = PathBuf::from(OsString::from_wide(&[BS, BS, u16::from(b's'), 0xdfff]));
+    let encoded = wide_path(&unc);
+    assert_eq!(
+        &encoded[..8],
+        &[
+            BS,
+            BS,
+            u16::from(b'?'),
+            BS,
+            u16::from(b'U'),
+            u16::from(b'N'),
+            u16::from(b'C'),
+            BS,
+        ]
+    );
+    assert_eq!(&encoded[8..], &[u16::from(b's'), 0xdfff, 0]);
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn save_load_replace_clear_and_missing_are_complete() {
@@ -237,6 +450,245 @@ async fn save_load_replace_clear_and_missing_are_complete() {
     store.clear(key).await.unwrap();
     store.clear(key).await.unwrap();
     assert_eq!(store.load(key).await.unwrap(), None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn inspection_quarantine_and_exact_legacy_detection_are_non_destructive() {
+    let root = tempfile::tempdir().unwrap();
+    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        .await
+        .unwrap();
+    let key = b"inspection-key";
+    assert_eq!(
+        store.inspect(key).await.unwrap().state,
+        CheckpointState::Absent
+    );
+
+    std::fs::write(root.path().join("exact.legacy.session"), b"legacy").unwrap();
+    assert!(matches!(
+        store
+            .load_with_legacy_filename(key, "exact.legacy.session")
+            .await
+            .unwrap(),
+        LegacyLoad::LegacyDetected { .. }
+    ));
+    assert!(matches!(
+        store
+            .load_with_legacy_filename(key, "../exact.legacy.session")
+            .await,
+        Err(FileStoreError::InvalidLegacyFilename)
+    ));
+
+    store.save(key, b"canonical".to_vec()).await.unwrap();
+    let inspection = store.inspect(key).await.unwrap();
+    assert_eq!(inspection.state, CheckpointState::Present);
+    assert!(inspection.size.unwrap() > b"canonical".len() as u64);
+    assert!(matches!(
+        store.load_with_legacy_filename(key, "exact.legacy.session").await.unwrap(),
+        LegacyLoad::Present(payload) if payload == b"canonical"
+    ));
+
+    let quarantine = store.quarantine(key).await.unwrap();
+    assert_eq!(quarantine.identifier.len(), 64);
+    assert!(quarantine.diagnostic_path.is_file());
+    assert_eq!(
+        store.inspect(key).await.unwrap().state,
+        CheckpointState::Absent
+    );
+    assert!(matches!(
+        store.quarantine(key).await,
+        Err(FileStoreError::QuarantineSourceMissing)
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn quarantine_sync_failure_preserves_the_committed_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let initial = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        .await
+        .unwrap();
+    let key = b"quarantine-sync-failure";
+    initial
+        .save(key, b"diagnostic payload".to_vec())
+        .await
+        .unwrap();
+    drop(initial);
+
+    let hook = Arc::new(|stage| {
+        if stage == TestStage::BeforeDirectorySync {
+            Err(io::Error::other("injected quarantine sync failure"))
+        } else {
+            Ok(())
+        }
+    });
+    let store =
+        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
+            .await
+            .unwrap();
+    let error = store.quarantine(key).await.unwrap_err();
+    let FileStoreError::QuarantineNamespaceSync { quarantine, source } = error else {
+        panic!("unexpected quarantine error: {error:?}");
+    };
+    assert_eq!(source.to_string(), "injected quarantine sync failure");
+    assert!(quarantine.diagnostic_path.is_file());
+    assert_eq!(
+        store.inspect(key).await.unwrap().state,
+        CheckpointState::Absent
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_cleanup_is_validated_and_explicitly_unsupported() {
+    let root = tempfile::tempdir().unwrap();
+    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .cleanup_stale_temporary_files_before_use(Duration::ZERO)
+            .await,
+        Err(FileStoreError::InvalidCleanupAge)
+    ));
+    assert!(matches!(
+        store
+            .cleanup_stale_temporary_files_before_use(Duration::from_secs(1))
+            .await,
+        Err(FileStoreError::CleanupUnsupported { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_dispatch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let (stage_sender, stage_receiver) = std::sync::mpsc::channel();
+    let stage_receiver = Arc::new(std::sync::Mutex::new(stage_receiver));
+    let (release_sender, release_receiver) = std::sync::mpsc::channel();
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let envelope_count = AtomicUsize::new(0);
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::BeforeEnvelope {
+            envelope_count.fetch_add(1, Ordering::SeqCst);
+            stage_sender.send(()).unwrap();
+        }
+        if stage == TestStage::BeforeCommit && envelope_count.load(Ordering::SeqCst) == 1 {
+            release_receiver.lock().unwrap().recv().unwrap();
+        }
+        Ok(())
+    });
+    let store =
+        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
+            .await
+            .unwrap();
+
+    let earlier = store.save(b"earlier", b"one".to_vec());
+    let first_stage_receiver = Arc::clone(&stage_receiver);
+    tokio::task::spawn_blocking(move || first_stage_receiver.lock().unwrap().recv().unwrap())
+        .await
+        .unwrap();
+    let maintenance = store.cleanup_stale_temporary_files_before_use(Duration::from_secs(1));
+    drop(maintenance);
+    let later = store.save(b"later", b"two".to_vec());
+
+    // The later save cannot reach its first filesystem stage while the barrier
+    // waits for the earlier save, even though the maintenance caller cancelled.
+    assert!(matches!(
+        stage_receiver.lock().unwrap().try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    release_sender.send(()).unwrap();
+    earlier.await.unwrap();
+    later.await.unwrap();
+    assert_eq!(store.load(b"later").await.unwrap(), Some(b"two".to_vec()));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
+    let event_receiver = Arc::new(std::sync::Mutex::new(event_receiver));
+    let (release_sender, release_receiver) = std::sync::mpsc::channel();
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let cleanup_count = AtomicUsize::new(0);
+    let save_count = AtomicUsize::new(0);
+    let hook = Arc::new(move |stage| {
+        match stage {
+            TestStage::BeforeCleanup => {
+                let index = cleanup_count.fetch_add(1, Ordering::SeqCst);
+                event_sender
+                    .send(if index == 0 { "M1" } else { "M2" })
+                    .unwrap();
+                if index == 0 {
+                    release_receiver.lock().unwrap().recv().unwrap();
+                }
+            }
+            TestStage::BeforeEnvelope => {
+                let index = save_count.fetch_add(1, Ordering::SeqCst);
+                event_sender
+                    .send(if index == 0 { "B" } else { "C" })
+                    .unwrap();
+            }
+            _ => {}
+        }
+        Ok(())
+    });
+    let store =
+        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
+            .await
+            .unwrap();
+
+    let first_maintenance = store.cleanup_stale_temporary_files_before_use(Duration::from_secs(1));
+    let first_event_receiver = Arc::clone(&event_receiver);
+    assert_eq!(
+        tokio::task::spawn_blocking(move || first_event_receiver.lock().unwrap().recv().unwrap())
+            .await
+            .unwrap(),
+        "M1"
+    );
+
+    let before_second = store.save(b"before-second", b"B".to_vec());
+    let second_maintenance = store.cleanup_stale_temporary_files_before_use(Duration::from_secs(1));
+    let after_second = store.save(b"after-second", b"C".to_vec());
+    release_sender.send(()).unwrap();
+
+    let (first_result, before_result, second_result, after_result) = tokio::join!(
+        first_maintenance,
+        before_second,
+        second_maintenance,
+        after_second
+    );
+    assert!(matches!(
+        first_result,
+        Err(FileStoreError::CleanupUnsupported { .. })
+    ));
+    before_result.unwrap();
+    assert!(matches!(
+        second_result,
+        Err(FileStoreError::CleanupUnsupported { .. })
+    ));
+    after_result.unwrap();
+
+    // M2 must not overtake B, and C must not overtake M2.
+    let receive_event = || event_receiver.lock().unwrap().recv().unwrap();
+    assert_eq!(receive_event(), "B");
+    assert_eq!(receive_event(), "M2");
+    assert_eq!(receive_event(), "C");
+    assert_eq!(
+        store.load(b"before-second").await.unwrap(),
+        Some(b"B".to_vec())
+    );
+    assert_eq!(
+        store.load(b"after-second").await.unwrap(),
+        Some(b"C".to_vec())
+    );
 }
 
 #[cfg(unix)]

@@ -138,10 +138,6 @@ path = "examples/lifecycle_tracing.rs"
 required-features = ["tracing"]
 
 [[example]]
-name = "persistent_session_file_store"
-path = "examples/persistent_session_file_store.rs"
-
-[[example]]
 name = "resubscribe_on_reconnect"
 path = "examples/resubscribe_on_reconnect.rs"
 

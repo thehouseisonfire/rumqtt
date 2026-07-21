@@ -159,10 +159,6 @@ name = "resubscribe_on_reconnect_v5"
 path = "examples/resubscribe_on_reconnect_v5.rs"
 
 [[example]]
-name = "persistent_session_file_store_v5"
-path = "examples/persistent_session_file_store_v5.rs"
-
-[[example]]
 name = "unbounded_v5"
 path = "examples/unbounded.rs"
 

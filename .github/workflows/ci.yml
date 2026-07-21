@@ -166,7 +166,25 @@ jobs:
             cargo check -p rumqttc-next --no-default-features --features "auth-scram,url"
 
       - name: Check workspace
-        run: cargo check --workspace
+        run: |
+          cargo check --workspace
+          cargo check -p rumqttc-v4-session-store-file-next --example persistent_session_file_store
+          cargo check -p rumqttc-v5-session-store-file-next --example persistent_session_file_store_v5
+
+  msrv-session-store:
+    name: Session stores on Rust 1.89
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.89
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: Linux-cargo-msrv-session-store
+      - run: |
+          cargo check -p rumqttc-session-store-file-core-next -p rumqttc-v4-session-store-file-next -p rumqttc-v5-session-store-file-next
+          cargo check -p rumqttc-session-store-file-core-next --target wasm32-unknown-unknown
 
   benchmark-broker-fixture:
     name: Benchmark broker fixture

@@ -16,17 +16,15 @@ client_id_length:u32_be || client_id UTF-8 bytes
 ```
 
 The complete byte string is hashed with BLAKE3 and the full lowercase digest is
-used as the `.session` filename. The core envelope, 64 MiB default limit, Unix
+used as the `.session` filename. The core envelope, 64 MiB default limit, Unix/Windows
 atomic-write behavior, FIFO/cancellation contract, trusted-root model,
 corruption policy, and durability limitations are documented by
 `rumqttc-session-store-file-core-next`.
 
 The store provides no cross-process locking, multi-writer protection,
 encryption, authentication, tamper resistance, or universal power-loss
-guarantee. Dependency-owned temporary files are ignored and may remain after an
-abrupt interruption; this adapter does not discover or clean them up.
+guarantee. Typed inspection, quarantine, operator-clear, and Windows owned-staging cleanup APIs are provided.
 
-This is a new hashed, versioned layout. Files written by the repository's old
-file-store example are incompatible and are never detected or migrated. Use a
-dedicated new root. Reusing old persistence state without deliberately
-resetting broker-held state can create a local/remote session mismatch.
+When canonical state is absent, exactly the former example filename
+`hex(scope).hex(client_id).session` below the root is detected and reported.
+It is never scanned for, decoded, or migrated.

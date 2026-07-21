@@ -18,8 +18,19 @@ crc32c = "0.6"
 thiserror = "2.0.8"
 tokio = { version = "1.40", features = ["rt", "sync"] }
 
+[target.'cfg(any(unix, windows))'.dependencies]
+getrandom = { version = "0.4", features = ["std"] }
+
 [target.'cfg(unix)'.dependencies]
 atomic-write-file = "0.3"
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }
 
 [dev-dependencies]
 tempfile = "3"

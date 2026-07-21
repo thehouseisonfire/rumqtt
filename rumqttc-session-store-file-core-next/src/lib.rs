@@ -6,7 +6,7 @@
 //!
 //! # Platform and filesystem scope
 //!
-//! This implementation supports Unix only. Non-Unix targets compile, but
+//! This implementation supports Unix and Windows. Other targets compile, but
 //! [`FileStore::open`] returns [`FileStoreError::UnsupportedPlatform`]. It is
 //! intended for ordinary local filesystems; it does not detect or certify NFS,
 //! SMB, container volumes, virtual disks, filesystem or mount behavior,
@@ -39,38 +39,83 @@
 //! authentication, cryptographic integrity, or tamper resistance. Corruption
 //! fails closed and is left untouched.
 //!
-//! Only the canonical `.session` path is authoritative. Dependency-owned
-//! temporary files may remain after abrupt interruption and are always ignored.
-//! This crate performs no stale-temporary-file discovery, promotion, migration,
-//! quarantine, or cleanup. Ordinary drop-time cleanup remains dependency-owned
-//! and is not part of the store's correctness contract.
+//! Only the canonical `.session` path is authoritative. Exact legacy detection
+//! never scans or migrates. Windows cleanup recognizes only store-owned staging
+//! names; Unix never parses dependency-private temporary names.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::mpsc;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::sync::oneshot;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const MAGIC: &[u8; 8] = b"RUMQSESS";
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const ENVELOPE_VERSION: u16 = 1;
 const HEADER_LEN: usize = 18;
 const CHECKSUM_LEN: usize = 4;
 
 /// The default maximum canonical checkpoint payload size (64 MiB).
 pub const DEFAULT_MAX_CHECKPOINT_SIZE: u64 = 64 * 1024 * 1024;
+
+/// Observable state of a canonical checkpoint (or an exact legacy candidate).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckpointState {
+    Absent,
+    Present,
+    LegacyDetected,
+}
+
+/// Metadata returned without opening or decoding checkpoint contents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointInspection {
+    pub state: CheckpointState,
+    pub size: Option<u64>,
+    pub modified: Option<SystemTime>,
+}
+
+/// Result of an exact canonical load plus legacy-filename check.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacyLoad {
+    Absent,
+    Present(Vec<u8>),
+    LegacyDetected { diagnostic_path: PathBuf },
+}
+
+/// Location assigned to a quarantined checkpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuarantineInfo {
+    pub identifier: String,
+    pub diagnostic_path: PathBuf,
+}
+
+/// One cleanup entry that could not be inspected or removed.
+#[derive(Debug)]
+pub struct CleanupFailure {
+    pub identifier: String,
+    pub source: io::Error,
+}
+
+/// Outcome of a store-wide stale temporary-file cleanup.
+#[derive(Debug, Default)]
+pub struct CleanupReport {
+    pub removed: Vec<String>,
+    pub skipped: Vec<String>,
+    pub failures: Vec<CleanupFailure>,
+}
 
 /// Configuration for a [`FileStore`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +137,7 @@ impl Default for FileStoreOptions {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileOperation {
     ResolveCurrentDirectory,
+    NormalizeRoot,
     StartCoordinator,
     InspectRoot,
     InspectNamespace,
@@ -105,12 +151,20 @@ pub enum FileOperation {
     RemoveCheckpoint,
     OpenNamespaceDirectory,
     SyncNamespaceDirectory,
+    InspectCheckpoint,
+    InspectLegacyCheckpoint,
+    QuarantineCheckpoint,
+    GenerateIdentifier,
+    EnumerateTemporaryFiles,
+    RemoveTemporaryFile,
+    RefreshClearStagingAge,
 }
 
 impl std::fmt::Display for FileOperation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::ResolveCurrentDirectory => "resolve the current directory",
+            Self::NormalizeRoot => "normalize the configured root path",
             Self::StartCoordinator => "start the session-store coordinator",
             Self::InspectRoot => "inspect configured root",
             Self::InspectNamespace => "inspect namespace directory",
@@ -124,6 +178,13 @@ impl std::fmt::Display for FileOperation {
             Self::RemoveCheckpoint => "remove checkpoint",
             Self::OpenNamespaceDirectory => "open namespace directory",
             Self::SyncNamespaceDirectory => "synchronize namespace directory",
+            Self::InspectCheckpoint => "inspect checkpoint",
+            Self::InspectLegacyCheckpoint => "inspect exact legacy checkpoint",
+            Self::QuarantineCheckpoint => "quarantine checkpoint",
+            Self::GenerateIdentifier => "generate a diagnostic identifier",
+            Self::EnumerateTemporaryFiles => "enumerate owned temporary files",
+            Self::RemoveTemporaryFile => "remove an owned temporary file",
+            Self::RefreshClearStagingAge => "refresh clear-staging age",
         })
     }
 }
@@ -194,6 +255,35 @@ pub enum FileStoreError {
     UnsupportedPlatform { platform: &'static str },
     #[error("session-store operation coordination failed")]
     CoordinationFailure,
+    #[error("canonical checkpoint to quarantine does not exist")]
+    QuarantineSourceMissing,
+    #[error("checkpoint quarantine failed: {source}")]
+    QuarantineCommit {
+        #[source]
+        source: io::Error,
+    },
+    #[error("checkpoint was moved to quarantine, but namespace synchronization failed: {source}")]
+    QuarantineNamespaceSync {
+        quarantine: QuarantineInfo,
+        #[source]
+        source: io::Error,
+    },
+    #[error("stale temporary-file cleanup is unsupported on {platform}")]
+    CleanupUnsupported { platform: &'static str },
+    #[error("cleanup minimum age must be greater than zero")]
+    InvalidCleanupAge,
+    #[cfg(any(unix, windows))]
+    #[error("failed to obtain a random diagnostic identifier: {source}")]
+    IdentifierGeneration {
+        #[source]
+        source: getrandom::Error,
+    },
+    #[error("checkpoint path has an unexpected file type")]
+    UnexpectedFileType,
+    #[error("store-wide maintenance coordination failed")]
+    MaintenanceCoordinationFailure,
+    #[error("legacy filename must be one non-empty normal path component")]
+    InvalidLegacyFilename,
 }
 
 /// A boxed future returned by core store operations.
@@ -223,7 +313,7 @@ impl std::fmt::Debug for FileStore {
 
 struct Inner {
     config: Arc<StoreConfig>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     submissions: mpsc::Sender<CoordinatorEvent>,
     #[cfg(all(test, unix))]
     registry_entries: Arc<std::sync::atomic::AtomicUsize>,
@@ -233,7 +323,7 @@ struct StoreConfig {
     root: PathBuf,
     namespace: PathBuf,
     maximum: u64,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hook: Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
 }
 
@@ -259,7 +349,7 @@ impl FileStore {
     ///
     /// The root and its ancestors are trusted. Construction does not add
     /// cross-process locking or protection against hostile filesystem changes.
-    /// On non-Unix targets this method returns
+    /// On targets other than Unix and Windows this method returns
     /// [`FileStoreError::UnsupportedPlatform`].
     ///
     /// # Errors
@@ -275,7 +365,7 @@ impl FileStore {
         let namespace = validate_namespace(namespace.as_ref())?;
         validate_maximum(options.max_checkpoint_size)?;
 
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (root, namespace, options);
             return Err(FileStoreError::UnsupportedPlatform {
@@ -283,22 +373,22 @@ impl FileStore {
             });
         }
 
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let maximum = options.max_checkpoint_size;
             let config =
-                tokio::task::spawn_blocking(move || initialize_unix(root, namespace, maximum))
+                tokio::task::spawn_blocking(move || initialize_platform(root, namespace, maximum))
                     .await
                     .map_err(|_| FileStoreError::CoordinationFailure)??;
             Self::from_config(config)
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn from_config(config: StoreConfig) -> Result<Self, FileStoreError> {
         let config = Arc::new(config);
         let (submissions, receiver) = mpsc::channel();
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let registry_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let coordinator_runtime = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -307,7 +397,7 @@ impl FileStore {
                 source,
             })?;
         let scheduler_config = Arc::clone(&config);
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let scheduler_registry_entries = Arc::clone(&registry_entries);
         std::thread::Builder::new()
             .name("rumqttc-file-store-coordinator".into())
@@ -317,7 +407,7 @@ impl FileStore {
                     &scheduler_config,
                     &receiver,
                     &blocking_executor,
-                    #[cfg(test)]
+                    #[cfg(all(test, unix))]
                     &scheduler_registry_entries,
                 );
             })
@@ -329,7 +419,7 @@ impl FileStore {
             inner: Arc::new(Inner {
                 config,
                 submissions,
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 registry_entries,
             }),
         })
@@ -347,7 +437,7 @@ impl FileStore {
         validate_maximum(options.max_checkpoint_size)?;
         let maximum = options.max_checkpoint_size;
         let mut config =
-            tokio::task::spawn_blocking(move || initialize_unix(root, namespace, maximum))
+            tokio::task::spawn_blocking(move || initialize_platform(root, namespace, maximum))
                 .await
                 .map_err(|_| FileStoreError::CoordinationFailure)??;
         config.hook = Some(hook);
@@ -359,12 +449,12 @@ impl FileStore {
     /// Only a genuinely absent canonical checkpoint returns `Ok(None)`.
     #[must_use]
     pub fn load(&self, canonical_key: &[u8]) -> FileStoreFuture<Option<Vec<u8>>> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
             return unsupported_future();
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let (sender, receiver) = oneshot::channel();
             submit(
@@ -379,12 +469,12 @@ impl FileStore {
     /// Saves an opaque canonical payload for `canonical_key`.
     #[must_use]
     pub fn save(&self, canonical_key: &[u8], payload: Vec<u8>) -> FileStoreFuture<()> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (canonical_key, payload);
             return unsupported_future();
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let (sender, receiver) = oneshot::channel();
             submit(
@@ -399,12 +489,12 @@ impl FileStore {
     /// Clears the canonical checkpoint for `canonical_key`.
     #[must_use]
     pub fn clear(&self, canonical_key: &[u8]) -> FileStoreFuture<()> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
             return unsupported_future();
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let (sender, receiver) = oneshot::channel();
             submit(
@@ -416,7 +506,150 @@ impl FileStore {
         }
     }
 
-    /// Returns the canonical checkpoint path for an opaque key.
+    /// Inspects metadata without opening, decoding, or mutating the checkpoint.
+    #[must_use]
+    pub fn inspect(&self, canonical_key: &[u8]) -> FileStoreFuture<CheckpointInspection> {
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = canonical_key;
+            unsupported_future()
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let (sender, receiver) = oneshot::channel();
+            submit(
+                &self.inner.submissions,
+                key_hash(canonical_key),
+                Operation::Inspect { sender },
+                receiver,
+            )
+        }
+    }
+
+    /// Loads the canonical checkpoint, checking exactly one legacy filename only
+    /// when the canonical checkpoint is absent.
+    #[must_use]
+    pub fn load_with_legacy_filename(
+        &self,
+        canonical_key: &[u8],
+        legacy_filename: impl AsRef<OsStr>,
+    ) -> FileStoreFuture<LegacyLoad> {
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (canonical_key, legacy_filename);
+            unsupported_future()
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let legacy_filename = match validate_filename(legacy_filename.as_ref()) {
+                Ok(filename) => filename,
+                Err(error) => return Box::pin(async move { Err(error) }),
+            };
+            let (sender, receiver) = oneshot::channel();
+            submit(
+                &self.inner.submissions,
+                key_hash(canonical_key),
+                Operation::LoadWithLegacy {
+                    legacy_filename,
+                    sender,
+                },
+                receiver,
+            )
+        }
+    }
+
+    /// Inspects canonical state and then exactly one legacy filename in one FIFO operation.
+    #[must_use]
+    pub fn inspect_with_legacy_filename(
+        &self,
+        canonical_key: &[u8],
+        legacy_filename: impl AsRef<OsStr>,
+    ) -> FileStoreFuture<CheckpointInspection> {
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (canonical_key, legacy_filename);
+            unsupported_future()
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let legacy_filename = match validate_filename(legacy_filename.as_ref()) {
+                Ok(filename) => filename,
+                Err(error) => return Box::pin(async move { Err(error) }),
+            };
+            let (sender, receiver) = oneshot::channel();
+            submit(
+                &self.inner.submissions,
+                key_hash(canonical_key),
+                Operation::InspectWithLegacy {
+                    legacy_filename,
+                    sender,
+                },
+                receiver,
+            )
+        }
+    }
+
+    /// Atomically moves a canonical checkpoint to a randomized diagnostic name.
+    #[must_use]
+    pub fn quarantine(&self, canonical_key: &[u8]) -> FileStoreFuture<QuarantineInfo> {
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = canonical_key;
+            unsupported_future()
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let (sender, receiver) = oneshot::channel();
+            submit(
+                &self.inner.submissions,
+                key_hash(canonical_key),
+                Operation::Quarantine { sender },
+                receiver,
+            )
+        }
+    }
+
+    /// Removes stale store-owned Windows staging files behind a store-wide FIFO barrier.
+    #[must_use]
+    pub fn cleanup_stale_temporary_files_before_use(
+        &self,
+        minimum_age: Duration,
+    ) -> FileStoreFuture<CleanupReport> {
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = minimum_age;
+            return unsupported_future();
+        }
+        #[cfg(any(unix, windows))]
+        {
+            if minimum_age.is_zero() {
+                return Box::pin(async { Err(FileStoreError::InvalidCleanupAge) });
+            }
+            let (sender, receiver) = oneshot::channel();
+            if self
+                .inner
+                .submissions
+                .send(CoordinatorEvent::Maintenance(MaintenanceSubmission {
+                    minimum_age,
+                    sender,
+                    completion_sender: self.inner.submissions.clone(),
+                }))
+                .is_err()
+            {
+                return Box::pin(async { Err(FileStoreError::MaintenanceCoordinationFailure) });
+            }
+            Box::pin(async move {
+                receiver
+                    .await
+                    .unwrap_or(Err(FileStoreError::MaintenanceCoordinationFailure))
+            })
+        }
+    }
+
+    /// Returns a diagnostic path for an opaque key.
+    ///
+    /// This path is not a stable storage API and callers must not read, write,
+    /// rename, or delete it while the store is in use.
     #[must_use]
     pub fn checkpoint_path(&self, canonical_key: &[u8]) -> PathBuf {
         self.inner
@@ -432,7 +665,7 @@ pub fn checkpoint_filename(canonical_key: &[u8]) -> String {
     format!("{}.session", blake3::hash(canonical_key).to_hex())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn key_hash(canonical_key: &[u8]) -> [u8; 32] {
     *blake3::hash(canonical_key).as_bytes()
 }
@@ -448,6 +681,16 @@ fn validate_namespace(namespace: &OsStr) -> Result<PathBuf, FileStoreError> {
     }
 }
 
+#[cfg(any(unix, windows))]
+fn validate_filename(filename: &OsStr) -> Result<PathBuf, FileStoreError> {
+    let path = Path::new(filename);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(component)), None) if !component.is_empty() => Ok(path.into()),
+        _ => Err(FileStoreError::InvalidLegacyFilename),
+    }
+}
+
 fn validate_maximum(maximum: u64) -> Result<(), FileStoreError> {
     let envelope_capacity = usize::try_from(maximum)
         .ok()
@@ -458,7 +701,7 @@ fn validate_maximum(maximum: u64) -> Result<(), FileStoreError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported_future<T: Send + 'static>() -> FileStoreFuture<T> {
     Box::pin(async {
         Err(FileStoreError::UnsupportedPlatform {
@@ -467,7 +710,7 @@ fn unsupported_future<T: Send + 'static>() -> FileStoreFuture<T> {
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn submit<T: Send + 'static>(
     submissions: &mpsc::Sender<CoordinatorEvent>,
     key_hash: [u8; 32],
@@ -492,20 +735,20 @@ fn submit<T: Send + 'static>(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct Submission {
     key_hash: [u8; 32],
     operation: Operation,
     completion_sender: mpsc::Sender<CoordinatorEvent>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct QueuedOperation {
     operation: Operation,
     completion_sender: mpsc::Sender<CoordinatorEvent>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum Operation {
     Load {
         sender: oneshot::Sender<Result<Option<Vec<u8>>, FileStoreError>>,
@@ -517,40 +760,91 @@ enum Operation {
     Clear {
         sender: oneshot::Sender<Result<(), FileStoreError>>,
     },
+    Inspect {
+        sender: oneshot::Sender<Result<CheckpointInspection, FileStoreError>>,
+    },
+    LoadWithLegacy {
+        legacy_filename: PathBuf,
+        sender: oneshot::Sender<Result<LegacyLoad, FileStoreError>>,
+    },
+    InspectWithLegacy {
+        legacy_filename: PathBuf,
+        sender: oneshot::Sender<Result<CheckpointInspection, FileStoreError>>,
+    },
+    Quarantine {
+        sender: oneshot::Sender<Result<QuarantineInfo, FileStoreError>>,
+    },
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum BlockingResult {
     Load(Result<Option<Vec<u8>>, FileStoreError>),
     Save(Result<(), FileStoreError>),
     Clear(Result<(), FileStoreError>),
+    Inspect(Result<CheckpointInspection, FileStoreError>),
+    LoadWithLegacy(Result<LegacyLoad, FileStoreError>),
+    InspectWithLegacy(Result<CheckpointInspection, FileStoreError>),
+    Quarantine(Result<QuarantineInfo, FileStoreError>),
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct Completion {
     key_hash: [u8; 32],
     outcome: Option<(Operation, BlockingResult)>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum CoordinatorEvent {
     Submission(Submission),
     Completion(Completion),
+    Maintenance(MaintenanceSubmission),
+    MaintenanceCompletion(MaintenanceCompletion),
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+struct MaintenanceSubmission {
+    minimum_age: Duration,
+    sender: oneshot::Sender<Result<CleanupReport, FileStoreError>>,
+    completion_sender: mpsc::Sender<CoordinatorEvent>,
+}
+
+#[cfg(any(unix, windows))]
+struct MaintenanceCompletion {
+    outcome: Option<MaintenanceOutcome>,
+}
+
+#[cfg(any(unix, windows))]
+enum PendingEvent {
+    Submission(Submission),
+    Maintenance(MaintenanceSubmission),
+}
+
+#[cfg(any(unix, windows))]
+type MaintenanceOutcome = (
+    oneshot::Sender<Result<CleanupReport, FileStoreError>>,
+    Result<CleanupReport, FileStoreError>,
+);
+
+#[cfg(any(unix, windows))]
+#[allow(clippy::too_many_lines)]
 fn run_scheduler(
     config: &Arc<StoreConfig>,
     receiver: &mpsc::Receiver<CoordinatorEvent>,
     blocking_executor: &tokio::runtime::Handle,
-    #[cfg(test)] registry_entries: &std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, unix))] registry_entries: &std::sync::atomic::AtomicUsize,
 ) {
     let mut queues: HashMap<[u8; 32], VecDeque<QueuedOperation>> = HashMap::new();
     let mut active = HashSet::new();
+    let mut pending = VecDeque::new();
+    let mut maintenance_active = false;
 
     while let Ok(event) = receiver.recv() {
         match event {
             CoordinatorEvent::Submission(submission) => {
+                if maintenance_active || !pending.is_empty() {
+                    pending.push_back(PendingEvent::Submission(submission));
+                    continue;
+                }
                 let key_hash = submission.key_hash;
                 queues
                     .entry(key_hash)
@@ -559,7 +853,7 @@ fn run_scheduler(
                         operation: submission.operation,
                         completion_sender: submission.completion_sender,
                     });
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 registry_entries.store(queues.len(), std::sync::atomic::Ordering::SeqCst);
                 dispatch_if_idle(
                     key_hash,
@@ -586,17 +880,118 @@ fn run_scheduler(
                 {
                     queues.remove(&completion.key_hash);
                 }
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 registry_entries.store(queues.len(), std::sync::atomic::Ordering::SeqCst);
                 if let Some((operation, result)) = outcome {
                     deliver(operation, result);
                 }
+                advance_pending_if_ready(
+                    config,
+                    &mut queues,
+                    &mut active,
+                    &mut pending,
+                    &mut maintenance_active,
+                    blocking_executor,
+                );
+            }
+            CoordinatorEvent::Maintenance(submission) => {
+                pending.push_back(PendingEvent::Maintenance(submission));
+                advance_pending_if_ready(
+                    config,
+                    &mut queues,
+                    &mut active,
+                    &mut pending,
+                    &mut maintenance_active,
+                    blocking_executor,
+                );
+            }
+            CoordinatorEvent::MaintenanceCompletion(completion) => {
+                maintenance_active = false;
+                if let Some((sender, result)) = completion.outcome {
+                    let _ = sender.send(result);
+                }
+                advance_pending_if_ready(
+                    config,
+                    &mut queues,
+                    &mut active,
+                    &mut pending,
+                    &mut maintenance_active,
+                    blocking_executor,
+                );
             }
         }
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+fn advance_pending_if_ready(
+    config: &Arc<StoreConfig>,
+    queues: &mut HashMap<[u8; 32], VecDeque<QueuedOperation>>,
+    active: &mut HashSet<[u8; 32]>,
+    pending: &mut VecDeque<PendingEvent>,
+    maintenance_active: &mut bool,
+    blocking_executor: &tokio::runtime::Handle,
+) {
+    if *maintenance_active {
+        return;
+    }
+
+    loop {
+        match pending.front() {
+            Some(PendingEvent::Maintenance(_)) => {
+                if !active.is_empty() || queues.values().any(|queue| !queue.is_empty()) {
+                    return;
+                }
+                let Some(PendingEvent::Maintenance(submission)) = pending.pop_front() else {
+                    unreachable!("the pending event kind was inspected above");
+                };
+                *maintenance_active = true;
+                dispatch_maintenance(config, submission, blocking_executor);
+                return;
+            }
+            Some(PendingEvent::Submission(_)) => {
+                let Some(PendingEvent::Submission(submission)) = pending.pop_front() else {
+                    unreachable!("the pending event kind was inspected above");
+                };
+                let key_hash = submission.key_hash;
+                queues
+                    .entry(key_hash)
+                    .or_default()
+                    .push_back(QueuedOperation {
+                        operation: submission.operation,
+                        completion_sender: submission.completion_sender,
+                    });
+                dispatch_if_idle(key_hash, config, queues, active, blocking_executor);
+            }
+            None => return,
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn dispatch_maintenance(
+    config: &Arc<StoreConfig>,
+    submission: MaintenanceSubmission,
+    blocking_executor: &tokio::runtime::Handle,
+) {
+    let config = Arc::clone(config);
+    blocking_executor.spawn_blocking(move || {
+        let MaintenanceSubmission {
+            minimum_age,
+            sender,
+            completion_sender,
+        } = submission;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cleanup_stale_files(&config, minimum_age)
+        }));
+        let outcome = result.ok().map(|result| (sender, result));
+        let _ = completion_sender.send(CoordinatorEvent::MaintenanceCompletion(
+            MaintenanceCompletion { outcome },
+        ));
+    });
+}
+
+#[cfg(any(unix, windows))]
 fn dispatch_if_idle(
     key_hash: [u8; 32],
     config: &Arc<StoreConfig>,
@@ -633,7 +1028,7 @@ fn dispatch_if_idle(
     });
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn run_owned_operation(
     config: &StoreConfig,
     path: &Path,
@@ -645,9 +1040,9 @@ fn run_owned_operation(
             (Operation::Load { sender }, BlockingResult::Load(result))
         }
         Operation::Save { payload, sender } => {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             let result = save_checkpoint(config, path, &payload);
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             let result = Err(FileStoreError::UnsupportedPlatform {
                 platform: std::env::consts::OS,
             });
@@ -657,18 +1052,47 @@ fn run_owned_operation(
             )
         }
         Operation::Clear { sender } => {
-            #[cfg(unix)]
             let result = clear_checkpoint(config, path);
-            #[cfg(not(unix))]
-            let result = Err(FileStoreError::UnsupportedPlatform {
-                platform: std::env::consts::OS,
-            });
             (Operation::Clear { sender }, BlockingResult::Clear(result))
         }
+        Operation::Inspect { sender } => (
+            Operation::Inspect { sender },
+            BlockingResult::Inspect(inspect_checkpoint(config, path)),
+        ),
+        Operation::LoadWithLegacy {
+            legacy_filename,
+            sender,
+        } => {
+            let result = load_with_legacy(config, path, &legacy_filename);
+            (
+                Operation::LoadWithLegacy {
+                    legacy_filename,
+                    sender,
+                },
+                BlockingResult::LoadWithLegacy(result),
+            )
+        }
+        Operation::InspectWithLegacy {
+            legacy_filename,
+            sender,
+        } => {
+            let result = inspect_with_legacy(config, path, &legacy_filename);
+            (
+                Operation::InspectWithLegacy {
+                    legacy_filename,
+                    sender,
+                },
+                BlockingResult::InspectWithLegacy(result),
+            )
+        }
+        Operation::Quarantine { sender } => (
+            Operation::Quarantine { sender },
+            BlockingResult::Quarantine(quarantine_checkpoint(config, path)),
+        ),
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn deliver(operation: Operation, result: BlockingResult) {
     match (operation, result) {
         (Operation::Load { sender }, BlockingResult::Load(result)) => {
@@ -678,16 +1102,38 @@ fn deliver(operation: Operation, result: BlockingResult) {
         | (Operation::Clear { sender }, BlockingResult::Clear(result)) => {
             let _send_result = sender.send(result);
         }
+        (Operation::Inspect { sender }, BlockingResult::Inspect(result))
+        | (
+            Operation::InspectWithLegacy { sender, .. },
+            BlockingResult::InspectWithLegacy(result),
+        ) => {
+            let _ = sender.send(result);
+        }
+        (Operation::LoadWithLegacy { sender, .. }, BlockingResult::LoadWithLegacy(result)) => {
+            let _ = sender.send(result);
+        }
+        (Operation::Quarantine { sender }, BlockingResult::Quarantine(result)) => {
+            let _ = sender.send(result);
+        }
         _ => unreachable!("operation and result kinds must match"),
     }
 }
 
-#[cfg(unix)]
-fn initialize_unix(
+#[cfg(any(unix, windows))]
+fn initialize_platform(
     mut root: PathBuf,
     namespace_component: PathBuf,
     maximum: u64,
 ) -> Result<StoreConfig, FileStoreError> {
+    #[cfg(windows)]
+    {
+        root = std::path::absolute(&root).map_err(|source| FileStoreError::Io {
+            operation: FileOperation::NormalizeRoot,
+            source,
+        })?;
+    }
+
+    #[cfg(unix)]
     if root.is_relative() {
         let current_directory = std::env::current_dir().map_err(|source| FileStoreError::Io {
             operation: FileOperation::ResolveCurrentDirectory,
@@ -714,11 +1160,14 @@ fn initialize_unix(
 
     let namespace = root.join(namespace_component);
     match std::fs::create_dir(&namespace) {
-        Ok(()) => sync_directory(
-            &root,
-            FileOperation::OpenRootDirectory,
-            FileOperation::SyncRootDirectory,
-        )?,
+        Ok(()) => {
+            #[cfg(unix)]
+            sync_directory(
+                &root,
+                FileOperation::OpenRootDirectory,
+                FileOperation::SyncRootDirectory,
+            )?;
+        }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let metadata = std::fs::metadata(&namespace).map_err(|source| FileStoreError::Io {
                 operation: FileOperation::InspectNamespace,
@@ -740,12 +1189,12 @@ fn initialize_unix(
         root,
         namespace,
         maximum,
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         hook: None,
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TestStage {
     BeforeEnvelope,
@@ -759,9 +1208,10 @@ enum TestStage {
     AfterRemove,
     BeforeDirectorySync,
     AfterDirectorySync,
+    BeforeCleanup,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn hit_test_stage(
     config: &StoreConfig,
     stage: TestStage,
@@ -773,7 +1223,7 @@ fn hit_test_stage(
     hook(stage).map_err(|source| FileStoreError::Io { operation, source })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn encode_envelope(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreError> {
     let size = u64::try_from(payload.len())
         .map_err(|_| FileStoreError::InvalidPayloadLength { declared: u64::MAX })?;
@@ -793,7 +1243,7 @@ fn encode_envelope(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreErr
     Ok(envelope)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn load_checkpoint(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>, FileStoreError> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -811,12 +1261,12 @@ fn load_checkpoint(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>,
     decode_reader(&mut file, config.maximum).map(Some)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode_reader(reader: &mut impl Read, maximum: u64) -> Result<Vec<u8>, FileStoreError> {
     decode_reader_with_usize_limit(reader, maximum, usize::MAX as u64)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode_reader_with_usize_limit(
     reader: &mut impl Read,
     maximum: u64,
@@ -880,7 +1330,7 @@ fn decode_reader_with_usize_limit(
     Ok(payload)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn read_section(
     reader: &mut impl Read,
     bytes: &mut [u8],
@@ -898,7 +1348,7 @@ fn read_section(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn ensure_namespace_available(config: &StoreConfig) -> Result<(), FileStoreError> {
     match std::fs::metadata(&config.namespace) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -920,20 +1370,20 @@ fn save_checkpoint(
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::BeforeEnvelope,
         FileOperation::WriteEnvelope,
     )?;
     let envelope = encode_envelope(payload, config.maximum)?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::AfterEnvelope,
         FileOperation::WriteEnvelope,
     )?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::BeforeAtomicOpen,
@@ -947,7 +1397,7 @@ fn save_checkpoint(
         operation: FileOperation::OpenAtomicWriter,
         source,
     })?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     {
         let midpoint = envelope.len() / 2;
         writer
@@ -971,13 +1421,13 @@ fn save_checkpoint(
             operation: FileOperation::WriteEnvelope,
             source,
         })?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::BeforeCommit,
         FileOperation::WriteEnvelope,
     )?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     if let Err(source) = config
         .hook
         .as_ref()
@@ -988,14 +1438,14 @@ fn save_checkpoint(
     writer
         .commit()
         .map_err(|source| FileStoreError::AtomicCommit { source })?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hit_test_stage(config, TestStage::AfterCommit, FileOperation::WriteEnvelope)?;
     Ok(())
 }
 
 #[cfg(unix)]
 fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreError> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::BeforeRemove,
@@ -1003,13 +1453,13 @@ fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreEr
     )?;
     match std::fs::remove_file(path) {
         Ok(()) => {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             hit_test_stage(
                 config,
                 TestStage::AfterRemove,
                 FileOperation::RemoveCheckpoint,
             )?;
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             hit_test_stage(
                 config,
                 TestStage::BeforeDirectorySync,
@@ -1020,7 +1470,7 @@ fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreEr
                 FileOperation::OpenNamespaceDirectory,
                 FileOperation::SyncNamespaceDirectory,
             )?;
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             hit_test_stage(
                 config,
                 TestStage::AfterDirectorySync,
@@ -1034,6 +1484,605 @@ fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreEr
             source,
         }),
     }
+}
+
+#[cfg(any(unix, windows))]
+fn inspect_checkpoint(
+    config: &StoreConfig,
+    path: &Path,
+) -> Result<CheckpointInspection, FileStoreError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(CheckpointInspection {
+            state: CheckpointState::Present,
+            size: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+        }),
+        Ok(_) => Err(FileStoreError::UnexpectedFileType),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            ensure_namespace_available(config)?;
+            Ok(CheckpointInspection {
+                state: CheckpointState::Absent,
+                size: None,
+                modified: None,
+            })
+        }
+        Err(source) => Err(FileStoreError::Io {
+            operation: FileOperation::InspectCheckpoint,
+            source,
+        }),
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn load_with_legacy(
+    config: &StoreConfig,
+    canonical_path: &Path,
+    legacy_filename: &Path,
+) -> Result<LegacyLoad, FileStoreError> {
+    if let Some(payload) = load_checkpoint(config, canonical_path)? {
+        return Ok(LegacyLoad::Present(payload));
+    }
+    let legacy_path = config.root.join(legacy_filename);
+    match std::fs::symlink_metadata(&legacy_path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(LegacyLoad::LegacyDetected {
+            diagnostic_path: legacy_path,
+        }),
+        Ok(_) => Err(FileStoreError::UnexpectedFileType),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
+            ) =>
+        {
+            Ok(LegacyLoad::Absent)
+        }
+        Err(source) => Err(FileStoreError::Io {
+            operation: FileOperation::InspectLegacyCheckpoint,
+            source,
+        }),
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn inspect_with_legacy(
+    config: &StoreConfig,
+    canonical_path: &Path,
+    legacy_filename: &Path,
+) -> Result<CheckpointInspection, FileStoreError> {
+    let canonical = inspect_checkpoint(config, canonical_path)?;
+    if canonical.state == CheckpointState::Present {
+        return Ok(canonical);
+    }
+    match std::fs::symlink_metadata(config.root.join(legacy_filename)) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(CheckpointInspection {
+            state: CheckpointState::LegacyDetected,
+            size: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+        }),
+        Ok(_) => Err(FileStoreError::UnexpectedFileType),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
+            ) =>
+        {
+            Ok(canonical)
+        }
+        Err(source) => Err(FileStoreError::Io {
+            operation: FileOperation::InspectLegacyCheckpoint,
+            source,
+        }),
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn random_identifier() -> Result<String, FileStoreError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|source| FileStoreError::IdentifierGeneration { source })?;
+    let mut result = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut result, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(result)
+}
+
+#[cfg(unix)]
+fn quarantine_checkpoint(
+    config: &StoreConfig,
+    path: &Path,
+) -> Result<QuarantineInfo, FileStoreError> {
+    let hash = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(FileStoreError::UnexpectedFileType)?;
+    loop {
+        let identifier = random_identifier()?;
+        let destination = config
+            .namespace
+            .join(format!("{hash}.session.quarantine-v1.{identifier}"));
+        match rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::CWD,
+            &destination,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => {
+                let quarantine = QuarantineInfo {
+                    identifier,
+                    diagnostic_path: destination,
+                };
+                sync_quarantine_namespace(config, &quarantine)?;
+                return Ok(quarantine);
+            }
+            Err(error) if error == rustix::io::Errno::NOENT => {
+                ensure_namespace_available(config)?;
+                return Err(FileStoreError::QuarantineSourceMissing);
+            }
+            Err(error) if error == rustix::io::Errno::EXIST => {}
+            Err(error) => {
+                return Err(FileStoreError::QuarantineCommit {
+                    source: io::Error::from_raw_os_error(error.raw_os_error()),
+                });
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sync_quarantine_namespace(
+    config: &StoreConfig,
+    quarantine: &QuarantineInfo,
+) -> Result<(), FileStoreError> {
+    #[cfg(test)]
+    if let Some(hook) = &config.hook {
+        hook(TestStage::BeforeDirectorySync).map_err(|source| {
+            FileStoreError::QuarantineNamespaceSync {
+                quarantine: quarantine.clone(),
+                source,
+            }
+        })?;
+    }
+
+    let directory = std::fs::File::open(&config.namespace).map_err(|source| {
+        FileStoreError::QuarantineNamespaceSync {
+            quarantine: quarantine.clone(),
+            source,
+        }
+    })?;
+    directory
+        .sync_all()
+        .map_err(|source| FileStoreError::QuarantineNamespaceSync {
+            quarantine: quarantine.clone(),
+            source,
+        })?;
+
+    #[cfg(test)]
+    if let Some(hook) = &config.hook {
+        hook(TestStage::AfterDirectorySync).map_err(|source| {
+            FileStoreError::QuarantineNamespaceSync {
+                quarantine: quarantine.clone(),
+                source,
+            }
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[allow(clippy::missing_const_for_fn)]
+fn cleanup_stale_files(
+    config: &StoreConfig,
+    _minimum_age: Duration,
+) -> Result<CleanupReport, FileStoreError> {
+    #[cfg(not(test))]
+    let _ = config;
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::BeforeCleanup,
+        FileOperation::EnumerateTemporaryFiles,
+    )?;
+    Err(FileStoreError::CleanupUnsupported {
+        platform: std::env::consts::OS,
+    })
+}
+
+#[cfg(windows)]
+fn wide_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const SEPARATOR: u16 = b'\\' as u16;
+    const ALTERNATE_SEPARATOR: u16 = b'/' as u16;
+    const VERBATIM_PREFIX: &[u16] = &[SEPARATOR, SEPARATOR, b'?' as u16, SEPARATOR];
+    const DEVICE_PREFIX: &[u16] = &[SEPARATOR, SEPARATOR, b'.' as u16, SEPARATOR];
+    const UNC_PREFIX: &[u16] = &[
+        SEPARATOR,
+        SEPARATOR,
+        b'?' as u16,
+        SEPARATOR,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        SEPARATOR,
+    ];
+
+    let path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let (prefix, remainder) =
+        if path.starts_with(VERBATIM_PREFIX) || path.starts_with(DEVICE_PREFIX) {
+            (&[][..], path.as_slice())
+        } else if path.starts_with(&[SEPARATOR, SEPARATOR]) {
+            (UNC_PREFIX, &path[2..])
+        } else {
+            (VERBATIM_PREFIX, path.as_slice())
+        };
+
+    let mut extended = Vec::with_capacity(prefix.len() + remainder.len() + 1);
+    extended.extend_from_slice(prefix);
+    extended.extend(remainder.iter().map(|unit| {
+        if *unit == ALTERNATE_SEPARATOR {
+            SEPARATOR
+        } else {
+            *unit
+        }
+    }));
+    extended.push(0);
+    extended
+}
+
+#[cfg(windows)]
+fn move_file(source: &Path, destination: &Path, flags: u32) -> Result<(), io::Error> {
+    let source = wide_path(source);
+    let destination = wide_path(destination);
+    // SAFETY: both pointers reference NUL-terminated wide strings for the call.
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            flags,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn delete_file(path: &Path) -> Result<(), io::Error> {
+    let path = wide_path(path);
+    // SAFETY: the pointer references a NUL-terminated wide string for the call.
+    if unsafe { windows_sys::Win32::Storage::FileSystem::DeleteFileW(path.as_ptr()) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn create_windows_staging(path: &Path, contents: &[u8]) -> Result<(), FileStoreError> {
+    use std::io::Write;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH, FlushFileBuffers,
+    };
+
+    let wide = wide_path(path);
+    // SAFETY: `wide` is NUL-terminated; null security attributes deliberately inherit the directory ACL.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(FileStoreError::Io {
+            operation: FileOperation::OpenAtomicWriter,
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: the successful CreateFileW call returned an owned handle.
+    let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
+    file.write_all(contents)
+        .map_err(|source| FileStoreError::Io {
+            operation: FileOperation::WriteEnvelope,
+            source,
+        })?;
+    // SAFETY: the file still owns a live handle.
+    if unsafe { FlushFileBuffers(handle) } == 0 {
+        return Err(FileStoreError::Io {
+            operation: FileOperation::WriteEnvelope,
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn refresh_windows_clear_age(path: &Path) -> Result<(), io::Error> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{FILETIME, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH, FILE_WRITE_ATTRIBUTES,
+        FlushFileBuffers, OPEN_EXISTING, SetFileTime,
+    };
+
+    const WINDOWS_EPOCH_OFFSET_100NS: u64 = 116_444_736_000_000_000;
+    const HUNDRED_NS_PER_SECOND: u64 = 10_000_000;
+
+    let elapsed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let ticks = elapsed
+        .as_secs()
+        .checked_mul(HUNDRED_NS_PER_SECOND)
+        .and_then(|ticks| ticks.checked_add(u64::from(elapsed.subsec_nanos() / 100)))
+        .and_then(|ticks| ticks.checked_add(WINDOWS_EPOCH_OFFSET_100NS))
+        .ok_or_else(|| {
+            io::Error::other("current time cannot be represented as a Windows file time")
+        })?;
+    let [b0, b1, b2, b3, b4, b5, b6, b7] = ticks.to_le_bytes();
+    let last_write = FILETIME {
+        dwLowDateTime: u32::from_le_bytes([b0, b1, b2, b3]),
+        dwHighDateTime: u32::from_le_bytes([b4, b5, b6, b7]),
+    };
+
+    let wide = wide_path(path);
+    // SAFETY: `wide` is NUL-terminated and the returned handle is checked below.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE | FILE_WRITE_ATTRIBUTES,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful CreateFileW call returned an owned handle. Keeping
+    // it in a File ensures it is closed before the subsequent rename.
+    let _file = unsafe { std::fs::File::from_raw_handle(handle) };
+    // SAFETY: `handle` is live and `last_write` remains valid for the call.
+    if unsafe {
+        SetFileTime(
+            handle,
+            std::ptr::null(),
+            std::ptr::null(),
+            &raw const last_write,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `handle` is still live and was opened with write access.
+    if unsafe { FlushFileBuffers(handle) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn save_checkpoint(
+    config: &StoreConfig,
+    path: &Path,
+    payload: &[u8],
+) -> Result<(), FileStoreError> {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let envelope = encode_envelope(payload, config.maximum)?;
+    let hash = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(FileStoreError::UnexpectedFileType)?;
+    loop {
+        let identifier = random_identifier()?;
+        let staging = config
+            .namespace
+            .join(format!("{hash}.session.tmp-v1.save.{identifier}"));
+        match create_windows_staging(&staging, &envelope) {
+            Ok(()) => {}
+            Err(FileStoreError::Io { source, .. })
+                if source.kind() == io::ErrorKind::AlreadyExists =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+        let initial = move_file(&staging, path, MOVEFILE_WRITE_THROUGH);
+        match initial {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(code) if code.cast_unsigned() == ERROR_FILE_EXISTS || code.cast_unsigned() == ERROR_ALREADY_EXISTS) =>
+            {
+                return move_file(
+                    &staging,
+                    path,
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+                .map_err(|source| FileStoreError::AtomicCommit { source });
+            }
+            Err(source) => return Err(FileStoreError::AtomicCommit { source }),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreError> {
+    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+    let hash = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(FileStoreError::UnexpectedFileType)?;
+    match refresh_windows_clear_age(path) {
+        Ok(()) => {}
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            ensure_namespace_available(config)?;
+            return Ok(());
+        }
+        Err(source) => {
+            return Err(FileStoreError::Io {
+                operation: FileOperation::RefreshClearStagingAge,
+                source,
+            });
+        }
+    }
+    loop {
+        let identifier = random_identifier()?;
+        let staging = config
+            .namespace
+            .join(format!("{hash}.session.tmp-v1.clear.{identifier}"));
+        match move_file(path, &staging, MOVEFILE_WRITE_THROUGH) {
+            Ok(()) => {
+                return delete_file(&staging).map_err(|source| FileStoreError::Io {
+                    operation: FileOperation::RemoveTemporaryFile,
+                    source,
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ensure_namespace_available(config)?;
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(FileStoreError::Io {
+                    operation: FileOperation::RemoveCheckpoint,
+                    source,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn quarantine_checkpoint(
+    config: &StoreConfig,
+    path: &Path,
+) -> Result<QuarantineInfo, FileStoreError> {
+    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+    let hash = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(FileStoreError::UnexpectedFileType)?;
+    loop {
+        let identifier = random_identifier()?;
+        let destination = config
+            .namespace
+            .join(format!("{hash}.session.quarantine-v1.{identifier}"));
+        match move_file(path, &destination, MOVEFILE_WRITE_THROUGH) {
+            Ok(()) => {
+                return Ok(QuarantineInfo {
+                    identifier,
+                    diagnostic_path: destination,
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ensure_namespace_available(config)?;
+                return Err(FileStoreError::QuarantineSourceMissing);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(source) => return Err(FileStoreError::QuarantineCommit { source }),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn cleanup_stale_files(
+    config: &StoreConfig,
+    minimum_age: Duration,
+) -> Result<CleanupReport, FileStoreError> {
+    let now = SystemTime::now();
+    let mut report = CleanupReport::default();
+    let entries = std::fs::read_dir(&config.namespace).map_err(|source| FileStoreError::Io {
+        operation: FileOperation::EnumerateTemporaryFiles,
+        source,
+    })?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(source) => {
+                report.failures.push(CleanupFailure {
+                    identifier: "<directory-entry>".into(),
+                    source,
+                });
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_owned_temporary_filename(&name) {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => {
+                report.failures.push(CleanupFailure {
+                    identifier: name,
+                    source: io::Error::other("owned staging name is not a regular file"),
+                });
+                continue;
+            }
+            Err(source) => {
+                report.failures.push(CleanupFailure {
+                    identifier: name,
+                    source,
+                });
+                continue;
+            }
+        };
+        let old_enough = metadata
+            .modified()
+            .ok()
+            .and_then(|time| now.duration_since(time).ok())
+            .is_some_and(|age| age >= minimum_age);
+        if !old_enough {
+            report.skipped.push(name);
+            continue;
+        }
+        match delete_file(&entry.path()) {
+            Ok(()) => report.removed.push(name),
+            Err(source) => report.failures.push(CleanupFailure {
+                identifier: name,
+                source,
+            }),
+        }
+    }
+    Ok(report)
+}
+
+#[cfg(windows)]
+fn is_owned_temporary_filename(name: &str) -> bool {
+    let Some((hash, rest)) = name.split_once(".session.tmp-v1.") else {
+        return false;
+    };
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return false;
+    }
+    let Some((kind, identifier)) = rest.split_once('.') else {
+        return false;
+    };
+    matches!(kind, "save" | "clear")
+        && identifier.len() == 64
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 #[cfg(unix)]
@@ -1052,5 +2101,5 @@ fn sync_directory(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests;

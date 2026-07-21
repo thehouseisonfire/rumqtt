@@ -1,12 +1,12 @@
 use rumqttc::SessionStoreKey;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use rumqttc::{PersistedAckMode, PersistedSession, SessionDecodeError, SessionStore};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use rumqttc_session_store_file_core_next::FileStoreError;
 
 use super::*;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn session(client_id: &str, last_pkid: u16) -> PersistedSession {
     PersistedSession {
         format_version: 1,
@@ -69,7 +69,42 @@ fn key_encoding_is_unambiguous_safe_and_protocol_tagged() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn exact_legacy_file_is_reported_without_scanning_or_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::open(root.path()).await.unwrap();
+    let key = SessionStoreKey::new("scope", "client");
+    let legacy = root.path().join(legacy_example_filename(&key));
+    std::fs::write(&legacy, b"legacy bytes").unwrap();
+
+    assert_eq!(
+        store.inspect(&key).await.unwrap().state,
+        rumqttc_session_store_file_core_next::CheckpointState::LegacyDetected
+    );
+    let error = store.load(&key).await.unwrap_err();
+    assert!(
+        matches!(error.downcast_ref::<SessionFileStoreError>(), Some(SessionFileStoreError::LegacyCheckpointDetected { diagnostic_path }) if diagnostic_path == &legacy)
+    );
+    assert_eq!(std::fs::read(legacy).unwrap(), b"legacy bytes");
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn unrepresentable_legacy_filename_does_not_break_a_fresh_key() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::open(root.path()).await.unwrap();
+    let key = SessionStoreKey::new("", "x".repeat(128));
+    assert!(legacy_example_filename(&key).len() > 255);
+
+    assert_eq!(
+        store.inspect(&key).await.unwrap().state,
+        CheckpointState::Absent
+    );
+    assert_eq!(store.load(&key).await.unwrap(), None);
+}
+
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn adapter_round_trip_replace_clear_missing_and_semantics_remain_external() {
     let root = tempfile::tempdir().unwrap();
@@ -89,7 +124,7 @@ async fn adapter_round_trip_replace_clear_missing_and_semantics_remain_external(
     assert_eq!(store.load(&key).await.unwrap(), None);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn envelope_and_codec_errors_remain_distinct() {
     let root = tempfile::tempdir().unwrap();
@@ -137,7 +172,7 @@ async fn envelope_and_codec_errors_remain_distinct() {
     ));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn recompute_outer_crc(bytes: &mut [u8]) {
     let checksum = crc32c::crc32c(&bytes[..bytes.len() - 4]);
     let offset = bytes.len() - 4;

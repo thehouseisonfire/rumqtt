@@ -24,17 +24,17 @@ session settings, and a local `SessionStore`.
 
 Compile-checked examples:
 
-- v4: `rumqttc-v4/examples/persistent_session_file_store.rs`
-- v5: `rumqttc-v5/examples/persistent_session_file_store_v5.rs`
+- v4: `rumqttc-v4-session-store-file-next/examples/persistent_session_file_store.rs`
+- v5: `rumqttc-v5-session-store-file-next/examples/persistent_session_file_store_v5.rs`
 
-For a production-oriented Unix implementation, use
+For a production-oriented Unix or Windows implementation, use
 `rumqttc-v4-session-store-file-next` or
 `rumqttc-v5-session-store-file-next`. These stores require an existing,
 trusted, dedicated root and create separate `v4`/`v5` namespaces beneath it.
 Their versioned envelope and hashed filenames are intentionally incompatible
-with files made by the examples; no legacy detection or migration is
-performed. Do not reuse an old directory without deliberately reconciling the
-broker-held session as well.
+with former example files. An exact old filename is reported but never
+migrated. See [session-store recovery](session-store-recovery.md) before
+discarding local state or reusing an old root.
 
 MQTT 3.1.1 uses `clean_session(false)`. MQTT 5 uses `clean_start(false)` plus a
 non-zero session expiry interval or `SessionMode::Persistent`.

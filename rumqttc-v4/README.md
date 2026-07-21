@@ -313,8 +313,9 @@ Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` o
   state for reconnect. Without a `SessionStore`, rumqttc can still resume within
   the same live `EventLoop`, but a new process cannot strictly continue a
   broker-retained session unless it restores the local client session state.
-  See `examples/persistent_session_file_store.rs` for a complete file-backed
-  `SessionStore` implementation owned by application code.
+  See
+  `rumqttc-v4-session-store-file-next/examples/persistent_session_file_store.rs`
+  for a complete example using the supported file-store adapter.
 
 - Exactly one active `EventLoop` may own and modify a session-store key at a
   time. `SessionStore` does not provide leases, fencing, compare-and-swap, or
