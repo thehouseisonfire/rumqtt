@@ -23,36 +23,18 @@ repos:
 
       - id: clippy
         name: clippy
-        entry: >
+        entry: |
           bash -c '
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
 
-          cargo hack clippy
-          --fix
-          --allow-dirty
-          --each-feature
-          --exclude-all-features
-          --no-dev-deps
-          --optional-deps url
-          -p rumqttc-v4-next
-          -p rumqttc-v5-next;
+          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next;
 
           (
             cd session-store-file;
-            cargo clippy
-            --fix
-            --allow-dirty
-            --all-targets
-            -p rumqttc-session-store-file-core-next
-            -p rumqttc-v4-session-store-file-next
-            -p rumqttc-v5-session-store-file-next;
-            RUSTFLAGS="-D warnings" cargo clippy
-            --fix
-            --allow-dirty
-            --all-targets
-            -p session-store-file-benchmarks
+            cargo clippy --fix --allow-dirty --all-targets -p rumqttc-session-store-file-core-next -p rumqttc-v4-session-store-file-next -p rumqttc-v5-session-store-file-next;
+            RUSTFLAGS="-D warnings" cargo clippy --fix --allow-dirty --all-targets -p session-store-file-benchmarks
           )
           '
         language: system
