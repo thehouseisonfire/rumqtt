@@ -49,6 +49,8 @@ repos:
             -p rumqttc-v4-session-store-file-next
             -p rumqttc-v5-session-store-file-next;
             RUSTFLAGS="-D warnings" cargo clippy
+            --fix
+            --allow-dirty
             --all-targets
             -p session-store-file-benchmarks
           )

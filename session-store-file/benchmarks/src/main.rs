@@ -173,7 +173,7 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn print_output(output: BenchOutput) -> anyhow::Result<()> {
+fn print_output(output: &BenchOutput) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }

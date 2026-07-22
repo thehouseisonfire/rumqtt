@@ -19,7 +19,7 @@ use super::{BenchOutput, CommonArgs, Protocol, environment, print_output, run_id
 const COUNTS: [usize; 5] = [0, 1, 10, 100, 1_000];
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum PersistenceCommand {
+pub enum PersistenceCommand {
     Envelope(EnvelopeArgs),
     Codec(CodecArgs),
     FileStore(FileStoreArgs),
@@ -37,7 +37,7 @@ enum EnvelopeMode {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct EnvelopeArgs {
+pub struct EnvelopeArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, value_enum, default_value = "encode")]
@@ -57,7 +57,7 @@ enum CodecMode {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct CodecArgs {
+pub struct CodecArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, value_enum, default_value = "encode")]
@@ -89,7 +89,7 @@ enum StoreOperation {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct FileStoreArgs {
+pub struct FileStoreArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, value_enum, default_value = "save-replace")]
@@ -101,7 +101,7 @@ pub(crate) struct FileStoreArgs {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct CoordinationArgs {
+pub struct CoordinationArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, default_value = "8")]
@@ -113,7 +113,7 @@ pub(crate) struct CoordinationArgs {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct GrowthArgs {
+pub struct GrowthArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, default_value = "1024")]
@@ -129,7 +129,7 @@ enum PersistenceMode {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct MqttArgs {
+pub struct MqttArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, value_enum, default_value = "enabled")]
@@ -148,13 +148,13 @@ pub(crate) struct MqttArgs {
     qos: u8,
 }
 
-pub(crate) async fn run(command: PersistenceCommand) -> anyhow::Result<()> {
+pub async fn run(command: PersistenceCommand) -> anyhow::Result<()> {
     match command {
-        PersistenceCommand::Envelope(args) => run_envelope(args),
-        PersistenceCommand::Codec(args) => run_codec(args),
+        PersistenceCommand::Envelope(args) => run_envelope(&args),
+        PersistenceCommand::Codec(args) => run_codec(&args),
         PersistenceCommand::FileStore(args) => run_file_store(args).await,
         PersistenceCommand::Coordination(args) => run_coordination(args).await,
-        PersistenceCommand::Growth(args) => run_growth(args),
+        PersistenceCommand::Growth(args) => run_growth(&args),
         PersistenceCommand::Mqtt(args) => run_mqtt(args).await,
     }
 }
@@ -222,7 +222,7 @@ impl rumqttc_v4::SessionStore for MeasuringV4Store {
                 .barriers_ns
                 .lock()
                 .expect("barrier samples lock")
-                .push(started.elapsed().as_nanos() as u64);
+                .push(nanos_u64(started.elapsed().as_nanos()));
             match &result {
                 Ok(()) => {
                     self.measurements
@@ -295,7 +295,7 @@ impl rumqttc_v5::SessionStore for MeasuringV5Store {
                 .barriers_ns
                 .lock()
                 .expect("barrier samples lock")
-                .push(started.elapsed().as_nanos() as u64);
+                .push(nanos_u64(started.elapsed().as_nanos()));
             match &result {
                 Ok(()) => {
                     self.measurements
@@ -427,7 +427,16 @@ async fn run_mqtt(args: MqttArgs) -> anyhow::Result<()> {
         "final_checkpoint_bytes".to_owned(),
         measurements.final_checkpoint_bytes.load(Ordering::Relaxed) as f64,
     );
-    if !barriers.is_empty() {
+    if barriers.is_empty() {
+        for name in [
+            "persistence_barrier_p50_ns",
+            "persistence_barrier_p95_ns",
+            "persistence_barrier_p99_ns",
+            "persistence_barrier_max_ns",
+        ] {
+            metrics.insert(name.to_owned(), 0.0);
+        }
+    } else {
         metrics.insert(
             "persistence_barrier_p50_ns".to_owned(),
             percentile(&barriers, 50) as f64,
@@ -444,15 +453,6 @@ async fn run_mqtt(args: MqttArgs) -> anyhow::Result<()> {
             "persistence_barrier_max_ns".to_owned(),
             barriers[barriers.len() - 1] as f64,
         );
-    } else {
-        for name in [
-            "persistence_barrier_p50_ns",
-            "persistence_barrier_p95_ns",
-            "persistence_barrier_p99_ns",
-            "persistence_barrier_max_ns",
-        ] {
-            metrics.insert(name.to_owned(), 0.0);
-        }
     }
     let mut samples = BTreeMap::new();
     samples.insert(
@@ -463,7 +463,7 @@ async fn run_mqtt(args: MqttArgs) -> anyhow::Result<()> {
         "persistence_barrier_ns".to_owned(),
         barriers.into_iter().map(|value| value as f64).collect(),
     );
-    print_output(BenchOutput {
+    print_output(&BenchOutput {
         schema_version: 1,
         run_id: client_id,
         scenario: format!(
@@ -640,7 +640,7 @@ async fn publish_windows_v4(
         }
         for (admitted, notice) in notices {
             notice.wait_completion_async().await?;
-            latencies.push(admitted.elapsed().as_nanos() as u64);
+            latencies.push(nanos_u64(admitted.elapsed().as_nanos()));
         }
     }
     Ok(latencies)
@@ -667,17 +667,23 @@ async fn publish_windows_v5(
         }
         for (admitted, notice) in notices {
             notice.wait_completion_async().await?;
-            latencies.push(admitted.elapsed().as_nanos() as u64);
+            latencies.push(nanos_u64(admitted.elapsed().as_nanos()));
         }
     }
     Ok(latencies)
 }
 
 fn payload(size: usize) -> Vec<u8> {
-    (0..size).map(|index| (index % 251) as u8).collect()
+    (0..size)
+        .map(|index| u8::try_from(index % 251).expect("remainder is less than 251"))
+        .collect()
 }
 
-fn run_envelope(args: EnvelopeArgs) -> anyhow::Result<()> {
+fn nanos_u64(nanos: u128) -> u64 {
+    u64::try_from(nanos).unwrap_or(u64::MAX)
+}
+
+fn run_envelope(args: &EnvelopeArgs) -> anyhow::Result<()> {
     validate_samples(args.samples)?;
     if args.operations_per_sample == 0 {
         bail!("--operations-per-sample must be greater than zero");
@@ -715,10 +721,11 @@ fn run_envelope(args: EnvelopeArgs) -> anyhow::Result<()> {
                 }
             }
         }
-        samples.push(started.elapsed().as_nanos() as u64 / args.operations_per_sample as u64);
+        let average_nanos = started.elapsed().as_nanos() / args.operations_per_sample as u128;
+        samples.push(nanos_u64(average_nanos));
     }
     emit_latency(
-        args.common,
+        &args.common,
         format!("persistence-envelope-{:?}", args.mode).to_lowercase(),
         started_at,
         json!({
@@ -736,7 +743,7 @@ fn run_envelope(args: EnvelopeArgs) -> anyhow::Result<()> {
     )
 }
 
-fn run_codec(args: CodecArgs) -> anyhow::Result<()> {
+fn run_codec(args: &CodecArgs) -> anyhow::Result<()> {
     validate_samples(args.samples)?;
     if args.qos == 0 {
         bail!("persistent inflight fixtures require QoS 1 or QoS 2");
@@ -755,7 +762,7 @@ fn run_codec(args: CodecArgs) -> anyhow::Result<()> {
                         drop(black_box(rumqttc_v4::PersistedSession::decode(&encoded)?));
                     }
                 }
-                samples.push(started.elapsed().as_nanos() as u64);
+                samples.push(nanos_u64(started.elapsed().as_nanos()));
             }
             encoded.len()
         }
@@ -770,13 +777,13 @@ fn run_codec(args: CodecArgs) -> anyhow::Result<()> {
                         drop(black_box(rumqttc_v5::PersistedSession::decode(&encoded)?));
                     }
                 }
-                samples.push(started.elapsed().as_nanos() as u64);
+                samples.push(nanos_u64(started.elapsed().as_nanos()));
             }
             encoded.len()
         }
     };
     emit_latency(
-        args.common,
+        &args.common,
         format!("persistence-codec-{:?}", args.mode).to_lowercase(),
         started_at,
         json!({
@@ -844,10 +851,10 @@ async fn run_file_store(args: FileStoreArgs) -> anyhow::Result<()> {
                 black_box(store.quarantine(key.as_bytes()).await.is_err());
             }
         }
-        samples.push(started.elapsed().as_nanos() as u64);
+        samples.push(nanos_u64(started.elapsed().as_nanos()));
     }
     emit_latency(
-        args.common,
+        &args.common,
         format!("persistence-file-store-{:?}", args.operation).to_lowercase(),
         started_at,
         json!({
@@ -888,7 +895,7 @@ async fn run_coordination(args: CoordinationArgs) -> anyhow::Result<()> {
                 };
                 let started = Instant::now();
                 black_box(store.inspect(key.as_bytes()).await?);
-                latencies.push(started.elapsed().as_nanos() as u64);
+                latencies.push(nanos_u64(started.elapsed().as_nanos()));
             }
             Ok::<_, rumqttc_store_core::FileStoreError>(latencies)
         });
@@ -902,7 +909,7 @@ async fn run_coordination(args: CoordinationArgs) -> anyhow::Result<()> {
     let mut extra = BTreeMap::new();
     extra.insert("operations_sec".to_owned(), total as f64 / elapsed);
     emit_latency_with_metrics(
-        args.common,
+        &args.common,
         "persistence-coordination".to_owned(),
         started_at,
         json!({
@@ -919,7 +926,7 @@ async fn run_coordination(args: CoordinationArgs) -> anyhow::Result<()> {
     )
 }
 
-fn run_growth(args: GrowthArgs) -> anyhow::Result<()> {
+fn run_growth(args: &GrowthArgs) -> anyhow::Result<()> {
     if args.qos == 0 {
         bail!("growth fixtures require QoS 1 or QoS 2");
     }
@@ -954,7 +961,7 @@ fn run_growth(args: GrowthArgs) -> anyhow::Result<()> {
     );
     let mut samples = BTreeMap::new();
     samples.insert("canonical_size_bytes".to_owned(), canonical_sizes);
-    print_output(BenchOutput {
+    print_output(&BenchOutput {
         schema_version: 1,
         run_id: run_id(args.common.run_id.as_deref(), "persistence-growth"),
         scenario: "persistence-checkpoint-growth".to_owned(),
@@ -1048,7 +1055,7 @@ fn validate_samples(samples: usize) -> anyhow::Result<()> {
 }
 
 fn emit_latency(
-    common: CommonArgs,
+    common: &CommonArgs,
     scenario: String,
     started_at: u64,
     config: serde_json::Value,
@@ -1070,7 +1077,7 @@ fn emit_latency(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_latency_with_metrics(
-    common: CommonArgs,
+    common: &CommonArgs,
     scenario: String,
     started_at: u64,
     config: serde_json::Value,
@@ -1100,7 +1107,7 @@ fn emit_latency_with_metrics(
         sample_name.to_owned(),
         samples.into_iter().map(|value| value as f64).collect(),
     );
-    print_output(BenchOutput {
+    print_output(&BenchOutput {
         schema_version: 1,
         run_id: run_id(common.run_id.as_deref(), &scenario),
         scenario,
