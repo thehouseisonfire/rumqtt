@@ -908,7 +908,7 @@ fn run_scheduler(
             CoordinatorEvent::MaintenanceCompletion(completion) => {
                 maintenance_active = false;
                 if let Some((sender, result)) = completion.outcome {
-                    let _ = sender.send(result);
+                    let _send_result = sender.send(result);
                 }
                 advance_pending_if_ready(
                     config,
@@ -985,7 +985,7 @@ fn dispatch_maintenance(
             cleanup_stale_files(&config, minimum_age)
         }));
         let outcome = result.ok().map(|result| (sender, result));
-        let _ = completion_sender.send(CoordinatorEvent::MaintenanceCompletion(
+        let _send_result = completion_sender.send(CoordinatorEvent::MaintenanceCompletion(
             MaintenanceCompletion { outcome },
         ));
     });
@@ -1107,13 +1107,13 @@ fn deliver(operation: Operation, result: BlockingResult) {
             Operation::InspectWithLegacy { sender, .. },
             BlockingResult::InspectWithLegacy(result),
         ) => {
-            let _ = sender.send(result);
+            let _send_result = sender.send(result);
         }
         (Operation::LoadWithLegacy { sender, .. }, BlockingResult::LoadWithLegacy(result)) => {
-            let _ = sender.send(result);
+            let _send_result = sender.send(result);
         }
         (Operation::Quarantine { sender }, BlockingResult::Quarantine(result)) => {
-            let _ = sender.send(result);
+            let _send_result = sender.send(result);
         }
         _ => unreachable!("operation and result kinds must match"),
     }
@@ -1618,13 +1618,15 @@ fn inspect_with_legacy(
 
 #[cfg(any(unix, windows))]
 fn random_identifier() -> Result<String, FileStoreError> {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)
         .map_err(|source| FileStoreError::IdentifierGeneration { source })?;
     let mut result = String::with_capacity(64);
     for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut result, "{byte:02x}").expect("writing to a String cannot fail");
+        result.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        result.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
     Ok(result)
 }
