@@ -95,11 +95,14 @@ discarded before the connection continues. When it is `1`, compatible
 unfinished PUBLISH, PUBREL, SUBSCRIBE, and UNSUBSCRIBE exchanges retain their
 packet identifiers and are replayed according to MQTT rules.
 
-Persisted outgoing QoS 1/2 PUBLISH packets are conservative recovery
-transmissions with `DUP=1`; the separate first live packet remains `DUP=0`.
-Admission, normalized topic data, and packet-ID ownership are durable before
-transport visibility. Topic aliases remain connection-scoped, and QoS 2 PUBREL
-and terminal completion keep their independent durability barriers.
+The separate live QoS 1/2 PUBLISH uses `DUP=0`, as required by the
+first-transmission obligations MQTT-4.3.2-2 and MQTT-4.3.3-2. Persisted and
+restored recovery PUBLISH packets use `DUP=1`, consistent with the
+retransmission obligation MQTT-3.3.1-1. The strict first-transmission
+qualification is limited to persistent recovery and is documented in
+[Persistent recovery and the DUP flag](../docs/design.md#persistent-recovery-and-the-dup-flag).
+Topic aliases remain connection-scoped, and QoS 2 PUBREL and terminal
+completion keep their independent durability barriers.
 
 The store is also cleared after a graceful DISCONNECT whose effective Session
 Expiry Interval is zero. A Session Expiry Interval on the client DISCONNECT

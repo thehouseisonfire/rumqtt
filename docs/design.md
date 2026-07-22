@@ -126,13 +126,36 @@ Incoming acknowledgement packets remain visible as events even when they also
 resolve a notice.
 
 A timeout or transport failure cannot prove that a packet partially or fully
-written to the network was not delivered. The durable checkpoint is a recovery
-instruction rather than an exact transcript: admission stores QoS 1 and QoS 2
-PUBLISH entries with `DUP=1`, while the separate uninterrupted first wire
-packet keeps `DUP=0`. This makes every restart or reconnect replay conservative,
-including recovery before the first physical send. MQTT-3.3.1-1 requires
-re-delivery to use `DUP=1`, and a receiver cannot assume that `DUP=1` proves an
-earlier copy was received.
+written to the network was not delivered.
+
+### Persistent recovery and the DUP flag
+
+When a `SessionStore` is configured, admission of an outgoing QoS 1 or QoS 2
+PUBLISH and its packet-identifier ownership is durably checkpointed before the
+packet is visible to the transport. The uninterrupted first wire packet is a
+separate value and keeps `DUP=0`; the checkpoint is a conservative recovery
+instruction with `DUP=1`, and restoration sends that recovery PUBLISH with
+`DUP=1`.
+
+The store commit and network transmission cannot be one atomic operation.
+Persisting "attempted" before transport can leave durable `attempted=true`
+although no packet was sent. Persisting it after transport can leave durable
+`attempted=false` although some packet bytes became visible. The conservative
+representation avoids either unverifiable attempted-state choice and preserves
+admitted work and packet-identifier ownership.
+
+Consequently, a process can terminate after the admission checkpoint commits
+but before any transport attempt. After restoration, the broker's first
+physically observed copy can therefore carry `DUP=1`. Strict conformance with
+the MQTT first-transmission DUP requirement is not claimed for that exact
+recovery case. This qualification is limited to persistent recovery: ordinary
+uninterrupted operation still sends the first PUBLISH with `DUP=0`, and clients
+without a configured `SessionStore` do not enter this path.
+
+This policy belongs to the v4 and v5 client state machines and applies to every
+`SessionStore` backend. A file-store adapter only persists the state supplied
+by its client; its envelope, CRC, atomic replacement, and synchronization do
+not determine the DUP flag.
 
 ## Keepalive
 

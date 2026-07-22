@@ -173,8 +173,11 @@ pub enum PersistedRequest {
 pub struct PersistedPublish {
     /// MQTT DUP flag to use when replaying the publish.
     ///
-    /// New checkpoints emit `true`. Restore also treats `false` from an older
-    /// compatible checkpoint as `true` before retransmission.
+    /// This is the conservative recovery representation, not the live
+    /// first-send packet, which remains `DUP=0`. New checkpoints emit `true`,
+    /// and restore treats `false` from an older compatible checkpoint as
+    /// `true`. See the persistence design documentation for the
+    /// crash-before-send qualification.
     pub dup: bool,
     /// Publish `QoS`.
     pub qos: PersistedQoS,

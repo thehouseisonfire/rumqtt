@@ -4120,7 +4120,7 @@
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
       "mapping_status": "reviewed",
-      "mapping_reason": "Admission keeps the first live QoS 1/2 PUBLISH at DUP=0 while snapshots store a conservative recovery copy with DUP=1. Reconnect cleanup and restore, including compatible legacy checkpoints containing DUP=0, prepare every retransmission with DUP=1. QoS 0 remains covered separately by MQTT-3.3.1-2.",
+      "mapping_reason": "Reviewed client re-delivery paths set DUP=1 for outgoing QoS 1/2 PUBLISH packets. Persistence also uses DUP=1 for its conservative recovery representation, including restoration before a first transport attempt; that crash-before-send case is a qualification of the separate first-transmission obligations, not proof that a re-delivery occurred. QoS 0 remains covered separately by MQTT-3.3.1-2.",
       "compliance_status": "compliant",
       "evidence": [
         {
@@ -4130,7 +4130,7 @@
             "request_from_persisted_request",
             "MqttState::clean_with_notices"
           ],
-          "reason": "Snapshots, restore normalization, and reconnect cleanup prepare outgoing QoS 1/2 recovery PUBLISH packets with DUP=1 without mutating the separate first live packet."
+          "reason": "Reconnect cleanup and restoration encode outgoing QoS 1/2 recovery PUBLISH packets with DUP=1; the crash-before-send limitation of that recovery representation is documented separately."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/publish.rs",
@@ -4145,13 +4145,11 @@
         "tests": [
           "rumqttc-v5/src/state.rs::clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
           "rumqttc-v5/src/state.rs::old_dup_false_checkpoints_restore_qos1_and_qos2_as_replays",
-          "rumqttc-v5/src/eventloop.rs::admission_checkpoint_is_duplicate_but_first_wire_publish_is_not",
           "rumqttc-v5/tests/state.rs::direct_state_clean_marks_qos1_publish_for_dup_replay",
           "rumqttc-v5/tests/state.rs::direct_state_clean_marks_qos2_publish_for_dup_replay",
-          "rumqttc-v5/tests/state.rs::direct_state_clean_marks_unflushed_qos1_publish_for_conservative_replay",
           "rumqttc-v5/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first"
         ],
-        "notes": "State, byte-level event-loop, compatibility, direct-state, and reliability coverage distinguish the DUP=0 live first send from the DUP=1 durable/replayed representation."
+        "notes": "State, compatibility, direct-state, and reliability coverage verify DUP=1 on outgoing recovery and reconnect re-delivery paths. These tests do not establish strict conformance for the separately documented crash-before-send first-transmission case."
       },
       "follow_up": null
     },
@@ -6705,7 +6703,7 @@
         "mqttbytes-core/src/topic.rs"
       ],
       "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+      "mapping_reason": "No full mapping review has been performed. Known persistence-recovery limitation: the normal uninterrupted first QoS 1 transmission uses DUP=0, but an admitted outgoing PUBLISH is checkpointed for recovery with DUP=1. If the process terminates after checkpointing but before any transport attempt, restoration can send the broker's first observed copy with DUP=1. Strict conformance is not claimed for that exact recovery case."
     },
     {
       "id": "MQTT-4.3.2-3",
@@ -6790,7 +6788,7 @@
         "mqttbytes-core/src/topic.rs"
       ],
       "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping to state machine, event loop, and topic behavior modules."
+      "mapping_reason": "No full mapping review has been performed. Known persistence-recovery limitation: the normal uninterrupted first QoS 2 transmission uses DUP=0, but an admitted outgoing PUBLISH is checkpointed for recovery with DUP=1. If the process terminates after checkpointing but before any transport attempt, restoration can send the broker's first observed copy with DUP=1. Strict conformance is not claimed for that exact recovery case."
     },
     {
       "id": "MQTT-4.3.3-3",

@@ -21,10 +21,12 @@
   and `ProxyAuth` configuration with `Proxy::http(...)`, `Proxy::https(...)`,
   `Proxy::socks5(...)`, and `.with_credentials(...)`; proxy debug output now
   redacts passwords.
-- `rumqttc` v4/v5: Persist admitted outgoing QoS 1/2 PUBLISH recovery entries with `DUP=1`
-  while keeping the uninterrupted first wire transmission at `DUP=0`. Restored legacy entries
-  are normalized to `DUP=1`, removing the separate pre-flush DUP-promotion checkpoint without
-  changing packet-ID, PUBREL, or terminal-completion durability barriers.
+- `rumqttc` v4/v5: Remove the redundant flush-only checkpoint while keeping the uninterrupted
+  first wire QoS 1/2 PUBLISH at `DUP=0` and storing/restoring its recovery representation with
+  `DUP=1`. This reduces save count and submitted checkpoint bytes. A crash after the admission
+  checkpoint but before transport submission can make the broker's first observed copy carry
+  `DUP=1`; this is a documented conservative recovery trade-off, and strict conformance is not
+  claimed for that exact first-transmission edge case.
 ### Deprecated
 ### Removed
 - `rumqttc` v4/v5 (Breaking Change): Remove the obsolete outgoing publish flush-attempt

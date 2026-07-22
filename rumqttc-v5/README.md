@@ -300,14 +300,17 @@ Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` o
   `rumqttc-v5-session-store-file-next/examples/persistent_session_file_store_v5.rs`
   for a complete example using the supported file-store adapter.
 
-- For strict MQTT 5 restart-safe session resume, configure a `SessionStore`.
+- For restart-safe local session resume, configure a `SessionStore`.
   MQTT-3.2.2-4 requires a client that lacks Session State to close a connection
   that returns `Session Present = 1`; MQTT-3.1.2-23 requires Client and Server
   Session State to be stored after a connection closes when the Session Expiry
   Interval is greater than zero. Without a `SessionStore`, rumqttc can still be
   strict by rejecting broker-only resume after a new process or newly constructed
   `EventLoop`, but it cannot strictly continue that resumed session because the
-  local client state was not restored.
+  local client state was not restored. The configured store's conservative
+  PUBLISH recovery representation has a narrowly scoped first-transmission DUP
+  qualification documented in
+  [`docs/design.md`](../docs/design.md#persistent-recovery-and-the-dup-flag).
 
 - Exactly one active `EventLoop` may own and modify a session-store key at a
   time. `SessionStore` does not provide leases, fencing, compare-and-swap, or

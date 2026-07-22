@@ -56,8 +56,11 @@ and incomplete incoming QoS 2 state. Restoration is enabled only for
 `clean_session = false` and validates that the checkpoint belongs to the
 configured Client Identifier and compatible local options.
 
-Persisted outgoing QoS 1/2 PUBLISH packets are recovery transmissions and use
-`DUP=1` even if admission completed before the first live send. The separately
-returned live packet remains `DUP=0`. Admission and packet-ID ownership are
-saved before transport visibility; QoS 2 PUBREL and terminal completion retain
-their independent durability barriers.
+The separately returned live QoS 1/2 PUBLISH uses `DUP=0`, as required by the
+first-transmission obligations MQTT-4.3.2-1 and MQTT-4.3.3-1. Persisted and
+restored recovery PUBLISH packets use `DUP=1`, consistent with the
+retransmission obligation MQTT-3.3.1-1. The strict first-transmission
+qualification is limited to persistent recovery and is documented in
+[Persistent recovery and the DUP flag](../docs/design.md#persistent-recovery-and-the-dup-flag).
+QoS 2 PUBREL and terminal completion retain their independent durability
+barriers.

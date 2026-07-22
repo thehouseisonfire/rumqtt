@@ -652,7 +652,7 @@
             "MqttState::clean_with_notices",
             "MqttState::outgoing_publish_with_notice"
           ],
-          "reason": "Reconnect replay drains stored unacknowledged publishes, preserves their packet identifiers, and sets DUP for every admitted QoS>0 recovery transmission, including recovery before a first network attempt."
+          "reason": "Reconnect replay drains stored unacknowledged publishes and preserves their packet identifiers. The DUP qualification for persistence recovery before a first network attempt is documented separately from this packet-identifier lifecycle evidence."
         },
         {
           "path": "rumqttc-v4/src/state.rs",

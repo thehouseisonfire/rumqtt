@@ -3124,9 +3124,9 @@ fn persisted_publish(publish: &Publish) -> Option<PersistedPublish> {
     }
 
     Some(PersistedPublish {
-        // A checkpoint is a recovery instruction, not a transcript of the first
-        // live send. MQTT-3.3.1-1 requires any replay to use DUP=1, while the
-        // separate packet returned from fresh admission keeps DUP=0.
+        // Conservative recovery representation, not the live first-send
+        // packet, which remains DUP=0. See docs/design.md for the
+        // crash-before-send qualification.
         dup: true,
         qos: persisted_qos(publish.qos),
         retain: publish.retain,
@@ -3202,7 +3202,8 @@ fn request_from_persisted_request(
         PersistedRequest::Publish(publish) => {
             validate_pkid(publish.pkid)?;
             Ok(Request::Publish(Publish {
-                // Normalize checkpoints written by older clients before replay.
+                // Normalize to the conservative recovery representation, not
+                // the live first-send packet. See docs/design.md.
                 dup: true,
                 qos: qos_from_persisted(publish.qos),
                 retain: publish.retain,

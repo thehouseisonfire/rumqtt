@@ -4242,7 +4242,7 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The authoritative requirement includes both the positive resend rule on resumed sessions and the negative prohibition on resending at other times. rumqttc-v5 moves unacknowledged outgoing QoS>0 PUBLISH and PUBREL state into reconnect replay queues, preserves their original Packet Identifiers, marks every admitted publish replay with DUP, and drops replay state when CONNACK shows no session is present or when Clean Start begins a new session.",
+      "mapping_reason": "The authoritative requirement includes both the positive resend rule on resumed sessions and the negative prohibition on resending at other times. rumqttc-v5 moves unacknowledged outgoing QoS>0 PUBLISH and PUBREL state into reconnect replay queues, preserves their original Packet Identifiers, marks reconnect re-deliveries with DUP, and drops replay state when CONNACK shows no session is present or when Clean Start begins a new session. The persistence recovery representation can also be restored before a first transport attempt; that case is documented as a first-transmission qualification rather than resend evidence.",
       "authoritative_source": {
         "path": "docs/spec/mqtt-v5.0.md",
         "section_number": "4.4",
@@ -4270,7 +4270,7 @@
             "request_from_persisted_request",
             "MqttState::save_pubrel_with_notice"
           ],
-          "reason": "Snapshots, restore normalization, and reconnect cleanup requeue unacknowledged outgoing QoS>0 PUBLISH packets with DUP and their original Packet Identifiers, while tracked PUBREL packets retain their original Packet Identifiers."
+          "reason": "Reconnect cleanup requeues unacknowledged outgoing QoS>0 PUBLISH packets with DUP and their original Packet Identifiers, while tracked PUBREL packets retain their original Packet Identifiers. Persistence restoration before a first transport attempt is not treated as evidence of a required resend."
         },
         {
           "path": "rumqttc-v5/src/eventloop.rs",
@@ -4294,8 +4294,6 @@
         "status": "covered",
         "tests": [
           "rumqttc-v5/src/state.rs::clean_marks_unacked_qos1_publish_dup_for_reconnect_replay",
-          "rumqttc-v5/src/state.rs::old_dup_false_checkpoints_restore_qos1_and_qos2_as_replays",
-          "rumqttc-v5/src/eventloop.rs::admission_checkpoint_is_duplicate_but_first_wire_publish_is_not",
           "rumqttc-v5/tests/reliability.rs::reconnection_resends_unacked_packets_from_the_previous_connection_first",
           "rumqttc-v5/tests/reliability.rs::reconnection_with_out_of_order_pubacks_resends_oldest_unacked_publish_first",
           "rumqttc-v5/tests/reliability.rs::reconnection_replays_pubrel_with_original_packet_identifier",
