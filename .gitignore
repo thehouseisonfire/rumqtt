@@ -61,6 +61,7 @@ __pycache__/
 # ================
 benchmarks/results/
 benchmarks/__pycache__
+session-store-file/benchmarks/results/
 
 
 # Runtime data

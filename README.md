@@ -21,6 +21,12 @@ robust, and performant.
 | [rumqttc-core-next](./rumqttc-core/) | Shared transport and connection plumbing for the client crates | [![crates.io page](https://img.shields.io/crates/v/rumqttc-core-next.svg)](https://crates.io/crates/rumqttc-core-next) |
 | [mqttbytes-core-next](./mqttbytes-core/) | Shared MQTT packet primitives for the client crates | [![crates.io page](https://img.shields.io/crates/v/mqttbytes-core-next.svg)](https://crates.io/crates/mqttbytes-core-next) |
 
+Optional file-backed implementations of the client-owned `SessionStore` APIs
+are developed in the independent
+[`session-store-file` workspace](./session-store-file/README.md). That workspace
+contains a protocol-neutral filesystem core and separate MQTT 3.1.1 and MQTT 5
+adapters; it is not part of the client dependency graph.
+
 rumqttc-next is a maintained fork of rumqtt with a variety of extra features.
 
 The client crates are published with `*-next` package names on crates.io, but their Rust library target is

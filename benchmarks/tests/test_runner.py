@@ -93,6 +93,40 @@ class RunnerTests(unittest.TestCase):
 
         self.assertNotIn("--release", command)
 
+    def test_persistence_scenario_routes_to_nested_workspace(self):
+        command = runner.scenario_command(
+            self.scenario(
+                name="persistence-envelope-1mib",
+                group="persistence",
+                command="envelope",
+                primary_metric="operations_sec",
+                args={"protocol": "v5", "payload_size": 1048576},
+            ),
+            run_id="run-1",
+            broker_url=None,
+            ca_cert=None,
+        )
+
+        self.assertIn("session-store-file/Cargo.toml", command)
+        self.assertIn("session-store-file-benchmarks", command)
+        self.assertIn("rumqtt-session-store-file-bench", command)
+
+    def test_named_persistence_scenario_uses_nested_catalog_and_results(self):
+        path, scenario = runner.load_scenario(REPO_ROOT, "persistence-envelope-1mib")
+
+        self.assertEqual(
+            path,
+            REPO_ROOT
+            / "session-store-file"
+            / "benchmarks"
+            / "scenarios"
+            / "persistence-envelope-1mib.toml",
+        )
+        output = runner.default_output_dir(REPO_ROOT, "runs", scenario)
+        self.assertEqual(
+            output.parents[1], REPO_ROOT / "session-store-file" / "benchmarks" / "results"
+        )
+
     def test_scenario_command_includes_declared_cargo_features(self):
         command = runner.scenario_command(
             self.scenario(
@@ -114,8 +148,12 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("parse-url", command)
 
     def test_all_real_scenarios_validate(self):
-        scenario_dir = REPO_ROOT / "benchmarks" / "scenarios"
-        scenario_files = sorted(scenario_dir.glob("*.toml"))
+        scenario_files = sorted((REPO_ROOT / "benchmarks" / "scenarios").glob("*.toml"))
+        scenario_files.extend(
+            sorted(
+                (REPO_ROOT / "session-store-file" / "benchmarks" / "scenarios").glob("*.toml")
+            )
+        )
 
         self.assertGreaterEqual(len(scenario_files), 60)
         for path in scenario_files:

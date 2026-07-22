@@ -24,8 +24,8 @@ session settings, and a local `SessionStore`.
 
 Compile-checked examples:
 
-- v4: `rumqttc-v4-session-store-file-next/examples/persistent_session_file_store.rs`
-- v5: `rumqttc-v5-session-store-file-next/examples/persistent_session_file_store_v5.rs`
+- v4: `session-store-file/v4/examples/persistent_session_file_store.rs`
+- v5: `session-store-file/v5/examples/persistent_session_file_store_v5.rs`
 
 For a production-oriented Unix or Windows implementation, use
 `rumqttc-v4-session-store-file-next` or

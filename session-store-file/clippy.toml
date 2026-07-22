@@ -1,0 +1,2 @@
+# These pairs are imposed by supported upstream dependency generations.
+allowed-duplicate-crates = ["cpufeatures", "getrandom", "r-efi", "rand_core", "syn", "windows-sys"]

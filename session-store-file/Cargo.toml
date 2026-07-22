@@ -1,13 +1,5 @@
 [workspace]
-members = [
-  "mqttbytes-core",
-  "rumqttc-core",
-  "rumqttc-next",
-  "rumqttc-v4",
-  "rumqttc-v5",
-  "benchmarks",
-]
-exclude = ["session-store-file"]
+members = ["core", "v4", "v5", "benchmarks"]
 resolver = "3"
 
 [workspace.package]
@@ -18,8 +10,6 @@ license = "Apache-2.0"
 authors = ["tekjar <raviteja@bytebeam.io>"]
 
 [profile.dev]
-# producing debug info in builds takes up a lot of space on runner, and we
-# are currently not using it.
 debug = false
 
 [profile.release]

@@ -27,7 +27,7 @@ def tracked_markdown_files() -> list[Path]:
         capture_output=True,
         text=True,
     )
-    return [ROOT / line for line in result.stdout.splitlines() if line]
+    return [ROOT / line for line in result.stdout.splitlines() if line and (ROOT / line).exists()]
 
 
 def local_target(raw_target: str) -> str | None:

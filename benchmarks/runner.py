@@ -92,7 +92,11 @@ def fallback_environment(root: Path) -> dict[str, Any]:
 def load_scenario(root: Path, scenario: str) -> tuple[Path, dict[str, Any]]:
     path = Path(scenario)
     if not path.suffix:
-        path = root / "benchmarks" / "scenarios" / f"{scenario}.toml"
+        candidates = [
+            root / "benchmarks" / "scenarios" / f"{scenario}.toml",
+            root / "session-store-file" / "benchmarks" / "scenarios" / f"{scenario}.toml",
+        ]
+        path = next((candidate for candidate in candidates if candidate.exists()), candidates[0])
     elif not path.is_absolute():
         path = root / path
 
@@ -247,16 +251,23 @@ def scenario_command(
         raise RuntimeError(f"unsupported cargo profile: {cargo_profile}")
 
     cmd = ["cargo", "run"]
+    if scenario["group"] == "persistence":
+        cmd.extend(["--manifest-path", "session-store-file/Cargo.toml"])
     if cargo_profile == "release":
         cmd.append("--release")
     cargo_features = sorted(set(scenario.get("cargo_features", [])))
     if cargo_features:
         cmd.extend(["--features", ",".join(cargo_features)])
+    package, binary = (
+        ("session-store-file-benchmarks", "rumqtt-session-store-file-bench")
+        if scenario["group"] == "persistence"
+        else ("benchmarks", "rumqtt-bench")
+    )
     cmd.extend([
         "-p",
-        "benchmarks",
+        package,
         "--bin",
-        "rumqtt-bench",
+        binary,
         "--",
         scenario["group"],
         scenario["command"],
@@ -947,15 +958,24 @@ def timestamp() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%SZ")
 
 
-def default_output_dir(root: Path, kind: str) -> Path:
-    return root / "benchmarks" / "results" / kind / timestamp()
+def default_output_dir(root: Path, kind: str, scenario: dict[str, Any]) -> Path:
+    benchmark_root = (
+        root / "session-store-file" / "benchmarks"
+        if scenario["group"] == "persistence"
+        else root / "benchmarks"
+    )
+    return benchmark_root / "results" / kind / timestamp()
 
 
 def command_run(args: argparse.Namespace) -> None:
     root = repo_root()
     scenario_path, scenario = load_scenario(root, args.scenario)
     validate_broker_requirement(scenario, args.broker_url)
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else default_output_dir(root, "runs")
+    output_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else default_output_dir(root, "runs", scenario)
+    )
     runs = []
     total = args.warmup_runs + args.runs
     for index in range(total):
@@ -1023,7 +1043,9 @@ def command_compare(args: argparse.Namespace) -> None:
     baseline_ref = resolve_ref(root, args.baseline_ref or current_ref(root))
     target_ref = resolve_ref(root, args.target_ref)
     output_dir = (
-        Path(args.output_dir).resolve() if args.output_dir else default_output_dir(root, "comparisons")
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else default_output_dir(root, "comparisons", scenario)
     )
     temp_root = Path(tempfile.mkdtemp(prefix="rumqtt-bench-compare-"))
     worktrees: dict[str, Path] = {}

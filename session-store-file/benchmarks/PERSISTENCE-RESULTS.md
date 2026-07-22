@@ -121,7 +121,9 @@ affects these higher-inflight figures.
 The paired command shape was:
 
 ```bash
-cargo run --quiet --release -p benchmarks --bin rumqtt-bench -- persistence mqtt \
+cargo run --quiet --release --manifest-path session-store-file/Cargo.toml \
+  -p session-store-file-benchmarks --bin rumqtt-session-store-file-bench -- \
+  persistence mqtt \
   --protocol v4 --qos 1 --persistence enabled \
   --broker-url mqtt://127.0.0.1:18883 --messages 100 --warmup-messages 10 --inflight 1
 ```

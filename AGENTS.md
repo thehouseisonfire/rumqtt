@@ -1,11 +1,16 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repo is a Rust workspace. Main members are:
+This repo contains two Rust workspaces. Main client-workspace members are:
 - `rumqttc-v4/`: MQTT 3.1.1 client crate.
 - `rumqttc-v5/`: MQTT 5 client crate.
-- `benchmarks/`: maintained performance harness and benchmark scenarios.
+- `benchmarks/`: maintained client, codec, and options performance harness.
 - `docs/`: design notes and contributor conduct docs.
+
+The independent `session-store-file/` workspace contains the optional
+protocol-neutral file-store core, MQTT v4/v5 adapters, and persistence
+benchmarks. Run its Cargo commands with
+`--manifest-path session-store-file/Cargo.toml`.
 
 Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.
 
@@ -21,10 +26,12 @@ because the un-suffixed package names are not owned in crates.io. Their library 
 
 ## Build, Test, and Development Commands
 - `cargo check --workspace`: fast compile check across all workspace crates.
+- `cargo check --manifest-path session-store-file/Cargo.toml --workspace`: check all optional file-store crates.
 - `cargo test -p rumqttc-v4-next`: run MQTT 3.1.1 crate tests.
 - `cargo test -p rumqttc-v5-next`: run MQTT 5 crate tests.
 - `cargo test -p rumqttc-v4-next --test reliability -- --nocapture`: run v4 reliability integration tests with logs.
 - `cargo fmt --all`: format Rust code.
+- `cargo fmt --manifest-path session-store-file/Cargo.toml --all`: format the file-store workspace.
 - `cargo hack --each-feature --exclude-all-features --optional-deps url test -p rumqttc-v4-next -p rumqttc-v5-next`: CI-style feature matrix test (requires `cargo-hack`).
 - `cargo hack clippy --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next`: lint parity with pre-commit/CI.
 
@@ -37,7 +44,9 @@ Rust edition is `2024` (workspace-level). Follow `.editorconfig`: LF endings, sp
 Keep protocol behavior changes consistent between MQTT v4 and v5 paths when applicable.
 
 ## Documentation
-User facing changes to the API must be documented in `CHANGELOG.md`. If they would impact the examples and recipes provided, such should also be updated appropriately.
+User-facing client changes must be documented in `CHANGELOG.md`; file-store
+changes belong in `session-store-file/CHANGELOG.md`. If they affect examples or
+recipes, update those as well.
 
 ## Testing Guidelines
 Write integration tests in the relevant crate `tests/` directory with behavior-focused names (for example, `reconnection_resumes_from_the_previous_state`). Prefer targeted runs while iterating, then run full crate tests before opening a PR. If feature-sensitive code changes, run the `cargo hack` matrix command used in CI.

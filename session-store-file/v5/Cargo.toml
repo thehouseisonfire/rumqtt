@@ -13,8 +13,8 @@ authors.workspace = true
 readme = "README.md"
 
 [dependencies]
-rumqttc = { package = "rumqttc-v5-next", path = "../rumqttc-v5", version = "0.34.0-alpha", default-features = false }
-rumqttc-session-store-file-core-next = { path = "../rumqttc-session-store-file-core-next", version = "0.34.0-alpha" }
+rumqttc = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", version = "0.34.0-alpha", default-features = false }
+rumqttc-session-store-file-core-next = { path = "../core", version = "0.34.0-alpha" }
 thiserror = "2.0.8"
 
 [dev-dependencies]

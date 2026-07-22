@@ -121,8 +121,10 @@ message rates, large inflight sessions, or storage constraints should measure
 representative traffic on their deployment hardware. This store protects MQTT
 protocol recovery state and is not a replacement for an application outbox or
 durable business-message queue. See the
-[benchmark methodology](../benchmarks/PERSISTENCE.md) and
-[recorded results](../benchmarks/PERSISTENCE-RESULTS.md) for details.
+[benchmark methodology] and [recorded results] for details.
+
+[benchmark methodology]: https://github.com/thehouseisonfire/rumqtt/blob/main/session-store-file/benchmarks/PERSISTENCE.md
+[recorded results]: https://github.com/thehouseisonfire/rumqtt/blob/main/session-store-file/benchmarks/PERSISTENCE-RESULTS.md
 
 ## Trust and support boundary
 

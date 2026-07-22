@@ -33,10 +33,10 @@ Supported workload groups:
 - `codec encode|decode|roundtrip`
 - `client throughput|latency|connections`
 - `options parse-url`
-- `persistence envelope|codec|file-store|coordination|growth|mqtt`
 
-Persistent-session methodology, fixture definitions, and baseline reporting are
-documented in [`PERSISTENCE.md`](PERSISTENCE.md).
+File-backed persistence workloads live in the independent
+[`session-store-file` benchmark package](../session-store-file/benchmarks/README.md).
+The shared scenario runner routes those scenarios to that package automatically.
 
 `options parse-url` requires the benchmark crate `url` feature:
 
@@ -156,7 +156,9 @@ The runner validates these fields and fails if a benchmark result does not
 include the scenario's primary metric. When `transport` is set, the runner also
 checks the broker URL scheme before starting the benchmark.
 
-The runner writes generated reports under `benchmarks/results/`:
+The runner writes generated reports under the owning package's `results/`
+directory: `benchmarks/results/` for client scenarios and
+`session-store-file/benchmarks/results/` for persistence scenarios.
 
 - `summary.json`
 - `summary.csv`

@@ -1,0 +1,115 @@
+on:
+  pull_request:
+    branches:
+      - main
+      - mqtt5-client
+    paths:
+      - 'session-store-file/**'
+      - 'rumqttc-v4/**'
+      - 'rumqttc-v5/**'
+      - 'rumqttc-core/**'
+      - 'mqttbytes-core/**'
+      - 'benchmarks/runner.py'
+      - 'benchmarks/broker_fixture.py'
+      - 'benchmarks/tests/**'
+      - 'Cargo.toml'
+      - '.github/workflows/session-store-file-ci.yml'
+  push:
+    branches:
+      - main
+
+name: File session stores
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-D warnings"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Build and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-session-store-file
+          workspaces: session-store-file -> target
+      - name: Check and test workspace
+        working-directory: session-store-file
+        run: |
+          cargo check --locked --workspace --all-targets
+          cargo test --locked --workspace
+          cargo test --locked --workspace --doc
+      - name: Lint published crates
+        working-directory: session-store-file
+        env:
+          RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
+        run: |
+          cargo clippy --locked --all-targets \
+            -p rumqttc-session-store-file-core-next \
+            -p rumqttc-v4-session-store-file-next \
+            -p rumqttc-v5-session-store-file-next -- \
+            -D warnings -D clippy::multiple_crate_versions
+      - name: Lint persistence benchmarks
+        working-directory: session-store-file
+        run: cargo clippy --locked --all-targets -p session-store-file-benchmarks -- -D warnings
+      - name: Check documentation and examples
+        if: ${{ matrix.os != 'windows-latest' }}
+        working-directory: session-store-file
+        run: |
+          cargo doc --locked --workspace --no-deps
+          cargo check --locked -p rumqttc-v4-session-store-file-next --example persistent_session_file_store
+          cargo check --locked -p rumqttc-v5-session-store-file-next --example persistent_session_file_store_v5
+      - name: Check benchmark routing
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          cargo run --locked --manifest-path session-store-file/Cargo.toml \
+            -p session-store-file-benchmarks --bin rumqtt-session-store-file-bench -- \
+            persistence envelope --samples 1 --operations-per-sample 1 --payload-size 16
+          python3 -m compileall benchmarks/runner.py benchmarks/broker_fixture.py
+          python3 -m unittest benchmarks/tests/test_runner.py benchmarks/tests/test_broker_fixture.py
+
+  msrv:
+    name: Rust 1.89 and WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.89
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: Linux-session-store-file-msrv
+          workspaces: session-store-file -> target
+      - run: |
+          cargo check --locked --manifest-path session-store-file/Cargo.toml \
+            -p rumqttc-session-store-file-core-next \
+            -p rumqttc-v4-session-store-file-next \
+            -p rumqttc-v5-session-store-file-next
+          cargo check --locked --manifest-path session-store-file/Cargo.toml \
+            -p rumqttc-session-store-file-core-next --target wasm32-unknown-unknown
+
+  package:
+    name: Package contents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          cargo package --locked --no-verify --manifest-path session-store-file/Cargo.toml \
+            -p rumqttc-session-store-file-core-next
+          cargo package --locked --list --manifest-path session-store-file/Cargo.toml \
+            -p rumqttc-v4-session-store-file-next
+          cargo package --locked --list --manifest-path session-store-file/Cargo.toml \
+            -p rumqttc-v5-session-store-file-next

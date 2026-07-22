@@ -6,7 +6,8 @@ repos:
         entry: >
           bash -c '
           set -euo pipefail;
-          cargo fmt --all
+          cargo fmt --all;
+          cargo fmt --manifest-path session-store-file/Cargo.toml --all
           '
         language: system
         pass_filenames: false
@@ -38,13 +39,19 @@ repos:
           -p rumqttc-v4-next
           -p rumqttc-v5-next;
 
-          cargo clippy
-          --fix
-          --allow-dirty
-          --all-targets
-          -p rumqttc-session-store-file-core-next
-          -p rumqttc-v4-session-store-file-next
-          -p rumqttc-v5-session-store-file-next
+          (
+            cd session-store-file;
+            cargo clippy
+            --fix
+            --allow-dirty
+            --all-targets
+            -p rumqttc-session-store-file-core-next
+            -p rumqttc-v4-session-store-file-next
+            -p rumqttc-v5-session-store-file-next;
+            RUSTFLAGS="-D warnings" cargo clippy
+            --all-targets
+            -p session-store-file-benchmarks
+          )
           '
         language: system
         pass_filenames: false
@@ -168,6 +175,7 @@ repos:
           -p rumqttc-v5-next;
 
           cargo test
+          --manifest-path session-store-file/Cargo.toml
           -p rumqttc-session-store-file-core-next
           -p rumqttc-v4-session-store-file-next
           -p rumqttc-v5-session-store-file-next

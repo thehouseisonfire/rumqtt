@@ -5,17 +5,9 @@
   DNS resolution and RFC 1929 username/password authentication. Add independent
   `http-proxy` and `socks-proxy` features while retaining `proxy` as an umbrella
   that enables both.
-- Add Unix and Windows file-backed persistent session stores for MQTT v4 and v5, backed by a
-  shared protocol-neutral, checksummed, bounded, cancellation-safe core using
-  `atomic-write-file` 0.3.0 on Unix and native `windows-sys` 0.61 wide-path
-  commits on Windows. Add inspection, quarantine, exact legacy detection,
-  operator clear, and cancellation-safe owned-staging cleanup APIs.
 - `rumqttc` v4/v5: Add Linux-only `NetworkOptions::set_mptcp(...)` for opt-in
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
-- Add reproducible persistent-session envelope, codec, durable file-store,
-  coordination, checkpoint-growth, and MQTT QoS 1/QoS 2 benchmarks with
-  machine-readable latency distributions and persistence-disabled baselines.
 ### Changed
 - `rumqttc` v4/v5 (Breaking Change): Replace public-field `Proxy`, `ProxyType`,
   and `ProxyAuth` configuration with `Proxy::http(...)`, `Proxy::https(...)`,

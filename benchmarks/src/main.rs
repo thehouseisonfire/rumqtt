@@ -18,8 +18,6 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
 
-mod persistence;
-
 const BENCH_MAX_PACKET_SIZE: usize = 256 * 1024;
 
 #[derive(Parser, Debug)]
@@ -43,10 +41,6 @@ enum CommandGroup {
     Options {
         #[command(subcommand)]
         command: OptionsCommand,
-    },
-    Persistence {
-        #[command(subcommand)]
-        command: persistence::PersistenceCommand,
     },
 }
 
@@ -264,7 +258,6 @@ async fn main() -> anyhow::Result<()> {
         CommandGroup::Options { command } => match command {
             OptionsCommand::ParseUrl(args) => run_options_parse_url(args),
         },
-        CommandGroup::Persistence { command } => persistence::run(command).await,
     }
 }
 

@@ -45,13 +45,19 @@ padding outside the canonical session.
 ## Commands
 
 ```bash
-cargo run --release -p benchmarks --bin rumqtt-bench -- persistence envelope --mode encode --payload-size 1048576
-cargo run --release -p benchmarks --bin rumqtt-bench -- persistence codec --protocol v4 --mode encode --inflight 100 --payload-size 1024 --qos 1
-cargo run --release -p benchmarks --bin rumqtt-bench -- persistence codec --protocol v5 --mode decode --inflight 100 --payload-size 1024 --qos 2
-cargo run --release -p benchmarks --bin rumqtt-bench -- persistence file-store --operation save-replace --payload-size 1048576
-cargo run --release -p benchmarks --bin rumqtt-bench -- persistence coordination --concurrency 8 --operations 100
-cargo run --release -p benchmarks --bin rumqtt-bench -- persistence growth --protocol v5 --payload-size 1024 --qos 2
-python3 benchmarks/runner.py run --scenario persistence-mqtt-v4-qos1-enabled --broker-url mqtt://127.0.0.1:1883 --runs 5 --warmup-runs 1
+store_bench=(cargo run --release --manifest-path session-store-file/Cargo.toml \
+  -p session-store-file-benchmarks --bin rumqtt-session-store-file-bench --)
+"${store_bench[@]}" persistence envelope --mode encode --payload-size 1048576
+"${store_bench[@]}" persistence codec --protocol v4 --mode encode \
+  --inflight 100 --payload-size 1024 --qos 1
+"${store_bench[@]}" persistence codec --protocol v5 --mode decode \
+  --inflight 100 --payload-size 1024 --qos 2
+"${store_bench[@]}" persistence file-store --operation save-replace --payload-size 1048576
+"${store_bench[@]}" persistence coordination --concurrency 8 --operations 100
+"${store_bench[@]}" persistence growth --protocol v5 --payload-size 1024 --qos 2
+python3 benchmarks/runner.py run \
+  --scenario persistence-mqtt-v4-qos1-enabled \
+  --broker-url mqtt://127.0.0.1:1883 --runs 5 --warmup-runs 1
 ```
 
 Run every file-store operation by selecting `save-create`, `save-replace`,
