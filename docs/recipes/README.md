@@ -28,17 +28,34 @@ deployment.
 
 ## Compile-Checked Examples
 
-Most recipes link to examples under `rumqttc-v4/examples/` or
-`rumqttc-v5/examples/`. Run an example with the package name and required
-features, for example:
+Every Rust block in this guide is compiled against both protocol crates unless
+the block is explicitly marked v4- or v5-only. Every linked example and Cargo
+command is also checked by `python3 scripts/check-recipes.py` in CI. The
+following matrix covers the production-sensitive feature combinations:
 
 ```bash
-cargo run -p rumqttc-v5-next --features websocket --example websocket_v5
+cargo run -p rumqttc-v4-next --features use-rustls --example tls2
+cargo run -p rumqttc-v5-next --features use-rustls --example tls_client_auth_v5
+cargo run -p rumqttc-v4-next --features websocket,use-rustls --example wss
+cargo run -p rumqttc-v5-next --features websocket,use-rustls --example wss_v5
+cargo run -p rumqttc-v4-next --features websocket,http-proxy --example websocket_proxy
 cargo run -p rumqttc-v5-next --features websocket,http-proxy --example websocket_proxy_v5
-cargo run -p rumqttc-v5-next --features use-rustls --example tls_v5
+cargo run -p rumqttc-v4-next --features socks-proxy --example socks5_proxy
+cargo run -p rumqttc-v5-next --features socks-proxy --example socks5_proxy_v5
+cargo run -p rumqttc-v4-next --example resubscribe_on_reconnect
+cargo run -p rumqttc-v5-next --example resubscribe_on_reconnect_v5
+cargo run -p rumqttc-v4-next --example async_manual_acks
+cargo run -p rumqttc-v5-next --example async_manual_acks_v5
+cargo run -p rumqttc-v4-next --features tracing --example lifecycle_tracing
 cargo run -p rumqttc-v5-next --features tracing --example lifecycle_tracing_v5
+cargo run -p rumqttc-v4-next --example diagnostics_snapshot
 cargo run -p rumqttc-v5-next --example diagnostics_snapshot_v5
 ```
+
+These are runnable examples and therefore try to connect to their documented
+endpoint. CI substitutes `cargo check` to validate them without contacting
+external services; the local Mosquitto recipe has a separate end-to-end smoke
+test.
 
 Use package names such as `rumqttc-v5-next` in Cargo commands. Application code
 continues to import the library as `rumqttc`.

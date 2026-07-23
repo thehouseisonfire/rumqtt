@@ -14,6 +14,8 @@ on:
       - 'Cargo.*'
       - '*/Cargo.*'
       - 'scripts/check-markdown-links.py'
+      - 'scripts/check-recipes.py'
+      - 'scripts/smoke-production-recipes.sh'
       - '.github/workflows/*'
   push:
     branches:
@@ -62,6 +64,17 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack,cargo-llvm-cov,nextest
+
+      - name: Check production recipes
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+            python3 scripts/check-recipes.py
+            docker compose -f docs/recipes/fixtures/mosquitto/compose.yaml config --quiet
+            docker compose -f docs/recipes/fixtures/emqx/compose.yaml config --quiet
+
+      - name: Smoke test production broker recipe
+        if: ${{ runner.os == 'Linux' }}
+        run: scripts/smoke-production-recipes.sh
 
       - name: Install Mosquitto
         if: ${{ runner.os == 'Linux' }}

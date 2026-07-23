@@ -4,7 +4,9 @@ On Linux, opt an MQTT connection into Multipath TCP (MPTCP) through
 `NetworkOptions`. The same configuration works with the MQTT 3.1.1 and MQTT 5
 packages and requires no Cargo feature.
 
-```rust,no_run
+For MQTT 5, configure it directly on `MqttOptions`:
+
+```rust,v5,no_run
 use rumqttc::{MqttOptions, NetworkOptions};
 
 let mut options = MqttOptions::new("mobile-client", ("broker.example.com", 1883));
@@ -14,6 +16,22 @@ let mut options = MqttOptions::new("mobile-client", ("broker.example.com", 1883)
     let mut network_options = NetworkOptions::new();
     network_options.set_mptcp(true);
     options.set_network_options(network_options);
+}
+```
+
+For MQTT 3.1.1, configure it on the event loop before the first poll:
+
+```rust,v4,no_run
+use rumqttc::{AsyncClient, MqttOptions, NetworkOptions};
+
+let options = MqttOptions::new("mobile-client", ("broker.example.com", 1883));
+let (_client, mut eventloop) = AsyncClient::builder(options).capacity(100).build();
+
+#[cfg(target_os = "linux")]
+{
+    let mut network_options = NetworkOptions::new();
+    network_options.set_mptcp(true);
+    eventloop.set_network_options(network_options);
 }
 ```
 

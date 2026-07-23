@@ -99,6 +99,10 @@ name = "async_manual_acks_v5"
 path = "examples/async_manual_acks_v5.rs"
 
 [[example]]
+name = "broker_recipe_smoke_v5"
+path = "examples/broker_recipe_smoke_v5.rs"
+
+[[example]]
 name = "asyncpubsub_v5"
 path = "examples/asyncpubsub_v5.rs"
 

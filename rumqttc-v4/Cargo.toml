@@ -86,6 +86,10 @@ name = "async_manual_acks"
 path = "examples/async_manual_acks.rs"
 
 [[example]]
+name = "broker_recipe_smoke"
+path = "examples/broker_recipe_smoke.rs"
+
+[[example]]
 name = "asyncpubsub"
 path = "examples/asyncpubsub.rs"
 

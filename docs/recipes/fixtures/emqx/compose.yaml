@@ -1,0 +1,20 @@
+services:
+  broker:
+    image: emqx/emqx:5.8.8
+    environment:
+      EMQX_NODE__NAME: emqx@broker
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+      - "127.0.0.1:18083:18083"
+    volumes:
+      - broker-data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  broker-data:

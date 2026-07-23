@@ -16,68 +16,7 @@ Do not assume the recommendation is correct. Identify its benefits, drawbacks, i
 
 ## Candidate Improvements
 
-### 1. Add Production Deployment Recipes
-
-**Problem**
-
-The existing README examples are useful, but they are primarily minimal examples.
-
-The crates support several advanced production features whose correct composition may not be obvious to consumers:
-
-* Custom TLS roots
-* Mutual TLS and client certificates
-* Secure WebSockets
-* Custom WebSocket headers
-* HTTP or SOCKS proxies
-* Persistent sessions
-* Reconnection and resubscription
-* Bounded request channels
-* Backpressure
-* Manual acknowledgements
-* Broker-specific behavior
-
-**Proposed change**
-
-Add a structured documentation section under:
-
-```text
-docs/recipes/
-```
-
-Provide copy-pasteable, tested recipes for common production deployments, along with a feature matrix.
-
-Potential targets include:
-
-* Mosquitto
-* EMQX
-* HiveMQ
-* AWS IoT Core
-* Corporate proxy environments
-
-**Expected value**
-
-Reduces:
-
-* Integration time
-* Configuration mistakes
-* Support requests
-* Reliance on incomplete external examples
-
-**Complexity:** Low to medium
-**Risk:** Minimal
-
-**Validation**
-
-* Compile every recipe in CI.
-* Use Dockerized Mosquitto or EMQX smoke tests where practical.
-* Validate relevant feature combinations.
-* Check documentation links and commands.
-
-**Priority:** High value
-
----
-
-### 2. Ship a Tested File-Backed Session Store
+### Ship a Tested File-Backed Session Store
 
 **Problem**
 

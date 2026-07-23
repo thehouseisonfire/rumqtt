@@ -1,0 +1,18 @@
+services:
+  broker:
+    image: eclipse-mosquitto:2.0.22
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - broker-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-p", "1883", "-t", "rumqttc/health", "-m", "ok"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+
+volumes:
+  broker-data:

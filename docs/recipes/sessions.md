@@ -27,6 +27,13 @@ Compile-checked examples:
 - v4: `session-store-file/v4/examples/persistent_session_file_store.rs`
 - v5: `session-store-file/v5/examples/persistent_session_file_store_v5.rs`
 
+```bash
+cargo check --manifest-path session-store-file/Cargo.toml \
+  -p rumqttc-v4-session-store-file-next --example persistent_session_file_store
+cargo check --manifest-path session-store-file/Cargo.toml \
+  -p rumqttc-v5-session-store-file-next --example persistent_session_file_store_v5
+```
+
 For a production-oriented Unix or Windows implementation, use
 `rumqttc-v4-session-store-file-next` or
 `rumqttc-v5-session-store-file-next`. These stores require an existing,
