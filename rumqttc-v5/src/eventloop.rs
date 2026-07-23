@@ -965,7 +965,12 @@ impl EventLoop {
             return Err(err);
         }
 
-        let flush_result = self.network.as_mut().unwrap().flush().await;
+        let flush_result = self
+            .network
+            .as_mut()
+            .expect("connected event loop must have an active network")
+            .flush()
+            .await;
         for notice in notices {
             notice.complete();
         }
@@ -1261,7 +1266,11 @@ impl EventLoop {
                     }
                     Err(_) => continue,
                 },
-                o = self.network.as_mut().unwrap().readb(&mut self.state, read_batch_size) => {
+                o = self
+                    .network
+                    .as_mut()
+                    .expect("connected event loop must have an active network")
+                    .readb(&mut self.state, read_batch_size) => {
                     let batch = match o {
                         Ok(batch) => batch,
                         Err(err) => {
@@ -1272,7 +1281,11 @@ impl EventLoop {
                     if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
                         self.reset_keepalive_timeout();
                     }
-                    Ok(self.state.events.pop_front().unwrap())
+                    Ok(self
+                        .state
+                        .events
+                        .pop_front()
+                        .expect("successful network read must queue an event"))
                 },
                 () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
                     if self.keepalive_timeout.is_some() && !self.options.keep_alive.is_zero() => {
@@ -1280,11 +1293,19 @@ impl EventLoop {
                         .state
                         .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
                     if let Some(outgoing) = outgoing {
-                        self.network.as_mut().unwrap().write(outgoing).await?;
+                        self.network
+                            .as_mut()
+                            .expect("connected event loop must have an active network")
+                            .write(outgoing)
+                            .await?;
                     }
                     self.flush_network().await?;
                     self.reset_keepalive_timeout();
-                    Ok(self.state.events.pop_front().unwrap())
+                    Ok(self
+                        .state
+                        .events
+                        .pop_front()
+                        .expect("successful ping transition must queue an event"))
                 }
             };
         }
@@ -1306,7 +1327,11 @@ impl EventLoop {
         .await?;
         self.flush_request_batch(should_flush, qos0_notices, checkpoint_action)
             .await?;
-        Ok(self.state.events.pop_front().unwrap())
+        Ok(self
+            .state
+            .events
+            .pop_front()
+            .expect("immediate disconnect transition must queue an event"))
     }
 
     async fn handle_ready_requests(&mut self) -> Result<bool, ConnectionError> {
@@ -1471,7 +1496,13 @@ impl EventLoop {
                         SessionCheckpointAction::ApplySessionExpiry(session_expiry_interval);
                 }
                 if let Some(outgoing) = outgoing {
-                    if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
+                    if let Err(err) = self
+                        .network
+                        .as_mut()
+                        .expect("connected event loop must have an active network")
+                        .write(outgoing)
+                        .await
+                    {
                         return Err(ConnectionError::MqttState(err));
                     }
                     *should_flush = true;
@@ -1490,7 +1521,13 @@ impl EventLoop {
                 self.persist_session_or_fail_qos0_notices(qos0_notices, flush_notice)
                     .await?;
                 if let Some(outgoing) = outgoing {
-                    if let Err(err) = self.network.as_mut().unwrap().write(outgoing).await {
+                    if let Err(err) = self
+                        .network
+                        .as_mut()
+                        .expect("connected event loop must have an active network")
+                        .write(outgoing)
+                        .await
+                    {
                         for notice in qos0_notices.drain(..) {
                             notice.error(PublishNoticeError::Qos0NotFlushed);
                         }
@@ -1541,7 +1578,11 @@ impl EventLoop {
     }
 
     async fn flush_network(&mut self) -> Result<(), ConnectionError> {
-        self.network.as_mut().unwrap().flush().await?;
+        self.network
+            .as_mut()
+            .expect("connected event loop must have an active network")
+            .flush()
+            .await?;
         Ok(())
     }
 
@@ -1555,7 +1596,11 @@ impl EventLoop {
                 // Preserve current resumable state before exposing a nonzero
                 // DISCONNECT override. A zero interval will clear it after flush.
                 if session_expiry_interval.unwrap_or(0) == 0 {
-                    self.network.as_mut().unwrap().flush().await?;
+                    self.network
+                        .as_mut()
+                        .expect("connected event loop must have an active network")
+                        .flush()
+                        .await?;
                 } else {
                     self.save_persisted_session().await?;
                     self.flush_network().await?;
@@ -1571,7 +1616,7 @@ impl EventLoop {
         let read = self
             .network
             .as_mut()
-            .unwrap()
+            .expect("disconnect drain requires an active network")
             .readb(&mut self.state, read_batch_size);
 
         let batch = if let Some(deadline) = self
@@ -1628,9 +1673,17 @@ impl EventLoop {
             .handle_outgoing_packet_with_notice(Request::DisconnectNow(disconnect), None)?;
 
         if let Some(outgoing) = outgoing {
-            self.network.as_mut().unwrap().write(outgoing).await?;
+            self.network
+                .as_mut()
+                .expect("pending disconnect requires an active network")
+                .write(outgoing)
+                .await?;
             if clear_persisted_session {
-                self.network.as_mut().unwrap().flush().await?;
+                self.network
+                    .as_mut()
+                    .expect("pending disconnect requires an active network")
+                    .flush()
+                    .await?;
             } else {
                 self.flush_network().await?;
             }
@@ -1643,7 +1696,11 @@ impl EventLoop {
         self.drop_unprocessed_requests();
         self.checkpoint_after_connection_loss().await?;
         self.disconnect_complete = true;
-        Ok(self.state.events.pop_front().unwrap())
+        Ok(self
+            .state
+            .events
+            .pop_front()
+            .expect("disconnect transition must queue an event"))
     }
 
     fn reset_keepalive_timeout(&mut self) {
@@ -1700,7 +1757,9 @@ impl EventLoop {
             }
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
-            Ok(pending.pop_front().unwrap())
+            Ok(pending
+                .pop_front()
+                .expect("pending queue was checked as non-empty"))
         }
     }
 
