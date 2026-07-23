@@ -1,0 +1,16 @@
+[package]
+name = "session-store-file-consumer-tests"
+version = "0.1.0"
+publish = false
+rust-version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+rumqttc-session-store-file-next = { path = "../adapter", features = ["v4", "v5"] }
+rumqttc-v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", default-features = false }
+rumqttc-v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", default-features = false }
+tempfile = "3"
+tokio = { version = "1.40", features = ["macros", "rt"] }

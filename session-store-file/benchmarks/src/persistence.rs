@@ -187,7 +187,7 @@ impl StoreMeasurements {
 
 #[derive(Clone, Debug)]
 struct MeasuringV4Store {
-    inner: rumqttc_v4_store::SessionFileStore,
+    inner: rumqttc_store::v4::SessionFileStore,
     measurements: Arc<StoreMeasurements>,
 }
 
@@ -265,7 +265,7 @@ impl rumqttc_v4::SessionStore for MeasuringV4Store {
 
 #[derive(Clone, Debug)]
 struct MeasuringV5Store {
-    inner: rumqttc_v5_store::SessionFileStore,
+    inner: rumqttc_store::v5::SessionFileStore,
     measurements: Arc<StoreMeasurements>,
 }
 
@@ -507,7 +507,7 @@ async fn run_mqtt_v4(
         .set_clean_session(false)
         .set_inflight(u16::try_from(args.inflight)?);
     if matches!(args.persistence, PersistenceMode::Enabled) {
-        let inner = rumqttc_v4_store::SessionFileStore::open(root).await?;
+        let inner = rumqttc_store::v4::SessionFileStore::open(root).await?;
         options.set_session_store(MeasuringV4Store {
             inner,
             measurements: Arc::clone(&measurements),
@@ -570,7 +570,7 @@ async fn run_mqtt_v5(
         .set_session_expiry_interval(Some(3600))
         .set_outgoing_inflight_upper_limit(u16::try_from(args.inflight)?);
     if matches!(args.persistence, PersistenceMode::Enabled) {
-        let inner = rumqttc_v5_store::SessionFileStore::open(root).await?;
+        let inner = rumqttc_store::v5::SessionFileStore::open(root).await?;
         options.set_session_store(MeasuringV5Store {
             inner,
             measurements: Arc::clone(&measurements),

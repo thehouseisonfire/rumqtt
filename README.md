@@ -24,8 +24,8 @@ robust, and performant.
 Optional file-backed implementations of the client-owned `SessionStore` APIs
 are developed in the independent
 [`session-store-file` workspace](./session-store-file/README.md). That workspace
-contains a protocol-neutral filesystem core and separate MQTT 3.1.1 and MQTT 5
-adapters; it is not part of the client dependency graph.
+contains a protocol-neutral filesystem core and one feature-gated MQTT 3.1.1
+and MQTT 5 adapter package; it is not part of the client dependency graph.
 
 rumqttc-next is a maintained fork of rumqtt with a variety of extra features.
 

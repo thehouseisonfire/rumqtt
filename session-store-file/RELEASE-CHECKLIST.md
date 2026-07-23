@@ -1,6 +1,6 @@
 # File session-store release checklist
 
-- Choose one coordinated version for the core and both adapters.
+- Choose one coordinated version for the core and merged adapter.
 - Confirm matching `rumqttc-v4-next` and `rumqttc-v5-next` versions are already
   available from crates.io.
 - Cut `CHANGELOG.md` from `Unreleased` to `## [VERSION] - YYYY-MM-DD` and leave a

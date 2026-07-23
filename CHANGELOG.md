@@ -9,6 +9,8 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc` v4/v5: Consolidate the optional file-backed session adapters into
+  `rumqttc-session-store-file-next`, with independent `v4` and `v5` features.
 - `rumqttc` v4/v5 (Breaking Change): Replace public-field `Proxy`, `ProxyType`,
   and `ProxyAuth` configuration with `Proxy::http(...)`, `Proxy::https(...)`,
   `Proxy::socks5(...)`, and `.with_credentials(...)`; proxy debug output now

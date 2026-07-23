@@ -51,6 +51,19 @@ jobs:
           cargo check --locked --workspace --all-targets
           cargo test --locked --workspace
           cargo test --locked --workspace --doc
+      - name: Check merged adapter feature matrix
+        working-directory: session-store-file
+        run: |
+          cargo check --locked -p rumqttc-session-store-file-next --no-default-features
+          cargo test --locked -p rumqttc-session-store-file-next --no-default-features --features v4
+          cargo test --locked -p rumqttc-session-store-file-next --no-default-features --features v5
+          cargo test --locked -p rumqttc-session-store-file-next --no-default-features --features v4,v5
+          if cargo tree --locked -p rumqttc-session-store-file-next --no-default-features --features v4 | grep -q 'rumqttc-v5-next'; then
+            exit 1
+          fi
+          if cargo tree --locked -p rumqttc-session-store-file-next --no-default-features --features v5 | grep -q 'rumqttc-v4-next'; then
+            exit 1
+          fi
       - name: Lint published crates
         working-directory: session-store-file
         env:
@@ -58,8 +71,7 @@ jobs:
         run: |
           cargo clippy --locked --all-targets \
             -p rumqttc-session-store-file-core-next \
-            -p rumqttc-v4-session-store-file-next \
-            -p rumqttc-v5-session-store-file-next -- \
+            -p rumqttc-session-store-file-next --all-features -- \
             -D warnings -D clippy::multiple_crate_versions
       - name: Lint persistence benchmarks
         working-directory: session-store-file
@@ -68,9 +80,13 @@ jobs:
         if: ${{ matrix.os != 'windows-latest' }}
         working-directory: session-store-file
         run: |
-          cargo doc --locked --workspace --no-deps
-          cargo check --locked -p rumqttc-v4-session-store-file-next --example persistent_session_file_store
-          cargo check --locked -p rumqttc-v5-session-store-file-next --example persistent_session_file_store_v5
+          cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --no-deps
+          cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --features v4 --no-deps
+          cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --features v5 --no-deps
+          cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --features v4,v5 --no-deps
+          cargo check --locked -p rumqttc-session-store-file-next --example persistent_session_file_store_v4 --features v4
+          cargo check --locked -p rumqttc-session-store-file-next --example persistent_session_file_store_v5 --features v5
+          cargo check --locked -p rumqttc-session-store-file-next --example persistent_session_file_store_dual --features v4,v5
       - name: Check benchmark routing
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
@@ -95,8 +111,7 @@ jobs:
       - run: |
           cargo check --locked --manifest-path session-store-file/Cargo.toml \
             -p rumqttc-session-store-file-core-next \
-            -p rumqttc-v4-session-store-file-next \
-            -p rumqttc-v5-session-store-file-next
+            -p rumqttc-session-store-file-next --all-features
           cargo check --locked --manifest-path session-store-file/Cargo.toml \
             -p rumqttc-session-store-file-core-next --target wasm32-unknown-unknown
 
@@ -110,6 +125,4 @@ jobs:
           cargo package --locked --no-verify --manifest-path session-store-file/Cargo.toml \
             -p rumqttc-session-store-file-core-next
           cargo package --locked --list --manifest-path session-store-file/Cargo.toml \
-            -p rumqttc-v4-session-store-file-next
-          cargo package --locked --list --manifest-path session-store-file/Cargo.toml \
-            -p rumqttc-v5-session-store-file-next
+            -p rumqttc-session-store-file-next

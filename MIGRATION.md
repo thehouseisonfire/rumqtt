@@ -426,8 +426,9 @@ durable storage layout. Use `set_session_store_scope(...)` when one store is
 shared across brokers, tenants, environments, or connection profiles that may
 reuse the same MQTT Client Identifier. See:
 
-- `session-store-file/v4/examples/persistent_session_file_store.rs`
-- `session-store-file/v5/examples/persistent_session_file_store_v5.rs`
+- `session-store-file/adapter/examples/persistent_session_file_store_v4.rs`
+- `session-store-file/adapter/examples/persistent_session_file_store_v5.rs`
+- `session-store-file/adapter/examples/persistent_session_file_store_dual.rs`
 
 MQTT 5 defaults to strict broker session reconciliation. If a newly constructed
 client has no matching local session state and the broker returns

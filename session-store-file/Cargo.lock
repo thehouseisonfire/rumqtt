@@ -847,6 +847,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumqttc-session-store-file-next"
+version = "0.34.0-alpha"
+dependencies = [
+ "crc32c",
+ "pretty_env_logger",
+ "rumqttc-session-store-file-core-next",
+ "rumqttc-v4-next",
+ "rumqttc-v5-next",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rumqttc-v4-next"
 version = "0.34.0-alpha"
 dependencies = [
@@ -868,19 +882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc-v4-session-store-file-next"
-version = "0.34.0-alpha"
-dependencies = [
- "crc32c",
- "pretty_env_logger",
- "rumqttc-session-store-file-core-next",
- "rumqttc-v4-next",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "rumqttc-v5-next"
 version = "0.34.0-alpha"
 dependencies = [
@@ -899,19 +900,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
-]
-
-[[package]]
-name = "rumqttc-v5-session-store-file-next"
-version = "0.34.0-alpha"
-dependencies = [
- "crc32c",
- "pretty_env_logger",
- "rumqttc-session-store-file-core-next",
- "rumqttc-v5-next",
- "tempfile",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -1079,12 +1067,22 @@ dependencies = [
  "crc32c",
  "rand 0.10.2",
  "rumqttc-session-store-file-core-next",
+ "rumqttc-session-store-file-next",
  "rumqttc-v4-next",
- "rumqttc-v4-session-store-file-next",
  "rumqttc-v5-next",
- "rumqttc-v5-session-store-file-next",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "session-store-file-consumer-tests"
+version = "0.1.0"
+dependencies = [
+ "rumqttc-session-store-file-next",
+ "rumqttc-v4-next",
+ "rumqttc-v5-next",
  "tempfile",
  "tokio",
 ]

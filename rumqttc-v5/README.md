@@ -297,7 +297,7 @@ Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` o
   notice error. rumqttc clears the configured store when the broker starts a
   fresh session (`Session Present = 0`), when local session state is explicitly
   reset, or when the effective session expiry is zero at disconnect. See
-  `session-store-file/v5/examples/persistent_session_file_store_v5.rs`
+  `session-store-file/adapter/examples/persistent_session_file_store_v5.rs`
   for a complete example using the supported file-store adapter.
 
 - For restart-safe local session resume, configure a `SessionStore`.

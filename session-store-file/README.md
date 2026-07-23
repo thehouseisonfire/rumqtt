@@ -5,8 +5,10 @@ the `SessionStore` APIs owned by `rumqttc-v4-next` and `rumqttc-v5-next`.
 
 - [`core`](core/README.md) provides protocol-neutral, crash-consistent local
   checkpoint storage.
-- [`v4`](v4/README.md) adapts the core to MQTT 3.1.1 sessions.
-- [`v5`](v5/README.md) adapts the core to MQTT 5 sessions.
+- [`adapter`](adapter/README.md) provides independently selectable `v4` and
+  `v5` modules in one package.
+- [`consumer-tests`](consumer-tests/) verifies the dual-protocol public API as
+  a downstream crate.
 - [`benchmarks`](benchmarks/README.md) contains persistence-specific workloads.
 
 From the repository root, run:

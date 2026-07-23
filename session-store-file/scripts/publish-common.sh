@@ -21,8 +21,7 @@ cd "$workspace_dir"
 
 packages=(
     rumqttc-session-store-file-core-next
-    rumqttc-v4-session-store-file-next
-    rumqttc-v5-session-store-file-next
+    rumqttc-session-store-file-next
 )
 
 version="$({ cargo metadata --no-deps --format-version 1; } | python3 -c '
@@ -33,7 +32,7 @@ packages = {
     if package["name"].startswith("rumqttc-")
 }
 versions = set(packages.values())
-if len(packages) != 3 or len(versions) != 1:
+if len(packages) != 2 or len(versions) != 1:
     raise SystemExit(f"storage package versions are not coordinated: {packages}")
 print(versions.pop())
 ')"
@@ -66,26 +65,12 @@ if ! grep -Fq "## [$version] - " CHANGELOG.md; then
     exit 1
 fi
 
-client_package_for_adapter() {
-    case "$1" in
-        rumqttc-v4-session-store-file-next) echo rumqttc-v4-next ;;
-        rumqttc-v5-session-store-file-next) echo rumqttc-v5-next ;;
-        *) return 1 ;;
-    esac
-}
-
-client_version_for_adapter() {
-    local manifest
-    case "$1" in
-        rumqttc-v4-session-store-file-next) manifest="v4/Cargo.toml" ;;
-        rumqttc-v5-session-store-file-next) manifest="v5/Cargo.toml" ;;
-        *) return 1 ;;
-    esac
+client_version_for_alias() {
     python3 -c '
 import sys, tomllib
-with open(sys.argv[1], "rb") as source:
-    print(tomllib.load(source)["dependencies"]["rumqttc"]["version"])
-' "$manifest"
+with open("adapter/Cargo.toml", "rb") as source:
+    print(tomllib.load(source)["dependencies"][sys.argv[1]]["version"])
+' "$1"
 }
 
 wait_for_crate() {
@@ -105,9 +90,9 @@ wait_for_crate() {
     exit 1
 }
 
-for adapter in "${packages[@]:1}"; do
-    client_package="$(client_package_for_adapter "$adapter")"
-    client_version="$(client_version_for_adapter "$adapter")"
+for client in rumqttc-v4 rumqttc-v5; do
+    client_package="${client}-next"
+    client_version="$(client_version_for_alias "$client")"
     wait_for_crate "$client_package" "$client_version"
 done
 

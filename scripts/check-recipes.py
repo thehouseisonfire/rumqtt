@@ -94,8 +94,7 @@ def validate_examples(metadata: dict) -> None:
     package_for_directory = {
         "rumqttc-v4": "rumqttc-v4-next",
         "rumqttc-v5": "rumqttc-v5-next",
-        "session-store-file/v4": "rumqttc-v4-session-store-file-next",
-        "session-store-file/v5": "rumqttc-v5-session-store-file-next",
+        "session-store-file/adapter": "rumqttc-session-store-file-next",
     }
     for path in recipe_files():
         content = path.read_text(encoding="utf-8")

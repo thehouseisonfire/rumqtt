@@ -24,20 +24,27 @@ session settings, and a local `SessionStore`.
 
 Compile-checked examples:
 
-- v4: `session-store-file/v4/examples/persistent_session_file_store.rs`
-- v5: `session-store-file/v5/examples/persistent_session_file_store_v5.rs`
+- v4: `session-store-file/adapter/examples/persistent_session_file_store_v4.rs`
+- v5: `session-store-file/adapter/examples/persistent_session_file_store_v5.rs`
+- both: `session-store-file/adapter/examples/persistent_session_file_store_dual.rs`
 
 ```bash
 cargo check --manifest-path session-store-file/Cargo.toml \
-  -p rumqttc-v4-session-store-file-next --example persistent_session_file_store
+  -p rumqttc-session-store-file-next --no-default-features --features v4 \
+  --example persistent_session_file_store_v4
 cargo check --manifest-path session-store-file/Cargo.toml \
-  -p rumqttc-v5-session-store-file-next --example persistent_session_file_store_v5
+  -p rumqttc-session-store-file-next --no-default-features --features v5 \
+  --example persistent_session_file_store_v5
+cargo check --manifest-path session-store-file/Cargo.toml \
+  -p rumqttc-session-store-file-next --no-default-features --features v4,v5 \
+  --example persistent_session_file_store_dual
 ```
 
 For a production-oriented Unix or Windows implementation, use
-`rumqttc-v4-session-store-file-next` or
-`rumqttc-v5-session-store-file-next`. These stores require an existing,
-trusted, dedicated root and create separate `v4`/`v5` namespaces beneath it.
+`rumqttc-session-store-file-next` with its `v4`, `v5`, or combined `v4,v5`
+features. The stores require an existing, trusted, dedicated root and create
+separate `v4`/`v5` namespaces beneath it. Protocol keys and session values are
+not interchangeable even when both features are enabled.
 Their versioned envelope and hashed filenames are intentionally incompatible
 with former example files. An exact old filename is reported but never
 migrated. See [session-store recovery](session-store-recovery.md) before

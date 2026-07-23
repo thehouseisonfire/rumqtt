@@ -314,7 +314,7 @@ Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` o
   the same live `EventLoop`, but a new process cannot strictly continue a
   broker-retained session unless it restores the local client session state.
   See
-  `session-store-file/v4/examples/persistent_session_file_store.rs`
+  `session-store-file/adapter/examples/persistent_session_file_store_v4.rs`
   for a complete example using the supported file-store adapter.
 
 - Exactly one active `EventLoop` may own and modify a session-store key at a

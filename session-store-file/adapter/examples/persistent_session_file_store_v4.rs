@@ -1,13 +1,10 @@
 //! Persistent MQTT 3.1.1 session using the supported file-store adapter.
 
-use rumqttc::{AsyncClient, MqttOptions, PublishOptions, QoS, SessionStoreKey};
-use rumqttc_v4_session_store_file_next::{
-    CheckpointState, SessionFileStore, legacy_example_filename,
-};
+use rumqttc_session_store_file::v4::{CheckpointState, SessionFileStore, legacy_example_filename};
+use rumqttc_v4::{AsyncClient, MqttOptions, PublishOptions, QoS, SessionStoreKey};
 use std::error::Error;
 use std::io;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const CLIENT_ID: &str = "rumqtt-persistent-session-v4";
