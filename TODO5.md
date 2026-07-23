@@ -1,22 +1,6 @@
-# TODO
+# Candidate Improvements
 
----
-
-## Reusable Evaluation Prompts
-
-### Evaluate a Single Recommendation
-
-What is your assessment of this recommendation?
-
-Determine whether it is technically feasible and whether it would provide legitimate, meaningful value.
-
-Do not assume the recommendation is correct. Identify its benefits, drawbacks, implementation complexity, compatibility risks, and likely maintenance cost.
-
----
-
-## Candidate Improvements
-
-### Ship a Tested File-Backed Session Store
+## Ship a Tested File-Backed Session Store
 
 **Problem**
 
