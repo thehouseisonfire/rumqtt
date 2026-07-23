@@ -33,7 +33,7 @@ repos:
 
           (
             cd session-store-file;
-            cargo clippy --fix --allow-dirty --all-targets --all-features -p rumqttc-session-store-file-core-next -p rumqttc-session-store-file-next;
+            cargo clippy --fix --allow-dirty --all-targets --all-features -p atomic-blob-store -p rumqttc-session-store-file-next;
             RUSTFLAGS="-D warnings" cargo clippy --fix --allow-dirty --all-targets -p session-store-file-benchmarks
           )
           '
@@ -160,7 +160,7 @@ repos:
 
           cargo test
           --manifest-path session-store-file/Cargo.toml
-          -p rumqttc-session-store-file-core-next
+          -p atomic-blob-store
           -p rumqttc-session-store-file-next
           --all-features
           '

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 
-use rumqttc_session_store_file_core_next::FileStoreError;
+use atomic_blob_store::AtomicBlobStoreError;
 use rumqttc_v4::{
     PersistedSession, SessionDecodeError, SessionEncodeError, SessionStore, SessionStoreKey,
 };
@@ -45,7 +45,7 @@ impl Protocol for V4 {
 #[derive(Debug, thiserror::Error)]
 pub enum SessionFileStoreError {
     #[error("file store: {0}")]
-    FileStore(#[from] FileStoreError),
+    FileStore(#[from] AtomicBlobStoreError),
     #[error("canonical session encoding failed: {0}")]
     SessionEncode(#[from] SessionEncodeError),
     #[error("canonical session decoding failed: {0}")]
@@ -56,6 +56,24 @@ pub enum SessionFileStoreError {
         "legacy checkpoint detected at {diagnostic_path:?}; explicit operator recovery is required"
     )]
     LegacyCheckpointDetected { diagnostic_path: PathBuf },
+    #[error("failed to inspect legacy checkpoint at {diagnostic_path:?}: {source}")]
+    LegacyInspection {
+        diagnostic_path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("legacy checkpoint inspection coordination failed: {source}")]
+    LegacyInspectionCoordination {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+    #[error("legacy checkpoint inspection requires an active Tokio runtime: {source}")]
+    LegacyInspectionRuntimeUnavailable {
+        #[source]
+        source: tokio::runtime::TryCurrentError,
+    },
+    #[error("legacy checkpoint path is not a regular file: {diagnostic_path:?}")]
+    LegacyPathIsNotFile { diagnostic_path: PathBuf },
 }
 
 impl From<AdapterError<V4>> for SessionFileStoreError {
@@ -67,6 +85,22 @@ impl From<AdapterError<V4>> for SessionFileStoreError {
             AdapterError::KeyEncode(error) => Self::KeyEncode(error),
             AdapterError::LegacyCheckpointDetected { diagnostic_path } => {
                 Self::LegacyCheckpointDetected { diagnostic_path }
+            }
+            AdapterError::LegacyInspection {
+                diagnostic_path,
+                source,
+            } => Self::LegacyInspection {
+                diagnostic_path,
+                source,
+            },
+            AdapterError::LegacyInspectionCoordination { source } => {
+                Self::LegacyInspectionCoordination { source }
+            }
+            AdapterError::LegacyInspectionRuntimeUnavailable { source } => {
+                Self::LegacyInspectionRuntimeUnavailable { source }
+            }
+            AdapterError::LegacyPathIsNotFile { diagnostic_path } => {
+                Self::LegacyPathIsNotFile { diagnostic_path }
             }
         }
     }

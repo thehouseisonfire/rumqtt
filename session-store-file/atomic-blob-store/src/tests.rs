@@ -3,9 +3,102 @@ use std::io::{Cursor, Read};
 use super::*;
 
 const TEST_MAXIMUM: u64 = 1024;
+const TEST_DOMAIN: &[u8; DOMAIN_TAG_LEN] = b"BLOBTEST";
+
+fn format() -> BlobFormatIdentity {
+    BlobFormatIdentity::new(TEST_DOMAIN, ".blob", ENVELOPE_VERSION_V1).unwrap()
+}
+
+fn options() -> AtomicBlobStoreOptions {
+    AtomicBlobStoreOptions::new(format()).with_max_blob_size(TEST_MAXIMUM)
+}
+
+#[test]
+fn format_identity_rejects_invalid_domain_suffix_and_version() {
+    assert!(matches!(
+        BlobFormatIdentity::new(b"", ".blob", ENVELOPE_VERSION_V1),
+        Err(AtomicBlobStoreConfigError::InvalidDomainTagLength { found: 0 })
+    ));
+    for suffix in ["", "blob", ".", ".UPPER", "../blob", ".blob.more"] {
+        assert!(matches!(
+            BlobFormatIdentity::new(TEST_DOMAIN, suffix, ENVELOPE_VERSION_V1),
+            Err(AtomicBlobStoreConfigError::InvalidFilenameSuffix)
+        ));
+    }
+    assert!(matches!(
+        BlobFormatIdentity::new(TEST_DOMAIN, ".blob", 2),
+        Err(AtomicBlobStoreConfigError::UnsupportedConfiguredEnvelopeVersion { found: 2 })
+    ));
+}
+
+#[test]
+fn domain_is_an_envelope_collision_guard_not_part_of_key_hashing() {
+    let other = BlobFormatIdentity::new(b"BLOBOTHR", ".blob", ENVELOPE_VERSION_V1).unwrap();
+    assert_eq!(
+        blob_filename(&format(), b"\0\xffopaque"),
+        blob_filename(&other, b"\0\xffopaque")
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn wrong_domain_fails_closed_and_flush_waits_for_submitted_work() {
+    let root = tempfile::tempdir().unwrap();
+    let first = AtomicBlobStore::open(root.path(), "shared", options())
+        .await
+        .unwrap();
+    drop(first.save(b"\0\xffkey", b"value".to_vec()));
+    first.flush().await.unwrap();
+
+    let other = BlobFormatIdentity::new(b"BLOBOTHR", ".blob", ENVELOPE_VERSION_V1).unwrap();
+    let second = AtomicBlobStore::open(
+        root.path(),
+        "shared",
+        AtomicBlobStoreOptions::new(other).with_max_blob_size(TEST_MAXIMUM),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        second.load(b"\0\xffkey").await,
+        Err(AtomicBlobStoreError::InvalidEnvelopeDomain { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_concurrency_bounds_different_keys() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let hook_active = Arc::clone(&active);
+    let hook_maximum = Arc::clone(&maximum);
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::BeforeEnvelope {
+            let now = hook_active.fetch_add(1, Ordering::SeqCst) + 1;
+            hook_maximum.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(10));
+        } else if stage == TestStage::AfterEnvelope {
+            hook_active.fetch_sub(1, Ordering::SeqCst);
+        }
+        Ok(())
+    });
+    let bounded = options().with_max_concurrent_operations(NonZeroUsize::new(1).unwrap());
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "bounded", bounded, hook)
+        .await
+        .unwrap();
+    let (left, right) = tokio::join!(
+        store.save(b"left", b"one".to_vec()),
+        store.save(b"right", b"two".to_vec())
+    );
+    left.unwrap();
+    right.unwrap();
+    assert_eq!(maximum.load(Ordering::SeqCst), 1);
+}
 
 fn envelope(payload: &[u8]) -> Vec<u8> {
-    encode_envelope(payload, TEST_MAXIMUM).unwrap()
+    encode_envelope(&format(), payload, TEST_MAXIMUM).unwrap()
 }
 
 #[test]
@@ -14,8 +107,8 @@ fn golden_envelope_is_stable_and_big_endian() {
     assert_eq!(
         actual,
         [
-            b'R', b'U', b'M', b'Q', b'S', b'E', b'S', b'S', 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, b'a',
-            b'b', b'c', 0x36, 0xbd, 0xfa, 0x05,
+            b'B', b'L', b'O', b'B', b'T', b'E', b'S', b'T', 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, b'a',
+            b'b', b'c', 0xb7, 0xba, 0x8c, 0x0f,
         ]
     );
 }
@@ -25,7 +118,7 @@ fn envelope_round_trip_and_empty_payload() {
     for payload in [b"payload".as_slice(), b"".as_slice()] {
         let bytes = envelope(payload);
         assert_eq!(
-            decode_reader(&mut Cursor::new(bytes), TEST_MAXIMUM).unwrap(),
+            decode_reader(&format(), &mut Cursor::new(bytes), TEST_MAXIMUM).unwrap(),
             payload
         );
     }
@@ -36,30 +129,30 @@ fn envelope_rejects_magic_version_checksum_and_trailing_data() {
     let mut invalid_magic = envelope(b"x");
     invalid_magic[0] ^= 1;
     assert!(matches!(
-        decode_reader(&mut Cursor::new(invalid_magic), TEST_MAXIMUM),
-        Err(FileStoreError::InvalidEnvelopeMagic)
+        decode_reader(&format(), &mut Cursor::new(invalid_magic), TEST_MAXIMUM),
+        Err(AtomicBlobStoreError::InvalidEnvelopeDomain { .. })
     ));
 
     let mut invalid_version = envelope(b"x");
     invalid_version[9] = 2;
     assert!(matches!(
-        decode_reader(&mut Cursor::new(invalid_version), TEST_MAXIMUM),
-        Err(FileStoreError::UnsupportedEnvelopeVersion { found: 2 })
+        decode_reader(&format(), &mut Cursor::new(invalid_version), TEST_MAXIMUM),
+        Err(AtomicBlobStoreError::UnsupportedEnvelopeVersion { found: 2 })
     ));
 
     let mut invalid_checksum = envelope(b"x");
     invalid_checksum[18] ^= 1;
     assert!(matches!(
-        decode_reader(&mut Cursor::new(invalid_checksum), TEST_MAXIMUM),
-        Err(FileStoreError::ChecksumMismatch { .. })
+        decode_reader(&format(), &mut Cursor::new(invalid_checksum), TEST_MAXIMUM),
+        Err(AtomicBlobStoreError::ChecksumMismatch { .. })
     ));
 
     for suffix in [vec![1], vec![1, 2, 3]] {
         let mut trailing = envelope(b"x");
         trailing.extend_from_slice(&suffix);
         assert!(matches!(
-            decode_reader(&mut Cursor::new(trailing), TEST_MAXIMUM),
-            Err(FileStoreError::TrailingData)
+            decode_reader(&format(), &mut Cursor::new(trailing), TEST_MAXIMUM),
+            Err(AtomicBlobStoreError::TrailingData)
         ));
     }
 }
@@ -81,21 +174,21 @@ fn every_envelope_section_reports_truncation() {
     ];
     for (length, section) in cases {
         assert!(matches!(
-            decode_reader(&mut Cursor::new(&bytes[..length]), TEST_MAXIMUM),
-            Err(FileStoreError::TruncatedEnvelope { section: found }) if found == section
+            decode_reader(&format(), &mut Cursor::new(&bytes[..length]), TEST_MAXIMUM),
+            Err(AtomicBlobStoreError::TruncatedEnvelope { section: found }) if found == section
         ));
     }
 }
 
 #[test]
 fn declared_size_is_checked_before_payload_read_or_allocation() {
-    let mut bytes = Vec::from(*MAGIC);
-    bytes.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
+    let mut bytes = Vec::from(*TEST_DOMAIN);
+    bytes.extend_from_slice(&ENVELOPE_VERSION_V1.to_be_bytes());
     bytes.extend_from_slice(&(TEST_MAXIMUM + 1).to_be_bytes());
     let mut reader = CountingReader::new(bytes);
     assert!(matches!(
-        decode_reader(&mut reader, TEST_MAXIMUM),
-        Err(FileStoreError::CheckpointTooLarge {
+        decode_reader(&format(), &mut reader, TEST_MAXIMUM),
+        Err(AtomicBlobStoreError::BlobTooLarge {
             size: 1025,
             maximum: TEST_MAXIMUM
         })
@@ -105,13 +198,13 @@ fn declared_size_is_checked_before_payload_read_or_allocation() {
 
 #[test]
 fn declared_size_above_target_usize_is_rejected_before_allocation() {
-    let mut bytes = Vec::from(*MAGIC);
-    bytes.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
+    let mut bytes = Vec::from(*TEST_DOMAIN);
+    bytes.extend_from_slice(&ENVELOPE_VERSION_V1.to_be_bytes());
     bytes.extend_from_slice(&17_u64.to_be_bytes());
     let mut reader = CountingReader::new(bytes);
     assert!(matches!(
-        decode_reader_with_usize_limit(&mut reader, TEST_MAXIMUM, 16),
-        Err(FileStoreError::InvalidPayloadLength { declared: 17 })
+        decode_reader_with_usize_limit(&format(), &mut reader, TEST_MAXIMUM, 16),
+        Err(AtomicBlobStoreError::InvalidPayloadLength { declared: 17 })
     ));
     assert_eq!(reader.bytes_read, HEADER_LEN);
 }
@@ -120,14 +213,14 @@ fn declared_size_above_target_usize_is_rejected_before_allocation() {
 fn maximum_size_boundary_is_accepted_and_save_rejects_above_it() {
     let maximum = usize::try_from(TEST_MAXIMUM).unwrap();
     let payload = vec![7; maximum];
-    let bytes = encode_envelope(&payload, TEST_MAXIMUM).unwrap();
+    let bytes = encode_envelope(&format(), &payload, TEST_MAXIMUM).unwrap();
     assert_eq!(
-        decode_reader(&mut Cursor::new(bytes), TEST_MAXIMUM).unwrap(),
+        decode_reader(&format(), &mut Cursor::new(bytes), TEST_MAXIMUM).unwrap(),
         payload
     );
     assert!(matches!(
-        encode_envelope(&vec![0; maximum + 1], TEST_MAXIMUM),
-        Err(FileStoreError::CheckpointTooLarge { .. })
+        encode_envelope(&format(), &vec![0; maximum + 1], TEST_MAXIMUM),
+        Err(AtomicBlobStoreError::BlobTooLarge { .. })
     ));
 }
 
@@ -146,8 +239,8 @@ fn checksum_covers_header_and_payload() {
         }
         bytes[index] ^= 1;
         assert!(matches!(
-            decode_reader(&mut Cursor::new(bytes), TEST_MAXIMUM),
-            Err(FileStoreError::ChecksumMismatch { .. })
+            decode_reader(&format(), &mut Cursor::new(bytes), TEST_MAXIMUM),
+            Err(AtomicBlobStoreError::ChecksumMismatch { .. })
         ));
     }
 
@@ -164,8 +257,8 @@ fn bounded_reader_consumes_only_declared_payload_checksum_and_one_probe() {
     bytes.extend(std::iter::repeat_n(9, 10_000));
     let mut reader = CountingReader::new(bytes);
     assert!(matches!(
-        decode_reader(&mut reader, TEST_MAXIMUM),
-        Err(FileStoreError::TrailingData)
+        decode_reader(&format(), &mut reader, TEST_MAXIMUM),
+        Err(AtomicBlobStoreError::TrailingData)
     ));
     assert_eq!(reader.bytes_read, HEADER_LEN + 3 + CHECKSUM_LEN + 1);
     assert_eq!(reader.largest_request, 8);
@@ -175,7 +268,9 @@ fn bounded_reader_consumes_only_declared_payload_checksum_and_one_probe() {
 fn configured_maximum_must_fit_an_envelope_allocation() {
     assert!(matches!(
         validate_maximum(u64::MAX),
-        Err(FileStoreError::InvalidMaximumCheckpointSize { .. })
+        Err(AtomicBlobStoreError::Configuration(
+            AtomicBlobStoreConfigError::InvalidMaximumBlobSize { .. }
+        ))
     ));
     validate_maximum(0).unwrap();
 }
@@ -207,9 +302,9 @@ impl Read for CountingReader {
 
 #[test]
 fn filename_is_full_lowercase_blake3_and_contains_no_key_text() {
-    let filename = checkpoint_filename(b"../client/name\\CON:");
-    assert_eq!(filename.len(), 64 + ".session".len());
-    assert!(filename.ends_with(".session"));
+    let filename = blob_filename(&format(), b"../client/name\\CON:");
+    assert_eq!(filename.len(), 64 + ".blob".len());
+    assert_eq!(&filename[64..], ".blob");
     assert!(
         filename[..64]
             .bytes()
@@ -226,17 +321,14 @@ async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup(
     let root = tempfile::tempdir().unwrap();
     let unicode_root = root.path().join("sessões-客户端");
     std::fs::create_dir(&unicode_root).unwrap();
-    let store = FileStore::open(&unicode_root, "v5", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(&unicode_root, "v5", options())
         .await
         .unwrap();
     let key = "ключ/客户端".as_bytes();
     store.save(key, b"old".to_vec()).await.unwrap();
     store.save(key, b"new".to_vec()).await.unwrap();
     assert_eq!(store.load(key).await.unwrap(), Some(b"new".to_vec()));
-    assert_eq!(
-        store.inspect(key).await.unwrap().state,
-        CheckpointState::Present
-    );
+    assert_eq!(store.inspect(key).await.unwrap().state, BlobState::Present);
     let quarantine = store.quarantine(key).await.unwrap();
     assert!(quarantine.diagnostic_path.is_file());
     assert_eq!(store.load(key).await.unwrap(), None);
@@ -245,12 +337,12 @@ async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup(
     let hash = "0".repeat(64);
     let owned = unicode_root
         .join("v5")
-        .join(format!("{hash}.session.tmp-v1.clear.{}", "1".repeat(64)));
+        .join(format!("{hash}.blob.tmp-v1.clear.{}", "1".repeat(64)));
     let unrelated = unicode_root.join("v5").join("unrelated.tmp");
     std::fs::write(&owned, b"owned").unwrap();
     std::fs::write(&unrelated, b"unrelated").unwrap();
     let report = store
-        .cleanup_stale_temporary_files_before_use(Duration::from_secs(3600))
+        .cleanup_stale_temporary_files(Duration::from_secs(3600))
         .await
         .unwrap();
     assert_eq!(
@@ -266,11 +358,11 @@ async fn windows_new_clear_staging_uses_the_clear_time_for_cleanup_age() {
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
 
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
-    let canonical = store.checkpoint_path(b"old-checkpoint");
-    std::fs::write(&canonical, b"old checkpoint").unwrap();
+    let canonical = store.blob_path(b"old-blob");
+    std::fs::write(&canonical, b"old blob").unwrap();
     let old = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
     let file = std::fs::File::options()
         .write(true)
@@ -285,11 +377,11 @@ async fn windows_new_clear_staging_uses_the_clear_time_for_cleanup_age() {
     let staging = root
         .path()
         .join("v4")
-        .join(format!("{hash}.session.tmp-v1.clear.{}", "1".repeat(64)));
+        .join(format!("{hash}.blob.tmp-v1.clear.{}", "1".repeat(64)));
     move_file(&canonical, &staging, MOVEFILE_WRITE_THROUGH).unwrap();
 
     let report = store
-        .cleanup_stale_temporary_files_before_use(Duration::from_secs(60 * 60))
+        .cleanup_stale_temporary_files(Duration::from_secs(60 * 60))
         .await
         .unwrap();
     assert!(report.removed.is_empty());
@@ -302,21 +394,21 @@ async fn windows_new_clear_staging_uses_the_clear_time_for_cleanup_age() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn windows_quarantine_does_not_report_a_missing_namespace_as_a_missing_checkpoint() {
+async fn windows_quarantine_does_not_report_a_missing_namespace_as_a_missing_blob() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     assert!(matches!(
         store.quarantine(b"absent-key").await,
-        Err(FileStoreError::QuarantineSourceMissing)
+        Err(AtomicBlobStoreError::QuarantineSourceMissing)
     ));
     std::fs::remove_dir(root.path().join("v4")).unwrap();
 
     assert!(matches!(
         store.quarantine(b"absent-key").await,
-        Err(FileStoreError::Io {
-            operation: FileOperation::InspectNamespace,
+        Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::InspectNamespace,
             source,
         }) if source.kind() == io::ErrorKind::NotFound
     ));
@@ -325,7 +417,7 @@ async fn windows_quarantine_does_not_report_a_missing_namespace_as_a_missing_che
 #[cfg(windows)]
 #[test]
 fn windows_relative_root_child() {
-    let Some(root) = std::env::var_os("RUMQTTC_WINDOWS_RELATIVE_ROOT_CHILD") else {
+    let Some(root) = std::env::var_os("ATOMIC_BLOB_WINDOWS_RELATIVE_ROOT_CHILD") else {
         return;
     };
     std::env::set_current_dir(root).unwrap();
@@ -333,17 +425,14 @@ fn windows_relative_root_child() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let store = FileStore::open(
-            Path::new(".").join("unused").join(".."),
-            "v4",
-            FileStoreOptions::default(),
-        )
-        .await
-        .unwrap();
-        let checkpoint = store.checkpoint_path(b"relative-key");
-        assert!(checkpoint.is_absolute());
+        let store =
+            AtomicBlobStore::open(Path::new(".").join("unused").join(".."), "v4", options())
+                .await
+                .unwrap();
+        let blob = store.blob_path(b"relative-key");
+        assert!(blob.is_absolute());
         assert!(
-            !checkpoint
+            !blob
                 .components()
                 .any(|component| { matches!(component, Component::CurDir | Component::ParentDir) })
         );
@@ -375,7 +464,7 @@ fn windows_relative_root_support_is_exercised_in_an_isolated_process() {
             "tests::windows_relative_root_child",
             "--nocapture",
         ])
-        .env("RUMQTTC_WINDOWS_RELATIVE_ROOT_CHILD", root.path())
+        .env("ATOMIC_BLOB_WINDOWS_RELATIVE_ROOT_CHILD", root.path())
         .status()
         .unwrap();
     assert!(status.success());
@@ -437,7 +526,7 @@ fn windows_extended_paths_preserve_non_unicode_wide_units() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn save_load_replace_clear_and_missing_are_complete() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let key = b"key";
@@ -454,51 +543,25 @@ async fn save_load_replace_clear_and_missing_are_complete() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn inspection_quarantine_and_exact_legacy_detection_are_non_destructive() {
+async fn inspection_and_quarantine_are_non_destructive() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let key = b"inspection-key";
-    assert_eq!(
-        store.inspect(key).await.unwrap().state,
-        CheckpointState::Absent
-    );
-
-    std::fs::write(root.path().join("exact.legacy.session"), b"legacy").unwrap();
-    assert!(matches!(
-        store
-            .load_with_legacy_filename(key, "exact.legacy.session")
-            .await
-            .unwrap(),
-        LegacyLoad::LegacyDetected { .. }
-    ));
-    assert!(matches!(
-        store
-            .load_with_legacy_filename(key, "../exact.legacy.session")
-            .await,
-        Err(FileStoreError::InvalidLegacyFilename)
-    ));
+    assert_eq!(store.inspect(key).await.unwrap().state, BlobState::Absent);
 
     store.save(key, b"canonical".to_vec()).await.unwrap();
     let inspection = store.inspect(key).await.unwrap();
-    assert_eq!(inspection.state, CheckpointState::Present);
+    assert_eq!(inspection.state, BlobState::Present);
     assert!(inspection.size.unwrap() > b"canonical".len() as u64);
-    assert!(matches!(
-        store.load_with_legacy_filename(key, "exact.legacy.session").await.unwrap(),
-        LegacyLoad::Present(payload) if payload == b"canonical"
-    ));
-
     let quarantine = store.quarantine(key).await.unwrap();
     assert_eq!(quarantine.identifier.len(), 64);
     assert!(quarantine.diagnostic_path.is_file());
-    assert_eq!(
-        store.inspect(key).await.unwrap().state,
-        CheckpointState::Absent
-    );
+    assert_eq!(store.inspect(key).await.unwrap().state, BlobState::Absent);
     assert!(matches!(
         store.quarantine(key).await,
-        Err(FileStoreError::QuarantineSourceMissing)
+        Err(AtomicBlobStoreError::QuarantineSourceMissing)
     ));
 }
 
@@ -506,7 +569,7 @@ async fn inspection_quarantine_and_exact_legacy_detection_are_non_destructive() 
 #[tokio::test]
 async fn quarantine_sync_failure_preserves_the_committed_destination() {
     let root = tempfile::tempdir().unwrap();
-    let initial = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let initial = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let key = b"quarantine-sync-failure";
@@ -523,40 +586,34 @@ async fn quarantine_sync_failure_preserves_the_committed_destination() {
             Ok(())
         }
     });
-    let store =
-        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-            .await
-            .unwrap();
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+        .await
+        .unwrap();
     let error = store.quarantine(key).await.unwrap_err();
-    let FileStoreError::QuarantineNamespaceSync { quarantine, source } = error else {
+    let AtomicBlobStoreError::QuarantineNamespaceSync { quarantine, source } = error else {
         panic!("unexpected quarantine error: {error:?}");
     };
     assert_eq!(source.to_string(), "injected quarantine sync failure");
     assert!(quarantine.diagnostic_path.is_file());
-    assert_eq!(
-        store.inspect(key).await.unwrap().state,
-        CheckpointState::Absent
-    );
+    assert_eq!(store.inspect(key).await.unwrap().state, BlobState::Absent);
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_cleanup_is_validated_and_explicitly_unsupported() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     assert!(matches!(
-        store
-            .cleanup_stale_temporary_files_before_use(Duration::ZERO)
-            .await,
-        Err(FileStoreError::InvalidCleanupAge)
+        store.cleanup_stale_temporary_files(Duration::ZERO).await,
+        Err(AtomicBlobStoreError::InvalidCleanupAge)
     ));
     assert!(matches!(
         store
-            .cleanup_stale_temporary_files_before_use(Duration::from_secs(1))
+            .cleanup_stale_temporary_files(Duration::from_secs(1))
             .await,
-        Err(FileStoreError::CleanupUnsupported { .. })
+        Err(AtomicBlobStoreError::CleanupUnsupported { .. })
     ));
 }
 
@@ -581,17 +638,16 @@ async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_d
         }
         Ok(())
     });
-    let store =
-        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-            .await
-            .unwrap();
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+        .await
+        .unwrap();
 
     let earlier = store.save(b"earlier", b"one".to_vec());
     let first_stage_receiver = Arc::clone(&stage_receiver);
     tokio::task::spawn_blocking(move || first_stage_receiver.lock().unwrap().recv().unwrap())
         .await
         .unwrap();
-    let maintenance = store.cleanup_stale_temporary_files_before_use(Duration::from_secs(1));
+    let maintenance = store.cleanup_stale_temporary_files(Duration::from_secs(1));
     drop(maintenance);
     let later = store.save(b"later", b"two".to_vec());
 
@@ -640,12 +696,11 @@ async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
         }
         Ok(())
     });
-    let store =
-        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-            .await
-            .unwrap();
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+        .await
+        .unwrap();
 
-    let first_maintenance = store.cleanup_stale_temporary_files_before_use(Duration::from_secs(1));
+    let first_maintenance = store.cleanup_stale_temporary_files(Duration::from_secs(1));
     let first_event_receiver = Arc::clone(&event_receiver);
     assert_eq!(
         tokio::task::spawn_blocking(move || first_event_receiver.lock().unwrap().recv().unwrap())
@@ -655,7 +710,7 @@ async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
     );
 
     let before_second = store.save(b"before-second", b"B".to_vec());
-    let second_maintenance = store.cleanup_stale_temporary_files_before_use(Duration::from_secs(1));
+    let second_maintenance = store.cleanup_stale_temporary_files(Duration::from_secs(1));
     let after_second = store.save(b"after-second", b"C".to_vec());
     release_sender.send(()).unwrap();
 
@@ -667,12 +722,12 @@ async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
     );
     assert!(matches!(
         first_result,
-        Err(FileStoreError::CleanupUnsupported { .. })
+        Err(AtomicBlobStoreError::CleanupUnsupported { .. })
     ));
     before_result.unwrap();
     assert!(matches!(
         second_result,
-        Err(FileStoreError::CleanupUnsupported { .. })
+        Err(AtomicBlobStoreError::CleanupUnsupported { .. })
     ));
     after_result.unwrap();
 
@@ -712,16 +767,16 @@ async fn relative_root_is_stable_after_current_directory_changes() {
     std::fs::create_dir(&later_directory).unwrap();
 
     std::env::set_current_dir(&initial_directory).unwrap();
-    let store = FileStore::open("store-root", "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open("store-root", "v4", options())
         .await
         .unwrap();
-    let checkpoint = store.checkpoint_path(b"key");
-    assert!(checkpoint.is_absolute());
+    let blob = store.blob_path(b"key");
+    assert!(blob.is_absolute());
 
     std::env::set_current_dir(&later_directory).unwrap();
     store.save(b"key", b"value".to_vec()).await.unwrap();
     assert_eq!(store.load(b"key").await.unwrap(), Some(b"value".to_vec()));
-    assert!(checkpoint.is_file());
+    assert!(blob.is_file());
     assert!(!later_directory.join("store-root").exists());
 }
 
@@ -733,11 +788,7 @@ fn store_remains_usable_after_construction_runtime_is_dropped() {
         .build()
         .unwrap();
     let store = construction_runtime
-        .block_on(FileStore::open(
-            root.path(),
-            "v4",
-            FileStoreOptions::default(),
-        ))
+        .block_on(AtomicBlobStore::open(root.path(), "v4", options()))
         .unwrap();
     let clone = store.clone();
     drop(construction_runtime);
@@ -765,44 +816,44 @@ fn store_remains_usable_after_construction_runtime_is_dropped() {
 async fn root_and_namespace_types_are_validated() {
     let missing = tempfile::tempdir().unwrap().path().join("missing");
     assert!(matches!(
-        FileStore::open(missing, "v4", FileStoreOptions::default()).await,
-        Err(FileStoreError::RootDoesNotExist)
+        AtomicBlobStore::open(missing, "v4", options()).await,
+        Err(AtomicBlobStoreError::RootDoesNotExist)
     ));
 
     let directory = tempfile::tempdir().unwrap();
     let root_file = directory.path().join("file");
     std::fs::write(&root_file, b"x").unwrap();
     assert!(matches!(
-        FileStore::open(root_file, "v4", FileStoreOptions::default()).await,
-        Err(FileStoreError::RootIsNotDirectory)
+        AtomicBlobStore::open(root_file, "v4", options()).await,
+        Err(AtomicBlobStoreError::RootIsNotDirectory)
     ));
 
     std::fs::write(directory.path().join("v4"), b"x").unwrap();
     assert!(matches!(
-        FileStore::open(directory.path(), "v4", FileStoreOptions::default()).await,
-        Err(FileStoreError::NamespacePathIsNotDirectory)
+        AtomicBlobStore::open(directory.path(), "v4", options()).await,
+        Err(AtomicBlobStoreError::NamespacePathIsNotDirectory)
     ));
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn missing_namespace_is_not_reported_as_a_missing_checkpoint() {
+async fn missing_namespace_is_not_reported_as_a_missing_blob() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     std::fs::remove_dir(root.path().join("v4")).unwrap();
     assert!(matches!(
         store.load(b"key").await,
-        Err(FileStoreError::Io {
-            operation: FileOperation::InspectNamespace,
+        Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::InspectNamespace,
             ..
         })
     ));
     assert!(matches!(
         store.clear(b"key").await,
-        Err(FileStoreError::Io {
-            operation: FileOperation::InspectNamespace,
+        Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::InspectNamespace,
             ..
         })
     ));
@@ -812,12 +863,12 @@ async fn missing_namespace_is_not_reported_as_a_missing_checkpoint() {
 fn io_and_atomic_commit_errors_preserve_sources() {
     use std::error::Error;
 
-    let io_error = FileStoreError::Io {
-        operation: FileOperation::ReadEnvelope,
+    let io_error = AtomicBlobStoreError::Io {
+        operation: StoreOperation::ReadEnvelope,
         source: io::Error::other("read"),
     };
     assert_eq!(io_error.source().unwrap().to_string(), "read");
-    let commit_error = FileStoreError::AtomicCommit {
+    let commit_error = AtomicBlobStoreError::AtomicCommit {
         source: io::Error::other("commit"),
     };
     assert_eq!(commit_error.source().unwrap().to_string(), "commit");
@@ -825,9 +876,9 @@ fn io_and_atomic_commit_errors_preserve_sources() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_checkpoint() {
+async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_blob() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let key = b"cancelled-key";
@@ -859,7 +910,7 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
     ];
     for failed_stage in before_commit {
         let root = tempfile::tempdir().unwrap();
-        let initial = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        let initial = AtomicBlobStore::open(root.path(), "v4", options())
             .await
             .unwrap();
         initial.save(b"key", b"old".to_vec()).await.unwrap();
@@ -872,13 +923,12 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
                 Ok(())
             }
         });
-        let store =
-            FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-                .await
-                .unwrap();
+        let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+            .await
+            .unwrap();
         let error = store.save(b"key", b"new".to_vec()).await.unwrap_err();
         if failed_stage == TestStage::CommitError {
-            assert!(matches!(error, FileStoreError::AtomicCommit { .. }));
+            assert!(matches!(error, AtomicBlobStoreError::AtomicCommit { .. }));
         }
         assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
     }
@@ -891,10 +941,9 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
             Ok(())
         }
     });
-    let store =
-        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-            .await
-            .unwrap();
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+        .await
+        .unwrap();
     assert!(store.save(b"key", b"new".to_vec()).await.is_err());
     assert_eq!(store.load(b"key").await.unwrap(), Some(b"new".to_vec()));
 }
@@ -909,7 +958,7 @@ async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
         TestStage::AfterDirectorySync,
     ] {
         let root = tempfile::tempdir().unwrap();
-        let initial = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+        let initial = AtomicBlobStore::open(root.path(), "v4", options())
             .await
             .unwrap();
         initial.save(b"key", b"old".to_vec()).await.unwrap();
@@ -921,10 +970,9 @@ async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
                 Ok(())
             }
         });
-        let store =
-            FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-                .await
-                .unwrap();
+        let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+            .await
+            .unwrap();
         assert!(store.clear(b"key").await.is_err());
         let loaded = store.load(b"key").await.unwrap();
         if failed_stage == TestStage::BeforeRemove {
@@ -952,10 +1000,9 @@ async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
         }
         Ok(())
     });
-    let store =
-        FileStore::open_with_test_hook(root.path(), "v4", FileStoreOptions::default(), hook)
-            .await
-            .unwrap();
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+        .await
+        .unwrap();
 
     let cancelled = store.save(b"same", b"value".to_vec());
     drop(cancelled);
@@ -994,7 +1041,7 @@ async fn cloned_handles_and_many_transient_keys_remain_operational() {
     use std::sync::atomic::Ordering;
 
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let clone = store.clone();
@@ -1018,12 +1065,12 @@ async fn save_uses_owner_only_mode_and_does_not_preserve_broader_mode() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let key = b"mode-key";
     store.save(key, b"one".to_vec()).await.unwrap();
-    let path = store.checkpoint_path(key);
+    let path = store.blob_path(key);
     assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
 
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
@@ -1048,7 +1095,7 @@ fn actual_atomic_writer_preserves_old_value_until_commit_and_drop_discards() {
     use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
 
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("checkpoint");
+    let path = root.path().join("blob");
     std::fs::write(&path, b"old").unwrap();
 
     let open = || {
@@ -1075,7 +1122,7 @@ fn actual_atomic_writer_preserves_old_value_until_commit_and_drop_discards() {
 #[tokio::test]
 async fn canonical_load_ignores_unrelated_temporary_files() {
     let root = tempfile::tempdir().unwrap();
-    let store = FileStore::open(root.path(), "v4", FileStoreOptions::default())
+    let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
     let key = b"key";
@@ -1094,10 +1141,10 @@ fn atomic_child_boundary() {
     use std::io::{BufRead, Write};
     use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
 
-    let Ok(path) = std::env::var("RUMQTTC_ATOMIC_CHILD_PATH") else {
+    let Ok(path) = std::env::var("ATOMIC_BLOB_CHILD_PATH") else {
         return;
     };
-    let payload = std::env::var("RUMQTTC_ATOMIC_CHILD_PAYLOAD").unwrap();
+    let payload = std::env::var("ATOMIC_BLOB_CHILD_PAYLOAD").unwrap();
     let mut options = atomic_write_file::OpenOptions::new();
     StdOpenOptionsExt::mode(&mut options, 0o600);
     AtomicOpenOptionsExt::preserve_mode(&mut options, false);
@@ -1123,8 +1170,8 @@ fn subprocess_exit_before_commit_and_successful_commit_have_permitted_states() {
     fn spawn_child(path: &Path, payload: &str) -> std::process::Child {
         Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "tests::atomic_child_boundary", "--nocapture"])
-            .env("RUMQTTC_ATOMIC_CHILD_PATH", path)
-            .env("RUMQTTC_ATOMIC_CHILD_PAYLOAD", payload)
+            .env("ATOMIC_BLOB_CHILD_PATH", path)
+            .env("ATOMIC_BLOB_CHILD_PAYLOAD", payload)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -1143,7 +1190,7 @@ fn subprocess_exit_before_commit_and_successful_commit_have_permitted_states() {
     }
 
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("checkpoint.session");
+    let path = root.path().join("blob.blob");
     std::fs::write(&path, envelope(b"old")).unwrap();
 
     let mut interrupted = spawn_child(&path, "new");
@@ -1153,6 +1200,7 @@ fn subprocess_exit_before_commit_and_successful_commit_have_permitted_states() {
     interrupted.wait().unwrap();
     assert_eq!(
         decode_reader(
+            &format(),
             &mut Cursor::new(std::fs::read(&path).unwrap()),
             TEST_MAXIMUM
         )
@@ -1172,7 +1220,12 @@ fn subprocess_exit_before_commit_and_successful_commit_have_permitted_states() {
     wait_for(&mut output, "COMMITTED");
     assert!(committed.wait().unwrap().success());
     assert_eq!(
-        decode_reader(&mut Cursor::new(std::fs::read(path).unwrap()), TEST_MAXIMUM).unwrap(),
+        decode_reader(
+            &format(),
+            &mut Cursor::new(std::fs::read(path).unwrap()),
+            TEST_MAXIMUM
+        )
+        .unwrap(),
         b"new"
     );
 }

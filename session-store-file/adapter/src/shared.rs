@@ -5,16 +5,22 @@
 
 use std::error::Error;
 use std::fmt;
+use std::io;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::Duration;
 
-use rumqttc_session_store_file_core_next::{
-    CheckpointInspection, CleanupReport, FileStore, FileStoreError, FileStoreOptions, LegacyLoad,
-    QuarantineInfo, checkpoint_filename,
+use crate::{CheckpointInspection, CheckpointState, FileStoreOptions};
+use atomic_blob_store::{
+    AtomicBlobStore, AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlobState,
+    CleanupReport, QuarantineInfo, blob_filename,
 };
 
 const KEY_FORMAT_VERSION: u8 = 1;
+const ENVELOPE_DOMAIN: &[u8; 8] = b"RUMQSESS";
+const ENVELOPE_SUFFIX: &str = ".session";
 
 mod private {
     pub trait Sealed {}
@@ -42,11 +48,26 @@ pub enum KeyEncodeError {
 }
 
 pub enum AdapterError<P: Protocol> {
-    FileStore(FileStoreError),
+    FileStore(AtomicBlobStoreError),
     SessionEncode(P::EncodeError),
     SessionDecode(P::DecodeError),
     KeyEncode(KeyEncodeError),
-    LegacyCheckpointDetected { diagnostic_path: PathBuf },
+    LegacyCheckpointDetected {
+        diagnostic_path: PathBuf,
+    },
+    LegacyInspection {
+        diagnostic_path: PathBuf,
+        source: io::Error,
+    },
+    LegacyInspectionCoordination {
+        source: tokio::task::JoinError,
+    },
+    LegacyInspectionRuntimeUnavailable {
+        source: tokio::runtime::TryCurrentError,
+    },
+    LegacyPathIsNotFile {
+        diagnostic_path: PathBuf,
+    },
 }
 
 impl<P: Protocol> fmt::Debug for AdapterError<P> {
@@ -64,12 +85,32 @@ impl<P: Protocol> fmt::Debug for AdapterError<P> {
                 .debug_struct("LegacyCheckpointDetected")
                 .field("diagnostic_path", diagnostic_path)
                 .finish(),
+            Self::LegacyInspection {
+                diagnostic_path,
+                source,
+            } => formatter
+                .debug_struct("LegacyInspection")
+                .field("diagnostic_path", diagnostic_path)
+                .field("source", source)
+                .finish(),
+            Self::LegacyInspectionCoordination { source } => formatter
+                .debug_struct("LegacyInspectionCoordination")
+                .field("source", source)
+                .finish(),
+            Self::LegacyInspectionRuntimeUnavailable { source } => formatter
+                .debug_struct("LegacyInspectionRuntimeUnavailable")
+                .field("source", source)
+                .finish(),
+            Self::LegacyPathIsNotFile { diagnostic_path } => formatter
+                .debug_struct("LegacyPathIsNotFile")
+                .field("diagnostic_path", diagnostic_path)
+                .finish(),
         }
     }
 }
 
-impl<P: Protocol> From<FileStoreError> for AdapterError<P> {
-    fn from(error: FileStoreError) -> Self {
+impl<P: Protocol> From<AtomicBlobStoreError> for AdapterError<P> {
+    fn from(error: AtomicBlobStoreError) -> Self {
         Self::FileStore(error)
     }
 }
@@ -81,15 +122,21 @@ impl<P: Protocol> From<KeyEncodeError> for AdapterError<P> {
 }
 
 pub struct Adapter<P: Protocol> {
-    core: FileStore,
+    core: AtomicBlobStore,
+    root: PathBuf,
     protocol: PhantomData<fn() -> P>,
+    #[cfg(test)]
+    legacy_inspections: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<P: Protocol> Clone for Adapter<P> {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
+            root: self.root.clone(),
             protocol: PhantomData,
+            #[cfg(test)]
+            legacy_inspections: Arc::clone(&self.legacy_inspections),
         }
     }
 }
@@ -100,7 +147,7 @@ impl<P: Protocol> fmt::Debug for Adapter<P> {
             .debug_struct("Adapter")
             .field("core", &self.core)
             .field("namespace", &P::NAMESPACE)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -109,9 +156,27 @@ impl<P: Protocol> Adapter<P> {
         root: impl Into<PathBuf>,
         options: FileStoreOptions,
     ) -> Result<Self, AdapterError<P>> {
+        let root = std::path::absolute(root.into()).map_err(|source| {
+            AdapterError::FileStore(AtomicBlobStoreError::Io {
+                operation: atomic_blob_store::StoreOperation::NormalizeRoot,
+                source,
+            })
+        })?;
+        let format = BlobFormatIdentity::new(
+            ENVELOPE_DOMAIN,
+            ENVELOPE_SUFFIX,
+            atomic_blob_store::ENVELOPE_VERSION_V1,
+        )
+        .expect("the adapter format identity is valid");
+        let core_options = AtomicBlobStoreOptions::new(format)
+            .with_max_blob_size(options.max_checkpoint_size)
+            .with_max_concurrent_operations(options.max_concurrent_operations);
         Ok(Self {
-            core: FileStore::open(root, P::NAMESPACE, options).await?,
+            core: AtomicBlobStore::open(&root, P::NAMESPACE, core_options).await?,
+            root,
             protocol: PhantomData,
+            #[cfg(test)]
+            legacy_inspections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -120,9 +185,7 @@ impl<P: Protocol> Adapter<P> {
         scope: &str,
         client_id: &str,
     ) -> Result<PathBuf, KeyEncodeError> {
-        Ok(self
-            .core
-            .checkpoint_path(&encode_key::<P>(scope, client_id)?))
+        Ok(self.core.blob_path(&encode_key::<P>(scope, client_id)?))
     }
 
     pub(crate) async fn inspect(
@@ -130,13 +193,23 @@ impl<P: Protocol> Adapter<P> {
         scope: &str,
         client_id: &str,
     ) -> Result<CheckpointInspection, AdapterError<P>> {
-        Ok(self
+        let canonical = self
             .core
-            .inspect_with_legacy_filename(
-                &encode_key::<P>(scope, client_id)?,
-                legacy_filename(scope, client_id),
-            )
-            .await?)
+            .inspect(&encode_key::<P>(scope, client_id)?)
+            .await?;
+        if canonical.state == BlobState::Present {
+            return Ok(CheckpointInspection {
+                state: CheckpointState::Present,
+                size: canonical.size,
+                modified: canonical.modified,
+            });
+        }
+        let legacy = self.inspect_legacy(scope, client_id).await?;
+        Ok(legacy.unwrap_or(CheckpointInspection {
+            state: CheckpointState::Absent,
+            size: None,
+            modified: None,
+        }))
     }
 
     pub(crate) async fn quarantine(
@@ -158,10 +231,7 @@ impl<P: Protocol> Adapter<P> {
         &self,
         minimum_age: Duration,
     ) -> Result<CleanupReport, AdapterError<P>> {
-        Ok(self
-            .core
-            .cleanup_stale_temporary_files_before_use(minimum_age)
-            .await?)
+        Ok(self.core.cleanup_stale_temporary_files(minimum_age).await?)
     }
 
     pub(crate) async fn load(
@@ -170,16 +240,12 @@ impl<P: Protocol> Adapter<P> {
         client_id: &str,
     ) -> Result<Option<P::Session>, AdapterError<P>> {
         let encoded_key = encode_key::<P>(scope, client_id)?;
-        let payload = match self
-            .core
-            .load_with_legacy_filename(&encoded_key, legacy_filename(scope, client_id))
-            .await?
-        {
-            LegacyLoad::Absent => return Ok(None),
-            LegacyLoad::Present(payload) => payload,
-            LegacyLoad::LegacyDetected { diagnostic_path } => {
-                return Err(AdapterError::LegacyCheckpointDetected { diagnostic_path });
+        let Some(payload) = self.core.load(&encoded_key).await? else {
+            if self.inspect_legacy(scope, client_id).await?.is_none() {
+                return Ok(None);
             }
+            let diagnostic_path = self.root.join(legacy_filename(scope, client_id));
+            return Err(AdapterError::LegacyCheckpointDetected { diagnostic_path });
         };
         P::decode(&payload)
             .map(Some)
@@ -197,6 +263,76 @@ impl<P: Protocol> Adapter<P> {
         self.core.save(&encoded_key, payload).await?;
         Ok(())
     }
+
+    async fn inspect_legacy(
+        &self,
+        scope: &str,
+        client_id: &str,
+    ) -> Result<Option<CheckpointInspection>, AdapterError<P>> {
+        #[cfg(test)]
+        self.legacy_inspections
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let diagnostic_path = self.root.join(legacy_filename(scope, client_id));
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|source| AdapterError::LegacyInspectionRuntimeUnavailable { source })?;
+        runtime
+            .spawn_blocking(move || inspect_legacy_path(diagnostic_path))
+            .await
+            .map_err(|source| AdapterError::LegacyInspectionCoordination { source })?
+            .map_err(|error| match error {
+                LegacyInspectionError::Io {
+                    diagnostic_path,
+                    source,
+                } => AdapterError::LegacyInspection {
+                    diagnostic_path,
+                    source,
+                },
+                LegacyInspectionError::PathIsNotFile { diagnostic_path } => {
+                    AdapterError::LegacyPathIsNotFile { diagnostic_path }
+                }
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_inspection_count(&self) -> usize {
+        self.legacy_inspections
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+fn inspect_legacy_path(
+    diagnostic_path: PathBuf,
+) -> Result<Option<CheckpointInspection>, LegacyInspectionError> {
+    match std::fs::symlink_metadata(&diagnostic_path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(Some(CheckpointInspection {
+            state: CheckpointState::LegacyDetected,
+            size: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+        })),
+        Ok(_) => Err(LegacyInspectionError::PathIsNotFile { diagnostic_path }),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(source) => Err(LegacyInspectionError::Io {
+            diagnostic_path,
+            source,
+        }),
+    }
+}
+
+enum LegacyInspectionError {
+    Io {
+        diagnostic_path: PathBuf,
+        source: io::Error,
+    },
+    PathIsNotFile {
+        diagnostic_path: PathBuf,
+    },
 }
 
 pub fn encode_key<P: Protocol>(scope: &str, client_id: &str) -> Result<Vec<u8>, KeyEncodeError> {
@@ -222,7 +358,13 @@ pub fn encode_key<P: Protocol>(scope: &str, client_id: &str) -> Result<Vec<u8>, 
 }
 
 pub fn filename<P: Protocol>(scope: &str, client_id: &str) -> Result<String, KeyEncodeError> {
-    Ok(checkpoint_filename(&encode_key::<P>(scope, client_id)?))
+    let format = BlobFormatIdentity::new(
+        ENVELOPE_DOMAIN,
+        ENVELOPE_SUFFIX,
+        atomic_blob_store::ENVELOPE_VERSION_V1,
+    )
+    .expect("the adapter format identity is valid");
+    Ok(blob_filename(&format, &encode_key::<P>(scope, client_id)?))
 }
 
 pub fn legacy_filename(scope: &str, client_id: &str) -> String {

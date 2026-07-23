@@ -11,12 +11,23 @@ use anyhow::{Context, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
 
-use rumqttc_store_core::bench_instrumentation as envelope;
-use rumqttc_store_core::{DEFAULT_MAX_CHECKPOINT_SIZE, FileStore, FileStoreOptions};
+use atomic_blob_store::bench_instrumentation as envelope;
+use atomic_blob_store::{
+    AtomicBlobStore, AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity,
+    DEFAULT_MAX_BLOB_SIZE, ENVELOPE_VERSION_V1,
+};
 
 use super::{BenchOutput, CommonArgs, Protocol, environment, print_output, run_id, unix_secs};
 
 const COUNTS: [usize; 5] = [0, 1, 10, 100, 1_000];
+
+fn benchmark_format() -> BlobFormatIdentity {
+    BlobFormatIdentity::new(b"BLOBBNCH", ".bench", ENVELOPE_VERSION_V1).unwrap()
+}
+
+fn benchmark_options() -> AtomicBlobStoreOptions {
+    AtomicBlobStoreOptions::new(benchmark_format())
+}
 
 #[derive(Subcommand, Debug)]
 pub enum PersistenceCommand {
@@ -690,7 +701,8 @@ fn run_envelope(args: &EnvelopeArgs) -> anyhow::Result<()> {
     }
     let started_at = unix_secs();
     let payload = payload(args.payload_size);
-    let encoded = envelope::encode(&payload, DEFAULT_MAX_CHECKPOINT_SIZE)?;
+    let format = benchmark_format();
+    let encoded = envelope::encode(&format, &payload, DEFAULT_MAX_BLOB_SIZE)?;
     let mut samples = Vec::with_capacity(args.samples);
     for _ in 0..args.samples {
         let started = Instant::now();
@@ -698,13 +710,18 @@ fn run_envelope(args: &EnvelopeArgs) -> anyhow::Result<()> {
             match args.mode {
                 EnvelopeMode::Encode => {
                     black_box(envelope::encode(
+                        &format,
                         black_box(&payload),
-                        DEFAULT_MAX_CHECKPOINT_SIZE,
+                        DEFAULT_MAX_BLOB_SIZE,
                     )?);
                 }
                 EnvelopeMode::Decode => {
                     let mut reader = Cursor::new(black_box(encoded.as_slice()));
-                    black_box(envelope::decode(&mut reader, DEFAULT_MAX_CHECKPOINT_SIZE)?);
+                    black_box(envelope::decode(
+                        &format,
+                        &mut reader,
+                        DEFAULT_MAX_BLOB_SIZE,
+                    )?);
                 }
                 EnvelopeMode::Crc32c => {
                     black_box(crc32c::crc32c(black_box(&payload)));
@@ -717,7 +734,9 @@ fn run_envelope(args: &EnvelopeArgs) -> anyhow::Result<()> {
                         corrupt.push(1);
                     }
                     let mut reader = Cursor::new(corrupt);
-                    black_box(envelope::decode(&mut reader, DEFAULT_MAX_CHECKPOINT_SIZE).is_err());
+                    black_box(
+                        envelope::decode(&format, &mut reader, DEFAULT_MAX_BLOB_SIZE).is_err(),
+                    );
                 }
             }
         }
@@ -805,7 +824,7 @@ async fn run_file_store(args: FileStoreArgs) -> anyhow::Result<()> {
     validate_samples(args.samples)?;
     let started_at = unix_secs();
     let temporary = tempfile::tempdir()?;
-    let store = FileStore::open(temporary.path(), "benchmark", FileStoreOptions::default()).await?;
+    let store = AtomicBlobStore::open(temporary.path(), "benchmark", benchmark_options()).await?;
     let body = payload(args.payload_size);
     let mut samples = Vec::with_capacity(args.samples);
     for sample in 0..args.samples {
@@ -878,7 +897,7 @@ async fn run_coordination(args: CoordinationArgs) -> anyhow::Result<()> {
     }
     let started_at = unix_secs();
     let temporary = tempfile::tempdir()?;
-    let store = FileStore::open(temporary.path(), "coord", FileStoreOptions::default()).await?;
+    let store = AtomicBlobStore::open(temporary.path(), "coord", benchmark_options()).await?;
     let wall = Instant::now();
     let mut tasks = tokio::task::JoinSet::new();
     for worker in 0..args.concurrency {
@@ -897,7 +916,7 @@ async fn run_coordination(args: CoordinationArgs) -> anyhow::Result<()> {
                 black_box(store.inspect(key.as_bytes()).await?);
                 latencies.push(nanos_u64(started.elapsed().as_nanos()));
             }
-            Ok::<_, rumqttc_store_core::FileStoreError>(latencies)
+            Ok::<_, AtomicBlobStoreError>(latencies)
         });
     }
     let mut samples = Vec::new();
@@ -1147,10 +1166,11 @@ mod tests {
 
     #[test]
     fn envelope_helper_uses_stable_production_bytes() {
-        let actual = envelope::encode(b"abc", 1024).unwrap();
-        assert_eq!(&actual[..18], b"RUMQSESS\0\x01\0\0\0\0\0\0\0\x03");
+        let format = benchmark_format();
+        let actual = envelope::encode(&format, b"abc", 1024).unwrap();
+        assert_eq!(&actual[..18], b"BLOBBNCH\0\x01\0\0\0\0\0\0\0\x03");
         assert_eq!(
-            envelope::decode(&mut Cursor::new(actual), 1024).unwrap(),
+            envelope::decode(&format, &mut Cursor::new(actual), 1024).unwrap(),
             b"abc"
         );
     }

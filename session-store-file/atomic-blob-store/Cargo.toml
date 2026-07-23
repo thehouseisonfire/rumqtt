@@ -1,9 +1,9 @@
 [package]
-name = "rumqttc-session-store-file-core-next"
-version = "0.34.0-alpha"
+name = "atomic-blob-store"
+version = "0.1.0-alpha.1"
 publish = true
-description = "Protocol-neutral file-backed persistent session storage for rumqttc-next"
-keywords = ["mqtt", "persistence", "session"]
+description = "Bounded crash-consistent keyed blob snapshots for trusted local filesystems"
+keywords = ["atomic", "filesystem", "persistence", "snapshot"]
 categories = ["filesystem"]
 rust-version.workspace = true
 edition.workspace = true

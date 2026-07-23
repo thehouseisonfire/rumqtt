@@ -4,6 +4,7 @@
 
 ### Added
 
+- Depend on the independently versioned `atomic-blob-store` pre-release crate.
 - Add `rumqttc-session-store-file-next`, whose independent additive `v4` and
   `v5` features support either or both clients while retaining their existing
   on-disk namespaces, key encodings, and checkpoint envelopes.
@@ -18,6 +19,12 @@
 
 ### Changed
 
+- Run exact legacy metadata probes on Tokio's blocking pool and only after the
+  canonical checkpoint is confirmed absent.
+- Move exact former-example filename detection into the MQTT adapter while
+  retaining canonical-path precedence and the trusted-root boundary.
+- Preserve the existing `RUMQSESS` envelope and `.session` paths through the
+  generic store's explicit format identity.
 - Consolidate the previously separate, unpublished v4 and v5 adapter packages
   into the shared feature-gated adapter package and update examples, benchmarks,
   CI, and release tooling accordingly.

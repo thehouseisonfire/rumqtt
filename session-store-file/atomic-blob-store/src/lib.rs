@@ -1,13 +1,12 @@
-//! Protocol-neutral, file-backed checkpoint storage for `rumqttc-next`.
+//! Bounded, crash-consistent keyed blob snapshots on trusted local filesystems.
 //!
-//! The store accepts opaque key and payload bytes. MQTT key encoding and session
-//! decoding belong to the protocol adapters. See the crate README for the
-//! on-disk format, interruption guarantees, and trust boundary.
+//! The store accepts opaque key and payload bytes. See the crate README for the
+//! exact format, non-goals, interruption guarantees, and trust boundary.
 //!
 //! # Platform and filesystem scope
 //!
 //! This implementation supports Unix and Windows. Other targets compile, but
-//! [`FileStore::open`] returns [`FileStoreError::UnsupportedPlatform`]. It is
+//! [`AtomicBlobStore::open`] returns [`AtomicBlobStoreError::UnsupportedPlatform`]. It is
 //! intended for ordinary local filesystems; it does not detect or certify NFS,
 //! SMB, container volumes, virtual disks, filesystem or mount behavior,
 //! controller caches, or persistence under arbitrary power loss.
@@ -21,17 +20,17 @@
 //! # Trust and concurrency model
 //!
 //! The configured root and its ancestors must be trusted and controlled by the
-//! application. Hash-derived filenames prevent canonical session key bytes from
+//! application. Hash-derived filenames prevent canonical blob key bytes from
 //! directly constructing paths outside that root. The store does not defend
 //! against another process or attacker that can modify the root, symlink or
-//! directory replacement, Windows reparse points, or concurrent checkpoint
+//! directory replacement, Windows reparse points, or concurrent blob
 //! manipulation.
 //!
 //! Coordination is process-local and shared by clones of one store. It provides
 //! same-key FIFO execution and cancellation-safe completion, but no
 //! cross-process locking, distributed locking, leases, fencing,
 //! compare-and-swap, or multi-writer coordination. Applications must ensure
-//! only one process and one active session owner writes a key.
+//! only one process and one active blob owner writes a key.
 //!
 //! # Data and recovery limitations
 //!
@@ -39,9 +38,9 @@
 //! authentication, cryptographic integrity, or tamper resistance. Corruption
 //! fails closed and is left untouched.
 //!
-//! Only the canonical `.session` path is authoritative. Exact legacy detection
-//! never scans or migrates. Windows cleanup recognizes only store-owned staging
-//! names; Unix never parses dependency-private temporary names.
+//! Only the canonical configured-suffix path is authoritative. Windows cleanup
+//! recognizes only store-owned staging names; Unix never parses
+//! dependency-private temporary names.
 
 #[cfg(any(unix, windows))]
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -50,6 +49,7 @@ use std::future::Future;
 use std::io;
 #[cfg(any(unix, windows))]
 use std::io::Read;
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -61,41 +61,97 @@ use std::sync::mpsc;
 #[cfg(any(unix, windows))]
 use tokio::sync::oneshot;
 
-#[cfg(any(unix, windows))]
-const MAGIC: &[u8; 8] = b"RUMQSESS";
-#[cfg(any(unix, windows))]
-const ENVELOPE_VERSION: u16 = 1;
+/// Required byte length of an envelope domain tag.
+pub const DOMAIN_TAG_LEN: usize = 8;
+/// The only envelope version emitted and accepted by this release.
+pub const ENVELOPE_VERSION_V1: u16 = 1;
+/// Maximum length, including the leading dot, of a filename suffix.
+pub const MAX_FILENAME_SUFFIX_LEN: usize = 32;
 const HEADER_LEN: usize = 18;
 const CHECKSUM_LEN: usize = 4;
 
-/// The default maximum canonical checkpoint payload size (64 MiB).
-pub const DEFAULT_MAX_CHECKPOINT_SIZE: u64 = 64 * 1024 * 1024;
+/// The default maximum canonical blob payload size (64 MiB).
+pub const DEFAULT_MAX_BLOB_SIZE: u64 = 64 * 1024 * 1024;
+/// Default bound for concurrently active different-key operations.
+pub const DEFAULT_MAX_CONCURRENT_OPERATIONS: usize = 4;
 
-/// Observable state of a canonical checkpoint (or an exact legacy candidate).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CheckpointState {
-    Absent,
-    Present,
-    LegacyDetected,
+/// Immutable identity of one application blob format.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlobFormatIdentity {
+    domain_tag: [u8; DOMAIN_TAG_LEN],
+    filename_suffix: String,
+    envelope_version: u16,
 }
 
-/// Metadata returned without opening or decoding checkpoint contents.
+impl BlobFormatIdentity {
+    /// Validates and constructs a format identity.
+    ///
+    /// The domain must contain exactly eight bytes. The suffix must start with
+    /// `.` and contain only lowercase ASCII letters, digits, `_`, or `-`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a precise configuration error for an invalid domain length,
+    /// unsafe suffix, or unsupported envelope version.
+    pub fn new(
+        domain_tag: impl AsRef<[u8]>,
+        filename_suffix: impl Into<String>,
+        envelope_version: u16,
+    ) -> Result<Self, AtomicBlobStoreConfigError> {
+        let domain = domain_tag.as_ref();
+        let domain_tag = <[u8; DOMAIN_TAG_LEN]>::try_from(domain).map_err(|_| {
+            AtomicBlobStoreConfigError::InvalidDomainTagLength {
+                found: domain.len(),
+            }
+        })?;
+        let filename_suffix = filename_suffix.into();
+        validate_suffix(&filename_suffix)?;
+        if envelope_version != ENVELOPE_VERSION_V1 {
+            return Err(
+                AtomicBlobStoreConfigError::UnsupportedConfiguredEnvelopeVersion {
+                    found: envelope_version,
+                },
+            );
+        }
+        Ok(Self {
+            domain_tag,
+            filename_suffix,
+            envelope_version,
+        })
+    }
+
+    #[must_use]
+    pub const fn domain_tag(&self) -> &[u8; DOMAIN_TAG_LEN] {
+        &self.domain_tag
+    }
+
+    #[must_use]
+    pub fn filename_suffix(&self) -> &str {
+        &self.filename_suffix
+    }
+
+    #[must_use]
+    pub const fn envelope_version(&self) -> u16 {
+        self.envelope_version
+    }
+}
+
+/// Observable state of a canonical blob.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlobState {
+    Absent,
+    Present,
+}
+
+/// Metadata returned without opening or decoding blob contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckpointInspection {
-    pub state: CheckpointState,
+pub struct BlobInspection {
+    pub state: BlobState,
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
 }
 
-/// Result of an exact canonical load plus legacy-filename check.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LegacyLoad {
-    Absent,
-    Present(Vec<u8>),
-    LegacyDetected { diagnostic_path: PathBuf },
-}
-
-/// Location assigned to a quarantined checkpoint.
+/// Location assigned to a quarantined blob.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuarantineInfo {
     pub identifier: String,
@@ -117,70 +173,124 @@ pub struct CleanupReport {
     pub failures: Vec<CleanupFailure>,
 }
 
-/// Configuration for a [`FileStore`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileStoreOptions {
-    /// Maximum canonical session payload size accepted by save and load.
-    pub max_checkpoint_size: u64,
+/// Configuration for a [`AtomicBlobStore`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AtomicBlobStoreOptions {
+    format: BlobFormatIdentity,
+    max_blob_size: u64,
+    max_concurrent_operations: NonZeroUsize,
 }
 
-impl Default for FileStoreOptions {
-    fn default() -> Self {
+impl AtomicBlobStoreOptions {
+    #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// The compile-time default concurrency is asserted to be nonzero.
+    pub const fn new(format: BlobFormatIdentity) -> Self {
         Self {
-            max_checkpoint_size: DEFAULT_MAX_CHECKPOINT_SIZE,
+            format,
+            max_blob_size: DEFAULT_MAX_BLOB_SIZE,
+            max_concurrent_operations: NonZeroUsize::new(DEFAULT_MAX_CONCURRENT_OPERATIONS)
+                .expect("the default concurrency is nonzero"),
         }
     }
+
+    #[must_use]
+    pub const fn with_max_blob_size(mut self, maximum: u64) -> Self {
+        self.max_blob_size = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_concurrent_operations(mut self, maximum: NonZeroUsize) -> Self {
+        self.max_concurrent_operations = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn format(&self) -> &BlobFormatIdentity {
+        &self.format
+    }
+
+    #[must_use]
+    pub const fn max_blob_size(&self) -> u64 {
+        self.max_blob_size
+    }
+
+    #[must_use]
+    pub const fn max_concurrent_operations(&self) -> NonZeroUsize {
+        self.max_concurrent_operations
+    }
+}
+
+/// Invalid immutable store configuration.
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum AtomicBlobStoreConfigError {
+    #[error("domain tag must contain exactly {DOMAIN_TAG_LEN} bytes; found {found}")]
+    InvalidDomainTagLength { found: usize },
+    #[error(
+        "filename suffix must match \\.[a-z0-9_-]+ and be at most {MAX_FILENAME_SUFFIX_LEN} bytes"
+    )]
+    InvalidFilenameSuffix,
+    #[error("configured envelope version {found} is not supported")]
+    UnsupportedConfiguredEnvelopeVersion { found: u16 },
+    #[error("namespace must be one non-empty normal path component")]
+    InvalidNamespace,
+    #[error("maximum blob size {maximum} cannot be represented safely on this target")]
+    InvalidMaximumBlobSize { maximum: u64 },
 }
 
 /// Filesystem operation associated with an ordinary I/O error.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FileOperation {
+pub enum StoreOperation {
     ResolveCurrentDirectory,
     NormalizeRoot,
+    StartInitialization,
     StartCoordinator,
     InspectRoot,
     InspectNamespace,
     CreateNamespace,
     OpenRootDirectory,
     SyncRootDirectory,
-    OpenCheckpoint,
+    OpenBlob,
     ReadEnvelope,
     OpenAtomicWriter,
     WriteEnvelope,
-    RemoveCheckpoint,
+    RemoveBlob,
     OpenNamespaceDirectory,
     SyncNamespaceDirectory,
-    InspectCheckpoint,
-    InspectLegacyCheckpoint,
-    QuarantineCheckpoint,
+    InspectBlob,
+    QuarantineBlob,
     GenerateIdentifier,
     EnumerateTemporaryFiles,
     RemoveTemporaryFile,
     RefreshClearStagingAge,
 }
 
-impl std::fmt::Display for FileOperation {
+impl std::fmt::Display for StoreOperation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::ResolveCurrentDirectory => "resolve the current directory",
             Self::NormalizeRoot => "normalize the configured root path",
-            Self::StartCoordinator => "start the session-store coordinator",
+            Self::StartInitialization => "start store initialization",
+            Self::StartCoordinator => "start the blob-store coordinator",
             Self::InspectRoot => "inspect configured root",
             Self::InspectNamespace => "inspect namespace directory",
             Self::CreateNamespace => "create namespace directory",
             Self::OpenRootDirectory => "open configured root directory",
             Self::SyncRootDirectory => "synchronize configured root directory",
-            Self::OpenCheckpoint => "open checkpoint",
-            Self::ReadEnvelope => "read checkpoint envelope",
-            Self::OpenAtomicWriter => "open atomic checkpoint writer",
-            Self::WriteEnvelope => "write checkpoint envelope",
-            Self::RemoveCheckpoint => "remove checkpoint",
+            Self::OpenBlob => "open blob",
+            Self::ReadEnvelope => "read blob envelope",
+            Self::OpenAtomicWriter => "open atomic blob writer",
+            Self::WriteEnvelope => "write blob envelope",
+            Self::RemoveBlob => "remove blob",
             Self::OpenNamespaceDirectory => "open namespace directory",
             Self::SyncNamespaceDirectory => "synchronize namespace directory",
-            Self::InspectCheckpoint => "inspect checkpoint",
-            Self::InspectLegacyCheckpoint => "inspect exact legacy checkpoint",
-            Self::QuarantineCheckpoint => "quarantine checkpoint",
+            Self::InspectBlob => "inspect blob",
+            Self::QuarantineBlob => "quarantine blob",
             Self::GenerateIdentifier => "generate a diagnostic identifier",
             Self::EnumerateTemporaryFiles => "enumerate owned temporary files",
             Self::RemoveTemporaryFile => "remove an owned temporary file",
@@ -212,17 +322,19 @@ impl std::fmt::Display for EnvelopeSection {
     }
 }
 
-/// Protocol-neutral failure from the file store.
+/// Protocol-neutral failure from the blob store.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
-pub enum FileStoreError {
+pub enum AtomicBlobStoreError {
+    #[error("invalid store configuration: {0}")]
+    Configuration(#[from] AtomicBlobStoreConfigError),
     #[error("I/O failure while attempting to {operation}: {source}")]
     Io {
-        operation: FileOperation,
+        operation: StoreOperation,
         #[source]
         source: io::Error,
     },
-    #[error("atomic checkpoint commit failed: {source}")]
+    #[error("atomic blob commit failed: {source}")]
     AtomicCommit {
         #[source]
         source: io::Error,
@@ -233,36 +345,35 @@ pub enum FileStoreError {
     RootIsNotDirectory,
     #[error("namespace path exists but is not a directory")]
     NamespacePathIsNotDirectory,
-    #[error("namespace must be one non-empty normal path component")]
-    InvalidNamespace,
-    #[error("maximum checkpoint size {maximum} cannot be represented safely on this target")]
-    InvalidMaximumCheckpointSize { maximum: u64 },
-    #[error("invalid checkpoint envelope magic")]
-    InvalidEnvelopeMagic,
-    #[error("unsupported checkpoint envelope version {found}")]
+    #[error("blob envelope belongs to a different domain")]
+    InvalidEnvelopeDomain {
+        expected: [u8; DOMAIN_TAG_LEN],
+        found: [u8; DOMAIN_TAG_LEN],
+    },
+    #[error("unsupported blob envelope version {found}")]
     UnsupportedEnvelopeVersion { found: u16 },
-    #[error("checkpoint envelope ended while reading {section}")]
+    #[error("blob envelope ended while reading {section}")]
     TruncatedEnvelope { section: EnvelopeSection },
-    #[error("checkpoint payload size {size} exceeds configured maximum {maximum}")]
-    CheckpointTooLarge { size: u64, maximum: u64 },
-    #[error("declared checkpoint payload length {declared} cannot be represented safely")]
+    #[error("blob payload size {size} exceeds configured maximum {maximum}")]
+    BlobTooLarge { size: u64, maximum: u64 },
+    #[error("declared blob payload length {declared} cannot be represented safely")]
     InvalidPayloadLength { declared: u64 },
-    #[error("checkpoint envelope contains trailing data")]
+    #[error("blob envelope contains trailing data")]
     TrailingData,
-    #[error("checkpoint checksum mismatch: stored {expected:#010x}, calculated {actual:#010x}")]
+    #[error("blob checksum mismatch: stored {expected:#010x}, calculated {actual:#010x}")]
     ChecksumMismatch { expected: u32, actual: u32 },
-    #[error("file-backed session storage is unsupported on {platform}")]
+    #[error("file-backed blob storage is unsupported on {platform}")]
     UnsupportedPlatform { platform: &'static str },
-    #[error("session-store operation coordination failed")]
+    #[error("blob-store operation coordination failed")]
     CoordinationFailure,
-    #[error("canonical checkpoint to quarantine does not exist")]
+    #[error("canonical blob to quarantine does not exist")]
     QuarantineSourceMissing,
-    #[error("checkpoint quarantine failed: {source}")]
+    #[error("blob quarantine failed: {source}")]
     QuarantineCommit {
         #[source]
         source: io::Error,
     },
-    #[error("checkpoint was moved to quarantine, but namespace synchronization failed: {source}")]
+    #[error("blob was moved to quarantine, but namespace synchronization failed: {source}")]
     QuarantineNamespaceSync {
         quarantine: QuarantineInfo,
         #[source]
@@ -278,35 +389,38 @@ pub enum FileStoreError {
         #[source]
         source: getrandom::Error,
     },
-    #[error("checkpoint path has an unexpected file type")]
+    #[error("blob path has an unexpected file type")]
     UnexpectedFileType,
     #[error("store-wide maintenance coordination failed")]
     MaintenanceCoordinationFailure,
-    #[error("legacy filename must be one non-empty normal path component")]
-    InvalidLegacyFilename,
 }
 
 /// A boxed future returned by core store operations.
-pub type FileStoreFuture<T> =
-    Pin<Box<dyn Future<Output = Result<T, FileStoreError>> + Send + 'static>>;
+pub type BlobStoreFuture<T> =
+    Pin<Box<dyn Future<Output = Result<T, AtomicBlobStoreError>> + Send + 'static>>;
 
-/// Protocol-neutral file-backed checkpoint store.
+/// Protocol-neutral file-backed blob store.
 ///
 /// Clones share one FIFO coordinator whose lifetime is independent of any
 /// caller-owned Tokio runtime. Submission occurs when an operation method is
 /// called, before its returned future is polled.
 #[derive(Clone)]
-pub struct FileStore {
+pub struct AtomicBlobStore {
     inner: Arc<Inner>,
 }
 
-impl std::fmt::Debug for FileStore {
+impl std::fmt::Debug for AtomicBlobStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("FileStore")
-            .field("root", &self.inner.config.root)
+            .debug_struct("AtomicBlobStore")
             .field("namespace", &self.inner.config.namespace)
-            .field("max_checkpoint_size", &self.inner.config.maximum)
+            .field("format", &self.inner.config.format)
+            .field("max_blob_size", &self.inner.config.maximum)
+            .field(
+                "max_concurrent_operations",
+                &self.inner.config.max_concurrent_operations,
+            )
+            .field("coordination", &"owned")
             .finish_non_exhaustive()
     }
 }
@@ -320,9 +434,10 @@ struct Inner {
 }
 
 struct StoreConfig {
-    root: PathBuf,
     namespace: PathBuf,
+    format: BlobFormatIdentity,
     maximum: u64,
+    max_concurrent_operations: usize,
     #[cfg(all(test, unix))]
     hook: Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
 }
@@ -331,14 +446,15 @@ impl std::fmt::Debug for StoreConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("StoreConfig")
-            .field("root", &self.root)
             .field("namespace", &self.namespace)
+            .field("format", &self.format)
             .field("maximum", &self.maximum)
+            .field("max_concurrent_operations", &self.max_concurrent_operations)
             .finish_non_exhaustive()
     }
 }
 
-impl FileStore {
+impl AtomicBlobStore {
     /// Constructs a store and creates the namespace directory when necessary.
     ///
     /// The configured root must already exist. Relative roots are resolved
@@ -350,7 +466,7 @@ impl FileStore {
     /// The root and its ancestors are trusted. Construction does not add
     /// cross-process locking or protection against hostile filesystem changes.
     /// On targets other than Unix and Windows this method returns
-    /// [`FileStoreError::UnsupportedPlatform`].
+    /// [`AtomicBlobStoreError::UnsupportedPlatform`].
     ///
     /// # Errors
     ///
@@ -359,48 +475,54 @@ impl FileStore {
     pub async fn open(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
-        options: FileStoreOptions,
-    ) -> Result<Self, FileStoreError> {
+        options: AtomicBlobStoreOptions,
+    ) -> Result<Self, AtomicBlobStoreError> {
         let root = root.into();
         let namespace = validate_namespace(namespace.as_ref())?;
-        validate_maximum(options.max_checkpoint_size)?;
+        validate_maximum(options.max_blob_size)?;
 
         #[cfg(not(any(unix, windows)))]
         {
             let _ = (root, namespace, options);
-            return Err(FileStoreError::UnsupportedPlatform {
+            return Err(AtomicBlobStoreError::UnsupportedPlatform {
                 platform: std::env::consts::OS,
             });
         }
 
         #[cfg(any(unix, windows))]
         {
-            let maximum = options.max_checkpoint_size;
-            let config =
-                tokio::task::spawn_blocking(move || initialize_platform(root, namespace, maximum))
-                    .await
-                    .map_err(|_| FileStoreError::CoordinationFailure)??;
+            let maximum = options.max_blob_size;
+            let format = options.format;
+            let max_concurrent_operations = options.max_concurrent_operations.get();
+            let config = initialize_in_background(
+                root,
+                namespace,
+                format,
+                maximum,
+                max_concurrent_operations,
+            )
+            .await?;
             Self::from_config(config)
         }
     }
 
     #[cfg(any(unix, windows))]
-    fn from_config(config: StoreConfig) -> Result<Self, FileStoreError> {
+    fn from_config(config: StoreConfig) -> Result<Self, AtomicBlobStoreError> {
         let config = Arc::new(config);
         let (submissions, receiver) = mpsc::channel();
         #[cfg(all(test, unix))]
         let registry_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let coordinator_runtime = tokio::runtime::Builder::new_current_thread()
             .build()
-            .map_err(|source| FileStoreError::Io {
-                operation: FileOperation::StartCoordinator,
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::StartCoordinator,
                 source,
             })?;
         let scheduler_config = Arc::clone(&config);
         #[cfg(all(test, unix))]
         let scheduler_registry_entries = Arc::clone(&registry_entries);
         std::thread::Builder::new()
-            .name("rumqttc-file-store-coordinator".into())
+            .name("atomic-blob-store-coordinator".into())
             .spawn(move || {
                 let blocking_executor = coordinator_runtime.handle().clone();
                 run_scheduler(
@@ -411,8 +533,8 @@ impl FileStore {
                     &scheduler_registry_entries,
                 );
             })
-            .map_err(|source| FileStoreError::Io {
-                operation: FileOperation::StartCoordinator,
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::StartCoordinator,
                 source,
             })?;
         Ok(Self {
@@ -429,26 +551,27 @@ impl FileStore {
     async fn open_with_test_hook(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
-        options: FileStoreOptions,
+        options: AtomicBlobStoreOptions,
         hook: Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>,
-    ) -> Result<Self, FileStoreError> {
+    ) -> Result<Self, AtomicBlobStoreError> {
         let root = root.into();
         let namespace = validate_namespace(namespace.as_ref())?;
-        validate_maximum(options.max_checkpoint_size)?;
-        let maximum = options.max_checkpoint_size;
+        validate_maximum(options.max_blob_size)?;
+        let maximum = options.max_blob_size;
+        let format = options.format;
+        let max_concurrent_operations = options.max_concurrent_operations.get();
         let mut config =
-            tokio::task::spawn_blocking(move || initialize_platform(root, namespace, maximum))
-                .await
-                .map_err(|_| FileStoreError::CoordinationFailure)??;
+            initialize_in_background(root, namespace, format, maximum, max_concurrent_operations)
+                .await?;
         config.hook = Some(hook);
         Self::from_config(config)
     }
 
     /// Loads the canonical payload associated with `canonical_key`.
     ///
-    /// Only a genuinely absent canonical checkpoint returns `Ok(None)`.
+    /// Only a genuinely absent canonical blob returns `Ok(None)`.
     #[must_use]
-    pub fn load(&self, canonical_key: &[u8]) -> FileStoreFuture<Option<Vec<u8>>> {
+    pub fn load(&self, canonical_key: &[u8]) -> BlobStoreFuture<Option<Vec<u8>>> {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -468,7 +591,7 @@ impl FileStore {
 
     /// Saves an opaque canonical payload for `canonical_key`.
     #[must_use]
-    pub fn save(&self, canonical_key: &[u8], payload: Vec<u8>) -> FileStoreFuture<()> {
+    pub fn save(&self, canonical_key: &[u8], payload: Vec<u8>) -> BlobStoreFuture<()> {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = (canonical_key, payload);
@@ -486,9 +609,9 @@ impl FileStore {
         }
     }
 
-    /// Clears the canonical checkpoint for `canonical_key`.
+    /// Clears the canonical blob for `canonical_key`.
     #[must_use]
-    pub fn clear(&self, canonical_key: &[u8]) -> FileStoreFuture<()> {
+    pub fn clear(&self, canonical_key: &[u8]) -> BlobStoreFuture<()> {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -506,9 +629,9 @@ impl FileStore {
         }
     }
 
-    /// Inspects metadata without opening, decoding, or mutating the checkpoint.
+    /// Inspects metadata without opening, decoding, or mutating the blob.
     #[must_use]
-    pub fn inspect(&self, canonical_key: &[u8]) -> FileStoreFuture<CheckpointInspection> {
+    pub fn inspect(&self, canonical_key: &[u8]) -> BlobStoreFuture<BlobInspection> {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -526,72 +649,9 @@ impl FileStore {
         }
     }
 
-    /// Loads the canonical checkpoint, checking exactly one legacy filename only
-    /// when the canonical checkpoint is absent.
+    /// Atomically moves a canonical blob to a randomized diagnostic name.
     #[must_use]
-    pub fn load_with_legacy_filename(
-        &self,
-        canonical_key: &[u8],
-        legacy_filename: impl AsRef<OsStr>,
-    ) -> FileStoreFuture<LegacyLoad> {
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (canonical_key, legacy_filename);
-            unsupported_future()
-        }
-        #[cfg(any(unix, windows))]
-        {
-            let legacy_filename = match validate_filename(legacy_filename.as_ref()) {
-                Ok(filename) => filename,
-                Err(error) => return Box::pin(async move { Err(error) }),
-            };
-            let (sender, receiver) = oneshot::channel();
-            submit(
-                &self.inner.submissions,
-                key_hash(canonical_key),
-                Operation::LoadWithLegacy {
-                    legacy_filename,
-                    sender,
-                },
-                receiver,
-            )
-        }
-    }
-
-    /// Inspects canonical state and then exactly one legacy filename in one FIFO operation.
-    #[must_use]
-    pub fn inspect_with_legacy_filename(
-        &self,
-        canonical_key: &[u8],
-        legacy_filename: impl AsRef<OsStr>,
-    ) -> FileStoreFuture<CheckpointInspection> {
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (canonical_key, legacy_filename);
-            unsupported_future()
-        }
-        #[cfg(any(unix, windows))]
-        {
-            let legacy_filename = match validate_filename(legacy_filename.as_ref()) {
-                Ok(filename) => filename,
-                Err(error) => return Box::pin(async move { Err(error) }),
-            };
-            let (sender, receiver) = oneshot::channel();
-            submit(
-                &self.inner.submissions,
-                key_hash(canonical_key),
-                Operation::InspectWithLegacy {
-                    legacy_filename,
-                    sender,
-                },
-                receiver,
-            )
-        }
-    }
-
-    /// Atomically moves a canonical checkpoint to a randomized diagnostic name.
-    #[must_use]
-    pub fn quarantine(&self, canonical_key: &[u8]) -> FileStoreFuture<QuarantineInfo> {
+    pub fn quarantine(&self, canonical_key: &[u8]) -> BlobStoreFuture<QuarantineInfo> {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -611,10 +671,10 @@ impl FileStore {
 
     /// Removes stale store-owned Windows staging files behind a store-wide FIFO barrier.
     #[must_use]
-    pub fn cleanup_stale_temporary_files_before_use(
+    pub fn cleanup_stale_temporary_files(
         &self,
         minimum_age: Duration,
-    ) -> FileStoreFuture<CleanupReport> {
+    ) -> BlobStoreFuture<CleanupReport> {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = minimum_age;
@@ -623,25 +683,63 @@ impl FileStore {
         #[cfg(any(unix, windows))]
         {
             if minimum_age.is_zero() {
-                return Box::pin(async { Err(FileStoreError::InvalidCleanupAge) });
+                return Box::pin(async { Err(AtomicBlobStoreError::InvalidCleanupAge) });
             }
             let (sender, receiver) = oneshot::channel();
             if self
                 .inner
                 .submissions
                 .send(CoordinatorEvent::Maintenance(MaintenanceSubmission {
-                    minimum_age,
+                    minimum_age: Some(minimum_age),
                     sender,
                     completion_sender: self.inner.submissions.clone(),
                 }))
                 .is_err()
             {
-                return Box::pin(async { Err(FileStoreError::MaintenanceCoordinationFailure) });
+                return Box::pin(async {
+                    Err(AtomicBlobStoreError::MaintenanceCoordinationFailure)
+                });
             }
             Box::pin(async move {
                 receiver
                     .await
-                    .unwrap_or(Err(FileStoreError::MaintenanceCoordinationFailure))
+                    .unwrap_or(Err(AtomicBlobStoreError::MaintenanceCoordinationFailure))
+            })
+        }
+    }
+
+    /// Waits until every operation submitted before this call has completed.
+    ///
+    /// Later submissions are not part of this barrier. Dropping the returned
+    /// future discards only its result; the barrier remains ordered.
+    #[must_use]
+    pub fn flush(&self) -> BlobStoreFuture<()> {
+        #[cfg(not(any(unix, windows)))]
+        {
+            return unsupported_future();
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let (sender, receiver) = oneshot::channel();
+            if self
+                .inner
+                .submissions
+                .send(CoordinatorEvent::Maintenance(MaintenanceSubmission {
+                    minimum_age: None,
+                    sender,
+                    completion_sender: self.inner.submissions.clone(),
+                }))
+                .is_err()
+            {
+                return Box::pin(async {
+                    Err(AtomicBlobStoreError::MaintenanceCoordinationFailure)
+                });
+            }
+            Box::pin(async move {
+                receiver
+                    .await
+                    .unwrap_or(Err(AtomicBlobStoreError::MaintenanceCoordinationFailure))
+                    .map(|_| ())
             })
         }
     }
@@ -651,18 +749,47 @@ impl FileStore {
     /// This path is not a stable storage API and callers must not read, write,
     /// rename, or delete it while the store is in use.
     #[must_use]
-    pub fn checkpoint_path(&self, canonical_key: &[u8]) -> PathBuf {
+    pub fn blob_path(&self, canonical_key: &[u8]) -> PathBuf {
         self.inner
             .config
             .namespace
-            .join(checkpoint_filename(canonical_key))
+            .join(blob_filename(&self.inner.config.format, canonical_key))
     }
 }
 
-/// Returns the stable full-BLAKE3 checkpoint filename for canonical key bytes.
+#[cfg(any(unix, windows))]
+async fn initialize_in_background(
+    root: PathBuf,
+    namespace: PathBuf,
+    format: BlobFormatIdentity,
+    maximum: u64,
+    max_concurrent_operations: usize,
+) -> Result<StoreConfig, AtomicBlobStoreError> {
+    let (sender, receiver) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("atomic-blob-store-initialize".into())
+        .spawn(move || {
+            let result =
+                initialize_platform(root, namespace, format, maximum, max_concurrent_operations);
+            let _ = sender.send(result);
+        })
+        .map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::StartInitialization,
+            source,
+        })?;
+    receiver
+        .await
+        .unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure))
+}
+
+/// Returns the stable full-BLAKE3 blob filename for canonical key bytes.
 #[must_use]
-pub fn checkpoint_filename(canonical_key: &[u8]) -> String {
-    format!("{}.session", blake3::hash(canonical_key).to_hex())
+pub fn blob_filename(format: &BlobFormatIdentity, canonical_key: &[u8]) -> String {
+    format!(
+        "{}{}",
+        blake3::hash(canonical_key).to_hex(),
+        format.filename_suffix
+    )
 }
 
 #[cfg(any(unix, windows))]
@@ -670,41 +797,44 @@ fn key_hash(canonical_key: &[u8]) -> [u8; 32] {
     *blake3::hash(canonical_key).as_bytes()
 }
 
-fn validate_namespace(namespace: &OsStr) -> Result<PathBuf, FileStoreError> {
+fn validate_namespace(namespace: &OsStr) -> Result<PathBuf, AtomicBlobStoreError> {
     let path = Path::new(namespace);
     let mut components = path.components();
     match (components.next(), components.next()) {
         (Some(Component::Normal(component)), None) if !component.is_empty() => {
             Ok(PathBuf::from(component))
         }
-        _ => Err(FileStoreError::InvalidNamespace),
+        _ => Err(AtomicBlobStoreConfigError::InvalidNamespace.into()),
     }
 }
 
-#[cfg(any(unix, windows))]
-fn validate_filename(filename: &OsStr) -> Result<PathBuf, FileStoreError> {
-    let path = Path::new(filename);
-    let mut components = path.components();
-    match (components.next(), components.next()) {
-        (Some(Component::Normal(component)), None) if !component.is_empty() => Ok(path.into()),
-        _ => Err(FileStoreError::InvalidLegacyFilename),
+fn validate_suffix(suffix: &str) -> Result<(), AtomicBlobStoreConfigError> {
+    let valid = (2..=MAX_FILENAME_SUFFIX_LEN).contains(&suffix.len())
+        && suffix.starts_with('.')
+        && suffix[1..].bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(AtomicBlobStoreConfigError::InvalidFilenameSuffix)
     }
 }
 
-fn validate_maximum(maximum: u64) -> Result<(), FileStoreError> {
+fn validate_maximum(maximum: u64) -> Result<(), AtomicBlobStoreError> {
     let envelope_capacity = usize::try_from(maximum)
         .ok()
         .and_then(|size| size.checked_add(HEADER_LEN + CHECKSUM_LEN));
     if envelope_capacity.is_none() {
-        return Err(FileStoreError::InvalidMaximumCheckpointSize { maximum });
+        return Err(AtomicBlobStoreConfigError::InvalidMaximumBlobSize { maximum }.into());
     }
     Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn unsupported_future<T: Send + 'static>() -> FileStoreFuture<T> {
+fn unsupported_future<T: Send + 'static>() -> BlobStoreFuture<T> {
     Box::pin(async {
-        Err(FileStoreError::UnsupportedPlatform {
+        Err(AtomicBlobStoreError::UnsupportedPlatform {
             platform: std::env::consts::OS,
         })
     })
@@ -715,8 +845,8 @@ fn submit<T: Send + 'static>(
     submissions: &mpsc::Sender<CoordinatorEvent>,
     key_hash: [u8; 32],
     operation: Operation,
-    receiver: oneshot::Receiver<Result<T, FileStoreError>>,
-) -> FileStoreFuture<T> {
+    receiver: oneshot::Receiver<Result<T, AtomicBlobStoreError>>,
+) -> BlobStoreFuture<T> {
     let submission = Submission {
         key_hash,
         operation,
@@ -726,12 +856,12 @@ fn submit<T: Send + 'static>(
         .send(CoordinatorEvent::Submission(submission))
         .is_err()
     {
-        return Box::pin(async { Err(FileStoreError::CoordinationFailure) });
+        return Box::pin(async { Err(AtomicBlobStoreError::CoordinationFailure) });
     }
     Box::pin(async move {
         receiver
             .await
-            .unwrap_or(Err(FileStoreError::CoordinationFailure))
+            .unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure))
     })
 }
 
@@ -751,40 +881,30 @@ struct QueuedOperation {
 #[cfg(any(unix, windows))]
 enum Operation {
     Load {
-        sender: oneshot::Sender<Result<Option<Vec<u8>>, FileStoreError>>,
+        sender: oneshot::Sender<Result<Option<Vec<u8>>, AtomicBlobStoreError>>,
     },
     Save {
         payload: Vec<u8>,
-        sender: oneshot::Sender<Result<(), FileStoreError>>,
+        sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
     },
     Clear {
-        sender: oneshot::Sender<Result<(), FileStoreError>>,
+        sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
     },
     Inspect {
-        sender: oneshot::Sender<Result<CheckpointInspection, FileStoreError>>,
-    },
-    LoadWithLegacy {
-        legacy_filename: PathBuf,
-        sender: oneshot::Sender<Result<LegacyLoad, FileStoreError>>,
-    },
-    InspectWithLegacy {
-        legacy_filename: PathBuf,
-        sender: oneshot::Sender<Result<CheckpointInspection, FileStoreError>>,
+        sender: oneshot::Sender<Result<BlobInspection, AtomicBlobStoreError>>,
     },
     Quarantine {
-        sender: oneshot::Sender<Result<QuarantineInfo, FileStoreError>>,
+        sender: oneshot::Sender<Result<QuarantineInfo, AtomicBlobStoreError>>,
     },
 }
 
 #[cfg(any(unix, windows))]
 enum BlockingResult {
-    Load(Result<Option<Vec<u8>>, FileStoreError>),
-    Save(Result<(), FileStoreError>),
-    Clear(Result<(), FileStoreError>),
-    Inspect(Result<CheckpointInspection, FileStoreError>),
-    LoadWithLegacy(Result<LegacyLoad, FileStoreError>),
-    InspectWithLegacy(Result<CheckpointInspection, FileStoreError>),
-    Quarantine(Result<QuarantineInfo, FileStoreError>),
+    Load(Result<Option<Vec<u8>>, AtomicBlobStoreError>),
+    Save(Result<(), AtomicBlobStoreError>),
+    Clear(Result<(), AtomicBlobStoreError>),
+    Inspect(Result<BlobInspection, AtomicBlobStoreError>),
+    Quarantine(Result<QuarantineInfo, AtomicBlobStoreError>),
 }
 
 #[cfg(any(unix, windows))]
@@ -803,8 +923,8 @@ enum CoordinatorEvent {
 
 #[cfg(any(unix, windows))]
 struct MaintenanceSubmission {
-    minimum_age: Duration,
-    sender: oneshot::Sender<Result<CleanupReport, FileStoreError>>,
+    minimum_age: Option<Duration>,
+    sender: oneshot::Sender<Result<CleanupReport, AtomicBlobStoreError>>,
     completion_sender: mpsc::Sender<CoordinatorEvent>,
 }
 
@@ -821,8 +941,8 @@ enum PendingEvent {
 
 #[cfg(any(unix, windows))]
 type MaintenanceOutcome = (
-    oneshot::Sender<Result<CleanupReport, FileStoreError>>,
-    Result<CleanupReport, FileStoreError>,
+    oneshot::Sender<Result<CleanupReport, AtomicBlobStoreError>>,
+    Result<CleanupReport, AtomicBlobStoreError>,
 );
 
 #[cfg(any(unix, windows))]
@@ -862,6 +982,7 @@ fn run_scheduler(
                     &mut active,
                     blocking_executor,
                 );
+                dispatch_available(config, &mut queues, &mut active, blocking_executor);
             }
             CoordinatorEvent::Completion(completion) => {
                 let outcome = completion.outcome;
@@ -873,6 +994,7 @@ fn run_scheduler(
                     &mut active,
                     blocking_executor,
                 );
+                dispatch_available(config, &mut queues, &mut active, blocking_executor);
                 if !active.contains(&completion.key_hash)
                     && queues
                         .get(&completion.key_hash)
@@ -982,7 +1104,10 @@ fn dispatch_maintenance(
             completion_sender,
         } = submission;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            cleanup_stale_files(&config, minimum_age)
+            minimum_age.map_or_else(
+                || Ok(CleanupReport::default()),
+                |minimum_age| cleanup_stale_files(&config, minimum_age),
+            )
         }));
         let outcome = result.ok().map(|result| (sender, result));
         let _send_result = completion_sender.send(CoordinatorEvent::MaintenanceCompletion(
@@ -999,7 +1124,7 @@ fn dispatch_if_idle(
     active: &mut HashSet<[u8; 32]>,
     blocking_executor: &tokio::runtime::Handle,
 ) {
-    if active.contains(&key_hash) {
+    if active.contains(&key_hash) || active.len() >= config.max_concurrent_operations {
         return;
     }
 
@@ -1014,8 +1139,9 @@ fn dispatch_if_idle(
     active.insert(key_hash);
     blocking_executor.spawn_blocking(move || {
         let path = config.namespace.join(format!(
-            "{}.session",
-            blake3::Hash::from_bytes(key_hash).to_hex()
+            "{}{}",
+            blake3::Hash::from_bytes(key_hash).to_hex(),
+            config.format.filename_suffix()
         ));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_owned_operation(&config, &path, operation)
@@ -1029,6 +1155,24 @@ fn dispatch_if_idle(
 }
 
 #[cfg(any(unix, windows))]
+fn dispatch_available(
+    config: &Arc<StoreConfig>,
+    queues: &mut HashMap<[u8; 32], VecDeque<QueuedOperation>>,
+    active: &mut HashSet<[u8; 32]>,
+    blocking_executor: &tokio::runtime::Handle,
+) {
+    while active.len() < config.max_concurrent_operations {
+        let Some(key_hash) = queues
+            .iter()
+            .find_map(|(key, queue)| (!queue.is_empty() && !active.contains(key)).then_some(*key))
+        else {
+            break;
+        };
+        dispatch_if_idle(key_hash, config, queues, active, blocking_executor);
+    }
+}
+
+#[cfg(any(unix, windows))]
 fn run_owned_operation(
     config: &StoreConfig,
     path: &Path,
@@ -1036,14 +1180,14 @@ fn run_owned_operation(
 ) -> (Operation, BlockingResult) {
     match operation {
         Operation::Load { sender } => {
-            let result = load_checkpoint(config, path);
+            let result = load_blob(config, path);
             (Operation::Load { sender }, BlockingResult::Load(result))
         }
         Operation::Save { payload, sender } => {
             #[cfg(any(unix, windows))]
-            let result = save_checkpoint(config, path, &payload);
+            let result = save_blob(config, path, &payload);
             #[cfg(not(any(unix, windows)))]
-            let result = Err(FileStoreError::UnsupportedPlatform {
+            let result = Err(AtomicBlobStoreError::UnsupportedPlatform {
                 platform: std::env::consts::OS,
             });
             (
@@ -1052,42 +1196,16 @@ fn run_owned_operation(
             )
         }
         Operation::Clear { sender } => {
-            let result = clear_checkpoint(config, path);
+            let result = clear_blob(config, path);
             (Operation::Clear { sender }, BlockingResult::Clear(result))
         }
         Operation::Inspect { sender } => (
             Operation::Inspect { sender },
-            BlockingResult::Inspect(inspect_checkpoint(config, path)),
+            BlockingResult::Inspect(inspect_blob(config, path)),
         ),
-        Operation::LoadWithLegacy {
-            legacy_filename,
-            sender,
-        } => {
-            let result = load_with_legacy(config, path, &legacy_filename);
-            (
-                Operation::LoadWithLegacy {
-                    legacy_filename,
-                    sender,
-                },
-                BlockingResult::LoadWithLegacy(result),
-            )
-        }
-        Operation::InspectWithLegacy {
-            legacy_filename,
-            sender,
-        } => {
-            let result = inspect_with_legacy(config, path, &legacy_filename);
-            (
-                Operation::InspectWithLegacy {
-                    legacy_filename,
-                    sender,
-                },
-                BlockingResult::InspectWithLegacy(result),
-            )
-        }
         Operation::Quarantine { sender } => (
             Operation::Quarantine { sender },
-            BlockingResult::Quarantine(quarantine_checkpoint(config, path)),
+            BlockingResult::Quarantine(quarantine_blob(config, path)),
         ),
     }
 }
@@ -1102,14 +1220,7 @@ fn deliver(operation: Operation, result: BlockingResult) {
         | (Operation::Clear { sender }, BlockingResult::Clear(result)) => {
             let _send_result = sender.send(result);
         }
-        (Operation::Inspect { sender }, BlockingResult::Inspect(result))
-        | (
-            Operation::InspectWithLegacy { sender, .. },
-            BlockingResult::InspectWithLegacy(result),
-        ) => {
-            let _send_result = sender.send(result);
-        }
-        (Operation::LoadWithLegacy { sender, .. }, BlockingResult::LoadWithLegacy(result)) => {
+        (Operation::Inspect { sender }, BlockingResult::Inspect(result)) => {
             let _send_result = sender.send(result);
         }
         (Operation::Quarantine { sender }, BlockingResult::Quarantine(result)) => {
@@ -1123,39 +1234,42 @@ fn deliver(operation: Operation, result: BlockingResult) {
 fn initialize_platform(
     mut root: PathBuf,
     namespace_component: PathBuf,
+    format: BlobFormatIdentity,
     maximum: u64,
-) -> Result<StoreConfig, FileStoreError> {
+    max_concurrent_operations: usize,
+) -> Result<StoreConfig, AtomicBlobStoreError> {
     #[cfg(windows)]
     {
-        root = std::path::absolute(&root).map_err(|source| FileStoreError::Io {
-            operation: FileOperation::NormalizeRoot,
+        root = std::path::absolute(&root).map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::NormalizeRoot,
             source,
         })?;
     }
 
     #[cfg(unix)]
     if root.is_relative() {
-        let current_directory = std::env::current_dir().map_err(|source| FileStoreError::Io {
-            operation: FileOperation::ResolveCurrentDirectory,
-            source,
-        })?;
+        let current_directory =
+            std::env::current_dir().map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::ResolveCurrentDirectory,
+                source,
+            })?;
         root = current_directory.join(root);
     }
 
     let metadata = match std::fs::metadata(&root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(FileStoreError::RootDoesNotExist);
+            return Err(AtomicBlobStoreError::RootDoesNotExist);
         }
         Err(source) => {
-            return Err(FileStoreError::Io {
-                operation: FileOperation::InspectRoot,
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::InspectRoot,
                 source,
             });
         }
     };
     if !metadata.is_dir() {
-        return Err(FileStoreError::RootIsNotDirectory);
+        return Err(AtomicBlobStoreError::RootIsNotDirectory);
     }
 
     let namespace = root.join(namespace_component);
@@ -1164,31 +1278,33 @@ fn initialize_platform(
             #[cfg(unix)]
             sync_directory(
                 &root,
-                FileOperation::OpenRootDirectory,
-                FileOperation::SyncRootDirectory,
+                StoreOperation::OpenRootDirectory,
+                StoreOperation::SyncRootDirectory,
             )?;
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            let metadata = std::fs::metadata(&namespace).map_err(|source| FileStoreError::Io {
-                operation: FileOperation::InspectNamespace,
-                source,
-            })?;
+            let metadata =
+                std::fs::metadata(&namespace).map_err(|source| AtomicBlobStoreError::Io {
+                    operation: StoreOperation::InspectNamespace,
+                    source,
+                })?;
             if !metadata.is_dir() {
-                return Err(FileStoreError::NamespacePathIsNotDirectory);
+                return Err(AtomicBlobStoreError::NamespacePathIsNotDirectory);
             }
         }
         Err(source) => {
-            return Err(FileStoreError::Io {
-                operation: FileOperation::CreateNamespace,
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::CreateNamespace,
                 source,
             });
         }
     }
 
     Ok(StoreConfig {
-        root,
         namespace,
+        format,
         maximum,
+        max_concurrent_operations,
         #[cfg(all(test, unix))]
         hook: None,
     })
@@ -1215,18 +1331,22 @@ enum TestStage {
 fn hit_test_stage(
     config: &StoreConfig,
     stage: TestStage,
-    operation: FileOperation,
-) -> Result<(), FileStoreError> {
+    operation: StoreOperation,
+) -> Result<(), AtomicBlobStoreError> {
     let Some(hook) = &config.hook else {
         return Ok(());
     };
-    hook(stage).map_err(|source| FileStoreError::Io { operation, source })
+    hook(stage).map_err(|source| AtomicBlobStoreError::Io { operation, source })
 }
 
 #[cfg(any(unix, windows))]
 #[cfg_attr(not(any(test, feature = "bench-instrumentation")), allow(dead_code))]
-fn encode_envelope(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreError> {
-    let (header, checksum) = envelope_parts(payload, maximum)?;
+fn encode_envelope(
+    format: &BlobFormatIdentity,
+    payload: &[u8],
+    maximum: u64,
+) -> Result<Vec<u8>, AtomicBlobStoreError> {
+    let (header, checksum) = envelope_parts(format, payload, maximum)?;
     let mut envelope = Vec::with_capacity(header.len() + payload.len() + checksum.len());
     envelope.extend_from_slice(&header);
     envelope.extend_from_slice(payload);
@@ -1236,28 +1356,30 @@ fn encode_envelope(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreErr
 
 #[cfg(any(unix, windows))]
 fn envelope_parts(
+    format: &BlobFormatIdentity,
     payload: &[u8],
     maximum: u64,
-) -> Result<([u8; HEADER_LEN], [u8; CHECKSUM_LEN]), FileStoreError> {
+) -> Result<([u8; HEADER_LEN], [u8; CHECKSUM_LEN]), AtomicBlobStoreError> {
     let size = u64::try_from(payload.len())
-        .map_err(|_| FileStoreError::InvalidPayloadLength { declared: u64::MAX })?;
+        .map_err(|_| AtomicBlobStoreError::InvalidPayloadLength { declared: u64::MAX })?;
     if size > maximum {
-        return Err(FileStoreError::CheckpointTooLarge { size, maximum });
+        return Err(AtomicBlobStoreError::BlobTooLarge { size, maximum });
     }
     payload
         .len()
         .checked_add(HEADER_LEN + CHECKSUM_LEN)
-        .ok_or(FileStoreError::InvalidPayloadLength { declared: size })?;
+        .ok_or(AtomicBlobStoreError::InvalidPayloadLength { declared: size })?;
     let mut header = [0; HEADER_LEN];
-    header[..MAGIC.len()].copy_from_slice(MAGIC);
-    header[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&ENVELOPE_VERSION.to_be_bytes());
-    header[MAGIC.len() + 2..].copy_from_slice(&size.to_be_bytes());
+    header[..DOMAIN_TAG_LEN].copy_from_slice(format.domain_tag());
+    header[DOMAIN_TAG_LEN..DOMAIN_TAG_LEN + 2]
+        .copy_from_slice(&format.envelope_version().to_be_bytes());
+    header[DOMAIN_TAG_LEN + 2..].copy_from_slice(&size.to_be_bytes());
     let checksum = crc32c::crc32c_append(crc32c::crc32c(&header), payload).to_be_bytes();
     Ok((header, checksum))
 }
 
 #[cfg(any(unix, windows))]
-fn load_checkpoint(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>, FileStoreError> {
+fn load_blob(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>, AtomicBlobStoreError> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -1265,55 +1387,63 @@ fn load_checkpoint(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>,
             return Ok(None);
         }
         Err(source) => {
-            return Err(FileStoreError::Io {
-                operation: FileOperation::OpenCheckpoint,
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::OpenBlob,
                 source,
             });
         }
     };
-    decode_reader(&mut file, config.maximum).map(Some)
+    decode_reader(&config.format, &mut file, config.maximum).map(Some)
 }
 
 #[cfg(any(unix, windows))]
-fn decode_reader(reader: &mut impl Read, maximum: u64) -> Result<Vec<u8>, FileStoreError> {
-    decode_reader_with_usize_limit(reader, maximum, usize::MAX as u64)
+fn decode_reader(
+    format: &BlobFormatIdentity,
+    reader: &mut impl Read,
+    maximum: u64,
+) -> Result<Vec<u8>, AtomicBlobStoreError> {
+    decode_reader_with_usize_limit(format, reader, maximum, usize::MAX as u64)
 }
 
 #[cfg(any(unix, windows))]
 fn decode_reader_with_usize_limit(
+    format: &BlobFormatIdentity,
     reader: &mut impl Read,
     maximum: u64,
     usize_limit: u64,
-) -> Result<Vec<u8>, FileStoreError> {
+) -> Result<Vec<u8>, AtomicBlobStoreError> {
     let mut magic = [0; 8];
     read_section(reader, &mut magic, EnvelopeSection::Magic)?;
-    if &magic != MAGIC {
-        return Err(FileStoreError::InvalidEnvelopeMagic);
+    if &magic != format.domain_tag() {
+        return Err(AtomicBlobStoreError::InvalidEnvelopeDomain {
+            expected: *format.domain_tag(),
+            found: magic,
+        });
     }
 
     let mut version = [0; 2];
     read_section(reader, &mut version, EnvelopeSection::Version)?;
     let version = u16::from_be_bytes(version);
-    if version != ENVELOPE_VERSION {
-        return Err(FileStoreError::UnsupportedEnvelopeVersion { found: version });
+    if version != format.envelope_version() {
+        return Err(AtomicBlobStoreError::UnsupportedEnvelopeVersion { found: version });
     }
 
     let mut length = [0; 8];
     read_section(reader, &mut length, EnvelopeSection::PayloadLength)?;
     let declared = u64::from_be_bytes(length);
     if declared > maximum {
-        return Err(FileStoreError::CheckpointTooLarge {
+        return Err(AtomicBlobStoreError::BlobTooLarge {
             size: declared,
             maximum,
         });
     }
     if declared > usize_limit {
-        return Err(FileStoreError::InvalidPayloadLength { declared });
+        return Err(AtomicBlobStoreError::InvalidPayloadLength { declared });
     }
     let payload_len = usize::try_from(declared)
         .ok()
         .filter(|size| size.checked_add(HEADER_LEN + CHECKSUM_LEN).is_some())
-        .ok_or(FileStoreError::InvalidPayloadLength { declared })?;
+        .ok_or(AtomicBlobStoreError::InvalidPayloadLength { declared })?;
 
     let mut payload = vec![0; payload_len];
     read_section(reader, &mut payload, EnvelopeSection::Payload)?;
@@ -1323,22 +1453,22 @@ fn decode_reader_with_usize_limit(
     let mut trailing = [0; 1];
     match reader.read(&mut trailing) {
         Ok(0) => {}
-        Ok(_) => return Err(FileStoreError::TrailingData),
+        Ok(_) => return Err(AtomicBlobStoreError::TrailingData),
         Err(source) => {
-            return Err(FileStoreError::Io {
-                operation: FileOperation::ReadEnvelope,
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::ReadEnvelope,
                 source,
             });
         }
     }
 
-    let mut actual = crc32c::crc32c(MAGIC);
-    actual = crc32c::crc32c_append(actual, &ENVELOPE_VERSION.to_be_bytes());
+    let mut actual = crc32c::crc32c(format.domain_tag());
+    actual = crc32c::crc32c_append(actual, &format.envelope_version().to_be_bytes());
     actual = crc32c::crc32c_append(actual, &declared.to_be_bytes());
     actual = crc32c::crc32c_append(actual, &payload);
     let expected = u32::from_be_bytes(checksum);
     if expected != actual {
-        return Err(FileStoreError::ChecksumMismatch { expected, actual });
+        return Err(AtomicBlobStoreError::ChecksumMismatch { expected, actual });
     }
     Ok(payload)
 }
@@ -1348,14 +1478,14 @@ fn read_section(
     reader: &mut impl Read,
     bytes: &mut [u8],
     section: EnvelopeSection,
-) -> Result<(), FileStoreError> {
+) -> Result<(), AtomicBlobStoreError> {
     match reader.read_exact(bytes) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-            Err(FileStoreError::TruncatedEnvelope { section })
+            Err(AtomicBlobStoreError::TruncatedEnvelope { section })
         }
-        Err(source) => Err(FileStoreError::Io {
-            operation: FileOperation::ReadEnvelope,
+        Err(source) => Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::ReadEnvelope,
             source,
         }),
     }
@@ -1365,43 +1495,51 @@ fn read_section(
 ///
 /// This module is deliberately feature-gated so ordinary consumers do not
 /// acquire an additional public surface. Its functions call the same encoder
-/// and bounded reader used by [`FileStore`].
+/// and bounded reader used by [`AtomicBlobStore`].
 #[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
 #[doc(hidden)]
 pub mod bench_instrumentation {
     use std::io::Read;
 
-    use super::{CHECKSUM_LEN, FileStoreError, HEADER_LEN, decode_reader, encode_envelope};
+    use super::{AtomicBlobStoreError, CHECKSUM_LEN, HEADER_LEN, decode_reader, encode_envelope};
 
     pub const ENVELOPE_OVERHEAD: usize = HEADER_LEN + CHECKSUM_LEN;
 
-    pub fn encode(payload: &[u8], maximum: u64) -> Result<Vec<u8>, FileStoreError> {
-        encode_envelope(payload, maximum)
+    pub fn encode(
+        format: &super::BlobFormatIdentity,
+        payload: &[u8],
+        maximum: u64,
+    ) -> Result<Vec<u8>, AtomicBlobStoreError> {
+        encode_envelope(format, payload, maximum)
     }
 
-    pub fn decode(reader: &mut impl Read, maximum: u64) -> Result<Vec<u8>, FileStoreError> {
-        decode_reader(reader, maximum)
+    pub fn decode(
+        format: &super::BlobFormatIdentity,
+        reader: &mut impl Read,
+        maximum: u64,
+    ) -> Result<Vec<u8>, AtomicBlobStoreError> {
+        decode_reader(format, reader, maximum)
     }
 }
 
 #[cfg(any(unix, windows))]
-fn ensure_namespace_available(config: &StoreConfig) -> Result<(), FileStoreError> {
+fn ensure_namespace_available(config: &StoreConfig) -> Result<(), AtomicBlobStoreError> {
     match std::fs::metadata(&config.namespace) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(FileStoreError::NamespacePathIsNotDirectory),
-        Err(source) => Err(FileStoreError::Io {
-            operation: FileOperation::InspectNamespace,
+        Ok(_) => Err(AtomicBlobStoreError::NamespacePathIsNotDirectory),
+        Err(source) => Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::InspectNamespace,
             source,
         }),
     }
 }
 
 #[cfg(unix)]
-fn save_checkpoint(
+fn save_blob(
     config: &StoreConfig,
     path: &Path,
     payload: &[u8],
-) -> Result<(), FileStoreError> {
+) -> Result<(), AtomicBlobStoreError> {
     use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
@@ -1410,46 +1548,52 @@ fn save_checkpoint(
     hit_test_stage(
         config,
         TestStage::BeforeEnvelope,
-        FileOperation::WriteEnvelope,
+        StoreOperation::WriteEnvelope,
     )?;
     #[cfg(test)]
-    let envelope = encode_envelope(payload, config.maximum)?;
+    let envelope = encode_envelope(&config.format, payload, config.maximum)?;
     #[cfg(not(test))]
-    let (header, checksum) = envelope_parts(payload, config.maximum)?;
+    let (header, checksum) = envelope_parts(&config.format, payload, config.maximum)?;
     #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::AfterEnvelope,
-        FileOperation::WriteEnvelope,
+        StoreOperation::WriteEnvelope,
     )?;
     #[cfg(all(test, unix))]
     hit_test_stage(
         config,
         TestStage::BeforeAtomicOpen,
-        FileOperation::OpenAtomicWriter,
+        StoreOperation::OpenAtomicWriter,
     )?;
     let mut options = atomic_write_file::OpenOptions::new();
     StdOpenOptionsExt::mode(&mut options, 0o600);
     AtomicOpenOptionsExt::preserve_mode(&mut options, false);
     AtomicOpenOptionsExt::preserve_owner(&mut options, false);
-    let mut writer = options.open(path).map_err(|source| FileStoreError::Io {
-        operation: FileOperation::OpenAtomicWriter,
-        source,
-    })?;
+    let mut writer = options
+        .open(path)
+        .map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::OpenAtomicWriter,
+            source,
+        })?;
     #[cfg(all(test, unix))]
     {
         let midpoint = envelope.len() / 2;
         writer
             .write_all(&envelope[..midpoint])
-            .map_err(|source| FileStoreError::Io {
-                operation: FileOperation::WriteEnvelope,
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::WriteEnvelope,
                 source,
             })?;
-        hit_test_stage(config, TestStage::DuringWrite, FileOperation::WriteEnvelope)?;
+        hit_test_stage(
+            config,
+            TestStage::DuringWrite,
+            StoreOperation::WriteEnvelope,
+        )?;
         writer
             .write_all(&envelope[midpoint..])
-            .map_err(|source| FileStoreError::Io {
-                operation: FileOperation::WriteEnvelope,
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::WriteEnvelope,
                 source,
             })?;
     }
@@ -1457,8 +1601,8 @@ fn save_checkpoint(
     for section in [&header[..], payload, &checksum[..]] {
         writer
             .write_all(section)
-            .map_err(|source| FileStoreError::Io {
-                operation: FileOperation::WriteEnvelope,
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::WriteEnvelope,
                 source,
             })?;
     }
@@ -1466,7 +1610,7 @@ fn save_checkpoint(
     hit_test_stage(
         config,
         TestStage::BeforeCommit,
-        FileOperation::WriteEnvelope,
+        StoreOperation::WriteEnvelope,
     )?;
     #[cfg(all(test, unix))]
     if let Err(source) = config
@@ -1474,155 +1618,86 @@ fn save_checkpoint(
         .as_ref()
         .map_or(Ok(()), |hook| hook(TestStage::CommitError))
     {
-        return Err(FileStoreError::AtomicCommit { source });
+        return Err(AtomicBlobStoreError::AtomicCommit { source });
     }
     writer
         .commit()
-        .map_err(|source| FileStoreError::AtomicCommit { source })?;
+        .map_err(|source| AtomicBlobStoreError::AtomicCommit { source })?;
     #[cfg(all(test, unix))]
-    hit_test_stage(config, TestStage::AfterCommit, FileOperation::WriteEnvelope)?;
+    hit_test_stage(
+        config,
+        TestStage::AfterCommit,
+        StoreOperation::WriteEnvelope,
+    )?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreError> {
+fn clear_blob(config: &StoreConfig, path: &Path) -> Result<(), AtomicBlobStoreError> {
     #[cfg(all(test, unix))]
-    hit_test_stage(
-        config,
-        TestStage::BeforeRemove,
-        FileOperation::RemoveCheckpoint,
-    )?;
+    hit_test_stage(config, TestStage::BeforeRemove, StoreOperation::RemoveBlob)?;
     match std::fs::remove_file(path) {
         Ok(()) => {
             #[cfg(all(test, unix))]
-            hit_test_stage(
-                config,
-                TestStage::AfterRemove,
-                FileOperation::RemoveCheckpoint,
-            )?;
+            hit_test_stage(config, TestStage::AfterRemove, StoreOperation::RemoveBlob)?;
             #[cfg(all(test, unix))]
             hit_test_stage(
                 config,
                 TestStage::BeforeDirectorySync,
-                FileOperation::SyncNamespaceDirectory,
+                StoreOperation::SyncNamespaceDirectory,
             )?;
             sync_directory(
                 &config.namespace,
-                FileOperation::OpenNamespaceDirectory,
-                FileOperation::SyncNamespaceDirectory,
+                StoreOperation::OpenNamespaceDirectory,
+                StoreOperation::SyncNamespaceDirectory,
             )?;
             #[cfg(all(test, unix))]
             hit_test_stage(
                 config,
                 TestStage::AfterDirectorySync,
-                FileOperation::SyncNamespaceDirectory,
+                StoreOperation::SyncNamespaceDirectory,
             )?;
             Ok(())
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => ensure_namespace_available(config),
-        Err(source) => Err(FileStoreError::Io {
-            operation: FileOperation::RemoveCheckpoint,
+        Err(source) => Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::RemoveBlob,
             source,
         }),
     }
 }
 
 #[cfg(any(unix, windows))]
-fn inspect_checkpoint(
-    config: &StoreConfig,
-    path: &Path,
-) -> Result<CheckpointInspection, FileStoreError> {
+fn inspect_blob(config: &StoreConfig, path: &Path) -> Result<BlobInspection, AtomicBlobStoreError> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(CheckpointInspection {
-            state: CheckpointState::Present,
+        Ok(metadata) if metadata.file_type().is_file() => Ok(BlobInspection {
+            state: BlobState::Present,
             size: Some(metadata.len()),
             modified: metadata.modified().ok(),
         }),
-        Ok(_) => Err(FileStoreError::UnexpectedFileType),
+        Ok(_) => Err(AtomicBlobStoreError::UnexpectedFileType),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             ensure_namespace_available(config)?;
-            Ok(CheckpointInspection {
-                state: CheckpointState::Absent,
+            Ok(BlobInspection {
+                state: BlobState::Absent,
                 size: None,
                 modified: None,
             })
         }
-        Err(source) => Err(FileStoreError::Io {
-            operation: FileOperation::InspectCheckpoint,
+        Err(source) => Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::InspectBlob,
             source,
         }),
     }
 }
 
 #[cfg(any(unix, windows))]
-fn load_with_legacy(
-    config: &StoreConfig,
-    canonical_path: &Path,
-    legacy_filename: &Path,
-) -> Result<LegacyLoad, FileStoreError> {
-    if let Some(payload) = load_checkpoint(config, canonical_path)? {
-        return Ok(LegacyLoad::Present(payload));
-    }
-    let legacy_path = config.root.join(legacy_filename);
-    match std::fs::symlink_metadata(&legacy_path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(LegacyLoad::LegacyDetected {
-            diagnostic_path: legacy_path,
-        }),
-        Ok(_) => Err(FileStoreError::UnexpectedFileType),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
-            ) =>
-        {
-            Ok(LegacyLoad::Absent)
-        }
-        Err(source) => Err(FileStoreError::Io {
-            operation: FileOperation::InspectLegacyCheckpoint,
-            source,
-        }),
-    }
-}
-
-#[cfg(any(unix, windows))]
-fn inspect_with_legacy(
-    config: &StoreConfig,
-    canonical_path: &Path,
-    legacy_filename: &Path,
-) -> Result<CheckpointInspection, FileStoreError> {
-    let canonical = inspect_checkpoint(config, canonical_path)?;
-    if canonical.state == CheckpointState::Present {
-        return Ok(canonical);
-    }
-    match std::fs::symlink_metadata(config.root.join(legacy_filename)) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(CheckpointInspection {
-            state: CheckpointState::LegacyDetected,
-            size: Some(metadata.len()),
-            modified: metadata.modified().ok(),
-        }),
-        Ok(_) => Err(FileStoreError::UnexpectedFileType),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
-            ) =>
-        {
-            Ok(canonical)
-        }
-        Err(source) => Err(FileStoreError::Io {
-            operation: FileOperation::InspectLegacyCheckpoint,
-            source,
-        }),
-    }
-}
-
-#[cfg(any(unix, windows))]
-fn random_identifier() -> Result<String, FileStoreError> {
+fn random_identifier() -> Result<String, AtomicBlobStoreError> {
     const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)
-        .map_err(|source| FileStoreError::IdentifierGeneration { source })?;
+        .map_err(|source| AtomicBlobStoreError::IdentifierGeneration { source })?;
     let mut result = String::with_capacity(64);
     for byte in bytes {
         result.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
@@ -1632,19 +1707,20 @@ fn random_identifier() -> Result<String, FileStoreError> {
 }
 
 #[cfg(unix)]
-fn quarantine_checkpoint(
+fn quarantine_blob(
     config: &StoreConfig,
     path: &Path,
-) -> Result<QuarantineInfo, FileStoreError> {
+) -> Result<QuarantineInfo, AtomicBlobStoreError> {
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
-        .ok_or(FileStoreError::UnexpectedFileType)?;
+        .ok_or(AtomicBlobStoreError::UnexpectedFileType)?;
     loop {
         let identifier = random_identifier()?;
-        let destination = config
-            .namespace
-            .join(format!("{hash}.session.quarantine-v1.{identifier}"));
+        let destination = config.namespace.join(format!(
+            "{hash}{}.quarantine-v1.{identifier}",
+            config.format.filename_suffix()
+        ));
         match rustix::fs::renameat_with(
             rustix::fs::CWD,
             path,
@@ -1662,11 +1738,11 @@ fn quarantine_checkpoint(
             }
             Err(error) if error == rustix::io::Errno::NOENT => {
                 ensure_namespace_available(config)?;
-                return Err(FileStoreError::QuarantineSourceMissing);
+                return Err(AtomicBlobStoreError::QuarantineSourceMissing);
             }
             Err(error) if error == rustix::io::Errno::EXIST => {}
             Err(error) => {
-                return Err(FileStoreError::QuarantineCommit {
+                return Err(AtomicBlobStoreError::QuarantineCommit {
                     source: io::Error::from_raw_os_error(error.raw_os_error()),
                 });
             }
@@ -1678,11 +1754,11 @@ fn quarantine_checkpoint(
 fn sync_quarantine_namespace(
     config: &StoreConfig,
     quarantine: &QuarantineInfo,
-) -> Result<(), FileStoreError> {
+) -> Result<(), AtomicBlobStoreError> {
     #[cfg(test)]
     if let Some(hook) = &config.hook {
         hook(TestStage::BeforeDirectorySync).map_err(|source| {
-            FileStoreError::QuarantineNamespaceSync {
+            AtomicBlobStoreError::QuarantineNamespaceSync {
                 quarantine: quarantine.clone(),
                 source,
             }
@@ -1690,14 +1766,14 @@ fn sync_quarantine_namespace(
     }
 
     let directory = std::fs::File::open(&config.namespace).map_err(|source| {
-        FileStoreError::QuarantineNamespaceSync {
+        AtomicBlobStoreError::QuarantineNamespaceSync {
             quarantine: quarantine.clone(),
             source,
         }
     })?;
     directory
         .sync_all()
-        .map_err(|source| FileStoreError::QuarantineNamespaceSync {
+        .map_err(|source| AtomicBlobStoreError::QuarantineNamespaceSync {
             quarantine: quarantine.clone(),
             source,
         })?;
@@ -1705,7 +1781,7 @@ fn sync_quarantine_namespace(
     #[cfg(test)]
     if let Some(hook) = &config.hook {
         hook(TestStage::AfterDirectorySync).map_err(|source| {
-            FileStoreError::QuarantineNamespaceSync {
+            AtomicBlobStoreError::QuarantineNamespaceSync {
                 quarantine: quarantine.clone(),
                 source,
             }
@@ -1719,16 +1795,16 @@ fn sync_quarantine_namespace(
 fn cleanup_stale_files(
     config: &StoreConfig,
     _minimum_age: Duration,
-) -> Result<CleanupReport, FileStoreError> {
+) -> Result<CleanupReport, AtomicBlobStoreError> {
     #[cfg(not(test))]
     let _ = config;
     #[cfg(test)]
     hit_test_stage(
         config,
         TestStage::BeforeCleanup,
-        FileOperation::EnumerateTemporaryFiles,
+        StoreOperation::EnumerateTemporaryFiles,
     )?;
-    Err(FileStoreError::CleanupUnsupported {
+    Err(AtomicBlobStoreError::CleanupUnsupported {
         platform: std::env::consts::OS,
     })
 }
@@ -1811,7 +1887,7 @@ fn create_windows_staging(
     header: &[u8],
     payload: &[u8],
     checksum: &[u8],
-) -> Result<(), FileStoreError> {
+) -> Result<(), AtomicBlobStoreError> {
     use std::io::Write;
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -1833,8 +1909,8 @@ fn create_windows_staging(
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return Err(FileStoreError::Io {
-            operation: FileOperation::OpenAtomicWriter,
+        return Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::OpenAtomicWriter,
             source: io::Error::last_os_error(),
         });
     }
@@ -1842,15 +1918,15 @@ fn create_windows_staging(
     let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
     for section in [header, payload, checksum] {
         file.write_all(section)
-            .map_err(|source| FileStoreError::Io {
-                operation: FileOperation::WriteEnvelope,
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: StoreOperation::WriteEnvelope,
                 source,
             })?;
     }
     // SAFETY: the file still owns a live handle.
     if unsafe { FlushFileBuffers(handle) } == 0 {
-        return Err(FileStoreError::Io {
-            operation: FileOperation::WriteEnvelope,
+        return Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::WriteEnvelope,
             source: io::Error::last_os_error(),
         });
     }
@@ -1925,29 +2001,30 @@ fn refresh_windows_clear_age(path: &Path) -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
-fn save_checkpoint(
+fn save_blob(
     config: &StoreConfig,
     path: &Path,
     payload: &[u8],
-) -> Result<(), FileStoreError> {
+) -> Result<(), AtomicBlobStoreError> {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let (header, checksum) = envelope_parts(payload, config.maximum)?;
+    let (header, checksum) = envelope_parts(&config.format, payload, config.maximum)?;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
-        .ok_or(FileStoreError::UnexpectedFileType)?;
+        .ok_or(AtomicBlobStoreError::UnexpectedFileType)?;
     loop {
         let identifier = random_identifier()?;
-        let staging = config
-            .namespace
-            .join(format!("{hash}.session.tmp-v1.save.{identifier}"));
+        let staging = config.namespace.join(format!(
+            "{hash}{}.tmp-v1.save.{identifier}",
+            config.format.filename_suffix()
+        ));
         match create_windows_staging(&staging, &header, payload, &checksum) {
             Ok(()) => {}
-            Err(FileStoreError::Io { source, .. })
+            Err(AtomicBlobStoreError::Io { source, .. })
                 if source.kind() == io::ErrorKind::AlreadyExists =>
             {
                 continue;
@@ -1964,20 +2041,20 @@ fn save_checkpoint(
                     path,
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
                 )
-                .map_err(|source| FileStoreError::AtomicCommit { source });
+                .map_err(|source| AtomicBlobStoreError::AtomicCommit { source });
             }
-            Err(source) => return Err(FileStoreError::AtomicCommit { source }),
+            Err(source) => return Err(AtomicBlobStoreError::AtomicCommit { source }),
         }
     }
 }
 
 #[cfg(windows)]
-fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreError> {
+fn clear_blob(config: &StoreConfig, path: &Path) -> Result<(), AtomicBlobStoreError> {
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
-        .ok_or(FileStoreError::UnexpectedFileType)?;
+        .ok_or(AtomicBlobStoreError::UnexpectedFileType)?;
     match refresh_windows_clear_age(path) {
         Ok(()) => {}
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -1985,21 +2062,22 @@ fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreEr
             return Ok(());
         }
         Err(source) => {
-            return Err(FileStoreError::Io {
-                operation: FileOperation::RefreshClearStagingAge,
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::RefreshClearStagingAge,
                 source,
             });
         }
     }
     loop {
         let identifier = random_identifier()?;
-        let staging = config
-            .namespace
-            .join(format!("{hash}.session.tmp-v1.clear.{identifier}"));
+        let staging = config.namespace.join(format!(
+            "{hash}{}.tmp-v1.clear.{identifier}",
+            config.format.filename_suffix()
+        ));
         match move_file(path, &staging, MOVEFILE_WRITE_THROUGH) {
             Ok(()) => {
-                return delete_file(&staging).map_err(|source| FileStoreError::Io {
-                    operation: FileOperation::RemoveTemporaryFile,
+                return delete_file(&staging).map_err(|source| AtomicBlobStoreError::Io {
+                    operation: StoreOperation::RemoveTemporaryFile,
                     source,
                 });
             }
@@ -2009,8 +2087,8 @@ fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreEr
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(source) => {
-                return Err(FileStoreError::Io {
-                    operation: FileOperation::RemoveCheckpoint,
+                return Err(AtomicBlobStoreError::Io {
+                    operation: StoreOperation::RemoveBlob,
                     source,
                 });
             }
@@ -2019,20 +2097,21 @@ fn clear_checkpoint(config: &StoreConfig, path: &Path) -> Result<(), FileStoreEr
 }
 
 #[cfg(windows)]
-fn quarantine_checkpoint(
+fn quarantine_blob(
     config: &StoreConfig,
     path: &Path,
-) -> Result<QuarantineInfo, FileStoreError> {
+) -> Result<QuarantineInfo, AtomicBlobStoreError> {
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
-        .ok_or(FileStoreError::UnexpectedFileType)?;
+        .ok_or(AtomicBlobStoreError::UnexpectedFileType)?;
     loop {
         let identifier = random_identifier()?;
-        let destination = config
-            .namespace
-            .join(format!("{hash}.session.quarantine-v1.{identifier}"));
+        let destination = config.namespace.join(format!(
+            "{hash}{}.quarantine-v1.{identifier}",
+            config.format.filename_suffix()
+        ));
         match move_file(path, &destination, MOVEFILE_WRITE_THROUGH) {
             Ok(()) => {
                 return Ok(QuarantineInfo {
@@ -2042,10 +2121,10 @@ fn quarantine_checkpoint(
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 ensure_namespace_available(config)?;
-                return Err(FileStoreError::QuarantineSourceMissing);
+                return Err(AtomicBlobStoreError::QuarantineSourceMissing);
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(source) => return Err(FileStoreError::QuarantineCommit { source }),
+            Err(source) => return Err(AtomicBlobStoreError::QuarantineCommit { source }),
         }
     }
 }
@@ -2054,13 +2133,14 @@ fn quarantine_checkpoint(
 fn cleanup_stale_files(
     config: &StoreConfig,
     minimum_age: Duration,
-) -> Result<CleanupReport, FileStoreError> {
+) -> Result<CleanupReport, AtomicBlobStoreError> {
     let now = SystemTime::now();
     let mut report = CleanupReport::default();
-    let entries = std::fs::read_dir(&config.namespace).map_err(|source| FileStoreError::Io {
-        operation: FileOperation::EnumerateTemporaryFiles,
-        source,
-    })?;
+    let entries =
+        std::fs::read_dir(&config.namespace).map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::EnumerateTemporaryFiles,
+            source,
+        })?;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
@@ -2073,7 +2153,7 @@ fn cleanup_stale_files(
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !is_owned_temporary_filename(&name) {
+        if !is_owned_temporary_filename(&name, config.format.filename_suffix()) {
             continue;
         }
         let metadata = match std::fs::symlink_metadata(entry.path()) {
@@ -2114,8 +2194,9 @@ fn cleanup_stale_files(
 }
 
 #[cfg(windows)]
-fn is_owned_temporary_filename(name: &str) -> bool {
-    let Some((hash, rest)) = name.split_once(".session.tmp-v1.") else {
+fn is_owned_temporary_filename(name: &str, suffix: &str) -> bool {
+    let marker = format!("{suffix}.tmp-v1.");
+    let Some((hash, rest)) = name.split_once(&marker) else {
         return false;
     };
     if hash.len() != 64
@@ -2138,17 +2219,19 @@ fn is_owned_temporary_filename(name: &str) -> bool {
 #[cfg(unix)]
 fn sync_directory(
     path: &Path,
-    open_operation: FileOperation,
-    sync_operation: FileOperation,
-) -> Result<(), FileStoreError> {
-    let directory = std::fs::File::open(path).map_err(|source| FileStoreError::Io {
+    open_operation: StoreOperation,
+    sync_operation: StoreOperation,
+) -> Result<(), AtomicBlobStoreError> {
+    let directory = std::fs::File::open(path).map_err(|source| AtomicBlobStoreError::Io {
         operation: open_operation,
         source,
     })?;
-    directory.sync_all().map_err(|source| FileStoreError::Io {
-        operation: sync_operation,
-        source,
-    })
+    directory
+        .sync_all()
+        .map_err(|source| AtomicBlobStoreError::Io {
+            operation: sync_operation,
+            source,
+        })
 }
 
 #[cfg(all(test, any(unix, windows)))]

@@ -3,8 +3,8 @@
 This independent workspace contains the optional file-backed implementations of
 the `SessionStore` APIs owned by `rumqttc-v4-next` and `rumqttc-v5-next`.
 
-- [`core`](core/README.md) provides protocol-neutral, crash-consistent local
-  checkpoint storage.
+- [`atomic-blob-store`](atomic-blob-store/README.md) provides neutral,
+  crash-consistent bounded blob snapshots.
 - [`adapter`](adapter/README.md) provides independently selectable `v4` and
   `v5` modules in one package.
 - [`consumer-tests`](consumer-tests/) verifies the dual-protocol public API as

@@ -70,7 +70,7 @@ jobs:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
           cargo clippy --locked --all-targets \
-            -p rumqttc-session-store-file-core-next \
+            -p atomic-blob-store \
             -p rumqttc-session-store-file-next --all-features -- \
             -D warnings -D clippy::multiple_crate_versions
       - name: Lint persistence benchmarks
@@ -80,6 +80,9 @@ jobs:
         if: ${{ matrix.os != 'windows-latest' }}
         working-directory: session-store-file
         run: |
+          cargo doc --locked -p atomic-blob-store --no-deps
+          cargo test --locked -p atomic-blob-store --doc
+          cargo check --locked -p atomic-blob-store --examples
           cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --no-deps
           cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --features v4 --no-deps
           cargo doc --locked -p rumqttc-session-store-file-next --no-default-features --features v5 --no-deps
@@ -87,6 +90,9 @@ jobs:
           cargo check --locked -p rumqttc-session-store-file-next --example persistent_session_file_store_v4 --features v4
           cargo check --locked -p rumqttc-session-store-file-next --example persistent_session_file_store_v5 --features v5
           cargo check --locked -p rumqttc-session-store-file-next --example persistent_session_file_store_dual --features v4,v5
+          if rg -n -i 'rumqtt|mqtt|session|checkpoint' atomic-blob-store; then
+            exit 1
+          fi
       - name: Check benchmark routing
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
@@ -110,10 +116,10 @@ jobs:
           workspaces: session-store-file -> target
       - run: |
           cargo check --locked --manifest-path session-store-file/Cargo.toml \
-            -p rumqttc-session-store-file-core-next \
+            -p atomic-blob-store \
             -p rumqttc-session-store-file-next --all-features
           cargo check --locked --manifest-path session-store-file/Cargo.toml \
-            -p rumqttc-session-store-file-core-next --target wasm32-unknown-unknown
+            -p atomic-blob-store --target wasm32-unknown-unknown
 
   package:
     name: Package contents
@@ -123,6 +129,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: |
           cargo package --locked --no-verify --manifest-path session-store-file/Cargo.toml \
-            -p rumqttc-session-store-file-core-next
+            -p atomic-blob-store
           cargo package --locked --list --manifest-path session-store-file/Cargo.toml \
             -p rumqttc-session-store-file-next

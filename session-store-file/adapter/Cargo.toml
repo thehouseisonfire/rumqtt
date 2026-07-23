@@ -23,8 +23,9 @@ v5 = ["dep:rumqttc-v5"]
 [dependencies]
 rumqttc-v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", version = "0.34.0-alpha", default-features = false, optional = true }
 rumqttc-v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", version = "0.34.0-alpha", default-features = false, optional = true }
-rumqttc-session-store-file-core-next = { path = "../core", version = "0.34.0-alpha" }
+atomic-blob-store = { path = "../atomic-blob-store", version = "0.1.0-alpha.1" }
 thiserror = "2.0.8"
+tokio = { version = "1.40", features = ["rt"] }
 
 [dev-dependencies]
 crc32c = "0.6"

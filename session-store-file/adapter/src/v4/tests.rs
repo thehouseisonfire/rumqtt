@@ -1,4 +1,4 @@
-use rumqttc_session_store_file_core_next::FileStoreError;
+use atomic_blob_store::AtomicBlobStoreError;
 use rumqttc_v4::{
     PersistedAckMode, PersistedSession, SessionDecodeError, SessionStore, SessionStoreKey,
 };
@@ -49,19 +49,26 @@ async fn existing_checkpoint_round_trip_and_legacy_detection_work() {
     let key = SessionStoreKey::new("scope", "client");
     store.save(&key, &session(7)).await.unwrap();
     assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
+    assert_eq!(store.inner.legacy_inspection_count(), 0);
+    let legacy = root.path().join(legacy_example_filename(&key));
+    std::fs::create_dir(&legacy).unwrap();
     assert_eq!(
         store.inspect(&key).await.unwrap().state,
         CheckpointState::Present
     );
+    assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
+    assert_eq!(store.inner.legacy_inspection_count(), 0);
+    std::fs::remove_dir(&legacy).unwrap();
     store.clear(&key).await.unwrap();
 
-    let legacy = root.path().join(legacy_example_filename(&key));
     std::fs::write(&legacy, b"legacy").unwrap();
     assert_eq!(
         store.inspect(&key).await.unwrap().state,
         CheckpointState::LegacyDetected
     );
+    assert_eq!(store.inner.legacy_inspection_count(), 1);
     let error = store.load(&key).await.unwrap_err();
+    assert_eq!(store.inner.legacy_inspection_count(), 2);
     assert!(matches!(
         error.downcast_ref::<SessionFileStoreError>(),
         Some(SessionFileStoreError::LegacyCheckpointDetected { diagnostic_path }) if diagnostic_path == &legacy
@@ -102,7 +109,7 @@ async fn envelope_and_codec_errors_remain_distinct() {
     assert!(matches!(
         error.downcast_ref::<SessionFileStoreError>(),
         Some(SessionFileStoreError::FileStore(
-            FileStoreError::ChecksumMismatch { .. }
+            AtomicBlobStoreError::ChecksumMismatch { .. }
         ))
     ));
 
