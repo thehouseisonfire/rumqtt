@@ -19,10 +19,6 @@ pub fn valid_topic(topic: &str) -> bool {
 ///
 /// <https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718106>
 ///
-/// # Panics
-///
-/// Panics only if `split('/')` produces no items, which does not happen for
-/// Rust strings.
 #[must_use]
 pub fn valid_filter(filter: &str) -> bool {
     if filter.is_empty() {
@@ -32,10 +28,11 @@ pub fn valid_filter(filter: &str) -> bool {
     // rev() is used so we can easily get the last entry
     let mut hirerarchy = filter.split('/').rev();
 
-    // split will never return an empty iterator
-    // even if the pattern isn't matched, the original string will be there
-    // so it is safe to just unwrap here!
-    let last = hirerarchy.next().unwrap();
+    // `split` always yields at least the original string. Keep the fallback so
+    // this validator remains total even if its iteration strategy changes.
+    let Some(last) = hirerarchy.next() else {
+        return false;
+    };
 
     // only single '#" or '+' is allowed in last entry
     // invalid: sport/tennis#

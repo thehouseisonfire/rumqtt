@@ -57,17 +57,13 @@ pub fn check(stream: Iter<u8>) -> Result<ParsedFixedHeader, Error> {
 /// Returns an error when the header is incomplete or the remaining length field
 /// is malformed.
 ///
-/// # Panics
-///
-/// Panics only if the iterator yields fewer than two bytes after the explicit
-/// length check above, which would indicate a broken iterator implementation.
 pub fn parse_fixed_header(mut stream: Iter<u8>) -> Result<ParsedFixedHeader, Error> {
     let stream_len = stream.len();
     if stream_len < 2 {
         return Err(Error::InsufficientBytes(2 - stream_len));
     }
 
-    let byte1 = *stream.next().unwrap();
+    let byte1 = *stream.next().ok_or(Error::InsufficientBytes(1))?;
     let (remaining_len_len, remaining_len) = length(stream)?;
 
     Ok(ParsedFixedHeader {

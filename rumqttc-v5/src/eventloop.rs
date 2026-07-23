@@ -36,6 +36,7 @@ use {
     crate::websockets::WsAdapter,
     crate::websockets::{UrlError, split_url, validate_response_headers},
     async_tungstenite::tungstenite::client::IntoClientRequest,
+    http::HeaderValue,
 };
 
 #[cfg(all(
@@ -1972,7 +1973,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 .into_client_request()?;
             request
                 .headers_mut()
-                .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
+                .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
 
             if let Some(request_modifier) = options.fallible_request_modifier() {
                 request = request_modifier(request)
@@ -2000,7 +2001,7 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 .into_client_request()?;
             request
                 .headers_mut()
-                .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
+                .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
 
             if let Some(request_modifier) = options.fallible_request_modifier() {
                 request = request_modifier(request)

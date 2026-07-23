@@ -168,7 +168,7 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
         }
         TlsConfiguration::Rustls(tls_client_config) => Arc::clone(tls_client_config),
         #[allow(unreachable_patterns)]
-        _ => unreachable!("This cannot be called for other TLS backends than Rustls"),
+        _ => return Err(Error::UnsupportedBackendConfiguration),
     };
 
     Ok(RustlsConnector::from(config))
@@ -193,7 +193,7 @@ pub fn native_tls_connector(tls_config: &TlsConfiguration) -> Result<NativeTlsCo
         TlsConfiguration::Native => native_tls::TlsConnector::new()?,
         TlsConfiguration::NativeConnector(connector) => connector.to_owned(),
         #[allow(unreachable_patterns)]
-        _ => unreachable!("This cannot be called for other TLS backends than Native TLS"),
+        _ => return Err(Error::UnsupportedBackendConfiguration),
     };
 
     Ok(connector.into())
@@ -261,7 +261,7 @@ pub fn websocket_tls_connector(
             Ok(connector)
         }
         #[allow(unreachable_patterns)]
-        _ => panic!("Unknown or not enabled TLS backend configuration"),
+        _ => Err(Error::UnsupportedBackendConfiguration),
     }
 }
 
@@ -296,4 +296,32 @@ pub async fn tls_connect(
         _ => return Err(Error::UnsupportedBackendConfiguration),
     };
     Ok(tls)
+}
+
+#[cfg(all(test, feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+mod tests {
+    use super::{Error, native_tls_connector, rustls_connector};
+    use crate::TlsConfiguration;
+
+    #[test]
+    fn rustls_connector_rejects_native_tls_configuration() {
+        assert!(matches!(
+            rustls_connector(&TlsConfiguration::Native),
+            Err(Error::UnsupportedBackendConfiguration)
+        ));
+    }
+
+    #[test]
+    fn native_tls_connector_rejects_rustls_configuration() {
+        let configuration = TlsConfiguration::Simple {
+            ca: Vec::new(),
+            alpn: None,
+            client_auth: None,
+        };
+
+        assert!(matches!(
+            native_tls_connector(&configuration),
+            Err(Error::UnsupportedBackendConfiguration)
+        ));
+    }
 }
