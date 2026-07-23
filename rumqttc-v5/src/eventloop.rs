@@ -363,7 +363,11 @@ pub struct EventLoop {
     pending: VecDeque<RequestEnvelope>,
     /// Requests admitted by the event loop and waiting for protocol scheduling.
     queued: OutboundScheduler<RequestEnvelope>,
-    /// Network connection to the broker
+    /// Network connection to the broker.
+    ///
+    /// This is installed only after every fallible establishment step has completed. Connected-only
+    /// helpers are reached through [`Self::select`], which [`Self::poll`] calls only while this is
+    /// `Some`.
     network: Option<Network>,
     /// Keep alive time
     keepalive_timeout: Option<Pin<Box<Sleep>>>,
@@ -1063,16 +1067,6 @@ impl EventLoop {
             self.clear_persisted_session_or_block_reload().await?;
         }
 
-        if !self.broker_only_session_resume {
-            self.session_client_id = Some(self.options.client_id());
-            self.session_store_key = Some(self.options.session_store_key());
-        }
-        self.network = Some(network);
-
-        if self.keepalive_timeout.is_none() && !self.options.keep_alive.is_zero() {
-            self.keepalive_timeout = Some(Box::pin(time::sleep(self.options.keep_alive)));
-        }
-
         if let Err(source) = self
             .state
             .handle_incoming_packet(Incoming::ConnAck(connack.clone()))
@@ -1083,6 +1077,16 @@ impl EventLoop {
             return Err(error);
         }
         self.reconcile_outgoing_tracking_after_connack();
+
+        if !self.broker_only_session_resume {
+            self.session_client_id = Some(self.options.client_id());
+            self.session_store_key = Some(self.options.session_store_key());
+        }
+        self.network = Some(network);
+
+        if self.keepalive_timeout.is_none() && !self.options.keep_alive.is_zero() {
+            self.keepalive_timeout = Some(Box::pin(time::sleep(self.options.keep_alive)));
+        }
 
         #[cfg(feature = "tracing")]
         {
@@ -1194,7 +1198,13 @@ impl EventLoop {
         })
     }
 
-    /// Select on network and requests and generate keepalive pings when necessary
+    /// Select on network and requests and generate keepalive pings when necessary.
+    ///
+    /// # Lifecycle invariant
+    ///
+    /// This connected-only driver is called by [`Self::poll`] only after a network has been
+    /// established. Connection errors return to `poll`, which normalizes the lifecycle through
+    /// [`Self::handle_network_result`] before another establishment attempt.
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         loop {
             if let Some(event) = self.state.events.pop_front() {
@@ -6968,6 +6978,60 @@ mod tests {
             matches!(packet, Packet::Connect(..)),
             "first packet on the wire must be CONNECT, got {packet:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn poll_does_not_commit_network_after_failed_post_connack_transition() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_start(false)
+            .set_socket_connector(move |_host, _network_options| {
+                let peer_tx = peer_tx.clone();
+                async move {
+                    let (client, peer) = tokio::io::duplex(1024);
+                    peer_tx.send(peer).unwrap();
+                    Ok(client)
+                }
+            });
+
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(10)))
+            .unwrap();
+        eventloop.state.events.clear();
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut encoded_connack = BytesMut::new();
+            ConnAck {
+                session_present: true,
+                code: ConnectReturnCode::Success,
+                properties: None,
+            }
+            .write(&mut encoded_connack)
+            .unwrap();
+            peer.write_all(&encoded_connack).await.unwrap();
+
+            let mut byte = [0];
+            peer.read(&mut byte).await.unwrap()
+        });
+
+        let error = eventloop.poll().await.unwrap_err();
+        assert!(matches!(
+            error,
+            ConnectionError::MqttState(StateError::ProtocolViolation(
+                crate::ProtocolViolation::DuplicateConnAck
+            ))
+        ));
+        assert!(eventloop.network.is_none());
+        assert!(eventloop.keepalive_timeout.is_none());
+        assert!(eventloop.state.events.is_empty());
+
+        assert_eq!(broker.await.unwrap(), 0);
     }
 
     // MQTT-3.1.0-1: Verify that poll() cannot process user requests before

@@ -342,7 +342,10 @@ pub struct EventLoop {
     pending: VecDeque<RequestEnvelope>,
     /// Requests admitted by the event loop and waiting for protocol scheduling.
     queued: OutboundScheduler<RequestEnvelope>,
-    /// Network connection to the broker
+    /// Network connection to the broker.
+    ///
+    /// Connected-only helpers are reached through [`Self::select`], which [`Self::poll`] calls only
+    /// while this is `Some`.
     network: Option<Network>,
     /// Keep alive time
     keepalive_timeout: Option<Pin<Box<Sleep>>>,
@@ -1064,7 +1067,13 @@ impl EventLoop {
         })
     }
 
-    /// Select on network and requests and generate keepalive pings when necessary
+    /// Select on network and requests and generate keepalive pings when necessary.
+    ///
+    /// # Lifecycle invariant
+    ///
+    /// This connected-only driver is called by [`Self::poll`] only after a network has been
+    /// established. Connection errors return to `poll`, which normalizes the lifecycle through
+    /// [`Self::handle_network_result`] before another establishment attempt.
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         loop {
             if let Some(event) = self.state.events.pop_front() {
