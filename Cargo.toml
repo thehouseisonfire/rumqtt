@@ -26,3 +26,8 @@ debug = false
 codegen-units = 1
 lto = true
 strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false

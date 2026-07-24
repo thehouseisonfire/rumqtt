@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start a reproducible Mosquitto broker and validate broker-backed scenarios."""
+"""Start a reproducible broker fixture and validate broker-backed scenarios."""
 
 from __future__ import annotations
 
@@ -438,6 +438,65 @@ class SystemBroker:
         }
 
 
+class SyntheticBroker:
+    def __init__(self, *, ports: BrokerPorts, cargo_profile: str, log: Path) -> None:
+        self.ports = ports
+        self.cargo_profile = cargo_profile
+        self.log = log
+        self.proc: subprocess.Popen[str] | None = None
+        self.log_handle = None
+        self.binary: Path | None = None
+
+    @property
+    def backend_name(self) -> str:
+        return "synthetic"
+
+    def start(self) -> None:
+        build = ["cargo", "build", "-p", "benchmarks", "--bin", "rumqtt-bench-router"]
+        profile_dir = "debug"
+        if self.cargo_profile == "release":
+            build.append("--release")
+            profile_dir = "release"
+        proc = run_process(build, cwd=REPO_ROOT, timeout=300)
+        if proc.returncode != 0:
+            raise FixtureError(f"failed to build synthetic router: {proc.stderr.strip()}")
+
+        suffix = ".exe" if os.name == "nt" else ""
+        self.binary = REPO_ROOT / "target" / profile_dir / f"rumqtt-bench-router{suffix}"
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self.log_handle = self.log.open("w", encoding="utf-8")
+        self.proc = subprocess.Popen(
+            [str(self.binary), "--bind", f"127.0.0.1:{self.ports.tcp}"],
+            stdout=self.log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if not wait_for_port("127.0.0.1", self.ports.tcp, timeout_sec=10):
+            self.stop()
+            detail = self.log.read_text(encoding="utf-8", errors="replace").strip()
+            raise FixtureError(f"synthetic router did not become ready: {detail}")
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+        if self.log_handle is not None:
+            self.log_handle.close()
+            self.log_handle = None
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend_name,
+            "image": None,
+            "synthetic_router_binary": str(self.binary) if self.binary else None,
+            "synthetic_router_log": str(self.log),
+        }
+
+
 def broker_urls(ports: BrokerPorts) -> dict[str, str]:
     return {
         "tcp": f"mqtt://127.0.0.1:{ports.tcp}",
@@ -491,6 +550,19 @@ def select_scenarios(
     selected.sort(key=lambda scenario: scenario.name)
     skipped.sort(key=lambda entry: entry["name"])
     return selected, skipped
+
+
+def validate_synthetic_scenarios(scenarios: list[ScenarioRef]) -> None:
+    unsupported = []
+    for scenario in scenarios:
+        qos = scenario.data.get("args", {}).get("qos", 0)
+        if scenario.transport != "tcp" or qos not in {0, 1}:
+            unsupported.append(scenario.name)
+    if unsupported:
+        raise FixtureError(
+            "the synthetic backend supports only TCP QoS 0/1 scenarios; unsupported: "
+            + ", ".join(sorted(unsupported))
+        )
 
 
 def build_runner_command(
@@ -665,6 +737,8 @@ def command_validate(args: argparse.Namespace) -> int:
 
     needs_websocket = any(scenario.transport == "websocket" for scenario in selected)
     active_transports = sorted({scenario.transport or "tcp" for scenario in selected})
+    if args.backend == "synthetic":
+        validate_synthetic_scenarios(selected)
     if args.backend == "system" and needs_websocket:
         binary = args.mosquitto_bin or shutil.which("mosquitto")
         if binary is None:
@@ -679,28 +753,35 @@ def command_validate(args: argparse.Namespace) -> int:
     temp = tempfile.TemporaryDirectory(prefix="rumqtt-bench-broker-")
     started_at = utc_timestamp()
     scenario_results: list[dict[str, Any]] = []
-    broker: DockerBroker | SystemBroker | None = None
+    broker: DockerBroker | SystemBroker | SyntheticBroker | None = None
     summary_path = output_dir / SUMMARY_FILENAME
     ports = allocate_ports()
     urls = broker_urls(ports)
     try:
         temp_root = Path(temp.name)
-        config = (
-            container_mosquitto_config()
-            if args.backend == "docker"
-            else build_system_config(ports, temp_root, include_websocket=needs_websocket)
-        )
-        paths = prepare_broker_paths(temp_root, config_text=config)
         persistent_ca_cert = output_dir / "ca.crt"
-        shutil.copyfile(paths.ca_cert, persistent_ca_cert)
-        broker = make_broker(
-            backend=args.backend,
-            ports=ports,
-            paths=paths,
-            mosquitto_bin=args.mosquitto_bin,
-            image=docker_image_from_env(),
-            active_transports=active_transports,
-        )
+        if args.backend == "synthetic":
+            broker = SyntheticBroker(
+                ports=ports,
+                cargo_profile=args.cargo_profile,
+                log=output_dir / "synthetic-router.log",
+            )
+        else:
+            config = (
+                container_mosquitto_config()
+                if args.backend == "docker"
+                else build_system_config(ports, temp_root, include_websocket=needs_websocket)
+            )
+            paths = prepare_broker_paths(temp_root, config_text=config)
+            shutil.copyfile(paths.ca_cert, persistent_ca_cert)
+            broker = make_broker(
+                backend=args.backend,
+                ports=ports,
+                paths=paths,
+                mosquitto_bin=args.mosquitto_bin,
+                image=docker_image_from_env(),
+                active_transports=active_transports,
+            )
         broker.start()
         for scenario in selected:
             scenario_results.append(
@@ -735,10 +816,12 @@ def command_validate(args: argparse.Namespace) -> int:
         "backend": metadata["backend"],
         "image": metadata.get("image"),
         "mosquitto_binary": metadata.get("mosquitto_binary"),
+        "synthetic_router_binary": metadata.get("synthetic_router_binary"),
+        "synthetic_router_log": metadata.get("synthetic_router_log"),
         "container": metadata.get("container"),
         "ports": ports.as_dict(),
         "broker_urls": urls,
-        "ca_cert": str(output_dir / "ca.crt"),
+        "ca_cert": str(output_dir / "ca.crt") if (output_dir / "ca.crt").exists() else None,
         "completed": completed,
         "failed": failed,
         "skipped": skipped,
@@ -761,7 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     validate = sub.add_parser("validate", help="Run broker-backed scenarios against a fixture broker")
-    validate.add_argument("--backend", choices=["docker", "system"], default="docker")
+    validate.add_argument("--backend", choices=["docker", "synthetic", "system"], default="docker")
     validate.add_argument("--transport", choices=sorted(VALID_FIXTURE_TRANSPORTS), default="all")
     validate.add_argument("--scenario", action="append", default=[])
     validate.add_argument("--runs", type=int, default=1)

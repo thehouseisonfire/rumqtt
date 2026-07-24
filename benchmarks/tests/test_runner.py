@@ -147,6 +147,112 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("options", command)
         self.assertIn("parse-url", command)
 
+    def test_external_command_translates_v5_throughput_scenario(self):
+        scenario = self.scenario(
+            name="client-v5-throughput-qos1",
+            group="client",
+            command="throughput",
+            primary_metric="throughput_msg_sec",
+            requires_broker=True,
+            transport="tcp",
+            args={
+                "protocol": "v5",
+                "duration_sec": 6,
+                "warmup_sec": 2,
+                "payload_size": 64,
+                "qos": 1,
+                "topic": "bench/external",
+                "publishers": 2,
+                "subscribers": 3,
+            },
+        )
+        comparable = runner.external_comparison_scenario(scenario)
+
+        command = runner.external_command(
+            comparable,
+            external_bin="/usr/bin/mqttv5",
+            broker_url="mqtt://127.0.0.1:1883",
+            ca_cert=None,
+            run_id="external-run",
+        )
+
+        self.assertEqual(command[:3], ["/usr/bin/mqttv5", "bench", "--mode"])
+        self.assertIn("throughput", command)
+        self.assertIn("bench/external/#", command)
+        self.assertEqual(comparable["args"]["filter"], "bench/external/#")
+        self.assertNotIn("filter", scenario["args"])
+
+    def test_external_comparison_rejects_unrepresentable_latency_rate(self):
+        scenario = self.scenario(
+            name="client-v5-latency-rate-100",
+            group="client",
+            command="latency",
+            primary_metric="p99_us",
+            requires_broker=True,
+            transport="tcp",
+            args={"protocol": "v5", "rate": 100},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "fixed 1000"):
+            runner.validate_external_scenario(scenario)
+
+    def test_external_throughput_output_normalizes_to_v1_metrics(self):
+        scenario = self.scenario(
+            name="client-v5-throughput-qos1",
+            group="client",
+            command="throughput",
+            primary_metric="throughput_msg_sec",
+            requires_broker=True,
+            transport="tcp",
+            args={"protocol": "v5"},
+        )
+
+        payload = runner.normalize_external_payload(
+            {
+                "mode": "throughput",
+                "config": {"transport": "mqtt"},
+                "results": {
+                    "published": 12,
+                    "received": 10,
+                    "elapsed_secs": 2.0,
+                    "throughput_avg": 5.0,
+                    "samples": [4, 6],
+                },
+            },
+            scenario=scenario,
+            run_id="external-run",
+            started_at_unix=1,
+            finished_at_unix=3,
+            external_bin="/usr/bin/mqttv5",
+            version="mqttv5 1.0",
+        )
+
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["metrics"]["throughput_msg_sec"], 5.0)
+        self.assertEqual(payload["samples"]["received_per_sec"], [4.0, 6.0])
+        self.assertEqual(payload["environment"]["external_version"], "mqttv5 1.0")
+
+    def test_external_json_is_extracted_after_progress_output(self):
+        output = """\
+connecting...
+warming up...
+running benchmark...
+{
+  "mode": "throughput",
+  "config": {"transport": "mqtt"},
+  "results": {"throughput_avg": 5.0}
+}
+"""
+
+        data = runner.read_external_json(output)
+
+        self.assertEqual(data["mode"], "throughput")
+        self.assertEqual(data["results"]["throughput_avg"], 5.0)
+
+    def test_external_json_rejects_trailing_non_json_output(self):
+        with self.assertRaisesRegex(RuntimeError, "did not end with a JSON object"):
+            runner.read_external_json('progress\n{"mode": "throughput"}\ndone\n')
+
     def test_all_real_scenarios_validate(self):
         scenario_files = sorted((REPO_ROOT / "benchmarks" / "scenarios").glob("*.toml"))
         scenario_files.extend(

@@ -13,10 +13,12 @@ import math
 import os
 import platform
 import random
+import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -288,6 +290,263 @@ def scenario_command(
             continue
         cmd.extend([flag, str(value)])
     return cmd
+
+
+def validate_external_scenario(scenario: dict[str, Any]) -> None:
+    args = scenario.get("args", {})
+    if (
+        scenario["group"] != "client"
+        or scenario["command"] not in {"throughput", "latency", "connections"}
+        or args.get("protocol") != "v5"
+    ):
+        raise RuntimeError(
+            "external mqttv5 comparison requires an MQTT v5 client throughput, latency, "
+            "or connections scenario"
+        )
+    if scenario.get("transport") not in {"tcp", "tls"}:
+        raise RuntimeError("external mqttv5 comparison supports only TCP and TLS scenarios")
+    if scenario["command"] == "latency" and args.get("rate", 1000) != 1000:
+        raise RuntimeError(
+            "mqttv5-cli latency currently uses a fixed 1000 msg/s rate; "
+            "select a scenario with rate = 1000"
+        )
+
+
+def external_comparison_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    comparable = dict(scenario)
+    comparable["args"] = dict(scenario.get("args", {}))
+    if scenario["command"] == "throughput":
+        topic = str(comparable["args"].get("topic", "bench/rumqtt"))
+        comparable["args"]["filter"] = f"{topic}/#"
+    return comparable
+
+
+def resolve_external_binary(external_bin: str) -> str:
+    path = shutil.which(external_bin)
+    if path is None:
+        raise RuntimeError(f"cannot find mqttv5 executable: {external_bin}")
+    return str(Path(path).resolve())
+
+
+def external_version(external_bin: str) -> str:
+    proc = run_process([external_bin, "--version"], timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"failed to query mqttv5 version: {proc.stderr.strip()}")
+    version = proc.stdout.strip()
+    if not version:
+        raise RuntimeError("mqttv5 --version returned empty output")
+    return version
+
+
+def external_command(
+    scenario: dict[str, Any],
+    *,
+    external_bin: str,
+    broker_url: str,
+    ca_cert: str | None,
+    run_id: str,
+) -> list[str]:
+    validate_external_scenario(scenario)
+    args = scenario.get("args", {})
+    command = scenario["command"]
+    cmd = [
+        external_bin,
+        "bench",
+        "--mode",
+        command,
+        "--duration",
+        str(args.get("duration_sec", 10)),
+        "--warmup",
+        str(args.get("warmup_sec", 0)),
+        "--url",
+        broker_url,
+        "--client-id",
+        run_id,
+    ]
+    if command != "connections":
+        cmd.extend(
+            [
+                "--payload-size",
+                str(args.get("payload_size", 64)),
+                "--qos",
+                str(args.get("qos", 1)),
+                "--topic",
+                str(args.get("topic", "bench/rumqtt")),
+            ]
+        )
+        filter_value = args.get("filter")
+        if command == "throughput":
+            topic = str(args.get("topic", "bench/rumqtt"))
+            filter_value = filter_value or f"{topic}/#"
+        if filter_value:
+            cmd.extend(["--filter", str(filter_value)])
+    if command == "throughput":
+        cmd.extend(
+            [
+                "--publishers",
+                str(args.get("publishers", 1)),
+                "--subscribers",
+                str(args.get("subscribers", 1)),
+            ]
+        )
+    if command == "connections":
+        cmd.extend(["--concurrency", str(args.get("concurrency", 10))])
+    if ca_cert is not None:
+        cmd.extend(["--ca-cert", ca_cert])
+    return cmd
+
+
+def normalize_external_payload(
+    data: dict[str, Any],
+    *,
+    scenario: dict[str, Any],
+    run_id: str,
+    started_at_unix: int,
+    finished_at_unix: int,
+    external_bin: str,
+    version: str,
+) -> dict[str, Any]:
+    mode = scenario["command"]
+    if data.get("mode") != mode or not isinstance(data.get("config"), dict):
+        raise RuntimeError(f"mqttv5 output must contain mode={mode!r} and a config object")
+    results = data.get("results")
+    if not isinstance(results, dict):
+        raise RuntimeError("mqttv5 output must contain a results object")
+
+    metric_maps = {
+        "throughput": {
+            "published": "published",
+            "received": "received",
+            "elapsed_secs": "elapsed_sec",
+            "throughput_avg": "throughput_msg_sec",
+        },
+        "latency": {
+            "messages": "messages",
+            "min_us": "min_us",
+            "max_us": "max_us",
+            "avg_us": "avg_us",
+            "p50_us": "p50_us",
+            "p95_us": "p95_us",
+            "p99_us": "p99_us",
+        },
+        "connections": {
+            "successful": "successful",
+            "failed": "failed",
+            "elapsed_secs": "elapsed_sec",
+            "connections_per_sec": "connections_sec",
+            "avg_connect_us": "avg_connect_us",
+            "p50_connect_us": "p50_connect_us",
+            "p95_connect_us": "p95_connect_us",
+            "p99_connect_us": "p99_connect_us",
+        },
+    }
+    metrics = {}
+    for source, target in metric_maps[mode].items():
+        value = results.get(source)
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+            raise RuntimeError(f"mqttv5 results.{source} must be a finite number")
+        metrics[target] = float(value)
+    sample_key = {
+        "throughput": "received_per_sec",
+        "latency": "latency_us",
+        "connections": "connections_per_sec",
+    }[mode]
+    raw_samples = results.get("samples", [])
+    if not isinstance(raw_samples, list) or any(
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        for value in raw_samples
+    ):
+        raise RuntimeError("mqttv5 results.samples must be an array of finite numbers")
+    payload = {
+        "schema_version": OUTPUT_SCHEMA_VERSION,
+        "run_id": run_id,
+        "scenario": f"external-mqttv5-{mode}",
+        "started_at_unix": started_at_unix,
+        "finished_at_unix": finished_at_unix,
+        "config": data["config"],
+        "metrics": metrics,
+        "samples": {sample_key: [float(value) for value in raw_samples]},
+        "environment": {
+            **fallback_environment(repo_root()),
+            "external_tool": "mqttv5-cli",
+            "external_version": version,
+            "external_binary": external_bin,
+        },
+    }
+    validate_benchmark_payload(payload, scenario)
+    return payload
+
+
+def read_external_json(stdout: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for offset, character in enumerate(stdout):
+        if character != "{":
+            continue
+        try:
+            data, end = decoder.raw_decode(stdout, offset)
+        except json.JSONDecodeError:
+            continue
+        if stdout[end:].strip():
+            continue
+        if not isinstance(data, dict):
+            raise RuntimeError("mqttv5 stdout JSON must be an object")
+        return data
+    raise RuntimeError("mqttv5 stdout did not end with a JSON object")
+
+
+def run_external_once(
+    *,
+    root: Path,
+    scenario: dict[str, Any],
+    external_bin: str,
+    version: str,
+    run_id: str,
+    broker_url: str,
+    ca_cert: str | None,
+    timeout: int,
+) -> dict[str, Any]:
+    cmd = external_command(
+        scenario,
+        external_bin=external_bin,
+        broker_url=broker_url,
+        ca_cert=ca_cert,
+        run_id=run_id,
+    )
+    started_at = int(time.time())
+    proc = run_process(cmd, cwd=root, timeout=timeout)
+    finished_at = int(time.time())
+    result: dict[str, Any] = {
+        "run_id": run_id,
+        "command": cmd,
+        "returncode": proc.returncode,
+        "stderr": proc.stderr,
+    }
+    if proc.returncode != 0:
+        result["ok"] = False
+        result["error"] = proc.stderr.strip() or proc.stdout.strip()
+        return result
+    try:
+        raw = read_external_json(proc.stdout)
+        payload = normalize_external_payload(
+            raw,
+            scenario=scenario,
+            run_id=run_id,
+            started_at_unix=started_at,
+            finished_at_unix=finished_at,
+            external_bin=external_bin,
+            version=version,
+        )
+    except (json.JSONDecodeError, RuntimeError) as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+        result["stdout"] = proc.stdout
+        return result
+    result["ok"] = True
+    result["payload"] = payload
+    result["metrics"] = dict(payload["metrics"])
+    return result
 
 
 def numeric_metric(metrics: dict[str, Any], metric: str) -> float:
@@ -777,7 +1036,7 @@ def strip_raw_payload(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def persist_raw_runs(output_dir: Path, summary: dict[str, Any]) -> None:
-    if summary.get("mode") == "compare":
+    if summary.get("mode") in {"compare", "compare-external"}:
         runs_by_side = summary.get("runs", {})
         if isinstance(runs_by_side, dict):
             for side, runs in runs_by_side.items():
@@ -1128,6 +1387,112 @@ def command_compare(args: argparse.Namespace) -> None:
                 remove_worktree(root, path)
 
 
+def command_compare_external(args: argparse.Namespace) -> None:
+    root = repo_root()
+    scenario_path, original_scenario = load_scenario(root, args.scenario)
+    validate_external_scenario(original_scenario)
+    validate_broker_requirement(original_scenario, args.broker_url)
+    scenario = external_comparison_scenario(original_scenario)
+    external_bin = resolve_external_binary(args.external_bin)
+    version = external_version(external_bin)
+    output_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else default_output_dir(root, "external-comparisons", scenario)
+    )
+    runs = {"baseline": [], "target": []}
+    total = args.warmup_runs + args.runs
+    for index in range(total):
+        order = ["baseline", "target"]
+        if args.alternate_order and index % 2 == 1:
+            order.reverse()
+        for side in order:
+            run_id = f"{scenario['name']}-{side}-{index}"
+            if side == "baseline":
+                run = run_once(
+                    root=root,
+                    scenario=scenario,
+                    run_id=run_id,
+                    broker_url=args.broker_url,
+                    ca_cert=args.ca_cert,
+                    cargo_profile=args.cargo_profile,
+                    timeout=args.timeout_sec,
+                )
+            else:
+                run = run_external_once(
+                    root=root,
+                    scenario=scenario,
+                    external_bin=external_bin,
+                    version=version,
+                    run_id=run_id,
+                    broker_url=args.broker_url,
+                    ca_cert=args.ca_cert,
+                    timeout=args.timeout_sec,
+                )
+            run["is_warmup"] = index < args.warmup_runs
+            run["run_index"] = index
+            run["side"] = side
+            runs[side].append(run)
+
+    baseline_measured = [run for run in runs["baseline"] if not run["is_warmup"]]
+    target_measured = [run for run in runs["target"] if not run["is_warmup"]]
+    baseline_summary = summarize_runs(baseline_measured)
+    target_summary = summarize_runs(target_measured)
+    comparison = compare_summaries(
+        baseline_measured,
+        target_measured,
+        scenario=scenario,
+        bootstrap_samples=args.bootstrap_samples,
+        confidence=args.confidence,
+    )
+    current_commit = resolve_ref(root, "HEAD")
+    summary = {
+        "scenario": scenario["name"],
+        "scenario_metadata": scenario_metadata(scenario),
+        "scenario_file": {
+            "path": str(scenario_path),
+            "sha256": scenario_file_hash(scenario_path),
+        },
+        "mode": "compare-external",
+        "baseline_ref": current_commit,
+        "target_ref": version,
+        "git": {"baseline_ref": current_commit},
+        "external": {"binary": external_bin, "version": version},
+        "command": {
+            "baseline": command_template(
+                scenario,
+                broker_url=args.broker_url,
+                ca_cert=args.ca_cert,
+                cargo_profile=args.cargo_profile,
+            ),
+            "target": external_command(
+                scenario,
+                external_bin=external_bin,
+                broker_url=args.broker_url,
+                ca_cert=args.ca_cert,
+                run_id="<run-id>",
+            ),
+        },
+        "cargo_profile": args.cargo_profile,
+        "environment": {
+            "baseline": summary_environment(root, runs["baseline"]),
+            "target": first_payload_environment(runs["target"]) or fallback_environment(root),
+        },
+        "baseline": baseline_summary,
+        "target": target_summary,
+        "comparison": comparison,
+        "quality": evaluate_compare_quality(
+            scenario, baseline_summary, target_summary, comparison
+        ),
+        "runs": runs,
+    }
+    write_report(output_dir, summary)
+    failed = [run for side_runs in runs.values() for run in side_runs if not run.get("ok")]
+    if failed:
+        raise RuntimeError(f"{len(failed)} benchmark run(s) failed; report written to {output_dir}")
+    print(f"External benchmark comparison complete: {output_dir}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1159,6 +1524,27 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--keep-worktrees", action="store_true")
     compare.add_argument("--output-dir")
     compare.set_defaults(func=command_compare)
+
+    external = sub.add_parser(
+        "compare-external", help="Compare a rumqtt MQTT v5 scenario against mqttv5-cli"
+    )
+    external.add_argument("--scenario", required=True)
+    external.add_argument("--external-bin", default="mqttv5")
+    external.add_argument("--runs", type=int, default=12)
+    external.add_argument("--warmup-runs", type=int, default=1)
+    external.add_argument("--broker-url", required=True)
+    external.add_argument("--ca-cert")
+    external.add_argument(
+        "--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release"
+    )
+    external.add_argument("--timeout-sec", type=int, default=300)
+    external.add_argument("--bootstrap-samples", type=int, default=1000)
+    external.add_argument("--confidence", type=float, default=0.95)
+    external.add_argument(
+        "--alternate-order", action=argparse.BooleanOptionalAction, default=True
+    )
+    external.add_argument("--output-dir")
+    external.set_defaults(func=command_compare_external)
     return parser
 
 

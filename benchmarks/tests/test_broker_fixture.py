@@ -16,7 +16,7 @@ SPEC.loader.exec_module(broker_fixture)
 
 
 class BrokerFixtureTests(unittest.TestCase):
-    def scenario(self, name, *, transport="tcp", requires_broker=True):
+    def scenario(self, name, *, transport="tcp", requires_broker=True, qos=1):
         return broker_fixture.ScenarioRef(
             name=name,
             path=REPO_ROOT / "benchmarks" / "scenarios" / f"{name}.toml",
@@ -24,6 +24,7 @@ class BrokerFixtureTests(unittest.TestCase):
                 "name": name,
                 "requires_broker": requires_broker,
                 "transport": transport,
+                "args": {"qos": qos},
             },
         )
 
@@ -120,6 +121,22 @@ class BrokerFixtureTests(unittest.TestCase):
 
         self.assertEqual(selected, [])
         self.assertEqual(skipped, [{"name": "client-v5-soak-qos1-1kib-1p1s", "reason": "soak_skipped"}])
+
+    def test_synthetic_backend_rejects_non_tcp_and_qos2_scenarios(self):
+        with self.assertRaisesRegex(broker_fixture.FixtureError, "TCP QoS 0/1"):
+            broker_fixture.validate_synthetic_scenarios(
+                [
+                    self.scenario("tls", transport="tls"),
+                    self.scenario("qos2", qos=2),
+                ]
+            )
+
+        broker_fixture.validate_synthetic_scenarios(
+            [
+                self.scenario("v4-qos0", qos=0),
+                self.scenario("v5-qos1", qos=1),
+            ]
+        )
 
     def test_runner_command_uses_broker_url_ca_cert_and_dev_profile(self):
         with tempfile.TemporaryDirectory() as temp:

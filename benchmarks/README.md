@@ -1,8 +1,8 @@
 # Benchmarks
 
 `benchmarks` is the maintained performance harness for this workspace. It is a
-Cargo package named `benchmarks` with one Rust workload binary and one Python
-orchestrator.
+Cargo package named `benchmarks` with a Rust workload binary, a synthetic-router
+binary, and Python orchestration tools.
 
 ## Workload CLI
 
@@ -30,7 +30,8 @@ cargo run -p benchmarks --bin rumqtt-bench -- \
 
 Supported workload groups:
 
-- `codec encode|decode|roundtrip`
+- `codec encode|decode|roundtrip` for MQTT v4, MQTT v5, and the NATS PUB
+  wire-format baseline
 - `client throughput|latency|connections`
 - `options parse-url`
 
@@ -52,6 +53,32 @@ Every workload prints a single JSON object with:
 - `metrics`
 - `samples`
 - `environment`
+
+NATS codec workloads use `--protocol nats --qos 0`. They measure the small
+in-repo NATS `PUB` frame encoder/parser, not the full `async-nats` client and
+not equivalent protocol features:
+
+```bash
+cargo run -p benchmarks --bin rumqtt-bench -- \
+  codec roundtrip --protocol nats --qos 0 --messages 100000 --payload-size 64
+```
+
+## Codec Profiling
+
+On POSIX systems, build with the optional `profiling` feature and the
+symbol-preserving Cargo profile to capture a pprof protobuf:
+
+```bash
+cargo run --profile profiling -p benchmarks --features profiling \
+  --bin rumqtt-bench -- \
+  codec decode --protocol v5 --messages 1000000 --payload-size 64 \
+  --qos 1 --profile-output /tmp/rumqtt-codec.pb --profile-frequency 100
+
+go tool pprof /tmp/rumqtt-codec.pb
+```
+
+Profiling changes timing and is intended for bottleneck diagnosis, not
+regression reports.
 
 ## Scenario Runner
 
@@ -76,6 +103,24 @@ python3 benchmarks/runner.py compare \
   --runs 12 \
   --warmup-runs 1
 ```
+
+Compare a compatible MQTT v5 client scenario against an installed
+`mqttv5-cli` executable:
+
+```bash
+python3 benchmarks/runner.py compare-external \
+  --scenario client-v5-throughput-qos1 \
+  --external-bin mqttv5 \
+  --broker-url mqtt://127.0.0.1:1883 \
+  --runs 12 \
+  --warmup-runs 1
+```
+
+The external adapter supports TCP/TLS throughput, fixed-rate 1000 msg/s
+latency, and connection scenarios. It records the resolved executable and
+`mqttv5 --version`, validates the tool's runtime JSON, normalizes comparable
+metrics into schema version 1, and alternates execution order. mqttv5-cli is
+not installed or updated by this repository.
 
 The runner uses `cargo run --release` by default. Use `--cargo-profile dev`
 only when debugging the harness itself.
@@ -124,6 +169,25 @@ python3 benchmarks/broker_fixture.py validate \
 Soak scenarios are skipped by default because they run for longer. Add
 `--include-soak` when you explicitly want to validate them.
 
+For client-side isolation without Mosquitto, use the in-repo synthetic router:
+
+```bash
+python3 benchmarks/broker_fixture.py validate \
+  --backend synthetic \
+  --transport tcp \
+  --scenario client-v4-throughput-qos1 \
+  --scenario client-v5-throughput-qos1 \
+  --runs 1 \
+  --warmup-runs 0 \
+  --cargo-profile dev \
+  --output-dir /tmp/rumqtt-bench-synthetic
+```
+
+The synthetic backend supports MQTT 3.1.1/5 TCP CONNECT, subscriptions,
+QoS 0/1 publish routing, acknowledgements, keepalive, and disconnect. It
+intentionally does not implement authentication, persistence, QoS 2, TLS, or
+WebSockets and is not a production broker.
+
 Override the Docker image with `RUMQTT_BENCH_MOSQUITTO_IMAGE`. A system
 Mosquitto can be used for TCP/TLS fallback with `--backend system`, but local
 Mosquitto packages are often built without websocket support. If websocket
@@ -134,6 +198,8 @@ The maintained scenario set covers:
 
 - codec encode, decode, and roundtrip for MQTT 3.1.1 and MQTT 5 across 0 B,
   64 B, 1 KiB, and 16 KiB payloads
+- NATS PUB wire-frame encode, decode, and roundtrip across the same payload
+  sizes as a protocol-format baseline
 - client throughput for MQTT 3.1.1 and MQTT 5 across QoS 0/1, representative
   payload sizes, and 1p1s, 4p1s, and 1p4s topologies
 - bounded-rate latency tails with p50/p95/p99 metrics

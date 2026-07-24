@@ -10,6 +10,7 @@ authors.workspace = true
 
 [features]
 default = []
+profiling = ["dep:pprof"]
 url = ["rumqttc_v4/url", "rumqttc_v5/url"]
 websocket = ["rumqttc_v4/websocket", "rumqttc_v5/websocket"]
 
@@ -17,6 +18,7 @@ websocket = ["rumqttc_v4/websocket", "rumqttc_v5/websocket"]
 bytes = "1"
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
+itoa = "1"
 rumqttc_v4 = { package = "rumqttc-v4-next", path = "../rumqttc-v4" }
 rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5" }
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +26,13 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 rand = "0.10"
 
+[target.'cfg(unix)'.dependencies]
+pprof = { version = "0.15", features = ["prost-codec"], optional = true }
+
 [[bin]]
 name = "rumqtt-bench"
 path = "src/main.rs"
+
+[[bin]]
+name = "rumqtt-bench-router"
+path = "src/bin/rumqtt-bench-router.rs"

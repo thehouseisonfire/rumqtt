@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>rumqtt benchmark report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+    th { background: #f4f4f4; }
+  </style>
+</head>
+<body>
+  <h1>client-v5-throughput-qos1</h1>
+  <p>MQTT 5 QoS 1 publish/subscribe throughput through an external TCP broker.</p>
+  <h2>Quality: pass</h2>
+  <table>
+    <thead>
+      <tr><th>Gate</th><th>Observed</th><th>Threshold</th><th>Status</th></tr>
+    </thead>
+    <tbody><tr><td>baseline_min_success_rate</td><td>1.0</td><td>0.95</td><td>pass</td></tr>
+<tr><td>target_min_success_rate</td><td>1.0</td><td>0.95</td><td>pass</td></tr>
+<tr><td>min_paired_runs</td><td>5</td><td>5</td><td>pass</td></tr>
+<tr><td>baseline_max_primary_cv_pct</td><td>2.2153127621832134</td><td>25.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_cv_pct</td><td>9.58374770929206</td><td>25.0</td><td>pass</td></tr>
+<tr><td>baseline_max_primary_mad_pct</td><td>0.6629724999415968</td><td>15.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_mad_pct</td><td>3.2367341269465695</td><td>15.0</td><td>pass</td></tr>
+<tr><td>max_relative_ci_width_pct</td><td>2.043547726701192</td><td>25.0</td><td>pass</td></tr></tbody>
+  </table>
+  <h2>Run summaries</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Section</th><th>Metric</th><th>Primary</th><th>Samples</th>
+        <th>Success rate</th><th>Median</th><th>MAD %</th><th>CV %</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>baseline</td><td>elapsed_sec</td><td></td><td>5</td><td>1.0</td><td>10.022817481</td><td>0.004650907799977423</td><td>0.025710677565873596</td></tr>
+<tr><td>baseline</td><td>published</td><td></td><td>5</td><td>1.0</td><td>2794239.0</td><td>0.6063189297694292</td><td>2.565693997701873</td></tr>
+<tr><td>baseline</td><td>received</td><td></td><td>5</td><td>1.0</td><td>2789507.0</td><td>0.6083153761578659</td><td>2.2034867806027467</td></tr>
+<tr><td>baseline</td><td>rss_growth_bytes</td><td></td><td>5</td><td>1.0</td><td>9670656.0</td><td>33.03684879288437</td><td>36.728034239082504</td></tr>
+<tr><td>baseline</td><td>rss_initial_bytes</td><td></td><td>5</td><td>1.0</td><td>51240960.0</td><td>3.2853717026378897</td><td>5.836019953148762</td></tr>
+<tr><td>baseline</td><td>rss_max_bytes</td><td></td><td>5</td><td>1.0</td><td>61816832.0</td><td>0.642724622316459</td><td>3.506736802967188</td></tr>
+<tr><td>baseline</td><td>throughput_collapse_pct</td><td></td><td>5</td><td>1.0</td><td>1.1087615422569959</td><td>100.0</td><td>157.6164792969065</td></tr>
+<tr><td>baseline</td><td>throughput_first_half_median_msg_sec</td><td></td><td>5</td><td>1.0</td><td>283740.0</td><td>3.604003665327413</td><td>4.101628740447386</td></tr>
+<tr><td>baseline</td><td>throughput_min_msg_sec</td><td></td><td>5</td><td>1.0</td><td>248788.0</td><td>2.1584642346093865</td><td>3.8662628809720934</td></tr>
+<tr><td>baseline</td><td>throughput_msg_sec</td><td>yes</td><td>5</td><td>1.0</td><td>278315.653785774</td><td>0.6629724999415968</td><td>2.2153127621832134</td></tr>
+<tr><td>baseline</td><td>throughput_second_half_median_msg_sec</td><td></td><td>5</td><td>1.0</td><td>280594.0</td><td>1.7241993770358597</td><td>4.823331964899719</td></tr>
+<tr><td>target</td><td>elapsed_sec</td><td></td><td>5</td><td>1.0</td><td>10.111168362</td><td>0.0048764592018071175</td><td>0.04015639151155208</td></tr>
+<tr><td>target</td><td>published</td><td></td><td>5</td><td>1.0</td><td>261277.0</td><td>3.190483662932443</td><td>9.549549689128071</td></tr>
+<tr><td>target</td><td>received</td><td></td><td>5</td><td>1.0</td><td>261318.0</td><td>3.1976365960247666</td><td>9.548329874035748</td></tr>
+<tr><td>target</td><td>throughput_msg_sec</td><td>yes</td><td>5</td><td>1.0</td><td>25854.783756867088</td><td>3.2367341269465695</td><td>9.58374770929206</td></tr></tbody>
+  </table>
+  <h2>Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th><th>Primary</th><th>Better</th><th>Baseline median</th>
+        <th>Target median</th><th>Delta %</th><th>CI width %</th><th>Pairs</th><th>Class</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>elapsed_sec</td><td></td><td>lower</td><td>10.022817481</td><td>10.111168362</td><td>0.8380788564920172</td><td>0.08803994808658788</td><td>5</td><td>regression</td></tr>
+<tr><td>published</td><td></td><td>higher</td><td>2794239.0</td><td>261277.0</td><td>-90.94165062284412</td><td>1.9138666321932192</td><td>5</td><td>regression</td></tr>
+<tr><td>received</td><td></td><td>higher</td><td>2789507.0</td><td>261318.0</td><td>-90.93165925018292</td><td>2.0525368796024566</td><td>5</td><td>regression</td></tr>
+<tr><td>rss_growth_bytes</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>rss_initial_bytes</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>rss_max_bytes</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>throughput_collapse_pct</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>throughput_first_half_median_msg_sec</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>throughput_min_msg_sec</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>throughput_msg_sec</td><td>yes</td><td>higher</td><td>278315.653785774</td><td>25854.783756867088</td><td>-91.01095004637531</td><td>2.043547726701192</td><td>5</td><td>regression</td></tr>
+<tr><td>throughput_second_half_median_msg_sec</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr></tbody>
+  </table>
+</body>
+</html>

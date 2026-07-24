@@ -88,6 +88,7 @@ jobs:
         run: |
             cargo check -p benchmarks --all-targets
             cargo clippy -p benchmarks --all-targets -- -D warnings
+            cargo test -p benchmarks --lib --bins
             cargo test -p benchmarks --test codec_smoke
             python3 -m compileall benchmarks/runner.py
             python3 -m unittest benchmarks/tests/test_runner.py
@@ -201,6 +202,30 @@ jobs:
             cargo check -p benchmarks --features websocket --all-targets
             python3 -m compileall benchmarks/runner.py benchmarks/broker_fixture.py
             python3 -m unittest benchmarks/tests/test_runner.py benchmarks/tests/test_broker_fixture.py
+
+      - name: Check codec profiling
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+            cargo check -p benchmarks --features profiling --all-targets
+            cargo run -p benchmarks --features profiling --bin rumqtt-bench -- \
+              codec decode --protocol v5 --messages 100000 --payload-size 64 --qos 1 \
+              --profile-output /tmp/rumqtt-codec.pb
+            test -s /tmp/rumqtt-codec.pb
+
+      - name: Validate synthetic benchmark router
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+            python3 benchmarks/broker_fixture.py validate \
+              --backend synthetic \
+              --transport tcp \
+              --scenario client-v4-throughput-qos1 \
+              --scenario client-v5-throughput-qos1 \
+              --runs 1 \
+              --warmup-runs 0 \
+              --cargo-profile dev \
+              --output-dir /tmp/rumqtt-bench-synthetic-fixture
 
       - name: Validate websocket benchmark scenarios
         env:

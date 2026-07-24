@@ -18,6 +18,8 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
 
+mod nats_codec;
+
 const BENCH_MAX_PACKET_SIZE: usize = 256 * 1024;
 
 #[derive(Parser, Debug)]
@@ -68,6 +70,24 @@ enum OptionsCommand {
 enum Protocol {
     V4,
     V5,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum CodecProtocol {
+    V4,
+    V5,
+    Nats,
+}
+
+impl CodecProtocol {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::V4 => "v4",
+            Self::V5 => "v5",
+            Self::Nats => "nats",
+        }
+    }
 }
 
 impl Protocol {
@@ -162,8 +182,11 @@ struct ClientCommonArgs {
 
 #[derive(Args, Debug, Clone)]
 struct CodecArgs {
-    #[command(flatten)]
-    common: CommonArgs,
+    #[arg(long, value_enum, default_value = "v5")]
+    protocol: CodecProtocol,
+
+    #[arg(long)]
+    run_id: Option<String>,
 
     #[arg(long, default_value = "100000")]
     messages: usize,
@@ -176,6 +199,12 @@ struct CodecArgs {
 
     #[arg(long, default_value = "bench/codec")]
     topic: String,
+
+    #[arg(long)]
+    profile_output: Option<PathBuf>,
+
+    #[arg(long, default_value = "100")]
+    profile_frequency: i32,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -673,16 +702,27 @@ async fn run_client_connections(args: ClientConnectionArgs) -> anyhow::Result<()
 }
 
 fn run_codec(args: CodecArgs, mode: CodecMode) -> anyhow::Result<()> {
+    if matches!(args.protocol, CodecProtocol::Nats) && args.qos != 0 {
+        bail!("NATS codec workloads require --qos 0");
+    }
+    if args.profile_frequency <= 0 {
+        bail!("--profile-frequency must be greater than zero");
+    }
     let started_at = unix_secs();
-    let run_id = run_id(args.common.run_id.as_deref(), "codec");
-    let result = match (args.common.protocol, mode) {
-        (Protocol::V4, CodecMode::Encode) => codec_v4_encode(&args)?,
-        (Protocol::V4, CodecMode::Decode) => codec_v4_decode(&args)?,
-        (Protocol::V4, CodecMode::Roundtrip) => codec_v4_roundtrip(&args)?,
-        (Protocol::V5, CodecMode::Encode) => codec_v5_encode(&args)?,
-        (Protocol::V5, CodecMode::Decode) => codec_v5_decode(&args)?,
-        (Protocol::V5, CodecMode::Roundtrip) => codec_v5_roundtrip(&args)?,
+    let run_id = run_id(args.run_id.as_deref(), "codec");
+    let profiler = start_profiler(args.profile_output.as_ref(), args.profile_frequency)?;
+    let result = match (args.protocol, mode) {
+        (CodecProtocol::V4, CodecMode::Encode) => codec_v4_encode(&args)?,
+        (CodecProtocol::V4, CodecMode::Decode) => codec_v4_decode(&args)?,
+        (CodecProtocol::V4, CodecMode::Roundtrip) => codec_v4_roundtrip(&args)?,
+        (CodecProtocol::V5, CodecMode::Encode) => codec_v5_encode(&args)?,
+        (CodecProtocol::V5, CodecMode::Decode) => codec_v5_decode(&args)?,
+        (CodecProtocol::V5, CodecMode::Roundtrip) => codec_v5_roundtrip(&args)?,
+        (CodecProtocol::Nats, CodecMode::Encode) => codec_nats_encode(&args)?,
+        (CodecProtocol::Nats, CodecMode::Decode) => codec_nats_decode(&args)?,
+        (CodecProtocol::Nats, CodecMode::Roundtrip) => codec_nats_roundtrip(&args)?,
     };
+    finish_profiler(profiler, args.profile_output.as_ref())?;
 
     let mut metrics = BTreeMap::new();
     metrics.insert("messages".to_owned(), args.messages as f64);
@@ -701,21 +741,80 @@ fn run_codec(args: CodecArgs, mode: CodecMode) -> anyhow::Result<()> {
     print_output(BenchOutput {
         schema_version: 1,
         run_id,
-        scenario: format!("codec-{}-{}", args.common.protocol.as_str(), mode.as_str()),
+        scenario: format!("codec-{}-{}", args.protocol.as_str(), mode.as_str()),
         started_at_unix: started_at,
         finished_at_unix: unix_secs(),
         config: json!({
-            "protocol": args.common.protocol,
+            "protocol": args.protocol,
             "mode": mode.as_str(),
             "messages": args.messages,
             "payload_size": args.payload_size,
             "topic": args.topic,
             "qos": args.qos,
+            "profile_output": args.profile_output,
+            "profile_frequency": args.profile_output.as_ref().map(|_| args.profile_frequency),
         }),
         metrics,
         samples: BTreeMap::new(),
         environment: environment(),
     })
+}
+
+#[cfg(all(feature = "profiling", unix))]
+fn start_profiler(
+    output: Option<&PathBuf>,
+    frequency: i32,
+) -> anyhow::Result<Option<pprof::ProfilerGuard<'static>>> {
+    output
+        .map(|_| {
+            pprof::ProfilerGuardBuilder::default()
+                .frequency(frequency)
+                .build()
+        })
+        .transpose()
+        .context("failed to start pprof profiler")
+}
+
+#[cfg(not(all(feature = "profiling", unix)))]
+fn start_profiler(output: Option<&PathBuf>, _frequency: i32) -> anyhow::Result<Option<()>> {
+    if output.is_some() {
+        #[cfg(not(feature = "profiling"))]
+        bail!("profiling requires building benchmarks with --features profiling");
+        #[cfg(all(feature = "profiling", not(unix)))]
+        bail!("pprof profiling is only supported on POSIX targets");
+    }
+    Ok(None)
+}
+
+#[cfg(all(feature = "profiling", unix))]
+fn finish_profiler(
+    profiler: Option<pprof::ProfilerGuard<'static>>,
+    output: Option<&PathBuf>,
+) -> anyhow::Result<()> {
+    use pprof::protos::Message;
+    use std::io::Write;
+
+    let (Some(profiler), Some(output)) = (profiler, output) else {
+        return Ok(());
+    };
+    let report = profiler
+        .report()
+        .build()
+        .context("failed to build pprof report")?;
+    let profile = report.pprof().context("failed to encode pprof report")?;
+    let mut encoded = Vec::new();
+    profile
+        .encode(&mut encoded)
+        .context("failed to serialize pprof report")?;
+    let mut file = std::fs::File::create(output)
+        .with_context(|| format!("failed to create pprof output {}", output.display()))?;
+    file.write_all(&encoded)
+        .with_context(|| format!("failed to write pprof output {}", output.display()))
+}
+
+#[cfg(not(all(feature = "profiling", unix)))]
+fn finish_profiler(_profiler: Option<()>, _output: Option<&PathBuf>) -> anyhow::Result<()> {
+    Ok(())
 }
 
 fn run_options_parse_url(args: OptionsParseUrlArgs) -> anyhow::Result<()> {
@@ -861,6 +960,58 @@ fn codec_v5_roundtrip(args: &CodecArgs) -> anyhow::Result<CodecResult> {
         elapsed_sec: started.elapsed().as_secs_f64(),
         bytes,
     })
+}
+
+fn codec_nats_encode(args: &CodecArgs) -> anyhow::Result<CodecResult> {
+    let payload = vec![0_u8; args.payload_size];
+    let mut buffer = BytesMut::new();
+    let started = Instant::now();
+    for _ in 0..args.messages {
+        nats_codec::write_publish(&args.topic, &payload, &mut buffer)?;
+    }
+    std::hint::black_box(&buffer);
+    Ok(CodecResult {
+        elapsed_sec: started.elapsed().as_secs_f64(),
+        bytes: buffer.len(),
+    })
+}
+
+fn codec_nats_decode(args: &CodecArgs) -> anyhow::Result<CodecResult> {
+    let mut stream = nats_stream(args)?;
+    let bytes = stream.len();
+    let started = Instant::now();
+    for _ in 0..args.messages {
+        std::hint::black_box(nats_codec::read_publish(&mut stream)?);
+    }
+    Ok(CodecResult {
+        elapsed_sec: started.elapsed().as_secs_f64(),
+        bytes,
+    })
+}
+
+fn codec_nats_roundtrip(args: &CodecArgs) -> anyhow::Result<CodecResult> {
+    let payload = vec![0_u8; args.payload_size];
+    let mut bytes = 0;
+    let started = Instant::now();
+    for _ in 0..args.messages {
+        let mut stream = BytesMut::new();
+        nats_codec::write_publish(&args.topic, &payload, &mut stream)?;
+        bytes += stream.len();
+        std::hint::black_box(nats_codec::read_publish(&mut stream)?);
+    }
+    Ok(CodecResult {
+        elapsed_sec: started.elapsed().as_secs_f64(),
+        bytes,
+    })
+}
+
+fn nats_stream(args: &CodecArgs) -> anyhow::Result<BytesMut> {
+    let payload = vec![0_u8; args.payload_size];
+    let mut stream = BytesMut::new();
+    for _ in 0..args.messages {
+        nats_codec::write_publish(&args.topic, &payload, &mut stream)?;
+    }
+    Ok(stream)
 }
 
 fn v4_stream(args: &CodecArgs) -> anyhow::Result<BytesMut> {

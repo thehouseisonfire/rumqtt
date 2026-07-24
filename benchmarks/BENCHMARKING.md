@@ -26,12 +26,17 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
 ## Broker Placement
 
 - Codec scenarios do not require a broker and are the least noisy.
+- NATS codec scenarios are a wire-format baseline implemented by this harness;
+  they do not measure the full `async-nats` library and are not an
+  apples-to-apples feature comparison with MQTT.
 - Client scenarios require an external broker passed with `--broker-url`.
 - For reproducible broker-backed smoke validation, prefer
   `python3 benchmarks/broker_fixture.py validate`. It starts a Docker
   Mosquitto with TCP, TLS, and websocket listeners, runs scenarios through the
   normal runner, writes `broker-validation-summary.json`, and removes the
   broker afterward.
+- Use the synthetic fixture only to isolate client and codec overhead from a
+  full broker. Do not use it for claims about production broker behavior.
 - For client throughput and latency, prefer a broker on the same isolated host
   or on a quiet, directly connected host. Do not compare local-broker results
   with remote-broker results.
@@ -88,3 +93,6 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
 - Keep the generated `summary.json` and `raw/` directory with any claim. The
   summary records scenario hash, command, git refs, rustc, OS, CPU count, and
   quality status; raw files keep the full parsed benchmark payloads.
+- External comparisons are meaningful only when the recorded mqttv5-cli
+  version, broker, transport, scenario, and machine are held fixed. Profiling
+  runs perturb timing and must not be mixed into regression samples.

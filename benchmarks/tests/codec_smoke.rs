@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::process::Command;
 
 fn run_codec(protocol: &str) -> Value {
+    let qos = if protocol == "nats" { "0" } else { "1" };
     let output = Command::new(env!("CARGO_BIN_EXE_rumqtt-bench"))
         .args([
             "codec",
@@ -13,7 +14,7 @@ fn run_codec(protocol: &str) -> Value {
             "--payload-size",
             "64",
             "--qos",
-            "1",
+            qos,
             "--run-id",
             "codec-smoke",
         ])
@@ -28,6 +29,60 @@ fn run_codec(protocol: &str) -> Value {
     );
 
     serde_json::from_slice(&output.stdout).expect("benchmark output must be JSON")
+}
+
+#[test]
+fn nats_codec_roundtrip_emits_stable_json() {
+    let json = run_codec("nats");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["scenario"], "codec-nats-roundtrip");
+    assert_eq!(json["config"]["protocol"], "nats");
+    assert_eq!(json["config"]["qos"], 0);
+    assert!(json["metrics"]["messages_sec"].as_f64().unwrap_or(0.0) > 0.0);
+}
+
+#[cfg(not(feature = "profiling"))]
+#[test]
+fn profile_output_requires_profiling_feature() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rumqtt-bench"))
+        .args([
+            "codec",
+            "decode",
+            "--protocol",
+            "v5",
+            "--messages",
+            "1",
+            "--profile-output",
+            "unused.pb",
+        ])
+        .output()
+        .expect("failed to run rumqtt-bench");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires building benchmarks with --features profiling")
+    );
+}
+
+#[test]
+fn nats_codec_rejects_mqtt_qos() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rumqtt-bench"))
+        .args([
+            "codec",
+            "decode",
+            "--protocol",
+            "nats",
+            "--messages",
+            "1",
+            "--qos",
+            "1",
+        ])
+        .output()
+        .expect("failed to run rumqtt-bench");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("require --qos 0"));
 }
 
 #[cfg(feature = "url")]
