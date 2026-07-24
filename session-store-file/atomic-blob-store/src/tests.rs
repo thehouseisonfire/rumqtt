@@ -13,6 +13,323 @@ fn options() -> AtomicBlobStoreOptions {
     AtomicBlobStoreOptions::new(format()).with_max_blob_size(TEST_MAXIMUM)
 }
 
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn streaming_round_trip_is_compatible_with_complete_blob_methods() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    let payload = b"streamed payload".to_vec();
+    let mut source = Cursor::new(payload.clone());
+    store
+        .save_from(
+            b"stream-to-complete",
+            &mut source,
+            u64::try_from(payload.len()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.load(b"stream-to-complete").await.unwrap(),
+        Some(payload.clone())
+    );
+
+    store
+        .save(b"complete-to-stream", payload.clone())
+        .await
+        .unwrap();
+    let mut destination = Vec::new();
+    let metadata = store
+        .load_into(b"complete-to-stream", &mut destination)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.payload_len, payload.len() as u64);
+    assert_eq!(destination, payload);
+
+    let mut absent_destination = b"untouched".to_vec();
+    assert_eq!(
+        store
+            .load_into(b"absent", &mut absent_destination)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(absent_destination, b"untouched");
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn streaming_transfer_uses_bounded_chunks_for_multi_chunk_payloads() {
+    let root = tempfile::tempdir().unwrap();
+    let payload_len = STREAM_CHUNK_SIZE * 3 + 17;
+    let large_options = AtomicBlobStoreOptions::new(format())
+        .with_max_blob_size(u64::try_from(payload_len).unwrap());
+    let store = AtomicBlobStore::open(root.path(), "streaming", large_options)
+        .await
+        .unwrap();
+    let payload = vec![0x5a; payload_len];
+    let mut source = TrackingAsyncReader::new(payload.clone());
+    store
+        .save_from(b"large", &mut source, payload_len as u64)
+        .await
+        .unwrap();
+    assert!(source.largest_request <= STREAM_CHUNK_SIZE);
+
+    let mut destination = Vec::new();
+    let metadata = store
+        .load_into(b"large", &mut destination)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.payload_len, payload_len as u64);
+    assert_eq!(destination, payload);
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn streaming_save_checks_declared_length_and_preserves_old_blob() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"old".to_vec()).await.unwrap();
+
+    let mut short = Cursor::new(b"new".to_vec());
+    assert!(matches!(
+        store.save_from(b"key", &mut short, 4).await,
+        Err(AtomicBlobStoreError::InputEndedEarly {
+            declared: 4,
+            actual: 3
+        })
+    ));
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
+
+    let mut long = Cursor::new(b"new!".to_vec());
+    assert!(matches!(
+        store.save_from(b"key", &mut long, 3).await,
+        Err(AtomicBlobStoreError::InputHasTrailingData { declared: 3 })
+    ));
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
+
+    let mut over_limit = Cursor::new(Vec::<u8>::new());
+    assert!(matches!(
+        store
+            .save_from(b"key", &mut over_limit, TEST_MAXIMUM + 1)
+            .await,
+        Err(AtomicBlobStoreError::BlobTooLarge {
+            size,
+            maximum: TEST_MAXIMUM
+        }) if size == TEST_MAXIMUM + 1
+    ));
+
+    let mut failing_source = FailingAsyncReader;
+    assert!(matches!(
+        store.save_from(b"key", &mut failing_source, 1).await,
+        Err(AtomicBlobStoreError::InputIo { .. })
+    ));
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_save_reports_staging_failure_while_first_input_read_is_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    std::fs::remove_dir(root.path().join("streaming")).unwrap();
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        store.save_from(b"key", &mut PendingAsyncReader, 1),
+    )
+    .await
+    .expect("the completed worker error must interrupt a pending input read")
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicBlobStoreError::Io {
+            operation: StoreOperation::OpenAtomicWriter,
+            ..
+        }
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_save_reports_write_failure_while_eof_probe_is_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let hook = Arc::new(|stage| {
+        if stage == TestStage::DuringWrite {
+            Err(io::Error::other("injected streaming write failure"))
+        } else {
+            Ok(())
+        }
+    });
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "streaming", options(), hook)
+        .await
+        .unwrap();
+    let mut reader = PayloadThenPendingReader::new(b"new".to_vec());
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        store.save_from(b"key", &mut reader, 3),
+    )
+    .await
+    .expect("the completed worker error must interrupt the pending EOF probe")
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicBlobStoreError::Io {
+            operation: StoreOperation::WriteEnvelope,
+            ..
+        }
+    ));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn streaming_load_validates_before_writing_output() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"payload".to_vec()).await.unwrap();
+    let path = store.blob_path(b"key");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[HEADER_LEN] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+
+    let mut destination = b"unchanged".to_vec();
+    assert!(matches!(
+        store.load_into(b"key", &mut destination).await,
+        Err(AtomicBlobStoreError::ChecksumMismatch { .. })
+    ));
+    assert_eq!(destination, b"unchanged");
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn streaming_destination_failure_releases_same_key_without_mutating_blob() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"payload".to_vec()).await.unwrap();
+    let mut destination = FailingAsyncWriter;
+    assert!(matches!(
+        store.load_into(b"key", &mut destination).await,
+        Err(AtomicBlobStoreError::OutputIo { .. })
+    ));
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"payload".to_vec()));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_active_streaming_save_aborts_staging_and_releases_same_key() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"old".to_vec()).await.unwrap();
+    let (mut source_writer, mut source_reader) = tokio::io::duplex(1);
+    tokio::io::AsyncWriteExt::write_all(&mut source_writer, b"x")
+        .await
+        .unwrap();
+
+    let streaming_store = store.clone();
+    let task = tokio::spawn(async move {
+        streaming_store
+            .save_from(b"key", &mut source_reader, 2)
+            .await
+    });
+    tokio::task::yield_now().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    store.save(b"key", b"after".to_vec()).await.unwrap();
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"after".to_vec()));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_streaming_save_after_input_completion_does_not_cancel_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let (started_sender, started_receiver) = std::sync::mpsc::channel();
+    let (release_sender, release_receiver) = std::sync::mpsc::channel();
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::BeforeCommit {
+            started_sender.send(()).unwrap();
+            release_receiver.lock().unwrap().recv().unwrap();
+        }
+        Ok(())
+    });
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "streaming", options(), hook)
+        .await
+        .unwrap();
+    let streaming_store = store.clone();
+    let task = tokio::spawn(async move {
+        streaming_store
+            .save_from(b"key", &mut Cursor::new(b"new"), 3)
+            .await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
+        .await
+        .unwrap();
+    task.abort();
+    release_sender.send(()).unwrap();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    store.flush().await.unwrap();
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"new".to_vec()));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_streaming_load_keeps_same_key_fifo_and_not_other_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"payload".to_vec()).await.unwrap();
+
+    let (started_sender, started_receiver) = std::sync::mpsc::channel();
+    let streaming_store = store.clone();
+    let task = tokio::spawn(async move {
+        let mut writer = BlockingAsyncWriter {
+            started: Some(started_sender),
+        };
+        streaming_store.load_into(b"key", &mut writer).await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
+        .await
+        .unwrap();
+
+    let clear = store.clear(b"key");
+    let (clear_sender, mut clear_receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        let result = clear.await;
+        let _ = clear_sender.send(result);
+    });
+    assert!(matches!(
+        clear_receiver.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+
+    store.save(b"other", b"independent".to_vec()).await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    clear_receiver.await.unwrap().unwrap();
+    assert_eq!(store.load(b"key").await.unwrap(), None);
+    assert_eq!(
+        store.load(b"other").await.unwrap(),
+        Some(b"independent".to_vec())
+    );
+}
+
 #[test]
 fn format_identity_rejects_invalid_domain_suffix_and_version() {
     assert!(matches!(
@@ -265,7 +582,7 @@ fn bounded_reader_consumes_only_declared_payload_checksum_and_one_probe() {
 }
 
 #[test]
-fn configured_maximum_must_fit_an_envelope_allocation() {
+fn configured_maximum_must_leave_room_for_envelope_overhead() {
     assert!(matches!(
         validate_maximum(u64::MAX),
         Err(AtomicBlobStoreError::Configuration(
@@ -297,6 +614,138 @@ impl Read for CountingReader {
         let read = self.bytes.read(buffer)?;
         self.bytes_read += read;
         Ok(read)
+    }
+}
+
+struct TrackingAsyncReader {
+    bytes: Cursor<Vec<u8>>,
+    largest_request: usize,
+}
+
+impl TrackingAsyncReader {
+    const fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: Cursor::new(bytes),
+            largest_request: 0,
+        }
+    }
+}
+
+impl AsyncRead for TrackingAsyncReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        self.largest_request = self.largest_request.max(buffer.remaining());
+        Pin::new(&mut self.bytes).poll_read(context, buffer)
+    }
+}
+
+struct FailingAsyncReader;
+
+impl AsyncRead for FailingAsyncReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Err(io::Error::other("injected input failure")))
+    }
+}
+
+struct PendingAsyncReader;
+
+impl AsyncRead for PendingAsyncReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Pending
+    }
+}
+
+struct PayloadThenPendingReader {
+    bytes: Cursor<Vec<u8>>,
+}
+
+impl PayloadThenPendingReader {
+    const fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: Cursor::new(bytes),
+        }
+    }
+}
+
+impl AsyncRead for PayloadThenPendingReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        if self.bytes.position() < self.bytes.get_ref().len() as u64 {
+            Pin::new(&mut self.bytes).poll_read(context, buffer)
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+}
+
+struct FailingAsyncWriter;
+
+impl AsyncWrite for FailingAsyncWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::task::Poll::Ready(Err(io::Error::other("injected output failure")))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+struct BlockingAsyncWriter {
+    started: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl AsyncWrite for BlockingAsyncWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        if let Some(started) = self.started.take() {
+            started.send(()).unwrap();
+        }
+        std::task::Poll::Pending
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -946,6 +1395,45 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
         .unwrap();
     assert!(store.save(b"key", b"new".to_vec()).await.is_err());
     assert_eq!(store.load(b"key").await.unwrap(), Some(b"new".to_vec()));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
+    for failed_stage in [
+        TestStage::BeforeEnvelope,
+        TestStage::AfterEnvelope,
+        TestStage::BeforeAtomicOpen,
+        TestStage::DuringWrite,
+        TestStage::BeforeCommit,
+        TestStage::CommitError,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let initial = AtomicBlobStore::open(root.path(), "v4", options())
+            .await
+            .unwrap();
+        initial.save(b"key", b"old".to_vec()).await.unwrap();
+        drop(initial);
+
+        let hook = Arc::new(move |stage| {
+            if stage == failed_stage {
+                Err(io::Error::other("injected streaming save-stage failure"))
+            } else {
+                Ok(())
+            }
+        });
+        let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+            .await
+            .unwrap();
+        let error = store
+            .save_from(b"key", &mut Cursor::new(b"new"), 3)
+            .await
+            .unwrap_err();
+        if failed_stage == TestStage::CommitError {
+            assert!(matches!(error, AtomicBlobStoreError::AtomicCommit { .. }));
+        }
+        assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
+    }
 }
 
 #[cfg(unix)]

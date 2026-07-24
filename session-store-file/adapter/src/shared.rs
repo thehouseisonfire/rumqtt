@@ -5,7 +5,7 @@
 
 use std::error::Error;
 use std::fmt;
-use std::io;
+use std::io::{self, Cursor};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -240,13 +240,15 @@ impl<P: Protocol> Adapter<P> {
         client_id: &str,
     ) -> Result<Option<P::Session>, AdapterError<P>> {
         let encoded_key = encode_key::<P>(scope, client_id)?;
-        let Some(payload) = self.core.load(&encoded_key).await? else {
+        let mut payload = Vec::new();
+        let Some(metadata) = self.core.load_into(&encoded_key, &mut payload).await? else {
             if self.inspect_legacy(scope, client_id).await?.is_none() {
                 return Ok(None);
             }
             let diagnostic_path = self.root.join(legacy_filename(scope, client_id));
             return Err(AdapterError::LegacyCheckpointDetected { diagnostic_path });
         };
+        debug_assert_eq!(metadata.payload_len, payload.len() as u64);
         P::decode(&payload)
             .map(Some)
             .map_err(AdapterError::SessionDecode)
@@ -260,7 +262,14 @@ impl<P: Protocol> Adapter<P> {
     ) -> Result<(), AdapterError<P>> {
         let encoded_key = encode_key::<P>(scope, client_id)?;
         let payload = P::encode(session).map_err(AdapterError::SessionEncode)?;
-        self.core.save(&encoded_key, payload).await?;
+        let payload_len = u64::try_from(payload.len()).map_err(|_| {
+            AdapterError::FileStore(AtomicBlobStoreError::InvalidPayloadLength {
+                declared: u64::MAX,
+            })
+        })?;
+        self.core
+            .save_from(&encoded_key, &mut Cursor::new(payload), payload_len)
+            .await?;
         Ok(())
     }
 

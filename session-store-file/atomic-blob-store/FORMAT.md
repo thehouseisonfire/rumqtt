@@ -16,6 +16,9 @@ EOF must immediately follow the checksum. A reader rejects a different domain,
 an unlisted version, a length above its configured bound, truncation, checksum
 failure, and trailing bytes.
 
+Streaming does not change this encoding. Streaming loads validate the complete
+envelope before seeking back to offset 18 and delivering payload bytes.
+
 ## Paths and owned names
 
 The canonical filename is the 32-byte BLAKE3 digest of the opaque key rendered

@@ -2,7 +2,7 @@
 name = "atomic-blob-store"
 version = "0.1.0-alpha.1"
 publish = true
-description = "Bounded crash-consistent keyed blob snapshots for trusted local filesystems"
+description = "Crash-consistent keyed blob streaming for trusted local filesystems"
 keywords = ["atomic", "filesystem", "persistence", "snapshot"]
 categories = ["filesystem"]
 rust-version.workspace = true
@@ -20,7 +20,7 @@ bench-instrumentation = []
 blake3 = { version = "1.8", features = ["pure"] }
 crc32c = "0.6"
 thiserror = "2.0.8"
-tokio = { version = "1.40", features = ["rt", "sync"] }
+tokio = { version = "1.40", features = ["io-util", "macros", "rt", "sync"] }
 
 [target.'cfg(any(unix, windows))'.dependencies]
 getrandom = { version = "0.4", features = ["std"] }
@@ -38,7 +38,7 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

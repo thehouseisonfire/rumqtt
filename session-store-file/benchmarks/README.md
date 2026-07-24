@@ -23,3 +23,8 @@ python3 benchmarks/runner.py run \
 
 See [`PERSISTENCE.md`](PERSISTENCE.md) for methodology and
 [`PERSISTENCE-RESULTS.md`](PERSISTENCE-RESULTS.md) for recorded results.
+
+File-store save and load scenarios use the production streaming API by
+default. Load latency includes the checksum-validation pass and subsequent
+payload-delivery pass. Pass `--io-mode complete` to measure the allocation-heavy
+convenience methods separately.

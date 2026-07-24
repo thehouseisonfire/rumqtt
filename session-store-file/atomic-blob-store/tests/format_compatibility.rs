@@ -2,7 +2,7 @@
 
 use atomic_blob_store::{
     AtomicBlobStore, AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity,
-    ENVELOPE_VERSION_V1,
+    BlobMetadata, ENVELOPE_VERSION_V1,
 };
 
 fn decode_hex(source: &str) -> Vec<u8> {
@@ -20,7 +20,7 @@ fn decode_hex(source: &str) -> Vec<u8> {
         .collect()
 }
 
-async fn load_fixture(name: &str) -> Result<Option<Vec<u8>>, AtomicBlobStoreError> {
+async fn load_fixture(name: &str) -> (Result<Option<BlobMetadata>, AtomicBlobStoreError>, Vec<u8>) {
     let root = tempfile::tempdir().unwrap();
     let format = BlobFormatIdentity::new(b"BLOBTEST", ".blob", ENVELOPE_VERSION_V1).unwrap();
     let options = AtomicBlobStoreOptions::new(format).with_max_blob_size(1024);
@@ -38,12 +38,16 @@ async fn load_fixture(name: &str) -> Result<Option<Vec<u8>>, AtomicBlobStoreErro
         _ => unreachable!(),
     };
     std::fs::write(store.blob_path(b"fixture"), decode_hex(fixture)).unwrap();
-    store.load(b"fixture").await
+    let mut output = Vec::new();
+    let result = store.load_into(b"fixture", &mut output).await;
+    (result, output)
 }
 
 #[tokio::test]
 async fn immutable_v1_fixtures_define_compatibility() {
-    assert_eq!(load_fixture("valid").await.unwrap(), Some(b"abc".to_vec()));
+    let (result, output) = load_fixture("valid").await;
+    assert_eq!(result.unwrap().unwrap().payload_len, 3);
+    assert_eq!(output, b"abc");
     for name in [
         "truncated",
         "oversized",
@@ -52,6 +56,8 @@ async fn immutable_v1_fixtures_define_compatibility() {
         "wrong-domain",
         "unsupported-version",
     ] {
-        assert!(load_fixture(name).await.is_err(), "{name}");
+        let (result, output) = load_fixture(name).await;
+        assert!(result.is_err(), "{name}");
+        assert!(output.is_empty(), "{name} wrote output before validation");
     }
 }

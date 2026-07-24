@@ -1,7 +1,11 @@
-//! Bounded, crash-consistent keyed blob snapshots on trusted local filesystems.
+//! Crash-consistent keyed blob streaming on trusted local filesystems.
 //!
-//! The store accepts opaque key and payload bytes. See the crate README for the
-//! exact format, non-goals, interruption guarantees, and trust boundary.
+//! The store accepts opaque key and payload bytes. [`AtomicBlobStore::save_from`]
+//! and [`AtomicBlobStore::load_into`] transfer payloads with bounded internal
+//! buffering; [`AtomicBlobStore::save`] and [`AtomicBlobStore::load`] remain
+//! complete-allocation conveniences. See the crate README for the exact format,
+//! non-goals, interruption guarantees, cancellation behavior, and trust
+//! boundary.
 //!
 //! # Platform and filesystem scope
 //!
@@ -48,7 +52,7 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
 #[cfg(any(unix, windows))]
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
@@ -58,6 +62,9 @@ use std::time::{Duration, SystemTime};
 #[cfg(any(unix, windows))]
 use std::sync::mpsc;
 
+use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(any(unix, windows))]
+use tokio::sync::mpsc as tokio_mpsc;
 #[cfg(any(unix, windows))]
 use tokio::sync::oneshot;
 
@@ -69,6 +76,10 @@ pub const ENVELOPE_VERSION_V1: u16 = 1;
 pub const MAX_FILENAME_SUFFIX_LEN: usize = 32;
 const HEADER_LEN: usize = 18;
 const CHECKSUM_LEN: usize = 4;
+#[cfg(any(unix, windows))]
+const STREAM_CHUNK_SIZE: usize = 64 * 1024;
+#[cfg(any(unix, windows))]
+const STREAM_CHANNEL_CAPACITY: usize = 2;
 
 /// The default maximum canonical blob payload size (64 MiB).
 pub const DEFAULT_MAX_BLOB_SIZE: u64 = 64 * 1024 * 1024;
@@ -149,6 +160,14 @@ pub struct BlobInspection {
     pub state: BlobState,
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
+}
+
+/// Metadata for a successfully validated blob payload.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlobMetadata {
+    /// Exact number of payload bytes in the envelope.
+    pub payload_len: u64,
 }
 
 /// Location assigned to a quarantined blob.
@@ -238,7 +257,7 @@ pub enum AtomicBlobStoreConfigError {
     UnsupportedConfiguredEnvelopeVersion { found: u16 },
     #[error("namespace must be one non-empty normal path component")]
     InvalidNamespace,
-    #[error("maximum blob size {maximum} cannot be represented safely on this target")]
+    #[error("maximum blob size {maximum} leaves no room for the envelope header and checksum")]
     InvalidMaximumBlobSize { maximum: u64 },
 }
 
@@ -362,6 +381,22 @@ pub enum AtomicBlobStoreError {
     TrailingData,
     #[error("blob checksum mismatch: stored {expected:#010x}, calculated {actual:#010x}")]
     ChecksumMismatch { expected: u32, actual: u32 },
+    #[error("streaming input ended after {actual} bytes; {declared} bytes were declared")]
+    InputEndedEarly { declared: u64, actual: u64 },
+    #[error("streaming input contains data after the declared {declared} bytes")]
+    InputHasTrailingData { declared: u64 },
+    #[error("failed to read streaming input: {source}")]
+    InputIo {
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to write streaming output: {source}")]
+    OutputIo {
+        #[source]
+        source: io::Error,
+    },
+    #[error("streaming transfer was cancelled before completion")]
+    StreamCancelled,
     #[error("file-backed blob storage is unsupported on {platform}")]
     UnsupportedPlatform { platform: &'static str },
     #[error("blob-store operation coordination failed")]
@@ -402,8 +437,9 @@ pub type BlobStoreFuture<T> =
 /// Protocol-neutral file-backed blob store.
 ///
 /// Clones share one FIFO coordinator whose lifetime is independent of any
-/// caller-owned Tokio runtime. Submission occurs when an operation method is
-/// called, before its returned future is polled.
+/// caller-owned Tokio runtime. Complete-blob and maintenance submission occurs
+/// when an operation method is called. Borrowed streaming operations submit
+/// when first polled.
 #[derive(Clone)]
 pub struct AtomicBlobStore {
     inner: Arc<Inner>,
@@ -567,7 +603,7 @@ impl AtomicBlobStore {
         Self::from_config(config)
     }
 
-    /// Loads the canonical payload associated with `canonical_key`.
+    /// Allocates and loads the complete canonical payload for `canonical_key`.
     ///
     /// Only a genuinely absent canonical blob returns `Ok(None)`.
     #[must_use]
@@ -589,7 +625,7 @@ impl AtomicBlobStore {
         }
     }
 
-    /// Saves an opaque canonical payload for `canonical_key`.
+    /// Saves an already allocated complete payload for `canonical_key`.
     #[must_use]
     pub fn save(&self, canonical_key: &[u8], payload: Vec<u8>) -> BlobStoreFuture<()> {
         #[cfg(not(any(unix, windows)))]
@@ -606,6 +642,176 @@ impl AtomicBlobStore {
                 Operation::Save { payload, sender },
                 receiver,
             )
+        }
+    }
+
+    /// Streams and atomically saves exactly `declared_len` payload bytes.
+    ///
+    /// The operation is submitted when this future is first polled. The reader
+    /// must then reach EOF immediately after `declared_len` bytes. Dropping the
+    /// future before the input-complete marker aborts the staged replacement;
+    /// after that marker, the coordinator finishes the commit and dropping the
+    /// future discards only its result.
+    pub async fn save_from<R>(
+        &self,
+        canonical_key: &[u8],
+        reader: &mut R,
+        declared_len: u64,
+    ) -> Result<(), AtomicBlobStoreError>
+    where
+        R: AsyncRead + Unpin + Send + ?Sized,
+    {
+        if declared_len > self.inner.config.maximum {
+            return Err(AtomicBlobStoreError::BlobTooLarge {
+                size: declared_len,
+                maximum: self.inner.config.maximum,
+            });
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (canonical_key, reader);
+            return Err(AtomicBlobStoreError::UnsupportedPlatform {
+                platform: std::env::consts::OS,
+            });
+        }
+
+        #[cfg(any(unix, windows))]
+        {
+            let (chunks_sender, chunks_receiver) = tokio_mpsc::channel(STREAM_CHANNEL_CAPACITY);
+            let (sender, mut receiver) = oneshot::channel();
+            submit_operation(
+                &self.inner.submissions,
+                key_hash(canonical_key),
+                Operation::SaveStream {
+                    declared_len,
+                    chunks: chunks_receiver,
+                    sender,
+                },
+            )?;
+
+            let mut read = 0_u64;
+            while read < declared_len {
+                let remaining = declared_len - read;
+                let requested = usize::try_from(remaining)
+                    .unwrap_or(usize::MAX)
+                    .min(STREAM_CHUNK_SIZE);
+                let mut chunk = vec![0; requested];
+                let read_result = tokio::select! {
+                    biased;
+                    result = &mut receiver => {
+                        return result.unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure));
+                    }
+                    result = tokio::io::AsyncReadExt::read(reader, &mut chunk) => result,
+                };
+                let count = match read_result {
+                    Ok(0) => {
+                        drop(chunks_sender);
+                        let _ = receive_result(receiver).await;
+                        return Err(AtomicBlobStoreError::InputEndedEarly {
+                            declared: declared_len,
+                            actual: read,
+                        });
+                    }
+                    Ok(count) => count,
+                    Err(source) => {
+                        drop(chunks_sender);
+                        let _ = receive_result(receiver).await;
+                        return Err(AtomicBlobStoreError::InputIo { source });
+                    }
+                };
+                chunk.truncate(count);
+                read += u64::try_from(count).expect("a chunk length always fits in u64");
+                if chunks_sender
+                    .send(SaveStreamMessage::Chunk(chunk))
+                    .await
+                    .is_err()
+                {
+                    return receive_result(receiver).await;
+                }
+            }
+
+            let mut trailing = [0; 1];
+            let trailing_result = tokio::select! {
+                biased;
+                result = &mut receiver => {
+                    return result.unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure));
+                }
+                result = tokio::io::AsyncReadExt::read(reader, &mut trailing) => result,
+            };
+            match trailing_result {
+                Ok(0) => {}
+                Ok(_) => {
+                    drop(chunks_sender);
+                    let _ = receive_result(receiver).await;
+                    return Err(AtomicBlobStoreError::InputHasTrailingData {
+                        declared: declared_len,
+                    });
+                }
+                Err(source) => {
+                    drop(chunks_sender);
+                    let _ = receive_result(receiver).await;
+                    return Err(AtomicBlobStoreError::InputIo { source });
+                }
+            }
+
+            if chunks_sender
+                .send(SaveStreamMessage::Complete)
+                .await
+                .is_err()
+            {
+                return receive_result(receiver).await;
+            }
+            drop(chunks_sender);
+            receive_result(receiver).await
+        }
+    }
+
+    /// Validates and streams a canonical payload into `writer`.
+    ///
+    /// Validation completes before the first payload byte is written. The
+    /// destination is not flushed or shut down by this method.
+    pub async fn load_into<W>(
+        &self,
+        canonical_key: &[u8],
+        writer: &mut W,
+    ) -> Result<Option<BlobMetadata>, AtomicBlobStoreError>
+    where
+        W: AsyncWrite + Unpin + Send + ?Sized,
+    {
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (canonical_key, writer);
+            return Err(AtomicBlobStoreError::UnsupportedPlatform {
+                platform: std::env::consts::OS,
+            });
+        }
+
+        #[cfg(any(unix, windows))]
+        {
+            let (chunks_sender, mut chunks_receiver) = tokio_mpsc::channel(STREAM_CHANNEL_CAPACITY);
+            let (acknowledgement_sender, acknowledgement_receiver) = oneshot::channel();
+            let (sender, receiver) = oneshot::channel();
+            submit_operation(
+                &self.inner.submissions,
+                key_hash(canonical_key),
+                Operation::LoadStream {
+                    chunks: Some(chunks_sender),
+                    acknowledgement: Some(acknowledgement_receiver),
+                    sender,
+                },
+            )?;
+
+            while let Some(chunk) = chunks_receiver.recv().await {
+                if let Err(source) = tokio::io::AsyncWriteExt::write_all(writer, &chunk).await {
+                    drop(chunks_receiver);
+                    drop(acknowledgement_sender);
+                    let _ = receive_result(receiver).await;
+                    return Err(AtomicBlobStoreError::OutputIo { source });
+                }
+            }
+            let _ = acknowledgement_sender.send(());
+            receive_result(receiver).await
         }
     }
 
@@ -822,10 +1028,9 @@ fn validate_suffix(suffix: &str) -> Result<(), AtomicBlobStoreConfigError> {
 }
 
 fn validate_maximum(maximum: u64) -> Result<(), AtomicBlobStoreError> {
-    let envelope_capacity = usize::try_from(maximum)
-        .ok()
-        .and_then(|size| size.checked_add(HEADER_LEN + CHECKSUM_LEN));
-    if envelope_capacity.is_none() {
+    let overhead =
+        u64::try_from(HEADER_LEN + CHECKSUM_LEN).expect("the fixed envelope overhead fits in u64");
+    if maximum.checked_add(overhead).is_none() {
         return Err(AtomicBlobStoreConfigError::InvalidMaximumBlobSize { maximum }.into());
     }
     Ok(())
@@ -866,6 +1071,30 @@ fn submit<T: Send + 'static>(
 }
 
 #[cfg(any(unix, windows))]
+fn submit_operation(
+    submissions: &mpsc::Sender<CoordinatorEvent>,
+    key_hash: [u8; 32],
+    operation: Operation,
+) -> Result<(), AtomicBlobStoreError> {
+    submissions
+        .send(CoordinatorEvent::Submission(Submission {
+            key_hash,
+            operation,
+            completion_sender: submissions.clone(),
+        }))
+        .map_err(|_| AtomicBlobStoreError::CoordinationFailure)
+}
+
+#[cfg(any(unix, windows))]
+async fn receive_result<T>(
+    receiver: oneshot::Receiver<Result<T, AtomicBlobStoreError>>,
+) -> Result<T, AtomicBlobStoreError> {
+    receiver
+        .await
+        .unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure))
+}
+
+#[cfg(any(unix, windows))]
 struct Submission {
     key_hash: [u8; 32],
     operation: Operation,
@@ -883,8 +1112,18 @@ enum Operation {
     Load {
         sender: oneshot::Sender<Result<Option<Vec<u8>>, AtomicBlobStoreError>>,
     },
+    LoadStream {
+        chunks: Option<tokio_mpsc::Sender<Vec<u8>>>,
+        acknowledgement: Option<oneshot::Receiver<()>>,
+        sender: oneshot::Sender<Result<Option<BlobMetadata>, AtomicBlobStoreError>>,
+    },
     Save {
         payload: Vec<u8>,
+        sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
+    },
+    SaveStream {
+        declared_len: u64,
+        chunks: tokio_mpsc::Receiver<SaveStreamMessage>,
         sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
     },
     Clear {
@@ -901,10 +1140,18 @@ enum Operation {
 #[cfg(any(unix, windows))]
 enum BlockingResult {
     Load(Result<Option<Vec<u8>>, AtomicBlobStoreError>),
+    LoadStream(Result<Option<BlobMetadata>, AtomicBlobStoreError>),
     Save(Result<(), AtomicBlobStoreError>),
+    SaveStream(Result<(), AtomicBlobStoreError>),
     Clear(Result<(), AtomicBlobStoreError>),
     Inspect(Result<BlobInspection, AtomicBlobStoreError>),
     Quarantine(Result<QuarantineInfo, AtomicBlobStoreError>),
+}
+
+#[cfg(any(unix, windows))]
+enum SaveStreamMessage {
+    Chunk(Vec<u8>),
+    Complete,
 }
 
 #[cfg(any(unix, windows))]
@@ -1183,6 +1430,30 @@ fn run_owned_operation(
             let result = load_blob(config, path);
             (Operation::Load { sender }, BlockingResult::Load(result))
         }
+        Operation::LoadStream {
+            mut chunks,
+            mut acknowledgement,
+            sender,
+        } => {
+            let result = load_blob_into_sender(
+                config,
+                path,
+                chunks
+                    .take()
+                    .expect("a queued streaming load owns its chunk sender"),
+                acknowledgement
+                    .take()
+                    .expect("a queued streaming load owns its acknowledgement"),
+            );
+            (
+                Operation::LoadStream {
+                    chunks,
+                    acknowledgement,
+                    sender,
+                },
+                BlockingResult::LoadStream(result),
+            )
+        }
         Operation::Save { payload, sender } => {
             #[cfg(any(unix, windows))]
             let result = save_blob(config, path, &payload);
@@ -1193,6 +1464,21 @@ fn run_owned_operation(
             (
                 Operation::Save { payload, sender },
                 BlockingResult::Save(result),
+            )
+        }
+        Operation::SaveStream {
+            declared_len,
+            mut chunks,
+            sender,
+        } => {
+            let result = save_blob_from_receiver(config, path, declared_len, &mut chunks);
+            (
+                Operation::SaveStream {
+                    declared_len,
+                    chunks,
+                    sender,
+                },
+                BlockingResult::SaveStream(result),
             )
         }
         Operation::Clear { sender } => {
@@ -1216,7 +1502,11 @@ fn deliver(operation: Operation, result: BlockingResult) {
         (Operation::Load { sender }, BlockingResult::Load(result)) => {
             let _send_result = sender.send(result);
         }
+        (Operation::LoadStream { sender, .. }, BlockingResult::LoadStream(result)) => {
+            let _send_result = sender.send(result);
+        }
         (Operation::Save { sender, .. }, BlockingResult::Save(result))
+        | (Operation::SaveStream { sender, .. }, BlockingResult::SaveStream(result))
         | (Operation::Clear { sender }, BlockingResult::Clear(result)) => {
             let _send_result = sender.send(result);
         }
@@ -1362,20 +1652,98 @@ fn envelope_parts(
 ) -> Result<([u8; HEADER_LEN], [u8; CHECKSUM_LEN]), AtomicBlobStoreError> {
     let size = u64::try_from(payload.len())
         .map_err(|_| AtomicBlobStoreError::InvalidPayloadLength { declared: u64::MAX })?;
+    let header = envelope_header(format, size, maximum)?;
+    let checksum = crc32c::crc32c_append(crc32c::crc32c(&header), payload).to_be_bytes();
+    Ok((header, checksum))
+}
+
+#[cfg(any(unix, windows))]
+fn envelope_header(
+    format: &BlobFormatIdentity,
+    size: u64,
+    maximum: u64,
+) -> Result<[u8; HEADER_LEN], AtomicBlobStoreError> {
     if size > maximum {
         return Err(AtomicBlobStoreError::BlobTooLarge { size, maximum });
     }
-    payload
-        .len()
-        .checked_add(HEADER_LEN + CHECKSUM_LEN)
-        .ok_or(AtomicBlobStoreError::InvalidPayloadLength { declared: size })?;
     let mut header = [0; HEADER_LEN];
     header[..DOMAIN_TAG_LEN].copy_from_slice(format.domain_tag());
     header[DOMAIN_TAG_LEN..DOMAIN_TAG_LEN + 2]
         .copy_from_slice(&format.envelope_version().to_be_bytes());
     header[DOMAIN_TAG_LEN + 2..].copy_from_slice(&size.to_be_bytes());
-    let checksum = crc32c::crc32c_append(crc32c::crc32c(&header), payload).to_be_bytes();
-    Ok((header, checksum))
+    Ok(header)
+}
+
+#[cfg(any(unix, windows))]
+fn write_stream_envelope(
+    config: &StoreConfig,
+    writer: &mut impl Write,
+    declared_len: u64,
+    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+) -> Result<(), AtomicBlobStoreError> {
+    let header = envelope_header(&config.format, declared_len, config.maximum)?;
+    writer
+        .write_all(&header)
+        .map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::WriteEnvelope,
+            source,
+        })?;
+    let mut checksum = crc32c::crc32c(&header);
+    let mut written = 0_u64;
+    #[cfg(all(test, unix))]
+    let mut during_write_hook_hit = false;
+
+    while let Some(message) = chunks.blocking_recv() {
+        match message {
+            SaveStreamMessage::Chunk(chunk) => {
+                let count = u64::try_from(chunk.len()).expect("a chunk length always fits in u64");
+                if written
+                    .checked_add(count)
+                    .is_none_or(|total| total > declared_len)
+                {
+                    return Err(AtomicBlobStoreError::InputHasTrailingData {
+                        declared: declared_len,
+                    });
+                }
+                writer
+                    .write_all(&chunk)
+                    .map_err(|source| AtomicBlobStoreError::Io {
+                        operation: StoreOperation::WriteEnvelope,
+                        source,
+                    })?;
+                checksum = crc32c::crc32c_append(checksum, &chunk);
+                written += count;
+                #[cfg(all(test, unix))]
+                if !during_write_hook_hit {
+                    hit_test_stage(
+                        config,
+                        TestStage::DuringWrite,
+                        StoreOperation::WriteEnvelope,
+                    )?;
+                }
+                #[cfg(all(test, unix))]
+                {
+                    during_write_hook_hit = true;
+                }
+            }
+            SaveStreamMessage::Complete => {
+                if written != declared_len {
+                    return Err(AtomicBlobStoreError::InputEndedEarly {
+                        declared: declared_len,
+                        actual: written,
+                    });
+                }
+                writer
+                    .write_all(&checksum.to_be_bytes())
+                    .map_err(|source| AtomicBlobStoreError::Io {
+                        operation: StoreOperation::WriteEnvelope,
+                        source,
+                    })?;
+                return Ok(());
+            }
+        }
+    }
+    Err(AtomicBlobStoreError::StreamCancelled)
 }
 
 #[cfg(any(unix, windows))]
@@ -1394,6 +1762,141 @@ fn load_blob(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>, Atomi
         }
     };
     decode_reader(&config.format, &mut file, config.maximum).map(Some)
+}
+
+#[cfg(any(unix, windows))]
+fn load_blob_into_sender(
+    config: &StoreConfig,
+    path: &Path,
+    chunks: tokio_mpsc::Sender<Vec<u8>>,
+    acknowledgement: oneshot::Receiver<()>,
+) -> Result<Option<BlobMetadata>, AtomicBlobStoreError> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            ensure_namespace_available(config)?;
+            return Ok(None);
+        }
+        Err(source) => {
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::OpenBlob,
+                source,
+            });
+        }
+    };
+    let metadata = validate_envelope_reader(&config.format, &mut file, config.maximum)?;
+    file.seek(SeekFrom::Start(
+        u64::try_from(HEADER_LEN).expect("the fixed header length fits in u64"),
+    ))
+    .map_err(|source| AtomicBlobStoreError::Io {
+        operation: StoreOperation::ReadEnvelope,
+        source,
+    })?;
+
+    let mut remaining = metadata.payload_len;
+    while remaining != 0 {
+        let requested = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(STREAM_CHUNK_SIZE);
+        let mut chunk = vec![0; requested];
+        read_section(&mut file, &mut chunk, EnvelopeSection::Payload)?;
+        remaining -= u64::try_from(requested).expect("a chunk length always fits in u64");
+        chunks
+            .blocking_send(chunk)
+            .map_err(|_| AtomicBlobStoreError::StreamCancelled)?;
+    }
+    drop(chunks);
+    acknowledgement
+        .blocking_recv()
+        .map_err(|_| AtomicBlobStoreError::StreamCancelled)?;
+    Ok(Some(metadata))
+}
+
+#[cfg(any(unix, windows))]
+fn validate_envelope_reader(
+    format: &BlobFormatIdentity,
+    reader: &mut impl Read,
+    maximum: u64,
+) -> Result<BlobMetadata, AtomicBlobStoreError> {
+    let mut header = [0; HEADER_LEN];
+    read_section(
+        reader,
+        &mut header[..DOMAIN_TAG_LEN],
+        EnvelopeSection::Magic,
+    )?;
+    let found = <[u8; DOMAIN_TAG_LEN]>::try_from(&header[..DOMAIN_TAG_LEN])
+        .expect("the domain header slice has the required length");
+    if &found != format.domain_tag() {
+        return Err(AtomicBlobStoreError::InvalidEnvelopeDomain {
+            expected: *format.domain_tag(),
+            found,
+        });
+    }
+
+    read_section(
+        reader,
+        &mut header[DOMAIN_TAG_LEN..DOMAIN_TAG_LEN + 2],
+        EnvelopeSection::Version,
+    )?;
+    let version = u16::from_be_bytes(
+        header[DOMAIN_TAG_LEN..DOMAIN_TAG_LEN + 2]
+            .try_into()
+            .expect("the version slice has two bytes"),
+    );
+    if version != format.envelope_version() {
+        return Err(AtomicBlobStoreError::UnsupportedEnvelopeVersion { found: version });
+    }
+
+    read_section(
+        reader,
+        &mut header[DOMAIN_TAG_LEN + 2..],
+        EnvelopeSection::PayloadLength,
+    )?;
+    let declared = u64::from_be_bytes(
+        header[DOMAIN_TAG_LEN + 2..]
+            .try_into()
+            .expect("the payload-length slice has eight bytes"),
+    );
+    if declared > maximum {
+        return Err(AtomicBlobStoreError::BlobTooLarge {
+            size: declared,
+            maximum,
+        });
+    }
+
+    let mut actual = crc32c::crc32c(&header);
+    let mut remaining = declared;
+    let mut buffer = vec![0; STREAM_CHUNK_SIZE];
+    while remaining != 0 {
+        let requested = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        read_section(reader, &mut buffer[..requested], EnvelopeSection::Payload)?;
+        actual = crc32c::crc32c_append(actual, &buffer[..requested]);
+        remaining -= u64::try_from(requested).expect("a chunk length always fits in u64");
+    }
+
+    let mut checksum = [0; CHECKSUM_LEN];
+    read_section(reader, &mut checksum, EnvelopeSection::Checksum)?;
+    let mut trailing = [0; 1];
+    match reader.read(&mut trailing) {
+        Ok(0) => {}
+        Ok(_) => return Err(AtomicBlobStoreError::TrailingData),
+        Err(source) => {
+            return Err(AtomicBlobStoreError::Io {
+                operation: StoreOperation::ReadEnvelope,
+                source,
+            });
+        }
+    }
+
+    let expected = u32::from_be_bytes(checksum);
+    if expected != actual {
+        return Err(AtomicBlobStoreError::ChecksumMismatch { expected, actual });
+    }
+    Ok(BlobMetadata {
+        payload_len: declared,
+    })
 }
 
 #[cfg(any(unix, windows))]
@@ -1606,6 +2109,74 @@ fn save_blob(
                 source,
             })?;
     }
+    #[cfg(all(test, unix))]
+    hit_test_stage(
+        config,
+        TestStage::BeforeCommit,
+        StoreOperation::WriteEnvelope,
+    )?;
+    #[cfg(all(test, unix))]
+    if let Err(source) = config
+        .hook
+        .as_ref()
+        .map_or(Ok(()), |hook| hook(TestStage::CommitError))
+    {
+        return Err(AtomicBlobStoreError::AtomicCommit { source });
+    }
+    writer
+        .commit()
+        .map_err(|source| AtomicBlobStoreError::AtomicCommit { source })?;
+    #[cfg(all(test, unix))]
+    hit_test_stage(
+        config,
+        TestStage::AfterCommit,
+        StoreOperation::WriteEnvelope,
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn save_blob_from_receiver(
+    config: &StoreConfig,
+    path: &Path,
+    declared_len: u64,
+    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+) -> Result<(), AtomicBlobStoreError> {
+    use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
+    use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
+
+    #[cfg(all(test, unix))]
+    hit_test_stage(
+        config,
+        TestStage::BeforeEnvelope,
+        StoreOperation::WriteEnvelope,
+    )?;
+    envelope_header(&config.format, declared_len, config.maximum)?;
+    #[cfg(all(test, unix))]
+    hit_test_stage(
+        config,
+        TestStage::AfterEnvelope,
+        StoreOperation::WriteEnvelope,
+    )?;
+    #[cfg(all(test, unix))]
+    hit_test_stage(
+        config,
+        TestStage::BeforeAtomicOpen,
+        StoreOperation::OpenAtomicWriter,
+    )?;
+
+    let mut options = atomic_write_file::OpenOptions::new();
+    StdOpenOptionsExt::mode(&mut options, 0o600);
+    AtomicOpenOptionsExt::preserve_mode(&mut options, false);
+    AtomicOpenOptionsExt::preserve_owner(&mut options, false);
+    let mut writer = options
+        .open(path)
+        .map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::OpenAtomicWriter,
+            source,
+        })?;
+    write_stream_envelope(config, &mut writer, declared_len, chunks)?;
+
     #[cfg(all(test, unix))]
     hit_test_stage(
         config,
@@ -1934,6 +2505,51 @@ fn create_windows_staging(
 }
 
 #[cfg(windows)]
+fn create_windows_streaming_staging(
+    config: &StoreConfig,
+    path: &Path,
+    declared_len: u64,
+    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+) -> Result<(), AtomicBlobStoreError> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH, FlushFileBuffers,
+    };
+
+    let wide = wide_path(path);
+    // SAFETY: `wide` is NUL-terminated; null security attributes deliberately inherit the directory ACL.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::OpenAtomicWriter,
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: the successful CreateFileW call returned an owned handle.
+    let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
+    write_stream_envelope(config, &mut file, declared_len, chunks)?;
+    // SAFETY: the file still owns a live handle.
+    if unsafe { FlushFileBuffers(handle) } == 0 {
+        return Err(AtomicBlobStoreError::Io {
+            operation: StoreOperation::WriteEnvelope,
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn refresh_windows_clear_age(path: &Path) -> Result<(), io::Error> {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{FILETIME, GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -2030,6 +2646,58 @@ fn save_blob(
                 continue;
             }
             Err(error) => return Err(error),
+        }
+        let initial = move_file(&staging, path, MOVEFILE_WRITE_THROUGH);
+        match initial {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(code) if code.cast_unsigned() == ERROR_FILE_EXISTS || code.cast_unsigned() == ERROR_ALREADY_EXISTS) =>
+            {
+                return move_file(
+                    &staging,
+                    path,
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+                .map_err(|source| AtomicBlobStoreError::AtomicCommit { source });
+            }
+            Err(source) => return Err(AtomicBlobStoreError::AtomicCommit { source }),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn save_blob_from_receiver(
+    config: &StoreConfig,
+    path: &Path,
+    declared_len: u64,
+    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+) -> Result<(), AtomicBlobStoreError> {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    envelope_header(&config.format, declared_len, config.maximum)?;
+    let hash = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(AtomicBlobStoreError::UnexpectedFileType)?;
+    loop {
+        let identifier = random_identifier()?;
+        let staging = config.namespace.join(format!(
+            "{hash}{}.tmp-v1.save.{identifier}",
+            config.format.filename_suffix()
+        ));
+        match create_windows_streaming_staging(config, &staging, declared_len, chunks) {
+            Ok(()) => {}
+            Err(AtomicBlobStoreError::Io { source, .. })
+                if source.kind() == io::ErrorKind::AlreadyExists =>
+            {
+                continue;
+            }
+            Err(error) => {
+                let _ = delete_file(&staging);
+                return Err(error);
+            }
         }
         let initial = move_file(&staging, path, MOVEFILE_WRITE_THROUGH);
         match initial {

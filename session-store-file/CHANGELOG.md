@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add bounded-memory streaming save/load support to the generic blob store and
+  route adapter persistence through it.
 - Depend on the independently versioned `atomic-blob-store` pre-release crate.
 - Add `rumqttc-session-store-file-next`, whose independent additive `v4` and
   `v5` features support either or both clients while retaining their existing

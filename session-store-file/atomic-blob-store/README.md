@@ -1,8 +1,9 @@
 # atomic-blob-store
 
-`atomic-blob-store` saves one complete, bounded byte blob per opaque key on a
-trusted local Unix or Windows filesystem. It supports atomic save, complete
-load, metadata inspection, quarantine, clear, and explicit maintenance.
+`atomic-blob-store` saves one size-limited byte blob per opaque key on a trusted
+local Unix or Windows filesystem. It supports atomic streaming save, validated
+streaming load, complete-blob conveniences, metadata inspection, quarantine,
+clear, and explicit maintenance.
 
 This crate is not a database, queue, object service, log, cache-coherence
 protocol, or multi-process coordination mechanism.
@@ -11,25 +12,42 @@ protocol, or multi-process coordination mechanism.
 
 - Keys are arbitrary bytes. Canonical filenames contain the lowercase full
   BLAKE3 digest of the key followed by the configured safe suffix.
-- Payloads are complete snapshots. Save owns one `Vec<u8>` and replacement
-  rewrites the complete envelope; load returns one complete allocation.
-- The default payload limit is 64 MiB. Length and allocation bounds are checked
-  before payload allocation. Memory and I/O costs are linear in blob size.
+- Payloads are complete replacements. `save_from` accepts a borrowed Tokio
+  `AsyncRead`, a declared length, and requires EOF immediately after that
+  length. It stages and checksums incrementally before atomic commit.
+- `load_into` validates the entire envelope in constant memory before writing
+  any payload bytes, then seeks back and streams the payload into a borrowed
+  Tokio `AsyncWrite`. This deliberate two-pass read prevents corrupt data from
+  reaching the destination.
+- Streaming uses fixed-size chunks and bounded channels. Memory does not grow
+  with blob size, while replacement and load I/O remain linear; validated
+  streaming load reads the payload twice.
+- `save(Vec<u8>)` and `load() -> Option<Vec<u8>>` remain conveniences for
+  callers that already own or need a complete allocation.
+- The default payload limit remains 64 MiB as a safety policy. Applications may
+  configure another representable limit.
 - One owned coordinator and private runtime serve all clones. Same-key work is
   FIFO, different keys run concurrently up to the configured bound, and
   blocking filesystem work stays off caller async workers.
-- Submission happens when an operation method is called. Dropping its future
-  discards only the result. `flush` waits for all earlier submissions.
+- Complete-blob and maintenance operations are submitted when their method is
+  called. Streaming operations are submitted when first polled because their
+  borrowed endpoints must be actively driven. `flush` waits for all operations
+  submitted before its barrier.
+- Dropping a streaming save before its input-complete marker aborts staging and
+  preserves the old canonical blob. After that marker, commit drains and only
+  the result is discarded. Dropping a streaming load stops output and releases
+  its same-key slot after the blocking worker observes cancellation.
 - Independent stores, even at the same path, do not coordinate with each other.
   When all handles are dropped, already submitted work drains before the owned
   runtime and coordinator exit.
 
-Streaming was deliberately rejected for this API generation. A sound streaming
-load cannot expose bytes before checksum and trailing-data validation, while a
-streaming save must reconcile declared length, trailing input, cancellation,
-and moving a reader into a `'static` coordinator job. Methods that secretly
-buffer the whole value would be misleading. A future streaming API requires a
-separate ownership and executor contract.
+Reader and writer I/O runs on the caller task. Only bounded byte chunks cross
+to the coordinator, so borrowed endpoints never need to become `'static` and
+blocking filesystem work never runs on caller async workers. A slow stream
+occupies one configured concurrent-operation slot and applies backpressure.
+`load_into` does not flush or shut down its destination. Destination failure or
+caller cancellation may leave caller-owned output partially written, but
+invalid envelopes produce no output.
 
 ## Trust and durability
 

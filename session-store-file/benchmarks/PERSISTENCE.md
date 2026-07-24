@@ -6,6 +6,11 @@ coordination, file synchronization, atomic replacement, or namespace
 synchronization. Durable persistence is expected to cost more than memory-only
 operation and is not an application outbox.
 
+Durable file-store save/load scenarios use `save_from` and `load_into`.
+Streaming-load measurements include both complete-envelope validation and the
+second payload-delivery pass; benchmark output records this policy. Use
+`--io-mode complete` for a separate convenience-method comparison.
+
 ## Methodology
 
 Run with the release profile on an otherwise idle machine. The JSON output

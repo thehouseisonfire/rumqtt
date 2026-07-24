@@ -99,12 +99,20 @@ enum StoreOperation {
     QuarantineMissing,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BlobIoMode {
+    Streaming,
+    Complete,
+}
+
 #[derive(Args, Debug)]
 pub struct FileStoreArgs {
     #[command(flatten)]
     common: CommonArgs,
     #[arg(long, value_enum, default_value = "save-replace")]
     operation: StoreOperation,
+    #[arg(long, value_enum, default_value = "streaming")]
+    io_mode: BlobIoMode,
     #[arg(long, default_value = "1024")]
     payload_size: usize,
     #[arg(long, default_value = "50")]
@@ -842,7 +850,15 @@ async fn run_file_store(args: FileStoreArgs) -> anyhow::Result<()> {
                     StoreOperation::SaveShrinking => payload(args.payload_size.saturating_mul(2)),
                     _ => body.clone(),
                 };
-                store.save(key.as_bytes(), setup).await?;
+                match args.io_mode {
+                    BlobIoMode::Streaming => {
+                        let setup_len = u64::try_from(setup.len())?;
+                        store
+                            .save_from(key.as_bytes(), &mut Cursor::new(setup), setup_len)
+                            .await?;
+                    }
+                    BlobIoMode::Complete => store.save(key.as_bytes(), setup).await?,
+                }
             }
             _ => {}
         }
@@ -851,12 +867,30 @@ async fn run_file_store(args: FileStoreArgs) -> anyhow::Result<()> {
             StoreOperation::SaveCreate
             | StoreOperation::SaveReplace
             | StoreOperation::SaveGrowing
-            | StoreOperation::SaveShrinking => {
-                store.save(key.as_bytes(), body.clone()).await?;
-            }
-            StoreOperation::LoadPresent | StoreOperation::LoadMissing => {
-                black_box(store.load(key.as_bytes()).await?);
-            }
+            | StoreOperation::SaveShrinking => match args.io_mode {
+                BlobIoMode::Streaming => {
+                    store
+                        .save_from(
+                            key.as_bytes(),
+                            &mut Cursor::new(body.as_slice()),
+                            u64::try_from(body.len())?,
+                        )
+                        .await?;
+                }
+                BlobIoMode::Complete => {
+                    store.save(key.as_bytes(), body.clone()).await?;
+                }
+            },
+            StoreOperation::LoadPresent | StoreOperation::LoadMissing => match args.io_mode {
+                BlobIoMode::Streaming => {
+                    let mut output = Vec::new();
+                    black_box(store.load_into(key.as_bytes(), &mut output).await?);
+                    black_box(output);
+                }
+                BlobIoMode::Complete => {
+                    black_box(store.load(key.as_bytes()).await?);
+                }
+            },
             StoreOperation::ClearPresent | StoreOperation::ClearMissing => {
                 store.clear(key.as_bytes()).await?;
             }
@@ -883,6 +917,11 @@ async fn run_file_store(args: FileStoreArgs) -> anyhow::Result<()> {
             "samples": args.samples,
             "page_cache": "warm-or-new-per-operation",
             "synchronization_included": true,
+            "payload_io": format!("{:?}", args.io_mode).to_lowercase(),
+            "load_validation": match args.io_mode {
+                BlobIoMode::Streaming => "complete-first-pass-then-stream",
+                BlobIoMode::Complete => "single-pass-into-complete-allocation",
+            },
             "backend": if cfg!(unix) { "atomic-write-file" } else { "windows-native" },
         }),
         "latency_ns",

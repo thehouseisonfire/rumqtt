@@ -1,6 +1,7 @@
 use atomic_blob_store::{
     AtomicBlobStore, AtomicBlobStoreOptions, BlobFormatIdentity, ENVELOPE_VERSION_V1,
 };
+use std::io::Cursor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,10 +14,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    let document = br#"{"theme":"dark"}"#;
     store
-        .save(b"active", br#"{"theme":"dark"}"#.to_vec())
+        .save_from(
+            b"active",
+            &mut Cursor::new(document),
+            u64::try_from(document.len())?,
+        )
         .await?;
-    let restored = store.load(b"active").await?.expect("saved configuration");
+    let mut restored = Vec::new();
+    store
+        .load_into(b"active", &mut restored)
+        .await?
+        .expect("saved configuration");
     println!("{}", String::from_utf8(restored)?);
     Ok(())
 }

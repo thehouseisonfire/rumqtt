@@ -1,6 +1,7 @@
 use atomic_blob_store::{
     AtomicBlobStore, AtomicBlobStoreOptions, BlobFormatIdentity, BlobState, ENVELOPE_VERSION_V1,
 };
+use std::io::Cursor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,13 +14,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let key = b"latest";
-    store.save(key, b"healthy".to_vec()).await?;
+    store
+        .save_from(key, &mut Cursor::new(b"healthy"), 7)
+        .await?;
 
     let path = store.blob_path(key);
     let mut bytes = std::fs::read(&path)?;
     bytes[18] ^= 1;
     std::fs::write(&path, bytes)?;
-    assert!(store.load(key).await.is_err());
+    assert!(store.load_into(key, &mut Vec::new()).await.is_err());
     assert_eq!(store.inspect(key).await?.state, BlobState::Present);
     println!("{}", store.quarantine(key).await?.diagnostic_path.display());
     Ok(())

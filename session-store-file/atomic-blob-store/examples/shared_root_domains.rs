@@ -1,6 +1,7 @@
 use atomic_blob_store::{
     AtomicBlobStore, AtomicBlobStoreOptions, BlobFormatIdentity, ENVELOPE_VERSION_V1,
 };
+use std::io::Cursor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,9 +13,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beta =
         AtomicBlobStore::open(root.path(), "beta", AtomicBlobStoreOptions::new(beta)).await?;
 
-    alpha.save(b"shared-key", b"alpha".to_vec()).await?;
-    beta.save(b"shared-key", b"beta".to_vec()).await?;
-    assert_eq!(alpha.load(b"shared-key").await?, Some(b"alpha".to_vec()));
-    assert_eq!(beta.load(b"shared-key").await?, Some(b"beta".to_vec()));
+    alpha
+        .save_from(b"shared-key", &mut Cursor::new(b"alpha"), 5)
+        .await?;
+    beta.save_from(b"shared-key", &mut Cursor::new(b"beta"), 4)
+        .await?;
+    let mut alpha_value = Vec::new();
+    let mut beta_value = Vec::new();
+    alpha.load_into(b"shared-key", &mut alpha_value).await?;
+    beta.load_into(b"shared-key", &mut beta_value).await?;
+    assert_eq!(alpha_value, b"alpha");
+    assert_eq!(beta_value, b"beta");
     Ok(())
 }
