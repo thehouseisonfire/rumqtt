@@ -59,6 +59,8 @@ store_bench=(cargo run --release --manifest-path session-store-file/Cargo.toml \
   --inflight 100 --payload-size 1024 --qos 2
 "${store_bench[@]}" persistence file-store --operation save-replace --payload-size 1048576
 "${store_bench[@]}" persistence coordination --concurrency 8 --operations 100
+"${store_bench[@]}" persistence lifecycle --stores 1 --max-concurrency 4 \
+  --payload-size 4194304 --samples 30
 "${store_bench[@]}" persistence growth --protocol v5 --payload-size 1024 --qos 2
 python3 benchmarks/runner.py run \
   --scenario persistence-mqtt-v4-qos1-enabled \
@@ -70,6 +72,15 @@ Run every file-store operation by selecting `save-create`, `save-replace`,
 `clear-present`, `clear-missing`, `inspect-present`, `inspect-missing`,
 `quarantine-present`, or `quarantine-missing`. Run coordination twice, with and
 without `--different-keys`.
+
+Run `lifecycle` for 1, 2, and 8 stores and concurrency bounds 1, 4, and 8.
+On Linux it records process thread deltas from `/proc/self/task`, process peak
+RSS from `VmHWM`, and allocation calls/bytes during the active save window.
+Thread deltas include any unrelated threads created concurrently. `VmHWM`
+cannot be reset, so each command must run in a fresh process. Allocation
+counters are process-global and count benchmark/runtime allocation as well as
+store allocation; paired runs must use identical commands and an otherwise
+idle process.
 
 ## Baseline report template
 

@@ -21,8 +21,9 @@ python3 benchmarks/runner.py run \
   --warmup-runs 1
 ```
 
-See [`PERSISTENCE.md`](PERSISTENCE.md) for methodology and
-[`PERSISTENCE-RESULTS.md`](PERSISTENCE-RESULTS.md) for recorded results.
+See [`PERSISTENCE.md`](PERSISTENCE.md) for methodology, including lifecycle and
+resource measurements, and [`PERSISTENCE-RESULTS.md`](PERSISTENCE-RESULTS.md)
+for recorded results.
 
 File-store save and load scenarios use the production streaming API by
 default. Load latency includes the checksum-validation pass and subsequent

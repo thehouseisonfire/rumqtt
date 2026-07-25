@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::hint::black_box;
 use std::io::Cursor;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,11 +14,14 @@ use serde_json::json;
 
 use atomic_blob_store::bench_instrumentation as envelope;
 use atomic_blob_store::{
-    AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, DEFAULT_MAX_BLOB_SIZE,
-    ENVELOPE_VERSION_V1, tokio::AtomicBlobStore,
+    AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlockingAtomicBlobStore,
+    DEFAULT_MAX_BLOB_SIZE, ENVELOPE_VERSION_V1, tokio::AtomicBlobStore,
 };
 
-use super::{BenchOutput, CommonArgs, Protocol, environment, print_output, run_id, unix_secs};
+use super::{
+    BenchOutput, CommonArgs, Protocol, allocation_counters, environment, print_output,
+    reset_allocation_counters, run_id, unix_secs,
+};
 
 const COUNTS: [usize; 5] = [0, 1, 10, 100, 1_000];
 
@@ -35,6 +39,7 @@ pub enum PersistenceCommand {
     Codec(CodecArgs),
     FileStore(FileStoreArgs),
     Coordination(CoordinationArgs),
+    Lifecycle(LifecycleArgs),
     Growth(GrowthArgs),
     Mqtt(MqttArgs),
 }
@@ -132,6 +137,20 @@ pub struct CoordinationArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct LifecycleArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    #[arg(long, default_value = "4")]
+    max_concurrency: usize,
+    #[arg(long, default_value = "1")]
+    stores: usize,
+    #[arg(long, default_value = "1048576")]
+    payload_size: usize,
+    #[arg(long, default_value = "30")]
+    samples: usize,
+}
+
+#[derive(Args, Debug)]
 pub struct GrowthArgs {
     #[command(flatten)]
     common: CommonArgs,
@@ -173,9 +192,170 @@ pub async fn run(command: PersistenceCommand) -> anyhow::Result<()> {
         PersistenceCommand::Codec(args) => run_codec(&args),
         PersistenceCommand::FileStore(args) => run_file_store(args).await,
         PersistenceCommand::Coordination(args) => run_coordination(args).await,
+        PersistenceCommand::Lifecycle(args) => run_lifecycle(args),
         PersistenceCommand::Growth(args) => run_growth(&args),
         PersistenceCommand::Mqtt(args) => run_mqtt(args).await,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn process_threads() -> anyhow::Result<usize> {
+    Ok(std::fs::read_dir("/proc/self/task")?.count())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_threads() -> anyhow::Result<usize> {
+    bail!("thread-count measurement is currently implemented only for Linux")
+}
+
+#[cfg(target_os = "linux")]
+fn peak_rss_bytes() -> anyhow::Result<u64> {
+    let status = std::fs::read_to_string("/proc/self/status")?;
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|value| value.split_whitespace().next())
+        .context("VmHWM is absent from /proc/self/status")?
+        .parse::<u64>()?;
+    Ok(value * 1024)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peak_rss_bytes() -> anyhow::Result<u64> {
+    bail!("peak-RSS measurement is currently implemented only for Linux")
+}
+
+fn run_lifecycle(args: LifecycleArgs) -> anyhow::Result<()> {
+    validate_samples(args.samples)?;
+    if args.stores == 0 || args.max_concurrency == 0 {
+        bail!("--stores and --max-concurrency must be greater than zero");
+    }
+    let started_at = unix_secs();
+    let baseline_threads = process_threads()?;
+    let baseline_rss = peak_rss_bytes()?;
+    let options = benchmark_options().with_max_concurrent_operations(
+        NonZeroUsize::new(args.max_concurrency).context("nonzero concurrency")?,
+    );
+    let mut open_samples = Vec::with_capacity(args.samples);
+    let mut cold_save_samples = Vec::with_capacity(args.samples);
+    let mut flush_samples = Vec::with_capacity(args.samples);
+    let mut close_samples = Vec::with_capacity(args.samples);
+    let mut idle_thread_deltas = Vec::with_capacity(args.samples);
+    let mut active_thread_deltas = Vec::with_capacity(args.samples);
+    let mut allocation_counts = Vec::with_capacity(args.samples);
+    let mut allocated_bytes = Vec::with_capacity(args.samples);
+    let body = payload(args.payload_size);
+
+    for sample in 0..args.samples {
+        let temporary = tempfile::tempdir()?;
+        let mut stores = Vec::with_capacity(args.stores);
+        let opened = Instant::now();
+        for index in 0..args.stores {
+            stores.push(BlockingAtomicBlobStore::open(
+                temporary.path(),
+                format!("lifecycle-{sample}-{index}"),
+                options.clone(),
+            )?);
+        }
+        open_samples.push(nanos_u64(opened.elapsed().as_nanos()));
+        idle_thread_deltas.push(process_threads()?.saturating_sub(baseline_threads) as f64);
+
+        reset_allocation_counters();
+        let saving = Instant::now();
+        std::thread::scope(|scope| -> Result<(), AtomicBlobStoreError> {
+            let mut handles = Vec::with_capacity(stores.len());
+            for (index, store) in stores.iter().enumerate() {
+                let body = &body;
+                handles
+                    .push(scope.spawn(move || {
+                        store.save(format!("key-{index}").as_bytes(), body.clone())
+                    }));
+            }
+            for handle in handles {
+                handle.join().expect("benchmark save thread panicked")?;
+            }
+            Ok(())
+        })?;
+        cold_save_samples.push(nanos_u64(saving.elapsed().as_nanos()));
+        let (count, bytes) = allocation_counters();
+        allocation_counts.push(count as f64);
+        allocated_bytes.push(bytes as f64);
+        active_thread_deltas.push(process_threads()?.saturating_sub(baseline_threads) as f64);
+
+        let flushing = Instant::now();
+        for store in &stores {
+            store.flush()?;
+        }
+        flush_samples.push(nanos_u64(flushing.elapsed().as_nanos()));
+
+        let closing = Instant::now();
+        for store in &stores {
+            store.close()?;
+        }
+        close_samples.push(nanos_u64(closing.elapsed().as_nanos()));
+    }
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("baseline_threads".to_owned(), baseline_threads as f64);
+    metrics.insert("baseline_peak_rss_bytes".to_owned(), baseline_rss as f64);
+    metrics.insert("peak_rss_bytes".to_owned(), peak_rss_bytes()? as f64);
+    metrics.insert(
+        "idle_thread_delta_max".to_owned(),
+        idle_thread_deltas.iter().copied().fold(0.0, f64::max),
+    );
+    metrics.insert(
+        "active_thread_delta_max".to_owned(),
+        active_thread_deltas.iter().copied().fold(0.0, f64::max),
+    );
+    let mut samples = BTreeMap::new();
+    samples.insert(
+        "open_latency_ns".to_owned(),
+        open_samples.into_iter().map(|value| value as f64).collect(),
+    );
+    samples.insert(
+        "cold_save_latency_ns".to_owned(),
+        cold_save_samples
+            .into_iter()
+            .map(|value| value as f64)
+            .collect(),
+    );
+    samples.insert(
+        "flush_latency_ns".to_owned(),
+        flush_samples
+            .into_iter()
+            .map(|value| value as f64)
+            .collect(),
+    );
+    samples.insert(
+        "close_latency_ns".to_owned(),
+        close_samples
+            .into_iter()
+            .map(|value| value as f64)
+            .collect(),
+    );
+    samples.insert("idle_thread_delta".to_owned(), idle_thread_deltas);
+    samples.insert("active_thread_delta".to_owned(), active_thread_deltas);
+    samples.insert("allocation_count".to_owned(), allocation_counts);
+    samples.insert("allocated_bytes".to_owned(), allocated_bytes);
+    print_output(&BenchOutput {
+        schema_version: 1,
+        run_id: run_id(args.common.run_id.as_deref(), "persistence-lifecycle"),
+        scenario: "persistence-blob-store-lifecycle".to_owned(),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "stores": args.stores,
+            "max_concurrency": args.max_concurrency,
+            "payload_size": args.payload_size,
+            "samples": args.samples,
+            "thread_measurement": "/proc/self/task delta",
+            "rss_measurement": "/proc/self/status VmHWM",
+            "allocation_measurement": "process-global counting allocator; measured save window",
+        }),
+        metrics,
+        samples,
+        environment: environment(),
+    })
 }
 
 #[derive(Debug, Default)]
