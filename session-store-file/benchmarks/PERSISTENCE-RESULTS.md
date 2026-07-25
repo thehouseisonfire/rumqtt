@@ -190,9 +190,61 @@ The 1 KiB path remained in the same tens-of-microseconds range.
 
 ## Unmeasured areas
 
-No cold-cache, macOS, native Windows, edge-device, CPU-utilization, allocation
-count, or physical-device write-amplification measurements were obtained.
-Dependency-private commit stages, blocking-pool scheduling delay, and
-coordination wait could not be timed independently without invasive hooks.
-Run the documented suite on those actual platforms rather than simulating them
-with sleeps.
+No cold-cache, macOS, native Windows, edge-device, CPU-utilization, or
+physical-device write-amplification measurements were obtained.
+Dependency-private commit stages and physical synchronization costs could not
+be attributed independently. Run the documented suite on actual target
+platforms rather than simulating them with sleeps.
+
+## TODO2 executor-neutral store validation (2026-07-25)
+
+The maintained harness was fixed at commit
+`607aac41fe7161cc37c2c0c8ffcc593b3ff33d1f`. The final engine source was
+`cae75823b18eb8cf118ab5dd55563693e29b448a`. Raw schema-version-1 JSON is in
+`baselines/todo2-linux-2026-07-25/` and
+`results/todo2-linux-2026-07-25/`.
+
+Both runs used Rust 1.96.1 release builds with workspace LTO on Linux 7.1.4,
+x86-64, and Btrfs with `noatime`, zstd level 3, SSD, and asynchronous discard.
+File-store samples used 20 observations per payload/I/O combination over 0 B,
+1 KiB, 16 KiB, 256 KiB, 1 MiB, and 4 MiB. Lifecycle/resource runs used 10
+observations for 1, 2, and 8 stores at concurrency bounds 1, 4, and 8.
+Coordination used 100 operations per submitting thread. Broker runs used local
+Mosquitto, 100 measured messages, 10 warmups, and inflight 1.
+
+The non-interleaved full sweep experienced substantial host-frequency and
+scheduling drift between the early baseline and later final run. Representative
+cases were therefore repeated with baseline and final binaries alternated on
+the same loaded host. The median of three paired 256 KiB streaming-save
+medians was 150.6 µs baseline and 151.3 µs final; paired p95 medians were
+182.8 µs and 181.5 µs. Single-submitter different-key inspection medians were
+13.1 µs and 13.5 µs, with p95 medians of 18.6 µs and 16.8 µs. These paired
+repeats do not reproduce a material raw-I/O or scheduler regression.
+
+Fresh-broker paired v4 barrier p50 ranges were 21.9–23.0 µs baseline and
+20.2–21.0 µs final; p95 ranges were 32.3–38.1 µs and 26.5–31.0 µs. V5 p50
+ranges overlapped at 19.1–25.4 µs and 21.5–22.7 µs. V5 p95 was noisier:
+25.9–36.5 µs baseline and 36.0–38.6 µs final. Save counts remained exactly two
+per v4 QoS 1 message and three per v5 QoS 2 message. The raw files retain all
+throughput and checkpoint-byte values; the short loopback runs are not used to
+claim a throughput improvement.
+
+Thread ownership matched the configured bound in both versions. One store used
+one idle coordinator and reached coordinator-plus-worker deltas of 2, 5, and 9
+threads for concurrency 1, 4, and 8. Eight stores remained at eight idle
+coordinators and no run exceeded eight coordinators plus eight workers per
+store. For the one-store/concurrency-four case, final versus baseline medians
+were 27.8/39.1 µs open, 3.49/3.30 ms cold four-key save, 5.6/8.8 µs flush, and
+94.5/125.8 µs deterministic close. Close includes joining workers and the
+coordinator.
+
+The same resource case recorded 123 allocation calls and 16,789,469 allocated
+bytes final versus 124 and 16,789,637 baseline during four simultaneous 4 MiB
+saves. Peak process RSS was 55.9 MiB final and 51.8 MiB baseline. `VmHWM` is a
+process-lifetime high-water mark and the allocation counter is process-global,
+so the RSS difference is treated as allocator/runtime noise rather than a
+store-retained-memory regression. Bounded-channel correctness for payloads
+larger than a chunk is enforced separately by deterministic facade tests.
+
+These measurements cover the local Unix implementation only. They do not
+constitute native evidence for any other platform.

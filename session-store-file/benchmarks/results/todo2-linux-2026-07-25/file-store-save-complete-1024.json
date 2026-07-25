@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "run_id": "final-save-complete-1024",
+  "scenario": "persistence-file-store-savereplace",
+  "started_at_unix": 1785013757,
+  "finished_at_unix": 1785013757,
+  "config": {
+    "backend": "atomic-write-file",
+    "checkpoint_size": 1046,
+    "load_validation": "single-pass-into-complete-allocation",
+    "operation": "savereplace",
+    "page_cache": "warm-or-new-per-operation",
+    "payload_io": "complete",
+    "payload_size": 1024,
+    "samples": 20,
+    "synchronization_included": true
+  },
+  "metrics": {
+    "bytes_sec": 41243535.98261936,
+    "latency_max_ns": 32362.0,
+    "latency_mean_ns": 25361.55,
+    "latency_p50_ns": 25138.0,
+    "latency_p95_ns": 32022.0,
+    "latency_p99_ns": 32022.0,
+    "samples": 20.0
+  },
+  "samples": {
+    "latency_ns": [
+      20283.0,
+      20951.0,
+      22013.0,
+      22601.0,
+      22648.0,
+      24822.0,
+      25032.0,
+      25062.0,
+      25067.0,
+      25138.0,
+      25148.0,
+      25457.0,
+      25539.0,
+      25669.0,
+      25847.0,
+      26324.0,
+      26902.0,
+      28344.0,
+      32022.0,
+      32362.0
+    ]
+  },
+  "environment": {
+    "git_commit": "cae75823b18eb8cf118ab5dd55563693e29b448a",
+    "git_dirty": true,
+    "build_profile": "release",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "target": "x86_64-linux",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_count": 16
+  }
+}

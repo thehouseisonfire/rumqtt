@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "run_id": "base-save-3",
+  "scenario": "persistence-file-store-savereplace",
+  "started_at_unix": 1785013737,
+  "finished_at_unix": 1785013737,
+  "config": {
+    "backend": "atomic-write-file",
+    "checkpoint_size": 262166,
+    "load_validation": "complete-first-pass-then-stream",
+    "operation": "savereplace",
+    "page_cache": "warm-or-new-per-operation",
+    "payload_io": "streaming",
+    "payload_size": 262144,
+    "samples": 30,
+    "synchronization_included": true
+  },
+  "metrics": {
+    "bytes_sec": 2155729884.30293,
+    "latency_max_ns": 174102.0,
+    "latency_mean_ns": 121613.56666666667,
+    "latency_p50_ns": 119823.0,
+    "latency_p95_ns": 153450.0,
+    "latency_p99_ns": 154655.0,
+    "samples": 30.0
+  },
+  "samples": {
+    "latency_ns": [
+      83920.0,
+      84374.0,
+      88996.0,
+      89019.0,
+      94994.0,
+      95765.0,
+      101358.0,
+      104787.0,
+      108788.0,
+      110834.0,
+      115261.0,
+      115831.0,
+      115933.0,
+      117844.0,
+      119823.0,
+      120000.0,
+      120831.0,
+      121212.0,
+      128382.0,
+      132917.0,
+      134137.0,
+      137761.0,
+      138910.0,
+      142322.0,
+      144347.0,
+      146103.0,
+      151751.0,
+      153450.0,
+      154655.0,
+      174102.0
+    ]
+  },
+  "environment": {
+    "git_commit": "cae75823b18eb8cf118ab5dd55563693e29b448a",
+    "git_dirty": true,
+    "build_profile": "release",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "target": "x86_64-linux",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_count": 16
+  }
+}

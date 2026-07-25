@@ -263,13 +263,17 @@ fn run_lifecycle(args: LifecycleArgs) -> anyhow::Result<()> {
         reset_allocation_counters();
         let saving = Instant::now();
         std::thread::scope(|scope| -> Result<(), AtomicBlobStoreError> {
-            let mut handles = Vec::with_capacity(stores.len());
-            for (index, store) in stores.iter().enumerate() {
-                let body = &body;
-                handles
-                    .push(scope.spawn(move || {
-                        store.save(format!("key-{index}").as_bytes(), body.clone())
+            let mut handles = Vec::with_capacity(stores.len() * args.max_concurrency);
+            for (store_index, store) in stores.iter().enumerate() {
+                for worker_index in 0..args.max_concurrency {
+                    let body = &body;
+                    handles.push(scope.spawn(move || {
+                        store.save(
+                            format!("key-{store_index}-{worker_index}").as_bytes(),
+                            body.clone(),
+                        )
                     }));
+                }
             }
             for handle in handles {
                 handle.join().expect("benchmark save thread panicked")?;

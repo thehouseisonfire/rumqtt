@@ -81,7 +81,8 @@ same-directory staging files and native write-through moves; its explicit
 cleanup recognizes only names owned by the configured suffix and store format.
 
 See [FORMAT.md](FORMAT.md) for the byte-level stable format and compatibility
-policy.
+policy and [RELEASE.md](RELEASE.md) for the independent release-readiness
+checklist.
 
 ## Facades and features
 
