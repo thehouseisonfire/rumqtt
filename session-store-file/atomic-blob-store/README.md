@@ -35,7 +35,7 @@ protocol, or multi-process coordination mechanism.
   borrowed endpoints must be actively driven. `flush` waits for all operations
   submitted before its barrier. `close` is an ordered, idempotent lifecycle
   barrier that drains prior work, rejects later work with `StoreClosed`, and
-  joins the store-owned workers.
+  joins the store-owned workers and coordinator thread.
 - Dropping a streaming save before its input-complete marker aborts staging and
   preserves the old canonical blob. After that marker, commit drains and only
   the result is discarded. Dropping a streaming load stops output and releases

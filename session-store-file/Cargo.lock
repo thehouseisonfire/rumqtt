@@ -1081,6 +1081,7 @@ dependencies = [
 name = "session-store-file-consumer-tests"
 version = "0.1.0"
 dependencies = [
+ "atomic-blob-store",
  "rumqttc-session-store-file-next",
  "rumqttc-v4-next",
  "rumqttc-v5-next",

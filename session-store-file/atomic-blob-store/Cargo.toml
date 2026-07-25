@@ -22,7 +22,13 @@ blake3 = { version = "1.8", features = ["pure"] }
 crc32c = "0.6"
 flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
-tokio = { version = "1.40", features = ["io-util", "macros", "rt"], optional = true }
+tokio = { version = "1.40", features = [
+    "io-util",
+    "macros",
+    "rt",
+    "sync",
+    "time",
+], optional = true }
 
 [target.'cfg(any(unix, windows))'.dependencies]
 getrandom = { version = "0.4", features = ["std"] }
@@ -40,7 +46,6 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

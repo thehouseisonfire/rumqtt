@@ -3,7 +3,7 @@ use atomic_blob_store::{
 };
 use std::io::Cursor;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let format = BlobFormatIdentity::new(b"APP-CONF", ".config", ENVELOPE_VERSION_V1)?;

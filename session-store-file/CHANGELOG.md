@@ -4,6 +4,9 @@
 
 ### Added
 
+- Add an independent, protocol-neutral blocking consumer exercise and a paired
+  persistence benchmark matrix for lifecycle latency, threads, RSS,
+  allocations, complete/streaming I/O, and coordination scaling.
 - Add bounded-memory streaming save/load support to the generic blob store and
   route adapter persistence through it.
 - Depend on the independently versioned `atomic-blob-store` pre-release crate.

@@ -1,10 +1,12 @@
 use std::io::{Cursor, Read};
+use std::num::NonZeroUsize;
 
 use super::*;
 use ::tokio;
 use ::tokio::io::{AsyncRead, AsyncWrite};
 use ::tokio::sync::oneshot;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const TEST_MAXIMUM: u64 = 1024;
 const TEST_DOMAIN: &[u8; DOMAIN_TAG_LEN] = b"BLOBTEST";
@@ -15,6 +17,148 @@ fn format() -> BlobFormatIdentity {
 
 fn options() -> AtomicBlobStoreOptions {
     AtomicBlobStoreOptions::new(format()).with_max_blob_size(TEST_MAXIMUM)
+}
+
+#[cfg(unix)]
+async fn store_with_hook(
+    root: &std::path::Path,
+    namespace: &str,
+    hook: Arc<dyn Fn(TestStage) -> std::io::Result<()> + Send + Sync>,
+) -> AtomicBlobStore {
+    AtomicBlobStore::open_with_test_hook(root, namespace, options(), hook)
+        .await
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn caught_job_panic_releases_the_key_and_keeps_the_worker_usable() {
+    let root = tempfile::tempdir().unwrap();
+    let panic_once = Arc::new(AtomicBool::new(true));
+    let hook = {
+        let panic_once = Arc::clone(&panic_once);
+        Arc::new(move |stage| {
+            if stage == TestStage::OperationStarted && panic_once.swap(false, Ordering::SeqCst) {
+                panic!("test-requested operation panic");
+            }
+            Ok(())
+        })
+    };
+    let store = store_with_hook(root.path(), "job-panic", hook).await;
+    assert!(matches!(
+        store.save(b"same-key", b"first".to_vec()).await,
+        Err(AtomicBlobStoreError::EngineFailed)
+    ));
+    store.save(b"same-key", b"second".to_vec()).await.unwrap();
+    assert_eq!(
+        store.load(b"same-key").await.unwrap(),
+        Some(b"second".to_vec())
+    );
+    assert_eq!(store.registry_entries(), 0);
+    store.close().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn worker_start_and_dispatch_failures_complete_and_release_admission() {
+    for failed_stage in [TestStage::WorkerStart, TestStage::WorkerDispatch] {
+        let root = tempfile::tempdir().unwrap();
+        let fail_once = Arc::new(AtomicBool::new(true));
+        let hook = {
+            let fail_once = Arc::clone(&fail_once);
+            Arc::new(move |stage| {
+                if stage == failed_stage && fail_once.swap(false, Ordering::SeqCst) {
+                    return Err(std::io::Error::other("test-requested worker failure"));
+                }
+                Ok(())
+            })
+        };
+        let store = store_with_hook(root.path(), "worker-failure", hook).await;
+        assert!(matches!(
+            store.save(b"same-key", b"first".to_vec()).await,
+            Err(AtomicBlobStoreError::WorkerUnavailable)
+        ));
+        store.save(b"same-key", b"second".to_vec()).await.unwrap();
+        assert_eq!(store.registry_entries(), 0);
+        store.close().await.unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn maintenance_panic_clears_the_barrier_and_later_work_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let panic_once = Arc::new(AtomicBool::new(true));
+    let hook = {
+        let panic_once = Arc::clone(&panic_once);
+        Arc::new(move |stage| {
+            if stage == TestStage::MaintenanceStarted && panic_once.swap(false, Ordering::SeqCst) {
+                panic!("test-requested maintenance panic");
+            }
+            Ok(())
+        })
+    };
+    let store = store_with_hook(root.path(), "maintenance-panic", hook).await;
+    assert!(matches!(
+        store
+            .cleanup_stale_temporary_files(Duration::from_secs(1))
+            .await,
+        Err(AtomicBlobStoreError::EngineFailed)
+    ));
+    store.save(b"later", b"value".to_vec()).await.unwrap();
+    store.close().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn coordinator_loss_is_terminal_and_deterministic() {
+    let root = tempfile::tempdir().unwrap();
+    let fail = Arc::new(AtomicBool::new(false));
+    let hook = {
+        let fail = Arc::clone(&fail);
+        Arc::new(move |stage| {
+            if stage == TestStage::CoordinatorEvent && fail.load(Ordering::SeqCst) {
+                panic!("test-requested coordinator failure");
+            }
+            Ok(())
+        })
+    };
+    let store = store_with_hook(root.path(), "coordinator-loss", hook).await;
+    fail.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        store.save(b"key", b"value".to_vec()).await,
+        Err(AtomicBlobStoreError::EngineFailed)
+    ));
+    assert!(matches!(
+        store.load(b"later").await,
+        Err(AtomicBlobStoreError::EngineFailed)
+    ));
+    assert!(matches!(
+        store.close().await,
+        Err(AtomicBlobStoreError::ShutdownFailure)
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn worker_join_panic_is_shared_by_close_callers() {
+    let root = tempfile::tempdir().unwrap();
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::WorkerExit {
+            return Err(std::io::Error::other("test-requested join panic"));
+        }
+        Ok(())
+    });
+    let store = store_with_hook(root.path(), "join-panic", hook).await;
+    store.save(b"key", b"value".to_vec()).await.unwrap();
+    let other = store.clone();
+    let (first, second) = tokio::join!(store.close(), other.close());
+    assert!(matches!(first, Err(AtomicBlobStoreError::ShutdownFailure)));
+    assert!(matches!(second, Err(AtomicBlobStoreError::ShutdownFailure)));
+    assert!(matches!(
+        store.load(b"later").await,
+        Err(AtomicBlobStoreError::StoreClosed)
+    ));
 }
 
 #[cfg(any(unix, windows))]
@@ -137,7 +281,7 @@ async fn streaming_save_checks_declared_length_and_preserves_old_blob() {
 }
 
 #[cfg(any(unix, windows))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn streaming_save_reports_staging_failure_while_first_input_read_is_pending() {
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
@@ -162,7 +306,7 @@ async fn streaming_save_reports_staging_failure_while_first_input_read_is_pendin
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn streaming_save_reports_write_failure_while_eof_probe_is_pending() {
     let root = tempfile::tempdir().unwrap();
     let hook = Arc::new(|stage| {
@@ -231,7 +375,7 @@ async fn streaming_destination_failure_releases_same_key_without_mutating_blob()
 }
 
 #[cfg(any(unix, windows))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn dropping_active_streaming_save_aborts_staging_and_releases_same_key() {
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
@@ -258,7 +402,7 @@ async fn dropping_active_streaming_save_aborts_staging_and_releases_same_key() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn dropping_streaming_save_after_input_completion_does_not_cancel_commit() {
     let root = tempfile::tempdir().unwrap();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
@@ -292,7 +436,7 @@ async fn dropping_streaming_save_after_input_completion_does_not_cancel_commit()
 }
 
 #[cfg(any(unix, windows))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn cancelled_streaming_load_keeps_same_key_fifo_and_not_other_keys() {
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
@@ -976,7 +1120,7 @@ fn windows_extended_paths_preserve_non_unicode_wide_units() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn save_load_replace_clear_and_missing_are_complete() {
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
@@ -1071,7 +1215,7 @@ async fn unix_cleanup_is_validated_and_explicitly_unsupported() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_dispatch() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1117,7 +1261,7 @@ async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_d
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1328,7 +1472,7 @@ fn io_and_atomic_commit_errors_preserve_sources() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_blob() {
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
@@ -1351,7 +1495,7 @@ async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_blob() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
     let before_commit = [
         TestStage::BeforeEnvelope,
@@ -1402,7 +1546,7 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
     for failed_stage in [
         TestStage::BeforeEnvelope,
@@ -1441,7 +1585,7 @@ async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
     for failed_stage in [
         TestStage::BeforeRemove,
@@ -1476,7 +1620,7 @@ async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1528,7 +1672,7 @@ async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn cloned_handles_and_many_transient_keys_remain_operational() {
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
@@ -1548,7 +1692,7 @@ async fn cloned_handles_and_many_transient_keys_remain_operational() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
     let root = tempfile::tempdir().unwrap();
     let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
@@ -1589,7 +1733,7 @@ async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
 }
 
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn last_handle_drop_drains_an_accepted_complete_operation() {
     let root = tempfile::tempdir().unwrap();
     let (committed_sender, committed_receiver) = std::sync::mpsc::sync_channel(1);

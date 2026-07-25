@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- Split configuration, errors, format, paths, filesystem backends, engine
+  events, lifecycle, operations, scheduling, streams, and workers into private
+  responsibility-focused modules without changing the public API or V1 bytes.
+- Make deterministic close join the coordinator as well as all started workers,
+  and preserve a shared `ShutdownFailure` outcome for concurrent close callers.
+- Catch injected filesystem-job and maintenance panics at job boundaries,
+  release admission after worker startup or dispatch failure, and transition
+  coordinator loss to a deterministic terminal engine failure.
+- Add facade conformance, streaming-boundary, infrastructure-failure,
+  blocking-only dependency, and independent-consumer coverage.
+
 ## [0.1.0] - 2026-07-25
 
 - Replace the private Tokio runtime with one executor-neutral coordinator and a
