@@ -1,7 +1,5 @@
 # Rumqtt Roadmap
 
-Here’s the roadmap we’ve set up for `rumqttc`.
-
 ## Memory Stability and Performance
 
 - Stable and fast memory usage
