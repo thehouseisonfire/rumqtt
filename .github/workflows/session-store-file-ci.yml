@@ -119,7 +119,11 @@ jobs:
             -p atomic-blob-store \
             -p rumqttc-session-store-file-next --all-features
           cargo check --locked --manifest-path session-store-file/Cargo.toml \
-            -p atomic-blob-store --target wasm32-unknown-unknown
+            -p atomic-blob-store --no-default-features \
+            --target wasm32-unknown-unknown
+          cargo check --locked --manifest-path session-store-file/Cargo.toml \
+            -p atomic-blob-store --features tokio \
+            --target wasm32-unknown-unknown
 
   package:
     name: Package contents

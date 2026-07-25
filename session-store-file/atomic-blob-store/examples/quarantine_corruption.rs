@@ -1,5 +1,6 @@
 use atomic_blob_store::{
-    AtomicBlobStore, AtomicBlobStoreOptions, BlobFormatIdentity, BlobState, ENVELOPE_VERSION_V1,
+    AtomicBlobStoreOptions, BlobFormatIdentity, BlobState, ENVELOPE_VERSION_V1,
+    tokio::AtomicBlobStore,
 };
 use std::io::Cursor;
 

@@ -65,12 +65,7 @@ pub enum SessionFileStoreError {
     #[error("legacy checkpoint inspection coordination failed: {source}")]
     LegacyInspectionCoordination {
         #[source]
-        source: tokio::task::JoinError,
-    },
-    #[error("legacy checkpoint inspection requires an active Tokio runtime: {source}")]
-    LegacyInspectionRuntimeUnavailable {
-        #[source]
-        source: tokio::runtime::TryCurrentError,
+        source: std::io::Error,
     },
     #[error("legacy checkpoint path is not a regular file: {diagnostic_path:?}")]
     LegacyPathIsNotFile { diagnostic_path: PathBuf },
@@ -95,9 +90,6 @@ impl From<AdapterError<V4>> for SessionFileStoreError {
             },
             AdapterError::LegacyInspectionCoordination { source } => {
                 Self::LegacyInspectionCoordination { source }
-            }
-            AdapterError::LegacyInspectionRuntimeUnavailable { source } => {
-                Self::LegacyInspectionRuntimeUnavailable { source }
             }
             AdapterError::LegacyPathIsNotFile { diagnostic_path } => {
                 Self::LegacyPathIsNotFile { diagnostic_path }

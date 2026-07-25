@@ -13,8 +13,8 @@ use serde_json::json;
 
 use atomic_blob_store::bench_instrumentation as envelope;
 use atomic_blob_store::{
-    AtomicBlobStore, AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity,
-    DEFAULT_MAX_BLOB_SIZE, ENVELOPE_VERSION_V1,
+    AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, DEFAULT_MAX_BLOB_SIZE,
+    ENVELOPE_VERSION_V1, tokio::AtomicBlobStore,
 };
 
 use super::{BenchOutput, CommonArgs, Protocol, environment, print_output, run_id, unix_secs};

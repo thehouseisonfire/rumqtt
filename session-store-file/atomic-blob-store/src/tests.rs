@@ -1,6 +1,10 @@
 use std::io::{Cursor, Read};
 
 use super::*;
+use ::tokio;
+use ::tokio::io::{AsyncRead, AsyncWrite};
+use ::tokio::sync::oneshot;
+use std::pin::Pin;
 
 const TEST_MAXIMUM: u64 = 1024;
 const TEST_DOMAIN: &[u8; DOMAIN_TAG_LEN] = b"BLOBTEST";
@@ -1526,8 +1530,6 @@ async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cloned_handles_and_many_transient_keys_remain_operational() {
-    use std::sync::atomic::Ordering;
-
     let root = tempfile::tempdir().unwrap();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
@@ -1538,11 +1540,75 @@ async fn cloned_handles_and_many_transient_keys_remain_operational() {
         let operation = clone.save(&key, key.to_vec());
         operation.await.unwrap();
         store.clear(&key).await.unwrap();
-        assert_eq!(store.inner.registry_entries.load(Ordering::SeqCst), 0);
+        assert_eq!(store.registry_entries(), 0);
     }
     clone.save(b"final", b"ok".to_vec()).await.unwrap();
     assert_eq!(store.load(b"final").await.unwrap(), Some(b"ok".to_vec()));
-    assert_eq!(store.inner.registry_entries.load(Ordering::SeqCst), 0);
+    assert_eq!(store.registry_entries(), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
+    let root = tempfile::tempdir().unwrap();
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::BeforeEnvelope {
+            let _ = started_sender.send(());
+        }
+        Ok(())
+    });
+    let store =
+        AtomicBlobStore::open_with_test_hook(root.path(), "closing-stream", options(), hook)
+            .await
+            .unwrap();
+    let (mut writer, mut reader) = tokio::io::duplex(1);
+    tokio::io::AsyncWriteExt::write_all(&mut writer, b"x")
+        .await
+        .unwrap();
+    let streaming_store = store.clone();
+    let stream =
+        tokio::spawn(async move { streaming_store.save_from(b"key", &mut reader, 2).await });
+    tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
+        .await
+        .unwrap();
+
+    let closing_store = store.clone();
+    let close = tokio::spawn(async move { closing_store.close().await });
+    while !store.is_closing() {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        store.inspect(b"key").await,
+        Err(AtomicBlobStoreError::StoreClosed)
+    ));
+
+    stream.abort();
+    assert!(stream.await.unwrap_err().is_cancelled());
+    close.await.unwrap().unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn last_handle_drop_drains_an_accepted_complete_operation() {
+    let root = tempfile::tempdir().unwrap();
+    let (committed_sender, committed_receiver) = std::sync::mpsc::sync_channel(1);
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::AfterCommit {
+            let _ = committed_sender.send(());
+        }
+        Ok(())
+    });
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "drop-drain", options(), hook)
+        .await
+        .unwrap();
+    let operation = store.save(b"key", b"value".to_vec());
+    drop(operation);
+    drop(store);
+
+    tokio::task::spawn_blocking(move || committed_receiver.recv().unwrap())
+        .await
+        .unwrap();
 }
 
 #[cfg(unix)]

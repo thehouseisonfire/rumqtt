@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use crate::{CheckpointInspection, CheckpointState, FileStoreOptions};
 use atomic_blob_store::{
-    AtomicBlobStore, AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlobState,
-    CleanupReport, QuarantineInfo, blob_filename,
+    AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlobState, CleanupReport,
+    QuarantineInfo, blob_filename, tokio::AtomicBlobStore,
 };
 
 const KEY_FORMAT_VERSION: u8 = 1;
@@ -60,10 +60,7 @@ pub enum AdapterError<P: Protocol> {
         source: io::Error,
     },
     LegacyInspectionCoordination {
-        source: tokio::task::JoinError,
-    },
-    LegacyInspectionRuntimeUnavailable {
-        source: tokio::runtime::TryCurrentError,
+        source: io::Error,
     },
     LegacyPathIsNotFile {
         diagnostic_path: PathBuf,
@@ -95,10 +92,6 @@ impl<P: Protocol> fmt::Debug for AdapterError<P> {
                 .finish(),
             Self::LegacyInspectionCoordination { source } => formatter
                 .debug_struct("LegacyInspectionCoordination")
-                .field("source", source)
-                .finish(),
-            Self::LegacyInspectionRuntimeUnavailable { source } => formatter
-                .debug_struct("LegacyInspectionRuntimeUnavailable")
                 .field("source", source)
                 .finish(),
             Self::LegacyPathIsNotFile { diagnostic_path } => formatter
@@ -282,12 +275,19 @@ impl<P: Protocol> Adapter<P> {
         self.legacy_inspections
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let diagnostic_path = self.root.join(legacy_filename(scope, client_id));
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|source| AdapterError::LegacyInspectionRuntimeUnavailable { source })?;
-        runtime
-            .spawn_blocking(move || inspect_legacy_path(diagnostic_path))
+        let (sender, receiver) = flume::bounded(1);
+        std::thread::Builder::new()
+            .name("rumqtt-legacy-checkpoint-inspection".into())
+            .spawn(move || {
+                let _ = sender.send(inspect_legacy_path(diagnostic_path));
+            })
+            .map_err(|source| AdapterError::LegacyInspectionCoordination { source })?;
+        receiver
+            .recv_async()
             .await
-            .map_err(|source| AdapterError::LegacyInspectionCoordination { source })?
+            .map_err(|_| AdapterError::LegacyInspectionCoordination {
+                source: io::Error::other("legacy checkpoint inspection worker stopped"),
+            })?
             .map_err(|error| match error {
                 LegacyInspectionError::Io {
                     diagnostic_path,

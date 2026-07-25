@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- Replace the private Tokio runtime with one executor-neutral coordinator and a
+  lazily started, bounded, store-owned worker pool.
+- Add `BlockingAtomicBlobStore`, move the async facade to the explicit optional
+  `tokio::AtomicBlobStore` module, and make the default dependency graph
+  Tokio-free.
+- Add ordered `flush` and deterministic, idempotent `close`, distinct lifecycle
+  errors, and best-effort last-handle drainage.
+- Keep runtime-neutral facade and streaming transport types available on
+  unsupported targets so those builds compile and return `UnsupportedPlatform`
+  when opened.
 - Add genuine bounded-memory `AsyncRead`/`AsyncWrite` streaming saves and
   validation-before-output streaming loads without changing the version-1
   envelope or atomic replacement guarantees.

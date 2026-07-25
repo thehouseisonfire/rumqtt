@@ -73,6 +73,21 @@ on one key (41.8 µs p50 submission-to-completion) and 385,986 ops/s across
 different keys (15.3 µs p50). This confirms useful different-key concurrency;
 the aggregate timing cannot separate scheduler wait from metadata service time.
 
+### Executor-neutral engine check (2026-07-24)
+
+After replacing the private Tokio runtime with the store-owned executor-neutral
+engine, a 30-sample release run of 1 MiB streaming replacement measured
+904.7 µs p50, 2.34 ms p95, and 2.49 ms p99. Eight tasks performing 100
+different-key missing inspections each reached 273,234 operations/s with
+20.4 µs p50, 73.3 µs p95, and 138.5 µs p99 submission-to-completion latency.
+
+These are validation runs on the same general host/filesystem class described
+above, but not tightly paired measurements. The durable replacement result is
+therefore recorded as a regression sentinel rather than attributed solely to
+the engine change. Correctness gates additionally verify lazy worker startup,
+bounded active operations, explicit worker joining, and Tokio-free blocking
+builds.
+
 ## Checkpoint growth
 
 With 1 KiB application payloads, v4 QoS 1 grew from 73 bytes for an empty

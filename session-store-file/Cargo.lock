@@ -106,6 +106,7 @@ dependencies = [
  "atomic-write-file",
  "blake3",
  "crc32c",
+ "flume",
  "getrandom 0.4.3",
  "libc",
  "rustix",
@@ -852,6 +853,7 @@ version = "0.34.0-alpha"
 dependencies = [
  "atomic-blob-store",
  "crc32c",
+ "flume",
  "pretty_env_logger",
  "rumqttc-v4-next",
  "rumqttc-v5-next",

@@ -21,8 +21,9 @@
 
 ### Changed
 
-- Run exact legacy metadata probes on Tokio's blocking pool and only after the
-  canonical checkpoint is confirmed absent.
+- Run exact legacy metadata probes on a runtime-neutral background thread and
+  only after the canonical checkpoint is confirmed absent; remove the obsolete
+  "active Tokio runtime required" adapter error.
 - Move exact former-example filename detection into the MQTT adapter while
   retaining canonical-path precedence and the trusted-root boundary.
 - Preserve the existing `RUMQSESS` envelope and `.session` paths through the

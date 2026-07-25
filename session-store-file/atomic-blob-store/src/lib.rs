@@ -1,16 +1,15 @@
 //! Crash-consistent keyed blob streaming on trusted local filesystems.
 //!
-//! The store accepts opaque key and payload bytes. [`AtomicBlobStore::save_from`]
-//! and [`AtomicBlobStore::load_into`] transfer payloads with bounded internal
-//! buffering; [`AtomicBlobStore::save`] and [`AtomicBlobStore::load`] remain
-//! complete-allocation conveniences. See the crate README for the exact format,
-//! non-goals, interruption guarantees, cancellation behavior, and trust
-//! boundary.
+//! The store accepts opaque key and payload bytes. [`BlockingAtomicBlobStore`]
+//! and the feature-gated [`tokio::AtomicBlobStore`] facade use one
+//! executor-neutral engine with bounded streaming; complete load/save methods
+//! remain allocation conveniences. See the crate README for the exact format,
+//! lifecycle, cancellation behavior, and trust boundary.
 //!
 //! # Platform and filesystem scope
 //!
 //! This implementation supports Unix and Windows. Other targets compile, but
-//! [`AtomicBlobStore::open`] returns [`AtomicBlobStoreError::UnsupportedPlatform`]. It is
+//! opening a store returns [`AtomicBlobStoreError::UnsupportedPlatform`]. It is
 //! intended for ordinary local filesystems; it does not detect or certify NFS,
 //! SMB, container volumes, virtual disks, filesystem or mount behavior,
 //! controller caches, or persistence under arbitrary power loss.
@@ -46,27 +45,24 @@
 //! recognizes only store-owned staging names; Unix never parses
 //! dependency-private temporary names.
 
+mod blocking;
+pub use blocking::BlockingAtomicBlobStore;
+
+#[cfg(feature = "tokio")]
+pub mod tokio;
+
 #[cfg(any(unix, windows))]
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
-use std::future::Future;
 use std::io;
 #[cfg(any(unix, windows))]
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
-use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-#[cfg(any(unix, windows))]
-use std::sync::mpsc;
-
-use tokio::io::{AsyncRead, AsyncWrite};
-#[cfg(any(unix, windows))]
-use tokio::sync::mpsc as tokio_mpsc;
-#[cfg(any(unix, windows))]
-use tokio::sync::oneshot;
+use flume::{Receiver, Sender};
 
 /// Required byte length of an envelope domain tag.
 pub const DOMAIN_TAG_LEN: usize = 8;
@@ -76,7 +72,6 @@ pub const ENVELOPE_VERSION_V1: u16 = 1;
 pub const MAX_FILENAME_SUFFIX_LEN: usize = 32;
 const HEADER_LEN: usize = 18;
 const CHECKSUM_LEN: usize = 4;
-#[cfg(any(unix, windows))]
 const STREAM_CHUNK_SIZE: usize = 64 * 1024;
 #[cfg(any(unix, windows))]
 const STREAM_CHANNEL_CAPACITY: usize = 2;
@@ -192,7 +187,7 @@ pub struct CleanupReport {
     pub failures: Vec<CleanupFailure>,
 }
 
-/// Configuration for a [`AtomicBlobStore`].
+/// Configuration shared by the blocking and Tokio store facades.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtomicBlobStoreOptions {
     format: BlobFormatIdentity,
@@ -401,6 +396,14 @@ pub enum AtomicBlobStoreError {
     UnsupportedPlatform { platform: &'static str },
     #[error("blob-store operation coordination failed")]
     CoordinationFailure,
+    #[error("blob store is closed")]
+    StoreClosed,
+    #[error("blob-store execution engine failed")]
+    EngineFailed,
+    #[error("blob-store worker facility is unavailable")]
+    WorkerUnavailable,
+    #[error("blob-store shutdown failed")]
+    ShutdownFailure,
     #[error("canonical blob to quarantine does not exist")]
     QuarantineSourceMissing,
     #[error("blob quarantine failed: {source}")]
@@ -430,22 +433,58 @@ pub enum AtomicBlobStoreError {
     MaintenanceCoordinationFailure,
 }
 
-/// A boxed future returned by core store operations.
-pub type BlobStoreFuture<T> =
-    Pin<Box<dyn Future<Output = Result<T, AtomicBlobStoreError>> + Send + 'static>>;
+pub(crate) struct Pending<T> {
+    receiver: Receiver<Result<T, AtomicBlobStoreError>>,
+    disconnected: Box<dyn FnOnce() -> Result<T, AtomicBlobStoreError> + Send>,
+}
 
-/// Protocol-neutral file-backed blob store.
-///
-/// Clones share one FIFO coordinator whose lifetime is independent of any
-/// caller-owned Tokio runtime. Complete-blob and maintenance submission occurs
-/// when an operation method is called. Borrowed streaming operations submit
-/// when first polled.
+impl<T: Send + 'static> Pending<T> {
+    fn new(receiver: Receiver<Result<T, AtomicBlobStoreError>>) -> Self {
+        Self {
+            receiver,
+            disconnected: Box::new(|| Err(AtomicBlobStoreError::EngineFailed)),
+        }
+    }
+
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+    fn with_disconnected(
+        receiver: Receiver<Result<T, AtomicBlobStoreError>>,
+        disconnected: impl FnOnce() -> Result<T, AtomicBlobStoreError> + Send + 'static,
+    ) -> Self {
+        Self {
+            receiver,
+            disconnected: Box::new(disconnected),
+        }
+    }
+
+    fn resolved(result: Result<T, AtomicBlobStoreError>) -> Self {
+        let (sender, receiver) = flume::bounded(1);
+        let _ = sender.send(result);
+        Self::new(receiver)
+    }
+
+    pub(crate) fn wait(self) -> Result<T, AtomicBlobStoreError> {
+        match self.receiver.recv() {
+            Ok(result) => result,
+            Err(_) => (self.disconnected)(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn wait_async(self) -> Result<T, AtomicBlobStoreError> {
+        match self.receiver.recv_async().await {
+            Ok(result) => result,
+            Err(_) => (self.disconnected)(),
+        }
+    }
+}
+
 #[derive(Clone)]
-pub struct AtomicBlobStore {
+pub(crate) struct EngineHandle {
     inner: Arc<Inner>,
 }
 
-impl std::fmt::Debug for AtomicBlobStore {
+impl std::fmt::Debug for EngineHandle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AtomicBlobStore")
@@ -464,9 +503,20 @@ impl std::fmt::Debug for AtomicBlobStore {
 struct Inner {
     config: Arc<StoreConfig>,
     #[cfg(any(unix, windows))]
-    submissions: mpsc::Sender<CoordinatorEvent>,
+    submissions: Sender<CoordinatorEvent>,
+    lifecycle: Arc<Mutex<Lifecycle>>,
     #[cfg(all(test, unix))]
+    #[allow(dead_code)]
     registry_entries: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+enum Lifecycle {
+    Open,
+    Closing,
+    Closed,
+    Failed,
 }
 
 struct StoreConfig {
@@ -476,6 +526,17 @@ struct StoreConfig {
     max_concurrent_operations: usize,
     #[cfg(all(test, unix))]
     hook: Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
+}
+
+pub(crate) struct SaveStreamEndpoint {
+    pub(crate) chunks: Sender<SaveStreamMessage>,
+    pub(crate) result: Pending<()>,
+}
+
+pub(crate) struct LoadStreamEndpoint {
+    pub(crate) chunks: Receiver<Vec<u8>>,
+    pub(crate) acknowledgement: Sender<()>,
+    pub(crate) result: Pending<Option<BlobMetadata>>,
 }
 
 impl std::fmt::Debug for StoreConfig {
@@ -490,7 +551,20 @@ impl std::fmt::Debug for StoreConfig {
     }
 }
 
-impl AtomicBlobStore {
+impl EngineHandle {
+    fn ensure_open(&self) -> Result<(), AtomicBlobStoreError> {
+        match *self
+            .inner
+            .lifecycle
+            .lock()
+            .expect("lifecycle lock poisoned")
+        {
+            Lifecycle::Open => Ok(()),
+            Lifecycle::Closing | Lifecycle::Closed => Err(AtomicBlobStoreError::StoreClosed),
+            Lifecycle::Failed => Err(AtomicBlobStoreError::EngineFailed),
+        }
+    }
+
     /// Constructs a store and creates the namespace directory when necessary.
     ///
     /// The configured root must already exist. Relative roots are resolved
@@ -508,7 +582,7 @@ impl AtomicBlobStore {
     ///
     /// Returns a validation, platform, filesystem, or coordination error when
     /// the store cannot be initialized with the requested guarantees.
-    pub async fn open(
+    pub(crate) fn open(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
         options: AtomicBlobStoreOptions,
@@ -530,14 +604,8 @@ impl AtomicBlobStore {
             let maximum = options.max_blob_size;
             let format = options.format;
             let max_concurrent_operations = options.max_concurrent_operations.get();
-            let config = initialize_in_background(
-                root,
-                namespace,
-                format,
-                maximum,
-                max_concurrent_operations,
-            )
-            .await?;
+            let config =
+                initialize_platform(root, namespace, format, maximum, max_concurrent_operations)?;
             Self::from_config(config)
         }
     }
@@ -545,26 +613,23 @@ impl AtomicBlobStore {
     #[cfg(any(unix, windows))]
     fn from_config(config: StoreConfig) -> Result<Self, AtomicBlobStoreError> {
         let config = Arc::new(config);
-        let (submissions, receiver) = mpsc::channel();
+        let (submissions, receiver) = flume::unbounded();
+        let lifecycle = Arc::new(Mutex::new(Lifecycle::Open));
         #[cfg(all(test, unix))]
         let registry_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let coordinator_runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .map_err(|source| AtomicBlobStoreError::Io {
-                operation: StoreOperation::StartCoordinator,
-                source,
-            })?;
         let scheduler_config = Arc::clone(&config);
+        let scheduler_lifecycle = Arc::clone(&lifecycle);
+        let worker_pool = WorkerPool::new(config.max_concurrent_operations)?;
         #[cfg(all(test, unix))]
         let scheduler_registry_entries = Arc::clone(&registry_entries);
         std::thread::Builder::new()
             .name("atomic-blob-store-coordinator".into())
             .spawn(move || {
-                let blocking_executor = coordinator_runtime.handle().clone();
                 run_scheduler(
                     &scheduler_config,
                     &receiver,
-                    &blocking_executor,
+                    &scheduler_lifecycle,
+                    worker_pool,
                     #[cfg(all(test, unix))]
                     &scheduler_registry_entries,
                 );
@@ -577,6 +642,7 @@ impl AtomicBlobStore {
             inner: Arc::new(Inner {
                 config,
                 submissions,
+                lifecycle,
                 #[cfg(all(test, unix))]
                 registry_entries,
             }),
@@ -584,7 +650,8 @@ impl AtomicBlobStore {
     }
 
     #[cfg(all(test, unix))]
-    async fn open_with_test_hook(
+    #[allow(dead_code)]
+    fn open_with_test_hook(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
         options: AtomicBlobStoreOptions,
@@ -597,8 +664,7 @@ impl AtomicBlobStore {
         let format = options.format;
         let max_concurrent_operations = options.max_concurrent_operations.get();
         let mut config =
-            initialize_in_background(root, namespace, format, maximum, max_concurrent_operations)
-                .await?;
+            initialize_platform(root, namespace, format, maximum, max_concurrent_operations)?;
         config.hook = Some(hook);
         Self::from_config(config)
     }
@@ -607,7 +673,10 @@ impl AtomicBlobStore {
     ///
     /// Only a genuinely absent canonical blob returns `Ok(None)`.
     #[must_use]
-    pub fn load(&self, canonical_key: &[u8]) -> BlobStoreFuture<Option<Vec<u8>>> {
+    pub(crate) fn load(&self, canonical_key: &[u8]) -> Pending<Option<Vec<u8>>> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -615,7 +684,7 @@ impl AtomicBlobStore {
         }
         #[cfg(any(unix, windows))]
         {
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -627,7 +696,10 @@ impl AtomicBlobStore {
 
     /// Saves an already allocated complete payload for `canonical_key`.
     #[must_use]
-    pub fn save(&self, canonical_key: &[u8], payload: Vec<u8>) -> BlobStoreFuture<()> {
+    pub(crate) fn save(&self, canonical_key: &[u8], payload: Vec<u8>) -> Pending<()> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = (canonical_key, payload);
@@ -635,7 +707,7 @@ impl AtomicBlobStore {
         }
         #[cfg(any(unix, windows))]
         {
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -645,22 +717,12 @@ impl AtomicBlobStore {
         }
     }
 
-    /// Streams and atomically saves exactly `declared_len` payload bytes.
-    ///
-    /// The operation is submitted when this future is first polled. The reader
-    /// must then reach EOF immediately after `declared_len` bytes. Dropping the
-    /// future before the input-complete marker aborts the staged replacement;
-    /// after that marker, the coordinator finishes the commit and dropping the
-    /// future discards only its result.
-    pub async fn save_from<R>(
+    pub(crate) fn start_save_stream(
         &self,
         canonical_key: &[u8],
-        reader: &mut R,
         declared_len: u64,
-    ) -> Result<(), AtomicBlobStoreError>
-    where
-        R: AsyncRead + Unpin + Send + ?Sized,
-    {
+    ) -> Result<SaveStreamEndpoint, AtomicBlobStoreError> {
+        self.ensure_open()?;
         if declared_len > self.inner.config.maximum {
             return Err(AtomicBlobStoreError::BlobTooLarge {
                 size: declared_len,
@@ -670,7 +732,7 @@ impl AtomicBlobStore {
 
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = (canonical_key, reader);
+            let _ = canonical_key;
             return Err(AtomicBlobStoreError::UnsupportedPlatform {
                 platform: std::env::consts::OS,
             });
@@ -678,8 +740,8 @@ impl AtomicBlobStore {
 
         #[cfg(any(unix, windows))]
         {
-            let (chunks_sender, chunks_receiver) = tokio_mpsc::channel(STREAM_CHANNEL_CAPACITY);
-            let (sender, mut receiver) = oneshot::channel();
+            let (chunks_sender, chunks_receiver) = flume::bounded(STREAM_CHANNEL_CAPACITY);
+            let (sender, receiver) = flume::bounded(1);
             submit_operation(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -689,99 +751,21 @@ impl AtomicBlobStore {
                     sender,
                 },
             )?;
-
-            let mut read = 0_u64;
-            while read < declared_len {
-                let remaining = declared_len - read;
-                let requested = usize::try_from(remaining)
-                    .unwrap_or(usize::MAX)
-                    .min(STREAM_CHUNK_SIZE);
-                let mut chunk = vec![0; requested];
-                let read_result = tokio::select! {
-                    biased;
-                    result = &mut receiver => {
-                        return result.unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure));
-                    }
-                    result = tokio::io::AsyncReadExt::read(reader, &mut chunk) => result,
-                };
-                let count = match read_result {
-                    Ok(0) => {
-                        drop(chunks_sender);
-                        let _ = receive_result(receiver).await;
-                        return Err(AtomicBlobStoreError::InputEndedEarly {
-                            declared: declared_len,
-                            actual: read,
-                        });
-                    }
-                    Ok(count) => count,
-                    Err(source) => {
-                        drop(chunks_sender);
-                        let _ = receive_result(receiver).await;
-                        return Err(AtomicBlobStoreError::InputIo { source });
-                    }
-                };
-                chunk.truncate(count);
-                read += u64::try_from(count).expect("a chunk length always fits in u64");
-                if chunks_sender
-                    .send(SaveStreamMessage::Chunk(chunk))
-                    .await
-                    .is_err()
-                {
-                    return receive_result(receiver).await;
-                }
-            }
-
-            let mut trailing = [0; 1];
-            let trailing_result = tokio::select! {
-                biased;
-                result = &mut receiver => {
-                    return result.unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure));
-                }
-                result = tokio::io::AsyncReadExt::read(reader, &mut trailing) => result,
-            };
-            match trailing_result {
-                Ok(0) => {}
-                Ok(_) => {
-                    drop(chunks_sender);
-                    let _ = receive_result(receiver).await;
-                    return Err(AtomicBlobStoreError::InputHasTrailingData {
-                        declared: declared_len,
-                    });
-                }
-                Err(source) => {
-                    drop(chunks_sender);
-                    let _ = receive_result(receiver).await;
-                    return Err(AtomicBlobStoreError::InputIo { source });
-                }
-            }
-
-            if chunks_sender
-                .send(SaveStreamMessage::Complete)
-                .await
-                .is_err()
-            {
-                return receive_result(receiver).await;
-            }
-            drop(chunks_sender);
-            receive_result(receiver).await
+            Ok(SaveStreamEndpoint {
+                chunks: chunks_sender,
+                result: Pending::new(receiver),
+            })
         }
     }
 
-    /// Validates and streams a canonical payload into `writer`.
-    ///
-    /// Validation completes before the first payload byte is written. The
-    /// destination is not flushed or shut down by this method.
-    pub async fn load_into<W>(
+    pub(crate) fn start_load_stream(
         &self,
         canonical_key: &[u8],
-        writer: &mut W,
-    ) -> Result<Option<BlobMetadata>, AtomicBlobStoreError>
-    where
-        W: AsyncWrite + Unpin + Send + ?Sized,
-    {
+    ) -> Result<LoadStreamEndpoint, AtomicBlobStoreError> {
+        self.ensure_open()?;
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = (canonical_key, writer);
+            let _ = canonical_key;
             return Err(AtomicBlobStoreError::UnsupportedPlatform {
                 platform: std::env::consts::OS,
             });
@@ -789,9 +773,9 @@ impl AtomicBlobStore {
 
         #[cfg(any(unix, windows))]
         {
-            let (chunks_sender, mut chunks_receiver) = tokio_mpsc::channel(STREAM_CHANNEL_CAPACITY);
-            let (acknowledgement_sender, acknowledgement_receiver) = oneshot::channel();
-            let (sender, receiver) = oneshot::channel();
+            let (chunks_sender, chunks_receiver) = flume::bounded(STREAM_CHANNEL_CAPACITY);
+            let (acknowledgement_sender, acknowledgement_receiver) = flume::bounded(1);
+            let (sender, receiver) = flume::bounded(1);
             submit_operation(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -801,23 +785,20 @@ impl AtomicBlobStore {
                     sender,
                 },
             )?;
-
-            while let Some(chunk) = chunks_receiver.recv().await {
-                if let Err(source) = tokio::io::AsyncWriteExt::write_all(writer, &chunk).await {
-                    drop(chunks_receiver);
-                    drop(acknowledgement_sender);
-                    let _ = receive_result(receiver).await;
-                    return Err(AtomicBlobStoreError::OutputIo { source });
-                }
-            }
-            let _ = acknowledgement_sender.send(());
-            receive_result(receiver).await
+            Ok(LoadStreamEndpoint {
+                chunks: chunks_receiver,
+                acknowledgement: acknowledgement_sender,
+                result: Pending::new(receiver),
+            })
         }
     }
 
     /// Clears the canonical blob for `canonical_key`.
     #[must_use]
-    pub fn clear(&self, canonical_key: &[u8]) -> BlobStoreFuture<()> {
+    pub(crate) fn clear(&self, canonical_key: &[u8]) -> Pending<()> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -825,7 +806,7 @@ impl AtomicBlobStore {
         }
         #[cfg(any(unix, windows))]
         {
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -837,7 +818,10 @@ impl AtomicBlobStore {
 
     /// Inspects metadata without opening, decoding, or mutating the blob.
     #[must_use]
-    pub fn inspect(&self, canonical_key: &[u8]) -> BlobStoreFuture<BlobInspection> {
+    pub(crate) fn inspect(&self, canonical_key: &[u8]) -> Pending<BlobInspection> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -845,7 +829,7 @@ impl AtomicBlobStore {
         }
         #[cfg(any(unix, windows))]
         {
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -857,7 +841,10 @@ impl AtomicBlobStore {
 
     /// Atomically moves a canonical blob to a randomized diagnostic name.
     #[must_use]
-    pub fn quarantine(&self, canonical_key: &[u8]) -> BlobStoreFuture<QuarantineInfo> {
+    pub(crate) fn quarantine(&self, canonical_key: &[u8]) -> Pending<QuarantineInfo> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_key;
@@ -865,7 +852,7 @@ impl AtomicBlobStore {
         }
         #[cfg(any(unix, windows))]
         {
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
                 key_hash(canonical_key),
@@ -877,10 +864,13 @@ impl AtomicBlobStore {
 
     /// Removes stale store-owned Windows staging files behind a store-wide FIFO barrier.
     #[must_use]
-    pub fn cleanup_stale_temporary_files(
+    pub(crate) fn cleanup_stale_temporary_files(
         &self,
         minimum_age: Duration,
-    ) -> BlobStoreFuture<CleanupReport> {
+    ) -> Pending<CleanupReport> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = minimum_age;
@@ -889,9 +879,9 @@ impl AtomicBlobStore {
         #[cfg(any(unix, windows))]
         {
             if minimum_age.is_zero() {
-                return Box::pin(async { Err(AtomicBlobStoreError::InvalidCleanupAge) });
+                return Pending::resolved(Err(AtomicBlobStoreError::InvalidCleanupAge));
             }
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             if self
                 .inner
                 .submissions
@@ -902,15 +892,11 @@ impl AtomicBlobStore {
                 }))
                 .is_err()
             {
-                return Box::pin(async {
-                    Err(AtomicBlobStoreError::MaintenanceCoordinationFailure)
-                });
+                return Pending::resolved(Err(
+                    AtomicBlobStoreError::MaintenanceCoordinationFailure,
+                ));
             }
-            Box::pin(async move {
-                receiver
-                    .await
-                    .unwrap_or(Err(AtomicBlobStoreError::MaintenanceCoordinationFailure))
-            })
+            Pending::new(receiver)
         }
     }
 
@@ -919,33 +905,76 @@ impl AtomicBlobStore {
     /// Later submissions are not part of this barrier. Dropping the returned
     /// future discards only its result; the barrier remains ordered.
     #[must_use]
-    pub fn flush(&self) -> BlobStoreFuture<()> {
+    pub(crate) fn flush(&self) -> Pending<()> {
+        if let Err(error) = self.ensure_open() {
+            return Pending::resolved(Err(error));
+        }
         #[cfg(not(any(unix, windows)))]
         {
             return unsupported_future();
         }
         #[cfg(any(unix, windows))]
         {
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = flume::bounded(1);
             if self
                 .inner
                 .submissions
-                .send(CoordinatorEvent::Maintenance(MaintenanceSubmission {
-                    minimum_age: None,
-                    sender,
-                    completion_sender: self.inner.submissions.clone(),
-                }))
+                .send(CoordinatorEvent::Flush(sender))
                 .is_err()
             {
-                return Box::pin(async {
-                    Err(AtomicBlobStoreError::MaintenanceCoordinationFailure)
+                return Pending::resolved(Err(
+                    AtomicBlobStoreError::MaintenanceCoordinationFailure,
+                ));
+            }
+            Pending::new(receiver)
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn close(&self) -> Pending<()> {
+        let state = *self
+            .inner
+            .lifecycle
+            .lock()
+            .expect("lifecycle lock poisoned");
+        match state {
+            Lifecycle::Closed => return Pending::resolved(Ok(())),
+            Lifecycle::Failed => {
+                return Pending::resolved(Err(AtomicBlobStoreError::ShutdownFailure));
+            }
+            Lifecycle::Open | Lifecycle::Closing => {}
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            return unsupported_future();
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let (sender, receiver) = flume::bounded(1);
+            if self
+                .inner
+                .submissions
+                .send(CoordinatorEvent::Close(CloseSubmission { sender }))
+                .is_err()
+            {
+                let state = *self
+                    .inner
+                    .lifecycle
+                    .lock()
+                    .expect("lifecycle lock poisoned");
+                return Pending::resolved(match state {
+                    Lifecycle::Closed => Ok(()),
+                    Lifecycle::Failed => Err(AtomicBlobStoreError::ShutdownFailure),
+                    Lifecycle::Open | Lifecycle::Closing => Err(AtomicBlobStoreError::EngineFailed),
                 });
             }
-            Box::pin(async move {
-                receiver
-                    .await
-                    .unwrap_or(Err(AtomicBlobStoreError::MaintenanceCoordinationFailure))
-                    .map(|_| ())
+            let lifecycle = Arc::clone(&self.inner.lifecycle);
+            Pending::with_disconnected(receiver, move || {
+                match *lifecycle.lock().expect("lifecycle lock poisoned") {
+                    Lifecycle::Closed => Ok(()),
+                    Lifecycle::Failed => Err(AtomicBlobStoreError::ShutdownFailure),
+                    Lifecycle::Open | Lifecycle::Closing => Err(AtomicBlobStoreError::EngineFailed),
+                }
             })
         }
     }
@@ -955,37 +984,12 @@ impl AtomicBlobStore {
     /// This path is not a stable storage API and callers must not read, write,
     /// rename, or delete it while the store is in use.
     #[must_use]
-    pub fn blob_path(&self, canonical_key: &[u8]) -> PathBuf {
+    pub(crate) fn blob_path(&self, canonical_key: &[u8]) -> PathBuf {
         self.inner
             .config
             .namespace
             .join(blob_filename(&self.inner.config.format, canonical_key))
     }
-}
-
-#[cfg(any(unix, windows))]
-async fn initialize_in_background(
-    root: PathBuf,
-    namespace: PathBuf,
-    format: BlobFormatIdentity,
-    maximum: u64,
-    max_concurrent_operations: usize,
-) -> Result<StoreConfig, AtomicBlobStoreError> {
-    let (sender, receiver) = oneshot::channel();
-    std::thread::Builder::new()
-        .name("atomic-blob-store-initialize".into())
-        .spawn(move || {
-            let result =
-                initialize_platform(root, namespace, format, maximum, max_concurrent_operations);
-            let _ = sender.send(result);
-        })
-        .map_err(|source| AtomicBlobStoreError::Io {
-            operation: StoreOperation::StartInitialization,
-            source,
-        })?;
-    receiver
-        .await
-        .unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure))
 }
 
 /// Returns the stable full-BLAKE3 blob filename for canonical key bytes.
@@ -1037,21 +1041,19 @@ fn validate_maximum(maximum: u64) -> Result<(), AtomicBlobStoreError> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn unsupported_future<T: Send + 'static>() -> BlobStoreFuture<T> {
-    Box::pin(async {
-        Err(AtomicBlobStoreError::UnsupportedPlatform {
-            platform: std::env::consts::OS,
-        })
-    })
+fn unsupported_future<T: Send + 'static>() -> Pending<T> {
+    Pending::resolved(Err(AtomicBlobStoreError::UnsupportedPlatform {
+        platform: std::env::consts::OS,
+    }))
 }
 
 #[cfg(any(unix, windows))]
 fn submit<T: Send + 'static>(
-    submissions: &mpsc::Sender<CoordinatorEvent>,
+    submissions: &Sender<CoordinatorEvent>,
     key_hash: [u8; 32],
     operation: Operation,
-    receiver: oneshot::Receiver<Result<T, AtomicBlobStoreError>>,
-) -> BlobStoreFuture<T> {
+    receiver: Receiver<Result<T, AtomicBlobStoreError>>,
+) -> Pending<T> {
     let submission = Submission {
         key_hash,
         operation,
@@ -1061,18 +1063,14 @@ fn submit<T: Send + 'static>(
         .send(CoordinatorEvent::Submission(submission))
         .is_err()
     {
-        return Box::pin(async { Err(AtomicBlobStoreError::CoordinationFailure) });
+        return Pending::resolved(Err(AtomicBlobStoreError::EngineFailed));
     }
-    Box::pin(async move {
-        receiver
-            .await
-            .unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure))
-    })
+    Pending::new(receiver)
 }
 
 #[cfg(any(unix, windows))]
 fn submit_operation(
-    submissions: &mpsc::Sender<CoordinatorEvent>,
+    submissions: &Sender<CoordinatorEvent>,
     key_hash: [u8; 32],
     operation: Operation,
 ) -> Result<(), AtomicBlobStoreError> {
@@ -1082,58 +1080,49 @@ fn submit_operation(
             operation,
             completion_sender: submissions.clone(),
         }))
-        .map_err(|_| AtomicBlobStoreError::CoordinationFailure)
-}
-
-#[cfg(any(unix, windows))]
-async fn receive_result<T>(
-    receiver: oneshot::Receiver<Result<T, AtomicBlobStoreError>>,
-) -> Result<T, AtomicBlobStoreError> {
-    receiver
-        .await
-        .unwrap_or(Err(AtomicBlobStoreError::CoordinationFailure))
+        .map_err(|_| AtomicBlobStoreError::EngineFailed)
 }
 
 #[cfg(any(unix, windows))]
 struct Submission {
     key_hash: [u8; 32],
     operation: Operation,
-    completion_sender: mpsc::Sender<CoordinatorEvent>,
+    completion_sender: Sender<CoordinatorEvent>,
 }
 
 #[cfg(any(unix, windows))]
 struct QueuedOperation {
     operation: Operation,
-    completion_sender: mpsc::Sender<CoordinatorEvent>,
+    completion_sender: Sender<CoordinatorEvent>,
 }
 
 #[cfg(any(unix, windows))]
 enum Operation {
     Load {
-        sender: oneshot::Sender<Result<Option<Vec<u8>>, AtomicBlobStoreError>>,
+        sender: Sender<Result<Option<Vec<u8>>, AtomicBlobStoreError>>,
     },
     LoadStream {
-        chunks: Option<tokio_mpsc::Sender<Vec<u8>>>,
-        acknowledgement: Option<oneshot::Receiver<()>>,
-        sender: oneshot::Sender<Result<Option<BlobMetadata>, AtomicBlobStoreError>>,
+        chunks: Option<Sender<Vec<u8>>>,
+        acknowledgement: Option<Receiver<()>>,
+        sender: Sender<Result<Option<BlobMetadata>, AtomicBlobStoreError>>,
     },
     Save {
         payload: Vec<u8>,
-        sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
+        sender: Sender<Result<(), AtomicBlobStoreError>>,
     },
     SaveStream {
         declared_len: u64,
-        chunks: tokio_mpsc::Receiver<SaveStreamMessage>,
-        sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
+        chunks: Receiver<SaveStreamMessage>,
+        sender: Sender<Result<(), AtomicBlobStoreError>>,
     },
     Clear {
-        sender: oneshot::Sender<Result<(), AtomicBlobStoreError>>,
+        sender: Sender<Result<(), AtomicBlobStoreError>>,
     },
     Inspect {
-        sender: oneshot::Sender<Result<BlobInspection, AtomicBlobStoreError>>,
+        sender: Sender<Result<BlobInspection, AtomicBlobStoreError>>,
     },
     Quarantine {
-        sender: oneshot::Sender<Result<QuarantineInfo, AtomicBlobStoreError>>,
+        sender: Sender<Result<QuarantineInfo, AtomicBlobStoreError>>,
     },
 }
 
@@ -1148,7 +1137,7 @@ enum BlockingResult {
     Quarantine(Result<QuarantineInfo, AtomicBlobStoreError>),
 }
 
-#[cfg(any(unix, windows))]
+#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
 enum SaveStreamMessage {
     Chunk(Vec<u8>),
     Complete,
@@ -1166,13 +1155,20 @@ enum CoordinatorEvent {
     Completion(Completion),
     Maintenance(MaintenanceSubmission),
     MaintenanceCompletion(MaintenanceCompletion),
+    Flush(Sender<Result<(), AtomicBlobStoreError>>),
+    Close(CloseSubmission),
 }
 
 #[cfg(any(unix, windows))]
 struct MaintenanceSubmission {
     minimum_age: Option<Duration>,
-    sender: oneshot::Sender<Result<CleanupReport, AtomicBlobStoreError>>,
-    completion_sender: mpsc::Sender<CoordinatorEvent>,
+    sender: Sender<Result<CleanupReport, AtomicBlobStoreError>>,
+    completion_sender: Sender<CoordinatorEvent>,
+}
+
+#[cfg(any(unix, windows))]
+struct CloseSubmission {
+    sender: Sender<Result<(), AtomicBlobStoreError>>,
 }
 
 #[cfg(any(unix, windows))]
@@ -1184,20 +1180,92 @@ struct MaintenanceCompletion {
 enum PendingEvent {
     Submission(Submission),
     Maintenance(MaintenanceSubmission),
+    Flush(Sender<Result<(), AtomicBlobStoreError>>),
+    Close(CloseSubmission),
 }
 
 #[cfg(any(unix, windows))]
 type MaintenanceOutcome = (
-    oneshot::Sender<Result<CleanupReport, AtomicBlobStoreError>>,
+    Sender<Result<CleanupReport, AtomicBlobStoreError>>,
     Result<CleanupReport, AtomicBlobStoreError>,
 );
+
+#[cfg(any(unix, windows))]
+type WorkerJob = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(any(unix, windows))]
+struct WorkerPool {
+    sender: Option<Sender<WorkerJob>>,
+    receiver: Receiver<WorkerJob>,
+    handles: Vec<std::thread::JoinHandle<()>>,
+    capacity: usize,
+}
+
+#[cfg(any(unix, windows))]
+impl WorkerPool {
+    fn new(capacity: usize) -> Result<Self, AtomicBlobStoreError> {
+        let (sender, receiver) = flume::unbounded::<WorkerJob>();
+        Ok(Self {
+            sender: Some(sender),
+            receiver,
+            handles: Vec::with_capacity(capacity),
+            capacity,
+        })
+    }
+
+    fn prepare(&mut self, required_workers: usize) -> Result<(), AtomicBlobStoreError> {
+        while self.handles.len() < required_workers.min(self.capacity) {
+            let receiver = self.receiver.clone();
+            let index = self.handles.len();
+            let handle = std::thread::Builder::new()
+                .name(format!("atomic-blob-store-worker-{index}"))
+                .spawn(move || {
+                    while let Ok(job) = receiver.recv() {
+                        job();
+                    }
+                })
+                .map_err(|_| AtomicBlobStoreError::WorkerUnavailable)?;
+            self.handles.push(handle);
+        }
+        Ok(())
+    }
+
+    fn execute(&self, job: WorkerJob) -> Result<(), AtomicBlobStoreError> {
+        self.sender
+            .as_ref()
+            .ok_or(AtomicBlobStoreError::WorkerUnavailable)?
+            .send(job)
+            .map_err(|_| AtomicBlobStoreError::WorkerUnavailable)
+    }
+
+    fn shutdown(&mut self) -> Result<(), AtomicBlobStoreError> {
+        self.sender.take();
+        let mut panicked = false;
+        for handle in self.handles.drain(..) {
+            panicked |= handle.join().is_err();
+        }
+        if panicked {
+            Err(AtomicBlobStoreError::ShutdownFailure)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
 
 #[cfg(any(unix, windows))]
 #[allow(clippy::too_many_lines)]
 fn run_scheduler(
     config: &Arc<StoreConfig>,
-    receiver: &mpsc::Receiver<CoordinatorEvent>,
-    blocking_executor: &tokio::runtime::Handle,
+    receiver: &Receiver<CoordinatorEvent>,
+    lifecycle: &Arc<Mutex<Lifecycle>>,
+    mut worker_pool: WorkerPool,
     #[cfg(all(test, unix))] registry_entries: &std::sync::atomic::AtomicUsize,
 ) {
     let mut queues: HashMap<[u8; 32], VecDeque<QueuedOperation>> = HashMap::new();
@@ -1208,6 +1276,13 @@ fn run_scheduler(
     while let Ok(event) = receiver.recv() {
         match event {
             CoordinatorEvent::Submission(submission) => {
+                if !matches!(
+                    *lifecycle.lock().expect("lifecycle lock poisoned"),
+                    Lifecycle::Open
+                ) {
+                    deliver_error(submission.operation, AtomicBlobStoreError::StoreClosed);
+                    continue;
+                }
                 if maintenance_active || !pending.is_empty() {
                     pending.push_back(PendingEvent::Submission(submission));
                     continue;
@@ -1222,14 +1297,8 @@ fn run_scheduler(
                     });
                 #[cfg(all(test, unix))]
                 registry_entries.store(queues.len(), std::sync::atomic::Ordering::SeqCst);
-                dispatch_if_idle(
-                    key_hash,
-                    config,
-                    &mut queues,
-                    &mut active,
-                    blocking_executor,
-                );
-                dispatch_available(config, &mut queues, &mut active, blocking_executor);
+                dispatch_if_idle(key_hash, config, &mut queues, &mut active, &mut worker_pool);
+                dispatch_available(config, &mut queues, &mut active, &mut worker_pool);
             }
             CoordinatorEvent::Completion(completion) => {
                 let outcome = completion.outcome;
@@ -1239,9 +1308,9 @@ fn run_scheduler(
                     config,
                     &mut queues,
                     &mut active,
-                    blocking_executor,
+                    &mut worker_pool,
                 );
-                dispatch_available(config, &mut queues, &mut active, blocking_executor);
+                dispatch_available(config, &mut queues, &mut active, &mut worker_pool);
                 if !active.contains(&completion.key_hash)
                     && queues
                         .get(&completion.key_hash)
@@ -1260,10 +1329,19 @@ fn run_scheduler(
                     &mut active,
                     &mut pending,
                     &mut maintenance_active,
-                    blocking_executor,
+                    &mut worker_pool,
                 );
             }
             CoordinatorEvent::Maintenance(submission) => {
+                if !matches!(
+                    *lifecycle.lock().expect("lifecycle lock poisoned"),
+                    Lifecycle::Open
+                ) {
+                    let _ = submission
+                        .sender
+                        .send(Err(AtomicBlobStoreError::StoreClosed));
+                    continue;
+                }
                 pending.push_back(PendingEvent::Maintenance(submission));
                 advance_pending_if_ready(
                     config,
@@ -1271,7 +1349,7 @@ fn run_scheduler(
                     &mut active,
                     &mut pending,
                     &mut maintenance_active,
-                    blocking_executor,
+                    &mut worker_pool,
                 );
             }
             CoordinatorEvent::MaintenanceCompletion(completion) => {
@@ -1285,10 +1363,121 @@ fn run_scheduler(
                     &mut active,
                     &mut pending,
                     &mut maintenance_active,
-                    blocking_executor,
+                    &mut worker_pool,
+                );
+            }
+            CoordinatorEvent::Flush(sender) => {
+                if !matches!(
+                    *lifecycle.lock().expect("lifecycle lock poisoned"),
+                    Lifecycle::Open
+                ) {
+                    let _ = sender.send(Err(AtomicBlobStoreError::StoreClosed));
+                    continue;
+                }
+                pending.push_back(PendingEvent::Flush(sender));
+                advance_pending_if_ready(
+                    config,
+                    &mut queues,
+                    &mut active,
+                    &mut pending,
+                    &mut maintenance_active,
+                    &mut worker_pool,
+                );
+            }
+            CoordinatorEvent::Close(submission) => {
+                let mut state = lifecycle.lock().expect("lifecycle lock poisoned");
+                match *state {
+                    Lifecycle::Open => {
+                        *state = Lifecycle::Closing;
+                        drop(state);
+                        pending.push_back(PendingEvent::Close(submission));
+                    }
+                    Lifecycle::Closing => {
+                        drop(state);
+                        pending.push_back(PendingEvent::Close(submission));
+                    }
+                    Lifecycle::Closed => {
+                        drop(state);
+                        let _ = submission.sender.send(Ok(()));
+                    }
+                    Lifecycle::Failed => {
+                        drop(state);
+                        let _ = submission
+                            .sender
+                            .send(Err(AtomicBlobStoreError::ShutdownFailure));
+                    }
+                }
+                advance_pending_if_ready(
+                    config,
+                    &mut queues,
+                    &mut active,
+                    &mut pending,
+                    &mut maintenance_active,
+                    &mut worker_pool,
                 );
             }
         }
+        if pending
+            .front()
+            .is_some_and(|event| matches!(event, PendingEvent::Close(_)))
+            && active.is_empty()
+            && queues.values().all(VecDeque::is_empty)
+            && !maintenance_active
+        {
+            let outcome = worker_pool.shutdown();
+            let mut state = lifecycle.lock().expect("lifecycle lock poisoned");
+            *state = if outcome.is_ok() {
+                Lifecycle::Closed
+            } else {
+                Lifecycle::Failed
+            };
+            drop(state);
+            while pending
+                .front()
+                .is_some_and(|event| matches!(event, PendingEvent::Close(_)))
+            {
+                let Some(PendingEvent::Close(close)) = pending.pop_front() else {
+                    unreachable!("the pending event kind was inspected above");
+                };
+                let result = if outcome.is_ok() {
+                    Ok(())
+                } else {
+                    Err(AtomicBlobStoreError::ShutdownFailure)
+                };
+                let _ = close.sender.send(result);
+            }
+            while let Ok(event) = receiver.try_recv() {
+                match event {
+                    CoordinatorEvent::Close(close) => {
+                        let result = if outcome.is_ok() {
+                            Ok(())
+                        } else {
+                            Err(AtomicBlobStoreError::ShutdownFailure)
+                        };
+                        let _ = close.sender.send(result);
+                    }
+                    CoordinatorEvent::Submission(submission) => {
+                        deliver_error(submission.operation, AtomicBlobStoreError::StoreClosed);
+                    }
+                    CoordinatorEvent::Maintenance(submission) => {
+                        let _ = submission
+                            .sender
+                            .send(Err(AtomicBlobStoreError::StoreClosed));
+                    }
+                    CoordinatorEvent::Flush(sender) => {
+                        let _ = sender.send(Err(AtomicBlobStoreError::StoreClosed));
+                    }
+                    CoordinatorEvent::Completion(_)
+                    | CoordinatorEvent::MaintenanceCompletion(_) => {}
+                }
+            }
+            return;
+        }
+    }
+    let _ = worker_pool.shutdown();
+    let mut state = lifecycle.lock().expect("lifecycle lock poisoned");
+    if !matches!(*state, Lifecycle::Closed) {
+        *state = Lifecycle::Closed;
     }
 }
 
@@ -1299,7 +1488,7 @@ fn advance_pending_if_ready(
     active: &mut HashSet<[u8; 32]>,
     pending: &mut VecDeque<PendingEvent>,
     maintenance_active: &mut bool,
-    blocking_executor: &tokio::runtime::Handle,
+    worker_pool: &mut WorkerPool,
 ) {
     if *maintenance_active {
         return;
@@ -1315,7 +1504,7 @@ fn advance_pending_if_ready(
                     unreachable!("the pending event kind was inspected above");
                 };
                 *maintenance_active = true;
-                dispatch_maintenance(config, submission, blocking_executor);
+                dispatch_maintenance(config, submission, worker_pool);
                 return;
             }
             Some(PendingEvent::Submission(_)) => {
@@ -1330,7 +1519,19 @@ fn advance_pending_if_ready(
                         operation: submission.operation,
                         completion_sender: submission.completion_sender,
                     });
-                dispatch_if_idle(key_hash, config, queues, active, blocking_executor);
+                dispatch_if_idle(key_hash, config, queues, active, worker_pool);
+            }
+            Some(PendingEvent::Flush(_)) => {
+                if !active.is_empty() || queues.values().any(|queue| !queue.is_empty()) {
+                    return;
+                }
+                let Some(PendingEvent::Flush(sender)) = pending.pop_front() else {
+                    unreachable!("the pending event kind was inspected above");
+                };
+                let _ = sender.send(Ok(()));
+            }
+            Some(PendingEvent::Close(_)) => {
+                return;
             }
             None => return,
         }
@@ -1341,26 +1542,43 @@ fn advance_pending_if_ready(
 fn dispatch_maintenance(
     config: &Arc<StoreConfig>,
     submission: MaintenanceSubmission,
-    blocking_executor: &tokio::runtime::Handle,
+    worker_pool: &mut WorkerPool,
 ) {
+    if let Err(error) = worker_pool.prepare(1) {
+        let _ = submission.sender.send(Err(error));
+        let _ = submission
+            .completion_sender
+            .send(CoordinatorEvent::MaintenanceCompletion(
+                MaintenanceCompletion { outcome: None },
+            ));
+        return;
+    }
     let config = Arc::clone(config);
-    blocking_executor.spawn_blocking(move || {
-        let MaintenanceSubmission {
-            minimum_age,
-            sender,
-            completion_sender,
-        } = submission;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            minimum_age.map_or_else(
-                || Ok(CleanupReport::default()),
-                |minimum_age| cleanup_stale_files(&config, minimum_age),
-            )
-        }));
-        let outcome = result.ok().map(|result| (sender, result));
-        let _send_result = completion_sender.send(CoordinatorEvent::MaintenanceCompletion(
-            MaintenanceCompletion { outcome },
+    let fallback_sender = submission.completion_sender.clone();
+    if worker_pool
+        .execute(Box::new(move || {
+            let MaintenanceSubmission {
+                minimum_age,
+                sender,
+                completion_sender,
+            } = submission;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                minimum_age.map_or_else(
+                    || Ok(CleanupReport::default()),
+                    |minimum_age| cleanup_stale_files(&config, minimum_age),
+                )
+            }));
+            let outcome = result.ok().map(|result| (sender, result));
+            let _send_result = completion_sender.send(CoordinatorEvent::MaintenanceCompletion(
+                MaintenanceCompletion { outcome },
+            ));
+        }))
+        .is_err()
+    {
+        let _ = fallback_sender.send(CoordinatorEvent::MaintenanceCompletion(
+            MaintenanceCompletion { outcome: None },
         ));
-    });
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -1369,7 +1587,7 @@ fn dispatch_if_idle(
     config: &Arc<StoreConfig>,
     queues: &mut HashMap<[u8; 32], VecDeque<QueuedOperation>>,
     active: &mut HashSet<[u8; 32]>,
-    blocking_executor: &tokio::runtime::Handle,
+    worker_pool: &mut WorkerPool,
 ) {
     if active.contains(&key_hash) || active.len() >= config.max_concurrent_operations {
         return;
@@ -1382,23 +1600,36 @@ fn dispatch_if_idle(
         operation,
         completion_sender,
     } = next_operation;
+    if let Err(error) = worker_pool.prepare(active.len() + 1) {
+        deliver_error(operation, error);
+        return;
+    }
     let config = Arc::clone(config);
     active.insert(key_hash);
-    blocking_executor.spawn_blocking(move || {
-        let path = config.namespace.join(format!(
-            "{}{}",
-            blake3::Hash::from_bytes(key_hash).to_hex(),
-            config.format.filename_suffix()
-        ));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_owned_operation(&config, &path, operation)
+    let fallback_sender = completion_sender.clone();
+    if worker_pool
+        .execute(Box::new(move || {
+            let path = config.namespace.join(format!(
+                "{}{}",
+                blake3::Hash::from_bytes(key_hash).to_hex(),
+                config.format.filename_suffix()
+            ));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_owned_operation(&config, &path, operation)
+            }))
+            .ok();
+            let _send_result = completion_sender.send(CoordinatorEvent::Completion(Completion {
+                key_hash,
+                outcome,
+            }));
         }))
-        .ok();
-        let _send_result = completion_sender.send(CoordinatorEvent::Completion(Completion {
+        .is_err()
+    {
+        let _ = fallback_sender.send(CoordinatorEvent::Completion(Completion {
             key_hash,
-            outcome,
+            outcome: None,
         }));
-    });
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -1406,7 +1637,7 @@ fn dispatch_available(
     config: &Arc<StoreConfig>,
     queues: &mut HashMap<[u8; 32], VecDeque<QueuedOperation>>,
     active: &mut HashSet<[u8; 32]>,
-    blocking_executor: &tokio::runtime::Handle,
+    worker_pool: &mut WorkerPool,
 ) {
     while active.len() < config.max_concurrent_operations {
         let Some(key_hash) = queues
@@ -1415,7 +1646,7 @@ fn dispatch_available(
         else {
             break;
         };
-        dispatch_if_idle(key_hash, config, queues, active, blocking_executor);
+        dispatch_if_idle(key_hash, config, queues, active, worker_pool);
     }
 }
 
@@ -1517,6 +1748,29 @@ fn deliver(operation: Operation, result: BlockingResult) {
             let _send_result = sender.send(result);
         }
         _ => unreachable!("operation and result kinds must match"),
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn deliver_error(operation: Operation, error: AtomicBlobStoreError) {
+    match operation {
+        Operation::Load { sender } => {
+            let _ = sender.send(Err(error));
+        }
+        Operation::LoadStream { sender, .. } => {
+            let _ = sender.send(Err(error));
+        }
+        Operation::Save { sender, .. }
+        | Operation::SaveStream { sender, .. }
+        | Operation::Clear { sender } => {
+            let _ = sender.send(Err(error));
+        }
+        Operation::Inspect { sender } => {
+            let _ = sender.send(Err(error));
+        }
+        Operation::Quarantine { sender } => {
+            let _ = sender.send(Err(error));
+        }
     }
 }
 
@@ -1679,7 +1933,7 @@ fn write_stream_envelope(
     config: &StoreConfig,
     writer: &mut impl Write,
     declared_len: u64,
-    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+    chunks: &mut Receiver<SaveStreamMessage>,
 ) -> Result<(), AtomicBlobStoreError> {
     let header = envelope_header(&config.format, declared_len, config.maximum)?;
     writer
@@ -1693,7 +1947,7 @@ fn write_stream_envelope(
     #[cfg(all(test, unix))]
     let mut during_write_hook_hit = false;
 
-    while let Some(message) = chunks.blocking_recv() {
+    while let Ok(message) = chunks.recv() {
         match message {
             SaveStreamMessage::Chunk(chunk) => {
                 let count = u64::try_from(chunk.len()).expect("a chunk length always fits in u64");
@@ -1768,8 +2022,8 @@ fn load_blob(config: &StoreConfig, path: &Path) -> Result<Option<Vec<u8>>, Atomi
 fn load_blob_into_sender(
     config: &StoreConfig,
     path: &Path,
-    chunks: tokio_mpsc::Sender<Vec<u8>>,
-    acknowledgement: oneshot::Receiver<()>,
+    chunks: Sender<Vec<u8>>,
+    acknowledgement: Receiver<()>,
 ) -> Result<Option<BlobMetadata>, AtomicBlobStoreError> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -1802,12 +2056,12 @@ fn load_blob_into_sender(
         read_section(&mut file, &mut chunk, EnvelopeSection::Payload)?;
         remaining -= u64::try_from(requested).expect("a chunk length always fits in u64");
         chunks
-            .blocking_send(chunk)
+            .send(chunk)
             .map_err(|_| AtomicBlobStoreError::StreamCancelled)?;
     }
     drop(chunks);
     acknowledgement
-        .blocking_recv()
+        .recv()
         .map_err(|_| AtomicBlobStoreError::StreamCancelled)?;
     Ok(Some(metadata))
 }
@@ -1998,7 +2252,7 @@ fn read_section(
 ///
 /// This module is deliberately feature-gated so ordinary consumers do not
 /// acquire an additional public surface. Its functions call the same encoder
-/// and bounded reader used by [`AtomicBlobStore`].
+/// and bounded reader used by the store facades.
 #[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
 #[doc(hidden)]
 pub mod bench_instrumentation {
@@ -2140,7 +2394,7 @@ fn save_blob_from_receiver(
     config: &StoreConfig,
     path: &Path,
     declared_len: u64,
-    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+    chunks: &mut Receiver<SaveStreamMessage>,
 ) -> Result<(), AtomicBlobStoreError> {
     use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
     use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
@@ -2509,7 +2763,7 @@ fn create_windows_streaming_staging(
     config: &StoreConfig,
     path: &Path,
     declared_len: u64,
-    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+    chunks: &mut Receiver<SaveStreamMessage>,
 ) -> Result<(), AtomicBlobStoreError> {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -2669,7 +2923,7 @@ fn save_blob_from_receiver(
     config: &StoreConfig,
     path: &Path,
     declared_len: u64,
-    chunks: &mut tokio_mpsc::Receiver<SaveStreamMessage>,
+    chunks: &mut Receiver<SaveStreamMessage>,
 ) -> Result<(), AtomicBlobStoreError> {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -2902,5 +3156,8 @@ fn sync_directory(
         })
 }
 
-#[cfg(all(test, any(unix, windows)))]
+#[cfg(all(test, feature = "tokio", any(unix, windows)))]
+use tokio::AtomicBlobStore;
+
+#[cfg(all(test, feature = "tokio", any(unix, windows)))]
 mod tests;
