@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "run_id": "baseline-growth-v5",
+  "scenario": "persistence-checkpoint-growth",
+  "started_at_unix": 1785012269,
+  "finished_at_unix": 1785012269,
+  "config": {
+    "payload_size": 1024,
+    "protocol": "v5",
+    "qos": 2,
+    "rows": [
+      {
+        "application_payload_bytes": 0,
+        "canonical_session_bytes": 57,
+        "envelope_bytes": 22,
+        "inflight": 0,
+        "qos": 2,
+        "total_checkpoint_bytes": 79
+      },
+      {
+        "application_payload_bytes": 1024,
+        "canonical_session_bytes": 1113,
+        "envelope_bytes": 22,
+        "inflight": 1,
+        "qos": 2,
+        "total_checkpoint_bytes": 1135
+      },
+      {
+        "application_payload_bytes": 10240,
+        "canonical_session_bytes": 10617,
+        "envelope_bytes": 22,
+        "inflight": 10,
+        "qos": 2,
+        "total_checkpoint_bytes": 10639
+      },
+      {
+        "application_payload_bytes": 102400,
+        "canonical_session_bytes": 105657,
+        "envelope_bytes": 22,
+        "inflight": 100,
+        "qos": 2,
+        "total_checkpoint_bytes": 105679
+      },
+      {
+        "application_payload_bytes": 1024000,
+        "canonical_session_bytes": 1056057,
+        "envelope_bytes": 22,
+        "inflight": 1000,
+        "qos": 2,
+        "total_checkpoint_bytes": 1056079
+      }
+    ]
+  },
+  "metrics": {
+    "minimal_canonical_bytes": 57.0,
+    "rows": 5.0,
+    "thousand_inflight_checkpoint_bytes": 1056079.0
+  },
+  "samples": {
+    "canonical_size_bytes": [
+      57.0,
+      1113.0,
+      10617.0,
+      105657.0,
+      1056057.0
+    ]
+  },
+  "environment": {
+    "git_commit": "607aac41fe7161cc37c2c0c8ffcc593b3ff33d1f",
+    "git_dirty": true,
+    "build_profile": "release",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "target": "x86_64-linux",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_count": 16
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "run_id": "baseline-lifecycle-1-4",
+  "scenario": "persistence-blob-store-lifecycle",
+  "started_at_unix": 1785012268,
+  "finished_at_unix": 1785012268,
+  "config": {
+    "allocation_measurement": "process-global counting allocator; measured save window",
+    "max_concurrency": 4,
+    "payload_size": 4194304,
+    "rss_measurement": "/proc/self/status VmHWM",
+    "samples": 10,
+    "stores": 1,
+    "thread_measurement": "/proc/self/task delta"
+  },
+  "metrics": {
+    "active_thread_delta_max": 2.0,
+    "baseline_peak_rss_bytes": 4972544.0,
+    "baseline_threads": 17.0,
+    "idle_thread_delta_max": 1.0,
+    "peak_rss_bytes": 18071552.0
+  },
+  "samples": {
+    "active_thread_delta": [
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0
+    ],
+    "allocated_bytes": [
+      4198034.0,
+      4198063.0,
+      4198063.0,
+      4198034.0,
+      4198034.0,
+      4198034.0,
+      4198034.0,
+      4198063.0,
+      4198034.0,
+      4198063.0
+    ],
+    "allocation_count": [
+      37.0,
+      38.0,
+      38.0,
+      37.0,
+      37.0,
+      37.0,
+      37.0,
+      38.0,
+      37.0,
+      38.0
+    ],
+    "close_latency_ns": [
+      23801.0,
+      17972.0,
+      21291.0,
+      26757.0,
+      17469.0,
+      25038.0,
+      31362.0,
+      25864.0,
+      21884.0,
+      103132.0
+    ],
+    "cold_save_latency_ns": [
+      3675940.0,
+      2456755.0,
+      3507918.0,
+      2146776.0,
+      2520860.0,
+      2214831.0,
+      2304424.0,
+      2655821.0,
+      1941940.0,
+      2899847.0
+    ],
+    "flush_latency_ns": [
+      4836.0,
+      12902.0,
+      7865.0,
+      6522.0,
+      6145.0,
+      5840.0,
+      10127.0,
+      6451.0,
+      5971.0,
+      6900.0
+    ],
+    "idle_thread_delta": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "open_latency_ns": [
+      65517.0,
+      28498.0,
+      22717.0,
+      33776.0,
+      27339.0,
+      59059.0,
+      30020.0,
+      54929.0,
+      31835.0,
+      27982.0
+    ]
+  },
+  "environment": {
+    "git_commit": "607aac41fe7161cc37c2c0c8ffcc593b3ff33d1f",
+    "git_dirty": true,
+    "build_profile": "release",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "target": "x86_64-linux",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_count": 16
+  }
+}
