@@ -1,10 +1,9 @@
-# TODO: Finish and Validate the Executor-Neutral Atomic Blob Store
+# TODO: Complete Atomic Blob Store Validation
 
 ## Objective
 
-Finish the engineering, validation, performance, and release work required for
-`session-store-file/atomic-blob-store` to be maintained and published as an
-independent general-purpose crate.
+Complete the remaining lifecycle, cross-facade, streaming, and performance
+validation for `session-store-file/atomic-blob-store`.
 
 The supported abstraction is:
 
@@ -15,36 +14,33 @@ The supported abstraction is:
 
 The crate is not a database, queue, object service, append-only log,
 multi-process coordination service, or security boundary. Do not add
-cross-process locking, authentication, encryption, CAS, transactions, or
-hostile-filesystem defenses as part of this work.
+cross-process locking, authentication, encryption, compare-and-swap,
+transactions, or hostile-filesystem defenses.
 
-Keep the crate pre-release until every acceptance criterion in this document is
-satisfied.
-
-## Architecture and Invariants
+## Relevant Architecture and Invariants
 
 The package has one executor-neutral engine shared by two facades:
 
-- `BlockingAtomicBlobStore` provides blocking complete and `Read`/`Write`
-  streaming operations.
+- `BlockingAtomicBlobStore` provides blocking complete operations and
+  `Read`/`Write` streaming.
 - `atomic_blob_store::tokio::AtomicBlobStore`, behind the opt-in `tokio`
   feature, pumps borrowed `AsyncRead`/`AsyncWrite` endpoints and waits for
   engine results.
 - One named coordinator OS thread per store owns ordering, admission,
   maintenance barriers, lifecycle, and completion bookkeeping.
 - A per-store, lazily started, bounded worker pool owns synchronous filesystem
-  execution. No caller runtime owns or gates accepted filesystem work.
+  execution.
 - Runtime-neutral bounded channels carry streaming chunks and completions
-  between facades and the engine.
+  between the facades and engine.
 
-Preserve these contracts while completing the work:
+Preserve these contracts:
 
-- Complete operations submit when their methods are called. Dropping their
-  returned waiter discards only the result.
+- Complete operations submit when their methods are called. Dropping the
+  returned waiter discards only its result.
 - Borrowed streaming operations submit on first poll or blocking call.
 - Operations for one key execute in FIFO submission order. Different keys may
   execute concurrently up to `max_concurrent_operations`.
-- Store-wide maintenance, `flush`, and `close` retain their coordinator order
+- Store-wide maintenance, `flush`, and `close` retain coordinator order
   relative to keyed operations.
 - `flush` includes operations accepted before its barrier, excludes later
   operations, does not close the store, and remains ordered if its waiter is
@@ -52,6 +48,8 @@ Preserve these contracts while completing the work:
 - `close` is ordered, shared by all clones, deterministic, idempotent, drains
   earlier accepted work, rejects later work with `StoreClosed`, and joins all
   store-owned execution resources.
+- Every concurrent `close` caller waits for coordinator termination and
+  observes the shared coordinator-join outcome.
 - Last-handle drop initiates best-effort drainage without blocking `Drop`.
   Callers requiring an observable shutdown point must use `close`.
 - Streaming save cancellation before the engine accepts the explicit
@@ -59,290 +57,211 @@ Preserve these contracts while completing the work:
   that marker, commit is accepted work and must survive caller task or runtime
   loss.
 - Streaming load validates the complete envelope before producing output,
-  performs the existing two-pass seek-and-stream flow, and does not flush or
-  shut down the caller's destination.
+  performs the two-pass seek-and-stream flow, and does not flush or shut down
+  the caller's destination.
 - Streaming transports remain bounded independently of blob size.
-- V1 envelope bytes, BLAKE3 filename derivation, configuration validation,
-  namespaces, platform-specific durability behavior, and public error meaning
-  remain stable.
-- Independent stores do not coordinate, even when opened over the same root and
-  namespace.
-- Unsupported targets compile and return `UnsupportedPlatform` when opening a
-  store.
+- V1 envelope bytes, BLAKE3 filename derivation, validation, namespaces,
+  platform durability behavior, and public error meanings remain stable.
+- Independent stores do not coordinate, even when opened over the same root
+  and namespace.
+- Engine and filesystem modules remain independent of Tokio. A blocking-only
+  dependency graph must not contain Tokio.
 
-The MQTT adapter supplies its canonical domain, suffix, namespaces, and key
-encoding. It recognizes only canonical files. Do not restore alternate legacy
-filename discovery or arbitrary-filename access.
+Use barriers, channels, and deterministic test hooks for concurrency and
+failure tests. Do not use sleeps as the synchronization mechanism. A bounded
+timeout may guard a test against deadlock only after deterministic
+synchronization establishes the state being tested.
 
-## 1. Separate Internal Responsibilities
+## 1. Complete Lifecycle and Runtime-Independence Tests
 
-Refactor the remaining monolithic implementation into reviewable internal
-modules without changing the public API or behavior. Use boundaries equivalent
-to:
+Add deterministic tests for the lifecycle transitions and barrier behaviors
+specified below.
 
-```text
-atomic-blob-store/src/
-  lib.rs
-  config.rs
-  error.rs
-  format.rs
-  path.rs
-  filesystem/
-    mod.rs
-    unix.rs
-    windows.rs
-  engine/
-    mod.rs
-    event.rs
-    lifecycle.rs
-    operation.rs
-    scheduler.rs
-    stream.rs
-    workers.rs
-  blocking.rs
-  tokio.rs
+### Flush ordering
+
+Prove that:
+
+- `flush` waits for all earlier accepted operations;
+- work submitted after a `flush` barrier is excluded from that barrier;
+- dropping a `flush` waiter does not remove or reorder the barrier;
+- multiple interleaved flush barriers preserve submission order;
+- a completed `flush` leaves the store open and usable.
+
+The assertions must distinguish operation acceptance, dispatch, completion,
+and waiter completion. Do not infer ordering solely from final filesystem
+state.
+
+### Close ordering and shared completion
+
+Prove that:
+
+- `close` drains earlier complete operations;
+- later operations are rejected with `StoreClosed` across all clones;
+- a close behind multiple queued operations preserves their coordinator order;
+- close waits for a streaming save after input-complete acceptance;
+- close remains behind a pre-input-complete stalled stream until that stream
+  is cancelled;
+- operations after successful close return the documented lifecycle error;
+- operations after failed close return the documented lifecycle error;
+- blocking and Tokio callers can close concurrently without deadlock;
+- every concurrent close caller waits until workers and the coordinator have
+  terminated;
+- every concurrent close caller observes the same coordinator-join result.
+
+The coordinator-exit test must keep the coordinator deterministically paused
+after close results become available but before thread exit, and must show that
+no caller returns during that interval.
+
+### Last-handle drainage and resource termination
+
+Prove that dropping the final handle:
+
+- drains an already accepted complete operation;
+- allows an accepted post-input-complete streaming save to commit;
+- aborts a pre-input-complete streaming save without replacing the canonical
+  blob;
+- eventually terminates the coordinator and every lazily started worker;
+- leaves no active-key or registry bookkeeping behind.
+
+Resource-termination assertions must observe the engine's owned resources
+directly through private test instrumentation or deterministic exit
+notifications. Completion of the final filesystem operation alone is
+insufficient evidence.
+
+### Caller-runtime independence
+
+Use independently constructed current-thread Tokio runtimes to prove that:
+
+- a store opened under one runtime remains usable and closable under another;
+- a complete operation accepted under one runtime completes after that runtime
+  is destroyed;
+- streaming input accepted through input-complete commits after its task and
+  runtime are destroyed;
+- destroying a task/runtime before input-complete aborts staging and preserves
+  the previous canonical blob;
+- a new runtime can observe the resulting state;
+- the blocking facade operates and closes in a process that never constructs a
+  Tokio runtime.
+
+Also verify the blocking-only build and dependency graph:
+
+```bash
+cargo test --manifest-path session-store-file/Cargo.toml \
+  -p atomic-blob-store --no-default-features
+
+cargo tree --manifest-path session-store-file/Cargo.toml \
+  -p atomic-blob-store --no-default-features
 ```
 
-Exact filenames may differ, but responsibilities must be clear:
+## 2. Complete Cross-Facade and Streaming Conformance
 
-- `config` validates and owns immutable format and execution configuration.
-- `error` contains executor-neutral public error and operation types.
-- `format` owns headers, checksums, bounded decoding, and format metadata.
-- `path` owns namespace/suffix validation, key hashing, and canonical paths.
-- `filesystem` contains synchronous platform operations only.
-- `engine` owns lifecycle, scheduling, admission, barriers, cancellation
-  states, workers, and runtime-neutral transport.
-- `blocking` and `tokio` contain only facade-specific endpoint pumping and
-  result waiting.
+Build a reusable scripted conformance suite that executes equivalent scenarios
+through the blocking and Tokio facades. The suite must compare observable
+results, not merely confirm that each facade succeeds independently.
 
-Do not expose engine commands, test hooks, or platform backends publicly. Keep
-Tokio types and calls confined to `tokio.rs` and Tokio-specific tests. Preserve
-the non-Unix/non-Windows compile path while moving platform code.
-
-Run focused format, scheduler, lifecycle, facade, and platform tests after each
-logical extraction. Immutable format fixtures must never be regenerated by the
-implementation under test.
-
-## 2. Add Deterministic Engine-Failure Coverage
-
-Introduce minimal test-only hooks or injectable internal boundaries that can
-exercise infrastructure failures without sleeps or production-only behavior
-changes.
-
-Add tests proving:
-
-- a filesystem job panic is caught at the job boundary;
-- the panicked operation completes with the documented engine/worker error;
-- its key is released and later same-key work cannot be stranded;
-- the worker facility remains usable after an ordinary caught job panic;
-- worker startup or dispatch failure releases admission and completes the
-  waiter;
-- coordinator channel loss transitions the shared lifecycle consistently and
-  rejects new work deterministically;
-- a worker join panic makes `close` return `ShutdownFailure`, and concurrent
-  close callers observe the same outcome;
-- maintenance-job panic or dispatch failure clears the maintenance-active state
-  and cannot strand later work;
-- infrastructure failure cannot leave registry entries, active keys,
-  coordinator threads, or worker threads behind.
-
-Keep error categories distinct. Do not collapse `StoreClosed`, `EngineFailed`,
-`WorkerUnavailable`, `ShutdownFailure`, filesystem errors, corruption, and
-stream endpoint errors into a generic coordination error.
-
-## 3. Complete Lifecycle and Runtime-Independence Tests
-
-Use barriers, channels, and deterministic test hooks rather than timing-only
-assertions.
-
-Add lifecycle tests for:
-
-- `flush` waiting for all earlier operations while excluding later
-  submissions;
-- dropping a `flush` waiter without removing or reordering the barrier;
-- multiple interleaved flush barriers;
-- `close` draining earlier complete operations and rejecting all later
-  operations across clones;
-- `close` waiting for a streaming save whose input-complete marker has already
-  been accepted;
-- `close` waiting behind a pre-input-complete stalled stream until cancellation;
-- operations after successful or failed close returning the documented
-  lifecycle error;
-- explicit close from blocking and Tokio callers without deadlock;
-- last-handle drainage terminating coordinator and worker threads, not merely
-  completing the final filesystem operation.
-
-Add runtime-independence tests for:
-
-- opening under one Tokio runtime and using the store under another;
-- submitting a complete operation, destroying its caller runtime, and observing
-  completion from a new runtime or the filesystem;
-- completing streaming input, destroying the task/runtime, and observing the
-  committed blob;
-- destroying the task/runtime before input completion and observing staging
-  abort with the previous canonical blob preserved;
-- using and closing the blocking facade in a process that never constructs a
-  Tokio runtime;
-- building and testing the crate without the Tokio feature or any Tokio
-  dependency in the resolved graph.
-
-## 4. Complete Cross-Facade and Streaming Coverage
-
-Build a reusable scripted conformance suite that runs equivalent sequences
-through the blocking and Tokio facades. Compare:
+For scenarios supported by both I/O models, compare:
 
 - result values and public error categories;
 - final canonical bytes and diagnostic paths;
-- same-key FIFO and different-key admission;
+- same-key FIFO behavior and different-key admission;
 - maintenance, `flush`, and `close` ordering;
-- early EOF, trailing input, reader failure, and destination failure;
+- early EOF, trailing input, source failure, and destination failure;
 - validation-before-output and exact `BlobMetadata`;
-- cancellation/source-drop behavior at equivalent stream states.
+- cancellation or source-drop behavior at equivalent stream states;
+- destination ownership, including the absence of facade-initiated flush or
+  shutdown.
 
-Do not expose a mixed blocking/Tokio handle API merely for testing.
+Do not expose a mixed blocking/Tokio public handle API for testing. Keep the
+script and adapters test-only.
 
-Complete the streaming boundary matrix in both facades:
+Run the streaming boundary matrix through both facades:
 
-- empty, one-byte, one-chunk, multi-chunk, maximum-sized, and over-limit blobs;
-- early EOF before data, within a chunk, and at chunk boundaries;
+- empty, one-byte, one-chunk, one-chunk-plus-one, multi-chunk, maximum-sized,
+  and over-limit blobs;
+- early EOF before data, within a chunk, and exactly at chunk boundaries;
 - trailing input after the declared length;
 - source errors before and after at least one chunk;
 - destination errors before and after at least one chunk;
-- cancellation or source drop before the first chunk and under backpressure;
+- cancellation or source drop before the first chunk and while transport
+  backpressure is active;
 - cancellation during the final EOF probe;
-- cancellation immediately before and after input-complete acceptance;
-- worker failure while a source read or EOF probe is pending;
+- cancellation immediately before and immediately after input-complete
+  acceptance;
+- worker failure while a source read is pending;
+- worker failure while the final EOF probe is pending;
 - invalid envelopes producing no output;
 - destinations not being flushed or shut down;
-- bounded transport memory for payloads much larger than the chunk size.
+- bounded transport memory for payloads substantially larger than the chunk
+  size.
 
-Where a behavior cannot be represented identically by blocking and async I/O,
-document the precise correspondence used by the conformance test.
+Blocking I/O cannot represent task cancellation identically to async I/O.
+Where exact equivalence is impossible, define the corresponding blocking event
+precisely—for example, source drop, endpoint disconnection, or an injected
+reader/writer failure—and document that mapping in the test.
 
-## 5. Extend and Run the Performance Harness
+Keep immutable V1 fixtures independent of the encoder under test. The
+conformance work must not regenerate or rewrite them.
 
-Extend the maintained persistence benchmark rather than creating an
-unreviewed, one-off harness. Emit machine-readable results using the existing
-schema and record the commands, commit identifiers, build profile, platform,
-filesystem, payload sizes, sample counts, and worker configuration.
+## 3. Complete the Performance Harness and Paired Measurements
 
-Measure paired baseline and final results for:
+Extend the maintained persistence benchmark rather than adding a one-off
+harness. Preserve the existing machine-readable schema and command structure.
 
-- store open and deterministic close latency;
-- idle coordinator and worker thread count per store;
-- peak thread count below, at, and above configured concurrency;
-- one, two, and many simultaneously open stores;
-- resident memory for idle and active stores;
-- complete save and load latency across representative payload sizes;
-- streaming save and load latency across the same payload sizes;
-- allocation count and peak RSS for multi-chunk streaming;
-- same-key serialized throughput;
-- different-key scaling below, at, and above the configured bound;
-- maintenance, `flush`, and `close` barrier latency;
-- cold lazy-worker startup;
-- slow-source and slow-destination backpressure;
-- rumqtt v4/v5 end-to-end save/load latency and checkpoint growth.
+### Missing scenarios
 
-Use a sound platform-specific method for thread, RSS, and allocation
-measurements and document its limitations. Do not infer allocation behavior
-only from source inspection.
+Add measurements for:
 
-Explain noise and any material regression. Lifecycle ownership may justify a
-neutral raw-latency result, but an unexplained material regression fails the
-gate. Update:
+- maintenance-barrier latency, including an ordered barrier behind active work;
+- slow-source streaming backpressure;
+- slow-destination streaming backpressure;
+- MQTT v4 and v5 recovery/load latency through the production adapter path.
+
+Slow endpoints must use deterministic coordination rather than arbitrary
+sleeps. Record separately:
+
+- time until transport backpressure is established;
+- operation completion latency after the endpoint is released;
+- configured chunk size and channel capacity;
+- payload size and worker bound.
+
+The maintenance scenario must record barrier latency both when idle and when
+queued behind accepted keyed work. It must verify the expected ordering while
+measuring it.
+
+The MQTT recovery scenario must measure loading and applying an existing
+checkpoint separately from save/barrier latency and checkpoint growth. Keep
+protocol version, checkpoint shape, payload size, inflight count, and
+filesystem configuration explicit in the output.
+
+### Paired execution
+
+Run paired baseline and final measurements for the new scenarios using:
+
+- the same maintained harness revision;
+- release builds with the same profile;
+- identical platform, filesystem, payload, worker, and sample configuration;
+- alternating baseline/final execution where practical to limit host drift;
+- enough samples to report p50, p95, and p99 without presenting short-loopback
+  noise as a performance claim.
+
+Every retained result must include:
+
+- command and run identifier;
+- baseline and final commit identifiers;
+- build profile and Rust toolchain;
+- operating system, architecture, filesystem, and relevant mount details;
+- payload and chunk sizes;
+- sample count and worker configuration;
+- raw samples in the existing JSON schema.
+
+Explain noise and any material regression. An unexplained material regression
+fails the gate.
+
+Update:
 
 - `session-store-file/benchmarks/README.md`;
 - `session-store-file/benchmarks/PERSISTENCE.md`;
 - `session-store-file/benchmarks/PERSISTENCE-RESULTS.md`.
-
-## 6. Obtain Supported-Platform Evidence
-
-Run the full native suite on both Unix and Windows implementations. CI
-configuration alone is not evidence of a passing platform run.
-
-Windows evidence must include:
-
-- native create and replace;
-- clear staging and old-or-absent interruption behavior;
-- quarantine, including rename-success/sync-failure ambiguity;
-- owned temporary-file cleanup and age handling;
-- relative and extended paths, including non-Unicode wide units;
-- lifecycle drainage, worker panic recovery, and deterministic close;
-- blocking and Tokio streaming through the native backend.
-
-Unix evidence must include:
-
-- atomic replacement and interruption behavior;
-- directory synchronization and clear semantics;
-- quarantine ambiguity;
-- dependency-owned temporary-file behavior;
-- lifecycle drainage, worker panic recovery, and deterministic close;
-- blocking and Tokio streaming through the native backend.
-
-Record the operating system, filesystem, toolchain, commands, and results in
-the benchmark/validation documentation. Do not describe Unix results as Windows
-evidence or simulated fault injection as native platform evidence.
-
-## 7. Final Documentation and Source Audits
-
-After the module extraction and tests are complete, audit public rustdoc,
-README, examples, diagnostics, thread names, feature names, package metadata,
-and changelogs.
-
-Documentation must continue to state:
-
-- the abstraction, trust model, and non-goals;
-- executor-neutral ownership of blocking execution resources;
-- the shared semantics of the blocking and Tokio facades;
-- submission timing for complete and streaming operations;
-- streaming cancellation cutover and validation-before-output;
-- same-key FIFO, different-key bounds, and unbounded queued complete-payload
-  memory;
-- `flush`, `close`, stalled-stream, last-handle, and process-termination
-  behavior;
-- independent-store and cross-process limitations;
-- thread/runtime cost and feature selection;
-- power-loss limitations and atomic-commit ambiguity;
-- V1 format and semver compatibility policy.
-
-Update the independent core and adapter changelogs for any public API,
-dependency, lifecycle, or migration changes made by this work.
-
-Run these audits:
-
-```bash
-cargo tree --manifest-path session-store-file/Cargo.toml \
-  -p atomic-blob-store --no-default-features
-
-rg -n 'tokio|spawn_blocking|Handle|Runtime' \
-  session-store-file/atomic-blob-store/src
-
-rg -n -i 'rumqtt|mqtt|session|checkpoint|legacy' \
-  session-store-file/atomic-blob-store
-```
-
-The blocking-only dependency graph must not contain Tokio. Tokio source matches
-must be confined to the feature-gated facade and its tests. Protocol and legacy
-terminology must not appear in the generic crate.
-
-## 8. Release and Product Gates
-
-Before publishing:
-
-1. Verify that the configured crates.io package name is available and suitable.
-   If it is not, rename package metadata, dependency declarations,
-   documentation, and examples consistently before reserving a name.
-2. Confirm that maintainers accept the independent crate's compatibility,
-   security-response, documentation, CI, and release-cadence cost.
-3. Publish an alpha/pre-release only after all engineering, benchmark, audit,
-   and native-platform gates pass.
-4. Exercise the prerelease in at least one non-MQTT application and solicit
-   external API/format feedback before declaring the API and format stable.
-5. Resolve actionable feedback and rerun all affected gates.
-
-The generic crate must retain an independent version and changelog. The MQTT
-adapter must depend on an intentional compatible version range and re-export
-only types that are part of its own contract.
 
 ## Validation Commands
 
@@ -378,36 +297,46 @@ cargo doc --manifest-path session-store-file/Cargo.toml \
   --workspace --all-features --no-deps
 ```
 
-Also run:
+Run the new benchmark scenarios in addition to the existing paired matrix.
+Run relevant main-workspace client tests if adapter behavior or public rumqtt
+APIs change.
 
-- the benchmark scenarios defined in Section 5;
-- native Unix and Windows validation from Section 6;
-- all dependency and source audits from Section 7;
-- relevant main-workspace client tests if adapter dependencies or rumqtt public
-  APIs change.
+Repeat the source audits:
+
+```bash
+rg -n 'tokio|spawn_blocking|Handle|Runtime' \
+  session-store-file/atomic-blob-store/src
+
+rg -n -i 'rumqtt|mqtt|session|checkpoint|legacy' \
+  session-store-file/atomic-blob-store
+```
+
+Tokio source matches must remain confined to the feature-gated facade and its
+tests. Protocol-specific terminology must not enter the generic crate.
 
 ## Acceptance Criteria
 
-The work is complete only when:
+The requirements are satisfied when:
 
-- internal module boundaries separate configuration, errors, format, paths,
-  platform filesystem code, engine scheduling/lifecycle, and facade pumping;
-- engine and platform modules have no Tokio dependency;
-- the blocking-only graph contains no Tokio;
-- deterministic tests cover worker panic, infrastructure failure, lifecycle
-  failure, and resource termination;
-- `flush`, `close`, last-handle drainage, and caller-runtime loss satisfy the
-  contracts above;
-- blocking and Tokio facades pass the shared conformance and streaming boundary
-  suites;
-- all V1 fixtures, canonical paths, MQTT adapter bytes, and public error
-  categories remain stable;
-- unsupported targets compile and fail at open with `UnsupportedPlatform`;
-- the complete paired benchmark matrix is recorded with no unexplained material
-  regression;
-- native Unix and Windows runs provide platform-specific evidence;
-- formatting, feature builds, tests, Clippy, docs, dependency audits, and
-  terminology audits pass;
-- package-name availability and independent-maintenance ownership are confirmed;
-- a prerelease has been exercised outside MQTT and actionable feedback is
-  resolved before stabilization.
+- deterministic tests directly prove dropped and interleaved `flush` barrier
+  behavior;
+- deterministic tests directly prove ordered, shared close completion and
+  termination of all store-owned threads;
+- last-handle drainage is verified for complete and streaming operations,
+  including direct resource-termination evidence;
+- accepted complete and streaming work survives caller-runtime loss at the
+  documented cancellation cutover;
+- one reusable conformance suite runs the required result, error, ordering,
+  cancellation, ownership, and streaming-boundary scenarios through both
+  facades;
+- streaming transport remains demonstrably bounded for payloads much larger
+  than its chunk size;
+- V1 fixtures, canonical paths, adapter bytes, and public error categories
+  remain stable;
+- the maintained harness measures maintenance latency, deterministic
+  slow-endpoint backpressure, and MQTT v4/v5 recovery/load latency;
+- paired results for the new scenarios are retained with complete methodology
+  and no unexplained material regression;
+- blocking-only builds contain no Tokio dependency;
+- formatting, feature builds, workspace tests, Clippy, docs, dependency
+  audits, and terminology audits pass.
