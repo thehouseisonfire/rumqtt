@@ -24,6 +24,8 @@
 
 ### Changed
 
+- Make every concurrent blob-store `close` caller wait for coordinator
+  termination and observe the shared join outcome.
 - Remove the obsolete "active Tokio runtime required" adapter error.
 - Preserve the existing `RUMQSESS` envelope and `.session` paths through the
   generic store's explicit format identity.

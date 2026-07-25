@@ -217,6 +217,11 @@ pub(crate) fn run_scheduler(
                     | CoordinatorEvent::MaintenanceCompletion(_) => {}
                 }
             }
+            #[cfg(all(test, unix))]
+            if let Some(hook) = &config.hook {
+                hook(TestStage::CoordinatorStopping)
+                    .expect("test-requested coordinator stopping failure");
+            }
             return;
         }
     }

@@ -106,10 +106,59 @@ pub(crate) struct Inner {
     pub(crate) submissions: Sender<CoordinatorEvent>,
     pub(crate) lifecycle: Arc<Mutex<Lifecycle>>,
     #[cfg(any(unix, windows))]
-    pub(crate) coordinator: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    pub(crate) coordinator: Arc<Mutex<CoordinatorJoin>>,
     #[cfg(all(test, unix))]
     #[allow(dead_code)]
     pub(crate) registry_entries: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) struct CoordinatorJoin {
+    handle: Option<std::thread::JoinHandle<()>>,
+    outcome: Option<CoordinatorJoinOutcome>,
+}
+
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy)]
+enum CoordinatorJoinOutcome {
+    Joined,
+    Panicked,
+}
+
+#[cfg(any(unix, windows))]
+impl CoordinatorJoin {
+    fn new(handle: std::thread::JoinHandle<()>) -> Self {
+        Self {
+            handle: Some(handle),
+            outcome: None,
+        }
+    }
+
+    fn finish(
+        &mut self,
+        result: Result<(), AtomicBlobStoreError>,
+    ) -> Result<(), AtomicBlobStoreError> {
+        let outcome = match self.outcome {
+            Some(outcome) => outcome,
+            None => {
+                let handle = self
+                    .handle
+                    .take()
+                    .expect("an unfinished coordinator has a join handle");
+                let outcome = if handle.join().is_ok() {
+                    CoordinatorJoinOutcome::Joined
+                } else {
+                    CoordinatorJoinOutcome::Panicked
+                };
+                self.outcome = Some(outcome);
+                outcome
+            }
+        };
+        match outcome {
+            CoordinatorJoinOutcome::Joined => result,
+            CoordinatorJoinOutcome::Panicked => Err(AtomicBlobStoreError::ShutdownFailure),
+        }
+    }
 }
 
 pub(crate) struct StoreConfig {
@@ -237,7 +286,7 @@ impl EngineHandle {
                 config,
                 submissions,
                 lifecycle,
-                coordinator: Arc::new(Mutex::new(Some(coordinator))),
+                coordinator: Arc::new(Mutex::new(CoordinatorJoin::new(coordinator))),
                 #[cfg(all(test, unix))]
                 registry_entries,
             }),
@@ -578,15 +627,10 @@ impl EngineHandle {
             });
             let coordinator = Arc::clone(&self.inner.coordinator);
             pending.with_after(move |result| {
-                let handle = coordinator
+                coordinator
                     .lock()
                     .expect("coordinator handle lock poisoned")
-                    .take();
-                if handle.is_some_and(|handle| handle.join().is_err()) {
-                    Err(AtomicBlobStoreError::ShutdownFailure)
-                } else {
-                    result
-                }
+                    .finish(result)
             })
         }
     }
@@ -595,15 +639,10 @@ impl EngineHandle {
     fn closed_pending(&self, result: Result<(), AtomicBlobStoreError>) -> Pending<()> {
         let coordinator = Arc::clone(&self.inner.coordinator);
         Pending::resolved(result).with_after(move |result| {
-            let handle = coordinator
+            coordinator
                 .lock()
                 .expect("coordinator handle lock poisoned")
-                .take();
-            if handle.is_some_and(|handle| handle.join().is_err()) {
-                Err(AtomicBlobStoreError::ShutdownFailure)
-            } else {
-                result
-            }
+                .finish(result)
         })
     }
 
@@ -681,6 +720,7 @@ pub(crate) fn submit_operation(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TestStage {
     CoordinatorEvent,
+    CoordinatorStopping,
     WorkerStart,
     WorkerDispatch,
     WorkerExit,

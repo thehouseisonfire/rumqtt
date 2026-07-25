@@ -161,6 +161,61 @@ async fn worker_join_panic_is_shared_by_close_callers() {
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn every_concurrent_close_waits_for_the_coordinator_to_stop() {
+    let root = tempfile::tempdir().unwrap();
+    let stopping = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let hook = {
+        let stopping = Arc::clone(&stopping);
+        let release = Arc::clone(&release);
+        Arc::new(move |stage| {
+            if stage == TestStage::CoordinatorStopping {
+                stopping.wait();
+                release.wait();
+            }
+            Ok(())
+        })
+    };
+    let store =
+        EngineHandle::open_with_test_hook(root.path(), "concurrent-join", options(), hook).unwrap();
+    let first = store.close();
+    let second = store.close();
+    let start = Arc::new(std::sync::Barrier::new(3));
+    let (finished, completion) = std::sync::mpsc::channel();
+
+    let first_start = Arc::clone(&start);
+    let first_finished = finished.clone();
+    let first = std::thread::spawn(move || {
+        first_start.wait();
+        first_finished.send(first.wait()).unwrap();
+    });
+    let second_start = Arc::clone(&start);
+    let second = std::thread::spawn(move || {
+        second_start.wait();
+        finished.send(second.wait()).unwrap();
+    });
+
+    start.wait();
+    stopping.wait();
+    let early_result = completion.recv_timeout(Duration::from_millis(250)).ok();
+    release.wait();
+
+    first.join().unwrap();
+    second.join().unwrap();
+    if let Some(result) = early_result.as_ref() {
+        result.as_ref().unwrap();
+    } else {
+        completion.recv().unwrap().unwrap();
+    }
+    completion.recv().unwrap().unwrap();
+    assert!(
+        early_result.is_none(),
+        "a close caller returned before the coordinator exited"
+    );
+}
+
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_round_trip_is_compatible_with_complete_blob_methods() {
