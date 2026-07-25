@@ -15,7 +15,6 @@ pub use shared::KeyEncodeError;
 pub enum CheckpointState {
     Absent,
     Present,
-    LegacyDetected,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

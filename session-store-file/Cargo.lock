@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "atomic-blob-store"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "atomic-write-file",
  "blake3",
@@ -853,7 +853,6 @@ version = "0.34.0-alpha"
 dependencies = [
  "atomic-blob-store",
  "crc32c",
- "flume",
  "pretty_env_logger",
  "rumqttc-v4-next",
  "rumqttc-v5-next",

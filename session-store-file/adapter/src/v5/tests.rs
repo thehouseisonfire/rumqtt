@@ -32,10 +32,6 @@ fn golden_key_bytes_filename_and_namespace_are_stable() {
         "0d9d0d150464f826fe9632a8ecd5520e381e3b04490afb307e47da3da7f6c198.session"
     );
     assert_eq!(SessionFileStore::namespace_name(), Path::new("v5"));
-    assert_eq!(
-        legacy_example_filename(&key),
-        "73636f7065.636c69656e74.session"
-    );
     assert_ne!(
         encode_session_store_key(&SessionStoreKey::new("ab", "c")).unwrap(),
         encode_session_store_key(&SessionStoreKey::new("a", "bc")).unwrap()
@@ -44,36 +40,23 @@ fn golden_key_bytes_filename_and_namespace_are_stable() {
 
 #[cfg(any(unix, windows))]
 #[tokio::test]
-async fn existing_checkpoint_round_trip_and_legacy_detection_work() {
+async fn existing_checkpoint_round_trip_works() {
     let root = tempfile::tempdir().unwrap();
     let store = SessionFileStore::open(root.path()).await.unwrap();
     let key = SessionStoreKey::new("scope", "client");
     store.save(&key, &session(7)).await.unwrap();
     assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
-    assert_eq!(store.inner.legacy_inspection_count(), 0);
-    let legacy = root.path().join(legacy_example_filename(&key));
-    std::fs::create_dir(&legacy).unwrap();
     assert_eq!(
         store.inspect(&key).await.unwrap().state,
         CheckpointState::Present
     );
     assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
-    assert_eq!(store.inner.legacy_inspection_count(), 0);
-    std::fs::remove_dir(&legacy).unwrap();
     store.clear(&key).await.unwrap();
-
-    std::fs::write(&legacy, b"legacy").unwrap();
     assert_eq!(
         store.inspect(&key).await.unwrap().state,
-        CheckpointState::LegacyDetected
+        CheckpointState::Absent
     );
-    assert_eq!(store.inner.legacy_inspection_count(), 1);
-    let error = store.load(&key).await.unwrap_err();
-    assert_eq!(store.inner.legacy_inspection_count(), 2);
-    assert!(matches!(
-        error.downcast_ref::<SessionFileStoreError>(),
-        Some(SessionFileStoreError::LegacyCheckpointDetected { diagnostic_path }) if diagnostic_path == &legacy
-    ));
+    assert!(store.load(&key).await.unwrap().is_none());
 }
 
 #[cfg(any(unix, windows))]

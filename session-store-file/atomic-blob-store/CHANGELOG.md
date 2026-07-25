@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-25
+
 - Replace the private Tokio runtime with one executor-neutral coordinator and a
   lazily started, bounded, store-owned worker pool.
 - Add `BlockingAtomicBlobStore`, move the async facade to the explicit optional

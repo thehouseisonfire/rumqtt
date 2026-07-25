@@ -1,10 +1,10 @@
 //! Persistent MQTT 3.1.1 session using the supported file-store adapter.
 
-use rumqttc_session_store_file::v4::{CheckpointState, SessionFileStore, legacy_example_filename};
+use rumqttc_session_store_file::v4::{CheckpointState, SessionFileStore};
 use rumqttc_v4::{AsyncClient, MqttOptions, PublishOptions, QoS, SessionStoreKey};
 use std::error::Error;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const CLIENT_ID: &str = "rumqtt-persistent-session-v4";
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     std::fs::create_dir_all(&root)?;
     let store = SessionFileStore::open(&root).await?;
-    if recover_if_requested(&store, &root).await? == RecoveryOutcome::Stop {
+    if recover_if_requested(&store).await? == RecoveryOutcome::Stop {
         return Ok(());
     }
     println!("Using persistent session store root {}", root.display());
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(event) => println!("{event:?}"),
             Err(error) => {
                 eprintln!(
-                    "session/event-loop failure (absence is normal; corruption and legacy files fail closed): {error}"
+                    "session/event-loop failure (absence is normal; corrupt checkpoints fail closed): {error}"
                 );
                 return Err(error.into());
             }
@@ -55,10 +55,7 @@ enum RecoveryOutcome {
     Stop,
 }
 
-async fn recover_if_requested(
-    store: &SessionFileStore,
-    root: &Path,
-) -> Result<RecoveryOutcome, Box<dyn Error>> {
+async fn recover_if_requested(store: &SessionFileStore) -> Result<RecoveryOutcome, Box<dyn Error>> {
     let Ok(action) = std::env::var("RUMQTTC_SESSION_RECOVERY") else {
         return Ok(RecoveryOutcome::Continue);
     };
@@ -69,14 +66,6 @@ async fn recover_if_requested(
     }
     let key = SessionStoreKey::new(SCOPE, CLIENT_ID);
     match store.inspect(&key).await?.state {
-        CheckpointState::LegacyDetected => {
-            let path = root.join(legacy_example_filename(&key));
-            return Err(io::Error::other(format!(
-                "legacy checkpoint detected at {}; move or remove it explicitly, then realign broker state as documented",
-                path.display()
-            ))
-            .into());
-        }
         CheckpointState::Absent => {
             println!("No canonical checkpoint exists; no local recovery action was taken");
             print_realign_instructions();

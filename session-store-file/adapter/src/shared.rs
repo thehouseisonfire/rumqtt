@@ -5,11 +5,9 @@
 
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Cursor};
+use std::io::Cursor;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{CheckpointInspection, CheckpointState, FileStoreOptions};
@@ -52,19 +50,6 @@ pub enum AdapterError<P: Protocol> {
     SessionEncode(P::EncodeError),
     SessionDecode(P::DecodeError),
     KeyEncode(KeyEncodeError),
-    LegacyCheckpointDetected {
-        diagnostic_path: PathBuf,
-    },
-    LegacyInspection {
-        diagnostic_path: PathBuf,
-        source: io::Error,
-    },
-    LegacyInspectionCoordination {
-        source: io::Error,
-    },
-    LegacyPathIsNotFile {
-        diagnostic_path: PathBuf,
-    },
 }
 
 impl<P: Protocol> fmt::Debug for AdapterError<P> {
@@ -78,26 +63,6 @@ impl<P: Protocol> fmt::Debug for AdapterError<P> {
                 formatter.debug_tuple("SessionDecode").field(error).finish()
             }
             Self::KeyEncode(error) => formatter.debug_tuple("KeyEncode").field(error).finish(),
-            Self::LegacyCheckpointDetected { diagnostic_path } => formatter
-                .debug_struct("LegacyCheckpointDetected")
-                .field("diagnostic_path", diagnostic_path)
-                .finish(),
-            Self::LegacyInspection {
-                diagnostic_path,
-                source,
-            } => formatter
-                .debug_struct("LegacyInspection")
-                .field("diagnostic_path", diagnostic_path)
-                .field("source", source)
-                .finish(),
-            Self::LegacyInspectionCoordination { source } => formatter
-                .debug_struct("LegacyInspectionCoordination")
-                .field("source", source)
-                .finish(),
-            Self::LegacyPathIsNotFile { diagnostic_path } => formatter
-                .debug_struct("LegacyPathIsNotFile")
-                .field("diagnostic_path", diagnostic_path)
-                .finish(),
         }
     }
 }
@@ -116,20 +81,14 @@ impl<P: Protocol> From<KeyEncodeError> for AdapterError<P> {
 
 pub struct Adapter<P: Protocol> {
     core: AtomicBlobStore,
-    root: PathBuf,
     protocol: PhantomData<fn() -> P>,
-    #[cfg(test)]
-    legacy_inspections: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<P: Protocol> Clone for Adapter<P> {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
-            root: self.root.clone(),
             protocol: PhantomData,
-            #[cfg(test)]
-            legacy_inspections: Arc::clone(&self.legacy_inspections),
         }
     }
 }
@@ -166,10 +125,7 @@ impl<P: Protocol> Adapter<P> {
             .with_max_concurrent_operations(options.max_concurrent_operations);
         Ok(Self {
             core: AtomicBlobStore::open(&root, P::NAMESPACE, core_options).await?,
-            root,
             protocol: PhantomData,
-            #[cfg(test)]
-            legacy_inspections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -190,19 +146,14 @@ impl<P: Protocol> Adapter<P> {
             .core
             .inspect(&encode_key::<P>(scope, client_id)?)
             .await?;
-        if canonical.state == BlobState::Present {
-            return Ok(CheckpointInspection {
-                state: CheckpointState::Present,
-                size: canonical.size,
-                modified: canonical.modified,
-            });
-        }
-        let legacy = self.inspect_legacy(scope, client_id).await?;
-        Ok(legacy.unwrap_or(CheckpointInspection {
-            state: CheckpointState::Absent,
-            size: None,
-            modified: None,
-        }))
+        Ok(CheckpointInspection {
+            state: match canonical.state {
+                BlobState::Absent => CheckpointState::Absent,
+                BlobState::Present => CheckpointState::Present,
+            },
+            size: canonical.size,
+            modified: canonical.modified,
+        })
     }
 
     pub(crate) async fn quarantine(
@@ -235,11 +186,7 @@ impl<P: Protocol> Adapter<P> {
         let encoded_key = encode_key::<P>(scope, client_id)?;
         let mut payload = Vec::new();
         let Some(metadata) = self.core.load_into(&encoded_key, &mut payload).await? else {
-            if self.inspect_legacy(scope, client_id).await?.is_none() {
-                return Ok(None);
-            }
-            let diagnostic_path = self.root.join(legacy_filename(scope, client_id));
-            return Err(AdapterError::LegacyCheckpointDetected { diagnostic_path });
+            return Ok(None);
         };
         debug_assert_eq!(metadata.payload_len, payload.len() as u64);
         P::decode(&payload)
@@ -265,83 +212,6 @@ impl<P: Protocol> Adapter<P> {
             .await?;
         Ok(())
     }
-
-    async fn inspect_legacy(
-        &self,
-        scope: &str,
-        client_id: &str,
-    ) -> Result<Option<CheckpointInspection>, AdapterError<P>> {
-        #[cfg(test)]
-        self.legacy_inspections
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let diagnostic_path = self.root.join(legacy_filename(scope, client_id));
-        let (sender, receiver) = flume::bounded(1);
-        std::thread::Builder::new()
-            .name("rumqtt-legacy-checkpoint-inspection".into())
-            .spawn(move || {
-                let _ = sender.send(inspect_legacy_path(diagnostic_path));
-            })
-            .map_err(|source| AdapterError::LegacyInspectionCoordination { source })?;
-        receiver
-            .recv_async()
-            .await
-            .map_err(|_| AdapterError::LegacyInspectionCoordination {
-                source: io::Error::other("legacy checkpoint inspection worker stopped"),
-            })?
-            .map_err(|error| match error {
-                LegacyInspectionError::Io {
-                    diagnostic_path,
-                    source,
-                } => AdapterError::LegacyInspection {
-                    diagnostic_path,
-                    source,
-                },
-                LegacyInspectionError::PathIsNotFile { diagnostic_path } => {
-                    AdapterError::LegacyPathIsNotFile { diagnostic_path }
-                }
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn legacy_inspection_count(&self) -> usize {
-        self.legacy_inspections
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-fn inspect_legacy_path(
-    diagnostic_path: PathBuf,
-) -> Result<Option<CheckpointInspection>, LegacyInspectionError> {
-    match std::fs::symlink_metadata(&diagnostic_path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(Some(CheckpointInspection {
-            state: CheckpointState::LegacyDetected,
-            size: Some(metadata.len()),
-            modified: metadata.modified().ok(),
-        })),
-        Ok(_) => Err(LegacyInspectionError::PathIsNotFile { diagnostic_path }),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(source) => Err(LegacyInspectionError::Io {
-            diagnostic_path,
-            source,
-        }),
-    }
-}
-
-enum LegacyInspectionError {
-    Io {
-        diagnostic_path: PathBuf,
-        source: io::Error,
-    },
-    PathIsNotFile {
-        diagnostic_path: PathBuf,
-    },
 }
 
 pub fn encode_key<P: Protocol>(scope: &str, client_id: &str) -> Result<Vec<u8>, KeyEncodeError> {
@@ -374,23 +244,6 @@ pub fn filename<P: Protocol>(scope: &str, client_id: &str) -> Result<String, Key
     )
     .expect("the adapter format identity is valid");
     Ok(blob_filename(&format, &encode_key::<P>(scope, client_id)?))
-}
-
-pub fn legacy_filename(scope: &str, client_id: &str) -> String {
-    format!(
-        "{}.{}.session",
-        hex(scope.as_bytes()),
-        hex(client_id.as_bytes())
-    )
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    output
 }
 
 pub fn namespace<P: Protocol>() -> &'static Path {

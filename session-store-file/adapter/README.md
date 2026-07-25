@@ -30,6 +30,4 @@ values interchangeable.
 
 The adapter requires an existing, trusted local-filesystem root. It provides
 process-local same-key coordination but no cross-process locking, encryption,
-authentication, tamper resistance, or universal power-loss guarantee. Exact
-filenames from the repository's former examples are detected but never scanned
-for, decoded, or migrated.
+authentication, tamper resistance, or universal power-loss guarantee.

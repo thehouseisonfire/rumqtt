@@ -52,23 +52,6 @@ pub enum SessionFileStoreError {
     SessionDecode(#[from] SessionDecodeError),
     #[error("session-store key encoding failed: {0}")]
     KeyEncode(#[from] KeyEncodeError),
-    #[error(
-        "legacy checkpoint detected at {diagnostic_path:?}; explicit operator recovery is required"
-    )]
-    LegacyCheckpointDetected { diagnostic_path: PathBuf },
-    #[error("failed to inspect legacy checkpoint at {diagnostic_path:?}: {source}")]
-    LegacyInspection {
-        diagnostic_path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("legacy checkpoint inspection coordination failed: {source}")]
-    LegacyInspectionCoordination {
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("legacy checkpoint path is not a regular file: {diagnostic_path:?}")]
-    LegacyPathIsNotFile { diagnostic_path: PathBuf },
 }
 
 impl From<AdapterError<V5>> for SessionFileStoreError {
@@ -78,22 +61,6 @@ impl From<AdapterError<V5>> for SessionFileStoreError {
             AdapterError::SessionEncode(error) => Self::SessionEncode(error),
             AdapterError::SessionDecode(error) => Self::SessionDecode(error),
             AdapterError::KeyEncode(error) => Self::KeyEncode(error),
-            AdapterError::LegacyCheckpointDetected { diagnostic_path } => {
-                Self::LegacyCheckpointDetected { diagnostic_path }
-            }
-            AdapterError::LegacyInspection {
-                diagnostic_path,
-                source,
-            } => Self::LegacyInspection {
-                diagnostic_path,
-                source,
-            },
-            AdapterError::LegacyInspectionCoordination { source } => {
-                Self::LegacyInspectionCoordination { source }
-            }
-            AdapterError::LegacyPathIsNotFile { diagnostic_path } => {
-                Self::LegacyPathIsNotFile { diagnostic_path }
-            }
         }
     }
 }
@@ -210,12 +177,6 @@ pub fn encode_session_store_key(key: &SessionStoreKey) -> Result<Vec<u8>, KeyEnc
 /// Returns an error if the key cannot be represented.
 pub fn session_filename(key: &SessionStoreKey) -> Result<String, KeyEncodeError> {
     shared::filename::<V5>(key.scope(), key.client_id())
-}
-
-/// Returns the one exact filename used by the repository's former example store.
-#[must_use]
-pub fn legacy_example_filename(key: &SessionStoreKey) -> String {
-    shared::legacy_filename(key.scope(), key.client_id())
 }
 
 impl SessionStore for SessionFileStore {

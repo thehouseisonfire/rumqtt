@@ -1,6 +1,6 @@
 [package]
 name = "atomic-blob-store"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 publish = true
 description = "Crash-consistent keyed blob streaming for trusted local filesystems"
 keywords = ["atomic", "filesystem", "persistence", "snapshot"]
