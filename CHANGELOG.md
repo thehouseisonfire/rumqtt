@@ -31,6 +31,9 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc` v4/v5: Preserve existing output-buffer contents when appending a
+  CONNECT packet, so its final flags byte is updated at the correct absolute
+  position.
 - `mqttbytes-core` and `rumqttc` v4/v5: Remove avoidable library panic paths
   from fixed-header/filter helpers, WebSocket subprotocol setup, and TLS backend
   dispatch; invalid TLS backend combinations now return

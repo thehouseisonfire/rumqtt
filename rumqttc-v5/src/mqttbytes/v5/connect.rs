@@ -101,13 +101,13 @@ impl Connect {
         write_mqtt_string(buffer, "MQTT")?;
 
         buffer.put_u8(0x05);
-        let flags_index = 1 + count + 2 + 4 + 1;
 
         let mut connect_flags = 0;
         if self.clean_start {
             connect_flags |= 0x02;
         }
 
+        let flags_index = buffer.len();
         buffer.put_u8(connect_flags);
         buffer.put_u16(self.keep_alive);
 
@@ -764,6 +764,37 @@ mod test {
             .unwrap();
 
         assert_eq!(&bytes[2..8], &[0x00, 0x04, b'M', b'Q', b'T', b'T']);
+    }
+
+    #[test]
+    fn connect_encoding_appends_to_non_empty_buffer() {
+        let connect = Connect {
+            keep_alive: 10,
+            client_id: "cid".to_owned(),
+            clean_start: true,
+            properties: None,
+        };
+        let will = None;
+        let auth = ConnectAuth::UsernamePassword {
+            username: "user".to_owned(),
+            password: Bytes::from_static(b"pass"),
+        };
+
+        let mut expected = BytesMut::new();
+        connect.write(&will, &auth, &mut expected).unwrap();
+
+        let prefix = [0xde, 0xad, 0xbe, 0xef];
+        let mut prefixed = BytesMut::from(&prefix[..]);
+        let packet_start = prefixed.len();
+        connect.write(&will, &auth, &mut prefixed).unwrap();
+
+        assert_eq!(&prefixed[..packet_start], &prefix);
+        assert_eq!(&prefixed[packet_start..], &expected);
+
+        let encoded = prefixed.split_off(packet_start);
+        let fixed_header = parse_fixed_header(encoded.iter()).unwrap();
+        let decoded = Connect::read(fixed_header, encoded.freeze()).unwrap();
+        assert_eq!(decoded, (connect, will, auth));
     }
 
     /// MQTT-3.1.2-2: Protocol Version for v5 MUST be 5 (0x05).
