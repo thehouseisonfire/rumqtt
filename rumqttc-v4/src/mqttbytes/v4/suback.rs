@@ -50,6 +50,13 @@ impl SubAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+        if self.return_codes.is_empty() {
+            return Err(Error::PayloadRequired);
+        }
+
         buffer.put_u8(0x90);
         let remaining_len = self.len();
         let remaining_len_bytes = write_remaining_length(buffer, remaining_len)?;
@@ -136,6 +143,28 @@ mod test {
         let packet = SubAck::read(fixed_header, ack_bytes);
 
         assert!(matches!(packet, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn suback_encoding_rejects_zero_packet_identifier() {
+        let suback = SubAck::new(0, vec![SubscribeReasonCode::Success(QoS::AtMostOnce)]);
+        let mut buf = BytesMut::from(&b"prefix"[..]);
+
+        let result = suback.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+        assert_eq!(&buf[..], b"prefix");
+    }
+
+    #[test]
+    fn suback_encoding_rejects_empty_payload() {
+        let suback = SubAck::new(1, Vec::new());
+        let mut buf = BytesMut::from(&b"prefix"[..]);
+
+        let result = suback.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PayloadRequired)));
+        assert_eq!(&buf[..], b"prefix");
     }
 
     #[test]

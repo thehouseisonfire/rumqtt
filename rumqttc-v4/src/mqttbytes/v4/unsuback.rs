@@ -38,6 +38,10 @@ impl UnsubAck {
     }
 
     pub fn write(&self, payload: &mut BytesMut) -> Result<usize, Error> {
+        if self.pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
         payload.put_slice(&[0xB0, 0x02]);
         payload.put_u16(self.pkid);
         Ok(4)
@@ -59,5 +63,16 @@ mod test {
         let packet = UnsubAck::read(fixed_header, ack_bytes);
 
         assert!(matches!(packet, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn unsuback_encoding_rejects_zero_packet_identifier() {
+        let unsuback = UnsubAck::new(0);
+        let mut buf = BytesMut::from(&b"prefix"[..]);
+
+        let result = unsuback.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::PacketIdZero)));
+        assert_eq!(&buf[..], b"prefix");
     }
 }

@@ -90,6 +90,9 @@ impl Subscribe {
         if self.pkid == 0 {
             return Err(Error::PacketIdZero);
         }
+        if self.filters.is_empty() {
+            return Err(Error::EmptySubscription);
+        }
 
         // write packet type
         buffer.put_u8(0x82);
@@ -325,6 +328,20 @@ mod test {
         let result = subscribe.write(&mut buf);
 
         assert!(matches!(result, Err(Error::PacketIdZero)));
+    }
+
+    #[test]
+    fn subscribe_encoding_rejects_empty_payload() {
+        let subscribe = Subscribe {
+            pkid: 1,
+            filters: Vec::new(),
+        };
+        let mut buf = BytesMut::from(&b"prefix"[..]);
+
+        let result = subscribe.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::EmptySubscription)));
+        assert_eq!(&buf[..], b"prefix");
     }
 
     #[test]

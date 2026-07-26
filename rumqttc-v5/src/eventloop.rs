@@ -3288,6 +3288,35 @@ mod tests {
         tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker)
     }
 
+    async fn run_mqtt_connect_with_raw_connack(
+        mut options: MqttOptions,
+        encoded_connack: &[u8],
+        read_response: bool,
+    ) -> (Result<ConnAck, ConnectionError>, Vec<u8>) {
+        let (client, mut peer) = tokio::io::duplex(1024);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::new_internal(
+            10,
+            AckMode::Automatic,
+            options.topic_alias_policy(),
+            options.topic_alias_max().unwrap_or(0),
+            options.authentication_method(),
+            options.auth_manager(),
+        );
+
+        let broker = async {
+            let _connect = read_packet_bytes(&mut peer).await;
+            peer.write_all(encoded_connack).await.unwrap();
+            if read_response {
+                read_packet_bytes(&mut peer).await
+            } else {
+                Vec::new()
+            }
+        };
+
+        tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker)
+    }
+
     async fn run_mqtt_connect_with_connack_and_return_state(
         mut options: MqttOptions,
         connack: ConnAck,
@@ -3854,13 +3883,9 @@ mod tests {
     #[tokio::test]
     async fn mqtt_connect_rejects_refused_connack_with_session_present() {
         let options = MqttOptions::new("test-client", "localhost");
-        let connack = ConnAck {
-            session_present: true,
-            code: ConnectReturnCode::BadUserNamePassword,
-            properties: None,
-        };
+        let connack = [0x20, 0x03, 0x01, 0x86, 0x00];
 
-        let (result, disconnect) = run_mqtt_connect_with_connack(options, connack).await;
+        let (result, disconnect) = run_mqtt_connect_with_raw_connack(options, &connack, true).await;
 
         assert!(matches!(
             result,
@@ -3909,13 +3934,9 @@ mod tests {
     #[tokio::test]
     async fn refused_connack_with_session_present_preserves_protocol_error_after_peer_close() {
         let options = MqttOptions::new("test-client", "localhost");
-        let connack = ConnAck {
-            session_present: true,
-            code: ConnectReturnCode::BadUserNamePassword,
-            properties: None,
-        };
+        let connack = [0x20, 0x03, 0x01, 0x86, 0x00];
 
-        let result = run_mqtt_connect_with_connack_then_close(options, connack).await;
+        let (result, response) = run_mqtt_connect_with_raw_connack(options, &connack, false).await;
 
         assert!(matches!(
             result,
@@ -3923,6 +3944,7 @@ mod tests {
                 MqttError::ProtocolError
             )))
         ));
+        assert!(response.is_empty());
     }
 
     #[tokio::test]

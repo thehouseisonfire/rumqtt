@@ -38,6 +38,8 @@ pub enum StateError {
     CollisionTimeout,
     #[error("A Subscribe packet must contain atleast one filter")]
     EmptySubscription,
+    #[error("An Unsubscribe packet must contain at least one filter")]
+    EmptyUnsubscription,
     #[error("Mqtt serialization/deserialization error: {0}")]
     Deserialization(#[from] mqttbytes::Error),
     #[error("MQTT protocol violation: {0}")]
@@ -1531,6 +1533,10 @@ impl MqttState {
         mut unsub: Unsubscribe,
         notice: Option<UnsubscribeNoticeTx>,
     ) -> Result<Packet, StateError> {
+        if unsub.topics.is_empty() {
+            return Err(StateError::EmptyUnsubscription);
+        }
+
         if unsub.pkid == 0 {
             unsub.pkid = self.next_control_pkid()?;
         } else {
@@ -1545,6 +1551,10 @@ impl MqttState {
         unsub: Unsubscribe,
         notice: Option<UnsubscribeNoticeTx>,
     ) -> Result<Packet, StateError> {
+        if unsub.topics.is_empty() {
+            return Err(StateError::EmptyUnsubscription);
+        }
+
         self.accept_replayed_outbound_pkid(unsub.pkid)?;
         Ok(self.save_outgoing_unsubscribe(unsub, notice))
     }
@@ -2261,6 +2271,27 @@ mod test {
 
     fn build_mqttstate() -> MqttState {
         MqttState::builder(100).build()
+    }
+
+    #[test]
+    fn outgoing_and_replayed_unsubscribe_reject_empty_filter_lists() {
+        let mut mqtt = build_mqttstate();
+        let empty = Unsubscribe {
+            pkid: 0,
+            topics: Vec::new(),
+        };
+
+        assert!(matches!(
+            mqtt.outgoing_unsubscribe(empty.clone(), None),
+            Err(StateError::EmptyUnsubscription)
+        ));
+
+        let replay = Unsubscribe { pkid: 1, ..empty };
+        assert!(matches!(
+            mqtt.replay_outgoing_unsubscribe(replay, None),
+            Err(StateError::EmptyUnsubscription)
+        ));
+        assert!(mqtt.pending_unsubscribe.is_empty());
     }
 
     fn persistent_options() -> MqttOptions {

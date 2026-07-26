@@ -63,6 +63,10 @@ impl Unsubscribe {
             filters.push(filter);
         }
 
+        if filters.is_empty() {
+            return Err(Error::EmptyUnsubscription);
+        }
+
         let unsubscribe = Self {
             pkid,
             filters,
@@ -74,6 +78,9 @@ impl Unsubscribe {
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         if self.pkid == 0 {
             return Err(Error::PacketIdZero);
+        }
+        if self.filters.is_empty() {
+            return Err(Error::EmptyUnsubscription);
         }
 
         buffer.put_u8(0xA2);
@@ -217,5 +224,36 @@ mod test {
 
         assert!(matches!(result, Err(Error::PacketIdZero)));
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn unsubscribe_parsing_rejects_empty_payload() {
+        let mut bytes = BytesMut::from(
+            &[
+                0xA2, // UNSUBSCRIBE
+                0x03, // remaining length
+                0x00, 0x01, // packet identifier
+                0x00, // properties length
+            ][..],
+        );
+
+        let result = Packet::read(&mut bytes, Some(1024));
+
+        assert!(matches!(result, Err(Error::EmptyUnsubscription)));
+    }
+
+    #[test]
+    fn unsubscribe_encoding_rejects_empty_payload() {
+        let unsubscribe = Unsubscribe {
+            pkid: 1,
+            filters: Vec::new(),
+            properties: None,
+        };
+        let mut bytes = BytesMut::from(&b"prefix"[..]);
+
+        let result = unsubscribe.write(&mut bytes);
+
+        assert!(matches!(result, Err(Error::EmptyUnsubscription)));
+        assert_eq!(&bytes[..], b"prefix");
     }
 }

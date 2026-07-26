@@ -40,6 +40,8 @@ pub enum Error {
     PacketIdZero,
     #[error("Empty Subscription")]
     EmptySubscription,
+    #[error("Empty Unsubscription")]
+    EmptyUnsubscription,
     #[error("Packet violates the MQTT protocol")]
     ProtocolError,
     #[error("Packet violates the MQTT protocol with disconnect reason {0:?}")]

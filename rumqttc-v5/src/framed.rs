@@ -54,6 +54,7 @@ const fn inbound_disconnect_reason(error: &mqttbytes::Error) -> Option<Disconnec
         | mqttbytes::Error::InvalidPropertyType(_)
         | mqttbytes::Error::TopicNotUtf8 { .. } => DisconnectReasonCode::MalformedPacket,
         mqttbytes::Error::EmptySubscription
+        | mqttbytes::Error::EmptyUnsubscription
         | mqttbytes::Error::ProtocolError
         | mqttbytes::Error::PacketIdZero => DisconnectReasonCode::ProtocolError,
         mqttbytes::Error::PayloadSizeLimitExceeded { .. } => DisconnectReasonCode::PacketTooLarge,

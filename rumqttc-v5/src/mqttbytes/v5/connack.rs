@@ -75,10 +75,13 @@ impl ConnAck {
             return Err(Error::IncorrectPacketFormat);
         }
         let return_code = read_u8(&mut bytes)?;
-        let properties = ConnAckProperties::read(&mut bytes)?;
-
         let session_present = (flags & 0x01) == 1;
         let code = connect_return(return_code)?;
+        if code != ConnectReturnCode::Success && session_present {
+            return Err(Error::ProtocolError);
+        }
+
+        let properties = ConnAckProperties::read(&mut bytes)?;
         let connack = Self {
             session_present,
             code,
@@ -89,6 +92,10 @@ impl ConnAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.code != ConnectReturnCode::Success && self.session_present {
+            return Err(Error::ProtocolError);
+        }
+
         let len = Self::len(self);
         buffer.put_u8(0x20);
 
@@ -503,6 +510,36 @@ mod test {
     use crate::mqttbytes::parse_fixed_header;
     use bytes::{Bytes, BytesMut};
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn connack_parsing_rejects_session_present_on_error() {
+        let packet = Bytes::from_static(&[
+            0x20, 0x03, // packet type + remaining length
+            0x01, // Session Present
+            0x87, // Not Authorized
+            0x00, // properties length
+        ]);
+        let fixed_header = FixedHeader::new(0x20, 1, 3);
+
+        let result = ConnAck::read(fixed_header, packet);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn connack_encoding_rejects_session_present_on_error() {
+        let connack = ConnAck {
+            session_present: true,
+            code: ConnectReturnCode::NotAuthorized,
+            properties: None,
+        };
+        let mut buffer = BytesMut::from(&b"prefix"[..]);
+
+        let result = connack.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::ProtocolError)));
+        assert_eq!(&buffer[..], b"prefix");
+    }
 
     #[test]
     fn length_calculation() {

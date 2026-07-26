@@ -111,12 +111,10 @@ impl Broker {
                     framed.connack(connack).await.unwrap();
                 }
                 ConnectBehavior::RefuseBadUserNamePasswordWithSessionPresent => {
-                    let connack = ConnAck {
-                        code: ConnectReturnCode::BadUserNamePassword,
-                        session_present: true,
-                        properties: None,
-                    };
-                    framed.connack(connack).await.unwrap();
+                    framed
+                        .raw_connack(&[0x20, 0x03, 0x01, 0x86, 0x00])
+                        .await
+                        .unwrap();
                 }
                 ConnectBehavior::StallAfterConnect => {
                     return Self {
@@ -358,6 +356,11 @@ impl Network {
 
         self.socket.write_all(&write[..]).await?;
         Ok(len)
+    }
+
+    async fn raw_connack(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.socket.write_all(bytes).await?;
+        Ok(bytes.len())
     }
 
     pub async fn readb(&mut self, incoming: &mut VecDeque<Incoming>) -> io::Result<()> {

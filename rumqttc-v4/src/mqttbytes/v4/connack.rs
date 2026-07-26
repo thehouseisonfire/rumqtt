@@ -65,6 +65,10 @@ impl ConnAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        if self.code != ConnectReturnCode::Success && self.session_present {
+            return Err(Error::IncorrectPacketFormat);
+        }
+
         let len = Self::len();
         buffer.put_u8(0x20);
 
@@ -146,6 +150,17 @@ mod test {
         let mut buf = BytesMut::new();
         connack.write(&mut buf).unwrap();
         assert_eq!(buf, vec![0b0010_0000, 0x02, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn connack_encoding_rejects_session_present_on_error() {
+        let connack = ConnAck::new(ConnectReturnCode::BadClientId, true);
+        let mut buf = BytesMut::from(&b"prefix"[..]);
+
+        let result = connack.write(&mut buf);
+
+        assert!(matches!(result, Err(Error::IncorrectPacketFormat)));
+        assert_eq!(&buf[..], b"prefix");
     }
 
     #[test]
