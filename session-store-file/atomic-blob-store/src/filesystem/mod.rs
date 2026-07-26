@@ -511,6 +511,50 @@ pub(crate) fn delete_file(path: &Path) -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
+pub(crate) fn sync_windows_directory(config: &StoreConfig) -> Result<(), io::Error> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FlushFileBuffers, OPEN_EXISTING,
+    };
+
+    let path = wide_path(&config.namespace);
+    // SAFETY: `path` is NUL-terminated and the returned handle is checked before ownership is
+    // transferred to `File`.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `handle` is valid and uniquely owned. `File` closes it on every return path.
+    let _directory = unsafe { std::fs::File::from_raw_handle(handle) };
+
+    #[cfg(test)]
+    if let Some(hook) = &config.hook {
+        hook(TestStage::BeforeDirectorySync)?;
+    }
+    // SAFETY: `directory` owns a valid directory handle opened for synchronization.
+    if unsafe { FlushFileBuffers(handle) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(test)]
+    if let Some(hook) = &config.hook {
+        hook(TestStage::AfterDirectorySync)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 pub(crate) fn create_windows_staging(
     _config: &StoreConfig,
     path: &Path,
@@ -774,18 +818,10 @@ pub(crate) fn save_blob(
             TestStage::AfterCommit,
             StoreOperation::WriteEnvelope,
         )?;
-        #[cfg(test)]
-        hit_test_stage(
-            config,
-            TestStage::BeforeDirectorySync,
-            StoreOperation::SyncNamespaceDirectory,
-        )?;
-        #[cfg(test)]
-        hit_test_stage(
-            config,
-            TestStage::AfterDirectorySync,
-            StoreOperation::SyncNamespaceDirectory,
-        )?;
+        sync_windows_directory(config).map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::SyncNamespaceDirectory,
+            source,
+        })?;
         return Ok(());
     }
 }
@@ -871,18 +907,10 @@ pub(crate) fn save_blob_from_receiver(
             TestStage::AfterCommit,
             StoreOperation::WriteEnvelope,
         )?;
-        #[cfg(test)]
-        hit_test_stage(
-            config,
-            TestStage::BeforeDirectorySync,
-            StoreOperation::SyncNamespaceDirectory,
-        )?;
-        #[cfg(test)]
-        hit_test_stage(
-            config,
-            TestStage::AfterDirectorySync,
-            StoreOperation::SyncNamespaceDirectory,
-        )?;
+        sync_windows_directory(config).map_err(|source| AtomicBlobStoreError::Io {
+            operation: StoreOperation::SyncNamespaceDirectory,
+            source,
+        })?;
         return Ok(());
     }
 }
@@ -919,18 +947,10 @@ pub(crate) fn clear_blob(config: &StoreConfig, path: &Path) -> Result<(), Atomic
             Ok(()) => {
                 #[cfg(test)]
                 hit_test_stage(config, TestStage::AfterRemove, StoreOperation::RemoveBlob)?;
-                #[cfg(test)]
-                hit_test_stage(
-                    config,
-                    TestStage::BeforeDirectorySync,
-                    StoreOperation::SyncNamespaceDirectory,
-                )?;
-                #[cfg(test)]
-                hit_test_stage(
-                    config,
-                    TestStage::AfterDirectorySync,
-                    StoreOperation::SyncNamespaceDirectory,
-                )?;
+                sync_windows_directory(config).map_err(|source| AtomicBlobStoreError::Io {
+                    operation: StoreOperation::SyncNamespaceDirectory,
+                    source,
+                })?;
                 return delete_file(&staging).map_err(|source| AtomicBlobStoreError::Io {
                     operation: StoreOperation::RemoveTemporaryFile,
                     source,
@@ -987,19 +1007,13 @@ pub(crate) fn quarantine_blob(
                             source,
                         }
                     })?;
-                    hook(TestStage::BeforeDirectorySync).map_err(|source| {
-                        AtomicBlobStoreError::QuarantineNamespaceSync {
-                            quarantine: quarantine.clone(),
-                            source,
-                        }
-                    })?;
-                    hook(TestStage::AfterDirectorySync).map_err(|source| {
-                        AtomicBlobStoreError::QuarantineNamespaceSync {
-                            quarantine: quarantine.clone(),
-                            source,
-                        }
-                    })?;
                 }
+                sync_windows_directory(config).map_err(|source| {
+                    AtomicBlobStoreError::QuarantineNamespaceSync {
+                        quarantine: quarantine.clone(),
+                        source,
+                    }
+                })?;
                 return Ok(quarantine);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {

@@ -14,6 +14,65 @@ use std::time::SystemTime;
 
 const TEST_MAXIMUM: u64 = 1024;
 const TEST_DOMAIN: &[u8; DOMAIN_TAG_LEN] = b"BLOBTEST";
+static ARTIFACT_SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct TestDirectory {
+    inner: tempfile::TempDir,
+}
+
+impl TestDirectory {
+    fn path(&self) -> &std::path::Path {
+        self.inner.path()
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let Some(artifact_root) = std::env::var_os("ATOMIC_BLOB_TEST_ARTIFACT_DIR") else {
+            return;
+        };
+        let test_name = std::thread::current()
+            .name()
+            .unwrap_or("unnamed-test")
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let sequence = ARTIFACT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let destination = std::path::PathBuf::from(artifact_root)
+            .join("failed-tests")
+            .join(format!("{test_name}-{}-{sequence}", std::process::id()));
+        let _ = copy_test_directory(self.path(), &destination);
+    }
+}
+
+fn test_directory() -> TestDirectory {
+    TestDirectory {
+        inner: tempfile::tempdir().unwrap(),
+    }
+}
+
+fn copy_test_directory(source: &std::path::Path, destination: &std::path::Path) -> io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_test_directory(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
 
 fn format() -> BlobFormatIdentity {
     BlobFormatIdentity::new(TEST_DOMAIN, ".blob", ENVELOPE_VERSION_V1).unwrap()
@@ -75,7 +134,7 @@ async fn store_with_hook(
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn caught_job_panic_releases_the_key_and_keeps_the_worker_usable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let exits = Arc::new(TestThreadExits::default());
     let panic_once = Arc::new(AtomicBool::new(true));
     let hook = {
@@ -106,7 +165,7 @@ async fn caught_job_panic_releases_the_key_and_keeps_the_worker_usable() {
 #[tokio::test]
 async fn worker_start_and_dispatch_failures_complete_and_release_admission() {
     for failed_stage in [TestStage::WorkerStart, TestStage::WorkerDispatch] {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let exits = Arc::new(TestThreadExits::default());
         let fail_once = Arc::new(AtomicBool::new(true));
         let hook = {
@@ -133,7 +192,7 @@ async fn worker_start_and_dispatch_failures_complete_and_release_admission() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn maintenance_panic_clears_the_barrier_and_later_work_runs() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let exits = Arc::new(TestThreadExits::default());
     let panic_once = Arc::new(AtomicBool::new(true));
     let hook = {
@@ -160,7 +219,7 @@ async fn maintenance_panic_clears_the_barrier_and_later_work_runs() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn maintenance_dispatch_failure_clears_the_barrier_and_later_work_runs() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let exits = Arc::new(TestThreadExits::default());
     let fail_once = Arc::new(AtomicBool::new(true));
     let hook = {
@@ -190,7 +249,7 @@ async fn maintenance_dispatch_failure_clears_the_barrier_and_later_work_runs() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn coordinator_loss_is_terminal_and_deterministic() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let exits = Arc::new(TestThreadExits::default());
     let fail = Arc::new(AtomicBool::new(false));
     let hook = {
@@ -222,7 +281,7 @@ async fn coordinator_loss_is_terminal_and_deterministic() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn worker_join_panic_is_shared_by_close_callers() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let exits = Arc::new(TestThreadExits::default());
     let hook = recording_hook(Arc::clone(&exits), move |stage| {
         if stage == TestStage::WorkerExit {
@@ -246,7 +305,7 @@ async fn worker_join_panic_is_shared_by_close_callers() {
 #[cfg(any(unix, windows))]
 #[test]
 fn every_concurrent_close_waits_for_the_coordinator_to_stop() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let exits = Arc::new(TestThreadExits::default());
     let stopping = Arc::new(std::sync::Barrier::new(2));
     let release = Arc::new(std::sync::Barrier::new(2));
@@ -303,7 +362,7 @@ fn every_concurrent_close_waits_for_the_coordinator_to_stop() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_round_trip_is_compatible_with_complete_blob_methods() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -349,7 +408,7 @@ async fn streaming_round_trip_is_compatible_with_complete_blob_methods() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_transfer_uses_bounded_chunks_for_multi_chunk_payloads() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let payload_len = STREAM_CHUNK_SIZE * 3 + 17;
     let large_options = AtomicBlobStoreOptions::new(format())
         .with_max_blob_size(u64::try_from(payload_len).unwrap());
@@ -377,7 +436,7 @@ async fn streaming_transfer_uses_bounded_chunks_for_multi_chunk_payloads() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_save_checks_declared_length_and_preserves_old_blob() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -422,7 +481,7 @@ async fn streaming_save_checks_declared_length_and_preserves_old_blob() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_save_reports_staging_failure_while_first_input_read_is_pending() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -447,7 +506,7 @@ async fn streaming_save_reports_staging_failure_while_first_input_read_is_pendin
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_save_reports_write_failure_while_eof_probe_is_pending() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let hook = Arc::new(|stage| {
         if stage == TestStage::DuringWrite {
             Err(io::Error::other("injected streaming write failure"))
@@ -478,8 +537,45 @@ async fn streaming_save_reports_write_failure_while_eof_probe_is_pending() {
 
 #[cfg(any(unix, windows))]
 #[tokio::test]
+async fn cancelling_streaming_save_during_final_eof_probe_preserves_old_blob() {
+    let root = test_directory();
+    let store = AtomicBlobStore::open(root.path(), "streaming", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"old".to_vec()).await.unwrap();
+
+    let (probe_sender, probe_receiver) = oneshot::channel();
+    let streaming_store = store.clone();
+    let task = tokio::spawn(async move {
+        let mut reader = PayloadThenPendingReader::notifying(b"new".to_vec(), probe_sender);
+        streaming_store.save_from(b"key", &mut reader, 3).await
+    });
+    probe_receiver
+        .await
+        .expect("the save must enter its final EOF probe");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    store.flush().await.unwrap();
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
+    store.save(b"key", b"after".to_vec()).await.unwrap();
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"after".to_vec()));
+    assert!(
+        std::fs::read_dir(root.path().join("streaming"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-v1."))
+    );
+    store.close().await.unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
 async fn streaming_load_validates_before_writing_output() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -500,7 +596,7 @@ async fn streaming_load_validates_before_writing_output() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_destination_failure_releases_same_key_without_mutating_blob() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -516,7 +612,7 @@ async fn streaming_destination_failure_releases_same_key_without_mutating_blob()
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn dropping_active_streaming_save_aborts_staging_and_releases_same_key() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -543,7 +639,7 @@ async fn dropping_active_streaming_save_aborts_staging_and_releases_same_key() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn dropping_streaming_save_after_input_completion_does_not_cancel_commit() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let (release_sender, release_receiver) = std::sync::mpsc::channel();
     let release_receiver = std::sync::Mutex::new(release_receiver);
@@ -577,7 +673,7 @@ async fn dropping_streaming_save_after_input_completion_does_not_cancel_commit()
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn cancelled_streaming_load_keeps_same_key_fifo_and_not_other_keys() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "streaming", options())
         .await
         .unwrap();
@@ -647,7 +743,7 @@ fn domain_is_an_envelope_collision_guard_not_part_of_key_hashing() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn wrong_domain_fails_closed_and_flush_waits_for_submitted_work() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let first = AtomicBlobStore::open(root.path(), "shared", options())
         .await
         .unwrap();
@@ -673,7 +769,7 @@ async fn wrong_domain_fails_closed_and_flush_waits_for_submitted_work() {
 async fn configured_concurrency_bounds_different_keys() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let active = Arc::new(AtomicUsize::new(0));
     let maximum = Arc::new(AtomicUsize::new(0));
     let hook_active = Arc::clone(&active);
@@ -970,12 +1066,21 @@ impl AsyncRead for NotifyingPendingReader {
 
 struct PayloadThenPendingReader {
     bytes: Cursor<Vec<u8>>,
+    pending: Option<oneshot::Sender<()>>,
 }
 
 impl PayloadThenPendingReader {
     const fn new(bytes: Vec<u8>) -> Self {
         Self {
             bytes: Cursor::new(bytes),
+            pending: None,
+        }
+    }
+
+    const fn notifying(bytes: Vec<u8>, pending: oneshot::Sender<()>) -> Self {
+        Self {
+            bytes: Cursor::new(bytes),
+            pending: Some(pending),
         }
     }
 }
@@ -989,6 +1094,9 @@ impl AsyncRead for PayloadThenPendingReader {
         if self.bytes.position() < self.bytes.get_ref().len() as u64 {
             Pin::new(&mut self.bytes).poll_read(context, buffer)
         } else {
+            if let Some(pending) = self.pending.take() {
+                let _ = pending.send(());
+            }
             std::task::Poll::Pending
         }
     }
@@ -1069,7 +1177,7 @@ fn filename_is_full_lowercase_blake3_and_contains_no_key_text() {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let unicode_root = root.path().join("sessões-客户端");
     std::fs::create_dir(&unicode_root).unwrap();
     let store = AtomicBlobStore::open(&unicode_root, "会话-v5", options())
@@ -1109,7 +1217,7 @@ async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup(
 async fn windows_new_clear_staging_uses_the_clear_time_for_cleanup_age() {
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -1164,7 +1272,7 @@ fn windows_owned_staging(namespace: &Path, kind: &str, identifier: char) -> Path
 #[tokio::test]
 #[allow(clippy::permissions_set_readonly_false)]
 async fn windows_cleanup_classifies_owned_names_ages_and_mixed_failures() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "cleanup", options())
         .await
         .unwrap();
@@ -1255,7 +1363,7 @@ async fn windows_cleanup_classifies_owned_names_ages_and_mixed_failures() {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_cleanup_reports_a_metadata_race_without_aborting() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let namespace = root.path().join("cleanup-race");
     std::fs::create_dir(&namespace).unwrap();
     let target = windows_owned_staging(&namespace, "save", 'c');
@@ -1292,7 +1400,7 @@ async fn windows_cleanup_reports_a_metadata_race_without_aborting() {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_quarantine_does_not_report_a_missing_namespace_as_a_missing_blob() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -1356,7 +1464,7 @@ fn windows_relative_root_child() {
 #[cfg(windows)]
 #[test]
 fn windows_relative_root_support_is_exercised_in_an_isolated_process() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     std::fs::create_dir(root.path().join("unused")).unwrap();
     std::fs::create_dir(root.path().join("later")).unwrap();
     let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -1428,7 +1536,7 @@ fn windows_extended_paths_preserve_non_unicode_wide_units() {
 async fn windows_extended_length_root_runs_real_store_operations() {
     use std::os::windows::ffi::OsStrExt;
 
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_directory();
     let mut root = temporary.path().to_path_buf();
     while root.as_os_str().encode_wide().count() <= 300 {
         root.push("long-segment-0123456789");
@@ -1458,7 +1566,7 @@ async fn windows_non_unicode_root_is_exercised_when_the_host_accepts_it() {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_directory();
     let component = OsString::from_wide(&[
         u16::from(b'w'),
         u16::from(b'i'),
@@ -1608,7 +1716,7 @@ fn windows_child_process_interruptions_leave_only_permitted_states() {
     use std::process::{Command, Stdio};
 
     fn run(stage: &str) {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let store = BlockingAtomicBlobStore::open(root.path(), "interrupt", options()).unwrap();
         store.save(b"key", b"old".to_vec()).unwrap();
         store.close().unwrap();
@@ -1692,7 +1800,7 @@ fn windows_child_process_interruptions_leave_only_permitted_states() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn save_load_replace_clear_and_missing_are_complete() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -1711,7 +1819,7 @@ async fn save_load_replace_clear_and_missing_are_complete() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn inspection_and_quarantine_are_non_destructive() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -1735,7 +1843,7 @@ async fn inspection_and_quarantine_are_non_destructive() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn quarantine_sync_failure_preserves_the_committed_destination() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let initial = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -1784,7 +1892,7 @@ async fn quarantine_sync_failure_preserves_the_committed_destination() {
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_cleanup_is_validated_and_explicitly_unsupported() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -1805,7 +1913,7 @@ async fn unix_cleanup_is_validated_and_explicitly_unsupported() {
 async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_dispatch() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (stage_sender, stage_receiver) = std::sync::mpsc::channel();
     let stage_receiver = Arc::new(std::sync::Mutex::new(stage_receiver));
     let (release_sender, release_receiver) = std::sync::mpsc::channel();
@@ -1851,7 +1959,7 @@ async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_d
 async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (event_sender, event_receiver) = std::sync::mpsc::channel();
     let event_receiver = Arc::new(std::sync::Mutex::new(event_receiver));
     let (release_sender, release_receiver) = std::sync::mpsc::channel();
@@ -1942,7 +2050,7 @@ async fn relative_root_is_stable_after_current_directory_changes() {
 
     let original_directory = std::env::current_dir().unwrap();
     let _guard = CurrentDirectoryGuard(original_directory);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = test_directory();
     let initial_directory = directory.path().join("initial");
     let later_directory = directory.path().join("later");
     let root = initial_directory.join("store-root");
@@ -1966,7 +2074,7 @@ async fn relative_root_is_stable_after_current_directory_changes() {
 #[cfg(any(unix, windows))]
 #[test]
 fn store_remains_usable_after_construction_runtime_is_dropped() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let construction_runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -1997,7 +2105,7 @@ fn store_remains_usable_after_construction_runtime_is_dropped() {
 #[cfg(any(unix, windows))]
 #[test]
 fn caller_runtime_loss_before_input_completion_preserves_the_old_blob() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let construction_runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2039,7 +2147,7 @@ fn caller_runtime_loss_before_input_completion_preserves_the_old_blob() {
 #[cfg(any(unix, windows))]
 #[test]
 fn caller_runtime_loss_after_input_completion_does_not_cancel_commit() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let armed = Arc::new(AtomicBool::new(false));
     let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
@@ -2099,13 +2207,13 @@ fn caller_runtime_loss_after_input_completion_does_not_cancel_commit() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn root_and_namespace_types_are_validated() {
-    let missing = tempfile::tempdir().unwrap().path().join("missing");
+    let missing = test_directory().path().join("missing");
     assert!(matches!(
         AtomicBlobStore::open(missing, "v4", options()).await,
         Err(AtomicBlobStoreError::RootDoesNotExist)
     ));
 
-    let directory = tempfile::tempdir().unwrap();
+    let directory = test_directory();
     let root_file = directory.path().join("file");
     std::fs::write(&root_file, b"x").unwrap();
     assert!(matches!(
@@ -2123,7 +2231,7 @@ async fn root_and_namespace_types_are_validated() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn missing_namespace_is_not_reported_as_a_missing_blob() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -2162,7 +2270,7 @@ fn io_and_atomic_commit_errors_preserve_sources() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_blob() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -2194,7 +2302,7 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
         TestStage::CommitError,
     ];
     for failed_stage in before_commit {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let initial = AtomicBlobStore::open(root.path(), "v4", options())
             .await
             .unwrap();
@@ -2218,7 +2326,7 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
         assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let hook = Arc::new(|stage| {
         if stage == TestStage::AfterCommit {
             Err(io::Error::other("injected post-commit failure"))
@@ -2244,7 +2352,7 @@ async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
         TestStage::BeforeCommit,
         TestStage::CommitError,
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let initial = AtomicBlobStore::open(root.path(), "v4", options())
             .await
             .unwrap();
@@ -2271,7 +2379,7 @@ async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
         assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let initial = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -2306,7 +2414,7 @@ async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
         TestStage::BeforeDirectorySync,
         TestStage::AfterDirectorySync,
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let initial = AtomicBlobStore::open(root.path(), "v4", options())
             .await
             .unwrap();
@@ -2337,7 +2445,7 @@ async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
 async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let (release_sender, release_receiver) = std::sync::mpsc::channel();
     let release_receiver = std::sync::Mutex::new(release_receiver);
@@ -2387,7 +2495,7 @@ async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn cloned_handles_and_many_transient_keys_remain_operational() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -2407,7 +2515,7 @@ async fn cloned_handles_and_many_transient_keys_remain_operational() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
     let hook = Arc::new(move |stage| {
         if stage == TestStage::BeforeEnvelope {
@@ -2448,7 +2556,7 @@ async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn last_handle_drop_drains_an_accepted_complete_operation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (event_sender, event_receiver) = std::sync::mpsc::channel();
     let hook = Arc::new(move |stage| {
         if matches!(
@@ -2481,7 +2589,7 @@ async fn last_handle_drop_drains_an_accepted_complete_operation() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn last_handle_drop_drains_streaming_work_after_input_completion() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
     let release_receiver = std::sync::Mutex::new(release_receiver);
@@ -2536,7 +2644,7 @@ async fn save_uses_owner_only_mode_and_does_not_preserve_broader_mode() {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -2566,7 +2674,7 @@ fn actual_atomic_writer_preserves_old_value_until_commit_and_drop_discards() {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let path = root.path().join("blob");
     std::fs::write(&path, b"old").unwrap();
 
@@ -2593,7 +2701,7 @@ fn actual_atomic_writer_preserves_old_value_until_commit_and_drop_discards() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn canonical_load_ignores_unrelated_temporary_files() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "v4", options())
         .await
         .unwrap();
@@ -2661,7 +2769,7 @@ fn subprocess_exit_before_commit_and_successful_commit_have_permitted_states() {
         }
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let path = root.path().join("blob.blob");
     std::fs::write(&path, envelope(b"old")).unwrap();
 

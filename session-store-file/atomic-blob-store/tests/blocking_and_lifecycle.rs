@@ -1,5 +1,8 @@
 #![cfg(any(unix, windows))]
 
+mod common;
+
+use common::test_directory;
 use std::io::Cursor;
 
 use atomic_blob_store::{
@@ -15,7 +18,7 @@ fn options() -> AtomicBlobStoreOptions {
 
 #[test]
 fn blocking_facade_streams_and_closes_idempotently() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = BlockingAtomicBlobStore::open(root.path(), "blocking", options()).unwrap();
 
     let mut source = Cursor::new(b"streamed payload");
@@ -36,7 +39,7 @@ fn blocking_facade_streams_and_closes_idempotently() {
 
 #[test]
 fn close_from_one_clone_closes_every_clone() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = BlockingAtomicBlobStore::open(root.path(), "clones", options()).unwrap();
     let clone = store.clone();
     store.save(b"key", b"value".to_vec()).unwrap();
@@ -49,7 +52,7 @@ fn close_from_one_clone_closes_every_clone() {
 
 #[test]
 fn concurrent_close_callers_share_the_shutdown_outcome() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = BlockingAtomicBlobStore::open(root.path(), "concurrent-close", options()).unwrap();
     let first = store.clone();
     let second = store.clone();
@@ -78,8 +81,8 @@ fn concurrent_close_callers_share_the_shutdown_outcome() {
 async fn blocking_and_tokio_facades_have_format_parity() {
     use atomic_blob_store::tokio::AtomicBlobStore;
 
-    let blocking_root = tempfile::tempdir().unwrap();
-    let async_root = tempfile::tempdir().unwrap();
+    let blocking_root = test_directory();
+    let async_root = test_directory();
     let blocking =
         BlockingAtomicBlobStore::open(blocking_root.path(), "parity", options()).unwrap();
     let asynchronous = AtomicBlobStore::open(async_root.path(), "parity", options())

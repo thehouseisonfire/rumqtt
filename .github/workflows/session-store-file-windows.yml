@@ -43,6 +43,10 @@ jobs:
         with:
           components: clippy
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.runner }}-atomic-blob-store-native-validation
@@ -96,19 +100,24 @@ jobs:
             echo "profile=debug scope=workspace"
             echo "profile=debug command=clippy workspace/all-targets/all-features"
           } | tee -a "$log"
-          run_logged cargo test --locked --manifest-path session-store-file/Cargo.toml \
+          run_logged cargo nextest run --locked --profile ci \
+            --manifest-path session-store-file/Cargo.toml \
             -p atomic-blob-store --no-default-features
           if cargo tree --locked --manifest-path session-store-file/Cargo.toml \
             -p atomic-blob-store --no-default-features | grep -Eq '(^| )tokio v'; then
             echo "blocking-only atomic-blob-store unexpectedly resolved Tokio" | tee -a "$log"
             exit 1
           fi
-          run_logged cargo test --locked --manifest-path session-store-file/Cargo.toml \
+          run_logged cargo nextest run --locked --profile ci \
+            --manifest-path session-store-file/Cargo.toml \
             -p atomic-blob-store --all-features
-          run_logged cargo test --locked --release --manifest-path session-store-file/Cargo.toml \
+          run_logged cargo nextest run --locked --profile ci --release \
+            --manifest-path session-store-file/Cargo.toml \
             -p atomic-blob-store --all-features
+          run_logged cargo nextest run --locked --profile ci \
+            --manifest-path session-store-file/Cargo.toml --workspace
           run_logged cargo test --locked --manifest-path session-store-file/Cargo.toml \
-            --workspace
+            --workspace --all-features --doc
           run_logged cargo clippy --locked --manifest-path session-store-file/Cargo.toml \
             --workspace --all-targets --all-features -- -D warnings
 
@@ -124,6 +133,7 @@ jobs:
             tests::last_handle_drop_drains_an_accepted_complete_operation
             tests::last_handle_drop_drains_streaming_work_after_input_completion
             tests::blocked_cancelled_work_keeps_same_key_order_but_not_other_keys
+            tests::cancelling_streaming_save_during_final_eof_probe_preserves_old_blob
             tests::dropping_streaming_save_after_input_completion_does_not_cancel_commit
             tests::windows_child_process_interruptions_leave_only_permitted_states
           )
@@ -132,16 +142,18 @@ jobs:
             echo "repeat iteration=${iteration}" | tee -a "$log"
             for test_name in "${tests[@]}"; do
               echo "iteration=${iteration} test=${test_name}" | tee -a "$log"
-              cargo test --locked --manifest-path session-store-file/Cargo.toml \
-                -p atomic-blob-store --all-features --lib "$test_name" -- \
-                --exact --nocapture 2>&1 | tee -a "$log"
+              cargo nextest run --locked --profile ci \
+                --manifest-path session-store-file/Cargo.toml \
+                -p atomic-blob-store --all-features \
+                -E "test(=${test_name})" --no-capture 2>&1 | tee -a "$log"
             done
             seed="${seeds[$((iteration - 1))]}"
             echo "iteration=${iteration} model_seed=0x${seed}" | tee -a "$log"
             ATOMIC_BLOB_MODEL_CASES=4 ATOMIC_BLOB_MODEL_SEED="$seed" \
-              cargo test --locked --manifest-path session-store-file/Cargo.toml \
-              -p atomic-blob-store --all-features --test model_sequences -- \
-              --nocapture 2>&1 | tee -a "$log"
+              cargo nextest run --locked --profile ci \
+              --manifest-path session-store-file/Cargo.toml \
+              -p atomic-blob-store --all-features \
+              -E 'binary(model_sequences)' --no-capture 2>&1 | tee -a "$log"
           done
 
       - name: Validate packaged blocking and Tokio consumers

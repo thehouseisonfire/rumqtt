@@ -1,5 +1,8 @@
 #![cfg(any(unix, windows))]
 
+mod common;
+
+use common::test_directory;
 use std::io::Cursor;
 
 use atomic_blob_store::{
@@ -243,7 +246,7 @@ fn configured_cases() -> (usize, u64) {
 fn blocking_sequences_match_the_reference_model() {
     let (cases, base_seed) = configured_cases();
     for case in 0..cases {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let store = BlockingAtomicBlobStore::open(root.path(), "model", options()).unwrap();
         run_model(
             BlockingModelStore(store),
@@ -258,7 +261,7 @@ fn blocking_sequences_match_the_reference_model() {
 fn tokio_sequences_match_the_reference_model() {
     let (cases, base_seed) = configured_cases();
     for case in 0..cases {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

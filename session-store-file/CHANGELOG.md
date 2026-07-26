@@ -27,6 +27,9 @@
 
 ### Changed
 
+- Flush Windows namespace directory handles after committed blob renames, and
+  strengthen native validation with deterministic final-EOF cancellation,
+  per-test timeouts, and panic-time retention of test-owned directories.
 - Make every concurrent blob-store `close` caller wait for coordinator
   termination and observe the shared join outcome.
 - Remove the obsolete "active Tokio runtime required" adapter error.

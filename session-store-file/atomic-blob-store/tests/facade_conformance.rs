@@ -1,5 +1,7 @@
 #![cfg(any(unix, windows))]
 
+mod common;
+
 use std::io::{self, Cursor, Read, Write};
 #[cfg(feature = "tokio")]
 use std::pin::Pin;
@@ -10,6 +12,7 @@ use atomic_blob_store::{
     AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlockingAtomicBlobStore,
     ENVELOPE_VERSION_V1,
 };
+use common::test_directory;
 
 const MAXIMUM: u64 = 2 * 64 * 1024 + 17;
 const CHUNK: usize = 64 * 1024;
@@ -124,7 +127,7 @@ impl tokio::io::AsyncRead for ScriptedReader {
 
 #[test]
 fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_ownership() {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = BlockingAtomicBlobStore::open(root.path(), "blocking-matrix", options()).unwrap();
 
     for size in BOUNDARY_SIZES {
@@ -207,6 +210,23 @@ fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_owner
             Some(b"old".to_vec())
         );
     }
+
+    // Blocking reads cannot be cancelled while pending. A source failure on the mandatory
+    // trailing-data probe exercises the corresponding boundary after all declared input arrived.
+    let payload = vec![4; CHUNK + 1];
+    let mut source = ScriptedReader::new(payload.clone(), Some(payload.len()));
+    assert!(matches!(
+        store.save_from(
+            b"source-failure",
+            &mut source,
+            u64::try_from(payload.len()).unwrap()
+        ),
+        Err(AtomicBlobStoreError::InputIo { .. })
+    ));
+    assert_eq!(
+        store.load(b"source-failure").unwrap(),
+        Some(b"old".to_vec())
+    );
     store.close().unwrap();
 }
 
@@ -215,7 +235,7 @@ fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_owner
 async fn tokio_streaming_boundary_matrix_matches_blocking_contracts() {
     use atomic_blob_store::tokio::AtomicBlobStore;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let store = AtomicBlobStore::open(root.path(), "tokio-matrix", options())
         .await
         .unwrap();
@@ -320,7 +340,7 @@ async fn tokio_streaming_boundary_matrix_matches_blocking_contracts() {
 async fn blocking_and_tokio_scripts_produce_identical_canonical_bytes() {
     use atomic_blob_store::tokio::AtomicBlobStore;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let blocking = BlockingAtomicBlobStore::open(root.path(), "blocking", options()).unwrap();
     let asynchronous = AtomicBlobStore::open(root.path(), "asynchronous", options())
         .await

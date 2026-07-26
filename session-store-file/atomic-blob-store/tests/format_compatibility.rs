@@ -1,9 +1,12 @@
 #![cfg(any(unix, windows))]
 
+mod common;
+
 use atomic_blob_store::{
     AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlobMetadata,
     BlockingAtomicBlobStore, ENVELOPE_VERSION_V1,
 };
+use common::test_directory;
 
 fn decode_hex(source: &str) -> Vec<u8> {
     let source = source.trim().as_bytes();
@@ -21,7 +24,7 @@ fn decode_hex(source: &str) -> Vec<u8> {
 }
 
 fn load_fixture(name: &str) -> (Result<Option<BlobMetadata>, AtomicBlobStoreError>, Vec<u8>) {
-    let root = tempfile::tempdir().unwrap();
+    let root = test_directory();
     let format = BlobFormatIdentity::new(b"BLOBTEST", ".blob", ENVELOPE_VERSION_V1).unwrap();
     let options = AtomicBlobStoreOptions::new(format).with_max_blob_size(1024);
     let store = BlockingAtomicBlobStore::open(root.path(), "fixtures", options).unwrap();
