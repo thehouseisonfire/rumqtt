@@ -1,6 +1,6 @@
 use super::{
     BufMut, BytesMut, Error, FixedHeader, QoS, fmt, len_len, qos, read_mqtt_bytes, read_u16,
-    write_mqtt_bytes, write_remaining_length,
+    transactional_write, write_mqtt_bytes, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -92,6 +92,10 @@ impl Publish {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         if self.qos == QoS::AtMostOnce && self.dup {
             return Err(Error::IncorrectPacketFormat);
         }
@@ -606,6 +610,37 @@ mod test {
         let result = publish.write(&mut buf);
 
         assert!(matches!(result, Err(Error::MalformedPacket)));
+    }
+
+    #[test]
+    fn maximum_length_publish_topic_round_trips() {
+        let topic = "a".repeat(usize::from(u16::MAX));
+        let publish = Publish::new(topic.clone(), QoS::AtMostOnce, b"hello".to_vec());
+        let mut buffer = BytesMut::new();
+
+        publish.write(&mut buffer).unwrap();
+
+        let fixed_header = parse_fixed_header(buffer.iter()).unwrap();
+        let publish_bytes = buffer.split_to(fixed_header.frame_length()).freeze();
+        let decoded = Publish::read(fixed_header, publish_bytes).unwrap();
+        assert_eq!(decoded.topic.as_ref(), topic.as_bytes());
+        assert_eq!(decoded.payload.as_ref(), b"hello");
+    }
+
+    #[test]
+    fn oversized_publish_topic_preserves_output_buffer() {
+        let publish = Publish::new(
+            "a".repeat(usize::from(u16::MAX) + 1),
+            QoS::AtMostOnce,
+            b"hello".to_vec(),
+        );
+        let mut buffer = BytesMut::from(&b"existing packet"[..]);
+        let original = buffer.clone();
+
+        let result = publish.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::PayloadTooLong)));
+        assert_eq!(buffer, original);
     }
 
     #[test]

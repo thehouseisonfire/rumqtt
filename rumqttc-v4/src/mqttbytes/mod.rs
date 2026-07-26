@@ -241,6 +241,20 @@ fn write_remaining_length(stream: &mut BytesMut, len: usize) -> Result<usize, Er
     core_primitives::write_remaining_length(stream, len).map_err(Error::from)
 }
 
+fn transactional_write<T>(
+    stream: &mut BytesMut,
+    write: impl FnOnce(&mut BytesMut) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let initial_len = stream.len();
+    match write(stream) {
+        Ok(written) => Ok(written),
+        Err(error) => {
+            stream.truncate(initial_len);
+            Err(error)
+        }
+    }
+}
+
 /// Maps a number to `QoS`
 /// Decodes a `QoS` value from its wire representation.
 ///

@@ -1,4 +1,7 @@
-use super::{Error, FixedHeader, QoS, len_len, read_u8, read_u16, write_remaining_length};
+use super::{
+    Error, FixedHeader, QoS, len_len, read_u8, read_u16, transactional_write,
+    write_remaining_length,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::convert::{TryFrom, TryInto};
 
@@ -50,6 +53,10 @@ impl SubAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         if self.pkid == 0 {
             return Err(Error::PacketIdZero);
         }

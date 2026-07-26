@@ -1,7 +1,8 @@
 use super::{
     BufMut, BytesMut, DisconnectReasonCode, Error, FixedHeader, PropertyType, QoS, len_len, length,
     property, qos, read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32,
-    validate_mqtt_string, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    transactional_write, validate_mqtt_string, write_mqtt_bytes, write_mqtt_string,
+    write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -99,6 +100,10 @@ impl Publish {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         if self.qos == QoS::AtMostOnce && self.dup {
             return Err(Error::MalformedPacket);
         }
@@ -280,6 +285,10 @@ impl PublishProperties {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 
@@ -527,6 +536,44 @@ mod test {
     }
 
     #[test]
+    fn maximum_length_publish_topic_round_trips() {
+        let topic = "a".repeat(usize::from(u16::MAX));
+        let publish = Publish::new(
+            topic.clone(),
+            QoS::AtMostOnce,
+            Bytes::from_static(b"hello"),
+            None,
+        );
+        let mut buffer = BytesMut::new();
+
+        publish.write(&mut buffer).unwrap();
+
+        let decoded = Packet::read(&mut buffer, Some(100_000)).unwrap();
+        let Packet::Publish(decoded) = decoded else {
+            panic!("expected PUBLISH packet");
+        };
+        assert_eq!(decoded.topic.as_ref(), topic.as_bytes());
+        assert_eq!(decoded.payload.as_ref(), b"hello");
+    }
+
+    #[test]
+    fn oversized_publish_topic_preserves_output_buffer() {
+        let publish = Publish::new(
+            "a".repeat(usize::from(u16::MAX) + 1),
+            QoS::AtMostOnce,
+            Bytes::from_static(b"hello"),
+            None,
+        );
+        let mut buffer = BytesMut::from(&b"existing packet"[..]);
+        let original = buffer.clone();
+
+        let result = publish.write(&mut buffer);
+
+        assert!(matches!(result, Err(Error::PayloadTooLong)));
+        assert_eq!(buffer, original);
+    }
+
+    #[test]
     fn publish_topic_with_bom_round_trips_without_stripping() {
         let topic = "\u{FEFF}a/b";
         let publish = Publish::new(topic, QoS::AtMostOnce, vec![0x01, 0x02], None);
@@ -593,7 +640,8 @@ mod test {
             topic_alias: Some(0),
             ..Default::default()
         };
-        let mut buffer = BytesMut::new();
+        let mut buffer = BytesMut::from(&b"existing packet"[..]);
+        let original = buffer.clone();
         let result = properties.write(&mut buffer);
 
         assert!(matches!(
@@ -602,5 +650,6 @@ mod test {
                 DisconnectReasonCode::TopicAliasInvalid
             ))
         ));
+        assert_eq!(buffer, original);
     }
 }

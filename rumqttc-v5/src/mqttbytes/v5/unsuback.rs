@@ -1,6 +1,6 @@
 use super::{
     Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_string, read_u8,
-    read_u16, write_mqtt_string, write_remaining_length,
+    read_u16, transactional_write, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -68,6 +68,10 @@ impl UnsubAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         if self.pkid == 0 {
             return Err(Error::PacketIdZero);
         }
@@ -169,6 +173,10 @@ impl UnsubAckProperties {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 

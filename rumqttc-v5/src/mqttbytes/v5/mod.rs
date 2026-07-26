@@ -18,8 +18,8 @@ pub use self::{
 
 use super::{
     Error, FixedHeader, PacketType, QoS, check, len_len, length, qos, read_mqtt_bytes,
-    read_mqtt_string, read_u8, read_u16, read_u32, validate_mqtt_string, write_mqtt_bytes,
-    write_mqtt_string, write_remaining_length,
+    read_mqtt_string, read_u8, read_u16, read_u32, transactional_write, validate_mqtt_string,
+    write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, BufMut, BytesMut};
 
@@ -189,32 +189,34 @@ impl Packet {
     /// Returns an error if the packet cannot be encoded within the configured
     /// packet-size limit or violates MQTT encoding rules.
     pub fn write(&self, write: &mut BytesMut, max_size: Option<u32>) -> Result<usize, Error> {
-        if let Some(max_size) = max_size
-            && self.size() > max_size as usize
-        {
-            return Err(Error::OutgoingPacketTooLarge {
-                pkt_size: u32::try_from(self.size()).unwrap_or(u32::MAX),
-                max: max_size,
-            });
-        }
+        transactional_write(write, |write| {
+            if let Some(max_size) = max_size
+                && self.size() > max_size as usize
+            {
+                return Err(Error::OutgoingPacketTooLarge {
+                    pkt_size: u32::try_from(self.size()).unwrap_or(u32::MAX),
+                    max: max_size,
+                });
+            }
 
-        match self {
-            Self::Auth(auth) => auth.write(write),
-            Self::Publish(publish) => publish.write(write),
-            Self::Subscribe(subscription) => subscription.write(write),
-            Self::Unsubscribe(unsubscribe) => unsubscribe.write(write),
-            Self::ConnAck(ack) => ack.write(write),
-            Self::PubAck(ack) => ack.write(write),
-            Self::SubAck(ack) => ack.write(write),
-            Self::UnsubAck(unsuback) => unsuback.write(write),
-            Self::PubRec(pubrec) => pubrec.write(write),
-            Self::PubRel(pubrel) => pubrel.write(write),
-            Self::PubComp(pubcomp) => pubcomp.write(write),
-            Self::Connect(connect, will, auth) => connect.write(will, auth, write),
-            Self::PingReq => PingReq::write(write),
-            Self::PingResp => PingResp::write(write),
-            Self::Disconnect(disconnect) => disconnect.write(write),
-        }
+            match self {
+                Self::Auth(auth) => auth.write(write),
+                Self::Publish(publish) => publish.write(write),
+                Self::Subscribe(subscription) => subscription.write(write),
+                Self::Unsubscribe(unsubscribe) => unsubscribe.write(write),
+                Self::ConnAck(ack) => ack.write(write),
+                Self::PubAck(ack) => ack.write(write),
+                Self::SubAck(ack) => ack.write(write),
+                Self::UnsubAck(unsuback) => unsuback.write(write),
+                Self::PubRec(pubrec) => pubrec.write(write),
+                Self::PubRel(pubrel) => pubrel.write(write),
+                Self::PubComp(pubcomp) => pubcomp.write(write),
+                Self::Connect(connect, will, auth) => connect.write(will, auth, write),
+                Self::PingReq => PingReq::write(write),
+                Self::PingResp => PingResp::write(write),
+                Self::Disconnect(disconnect) => disconnect.write(write),
+            }
+        })
     }
 
     pub fn size(&self) -> usize {
@@ -357,8 +359,22 @@ mod tests {
         Disconnect, DisconnectReasonCode, Error, Packet, PacketType, PubAck, PubAckReason, PubComp,
         PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish, QoS, SubAck, Subscribe,
         SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe,
-        validate_fixed_header_flags,
+        transactional_write, validate_fixed_header_flags,
     };
+
+    #[test]
+    fn transactional_write_restores_existing_bytes_after_error() {
+        let mut stream = BytesMut::from(&b"existing packet"[..]);
+        let original = stream.clone();
+
+        let result = transactional_write(&mut stream, |stream| {
+            stream.extend_from_slice(b"partial packet");
+            Err::<(), _>(Error::MalformedPacket)
+        });
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+        assert_eq!(stream, original);
+    }
 
     fn assert_packet_bytes_round_trip(packet: Packet, expected: &[u8]) {
         let mut encoded = BytesMut::new();

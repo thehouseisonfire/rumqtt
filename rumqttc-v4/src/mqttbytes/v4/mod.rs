@@ -1,6 +1,6 @@
 use super::{
     BufMut, BytesMut, Error, FixedHeader, PacketType, QoS, check, fmt, qos, read_mqtt_bytes,
-    read_mqtt_string, read_u8, read_u16, write_mqtt_bytes, write_mqtt_string,
+    read_mqtt_string, read_u8, read_u16, transactional_write, write_mqtt_bytes, write_mqtt_string,
     write_remaining_length,
 };
 
@@ -159,29 +159,31 @@ impl Packet {
     /// Returns an error if the packet cannot be encoded within `max_size` or
     /// violates MQTT encoding limits.
     pub fn write(&self, stream: &mut BytesMut, max_size: usize) -> Result<usize, Error> {
-        if self.size() > max_size {
-            return Err(Error::OutgoingPacketTooLarge {
-                pkt_size: self.size(),
-                max: max_size,
-            });
-        }
+        transactional_write(stream, |stream| {
+            if self.size() > max_size {
+                return Err(Error::OutgoingPacketTooLarge {
+                    pkt_size: self.size(),
+                    max: max_size,
+                });
+            }
 
-        match self {
-            Self::Connect(c) => c.write(stream),
-            Self::ConnAck(c) => c.write(stream),
-            Self::Publish(p) => p.write(stream),
-            Self::PubAck(p) => p.write(stream),
-            Self::PubRec(p) => p.write(stream),
-            Self::PubRel(p) => p.write(stream),
-            Self::PubComp(p) => p.write(stream),
-            Self::Subscribe(s) => s.write(stream),
-            Self::SubAck(s) => s.write(stream),
-            Self::Unsubscribe(u) => u.write(stream),
-            Self::UnsubAck(u) => u.write(stream),
-            Self::PingReq => PingReq.write(stream),
-            Self::PingResp => PingResp.write(stream),
-            Self::Disconnect => Disconnect.write(stream),
-        }
+            match self {
+                Self::Connect(c) => c.write(stream),
+                Self::ConnAck(c) => c.write(stream),
+                Self::Publish(p) => p.write(stream),
+                Self::PubAck(p) => p.write(stream),
+                Self::PubRec(p) => p.write(stream),
+                Self::PubRel(p) => p.write(stream),
+                Self::PubComp(p) => p.write(stream),
+                Self::Subscribe(s) => s.write(stream),
+                Self::SubAck(s) => s.write(stream),
+                Self::Unsubscribe(u) => u.write(stream),
+                Self::UnsubAck(u) => u.write(stream),
+                Self::PingReq => PingReq.write(stream),
+                Self::PingResp => PingResp.write(stream),
+                Self::Disconnect => Disconnect.write(stream),
+            }
+        })
     }
 }
 
@@ -218,7 +220,21 @@ const fn len_len(len: usize) -> usize {
 mod tests {
     use bytes::BytesMut;
 
-    use super::{Error, Packet};
+    use super::{Error, Packet, transactional_write};
+
+    #[test]
+    fn transactional_write_restores_existing_bytes_after_error() {
+        let mut stream = BytesMut::from(&b"existing packet"[..]);
+        let original = stream.clone();
+
+        let result = transactional_write(&mut stream, |stream| {
+            stream.extend_from_slice(b"partial packet");
+            Err::<(), _>(Error::MalformedPacket)
+        });
+
+        assert!(matches!(result, Err(Error::MalformedPacket)));
+        assert_eq!(stream, original);
+    }
 
     #[test]
     fn read_rejects_malformed_pubrel_flags() {

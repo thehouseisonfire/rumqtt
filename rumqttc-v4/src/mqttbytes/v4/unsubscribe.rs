@@ -1,6 +1,6 @@
 use super::{
-    BufMut, BytesMut, Error, FixedHeader, len_len, read_mqtt_string, read_u16, write_mqtt_string,
-    write_remaining_length,
+    BufMut, BytesMut, Error, FixedHeader, len_len, read_mqtt_string, read_u16, transactional_write,
+    write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -60,6 +60,10 @@ impl Unsubscribe {
     }
 
     pub fn write(&self, payload: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(payload, |payload| self.write_inner(payload))
+    }
+
+    fn write_inner(&self, payload: &mut BytesMut) -> Result<usize, Error> {
         if self.pkid == 0 {
             return Err(Error::PacketIdZero);
         }

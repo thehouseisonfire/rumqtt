@@ -1,7 +1,7 @@
 use super::{
     BufMut, BytesMut, Error, FixedHeader, PropertyType, QoS, len_len, length, property, qos,
-    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, validate_mqtt_string,
-    write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    read_mqtt_bytes, read_mqtt_string, read_u8, read_u16, read_u32, transactional_write,
+    validate_mqtt_string, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -89,6 +89,15 @@ impl Connect {
     }
 
     pub fn write(
+        &self,
+        will: &Option<LastWill>,
+        auth: &ConnectAuth,
+        buffer: &mut BytesMut,
+    ) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(will, auth, buffer))
+    }
+
+    fn write_inner(
         &self,
         will: &Option<LastWill>,
         auth: &ConnectAuth,
@@ -320,6 +329,10 @@ impl ConnectProperties {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 
@@ -462,6 +475,10 @@ impl LastWill {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
         let mut connect_flags = 0;
 
         connect_flags |= 0x04 | ((self.qos as u8) << 3);
@@ -599,6 +616,10 @@ impl LastWillProperties {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 
@@ -689,6 +710,10 @@ impl ConnectAuth {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
         let flags = match self {
             Self::None => 0,
             Self::Username { username } => {
@@ -924,14 +949,12 @@ mod test {
             properties: None,
         };
 
-        let mut bytes = BytesMut::new();
+        let mut bytes = BytesMut::from(&b"existing packet"[..]);
+        let original = bytes.clone();
         let result = connect_pkt.write(&None, &ConnectAuth::None, &mut bytes);
 
         assert!(matches!(result, Err(Error::PayloadTooLong)));
-        assert!(
-            !bytes.is_empty(),
-            "CONNECT encoding reports the protocol error after writing the packet prefix"
-        );
+        assert_eq!(bytes, original);
     }
 
     /// MQTT-3.1.2-3: CONNECT flags bit 0 is reserved and must encode as zero.
@@ -1080,10 +1103,12 @@ mod test {
     fn write_rejects_request_response_info_greater_than_one() {
         let mut props = ConnectProperties::new();
         props.request_response_info = Some(2);
-        let mut buffer = BytesMut::new();
+        let mut buffer = BytesMut::from(&b"existing packet"[..]);
+        let original = buffer.clone();
         let result = props.write(&mut buffer);
 
         assert!(matches!(result, Err(Error::ProtocolError)));
+        assert_eq!(buffer, original);
     }
 
     /// [MQTT-3.1.2-28] Request Response Information MUST be 0 or 1.

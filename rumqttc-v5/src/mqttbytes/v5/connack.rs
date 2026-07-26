@@ -1,6 +1,7 @@
 use super::{
     Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_mqtt_string,
-    read_u8, read_u16, read_u32, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    read_u8, read_u16, read_u32, transactional_write, write_mqtt_bytes, write_mqtt_string,
+    write_remaining_length,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -92,6 +93,10 @@ impl ConnAck {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         if self.code != ConnectReturnCode::Success && self.session_present {
             return Err(Error::ProtocolError);
         }
@@ -248,6 +253,10 @@ impl ConnAckProperties {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 

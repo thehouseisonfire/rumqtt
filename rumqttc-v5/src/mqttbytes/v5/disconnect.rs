@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use super::{
     Buf, Error, FixedHeader, PacketType, len_len, length, read_mqtt_string, read_u8, read_u32,
-    write_mqtt_string, write_remaining_length,
+    transactional_write, write_mqtt_string, write_remaining_length,
 };
 
 use super::{PropertyType, property};
@@ -226,6 +226,10 @@ impl DisconnectProperties {
     }
 
     fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let length = self.len();
         write_remaining_length(buffer, length)?;
 
@@ -343,6 +347,10 @@ impl Disconnect {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         buffer.put_u8(0xE0);
 
         let length = self.len();

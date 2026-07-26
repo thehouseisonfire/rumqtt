@@ -1,6 +1,7 @@
 use super::{
     BufMut, BytesMut, Error, FixedHeader, QoS, len_len, qos, read_mqtt_bytes, read_mqtt_string,
-    read_u8, read_u16, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    read_u8, read_u16, transactional_write, write_mqtt_bytes, write_mqtt_string,
+    write_remaining_length,
 };
 use bytes::{Buf, Bytes};
 
@@ -118,6 +119,10 @@ impl Connect {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         // MQTT-3.1.3-7: zero-byte ClientId requires CleanSession=1
         if self.client_id.is_empty() && !self.clean_session {
             return Err(Error::IncorrectPacketFormat);
@@ -212,6 +217,10 @@ impl LastWill {
     }
 
     fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
         let mut connect_flags = 0;
 
         connect_flags |= 0x04 | ((self.qos as u8) << 3);
@@ -267,6 +276,10 @@ impl ConnectAuth {
     }
 
     fn write(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<u8, Error> {
         let flags = match self {
             Self::None => 0,
             Self::Username { username } => {
@@ -884,14 +897,12 @@ mod test {
             auth: ConnectAuth::None,
         };
 
-        let mut buf = BytesMut::new();
+        let mut buf = BytesMut::from(&b"existing packet"[..]);
+        let original = buf.clone();
         let result = connect.write(&mut buf);
 
         assert!(matches!(result, Err(Error::PayloadTooLong)));
-        assert!(
-            !buf.is_empty(),
-            "CONNECT encoding reports the protocol error after writing the packet prefix"
-        );
+        assert_eq!(buf, original);
     }
 
     #[test]

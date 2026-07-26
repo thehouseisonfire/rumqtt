@@ -124,6 +124,7 @@
 - `rumqttc` v4/v5: Fix graceful disconnect after subscribe/unsubscribe packet-id gaps so completed publishes do not leave stale outbound drain tracking and prevent MQTT `DISCONNECT`.
 - `rumqttc` v4/v5: Reset retained local session state before reconnecting with a changed ClientId so pending state from one MQTT identity is not reused under another.
 - `rumqttc` v4/v5 codecs: Return `PayloadTooLong` instead of panicking when encoding MQTT strings or binary fields that exceed the MQTT two-byte length prefix limit.
+- `rumqttc` v4/v5 codecs: Preserve the caller's existing output-buffer contents and length when any packet or public nested-property serialization fails, including for fields exceeding MQTT length limits.
 - `rumqttc` v4/v5 codecs: Enforce MQTT UTF-8 string validation on read/write paths, rejecting malformed UTF-8 and U+0000 in MQTT strings, including publish topics, will topics, subscribe filters, and unsubscribe filters.
 - `rumqttc` v4/v5: Prevent packet identifier reuse across publish, `PUBREL`, subscribe, and unsubscribe flows, returning state errors instead of silently colliding identifiers.
 - `rumqttc` v4/v5: Reject zero packet identifiers and unsolicited ACK/`PUBREL` packets in codec/state handling, including tracked `SUBACK`/`UNSUBACK` and manual `PUBACK`/`PUBREC` acknowledgement flows.

@@ -2,7 +2,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::{
     Error, FixedHeader, PropertyType, len_len, length, property, read_mqtt_bytes, read_mqtt_string,
-    read_u8, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
+    read_u8, transactional_write, write_mqtt_bytes, write_mqtt_string, write_remaining_length,
 };
 
 /// Auth packet reason code
@@ -83,6 +83,10 @@ impl Auth {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
         buffer.put_u8(0xF0);
 
         let len = self.len();
@@ -179,6 +183,10 @@ impl AuthProperties {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        transactional_write(buffer, |buffer| self.write_inner(buffer))
+    }
+
+    fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
         let len = self.len();
         write_remaining_length(buffer, len)?;
 
