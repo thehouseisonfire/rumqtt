@@ -1075,7 +1075,7 @@ fn ca_certificate_metadata(path: Option<&Path>, certificate: Option<&[u8]>) -> V
     match (path, certificate) {
         (Some(path), Some(certificate)) => json!({
             "path": path,
-            "sha256": format!("{:x}", Sha256::digest(certificate)),
+            "sha256": Sha256::digest(certificate).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         }),
         _ => Value::Null,
     }

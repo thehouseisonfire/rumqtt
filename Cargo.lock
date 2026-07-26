@@ -297,7 +297,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tokio",
  "url",
 ]
@@ -748,9 +748,9 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "either"
-version = "1.16.0"
+version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "env_logger"
@@ -1423,9 +1423,9 @@ dependencies = [
 
 [[package]]
 name = "mqtt5"
-version = "0.37.2"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff91219b6b52e4ce164f6c50bc5557ec271ecf726ed71ff45cbf15ff0dcb73dc"
+checksum = "76fa7ad616d2432a430cd6d5a282249c2a9fb2db5086f55068e46a2ba4d4b5c3"
 dependencies = [
  "base64 0.22.1",
  "bebytes",
