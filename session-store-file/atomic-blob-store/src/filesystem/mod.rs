@@ -76,7 +76,7 @@ pub(crate) fn initialize_platform(
         format,
         maximum,
         max_concurrent_operations,
-        #[cfg(all(test, unix))]
+        #[cfg(all(test, any(unix, windows)))]
         hook: None,
     })
 }
@@ -512,6 +512,7 @@ pub(crate) fn delete_file(path: &Path) -> Result<(), io::Error> {
 
 #[cfg(windows)]
 pub(crate) fn create_windows_staging(
+    _config: &StoreConfig,
     path: &Path,
     header: &[u8],
     payload: &[u8],
@@ -524,6 +525,12 @@ pub(crate) fn create_windows_staging(
         CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH, FlushFileBuffers,
     };
 
+    #[cfg(test)]
+    hit_test_stage(
+        _config,
+        TestStage::BeforeAtomicOpen,
+        StoreOperation::OpenAtomicWriter,
+    )?;
     let wide = wide_path(path);
     // SAFETY: `wide` is NUL-terminated; null security attributes deliberately inherit the directory ACL.
     let handle = unsafe {
@@ -545,12 +552,22 @@ pub(crate) fn create_windows_staging(
     }
     // SAFETY: the successful CreateFileW call returned an owned handle.
     let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
-    for section in [header, payload, checksum] {
+    let mut write_section = |section| {
         file.write_all(section)
             .map_err(|source| AtomicBlobStoreError::Io {
                 operation: StoreOperation::WriteEnvelope,
                 source,
-            })?;
+            })
+    };
+    write_section(header)?;
+    #[cfg(test)]
+    hit_test_stage(
+        _config,
+        TestStage::DuringWrite,
+        StoreOperation::WriteEnvelope,
+    )?;
+    for section in [payload, checksum] {
+        write_section(section)?;
     }
     // SAFETY: the file still owns a live handle.
     if unsafe { FlushFileBuffers(handle) } == 0 {
@@ -575,6 +592,12 @@ pub(crate) fn create_windows_streaming_staging(
         CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH, FlushFileBuffers,
     };
 
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::BeforeAtomicOpen,
+        StoreOperation::OpenAtomicWriter,
+    )?;
     let wide = wide_path(path);
     // SAFETY: `wide` is NUL-terminated; null security attributes deliberately inherit the directory ACL.
     let handle = unsafe {
@@ -685,7 +708,19 @@ pub(crate) fn save_blob(
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::BeforeEnvelope,
+        StoreOperation::WriteEnvelope,
+    )?;
     let (header, checksum) = envelope_parts(&config.format, payload, config.maximum)?;
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::AfterEnvelope,
+        StoreOperation::WriteEnvelope,
+    )?;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -696,7 +731,7 @@ pub(crate) fn save_blob(
             "{hash}{}.tmp-v1.save.{identifier}",
             config.format.filename_suffix()
         ));
-        match create_windows_staging(&staging, &header, payload, &checksum) {
+        match create_windows_staging(config, &staging, &header, payload, &checksum) {
             Ok(()) => {}
             Err(AtomicBlobStoreError::Io { source, .. })
                 if source.kind() == io::ErrorKind::AlreadyExists =>
@@ -705,20 +740,53 @@ pub(crate) fn save_blob(
             }
             Err(error) => return Err(error),
         }
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::BeforeCommit,
+            StoreOperation::WriteEnvelope,
+        )?;
+        #[cfg(test)]
+        if let Err(source) = config
+            .hook
+            .as_ref()
+            .map_or(Ok(()), |hook| hook(TestStage::CommitError))
+        {
+            return Err(AtomicBlobStoreError::AtomicCommit { source });
+        }
         let initial = move_file(&staging, path, MOVEFILE_WRITE_THROUGH);
         match initial {
-            Ok(()) => return Ok(()),
+            Ok(()) => {}
             Err(error) if matches!(error.raw_os_error(), Some(code) if code.cast_unsigned() == ERROR_FILE_EXISTS || code.cast_unsigned() == ERROR_ALREADY_EXISTS) =>
             {
-                return move_file(
+                move_file(
                     &staging,
                     path,
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
                 )
-                .map_err(|source| AtomicBlobStoreError::AtomicCommit { source });
+                .map_err(|source| AtomicBlobStoreError::AtomicCommit { source })?;
             }
             Err(source) => return Err(AtomicBlobStoreError::AtomicCommit { source }),
         }
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::AfterCommit,
+            StoreOperation::WriteEnvelope,
+        )?;
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::BeforeDirectorySync,
+            StoreOperation::SyncNamespaceDirectory,
+        )?;
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::AfterDirectorySync,
+            StoreOperation::SyncNamespaceDirectory,
+        )?;
+        return Ok(());
     }
 }
 
@@ -734,7 +802,19 @@ pub(crate) fn save_blob_from_receiver(
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::BeforeEnvelope,
+        StoreOperation::WriteEnvelope,
+    )?;
     envelope_header(&config.format, declared_len, config.maximum)?;
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::AfterEnvelope,
+        StoreOperation::WriteEnvelope,
+    )?;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -757,26 +837,61 @@ pub(crate) fn save_blob_from_receiver(
                 return Err(error);
             }
         }
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::BeforeCommit,
+            StoreOperation::WriteEnvelope,
+        )?;
+        #[cfg(test)]
+        if let Err(source) = config
+            .hook
+            .as_ref()
+            .map_or(Ok(()), |hook| hook(TestStage::CommitError))
+        {
+            return Err(AtomicBlobStoreError::AtomicCommit { source });
+        }
         let initial = move_file(&staging, path, MOVEFILE_WRITE_THROUGH);
         match initial {
-            Ok(()) => return Ok(()),
+            Ok(()) => {}
             Err(error) if matches!(error.raw_os_error(), Some(code) if code.cast_unsigned() == ERROR_FILE_EXISTS || code.cast_unsigned() == ERROR_ALREADY_EXISTS) =>
             {
-                return move_file(
+                move_file(
                     &staging,
                     path,
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
                 )
-                .map_err(|source| AtomicBlobStoreError::AtomicCommit { source });
+                .map_err(|source| AtomicBlobStoreError::AtomicCommit { source })?;
             }
             Err(source) => return Err(AtomicBlobStoreError::AtomicCommit { source }),
         }
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::AfterCommit,
+            StoreOperation::WriteEnvelope,
+        )?;
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::BeforeDirectorySync,
+            StoreOperation::SyncNamespaceDirectory,
+        )?;
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::AfterDirectorySync,
+            StoreOperation::SyncNamespaceDirectory,
+        )?;
+        return Ok(());
     }
 }
 
 #[cfg(windows)]
 pub(crate) fn clear_blob(config: &StoreConfig, path: &Path) -> Result<(), AtomicBlobStoreError> {
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+    #[cfg(test)]
+    hit_test_stage(config, TestStage::BeforeRemove, StoreOperation::RemoveBlob)?;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -802,6 +917,20 @@ pub(crate) fn clear_blob(config: &StoreConfig, path: &Path) -> Result<(), Atomic
         ));
         match move_file(path, &staging, MOVEFILE_WRITE_THROUGH) {
             Ok(()) => {
+                #[cfg(test)]
+                hit_test_stage(config, TestStage::AfterRemove, StoreOperation::RemoveBlob)?;
+                #[cfg(test)]
+                hit_test_stage(
+                    config,
+                    TestStage::BeforeDirectorySync,
+                    StoreOperation::SyncNamespaceDirectory,
+                )?;
+                #[cfg(test)]
+                hit_test_stage(
+                    config,
+                    TestStage::AfterDirectorySync,
+                    StoreOperation::SyncNamespaceDirectory,
+                )?;
                 return delete_file(&staging).map_err(|source| AtomicBlobStoreError::Io {
                     operation: StoreOperation::RemoveTemporaryFile,
                     source,
@@ -828,6 +957,12 @@ pub(crate) fn quarantine_blob(
     path: &Path,
 ) -> Result<QuarantineInfo, AtomicBlobStoreError> {
     use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+    #[cfg(test)]
+    hit_test_stage(
+        config,
+        TestStage::BeforeQuarantineRename,
+        StoreOperation::QuarantineBlob,
+    )?;
     let hash = path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -840,10 +975,32 @@ pub(crate) fn quarantine_blob(
         ));
         match move_file(path, &destination, MOVEFILE_WRITE_THROUGH) {
             Ok(()) => {
-                return Ok(QuarantineInfo {
+                let quarantine = QuarantineInfo {
                     identifier,
                     diagnostic_path: destination,
-                });
+                };
+                #[cfg(test)]
+                if let Some(hook) = &config.hook {
+                    hook(TestStage::AfterQuarantineRename).map_err(|source| {
+                        AtomicBlobStoreError::QuarantineNamespaceSync {
+                            quarantine: quarantine.clone(),
+                            source,
+                        }
+                    })?;
+                    hook(TestStage::BeforeDirectorySync).map_err(|source| {
+                        AtomicBlobStoreError::QuarantineNamespaceSync {
+                            quarantine: quarantine.clone(),
+                            source,
+                        }
+                    })?;
+                    hook(TestStage::AfterDirectorySync).map_err(|source| {
+                        AtomicBlobStoreError::QuarantineNamespaceSync {
+                            quarantine: quarantine.clone(),
+                            source,
+                        }
+                    })?;
+                }
+                return Ok(quarantine);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 ensure_namespace_available(config)?;
@@ -882,6 +1039,12 @@ pub(crate) fn cleanup_stale_files(
         if !is_owned_temporary_filename(&name, config.format.filename_suffix()) {
             continue;
         }
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::BeforeCleanupMetadata,
+            StoreOperation::InspectBlob,
+        )?;
         let metadata = match std::fs::symlink_metadata(entry.path()) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => {
@@ -908,6 +1071,12 @@ pub(crate) fn cleanup_stale_files(
             report.skipped.push(name);
             continue;
         }
+        #[cfg(test)]
+        hit_test_stage(
+            config,
+            TestStage::BeforeCleanupRemove,
+            StoreOperation::RemoveTemporaryFile,
+        )?;
         match delete_file(&entry.path()) {
             Ok(()) => report.removed.push(name),
             Err(source) => report.failures.push(CleanupFailure {

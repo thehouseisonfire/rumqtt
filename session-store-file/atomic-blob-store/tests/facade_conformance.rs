@@ -1,6 +1,10 @@
 #![cfg(any(unix, windows))]
 
-use std::io::{self, Cursor, Write};
+use std::io::{self, Cursor, Read, Write};
+#[cfg(feature = "tokio")]
+use std::pin::Pin;
+#[cfg(feature = "tokio")]
+use std::task::{Context, Poll};
 
 use atomic_blob_store::{
     AtomicBlobStoreError, AtomicBlobStoreOptions, BlobFormatIdentity, BlockingAtomicBlobStore,
@@ -8,6 +12,8 @@ use atomic_blob_store::{
 };
 
 const MAXIMUM: u64 = 2 * 64 * 1024 + 17;
+const CHUNK: usize = 64 * 1024;
+const BOUNDARY_SIZES: [usize; 6] = [0, 1, CHUNK, CHUNK + 1, 2 * CHUNK, MAXIMUM as usize];
 
 fn options() -> AtomicBlobStoreOptions {
     AtomicBlobStoreOptions::new(
@@ -20,6 +26,7 @@ fn options() -> AtomicBlobStoreOptions {
 struct TrackingWriter {
     bytes: Vec<u8>,
     flushes: usize,
+    shutdowns: usize,
     fail_after: Option<usize>,
 }
 
@@ -44,12 +51,83 @@ impl Write for TrackingWriter {
     }
 }
 
+#[cfg(feature = "tokio")]
+impl tokio::io::AsyncWrite for TrackingWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Write::write(&mut *self, bytes))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.flushes += 1;
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.shutdowns += 1;
+        Poll::Ready(Ok(()))
+    }
+}
+
+struct ScriptedReader {
+    bytes: Vec<u8>,
+    position: usize,
+    fail_at: Option<usize>,
+}
+
+impl ScriptedReader {
+    fn new(bytes: Vec<u8>, fail_at: Option<usize>) -> Self {
+        Self {
+            bytes,
+            position: 0,
+            fail_at,
+        }
+    }
+}
+
+impl Read for ScriptedReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.fail_at.is_some_and(|limit| self.position >= limit) {
+            return Err(io::Error::other("scripted source failure"));
+        }
+        let remaining = self.bytes.len().saturating_sub(self.position);
+        let before_failure = self
+            .fail_at
+            .map_or(remaining, |limit| limit.saturating_sub(self.position));
+        let count = output.len().min(remaining).min(before_failure);
+        output[..count].copy_from_slice(&self.bytes[self.position..self.position + count]);
+        self.position += count;
+        Ok(count)
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl tokio::io::AsyncRead for ScriptedReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        output: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let mut bytes = vec![0; output.remaining()];
+        match Read::read(&mut *self, &mut bytes) {
+            Ok(count) => {
+                output.put_slice(&bytes[..count]);
+                Poll::Ready(Ok(()))
+            }
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    }
+}
+
 #[test]
 fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_ownership() {
     let root = tempfile::tempdir().unwrap();
     let store = BlockingAtomicBlobStore::open(root.path(), "blocking-matrix", options()).unwrap();
 
-    for size in [0, 1, 64 * 1024, 64 * 1024 + 1, MAXIMUM as usize] {
+    for size in BOUNDARY_SIZES {
         let key = format!("size-{size}");
         let payload = vec![size as u8; size];
         store
@@ -63,6 +141,7 @@ fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_owner
         assert_eq!(metadata.payload_len, size as u64);
         assert_eq!(destination.bytes, payload);
         assert_eq!(destination.flushes, 0);
+        assert_eq!(destination.shutdowns, 0);
     }
 
     let mut over_limit = Cursor::new(Vec::<u8>::new());
@@ -95,7 +174,145 @@ fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_owner
         Err(AtomicBlobStoreError::OutputIo { .. })
     ));
     assert_eq!(failing.flushes, 0);
+
+    for (name, payload_size, declared) in [
+        ("eof-before-data", 0, 1),
+        ("eof-within-chunk", CHUNK - 1, CHUNK as u64),
+        ("eof-at-boundary", CHUNK, CHUNK as u64 + 1),
+    ] {
+        let mut source = Cursor::new(vec![1; payload_size]);
+        assert!(
+            matches!(
+                store.save_from(name.as_bytes(), &mut source, declared),
+                Err(AtomicBlobStoreError::InputEndedEarly { .. })
+            ),
+            "{name}"
+        );
+    }
+
+    store.save(b"source-failure", b"old".to_vec()).unwrap();
+    for fail_at in [0, CHUNK] {
+        let payload = vec![3; CHUNK + 1];
+        let mut source = ScriptedReader::new(payload.clone(), Some(fail_at));
+        assert!(matches!(
+            store.save_from(
+                b"source-failure",
+                &mut source,
+                u64::try_from(payload.len()).unwrap()
+            ),
+            Err(AtomicBlobStoreError::InputIo { .. })
+        ));
+        assert_eq!(
+            store.load(b"source-failure").unwrap(),
+            Some(b"old".to_vec())
+        );
+    }
     store.close().unwrap();
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn tokio_streaming_boundary_matrix_matches_blocking_contracts() {
+    use atomic_blob_store::tokio::AtomicBlobStore;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "tokio-matrix", options())
+        .await
+        .unwrap();
+
+    for size in BOUNDARY_SIZES {
+        let key = format!("size-{size}");
+        let payload = vec![size as u8; size];
+        store
+            .save_from(
+                key.as_bytes(),
+                &mut Cursor::new(&payload),
+                u64::try_from(size).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut destination = TrackingWriter::default();
+        let metadata = store
+            .load_into(key.as_bytes(), &mut destination)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.payload_len, size as u64);
+        assert_eq!(destination.bytes, payload);
+        assert_eq!(destination.flushes, 0);
+        assert_eq!(destination.shutdowns, 0);
+    }
+
+    let mut over_limit = Cursor::new(Vec::<u8>::new());
+    assert!(matches!(
+        store.save_from(b"over", &mut over_limit, MAXIMUM + 1).await,
+        Err(AtomicBlobStoreError::BlobTooLarge { .. })
+    ));
+
+    store.save(b"preserved", b"old".to_vec()).await.unwrap();
+    for (name, payload_size, declared) in [
+        ("eof-before-data", 0, 1),
+        ("eof-within-chunk", CHUNK - 1, CHUNK as u64),
+        ("eof-at-boundary", CHUNK, CHUNK as u64 + 1),
+    ] {
+        let mut source = Cursor::new(vec![1; payload_size]);
+        assert!(
+            matches!(
+                store
+                    .save_from(name.as_bytes(), &mut source, declared)
+                    .await,
+                Err(AtomicBlobStoreError::InputEndedEarly { .. })
+            ),
+            "{name}"
+        );
+    }
+    let mut trailing = Cursor::new(b"new!".to_vec());
+    assert!(matches!(
+        store.save_from(b"preserved", &mut trailing, 3).await,
+        Err(AtomicBlobStoreError::InputHasTrailingData { .. })
+    ));
+
+    for fail_at in [0, CHUNK] {
+        let payload = vec![3; CHUNK + 1];
+        let mut source = ScriptedReader::new(payload.clone(), Some(fail_at));
+        assert!(matches!(
+            store
+                .save_from(
+                    b"preserved",
+                    &mut source,
+                    u64::try_from(payload.len()).unwrap()
+                )
+                .await,
+            Err(AtomicBlobStoreError::InputIo { .. })
+        ));
+        assert_eq!(
+            store.load(b"preserved").await.unwrap(),
+            Some(b"old".to_vec())
+        );
+    }
+
+    let payload = vec![7; CHUNK + 1];
+    store.save(b"destination", payload).await.unwrap();
+    for fail_after in [0, CHUNK] {
+        let mut destination = TrackingWriter {
+            fail_after: Some(fail_after),
+            ..TrackingWriter::default()
+        };
+        assert!(matches!(
+            store.load_into(b"destination", &mut destination).await,
+            Err(AtomicBlobStoreError::OutputIo { .. })
+        ));
+        assert_eq!(destination.flushes, 0);
+        assert_eq!(destination.shutdowns, 0);
+    }
+
+    std::fs::write(store.blob_path(b"invalid"), b"not-an-envelope").unwrap();
+    let mut destination = TrackingWriter::default();
+    assert!(store.load_into(b"invalid", &mut destination).await.is_err());
+    assert!(destination.bytes.is_empty());
+    assert_eq!(destination.flushes, 0);
+    assert_eq!(destination.shutdowns, 0);
+    store.close().await.unwrap();
 }
 
 #[cfg(feature = "tokio")]

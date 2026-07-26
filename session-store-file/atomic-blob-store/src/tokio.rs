@@ -76,7 +76,7 @@ impl AtomicBlobStore {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     pub(crate) async fn open_with_test_hook(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
@@ -103,7 +103,7 @@ impl AtomicBlobStore {
             .map(|core| Self { core })
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     pub(crate) fn registry_entries(&self) -> usize {
         self.core
             .inner
@@ -111,7 +111,7 @@ impl AtomicBlobStore {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     pub(crate) fn is_closing(&self) -> bool {
         matches!(
             *self

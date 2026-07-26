@@ -12,6 +12,11 @@
   coordinator loss to a deterministic terminal engine failure.
 - Add facade conformance, streaming-boundary, infrastructure-failure,
   blocking-only dependency, and independent-consumer coverage.
+- Run private engine failure hooks on both Unix and Windows, with direct worker
+  and coordinator exit notifications used to verify shutdown.
+- Add native Windows commit/interruption, quarantine ambiguity, owned-staging
+  cleanup, extended-path, facade, deterministic model, and packaged-consumer
+  validation.
 
 ## [0.1.0] - 2026-07-25
 

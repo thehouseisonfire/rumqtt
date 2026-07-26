@@ -8,7 +8,7 @@ pub(crate) struct WorkerPool {
     receiver: Receiver<WorkerJob>,
     handles: Vec<std::thread::JoinHandle<()>>,
     capacity: usize,
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     hook: Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
 }
 
@@ -16,7 +16,7 @@ pub(crate) struct WorkerPool {
 impl WorkerPool {
     pub(crate) fn new(
         capacity: usize,
-        #[cfg(all(test, unix))] hook: Option<
+        #[cfg(all(test, any(unix, windows)))] hook: Option<
             Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>,
         >,
     ) -> Result<Self, AtomicBlobStoreError> {
@@ -26,14 +26,14 @@ impl WorkerPool {
             receiver,
             handles: Vec::with_capacity(capacity),
             capacity,
-            #[cfg(all(test, unix))]
+            #[cfg(all(test, any(unix, windows)))]
             hook,
         })
     }
 
     pub(crate) fn prepare(&mut self, required_workers: usize) -> Result<(), AtomicBlobStoreError> {
         while self.handles.len() < required_workers.min(self.capacity) {
-            #[cfg(all(test, unix))]
+            #[cfg(all(test, any(unix, windows)))]
             if self
                 .hook
                 .as_ref()
@@ -43,15 +43,29 @@ impl WorkerPool {
             }
             let receiver = self.receiver.clone();
             let index = self.handles.len();
-            #[cfg(all(test, unix))]
+            #[cfg(all(test, any(unix, windows)))]
             let hook = self.hook.clone();
             let handle = std::thread::Builder::new()
                 .name(format!("atomic-blob-store-worker-{index}"))
                 .spawn(move || {
+                    #[cfg(all(test, any(unix, windows)))]
+                    struct WorkerExitNotification(
+                        Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
+                    );
+                    #[cfg(all(test, any(unix, windows)))]
+                    impl Drop for WorkerExitNotification {
+                        fn drop(&mut self) {
+                            if let Some(hook) = &self.0 {
+                                let _ = hook(TestStage::WorkerStopped);
+                            }
+                        }
+                    }
+                    #[cfg(all(test, any(unix, windows)))]
+                    let _exit_notification = WorkerExitNotification(hook.clone());
                     while let Ok(job) = receiver.recv() {
                         job();
                     }
-                    #[cfg(all(test, unix))]
+                    #[cfg(all(test, any(unix, windows)))]
                     if let Some(hook) = hook {
                         hook(TestStage::WorkerExit).expect("test-requested worker exit panic");
                     }
@@ -71,7 +85,7 @@ impl WorkerPool {
     }
 
     pub(crate) fn prepare_dispatch(&self) -> Result<(), AtomicBlobStoreError> {
-        #[cfg(all(test, unix))]
+        #[cfg(all(test, any(unix, windows)))]
         if self
             .hook
             .as_ref()

@@ -74,11 +74,19 @@ may be canonical. Reload to determine the observable state. Corrupt,
 wrong-domain, future-version, oversized, truncated, and trailing-data envelopes
 fail closed and are not modified or automatically quarantined.
 
+Quarantine also has an explicit post-rename ambiguity: namespace
+synchronization can fail after the canonical path has already moved. In that
+case `QuarantineNamespaceSync` carries the committed diagnostic path; the
+canonical path is absent and the complete prior blob remains at that path.
+
 Unix uses `atomic-write-file` for same-directory replacement and synchronizes
 directories after namespace creation and clear. Dependency-owned temporary
 names are never parsed or cleaned by this crate. Windows uses exclusive
 same-directory staging files and native write-through moves; its explicit
 cleanup recognizes only names owned by the configured suffix and store format.
+Native Windows CI exercises failure and process-interruption boundaries,
+extended and non-Unicode paths where the hosted filesystem permits them, both
+facades, and independently extracted package consumers.
 
 See [FORMAT.md](FORMAT.md) for the byte-level stable format and compatibility
 policy and [RELEASE.md](RELEASE.md) for the independent release-readiness

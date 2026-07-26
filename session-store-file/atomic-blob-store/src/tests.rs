@@ -5,8 +5,12 @@ use super::*;
 use ::tokio;
 use ::tokio::io::{AsyncRead, AsyncWrite};
 use ::tokio::sync::oneshot;
+#[cfg(windows)]
+use std::path::Component;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::time::SystemTime;
 
 const TEST_MAXIMUM: u64 = 1024;
 const TEST_DOMAIN: &[u8; DOMAIN_TAG_LEN] = b"BLOBTEST";
@@ -19,7 +23,45 @@ fn options() -> AtomicBlobStoreOptions {
     AtomicBlobStoreOptions::new(format()).with_max_blob_size(TEST_MAXIMUM)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+#[derive(Default)]
+struct TestThreadExits {
+    workers: std::sync::atomic::AtomicUsize,
+    coordinators: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(any(unix, windows))]
+impl TestThreadExits {
+    fn observe(&self, stage: TestStage) {
+        match stage {
+            TestStage::WorkerStopped => {
+                self.workers.fetch_add(1, Ordering::SeqCst);
+            }
+            TestStage::CoordinatorStopped => {
+                self.coordinators.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    }
+
+    fn assert_stopped(&self, workers: usize) {
+        assert_eq!(self.workers.load(Ordering::SeqCst), workers);
+        assert_eq!(self.coordinators.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn recording_hook(
+    exits: Arc<TestThreadExits>,
+    hook: impl Fn(TestStage) -> std::io::Result<()> + Send + Sync + 'static,
+) -> Arc<dyn Fn(TestStage) -> std::io::Result<()> + Send + Sync> {
+    Arc::new(move |stage| {
+        exits.observe(stage);
+        hook(stage)
+    })
+}
+
+#[cfg(any(unix, windows))]
 async fn store_with_hook(
     root: &std::path::Path,
     namespace: &str,
@@ -30,14 +72,15 @@ async fn store_with_hook(
         .unwrap()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn caught_job_panic_releases_the_key_and_keeps_the_worker_usable() {
     let root = tempfile::tempdir().unwrap();
+    let exits = Arc::new(TestThreadExits::default());
     let panic_once = Arc::new(AtomicBool::new(true));
     let hook = {
         let panic_once = Arc::clone(&panic_once);
-        Arc::new(move |stage| {
+        recording_hook(Arc::clone(&exits), move |stage| {
             if stage == TestStage::OperationStarted && panic_once.swap(false, Ordering::SeqCst) {
                 panic!("test-requested operation panic");
             }
@@ -56,17 +99,19 @@ async fn caught_job_panic_releases_the_key_and_keeps_the_worker_usable() {
     );
     assert_eq!(store.registry_entries(), 0);
     store.close().await.unwrap();
+    exits.assert_stopped(1);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn worker_start_and_dispatch_failures_complete_and_release_admission() {
     for failed_stage in [TestStage::WorkerStart, TestStage::WorkerDispatch] {
         let root = tempfile::tempdir().unwrap();
+        let exits = Arc::new(TestThreadExits::default());
         let fail_once = Arc::new(AtomicBool::new(true));
         let hook = {
             let fail_once = Arc::clone(&fail_once);
-            Arc::new(move |stage| {
+            recording_hook(Arc::clone(&exits), move |stage| {
                 if stage == failed_stage && fail_once.swap(false, Ordering::SeqCst) {
                     return Err(std::io::Error::other("test-requested worker failure"));
                 }
@@ -81,17 +126,19 @@ async fn worker_start_and_dispatch_failures_complete_and_release_admission() {
         store.save(b"same-key", b"second".to_vec()).await.unwrap();
         assert_eq!(store.registry_entries(), 0);
         store.close().await.unwrap();
+        exits.assert_stopped(1);
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn maintenance_panic_clears_the_barrier_and_later_work_runs() {
     let root = tempfile::tempdir().unwrap();
+    let exits = Arc::new(TestThreadExits::default());
     let panic_once = Arc::new(AtomicBool::new(true));
     let hook = {
         let panic_once = Arc::clone(&panic_once);
-        Arc::new(move |stage| {
+        recording_hook(Arc::clone(&exits), move |stage| {
             if stage == TestStage::MaintenanceStarted && panic_once.swap(false, Ordering::SeqCst) {
                 panic!("test-requested maintenance panic");
             }
@@ -107,16 +154,48 @@ async fn maintenance_panic_clears_the_barrier_and_later_work_runs() {
     ));
     store.save(b"later", b"value".to_vec()).await.unwrap();
     store.close().await.unwrap();
+    exits.assert_stopped(1);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn maintenance_dispatch_failure_clears_the_barrier_and_later_work_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let exits = Arc::new(TestThreadExits::default());
+    let fail_once = Arc::new(AtomicBool::new(true));
+    let hook = {
+        let fail_once = Arc::clone(&fail_once);
+        recording_hook(Arc::clone(&exits), move |stage| {
+            if stage == TestStage::WorkerDispatch && fail_once.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::other(
+                    "test-requested maintenance dispatch failure",
+                ));
+            }
+            Ok(())
+        })
+    };
+    let store = store_with_hook(root.path(), "maintenance-dispatch", hook).await;
+    assert!(matches!(
+        store
+            .cleanup_stale_temporary_files(Duration::from_secs(1))
+            .await,
+        Err(AtomicBlobStoreError::WorkerUnavailable)
+    ));
+    store.save(b"later", b"value".to_vec()).await.unwrap();
+    assert_eq!(store.registry_entries(), 0);
+    store.close().await.unwrap();
+    exits.assert_stopped(1);
+}
+
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn coordinator_loss_is_terminal_and_deterministic() {
     let root = tempfile::tempdir().unwrap();
+    let exits = Arc::new(TestThreadExits::default());
     let fail = Arc::new(AtomicBool::new(false));
     let hook = {
         let fail = Arc::clone(&fail);
-        Arc::new(move |stage| {
+        recording_hook(Arc::clone(&exits), move |stage| {
             if stage == TestStage::CoordinatorEvent && fail.load(Ordering::SeqCst) {
                 panic!("test-requested coordinator failure");
             }
@@ -137,13 +216,15 @@ async fn coordinator_loss_is_terminal_and_deterministic() {
         store.close().await,
         Err(AtomicBlobStoreError::ShutdownFailure)
     ));
+    exits.assert_stopped(0);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn worker_join_panic_is_shared_by_close_callers() {
     let root = tempfile::tempdir().unwrap();
-    let hook = Arc::new(move |stage| {
+    let exits = Arc::new(TestThreadExits::default());
+    let hook = recording_hook(Arc::clone(&exits), move |stage| {
         if stage == TestStage::WorkerExit {
             return Err(std::io::Error::other("test-requested join panic"));
         }
@@ -159,18 +240,20 @@ async fn worker_join_panic_is_shared_by_close_callers() {
         store.load(b"later").await,
         Err(AtomicBlobStoreError::StoreClosed)
     ));
+    exits.assert_stopped(1);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn every_concurrent_close_waits_for_the_coordinator_to_stop() {
     let root = tempfile::tempdir().unwrap();
+    let exits = Arc::new(TestThreadExits::default());
     let stopping = Arc::new(std::sync::Barrier::new(2));
     let release = Arc::new(std::sync::Barrier::new(2));
     let hook = {
         let stopping = Arc::clone(&stopping);
         let release = Arc::clone(&release);
-        Arc::new(move |stage| {
+        recording_hook(Arc::clone(&exits), move |stage| {
             if stage == TestStage::CoordinatorStopping {
                 stopping.wait();
                 release.wait();
@@ -214,6 +297,7 @@ fn every_concurrent_close_waits_for_the_coordinator_to_stop() {
         early_result.is_none(),
         "a close caller returned before the coordinator exited"
     );
+    exits.assert_stopped(0);
 }
 
 #[cfg(any(unix, windows))]
@@ -360,7 +444,7 @@ async fn streaming_save_reports_staging_failure_while_first_input_read_is_pendin
     ));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_save_reports_write_failure_while_eof_probe_is_pending() {
     let root = tempfile::tempdir().unwrap();
@@ -456,7 +540,7 @@ async fn dropping_active_streaming_save_aborts_staging_and_releases_same_key() {
     assert_eq!(store.load(b"key").await.unwrap(), Some(b"after".to_vec()));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn dropping_streaming_save_after_input_completion_does_not_cancel_commit() {
     let root = tempfile::tempdir().unwrap();
@@ -584,7 +668,7 @@ async fn wrong_domain_fails_closed_and_flush_waits_for_submitted_work() {
     ));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn configured_concurrency_bounds_different_keys() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -869,6 +953,21 @@ impl AsyncRead for PendingAsyncReader {
     }
 }
 
+struct NotifyingPendingReader(Option<oneshot::Sender<()>>);
+
+impl AsyncRead for NotifyingPendingReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+        std::task::Poll::Pending
+    }
+}
+
 struct PayloadThenPendingReader {
     bytes: Cursor<Vec<u8>>,
 }
@@ -973,7 +1072,7 @@ async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup(
     let root = tempfile::tempdir().unwrap();
     let unicode_root = root.path().join("sessões-客户端");
     std::fs::create_dir(&unicode_root).unwrap();
-    let store = AtomicBlobStore::open(&unicode_root, "v5", options())
+    let store = AtomicBlobStore::open(&unicode_root, "会话-v5", options())
         .await
         .unwrap();
     let key = "ключ/客户端".as_bytes();
@@ -988,9 +1087,9 @@ async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup(
 
     let hash = "0".repeat(64);
     let owned = unicode_root
-        .join("v5")
+        .join("会话-v5")
         .join(format!("{hash}.blob.tmp-v1.clear.{}", "1".repeat(64)));
-    let unrelated = unicode_root.join("v5").join("unrelated.tmp");
+    let unrelated = unicode_root.join("会话-v5").join("unrelated.tmp");
     std::fs::write(&owned, b"owned").unwrap();
     std::fs::write(&unrelated, b"unrelated").unwrap();
     let report = store
@@ -1002,6 +1101,7 @@ async fn windows_native_save_replace_inspect_quarantine_clear_and_owned_cleanup(
         vec![owned.file_name().unwrap().to_string_lossy()]
     );
     assert!(unrelated.is_file());
+    store.close().await.unwrap();
 }
 
 #[cfg(windows)]
@@ -1045,6 +1145,151 @@ async fn windows_new_clear_staging_uses_the_clear_time_for_cleanup_age() {
 }
 
 #[cfg(windows)]
+fn set_windows_modified(path: &Path, modified: SystemTime) {
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
+#[cfg(windows)]
+fn windows_owned_staging(namespace: &Path, kind: &str, identifier: char) -> PathBuf {
+    namespace.join(format!(
+        "{}.blob.tmp-v1.{kind}.{}",
+        "0".repeat(64),
+        identifier.to_string().repeat(64)
+    ))
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[allow(clippy::permissions_set_readonly_false)]
+async fn windows_cleanup_classifies_owned_names_ages_and_mixed_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AtomicBlobStore::open(root.path(), "cleanup", options())
+        .await
+        .unwrap();
+    let namespace = root.path().join("cleanup");
+    let minimum_age = Duration::from_secs(60 * 60);
+    let reference = SystemTime::now();
+
+    let stale_save = windows_owned_staging(&namespace, "save", '1');
+    let recent_save = windows_owned_staging(&namespace, "save", '2');
+    let stale_clear = windows_owned_staging(&namespace, "clear", '3');
+    let recent_clear = windows_owned_staging(&namespace, "clear", '4');
+    let boundary = windows_owned_staging(&namespace, "save", '5');
+    let removal_failure = windows_owned_staging(&namespace, "clear", '6');
+    let metadata_failure = windows_owned_staging(&namespace, "save", '7');
+    for path in [
+        &stale_save,
+        &recent_save,
+        &stale_clear,
+        &recent_clear,
+        &boundary,
+        &removal_failure,
+    ] {
+        std::fs::write(path, b"staging").unwrap();
+    }
+    std::fs::create_dir(&metadata_failure).unwrap();
+    for path in [&stale_save, &stale_clear, &removal_failure] {
+        set_windows_modified(path, reference - Duration::from_secs(2 * 60 * 60));
+    }
+    for path in [&recent_save, &recent_clear] {
+        set_windows_modified(path, reference - Duration::from_secs(30 * 60));
+    }
+    set_windows_modified(&boundary, reference - minimum_age);
+    let mut permissions = std::fs::metadata(&removal_failure).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&removal_failure, permissions).unwrap();
+
+    let malformed = [
+        format!("{}.blob.tmp-v1.save.short", "0".repeat(64)),
+        format!("{}.blob.tmp-v2.save.{}", "0".repeat(64), "8".repeat(64)),
+        format!("{}.wrong.tmp-v1.save.{}", "0".repeat(64), "9".repeat(64)),
+        format!("{}.blob.tmp-v1.other.{}", "0".repeat(64), "a".repeat(64)),
+        format!("{}.blob.tmp-v1.save.{}", "G".repeat(64), "b".repeat(64)),
+        "unrelated.tmp".to_owned(),
+    ];
+    for name in &malformed {
+        std::fs::write(namespace.join(name), b"unrelated").unwrap();
+    }
+
+    let mut report = store
+        .cleanup_stale_temporary_files(minimum_age)
+        .await
+        .unwrap();
+    report.removed.sort();
+    report.skipped.sort();
+    report
+        .failures
+        .sort_by(|left, right| left.identifier.cmp(&right.identifier));
+
+    let mut expected_removed = [&stale_save, &stale_clear, &boundary]
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned());
+    expected_removed.sort();
+    let mut expected_skipped = [&recent_save, &recent_clear]
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned());
+    expected_skipped.sort();
+    assert_eq!(report.removed, expected_removed);
+    assert_eq!(report.skipped, expected_skipped);
+    assert_eq!(
+        report
+            .failures
+            .iter()
+            .map(|failure| failure.identifier.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            metadata_failure.file_name().unwrap().to_string_lossy(),
+            removal_failure.file_name().unwrap().to_string_lossy(),
+        ]
+    );
+    for name in malformed {
+        assert!(namespace.join(name).is_file());
+    }
+
+    let mut permissions = std::fs::metadata(&removal_failure).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&removal_failure, permissions).unwrap();
+    store.close().await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_cleanup_reports_a_metadata_race_without_aborting() {
+    let root = tempfile::tempdir().unwrap();
+    let namespace = root.path().join("cleanup-race");
+    std::fs::create_dir(&namespace).unwrap();
+    let target = windows_owned_staging(&namespace, "save", 'c');
+    std::fs::write(&target, b"staging").unwrap();
+    let removed = Arc::new(AtomicBool::new(false));
+    let hook = {
+        let removed = Arc::clone(&removed);
+        let target = target.clone();
+        Arc::new(move |stage| {
+            if stage == TestStage::BeforeCleanupMetadata && !removed.swap(true, Ordering::SeqCst) {
+                std::fs::remove_file(&target)?;
+            }
+            Ok(())
+        })
+    };
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "cleanup-race", options(), hook)
+        .await
+        .unwrap();
+    let report = store
+        .cleanup_stale_temporary_files(Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert!(report.removed.is_empty());
+    assert!(report.skipped.is_empty());
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(
+        report.failures[0].identifier,
+        target.file_name().unwrap().to_string_lossy()
+    );
+    assert_eq!(report.failures[0].source.kind(), io::ErrorKind::NotFound);
+    store.close().await.unwrap();
+}
+
+#[cfg(windows)]
 #[tokio::test]
 async fn windows_quarantine_does_not_report_a_missing_namespace_as_a_missing_blob() {
     let root = tempfile::tempdir().unwrap();
@@ -1072,7 +1317,8 @@ fn windows_relative_root_child() {
     let Some(root) = std::env::var_os("ATOMIC_BLOB_WINDOWS_RELATIVE_ROOT_CHILD") else {
         return;
     };
-    std::env::set_current_dir(root).unwrap();
+    let root = PathBuf::from(root);
+    std::env::set_current_dir(&root).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -1088,6 +1334,7 @@ fn windows_relative_root_child() {
                 .components()
                 .any(|component| { matches!(component, Component::CurDir | Component::ParentDir) })
         );
+        std::env::set_current_dir(root.join("later")).unwrap();
 
         store.save(b"relative-key", b"old".to_vec()).await.unwrap();
         store.save(b"relative-key", b"new".to_vec()).await.unwrap();
@@ -1102,6 +1349,7 @@ fn windows_relative_root_child() {
             .unwrap();
         store.clear(b"relative-key").await.unwrap();
         assert_eq!(store.load(b"relative-key").await.unwrap(), None);
+        store.close().await.unwrap();
     });
 }
 
@@ -1110,6 +1358,7 @@ fn windows_relative_root_child() {
 fn windows_relative_root_support_is_exercised_in_an_isolated_process() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("unused")).unwrap();
+    std::fs::create_dir(root.path().join("later")).unwrap();
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -1174,7 +1423,273 @@ fn windows_extended_paths_preserve_non_unicode_wide_units() {
     assert_eq!(&encoded[8..], &[u16::from(b's'), 0xdfff, 0]);
 }
 
-#[cfg(unix)]
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_extended_length_root_runs_real_store_operations() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let mut root = temporary.path().to_path_buf();
+    while root.as_os_str().encode_wide().count() <= 300 {
+        root.push("long-segment-0123456789");
+    }
+    std::fs::create_dir_all(&root).unwrap();
+    let store = AtomicBlobStore::open(&root, "namespace-长", options())
+        .await
+        .unwrap();
+    let key = "opaque-ключ-客户端".as_bytes();
+    store.save(key, b"old".to_vec()).await.unwrap();
+    store.save(key, b"new".to_vec()).await.unwrap();
+    assert_eq!(store.load(key).await.unwrap(), Some(b"new".to_vec()));
+    let quarantine = store.quarantine(key).await.unwrap();
+    assert_eq!(
+        std::fs::read(quarantine.diagnostic_path).unwrap(),
+        envelope(b"new")
+    );
+    store.save(key, b"clear".to_vec()).await.unwrap();
+    store.clear(key).await.unwrap();
+    assert_eq!(store.load(key).await.unwrap(), None);
+    store.close().await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_non_unicode_root_is_exercised_when_the_host_accepts_it() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let component = OsString::from_wide(&[
+        u16::from(b'w'),
+        u16::from(b'i'),
+        u16::from(b'd'),
+        u16::from(b'e'),
+        0xd800,
+    ]);
+    let root = temporary.path().join(component);
+    if let Err(error) = std::fs::create_dir(&root) {
+        eprintln!(
+            "host filesystem rejected the non-Unicode root before the crate was invoked: {error}"
+        );
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::InvalidInput
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::Unsupported
+                    | io::ErrorKind::Other
+            ),
+            "unexpected environmental path-creation error: {error:?}"
+        );
+        return;
+    }
+
+    let store = AtomicBlobStore::open(&root, "wide", options())
+        .await
+        .unwrap();
+    store.save(b"key", b"value".to_vec()).await.unwrap();
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"value".to_vec()));
+    store.clear(b"key").await.unwrap();
+    store.close().await.unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_interruption_child() {
+    use std::io::Write;
+
+    let Some(mode) = std::env::var_os("ATOMIC_BLOB_WINDOWS_INTERRUPTION_MODE") else {
+        return;
+    };
+    let root = PathBuf::from(std::env::var_os("ATOMIC_BLOB_WINDOWS_INTERRUPTION_ROOT").unwrap());
+    let stage_name = std::env::var("ATOMIC_BLOB_WINDOWS_INTERRUPTION_STAGE").unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    if mode == "verify" {
+        runtime.block_on(async {
+            let store = AtomicBlobStore::open(&root, "interrupt", options())
+                .await
+                .unwrap();
+            let loaded = store.load(b"key").await.unwrap();
+            match stage_name.as_str() {
+                "save-before-replace" | "clear-before-rename" => {
+                    assert_eq!(loaded, Some(b"old".to_vec()));
+                }
+                "save-after-replace" => assert_eq!(loaded, Some(b"new".to_vec())),
+                "clear-after-rename" | "quarantine-after-rename" => {
+                    assert_eq!(loaded, None);
+                }
+                _ => panic!("unknown interruption stage {stage_name}"),
+            }
+
+            let namespace = root.join("interrupt");
+            for entry in std::fs::read_dir(&namespace).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if is_owned_temporary_filename(&name, ".blob") && entry.path().is_file() {
+                    let bytes = std::fs::read(entry.path()).unwrap();
+                    let payload =
+                        decode_reader(&format(), &mut Cursor::new(bytes), TEST_MAXIMUM).unwrap();
+                    assert!(
+                        payload == b"old" || payload == b"new",
+                        "staging file contained an unexpected complete payload"
+                    );
+                }
+            }
+            if stage_name == "quarantine-after-rename" {
+                let diagnostics = std::fs::read_dir(&namespace)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .contains(".blob.quarantine-v1.")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(diagnostics.len(), 1);
+                let payload = decode_reader(
+                    &format(),
+                    &mut Cursor::new(std::fs::read(diagnostics[0].path()).unwrap()),
+                    TEST_MAXIMUM,
+                )
+                .unwrap();
+                assert_eq!(payload, b"old");
+            }
+            store.close().await.unwrap();
+        });
+        return;
+    }
+
+    let target = match stage_name.as_str() {
+        "save-before-replace" => TestStage::BeforeCommit,
+        "save-after-replace" => TestStage::AfterCommit,
+        "clear-before-rename" => TestStage::BeforeRemove,
+        "clear-after-rename" => TestStage::AfterRemove,
+        "quarantine-after-rename" => TestStage::AfterQuarantineRename,
+        _ => panic!("unknown interruption stage {stage_name}"),
+    };
+    let signalled = AtomicBool::new(false);
+    let hook = Arc::new(move |stage| {
+        if stage == target && !signalled.swap(true, Ordering::SeqCst) {
+            println!("ATOMIC_BLOB_STAGE_REACHED");
+            std::io::stdout().flush().unwrap();
+            let mut command = String::new();
+            std::io::stdin().read_line(&mut command).unwrap();
+        }
+        Ok(())
+    });
+    runtime.block_on(async {
+        let store = AtomicBlobStore::open_with_test_hook(&root, "interrupt", options(), hook)
+            .await
+            .unwrap();
+        match stage_name.as_str() {
+            "save-before-replace" | "save-after-replace" => {
+                store.save(b"key", b"new".to_vec()).await.unwrap();
+            }
+            "clear-before-rename" | "clear-after-rename" => {
+                store.clear(b"key").await.unwrap();
+            }
+            "quarantine-after-rename" => {
+                store.quarantine(b"key").await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        store.close().await.unwrap();
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_child_process_interruptions_leave_only_permitted_states() {
+    use std::io::{BufRead, Read};
+    use std::process::{Command, Stdio};
+
+    fn run(stage: &str) {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockingAtomicBlobStore::open(root.path(), "interrupt", options()).unwrap();
+        store.save(b"key", b"old".to_vec()).unwrap();
+        store.close().unwrap();
+
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::windows_interruption_child",
+                "--nocapture",
+            ])
+            .env("ATOMIC_BLOB_WINDOWS_INTERRUPTION_MODE", "operate")
+            .env("ATOMIC_BLOB_WINDOWS_INTERRUPTION_ROOT", root.path())
+            .env("ATOMIC_BLOB_WINDOWS_INTERRUPTION_STAGE", stage)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert_ne!(
+                output.read_line(&mut line).unwrap(),
+                0,
+                "child exited before reaching {stage}"
+            );
+            if line.contains("ATOMIC_BLOB_STAGE_REACHED") {
+                break;
+            }
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let mut child_stdout = String::new();
+        output.read_to_string(&mut child_stdout).unwrap();
+        let mut child_stderr = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut child_stderr)
+            .unwrap();
+        if let Some(directory) = std::env::var_os("ATOMIC_BLOB_TEST_ARTIFACT_DIR") {
+            let directory = PathBuf::from(directory).join(stage);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("child.stdout.log"), child_stdout).unwrap();
+            std::fs::write(directory.join("child.stderr.log"), child_stderr).unwrap();
+            for entry in std::fs::read_dir(root.path().join("interrupt")).unwrap() {
+                let entry = entry.unwrap();
+                if entry.path().is_file() {
+                    std::fs::copy(entry.path(), directory.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::windows_interruption_child",
+                "--nocapture",
+            ])
+            .env("ATOMIC_BLOB_WINDOWS_INTERRUPTION_MODE", "verify")
+            .env("ATOMIC_BLOB_WINDOWS_INTERRUPTION_ROOT", root.path())
+            .env("ATOMIC_BLOB_WINDOWS_INTERRUPTION_STAGE", stage)
+            .status()
+            .unwrap();
+        assert!(status.success(), "verification failed for {stage}");
+    }
+
+    for stage in [
+        "save-before-replace",
+        "save-after-replace",
+        "clear-before-rename",
+        "clear-after-rename",
+        "quarantine-after-rename",
+    ] {
+        run(stage);
+    }
+}
+
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn save_load_replace_clear_and_missing_are_complete() {
     let root = tempfile::tempdir().unwrap();
@@ -1193,7 +1708,7 @@ async fn save_load_replace_clear_and_missing_are_complete() {
     assert_eq!(store.load(key).await.unwrap(), None);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn inspection_and_quarantine_are_non_destructive() {
     let root = tempfile::tempdir().unwrap();
@@ -1217,7 +1732,7 @@ async fn inspection_and_quarantine_are_non_destructive() {
     ));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn quarantine_sync_failure_preserves_the_committed_destination() {
     let root = tempfile::tempdir().unwrap();
@@ -1247,7 +1762,23 @@ async fn quarantine_sync_failure_preserves_the_committed_destination() {
     };
     assert_eq!(source.to_string(), "injected quarantine sync failure");
     assert!(quarantine.diagnostic_path.is_file());
+    assert_eq!(
+        decode_reader(
+            &format(),
+            &mut Cursor::new(std::fs::read(&quarantine.diagnostic_path).unwrap()),
+            TEST_MAXIMUM
+        )
+        .unwrap(),
+        b"diagnostic payload"
+    );
     assert_eq!(store.inspect(key).await.unwrap().state, BlobState::Absent);
+    assert_eq!(store.load(key).await.unwrap(), None);
+    store.clear(key).await.unwrap();
+    assert!(matches!(
+        store.quarantine(key).await,
+        Err(AtomicBlobStoreError::QuarantineSourceMissing)
+    ));
+    store.close().await.unwrap();
 }
 
 #[cfg(unix)]
@@ -1269,7 +1800,7 @@ async fn unix_cleanup_is_validated_and_explicitly_unsupported() {
     ));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_dispatch() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1315,7 +1846,7 @@ async fn cancelled_maintenance_barrier_waits_for_earlier_work_and_blocks_later_d
     assert_eq!(store.load(b"later").await.unwrap(), Some(b"two".to_vec()));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1432,7 +1963,7 @@ async fn relative_root_is_stable_after_current_directory_changes() {
     assert!(!later_directory.join("store-root").exists());
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn store_remains_usable_after_construction_runtime_is_dropped() {
     let root = tempfile::tempdir().unwrap();
@@ -1463,7 +1994,109 @@ fn store_remains_usable_after_construction_runtime_is_dropped() {
     assert_eq!(later_runtime.block_on(store.load(b"key")).unwrap(), None);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+#[test]
+fn caller_runtime_loss_before_input_completion_preserves_the_old_blob() {
+    let root = tempfile::tempdir().unwrap();
+    let construction_runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let store = construction_runtime
+        .block_on(AtomicBlobStore::open(
+            root.path(),
+            "runtime-before",
+            options(),
+        ))
+        .unwrap();
+    construction_runtime
+        .block_on(store.save(b"key", b"old".to_vec()))
+        .unwrap();
+    drop(construction_runtime);
+
+    let caller_runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (polled_sender, polled_receiver) = oneshot::channel();
+    let streaming_store = store.clone();
+    caller_runtime.spawn(async move {
+        let mut source = NotifyingPendingReader(Some(polled_sender));
+        streaming_store.save_from(b"key", &mut source, 1).await
+    });
+    caller_runtime.block_on(polled_receiver).unwrap();
+    drop(caller_runtime);
+
+    let recovery_runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    recovery_runtime.block_on(store.flush()).unwrap();
+    assert_eq!(
+        recovery_runtime.block_on(store.load(b"key")).unwrap(),
+        Some(b"old".to_vec())
+    );
+    recovery_runtime.block_on(store.close()).unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn caller_runtime_loss_after_input_completion_does_not_cancel_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let hook = {
+        let armed = Arc::clone(&armed);
+        Arc::new(move |stage| {
+            if stage == TestStage::BeforeCommit && armed.load(Ordering::SeqCst) {
+                let _ = started_sender.send(());
+                release_receiver.lock().unwrap().recv().unwrap();
+            }
+            Ok(())
+        })
+    };
+    let construction_runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let store = construction_runtime
+        .block_on(AtomicBlobStore::open_with_test_hook(
+            root.path(),
+            "runtime-after",
+            options(),
+            hook,
+        ))
+        .unwrap();
+    construction_runtime
+        .block_on(store.save(b"key", b"old".to_vec()))
+        .unwrap();
+    armed.store(true, Ordering::SeqCst);
+    drop(construction_runtime);
+
+    let caller_runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let streaming_store = store.clone();
+    caller_runtime.spawn(async move {
+        streaming_store
+            .save_from(b"key", &mut Cursor::new(b"new"), 3)
+            .await
+    });
+    let reached_commit = caller_runtime.spawn_blocking(move || started_receiver.recv().unwrap());
+    caller_runtime.block_on(reached_commit).unwrap();
+    drop(caller_runtime);
+    release_sender.send(()).unwrap();
+
+    let recovery_runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    recovery_runtime.block_on(store.flush()).unwrap();
+    assert_eq!(
+        recovery_runtime.block_on(store.load(b"key")).unwrap(),
+        Some(b"new".to_vec())
+    );
+    recovery_runtime.block_on(store.close()).unwrap();
+}
+
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn root_and_namespace_types_are_validated() {
     let missing = tempfile::tempdir().unwrap().path().join("missing");
@@ -1487,7 +2120,7 @@ async fn root_and_namespace_types_are_validated() {
     ));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn missing_namespace_is_not_reported_as_a_missing_blob() {
     let root = tempfile::tempdir().unwrap();
@@ -1526,7 +2159,7 @@ fn io_and_atomic_commit_errors_preserve_sources() {
     assert_eq!(commit_error.source().unwrap().to_string(), "commit");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_blob() {
     let root = tempfile::tempdir().unwrap();
@@ -1549,7 +2182,7 @@ async fn cancelled_operations_remain_fifo_and_cannot_resurrect_a_blob() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
     let before_commit = [
@@ -1600,7 +2233,7 @@ async fn save_wrapper_failpoints_preserve_complete_old_or_new_values() {
     assert_eq!(store.load(b"key").await.unwrap(), Some(b"new".to_vec()));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
     for failed_stage in [
@@ -1637,9 +2270,34 @@ async fn streaming_save_failpoints_preserve_complete_old_or_new_values() {
         }
         assert_eq!(store.load(b"key").await.unwrap(), Some(b"old".to_vec()));
     }
+
+    let root = tempfile::tempdir().unwrap();
+    let initial = AtomicBlobStore::open(root.path(), "v4", options())
+        .await
+        .unwrap();
+    initial.save(b"key", b"old".to_vec()).await.unwrap();
+    initial.close().await.unwrap();
+    let hook = Arc::new(|stage| {
+        if stage == TestStage::AfterCommit {
+            Err(io::Error::other("injected streaming post-commit failure"))
+        } else {
+            Ok(())
+        }
+    });
+    let store = AtomicBlobStore::open_with_test_hook(root.path(), "v4", options(), hook)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .save_from(b"key", &mut Cursor::new(b"new"), 3)
+            .await
+            .is_err()
+    );
+    assert_eq!(store.load(b"key").await.unwrap(), Some(b"new".to_vec()));
+    store.close().await.unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
     for failed_stage in [
@@ -1674,7 +2332,7 @@ async fn clear_wrapper_failpoints_expose_only_old_or_absent() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1726,7 +2384,7 @@ async fn blocked_cancelled_work_keeps_same_key_order_but_not_other_keys() {
     assert_eq!(store.load(b"same").await.unwrap(), None);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn cloned_handles_and_many_transient_keys_remain_operational() {
     let root = tempfile::tempdir().unwrap();
@@ -1746,7 +2404,7 @@ async fn cloned_handles_and_many_transient_keys_remain_operational() {
     assert_eq!(store.registry_entries(), 0);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
     let root = tempfile::tempdir().unwrap();
@@ -1787,14 +2445,17 @@ async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
     close.await.unwrap().unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn last_handle_drop_drains_an_accepted_complete_operation() {
     let root = tempfile::tempdir().unwrap();
-    let (committed_sender, committed_receiver) = std::sync::mpsc::sync_channel(1);
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
     let hook = Arc::new(move |stage| {
-        if stage == TestStage::AfterCommit {
-            let _ = committed_sender.send(());
+        if matches!(
+            stage,
+            TestStage::AfterCommit | TestStage::WorkerStopped | TestStage::CoordinatorStopped
+        ) {
+            let _ = event_sender.send(stage);
         }
         Ok(())
     });
@@ -1805,9 +2466,67 @@ async fn last_handle_drop_drains_an_accepted_complete_operation() {
     drop(operation);
     drop(store);
 
-    tokio::task::spawn_blocking(move || committed_receiver.recv().unwrap())
+    let events = tokio::task::spawn_blocking(move || {
+        (0..3)
+            .map(|_| event_receiver.recv().unwrap())
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap();
+    assert!(events.contains(&TestStage::AfterCommit));
+    assert!(events.contains(&TestStage::WorkerStopped));
+    assert!(events.contains(&TestStage::CoordinatorStopped));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn last_handle_drop_drains_streaming_work_after_input_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::BeforeCommit {
+            let _ = started_sender.send(());
+            release_receiver.lock().unwrap().recv().unwrap();
+        }
+        if matches!(
+            stage,
+            TestStage::AfterCommit | TestStage::WorkerStopped | TestStage::CoordinatorStopped
+        ) {
+            let _ = event_sender.send(stage);
+        }
+        Ok(())
+    });
+    let store =
+        AtomicBlobStore::open_with_test_hook(root.path(), "stream-drop-drain", options(), hook)
+            .await
+            .unwrap();
+    let streaming_store = store.clone();
+    let task = tokio::spawn(async move {
+        streaming_store
+            .save_from(b"key", &mut Cursor::new(b"value"), 5)
+            .await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
         .await
         .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    drop(store);
+    release_sender.send(()).unwrap();
+
+    let events = tokio::task::spawn_blocking(move || {
+        (0..3)
+            .map(|_| event_receiver.recv().unwrap())
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap();
+    assert!(events.contains(&TestStage::AfterCommit));
+    assert!(events.contains(&TestStage::WorkerStopped));
+    assert!(events.contains(&TestStage::CoordinatorStopped));
 }
 
 #[cfg(unix)]
@@ -1871,7 +2590,7 @@ fn actual_atomic_writer_preserves_old_value_until_commit_and_drop_discards() {
     assert_eq!(std::fs::read(path).unwrap(), b"new");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn canonical_load_ignores_unrelated_temporary_files() {
     let root = tempfile::tempdir().unwrap();

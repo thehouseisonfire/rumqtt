@@ -1,4 +1,39 @@
 use super::*;
+
+#[cfg(any(unix, windows))]
+pub(crate) fn fail_queued_after_coordinator_panic(receiver: &Receiver<CoordinatorEvent>) {
+    while let Ok(event) = receiver.try_recv() {
+        match event {
+            CoordinatorEvent::Submission(submission) => {
+                deliver_error(submission.operation, AtomicBlobStoreError::EngineFailed);
+            }
+            CoordinatorEvent::Maintenance(submission) => {
+                let _ = submission
+                    .sender
+                    .send(Err(AtomicBlobStoreError::EngineFailed));
+            }
+            CoordinatorEvent::MaintenanceCompletion(completion) => {
+                if let Some((sender, _)) = completion.outcome {
+                    let _ = sender.send(Err(AtomicBlobStoreError::EngineFailed));
+                }
+            }
+            CoordinatorEvent::Flush(sender) => {
+                let _ = sender.send(Err(AtomicBlobStoreError::EngineFailed));
+            }
+            CoordinatorEvent::Close(close) => {
+                let _ = close
+                    .sender
+                    .send(Err(AtomicBlobStoreError::ShutdownFailure));
+            }
+            CoordinatorEvent::Completion(completion) => {
+                if let Some((operation, _)) = completion.outcome {
+                    deliver_error(operation, AtomicBlobStoreError::EngineFailed);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(any(unix, windows))]
 #[allow(clippy::too_many_lines)]
 pub(crate) fn run_scheduler(
@@ -6,7 +41,7 @@ pub(crate) fn run_scheduler(
     receiver: &Receiver<CoordinatorEvent>,
     lifecycle: &Arc<Mutex<Lifecycle>>,
     mut worker_pool: WorkerPool,
-    #[cfg(all(test, unix))] registry_entries: &std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, any(unix, windows)))] registry_entries: &std::sync::atomic::AtomicUsize,
 ) {
     let mut queues: HashMap<[u8; 32], VecDeque<QueuedOperation>> = HashMap::new();
     let mut active = HashSet::new();
@@ -14,7 +49,7 @@ pub(crate) fn run_scheduler(
     let mut maintenance_active = false;
 
     while let Ok(event) = receiver.recv() {
-        #[cfg(all(test, unix))]
+        #[cfg(all(test, any(unix, windows)))]
         if let Some(hook) = &config.hook {
             hook(TestStage::CoordinatorEvent).expect("test-requested coordinator failure");
         }
@@ -39,11 +74,11 @@ pub(crate) fn run_scheduler(
                         operation: submission.operation,
                         completion_sender: submission.completion_sender,
                     });
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 registry_entries.store(queues.len(), std::sync::atomic::Ordering::SeqCst);
                 dispatch_if_idle(key_hash, config, &mut queues, &mut active, &mut worker_pool);
                 dispatch_available(config, &mut queues, &mut active, &mut worker_pool);
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 registry_entries.store(queues.len(), std::sync::atomic::Ordering::SeqCst);
             }
             CoordinatorEvent::Completion(completion) => {
@@ -64,7 +99,7 @@ pub(crate) fn run_scheduler(
                 {
                     queues.remove(&completion.key_hash);
                 }
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 registry_entries.store(queues.len(), std::sync::atomic::Ordering::SeqCst);
                 if let Some((operation, result)) = outcome {
                     deliver(operation, result);
@@ -217,7 +252,7 @@ pub(crate) fn run_scheduler(
                     | CoordinatorEvent::MaintenanceCompletion(_) => {}
                 }
             }
-            #[cfg(all(test, unix))]
+            #[cfg(all(test, any(unix, windows)))]
             if let Some(hook) = &config.hook {
                 hook(TestStage::CoordinatorStopping)
                     .expect("test-requested coordinator stopping failure");
@@ -323,7 +358,7 @@ pub(crate) fn dispatch_maintenance(
                 completion_sender,
             } = submission;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 hit_test_stage(
                     &config,
                     TestStage::MaintenanceStarted,
@@ -391,7 +426,7 @@ pub(crate) fn dispatch_if_idle(
                 config.format.filename_suffix()
             ));
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 hit_test_stage(
                     &config,
                     TestStage::OperationStarted,

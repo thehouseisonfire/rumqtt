@@ -4,6 +4,9 @@
 
 ### Added
 
+- Add retained native Windows validation for the protocol-neutral blob store,
+  including deterministic interruption recovery, both facades, release builds,
+  and consumers built from the extracted package.
 - Add an independent, protocol-neutral blocking consumer exercise and a paired
   persistence benchmark matrix for lifecycle latency, threads, RSS,
   allocations, complete/streaming I/O, and coordination scaling.

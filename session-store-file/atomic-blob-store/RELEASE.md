@@ -10,6 +10,10 @@ Engineering readiness requires the formatting, feature, test, lint,
 documentation, package, dependency, terminology, compatibility-fixture, and
 supported-target compile checks documented in the repository. Native platform
 evidence is tracked separately and is not inferred from cross-compilation.
+Before publication, manually dispatch the native Windows file-store workflow
+and require both the pinned `windows-2022` and compatibility
+`windows-latest` jobs, including extracted-package consumers, to pass without
+ignored failures.
 
 Before publication, maintainers must still explicitly accept compatibility,
 security-response, documentation, CI, and release-cadence ownership. The

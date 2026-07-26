@@ -14,9 +14,10 @@
 //! SMB, container volumes, virtual disks, filesystem or mount behavior,
 //! controller caches, or persistence under arbitrary power loss.
 //!
-//! A successful save means the `atomic-write-file` Unix commit operation
-//! synchronized its temporary file, atomically renamed it over the canonical
-//! path, and synchronized the containing namespace directory. These observable
+//! A successful save means the platform backend synchronized its staging file
+//! and completed an atomic replacement of the canonical path. Unix uses
+//! `atomic-write-file` and synchronizes the containing directory; Windows uses
+//! exclusive native staging plus a write-through move. These observable
 //! operations establish canonical-path old-or-new process-interruption
 //! semantics, not a universal hardware power-loss guarantee.
 //!

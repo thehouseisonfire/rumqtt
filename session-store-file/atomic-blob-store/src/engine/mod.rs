@@ -13,7 +13,7 @@ use operation::*;
 #[cfg(any(unix, windows))]
 mod scheduler;
 #[cfg(any(unix, windows))]
-use scheduler::run_scheduler;
+use scheduler::{fail_queued_after_coordinator_panic, run_scheduler};
 mod stream;
 pub(crate) use stream::{LoadStreamEndpoint, SaveStreamEndpoint};
 #[cfg(any(unix, windows))]
@@ -107,7 +107,7 @@ pub(crate) struct Inner {
     pub(crate) lifecycle: Arc<Mutex<Lifecycle>>,
     #[cfg(any(unix, windows))]
     pub(crate) coordinator: Arc<Mutex<CoordinatorJoin>>,
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     #[allow(dead_code)]
     pub(crate) registry_entries: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -166,7 +166,7 @@ pub(crate) struct StoreConfig {
     pub(crate) format: BlobFormatIdentity,
     pub(crate) maximum: u64,
     pub(crate) max_concurrent_operations: usize,
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     pub(crate) hook: Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
 }
 
@@ -248,33 +248,48 @@ impl EngineHandle {
         let config = Arc::new(config);
         let (submissions, receiver) = flume::unbounded();
         let lifecycle = Arc::new(Mutex::new(Lifecycle::Open));
-        #[cfg(all(test, unix))]
+        #[cfg(all(test, any(unix, windows)))]
         let registry_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let scheduler_config = Arc::clone(&config);
         let scheduler_lifecycle = Arc::clone(&lifecycle);
         let worker_pool = WorkerPool::new(
             config.max_concurrent_operations,
-            #[cfg(all(test, unix))]
+            #[cfg(all(test, any(unix, windows)))]
             config.hook.clone(),
         )?;
-        #[cfg(all(test, unix))]
+        #[cfg(all(test, any(unix, windows)))]
         let scheduler_registry_entries = Arc::clone(&registry_entries);
         let coordinator = std::thread::Builder::new()
             .name("atomic-blob-store-coordinator".into())
             .spawn(move || {
+                #[cfg(all(test, any(unix, windows)))]
+                struct CoordinatorExitNotification(
+                    Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
+                );
+                #[cfg(all(test, any(unix, windows)))]
+                impl Drop for CoordinatorExitNotification {
+                    fn drop(&mut self) {
+                        if let Some(hook) = &self.0 {
+                            let _ = hook(TestStage::CoordinatorStopped);
+                        }
+                    }
+                }
+                #[cfg(all(test, any(unix, windows)))]
+                let _exit_notification = CoordinatorExitNotification(scheduler_config.hook.clone());
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_scheduler(
                         &scheduler_config,
                         &receiver,
                         &scheduler_lifecycle,
                         worker_pool,
-                        #[cfg(all(test, unix))]
+                        #[cfg(all(test, any(unix, windows)))]
                         &scheduler_registry_entries,
                     );
                 }));
                 if outcome.is_err() {
                     *scheduler_lifecycle.lock().expect("lifecycle lock poisoned") =
                         Lifecycle::Failed;
+                    fail_queued_after_coordinator_panic(&receiver);
                 }
             })
             .map_err(|source| AtomicBlobStoreError::Io {
@@ -287,13 +302,13 @@ impl EngineHandle {
                 submissions,
                 lifecycle,
                 coordinator: Arc::new(Mutex::new(CoordinatorJoin::new(coordinator))),
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 registry_entries,
             }),
         })
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     #[allow(dead_code)]
     pub(crate) fn open_with_test_hook(
         root: impl Into<PathBuf>,
@@ -331,6 +346,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::Load { sender },
                 receiver,
@@ -354,6 +370,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::Save { payload, sender },
                 receiver,
@@ -388,6 +405,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit_operation(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::SaveStream {
                     declared_len,
@@ -422,6 +440,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit_operation(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::LoadStream {
                     chunks: Some(chunks_sender),
@@ -453,6 +472,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::Clear { sender },
                 receiver,
@@ -476,6 +496,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::Inspect { sender },
                 receiver,
@@ -499,6 +520,7 @@ impl EngineHandle {
             let (sender, receiver) = flume::bounded(1);
             submit(
                 &self.inner.submissions,
+                &self.inner.lifecycle,
                 key_hash(canonical_key),
                 Operation::Quarantine { sender },
                 receiver,
@@ -526,6 +548,20 @@ impl EngineHandle {
                 return Pending::resolved(Err(AtomicBlobStoreError::InvalidCleanupAge));
             }
             let (sender, receiver) = flume::bounded(1);
+            let state = self
+                .inner
+                .lifecycle
+                .lock()
+                .expect("lifecycle lock poisoned");
+            match *state {
+                Lifecycle::Open => {}
+                Lifecycle::Failed => {
+                    return Pending::resolved(Err(AtomicBlobStoreError::EngineFailed));
+                }
+                Lifecycle::Closing | Lifecycle::Closed | Lifecycle::ShutdownFailed => {
+                    return Pending::resolved(Err(AtomicBlobStoreError::StoreClosed));
+                }
+            }
             if self
                 .inner
                 .submissions
@@ -560,6 +596,20 @@ impl EngineHandle {
         #[cfg(any(unix, windows))]
         {
             let (sender, receiver) = flume::bounded(1);
+            let state = self
+                .inner
+                .lifecycle
+                .lock()
+                .expect("lifecycle lock poisoned");
+            match *state {
+                Lifecycle::Open => {}
+                Lifecycle::Failed => {
+                    return Pending::resolved(Err(AtomicBlobStoreError::EngineFailed));
+                }
+                Lifecycle::Closing | Lifecycle::Closed | Lifecycle::ShutdownFailed => {
+                    return Pending::resolved(Err(AtomicBlobStoreError::StoreClosed));
+                }
+            }
             if self
                 .inner
                 .submissions
@@ -596,6 +646,18 @@ impl EngineHandle {
         #[cfg(any(unix, windows))]
         {
             let (sender, receiver) = flume::bounded(1);
+            let state = self
+                .inner
+                .lifecycle
+                .lock()
+                .expect("lifecycle lock poisoned");
+            match *state {
+                Lifecycle::Closed => return self.closed_pending(Ok(())),
+                Lifecycle::ShutdownFailed | Lifecycle::Failed => {
+                    return self.closed_pending(Err(AtomicBlobStoreError::ShutdownFailure));
+                }
+                Lifecycle::Open | Lifecycle::Closing => {}
+            }
             if self
                 .inner
                 .submissions
@@ -683,10 +745,21 @@ pub(crate) fn unsupported_future<T: Send + 'static>() -> Pending<T> {
 #[cfg(any(unix, windows))]
 pub(crate) fn submit<T: Send + 'static>(
     submissions: &Sender<CoordinatorEvent>,
+    lifecycle: &Mutex<Lifecycle>,
     key_hash: [u8; 32],
     operation: Operation,
     receiver: Receiver<Result<T, AtomicBlobStoreError>>,
 ) -> Pending<T> {
+    let state = lifecycle.lock().expect("lifecycle lock poisoned");
+    match *state {
+        Lifecycle::Open => {}
+        Lifecycle::Failed => {
+            return Pending::resolved(Err(AtomicBlobStoreError::EngineFailed));
+        }
+        Lifecycle::Closing | Lifecycle::Closed | Lifecycle::ShutdownFailed => {
+            return Pending::resolved(Err(AtomicBlobStoreError::StoreClosed));
+        }
+    }
     let submission = Submission {
         key_hash,
         operation,
@@ -704,9 +777,18 @@ pub(crate) fn submit<T: Send + 'static>(
 #[cfg(any(unix, windows))]
 pub(crate) fn submit_operation(
     submissions: &Sender<CoordinatorEvent>,
+    lifecycle: &Mutex<Lifecycle>,
     key_hash: [u8; 32],
     operation: Operation,
 ) -> Result<(), AtomicBlobStoreError> {
+    let state = lifecycle.lock().expect("lifecycle lock poisoned");
+    match *state {
+        Lifecycle::Open => {}
+        Lifecycle::Failed => return Err(AtomicBlobStoreError::EngineFailed),
+        Lifecycle::Closing | Lifecycle::Closed | Lifecycle::ShutdownFailed => {
+            return Err(AtomicBlobStoreError::StoreClosed);
+        }
+    }
     submissions
         .send(CoordinatorEvent::Submission(Submission {
             key_hash,
@@ -716,7 +798,8 @@ pub(crate) fn submit_operation(
         .map_err(|_| AtomicBlobStoreError::EngineFailed)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TestStage {
     CoordinatorEvent,
@@ -724,6 +807,8 @@ pub(crate) enum TestStage {
     WorkerStart,
     WorkerDispatch,
     WorkerExit,
+    WorkerStopped,
+    CoordinatorStopped,
     OperationStarted,
     MaintenanceStarted,
     BeforeEnvelope,
@@ -738,9 +823,13 @@ pub(crate) enum TestStage {
     BeforeDirectorySync,
     AfterDirectorySync,
     BeforeCleanup,
+    BeforeCleanupMetadata,
+    BeforeCleanupRemove,
+    BeforeQuarantineRename,
+    AfterQuarantineRename,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 pub(crate) fn hit_test_stage(
     config: &StoreConfig,
     stage: TestStage,

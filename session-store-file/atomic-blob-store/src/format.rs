@@ -60,7 +60,7 @@ pub(crate) fn write_stream_envelope(
         })?;
     let mut checksum = crc32c::crc32c(&header);
     let mut written = 0_u64;
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     let mut during_write_hook_hit = false;
 
     while let Ok(message) = chunks.recv() {
@@ -83,7 +83,7 @@ pub(crate) fn write_stream_envelope(
                     })?;
                 checksum = crc32c::crc32c_append(checksum, &chunk);
                 written += count;
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 if !during_write_hook_hit {
                     hit_test_stage(
                         config,
@@ -91,7 +91,7 @@ pub(crate) fn write_stream_envelope(
                         StoreOperation::WriteEnvelope,
                     )?;
                 }
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 {
                     during_write_hook_hit = true;
                 }
