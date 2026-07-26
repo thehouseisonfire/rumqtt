@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thehouseisonfire/rumqtt/benchmarks/schema/rumqtt-library-bench-output-v2.schema.json",
+  "title": "matched MQTT library benchmark output v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "scenario",
+    "started_at_unix",
+    "finished_at_unix",
+    "client",
+    "config",
+    "effective_config",
+    "metrics",
+    "samples",
+    "quality",
+    "environment"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "run_id": {"type": "string", "minLength": 1},
+    "scenario": {"type": "string", "minLength": 1},
+    "started_at_unix": {"type": "integer", "minimum": 0},
+    "finished_at_unix": {"type": "integer", "minimum": 0},
+    "client": {"enum": ["rumqttc", "mqtt5"]},
+    "config": {"type": "object"},
+    "effective_config": {"type": "object"},
+    "metrics": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "number"}
+    },
+    "samples": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "number"}
+      }
+    },
+    "quality": {
+      "type": "object",
+      "required": ["valid"],
+      "properties": {"valid": {"type": "boolean"}}
+    },
+    "environment": {"type": "object"}
+  }
+}

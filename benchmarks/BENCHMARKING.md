@@ -68,6 +68,21 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
   itself changes or experience shows the threshold is unrealistic.
 - Feature-gated scenarios declare `cargo_features` in TOML. Keep the same
   feature set across compared branches.
+- For `compare-libraries`, the runner starts each backend in a fresh subprocess
+  and alternates execution order. Never run the paired backends concurrently.
+- Matched message identity is carried in MQTT 5 Correlation Data, so payload
+  size remains the exact immutable application payload size, including 0 B.
+- QoS 0 completion means socket flush and QoS 1 completion means successful
+  PUBACK. Subscriber-observed unique deliveries remain the throughput metric.
+- Publishing stops at the measurement deadline. Loss, duplicates, malformed
+  messages, rejection, overload, or an incomplete bounded drain invalidate a
+  matched run.
+- Matched throughput counts only unique deliveries observed by the measurement
+  deadline, using the adapter's observation timestamp rather than task wake-up
+  time. Deliveries completed during the bounded drain are reported separately
+  and contribute to loss/quality accounting, not timed throughput.
+- Matched latency ends at the same adapter observation timestamp, so channel
+  backlog or later receiver-task scheduling is excluded from latency samples.
 - Soak scenarios intentionally run longer than normal throughput scenarios.
   Run them on controlled hardware and avoid mixing soak results with short
   throughput runs.
@@ -96,3 +111,14 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
 - External comparisons are meaningful only when the recorded mqttv5-cli
   version, broker, transport, scenario, and machine are held fixed. Profiling
   runs perturb timing and must not be mixed into regression samples.
+- Matched comparisons use a ±5% practical-equivalence band. A winner requires
+  the complete paired confidence interval beyond that band; equivalence
+  requires the complete interval inside it.
+
+## Version Updates
+
+The `mqtt5` dependency is exact-version pinned and `Cargo.lock` is benchmark
+provenance. To update either client, update the dependency or workspace source,
+regenerate the lockfile, update the documented version, run both adapter smoke
+tests, and rerun both sides of every published scenario. Never merge samples
+from different client versions.

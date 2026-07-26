@@ -25,9 +25,11 @@ from typing import Any
 
 
 OUTPUT_SCHEMA_VERSION = 1
+MATCHED_OUTPUT_SCHEMA_VERSION = 2
 VALID_CARGO_PROFILES = {"dev", "release"}
 VALID_TRANSPORTS = {"tcp", "tls", "websocket"}
-VALID_CARGO_FEATURES = {"url", "websocket"}
+MATCHED_TRANSPORTS = {"tcp", "tls"}
+VALID_CARGO_FEATURES = {"alloc-metrics", "url", "websocket"}
 QUALITY_FIELDS = {
     "min_success_rate",
     "min_measured_runs",
@@ -75,6 +77,18 @@ def scenario_file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def certificate_metadata(ca_cert: str | None) -> dict[str, str] | None:
+    if ca_cert is None:
+        return None
+    path = Path(ca_cert).expanduser().resolve()
+    if not path.is_file():
+        raise RuntimeError(f"CA certificate does not exist or is not a file: {path}")
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 def rustc_version(root: Path) -> str | None:
     proc = run_process(["rustc", "--version"], cwd=root)
     if proc.returncode != 0:
@@ -120,10 +134,11 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
     for key in ("higher_is_better", "requires_broker"):
         if not isinstance(scenario.get(key), bool):
             raise RuntimeError(f"{path}: missing boolean field '{key}'")
-    if scenario["group"] not in {"client", "codec", "options", "persistence"}:
+    if scenario["group"] not in {"client", "matched", "codec", "options", "persistence"}:
         raise RuntimeError(f"{path}: unsupported benchmark group")
     commands = {
         "client": {"throughput", "latency", "connections"},
+        "matched": {"throughput", "latency", "connections"},
         "codec": {"encode", "decode", "roundtrip"},
         "options": {"parse-url"},
         "persistence": {"envelope", "codec", "file-store", "coordination", "growth", "mqtt"},
@@ -134,7 +149,7 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
         raise RuntimeError(f"{path}: args must be a table")
     validate_transport(path, scenario)
     validate_cargo_features(path, scenario.get("cargo_features"))
-    expected_requires_broker = scenario["group"] == "client" or (
+    expected_requires_broker = scenario["group"] in {"client", "matched"} or (
         scenario["group"] == "persistence" and scenario["command"] == "mqtt"
     )
     if scenario["requires_broker"] != expected_requires_broker:
@@ -147,13 +162,16 @@ def validate_transport(path: Path, scenario: dict[str, Any]) -> None:
     transport = scenario.get("transport")
     if transport is None:
         return
-    if scenario["group"] != "client" and not (
+    if scenario["group"] not in {"client", "matched"} and not (
         scenario["group"] == "persistence" and scenario["command"] == "mqtt"
     ):
-        raise RuntimeError(f"{path}: transport is only supported for client or persistence MQTT scenarios")
+        raise RuntimeError(f"{path}: transport is only supported for client, matched, or persistence MQTT scenarios")
     if not isinstance(transport, str) or transport not in VALID_TRANSPORTS:
         allowed = ", ".join(sorted(VALID_TRANSPORTS))
         raise RuntimeError(f"{path}: transport must be one of: {allowed}")
+    if scenario["group"] == "matched" and transport not in MATCHED_TRANSPORTS:
+        allowed = ", ".join(sorted(MATCHED_TRANSPORTS))
+        raise RuntimeError(f"{path}: matched transport must be one of: {allowed}")
 
 
 def validate_cargo_features(path: Path, features: Any) -> None:
@@ -228,11 +246,17 @@ def validate_broker_requirement(scenario: dict[str, Any], broker_url: str | None
     if broker_url is None or "transport" not in scenario:
         return
     scheme = broker_url.split(":", 1)[0].lower()
-    expected_schemes = {
-        "tcp": {"mqtt"},
-        "tls": {"mqtts", "ssl"},
-        "websocket": {"ws"},
-    }[scenario["transport"]]
+    if scenario["group"] == "matched":
+        expected_schemes = {
+            "tcp": {"mqtt"},
+            "tls": {"mqtts"},
+        }[scenario["transport"]]
+    else:
+        expected_schemes = {
+            "tcp": {"mqtt"},
+            "tls": {"mqtts", "ssl"},
+            "websocket": {"ws"},
+        }[scenario["transport"]]
     if scheme not in expected_schemes:
         expected = ", ".join(f"{value}://" for value in sorted(expected_schemes))
         raise RuntimeError(
@@ -289,6 +313,42 @@ def scenario_command(
                 cmd.append(flag)
             continue
         cmd.extend([flag, str(value)])
+    return cmd
+
+
+def matched_command(
+    scenario: dict[str, Any],
+    *,
+    client: str,
+    run_id: str,
+    broker_url: str,
+    ca_cert: str | None = None,
+    cargo_profile: str = "release",
+) -> list[str]:
+    if scenario["group"] != "matched":
+        raise RuntimeError("library comparison requires a matched scenario")
+    cmd = ["cargo", "run"]
+    if cargo_profile == "release":
+        cmd.append("--release")
+    features = sorted(set(scenario.get("cargo_features", [])))
+    if features:
+        cmd.extend(["--features", ",".join(features)])
+    cmd.extend([
+        "-p", "benchmarks", "--bin", "rumqtt-library-bench", "--",
+        "--client", client, "--run-id", run_id, scenario["command"],
+    ])
+    args = dict(scenario.get("args", {}))
+    args["broker-url"] = broker_url
+    if ca_cert is not None:
+        args["ca-cert"] = ca_cert
+    for key in sorted(args):
+        value = args[key]
+        flag = f"--{key.replace('_', '-')}"
+        if isinstance(value, bool):
+            if value:
+                cmd.append(flag)
+        else:
+            cmd.extend([flag, str(value)])
     return cmd
 
 
@@ -557,9 +617,10 @@ def numeric_metric(metrics: dict[str, Any], metric: str) -> float:
 
 
 def validate_benchmark_payload(data: dict[str, Any], scenario: dict[str, Any]) -> None:
-    if data.get("schema_version") != OUTPUT_SCHEMA_VERSION:
+    expected_version = MATCHED_OUTPUT_SCHEMA_VERSION if scenario["group"] == "matched" else OUTPUT_SCHEMA_VERSION
+    if data.get("schema_version") != expected_version:
         raise RuntimeError(
-            f"benchmark JSON schema_version must be {OUTPUT_SCHEMA_VERSION}, got {data.get('schema_version')!r}"
+            f"benchmark JSON schema_version must be {expected_version}, got {data.get('schema_version')!r}"
         )
     for key in ("run_id", "scenario"):
         if not isinstance(data.get(key), str) or not data[key]:
@@ -570,6 +631,15 @@ def validate_benchmark_payload(data: dict[str, Any], scenario: dict[str, Any]) -
     for key in ("config", "metrics", "samples", "environment"):
         if not isinstance(data.get(key), dict):
             raise RuntimeError(f"benchmark JSON field '{key}' must be an object")
+    if expected_version == MATCHED_OUTPUT_SCHEMA_VERSION:
+        for key in ("client",):
+            if data.get(key) not in {"rumqttc", "mqtt5"}:
+                raise RuntimeError(f"benchmark JSON field '{key}' must identify a matched client")
+        for key in ("effective_config", "quality"):
+            if not isinstance(data.get(key), dict):
+                raise RuntimeError(f"benchmark JSON field '{key}' must be an object")
+        if not isinstance(data["quality"].get("valid"), bool):
+            raise RuntimeError("benchmark JSON quality.valid must be a boolean")
 
     metrics = data["metrics"]
     for metric in metrics:
@@ -634,6 +704,66 @@ def run_once(
         for key, value in payload["metrics"].items()
         if isinstance(value, int | float)
     }
+    return result
+
+
+def run_matched_once(
+    *,
+    root: Path,
+    scenario: dict[str, Any],
+    client: str,
+    run_id: str,
+    broker_url: str,
+    ca_cert: str | None,
+    cargo_profile: str,
+    timeout: int,
+) -> dict[str, Any]:
+    cmd = matched_command(
+        scenario,
+        client=client,
+        run_id=run_id,
+        broker_url=broker_url,
+        ca_cert=ca_cert,
+        cargo_profile=cargo_profile,
+    )
+    try:
+        proc = run_process(cmd, cwd=root, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "run_id": run_id,
+            "client": client,
+            "command": cmd,
+            "returncode": None,
+            "ok": False,
+            "error": f"benchmark timed out after {exc.timeout} seconds",
+        }
+    result: dict[str, Any] = {
+        "run_id": run_id,
+        "client": client,
+        "command": cmd,
+        "returncode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
+    if proc.returncode != 0:
+        result["ok"] = False
+        result["error"] = proc.stderr.strip() or proc.stdout.strip()
+        return result
+    try:
+        payload = read_benchmark_json(proc.stdout, scenario)
+    except RuntimeError as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+        return result
+    result["payload"] = payload
+    result["metrics"] = {
+        key: float(value)
+        for key, value in payload["metrics"].items()
+        if isinstance(value, int | float) and not isinstance(value, bool)
+    }
+    result["ok"] = bool(payload["quality"]["valid"])
+    if not result["ok"]:
+        result["error"] = "benchmark quality.valid is false"
     return result
 
 
@@ -717,6 +847,7 @@ def bootstrap_delta(
     confidence: float,
     rng: random.Random,
     higher_is_better: bool,
+    equivalence_band_pct: float = 0.0,
 ) -> dict[str, Any]:
     pairs = [
         (baseline_value, target_value)
@@ -751,17 +882,20 @@ def bootstrap_delta(
     width = high - low
     classification = "inconclusive"
     inconclusive_reason = "ci_crosses_zero"
-    if higher_is_better:
-        if low > 0:
+    if low >= -equivalence_band_pct and high <= equivalence_band_pct:
+        classification = "equivalent"
+        inconclusive_reason = None
+    elif higher_is_better:
+        if low > equivalence_band_pct:
             classification = "improvement"
             inconclusive_reason = None
-        elif high < 0:
+        elif high < -equivalence_band_pct:
             classification = "regression"
             inconclusive_reason = None
-    elif high < 0:
+    elif high < -equivalence_band_pct:
         classification = "improvement"
         inconclusive_reason = None
-    elif low > 0:
+    elif low > equivalence_band_pct:
         classification = "regression"
         inconclusive_reason = None
     return {
@@ -801,6 +935,7 @@ def compare_summaries(
     scenario: dict[str, Any],
     bootstrap_samples: int,
     confidence: float,
+    equivalence_band_pct: float = 0.0,
 ) -> dict[str, Any]:
     baseline_ok = [run for run in baseline_runs if run.get("ok")]
     target_ok = [run for run in target_runs if run.get("ok")]
@@ -823,6 +958,7 @@ def compare_summaries(
             confidence=confidence,
             rng=random.Random(metric),
             higher_is_better=metric_higher_is_better(scenario, metric),
+            equivalence_band_pct=equivalence_band_pct,
         )
         if (
             metric == scenario["primary_metric"]
@@ -995,10 +1131,9 @@ def summary_environment(root: Path, runs: list[dict[str, Any]]) -> dict[str, Any
     if payload_environment is not None:
         environment.update(
             {
-                "rustc": payload_environment.get("rustc"),
-                "os": payload_environment.get("os"),
-                "arch": payload_environment.get("arch"),
-                "cpu_count": payload_environment.get("cpu_count"),
+                key: value
+                for key, value in payload_environment.items()
+                if value is not None
             }
         )
     return environment
@@ -1031,12 +1166,12 @@ def strip_raw_payload(run: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in run.items()
-        if key not in {"payload", "stderr"} or key == "stderr" and value
+        if key not in {"payload", "stdout"} and (key != "stderr" or value)
     }
 
 
 def persist_raw_runs(output_dir: Path, summary: dict[str, Any]) -> None:
-    if summary.get("mode") in {"compare", "compare-external"}:
+    if summary.get("mode") in {"compare", "compare-external", "compare-libraries"}:
         runs_by_side = summary.get("runs", {})
         if isinstance(runs_by_side, dict):
             for side, runs in runs_by_side.items():
@@ -1493,6 +1628,125 @@ def command_compare_external(args: argparse.Namespace) -> None:
     print(f"External benchmark comparison complete: {output_dir}")
 
 
+def command_compare_libraries(args: argparse.Namespace) -> None:
+    root = repo_root()
+    scenario_path, scenario = load_scenario(root, args.scenario)
+    if scenario["group"] != "matched":
+        raise RuntimeError("compare-libraries requires a scenario with group = 'matched'")
+    validate_broker_requirement(scenario, args.broker_url)
+    ca_certificate = certificate_metadata(args.ca_cert)
+    if ca_certificate is not None and scenario.get("transport") != "tls":
+        raise RuntimeError("--ca-cert is only valid for matched TLS scenarios")
+    ca_cert = ca_certificate["path"] if ca_certificate is not None else None
+    output_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else default_output_dir(root, "library-comparisons", scenario)
+    )
+    runs: dict[str, list[dict[str, Any]]] = {"rumqttc": [], "mqtt5": []}
+    total = args.warmup_runs + args.runs
+    for index in range(total):
+        order = ["rumqttc", "mqtt5"]
+        if args.alternate_order and index % 2 == 1:
+            order.reverse()
+        for client in order:
+            run = run_matched_once(
+                root=root,
+                scenario=scenario,
+                client=client,
+                run_id=f"{scenario['name']}-{client}-{index}",
+                broker_url=args.broker_url,
+                ca_cert=ca_cert,
+                cargo_profile=args.cargo_profile,
+                timeout=args.timeout_sec,
+            )
+            run["is_warmup"] = index < args.warmup_runs
+            run["run_index"] = index
+            runs[client].append(run)
+
+    measured = {
+        client: [run for run in client_runs if not run["is_warmup"]]
+        for client, client_runs in runs.items()
+    }
+    by_index = {
+        client: {run["run_index"]: run for run in client_runs}
+        for client, client_runs in measured.items()
+    }
+    paired_indices = sorted(set(by_index["rumqttc"]) & set(by_index["mqtt5"]))
+    paired_rumqttc = []
+    paired_mqtt5 = []
+    for index in paired_indices:
+        rumqttc_run = by_index["rumqttc"][index]
+        mqtt5_run = by_index["mqtt5"][index]
+        if rumqttc_run.get("ok") and mqtt5_run.get("ok"):
+            paired_rumqttc.append(rumqttc_run)
+            paired_mqtt5.append(mqtt5_run)
+
+    baseline_summary = summarize_runs(measured["rumqttc"])
+    target_summary = summarize_runs(measured["mqtt5"])
+    comparison = compare_summaries(
+        paired_rumqttc,
+        paired_mqtt5,
+        scenario=scenario,
+        bootstrap_samples=args.bootstrap_samples,
+        confidence=args.confidence,
+        equivalence_band_pct=args.equivalence_band_pct,
+    )
+    quality = evaluate_compare_quality(
+        scenario, baseline_summary, target_summary, comparison
+    )
+    if quality["status"] != "pass":
+        primary = comparison.get(scenario["primary_metric"])
+        if isinstance(primary, dict) and "classification" in primary:
+            primary["classification"] = "inconclusive"
+            primary["inconclusive_reason"] = "quality_gates_failed"
+    summary = {
+        "scenario": scenario["name"],
+        "scenario_metadata": scenario_metadata(scenario),
+        "scenario_file": {
+            "path": str(scenario_path),
+            "sha256": scenario_file_hash(scenario_path),
+        },
+        "mode": "compare-libraries",
+        "baseline_ref": "rumqttc-v5-next",
+        "target_ref": "mqtt5=0.37.2",
+        "git": {"commit": resolve_ref(root, "HEAD")},
+        "libraries": {
+            "baseline": {"name": "rumqttc-v5-next", "source": "workspace"},
+            "target": {"name": "mqtt5", "version": "0.37.2", "source": "crates.io"},
+        },
+        "command": {
+            client: matched_command(
+                scenario,
+                client=client,
+                run_id="<run-id>",
+                broker_url=args.broker_url,
+                ca_cert=ca_cert,
+                cargo_profile=args.cargo_profile,
+            )
+            for client in ("rumqttc", "mqtt5")
+        },
+        "cargo_profile": args.cargo_profile,
+        "ca_certificate": ca_certificate,
+        "equivalence_band_pct": args.equivalence_band_pct,
+        "environment": {
+            "baseline": summary_environment(root, runs["rumqttc"]),
+            "target": summary_environment(root, runs["mqtt5"]),
+        },
+        "baseline": baseline_summary,
+        "target": target_summary,
+        "comparison": comparison,
+        "quality": quality,
+        "valid_paired_runs": len(paired_rumqttc),
+        "runs": runs,
+    }
+    write_report(output_dir, summary)
+    failed = [run for client_runs in measured.values() for run in client_runs if not run.get("ok")]
+    if failed:
+        raise RuntimeError(f"{len(failed)} measured run(s) invalid; report written to {output_dir}")
+    print(f"Matched library comparison complete: {output_dir}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1545,6 +1799,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     external.add_argument("--output-dir")
     external.set_defaults(func=command_compare_external)
+
+    libraries = sub.add_parser(
+        "compare-libraries", help="Compare workspace rumqttc-v5-next with mqtt5=0.37.2"
+    )
+    libraries.add_argument("--scenario", required=True)
+    libraries.add_argument("--runs", type=int, default=12)
+    libraries.add_argument("--warmup-runs", type=int, default=1)
+    libraries.add_argument("--broker-url", required=True)
+    libraries.add_argument("--ca-cert")
+    libraries.add_argument(
+        "--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release"
+    )
+    libraries.add_argument("--timeout-sec", type=int, default=300)
+    libraries.add_argument("--bootstrap-samples", type=int, default=1000)
+    libraries.add_argument("--confidence", type=float, default=0.95)
+    libraries.add_argument("--equivalence-band-pct", type=float, default=5.0)
+    libraries.add_argument(
+        "--alternate-order", action=argparse.BooleanOptionalAction, default=True
+    )
+    libraries.add_argument("--output-dir")
+    libraries.set_defaults(func=command_compare_libraries)
     return parser
 
 
@@ -1559,6 +1834,8 @@ def main() -> int:
         parser.error("--timeout-sec must be greater than zero")
     if hasattr(args, "confidence") and not 0.0 < args.confidence < 1.0:
         parser.error("--confidence must be between 0 and 1")
+    if hasattr(args, "equivalence_band_pct") and args.equivalence_band_pct < 0.0:
+        parser.error("--equivalence-band-pct must be non-negative")
     try:
         args.func(args)
     except Exception as exc:

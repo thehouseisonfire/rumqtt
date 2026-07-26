@@ -25,7 +25,8 @@ if str(BENCHMARKS_DIR) not in sys.path:
 
 import runner  # noqa: E402
 
-DEFAULT_DOCKER_IMAGE = "eclipse-mosquitto:2.0"
+PINNED_MOSQUITTO_IMAGE = "eclipse-mosquitto:2.0.22"
+PINNED_EMQX_IMAGE = "emqx/emqx:5.9.3"
 CONTAINER_TCP_PORT = 1883
 CONTAINER_TLS_PORT = 8883
 CONTAINER_WEBSOCKET_PORT = 9001
@@ -261,7 +262,7 @@ def prepare_broker_paths(temp_root: Path, *, config_text: str) -> BrokerPaths:
 
 
 def docker_image_from_env() -> str:
-    return os.environ.get("RUMQTT_BENCH_MOSQUITTO_IMAGE", DEFAULT_DOCKER_IMAGE)
+    return os.environ.get("RUMQTT_BENCH_MOSQUITTO_IMAGE", PINNED_MOSQUITTO_IMAGE)
 
 
 def build_docker_run_command(
@@ -331,6 +332,48 @@ class DockerBroker:
         return {
             "backend": self.backend_name,
             "image": self.image,
+            "container": self.container_name,
+        }
+
+
+class EmqxDockerBroker:
+    def __init__(self, *, ports: BrokerPorts) -> None:
+        self.ports = ports
+        self.image = PINNED_EMQX_IMAGE
+        self.container_name = f"rumqtt-bench-emqx-{uuid.uuid4().hex[:12]}"
+
+    @property
+    def backend_name(self) -> str:
+        return "docker-emqx"
+
+    def start(self) -> None:
+        if shutil.which("docker") is None:
+            raise FixtureError("docker is required for the EMQX fixture")
+        cmd = [
+            "docker", "run", "-d", "--name", self.container_name,
+            "-p", f"127.0.0.1:{self.ports.tcp}:1883",
+            "-e", "EMQX_DASHBOARD__LISTENERS__HTTP__BIND=0",
+            self.image,
+        ]
+        proc = run_process(cmd, cwd=REPO_ROOT)
+        if proc.returncode != 0:
+            raise FixtureError(f"failed to start EMQX Docker container: {proc.stderr.strip()}")
+        if not wait_for_port("127.0.0.1", self.ports.tcp, timeout_sec=30):
+            logs = run_process(["docker", "logs", self.container_name], timeout=10)
+            raise FixtureError(f"EMQX did not become ready: {(logs.stderr or logs.stdout).strip()}")
+
+    def stop(self) -> None:
+        run_process(["docker", "rm", "-f", self.container_name], timeout=30)
+
+    def metadata(self) -> dict[str, Any]:
+        inspect = run_process(
+            ["docker", "image", "inspect", self.image, "--format", "{{index .RepoDigests 0}}"],
+            timeout=10,
+        )
+        return {
+            "backend": self.backend_name,
+            "image": self.image,
+            "image_digest": inspect.stdout.strip() if inspect.returncode == 0 else None,
             "container": self.container_name,
         }
 
@@ -576,10 +619,11 @@ def build_runner_command(
     timeout_sec: int,
     ca_cert: Path | None,
 ) -> list[str]:
+    runner_command = "compare-libraries" if scenario.data.get("group") == "matched" else "run"
     cmd = [
         sys.executable,
         str(BENCHMARKS_DIR / "runner.py"),
-        "run",
+        runner_command,
         "--scenario",
         scenario.name,
         "--broker-url",
@@ -739,6 +783,10 @@ def command_validate(args: argparse.Namespace) -> int:
     active_transports = sorted({scenario.transport or "tcp" for scenario in selected})
     if args.backend == "synthetic":
         validate_synthetic_scenarios(selected)
+    if args.broker == "emqx" and (
+        args.backend != "docker" or any(scenario.transport != "tcp" for scenario in selected)
+    ):
+        raise FixtureError("the pinned EMQX fixture currently supports Docker TCP scenarios")
     if args.backend == "system" and needs_websocket:
         binary = args.mosquitto_bin or shutil.which("mosquitto")
         if binary is None:
@@ -753,7 +801,7 @@ def command_validate(args: argparse.Namespace) -> int:
     temp = tempfile.TemporaryDirectory(prefix="rumqtt-bench-broker-")
     started_at = utc_timestamp()
     scenario_results: list[dict[str, Any]] = []
-    broker: DockerBroker | SystemBroker | SyntheticBroker | None = None
+    broker: DockerBroker | EmqxDockerBroker | SystemBroker | SyntheticBroker | None = None
     summary_path = output_dir / SUMMARY_FILENAME
     ports = allocate_ports()
     urls = broker_urls(ports)
@@ -766,6 +814,8 @@ def command_validate(args: argparse.Namespace) -> int:
                 cargo_profile=args.cargo_profile,
                 log=output_dir / "synthetic-router.log",
             )
+        elif args.broker == "emqx":
+            broker = EmqxDockerBroker(ports=ports)
         else:
             config = (
                 container_mosquitto_config()
@@ -819,6 +869,7 @@ def command_validate(args: argparse.Namespace) -> int:
         "synthetic_router_binary": metadata.get("synthetic_router_binary"),
         "synthetic_router_log": metadata.get("synthetic_router_log"),
         "container": metadata.get("container"),
+        "image_digest": metadata.get("image_digest"),
         "ports": ports.as_dict(),
         "broker_urls": urls,
         "ca_cert": str(output_dir / "ca.crt") if (output_dir / "ca.crt").exists() else None,
@@ -845,6 +896,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="Run broker-backed scenarios against a fixture broker")
     validate.add_argument("--backend", choices=["docker", "synthetic", "system"], default="docker")
+    validate.add_argument("--broker", choices=["mosquitto", "emqx"], default="mosquitto")
     validate.add_argument("--transport", choices=sorted(VALID_FIXTURE_TRANSPORTS), default="all")
     validate.add_argument("--scenario", action="append", default=[])
     validate.add_argument("--runs", type=int, default=1)

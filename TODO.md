@@ -1,5 +1,11 @@
 # Apples-to-Apples `rumqttc` vs `mqtt5` Library Benchmark
 
+> Implementation status: the direct-library harness, schema-v2 paired runner,
+> correctness accounting, optional allocation metrics, synthetic smoke
+> coverage, and pinned Mosquitto/EMQX fixtures are implemented. Unchecked
+> performance-matrix and publication gates intentionally require controlled
+> benchmark hardware and are not claimed from a development or shared-CI host.
+
 ## Goal
 
 Build a controlled, reproducible benchmark that can determine where the
@@ -33,35 +39,35 @@ apply.
 
 ## Provenance and Version Control
 
-- [ ] Add `mqtt5` as a direct, exact-version benchmark dependency rather than
+- [x] Add `mqtt5` as a direct, exact-version benchmark dependency rather than
   invoking `mqttv5-cli`.
-- [ ] Initially pin `mqtt5` to `=0.37.2`; record the resolved version and source
+- [x] Initially pin `mqtt5` to `=0.37.2`; record the resolved version and source
   in every result.
-- [ ] Continue benchmarking the current workspace `rumqttc-v5-next` source and
+- [x] Continue benchmarking the current workspace `rumqttc-v5-next` source and
   record its package version and Git commit.
 - [ ] Record Rust version, target triple, enabled Cargo features, optimization
   profile, allocator, operating system, CPU model, logical/physical CPU count,
   and total memory.
-- [ ] Commit the resulting `Cargo.lock` changes so dependency resolution is
+- [x] Commit the resulting `Cargo.lock` changes so dependency resolution is
   reproducible.
-- [ ] Provide an explicit version-update procedure. Updating either library
+- [x] Provide an explicit version-update procedure. Updating either library
   invalidates comparisons with previous results unless both sides are rerun.
 
 ## Shared Harness Architecture
 
-- [ ] Add a single benchmark executable with a backend selector such as
+- [x] Add a single benchmark executable with a backend selector such as
   `--client rumqttc|mqtt5`.
-- [ ] Put scenario setup, payload allocation, topic generation, timing,
+- [x] Put scenario setup, payload allocation, topic generation, timing,
   sampling, statistics, output serialization, and shutdown logic in
   backend-neutral code.
-- [ ] Define a small internal client-adapter trait implemented once for
+- [x] Define a small internal client-adapter trait implemented once for
   `rumqttc` and once for `mqtt5`.
-- [ ] Keep adapters minimal: connect, subscribe, publish, observe completion,
+- [x] Keep adapters minimal: connect, subscribe, publish, observe completion,
   receive, disconnect, and expose supported protocol limits.
-- [ ] Run each backend in a fresh subprocess. Do not measure both libraries
+- [x] Run each backend in a fresh subprocess. Do not measure both libraries
   concurrently in one process.
-- [ ] Alternate backend execution order for paired runs.
-- [ ] Keep the current external-CLI comparison available, but label it
+- [x] Alternate backend execution order for paired runs.
+- [x] Keep the current external-CLI comparison available, but label it
   separately as an application-level comparison.
 
 ## Fairness Contract
@@ -218,24 +224,24 @@ This is the most important source of accidental unfairness.
 
 ## Reports and Reproduction
 
-- [ ] Extend schema version 1 or introduce a documented schema version 2 for
+- [x] Extend schema version 1 or introduce a documented schema version 2 for
   matched-library comparisons.
-- [ ] Store the complete normalized configuration and both backend-specific
+- [x] Store the complete normalized configuration and both backend-specific
   effective configurations.
-- [ ] Store commands, raw stdout/stderr, raw measurements, environment metadata,
+- [x] Store commands, raw stdout/stderr, raw measurements, environment metadata,
   quality-gate results, and comparison statistics.
-- [ ] Generate JSON, CSV, and HTML reports.
-- [ ] Add a one-command reproduction recipe to `benchmarks/README.md`.
-- [ ] Document methodology and interpretation rules in
+- [x] Generate JSON, CSV, and HTML reports.
+- [x] Add a one-command reproduction recipe to `benchmarks/README.md`.
+- [x] Document methodology and interpretation rules in
   `benchmarks/BENCHMARKING.md`.
-- [ ] Add CI smoke tests for both adapters without treating shared CI runners as
+- [x] Add CI smoke tests for both adapters without treating shared CI runners as
   performance evidence.
 
 ## Acceptance Criteria
 
 The controlled comparison is complete only when:
 
-- [ ] Both libraries are invoked directly by the same harness without
+- [x] Both libraries are invoked directly by the same harness without
   `mqttv5-cli`.
 - [ ] All fairness-contract fields are verified or an unavoidable mismatch is
   called out beside every affected result.

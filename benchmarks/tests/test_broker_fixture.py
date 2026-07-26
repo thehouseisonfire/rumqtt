@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "broker_fixture.py"
@@ -27,6 +28,25 @@ class BrokerFixtureTests(unittest.TestCase):
                 "args": {"qos": qos},
             },
         )
+
+    def test_pinned_production_broker_images_use_exact_versions(self):
+        self.assertEqual(broker_fixture.PINNED_MOSQUITTO_IMAGE, "eclipse-mosquitto:2.0.22")
+        self.assertEqual(broker_fixture.PINNED_EMQX_IMAGE, "emqx/emqx:5.9.3")
+
+    def test_mosquitto_image_override_defaults_to_pin_and_honors_environment(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                broker_fixture.docker_image_from_env(),
+                broker_fixture.PINNED_MOSQUITTO_IMAGE,
+            )
+        with mock.patch.dict(
+            os.environ,
+            {"RUMQTT_BENCH_MOSQUITTO_IMAGE": "example.test/mosquitto:custom"},
+        ):
+            self.assertEqual(
+                broker_fixture.docker_image_from_env(),
+                "example.test/mosquitto:custom",
+            )
 
     def test_mosquitto_config_includes_tcp_tls_and_websocket_listeners(self):
         config = broker_fixture.mosquitto_config(
@@ -160,6 +180,25 @@ class BrokerFixtureTests(unittest.TestCase):
         self.assertIn(str(ca_cert), command)
         self.assertIn("dev", command)
         self.assertIn("123", command)
+
+    def test_runner_command_forwards_ca_cert_to_matched_comparison(self):
+        with tempfile.TemporaryDirectory() as temp:
+            scenario = self.scenario("matched-v5-throughput-tls", transport="tls")
+            scenario.data["group"] = "matched"
+            ca_cert = Path(temp) / "ca.crt"
+            command = broker_fixture.build_runner_command(
+                scenario=scenario,
+                broker_url="mqtts://localhost:18883",
+                output_dir=Path(temp) / "out",
+                runs=1,
+                warmup_runs=0,
+                cargo_profile="dev",
+                timeout_sec=123,
+                ca_cert=ca_cert,
+            )
+
+        self.assertIn("compare-libraries", command)
+        self.assertEqual(command[command.index("--ca-cert") + 1], str(ca_cert))
 
     def test_runner_command_omits_ca_cert_for_websocket(self):
         with tempfile.TemporaryDirectory() as temp:

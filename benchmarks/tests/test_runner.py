@@ -332,6 +332,32 @@ running benchmark...
 
         runner.validate_broker_requirement(scenario, "mqtt://127.0.0.1:1883")
 
+    def test_matched_scenario_rejects_websocket_transport(self):
+        scenario = self.scenario(
+            group="matched",
+            command="throughput",
+            requires_broker=True,
+            primary_metric="throughput_msg_sec",
+            transport="websocket",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "matched transport must be one of: tcp, tls"):
+            runner.validate_scenario(Path("scenario.toml"), scenario)
+
+    def test_matched_tls_rejects_ssl_alias_not_supported_by_adapter(self):
+        scenario = self.scenario(
+            group="matched",
+            command="throughput",
+            requires_broker=True,
+            primary_metric="throughput_msg_sec",
+            transport="tls",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "use one of: mqtts://"):
+            runner.validate_broker_requirement(scenario, "ssl://127.0.0.1:8883")
+
+        runner.validate_broker_requirement(scenario, "mqtts://127.0.0.1:8883")
+
     def test_read_benchmark_json_rejects_unsupported_schema_version(self):
         payload = self.payload()
         payload["schema_version"] = 2
@@ -515,6 +541,43 @@ running benchmark...
 
         self.assertEqual(len(digest), 64)
 
+    def test_summary_environment_preserves_v2_provenance_and_non_null_fallbacks(self):
+        environment = runner.summary_environment(
+            REPO_ROOT,
+            [
+                {
+                    "payload": {
+                        "environment": {
+                            "rustc": "rustc matched",
+                            "target": "x86_64-unknown-linux-gnu",
+                            "os": "linux",
+                            "arch": "x86_64",
+                            "cpu_count": None,
+                            "logical_cpu_count": 16,
+                            "cpu_model": "Benchmark CPU",
+                            "total_memory_bytes": 32_000_000_000,
+                            "allocator": "system-counting",
+                            "cargo_features": ["alloc-metrics"],
+                            "optimization_profile": "release",
+                            "library": "mqtt5",
+                            "library_version": "0.37.2",
+                        }
+                    }
+                }
+            ],
+        )
+
+        self.assertIsNotNone(environment["cpu_count"])
+        self.assertEqual(environment["logical_cpu_count"], 16)
+        self.assertEqual(environment["target"], "x86_64-unknown-linux-gnu")
+        self.assertEqual(environment["cpu_model"], "Benchmark CPU")
+        self.assertEqual(environment["total_memory_bytes"], 32_000_000_000)
+        self.assertEqual(environment["allocator"], "system-counting")
+        self.assertEqual(environment["cargo_features"], ["alloc-metrics"])
+        self.assertEqual(environment["optimization_profile"], "release")
+        self.assertEqual(environment["library"], "mqtt5")
+        self.assertEqual(environment["library_version"], "0.37.2")
+
     def test_summarize_runs_uses_only_successful_metrics(self):
         summary = runner.summarize_runs(
             [
@@ -528,6 +591,127 @@ running benchmark...
         self.assertEqual(summary["successful_runs"], 2)
         self.assertEqual(summary["metrics"]["messages_sec"]["median"], 15.0)
         self.assertIn("mad_pct", summary["metrics"]["messages_sec"])
+
+    def test_matched_command_selects_one_backend_in_one_process(self):
+        scenario = self.scenario(
+            name="matched",
+            group="matched",
+            command="throughput",
+            requires_broker=True,
+            args={"qos": 1, "payload_size": 64},
+        )
+
+        command = runner.matched_command(
+            scenario,
+            client="mqtt5",
+            run_id="pair-1",
+            broker_url="mqtt://127.0.0.1:1883",
+        )
+
+        self.assertIn("rumqtt-library-bench", command)
+        self.assertEqual(command[command.index("--client") + 1], "mqtt5")
+        self.assertNotIn("rumqttc", command)
+
+    def test_matched_command_forwards_ca_certificate(self):
+        scenario = self.scenario(
+            name="matched-tls",
+            group="matched",
+            command="throughput",
+            requires_broker=True,
+            transport="tls",
+            args={"qos": 1, "payload_size": 64},
+        )
+
+        command = runner.matched_command(
+            scenario,
+            client="rumqttc",
+            run_id="pair-tls-1",
+            broker_url="mqtts://localhost:8883",
+            ca_cert="/tmp/fixture-ca.crt",
+        )
+
+        self.assertEqual(command[command.index("--ca-cert") + 1], "/tmp/fixture-ca.crt")
+
+    def test_certificate_metadata_resolves_path_and_hashes_contents(self):
+        with tempfile.TemporaryDirectory() as temp:
+            certificate = Path(temp) / "ca.crt"
+            certificate.write_bytes(b"fixture-ca")
+
+            metadata = runner.certificate_metadata(str(certificate))
+
+        self.assertEqual(metadata["path"], str(certificate.resolve()))
+        self.assertEqual(
+            metadata["sha256"],
+            "fca046ca96fabdc57856c287f889f3a2a20dc3192abefa0443ae0e6505595fdf",
+        )
+
+    def test_matched_comparison_persists_raw_runs_and_strips_large_fields(self):
+        run = {
+            "run_id": "pair-1",
+            "ok": True,
+            "stdout": '{"schema_version": 2}',
+            "stderr": "",
+            "payload": {"metrics": {"throughput_msg_sec": 10.0}},
+            "metrics": {"throughput_msg_sec": 10.0},
+        }
+        summary = {
+            "mode": "compare-libraries",
+            "runs": {"rumqttc": [dict(run)], "mqtt5": [dict(run)]},
+        }
+
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp)
+            runner.write_report(output_dir, summary)
+            written = json.loads((output_dir / "summary.json").read_text())
+            rumqttc_run = written["runs"]["rumqttc"][0]
+            raw = json.loads((output_dir / rumqttc_run["raw_path"]).read_text())
+
+        self.assertNotIn("payload", rumqttc_run)
+        self.assertNotIn("stdout", rumqttc_run)
+        self.assertNotIn("stderr", rumqttc_run)
+        self.assertEqual(raw["payload"]["metrics"]["throughput_msg_sec"], 10.0)
+        self.assertEqual(raw["stdout"], '{"schema_version": 2}')
+
+    def test_v2_payload_requires_effective_config_and_validity(self):
+        scenario = self.scenario(
+            name="matched",
+            group="matched",
+            command="throughput",
+            requires_broker=True,
+            primary_metric="throughput_msg_sec",
+        )
+        payload = self.payload({"throughput_msg_sec": 10.0})
+        payload.update(
+            schema_version=2,
+            client="rumqttc",
+            effective_config={"publish_completion": "puback"},
+            quality={"valid": True},
+        )
+
+        runner.validate_benchmark_payload(payload, scenario)
+
+    def test_equivalence_band_requires_the_whole_interval_inside_band(self):
+        equivalent = runner.bootstrap_delta(
+            [100.0] * 12,
+            [103.0] * 12,
+            samples=100,
+            confidence=0.95,
+            rng=runner.random.Random(1),
+            higher_is_better=True,
+            equivalence_band_pct=5.0,
+        )
+        outside = runner.bootstrap_delta(
+            [100.0] * 12,
+            [107.0] * 12,
+            samples=100,
+            confidence=0.95,
+            rng=runner.random.Random(1),
+            higher_is_better=True,
+            equivalence_band_pct=5.0,
+        )
+
+        self.assertEqual(equivalent["classification"], "equivalent")
+        self.assertEqual(outside["classification"], "improvement")
 
 
 if __name__ == "__main__":

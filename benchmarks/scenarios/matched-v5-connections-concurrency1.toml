@@ -1,0 +1,20 @@
+name = "matched-v5-connections-concurrency1"
+group = "matched"
+command = "connections"
+description = "Direct-library serial MQTT 5 CONNECT/CONNACK/DISCONNECT churn."
+primary_metric = "connections_sec"
+higher_is_better = true
+requires_broker = true
+transport = "tcp"
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 12
+max_primary_cv_pct = 10.0
+max_primary_mad_pct = 5.0
+max_relative_ci_width_pct = 10.0
+
+[args]
+duration_sec = 10
+concurrency = 1
+keepalive_sec = 30

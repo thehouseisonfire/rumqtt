@@ -39,6 +39,35 @@ File-backed persistence workloads live in the independent
 [`session-store-file` benchmark package](../session-store-file/benchmarks/README.md).
 The shared scenario runner routes those scenarios to that package automatically.
 
+## Matched Library Comparison
+
+`rumqtt-library-bench` runs one client library per process. Shared code owns
+payloads, topics, Correlation Data sequence/timestamps, pacing, timing,
+delivery accounting, resource sampling, and drain behavior; the adapters only
+perform MQTT operations. The comparison uses workspace `rumqttc-v5-next` and
+the exact locked dependency `mqtt5 = 0.37.2`. Matched scenarios support TCP
+(`mqtt://`) and TLS (`mqtts://`); WebSocket is not supported by both adapters.
+For a TLS broker using a private CA, pass `--ca-cert /path/to/ca.pem`.
+
+```bash
+python3 benchmarks/runner.py compare-libraries \
+  --scenario matched-v5-throughput-qos1-1kib-1p1s \
+  --broker-url mqtt://127.0.0.1:1883 \
+  --runs 12 \
+  --warmup-runs 1
+```
+
+The runner alternates backend order and classifies the paired bootstrap
+interval against a predeclared ±5% practical-equivalence band. A run with
+loss, duplicates, malformed traffic, a rejected publish, or incomplete drain
+is retained in raw output but excluded from valid pairs. For a smoke check,
+use one development-profile run; shared CI runners are not performance
+evidence.
+
+Add `cargo_features = ["alloc-metrics"]` to a matched scenario to enable
+counting-system-allocator metrics. Allocation instrumentation is off by
+default because it perturbs the workload.
+
 `options parse-url` requires the benchmark crate `url` feature:
 
 ```bash
@@ -122,6 +151,9 @@ latency, and connection scenarios. It records the resolved executable and
 metrics into schema version 1, and alternates execution order. mqttv5-cli is
 not installed or updated by this repository.
 
+`compare-external` remains an application-level CLI comparison. Do not combine
+its results with the direct-library `compare-libraries` reports.
+
 The runner uses `cargo run --release` by default. Use `--cargo-profile dev`
 only when debugging the harness itself.
 
@@ -134,7 +166,7 @@ enables the benchmark crate `websocket` feature.
 
 Use the broker fixture when you need a reproducible local Mosquitto for
 broker-backed validation. The default backend is Docker with
-`eclipse-mosquitto:2.0`, configured with TCP, TLS, and websocket listeners on
+`eclipse-mosquitto:2.0.22`, configured with TCP, TLS, and websocket listeners on
 free localhost ports:
 
 ```bash
@@ -187,6 +219,21 @@ The synthetic backend supports MQTT 3.1.1/5 TCP CONNECT, subscriptions,
 QoS 0/1 publish routing, acknowledgements, keepalive, and disconnect. It
 intentionally does not implement authentication, persistence, QoS 2, TLS, or
 WebSockets and is not a production broker.
+
+Matched smoke tests can also use either pinned production broker:
+
+```bash
+python3 benchmarks/broker_fixture.py validate \
+  --backend docker --broker mosquitto --transport tcp \
+  --scenario matched-v5-throughput-qos1-1kib-1p1s
+
+python3 benchmarks/broker_fixture.py validate \
+  --backend docker --broker emqx --transport tcp \
+  --scenario matched-v5-throughput-qos1-1kib-1p1s
+```
+
+The fixtures pin `eclipse-mosquitto:2.0.22` and `emqx/emqx:5.9.3`. EMQX
+summaries also record the locally resolved image digest.
 
 Override the Docker image with `RUMQTT_BENCH_MOSQUITTO_IMAGE`. A system
 Mosquitto can be used for TCP/TLS fallback with `--backend system`, but local
@@ -263,6 +310,11 @@ same stable top-level shape:
 - `config`, `metrics`, `samples`, and `environment` are objects
 - every metric value is numeric
 - every sample series is an array of numbers
+
+`rumqtt-library-bench` emits schema version 2, documented by
+`benchmarks/schema/rumqtt-library-bench-output-v2.schema.json`. It adds the
+selected client, normalized and effective configurations, and explicit
+per-run validity.
 
 ## Running Meaningful Benchmarks
 

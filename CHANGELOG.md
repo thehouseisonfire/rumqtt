@@ -1,6 +1,10 @@
 ## [Unreleased]
 
 ### Added
+- Benchmarks: Add a controlled direct-library MQTT 5 comparison harness for
+  workspace `rumqttc-v5-next` and exact-version `mqtt5`, with shared
+  correctness accounting, paired schema-v2 reports, optional allocation
+  metrics, private-CA TLS support, and pinned Mosquitto/EMQX fixtures.
 - `rumqttc` v4/v5: Add first-party SOCKS5 proxy support, including proxy-side
   DNS resolution and RFC 1929 username/password authentication. Add independent
   `http-proxy` and `socks-proxy` features while retaining `proxy` as an umbrella
@@ -31,6 +35,9 @@
   from fixed-header/filter helpers, WebSocket subprotocol setup, and TLS backend
   dispatch; invalid TLS backend combinations now return
   `UnsupportedBackendConfiguration`.
+- Benchmarks: Classify matched timed throughput and latency by adapter-observed
+  delivery timestamps, preserve complete schema-v2 environment provenance in
+  comparison summaries, and support bracketed IPv6 broker URLs.
 ### Security
 
 ---

@@ -222,6 +222,7 @@ jobs:
               --transport tcp \
               --scenario client-v4-throughput-qos1 \
               --scenario client-v5-throughput-qos1 \
+              --scenario matched-v5-throughput-qos1-1kib-1p1s \
               --runs 1 \
               --warmup-runs 0 \
               --cargo-profile dev \

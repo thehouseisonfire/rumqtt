@@ -1,0 +1,26 @@
+name = "matched-v5-latency-qos1-rate1000"
+group = "matched"
+command = "latency"
+description = "Direct-library MQTT 5 QoS 1 end-to-end latency at 1000 messages per second."
+primary_metric = "p99_us"
+higher_is_better = false
+requires_broker = true
+transport = "tcp"
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 12
+max_primary_cv_pct = 10.0
+max_primary_mad_pct = 5.0
+max_relative_ci_width_pct = 10.0
+
+[args]
+duration_sec = 10
+warmup_sec = 2
+drain_sec = 5
+payload_size = 1024
+qos = 1
+topic = "bench/matched/v5/latency/qos1"
+rate = 1000
+window = 100
+receive_maximum = 100

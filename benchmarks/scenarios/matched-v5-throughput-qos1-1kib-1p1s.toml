@@ -1,0 +1,27 @@
+name = "matched-v5-throughput-qos1-1kib-1p1s"
+group = "matched"
+command = "throughput"
+description = "Direct-library MQTT 5 QoS 1 throughput with a 1 KiB immutable payload."
+primary_metric = "throughput_msg_sec"
+higher_is_better = true
+requires_broker = true
+transport = "tcp"
+
+[quality]
+min_success_rate = 1.0
+min_measured_runs = 12
+max_primary_cv_pct = 10.0
+max_primary_mad_pct = 5.0
+max_relative_ci_width_pct = 10.0
+
+[args]
+duration_sec = 10
+warmup_sec = 2
+drain_sec = 5
+payload_size = 1024
+qos = 1
+topic = "bench/matched/v5/qos1/1kib/1p1s"
+publishers = 1
+subscribers = 1
+window = 100
+receive_maximum = 100

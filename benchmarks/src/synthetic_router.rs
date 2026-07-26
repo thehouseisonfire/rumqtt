@@ -192,6 +192,7 @@ async fn handle_publish(
             qos,
             packet_id,
             &publish.topic,
+            &publish.properties,
             &publish.payload,
         );
         let _ = subscription.sender.send(outgoing);
@@ -284,6 +285,7 @@ fn parse_subscribe(protocol: Protocol, body: &[u8]) -> anyhow::Result<(u16, Vec<
 struct Publish {
     topic: String,
     packet_id: Option<u16>,
+    properties: Vec<u8>,
     payload: Vec<u8>,
 }
 
@@ -300,12 +302,18 @@ fn parse_publish(protocol: Protocol, qos: u8, body: &[u8]) -> anyhow::Result<Pub
         cursor += 2;
         Some(packet_id)
     };
-    if protocol == Protocol::V5 {
+    let properties = if protocol == Protocol::V5 {
+        let properties_start = cursor;
         let (properties_len, consumed) = read_variable_integer(&body[cursor..])?;
         cursor = cursor
             .checked_add(consumed + properties_len)
             .context("PUBLISH properties overflow")?;
-    }
+        body.get(properties_start..cursor)
+            .context("PUBLISH properties exceed packet body")?
+            .to_vec()
+    } else {
+        Vec::new()
+    };
     let payload = body
         .get(cursor..)
         .context("PUBLISH properties exceed packet body")?
@@ -313,6 +321,7 @@ fn parse_publish(protocol: Protocol, qos: u8, body: &[u8]) -> anyhow::Result<Pub
     Ok(Publish {
         topic,
         packet_id,
+        properties,
         payload,
     })
 }
@@ -323,6 +332,7 @@ fn encode_publish(
     qos: u8,
     packet_id: Option<u16>,
     topic: &str,
+    properties: &[u8],
     payload: &[u8],
 ) -> Vec<u8> {
     let mut body = Vec::with_capacity(topic.len() + payload.len() + 5);
@@ -332,7 +342,11 @@ fn encode_publish(
         body.extend_from_slice(&packet_id.to_be_bytes());
     }
     if protocol == Protocol::V5 {
-        body.push(0);
+        if properties.is_empty() {
+            body.push(0);
+        } else {
+            body.extend_from_slice(properties);
+        }
     }
     body.extend_from_slice(payload);
     frame_with_body(0x30 | (qos << 1) | u8::from(retain), &body)
@@ -414,11 +428,11 @@ mod tests {
     #[test]
     fn encodes_protocol_specific_publish_fields() {
         assert_eq!(
-            encode_publish(Protocol::V4, false, 0, None, "a", b"x"),
+            encode_publish(Protocol::V4, false, 0, None, "a", &[], b"x"),
             [0x30, 4, 0, 1, b'a', b'x']
         );
         assert_eq!(
-            encode_publish(Protocol::V5, false, 1, Some(9), "a", b"x"),
+            encode_publish(Protocol::V5, false, 1, Some(9), "a", &[], b"x"),
             [0x32, 7, 0, 1, b'a', 0, 9, 0, b'x']
         );
     }
