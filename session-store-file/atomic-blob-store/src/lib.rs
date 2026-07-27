@@ -121,6 +121,15 @@ pub mod bench_instrumentation {
     use super::{AtomicBlobStoreError, CHECKSUM_LEN, HEADER_LEN, decode_reader, encode_envelope};
 
     pub const ENVELOPE_OVERHEAD: usize = HEADER_LEN + CHECKSUM_LEN;
+    pub const STREAM_CHUNK_BYTES: usize = super::STREAM_CHUNK_SIZE;
+    pub const STREAM_CHANNEL_CAPACITY: usize = super::STREAM_CHANNEL_CAPACITY;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum BenchmarkEvent {
+        FlushAccepted,
+        SaveStreamInputStarved,
+        LoadStreamOutputBackpressured,
+    }
 
     pub fn encode(
         format: &super::BlobFormatIdentity,

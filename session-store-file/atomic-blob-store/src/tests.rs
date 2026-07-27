@@ -360,6 +360,57 @@ fn every_concurrent_close_waits_for_the_coordinator_to_stop() {
 }
 
 #[cfg(any(unix, windows))]
+#[test]
+fn blocking_and_tokio_close_callers_share_one_engine_and_join_point() {
+    let root = test_directory();
+    let exits = Arc::new(TestThreadExits::default());
+    let stopping = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let hook = {
+        let stopping = Arc::clone(&stopping);
+        let release = Arc::clone(&release);
+        recording_hook(Arc::clone(&exits), move |stage| {
+            if stage == TestStage::CoordinatorStopping {
+                stopping.wait();
+                release.wait();
+            }
+            Ok(())
+        })
+    };
+    let core =
+        EngineHandle::open_with_test_hook(root.path(), "mixed-close", options(), hook).unwrap();
+    let blocking = BlockingAtomicBlobStore::from_test_core(core.clone());
+    let asynchronous = AtomicBlobStore::from_test_core(core);
+    blocking.save(b"key", b"value".to_vec()).unwrap();
+
+    let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
+    let blocking_thread = std::thread::spawn({
+        let sender = finished_sender.clone();
+        move || sender.send(blocking.close()).unwrap()
+    });
+    let async_thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        finished_sender
+            .send(runtime.block_on(asynchronous.close()))
+            .unwrap();
+    });
+
+    stopping.wait();
+    assert!(matches!(
+        finished_receiver.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    release.wait();
+    finished_receiver.recv().unwrap().unwrap();
+    finished_receiver.recv().unwrap().unwrap();
+    blocking_thread.join().unwrap();
+    async_thread.join().unwrap();
+    exits.assert_stopped(1);
+}
+
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn streaming_round_trip_is_compatible_with_complete_blob_methods() {
     let root = test_directory();
@@ -569,6 +620,84 @@ async fn cancelling_streaming_save_during_final_eof_probe_preserves_old_blob() {
                 .to_string_lossy()
                 .contains(".tmp-v1."))
     );
+    store.close().await.unwrap();
+}
+
+#[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
+#[tokio::test]
+async fn benchmark_events_report_accepted_flush_and_actual_stream_pressure() {
+    use crate::bench_instrumentation::BenchmarkEvent;
+
+    fn receive(receiver: &std::sync::mpsc::Receiver<BenchmarkEvent>, expected: BenchmarkEvent) {
+        loop {
+            let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            if event == expected {
+                return;
+            }
+        }
+    }
+
+    let root = test_directory();
+    let (events, receiver) = std::sync::mpsc::channel();
+    let receiver = Arc::new(std::sync::Mutex::new(receiver));
+    let store = AtomicBlobStore::open_with_benchmark_events(
+        root.path(),
+        "benchmark-events",
+        options().with_max_blob_size((STREAM_CHUNK_SIZE * 4) as u64),
+        events,
+    )
+    .await
+    .unwrap();
+
+    let saving = store.clone();
+    let save = tokio::spawn(async move {
+        saving
+            .save_from(b"source", &mut PendingAsyncReader, 1)
+            .await
+    });
+    let source_receiver = Arc::clone(&receiver);
+    tokio::task::spawn_blocking(move || {
+        receive(
+            &source_receiver.lock().unwrap(),
+            BenchmarkEvent::SaveStreamInputStarved,
+        );
+    })
+    .await
+    .unwrap();
+
+    let flush = store.flush();
+    let flush_receiver = Arc::clone(&receiver);
+    tokio::task::spawn_blocking(move || {
+        receive(
+            &flush_receiver.lock().unwrap(),
+            BenchmarkEvent::FlushAccepted,
+        );
+    })
+    .await
+    .unwrap();
+    save.abort();
+    assert!(save.await.unwrap_err().is_cancelled());
+    flush.await.unwrap();
+
+    let payload = vec![7; STREAM_CHUNK_SIZE * 4];
+    store.save(b"destination", payload).await.unwrap();
+    let loading = store.clone();
+    let load = tokio::spawn(async move {
+        loading
+            .load_into(b"destination", &mut BlockingAsyncWriter { started: None })
+            .await
+    });
+    let output_receiver = Arc::clone(&receiver);
+    tokio::task::spawn_blocking(move || {
+        receive(
+            &output_receiver.lock().unwrap(),
+            BenchmarkEvent::LoadStreamOutputBackpressured,
+        );
+    })
+    .await
+    .unwrap();
+    load.abort();
+    assert!(load.await.unwrap_err().is_cancelled());
     store.close().await.unwrap();
 }
 
@@ -2037,6 +2166,81 @@ async fn maintenance_barriers_preserve_interleaved_fifo_submission_order() {
     );
 }
 
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn flush_barriers_are_ordered_survive_waiter_drop_and_exclude_later_work() {
+    let root = test_directory();
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
+    let (release_sender, release_receiver) = std::sync::mpsc::channel();
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let envelope_count = std::sync::atomic::AtomicUsize::new(0);
+    let commit_count = std::sync::atomic::AtomicUsize::new(0);
+    let flush_count = std::sync::atomic::AtomicUsize::new(0);
+    let hook = Arc::new(move |stage| {
+        match stage {
+            TestStage::BeforeEnvelope => {
+                let index = envelope_count.fetch_add(1, Ordering::SeqCst);
+                event_sender.send(format!("dispatch-{index}")).unwrap();
+            }
+            TestStage::BeforeCommit if commit_count.load(Ordering::SeqCst) == 0 => {
+                release_receiver.lock().unwrap().recv().unwrap();
+            }
+            TestStage::AfterCommit => {
+                let index = commit_count.fetch_add(1, Ordering::SeqCst);
+                event_sender.send(format!("complete-{index}")).unwrap();
+            }
+            TestStage::FlushCompleted => {
+                let index = flush_count.fetch_add(1, Ordering::SeqCst);
+                event_sender.send(format!("flush-{index}")).unwrap();
+            }
+            _ => {}
+        }
+        Ok(())
+    });
+    let store = store_with_hook(root.path(), "flush-order", hook).await;
+
+    let first = store.save(b"first", b"A".to_vec());
+    assert_eq!(event_receiver.recv().unwrap(), "dispatch-0");
+    let dropped_flush = store.flush();
+    drop(dropped_flush);
+    let second = store.save(b"second", b"B".to_vec());
+    let second_flush = store.flush();
+    let third = store.save(b"third", b"C".to_vec());
+
+    assert!(matches!(
+        event_receiver.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    release_sender.send(()).unwrap();
+    first.await.unwrap();
+    second.await.unwrap();
+    second_flush.await.unwrap();
+    third.await.unwrap();
+
+    let remaining = (0..7)
+        .map(|_| event_receiver.recv().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        remaining,
+        [
+            "complete-0",
+            "flush-0",
+            "dispatch-1",
+            "complete-1",
+            "flush-1",
+            "dispatch-2",
+            "complete-2",
+        ]
+    );
+    store.flush().await.unwrap();
+    store.save(b"after-flush", b"open".to_vec()).await.unwrap();
+    assert_eq!(
+        store.load(b"after-flush").await.unwrap(),
+        Some(b"open".to_vec())
+    );
+    store.close().await.unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn relative_root_is_stable_after_current_directory_changes() {
@@ -2202,6 +2406,51 @@ fn caller_runtime_loss_after_input_completion_does_not_cancel_commit() {
         Some(b"new".to_vec())
     );
     recovery_runtime.block_on(store.close()).unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn accepted_complete_operation_survives_caller_runtime_loss() {
+    let root = test_directory();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let hook = {
+        let armed = Arc::clone(&armed);
+        Arc::new(move |stage| {
+            if stage == TestStage::BeforeCommit && armed.load(Ordering::SeqCst) {
+                started_sender.send(()).unwrap();
+                release_receiver.lock().unwrap().recv().unwrap();
+            }
+            Ok(())
+        })
+    };
+    let store =
+        EngineHandle::open_with_test_hook(root.path(), "complete-runtime-loss", options(), hook)
+            .map(AtomicBlobStore::from_test_core)
+            .unwrap();
+    armed.store(true, Ordering::SeqCst);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let saving = store.clone();
+    runtime.spawn(async move { saving.save(b"key", b"value".to_vec()).await });
+    let reached_commit = runtime.spawn_blocking(move || started_receiver.recv().unwrap());
+    runtime.block_on(reached_commit).unwrap();
+    drop(runtime);
+    release_sender.send(()).unwrap();
+
+    let recovery = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    recovery.block_on(store.flush()).unwrap();
+    assert_eq!(
+        recovery.block_on(store.load(b"key")).unwrap(),
+        Some(b"value".to_vec())
+    );
+    recovery.block_on(store.close()).unwrap();
 }
 
 #[cfg(any(unix, windows))]
@@ -2555,6 +2804,49 @@ async fn close_waits_for_and_cancellation_releases_a_stalled_stream() {
 
 #[cfg(any(unix, windows))]
 #[tokio::test]
+async fn close_drains_a_stream_after_input_complete_even_when_the_caller_is_cancelled() {
+    let root = test_directory();
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let hook = Arc::new(move |stage| {
+        if stage == TestStage::BeforeCommit {
+            started_sender.send(()).unwrap();
+            release_receiver.lock().unwrap().recv().unwrap();
+        }
+        Ok(())
+    });
+    let store =
+        AtomicBlobStore::open_with_test_hook(root.path(), "close-accepted-stream", options(), hook)
+            .await
+            .unwrap();
+    let streaming = store.clone();
+    let task = tokio::spawn(async move {
+        streaming
+            .save_from(b"key", &mut Cursor::new(b"value"), 5)
+            .await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let closing = store.clone();
+    let close = tokio::spawn(async move { closing.close().await });
+    tokio::task::yield_now().await;
+    assert!(!close.is_finished());
+    assert!(matches!(
+        store.save(b"later", b"x".to_vec()).await,
+        Err(AtomicBlobStoreError::StoreClosed)
+    ));
+    release_sender.send(()).unwrap();
+    close.await.unwrap().unwrap();
+    assert!(std::fs::read(store.blob_path(b"key")).is_ok());
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
 async fn last_handle_drop_drains_an_accepted_complete_operation() {
     let root = test_directory();
     let (event_sender, event_receiver) = std::sync::mpsc::channel();
@@ -2635,6 +2927,60 @@ async fn last_handle_drop_drains_streaming_work_after_input_completion() {
     assert!(events.contains(&TestStage::AfterCommit));
     assert!(events.contains(&TestStage::WorkerStopped));
     assert!(events.contains(&TestStage::CoordinatorStopped));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn last_handle_drop_aborts_a_pre_complete_stream_and_drains_bookkeeping() {
+    let root = test_directory();
+    let exits = Arc::new(TestThreadExits::default());
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (stopped_sender, stopped_receiver) = std::sync::mpsc::sync_channel(1);
+    let hook = {
+        let armed = Arc::clone(&armed);
+        recording_hook(Arc::clone(&exits), move |stage| {
+            if stage == TestStage::BeforeEnvelope && armed.load(Ordering::SeqCst) {
+                started_sender.send(()).unwrap();
+            }
+            if stage == TestStage::CoordinatorStopped {
+                let _ = stopped_sender.send(());
+            }
+            Ok(())
+        })
+    };
+    let core = EngineHandle::open_with_test_hook(root.path(), "drop-pre-complete", options(), hook)
+        .unwrap();
+    let registry = Arc::clone(&core.inner.registry_entries);
+    let store = AtomicBlobStore::from_test_core(core.clone());
+    store.save(b"key", b"old".to_vec()).await.unwrap();
+    armed.store(true, Ordering::SeqCst);
+
+    let streaming = store.clone();
+    let task = tokio::spawn(async move {
+        let mut source = NotifyingPendingReader(None);
+        streaming.save_from(b"key", &mut source, 1).await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    drop(store);
+    drop(core);
+
+    tokio::task::spawn_blocking(move || stopped_receiver.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    exits.assert_stopped(1);
+    assert_eq!(registry.load(Ordering::SeqCst), 0);
+
+    let reopened = AtomicBlobStore::open(root.path(), "drop-pre-complete", options())
+        .await
+        .unwrap();
+    assert_eq!(reopened.load(b"key").await.unwrap(), Some(b"old".to_vec()));
+    reopened.close().await.unwrap();
 }
 
 #[cfg(unix)]

@@ -78,6 +78,8 @@ pub(crate) fn initialize_platform(
         max_concurrent_operations,
         #[cfg(all(test, any(unix, windows)))]
         hook: None,
+        #[cfg(feature = "bench-instrumentation")]
+        benchmark_events: None,
     })
 }
 #[cfg(any(unix, windows))]

@@ -16,12 +16,29 @@ pub struct BlockingAtomicBlobStore {
 }
 
 impl BlockingAtomicBlobStore {
+    #[cfg(all(test, feature = "tokio", any(unix, windows)))]
+    pub(crate) fn from_test_core(core: EngineHandle) -> Self {
+        Self { core }
+    }
+
     pub fn open(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
         options: AtomicBlobStoreOptions,
     ) -> Result<Self, AtomicBlobStoreError> {
         EngineHandle::open(root, namespace, options).map(|core| Self { core })
+    }
+
+    #[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
+    #[doc(hidden)]
+    pub fn open_with_benchmark_events(
+        root: impl Into<PathBuf>,
+        namespace: impl AsRef<OsStr>,
+        options: AtomicBlobStoreOptions,
+        events: std::sync::mpsc::Sender<crate::bench_instrumentation::BenchmarkEvent>,
+    ) -> Result<Self, AtomicBlobStoreError> {
+        EngineHandle::open_with_benchmark_events(root, namespace, options, events)
+            .map(|core| Self { core })
     }
 
     pub fn load(&self, key: &[u8]) -> Result<Option<Vec<u8>>, AtomicBlobStoreError> {

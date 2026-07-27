@@ -18,6 +18,36 @@ const MAXIMUM: u64 = 2 * 64 * 1024 + 17;
 const CHUNK: usize = 64 * 1024;
 const BOUNDARY_SIZES: [usize; 6] = [0, 1, CHUNK, CHUNK + 1, 2 * CHUNK, MAXIMUM as usize];
 
+#[cfg(feature = "tokio")]
+#[derive(Debug, Eq, PartialEq)]
+struct ScriptObservation {
+    metadata_len: u64,
+    loaded: Vec<u8>,
+    canonical: Vec<u8>,
+    canonical_filename: String,
+    inspection_size: u64,
+    early_eof: &'static str,
+    trailing: &'static str,
+    source_failure: &'static str,
+    destination_failure: &'static str,
+    destination_flushes: usize,
+    destination_shutdowns: usize,
+    absent_after_clear: bool,
+    after_close: &'static str,
+}
+
+#[cfg(feature = "tokio")]
+fn error_category(error: &AtomicBlobStoreError) -> &'static str {
+    match error {
+        AtomicBlobStoreError::InputEndedEarly { .. } => "input-ended-early",
+        AtomicBlobStoreError::InputHasTrailingData { .. } => "input-has-trailing-data",
+        AtomicBlobStoreError::InputIo { .. } => "input-io",
+        AtomicBlobStoreError::OutputIo { .. } => "output-io",
+        AtomicBlobStoreError::StoreClosed => "store-closed",
+        _ => "other",
+    }
+}
+
 fn options() -> AtomicBlobStoreOptions {
     AtomicBlobStoreOptions::new(
         BlobFormatIdentity::new(b"CONFTEST", ".blob", ENVELOPE_VERSION_V1).unwrap(),
@@ -168,15 +198,27 @@ fn blocking_streaming_boundary_matrix_is_bounded_and_preserves_destination_owner
 
     let payload = vec![7; 64 * 1024 + 1];
     store.save(b"destination", payload).unwrap();
-    let mut failing = TrackingWriter {
-        fail_after: Some(1),
-        ..TrackingWriter::default()
-    };
-    assert!(matches!(
-        store.load_into(b"destination", &mut failing),
-        Err(AtomicBlobStoreError::OutputIo { .. })
-    ));
-    assert_eq!(failing.flushes, 0);
+    for fail_after in [0, CHUNK] {
+        let mut failing = TrackingWriter {
+            fail_after: Some(fail_after),
+            ..TrackingWriter::default()
+        };
+        assert!(matches!(
+            store.load_into(b"destination", &mut failing),
+            Err(AtomicBlobStoreError::OutputIo { .. })
+        ));
+        assert_eq!(failing.flushes, 0);
+    }
+
+    std::fs::write(store.blob_path(b"invalid"), b"not-an-envelope").unwrap();
+    let mut invalid_destination = TrackingWriter::default();
+    assert!(
+        store
+            .load_into(b"invalid", &mut invalid_destination)
+            .is_err()
+    );
+    assert!(invalid_destination.bytes.is_empty());
+    assert_eq!(invalid_destination.flushes, 0);
 
     for (name, payload_size, declared) in [
         ("eof-before-data", 0, 1),
@@ -345,18 +387,140 @@ async fn blocking_and_tokio_scripts_produce_identical_canonical_bytes() {
     let asynchronous = AtomicBlobStore::open(root.path(), "asynchronous", options())
         .await
         .unwrap();
-    let payload = vec![0x5a; 64 * 1024 + 9];
-    blocking
-        .save_from(b"key", &mut Cursor::new(&payload), payload.len() as u64)
-        .unwrap();
-    asynchronous
-        .save_from(b"key", &mut Cursor::new(&payload), payload.len() as u64)
-        .await
-        .unwrap();
-    assert_eq!(
-        std::fs::read(blocking.blob_path(b"key")).unwrap(),
-        std::fs::read(asynchronous.blob_path(b"key")).unwrap()
-    );
-    blocking.close().unwrap();
-    asynchronous.close().await.unwrap();
+    let payload = vec![0x5a; CHUNK + 9];
+
+    let blocking_observation = {
+        blocking
+            .save_from(b"key", &mut Cursor::new(&payload), payload.len() as u64)
+            .unwrap();
+        let mut destination = TrackingWriter {
+            fail_after: None,
+            ..TrackingWriter::default()
+        };
+        let metadata = blocking
+            .load_into(b"key", &mut destination)
+            .unwrap()
+            .unwrap();
+        let inspection = blocking.inspect(b"key").unwrap();
+        let canonical_path = blocking.blob_path(b"key");
+        let canonical = std::fs::read(&canonical_path).unwrap();
+        let early_eof = error_category(
+            &blocking
+                .save_from(b"early", &mut Cursor::new(b"x"), 2)
+                .unwrap_err(),
+        );
+        let trailing = error_category(
+            &blocking
+                .save_from(b"trailing", &mut Cursor::new(b"xy"), 1)
+                .unwrap_err(),
+        );
+        let mut failing_source = ScriptedReader::new(vec![1; CHUNK + 1], Some(CHUNK));
+        let source_failure = error_category(
+            &blocking
+                .save_from(b"source", &mut failing_source, (CHUNK + 1) as u64)
+                .unwrap_err(),
+        );
+        let mut failing_destination = TrackingWriter {
+            fail_after: Some(CHUNK),
+            ..TrackingWriter::default()
+        };
+        let destination_failure = error_category(
+            &blocking
+                .load_into(b"key", &mut failing_destination)
+                .unwrap_err(),
+        );
+        blocking.clear(b"key").unwrap();
+        let absent_after_clear = blocking.load(b"key").unwrap().is_none();
+        blocking.close().unwrap();
+        let after_close = error_category(&blocking.load(b"key").unwrap_err());
+        ScriptObservation {
+            metadata_len: metadata.payload_len,
+            loaded: destination.bytes,
+            canonical,
+            canonical_filename: canonical_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            inspection_size: inspection.size.unwrap(),
+            early_eof,
+            trailing,
+            source_failure,
+            destination_failure,
+            destination_flushes: failing_destination.flushes,
+            destination_shutdowns: failing_destination.shutdowns,
+            absent_after_clear,
+            after_close,
+        }
+    };
+
+    let asynchronous_observation = {
+        asynchronous
+            .save_from(b"key", &mut Cursor::new(&payload), payload.len() as u64)
+            .await
+            .unwrap();
+        let mut destination = TrackingWriter::default();
+        let metadata = asynchronous
+            .load_into(b"key", &mut destination)
+            .await
+            .unwrap()
+            .unwrap();
+        let inspection = asynchronous.inspect(b"key").await.unwrap();
+        let canonical_path = asynchronous.blob_path(b"key");
+        let canonical = std::fs::read(&canonical_path).unwrap();
+        let early_eof = error_category(
+            &asynchronous
+                .save_from(b"early", &mut Cursor::new(b"x"), 2)
+                .await
+                .unwrap_err(),
+        );
+        let trailing = error_category(
+            &asynchronous
+                .save_from(b"trailing", &mut Cursor::new(b"xy"), 1)
+                .await
+                .unwrap_err(),
+        );
+        let mut failing_source = ScriptedReader::new(vec![1; CHUNK + 1], Some(CHUNK));
+        let source_failure = error_category(
+            &asynchronous
+                .save_from(b"source", &mut failing_source, (CHUNK + 1) as u64)
+                .await
+                .unwrap_err(),
+        );
+        let mut failing_destination = TrackingWriter {
+            fail_after: Some(CHUNK),
+            ..TrackingWriter::default()
+        };
+        let destination_failure = error_category(
+            &asynchronous
+                .load_into(b"key", &mut failing_destination)
+                .await
+                .unwrap_err(),
+        );
+        asynchronous.clear(b"key").await.unwrap();
+        let absent_after_clear = asynchronous.load(b"key").await.unwrap().is_none();
+        asynchronous.close().await.unwrap();
+        let after_close = error_category(&asynchronous.load(b"key").await.unwrap_err());
+        ScriptObservation {
+            metadata_len: metadata.payload_len,
+            loaded: destination.bytes,
+            canonical,
+            canonical_filename: canonical_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            inspection_size: inspection.size.unwrap(),
+            early_eof,
+            trailing,
+            source_failure,
+            destination_failure,
+            destination_flushes: failing_destination.flushes,
+            destination_shutdowns: failing_destination.shutdowns,
+            absent_after_clear,
+            after_close,
+        }
+    };
+
+    assert_eq!(blocking_observation, asynchronous_observation);
 }

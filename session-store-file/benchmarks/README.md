@@ -29,3 +29,9 @@ File-store save and load scenarios use the production streaming API by
 default. Load latency includes the checksum-validation pass and subsequent
 payload-delivery pass. Pass `--io-mode complete` to measure the allocation-heavy
 convenience methods separately.
+
+The `maintenance`, `backpressure`, and `recovery` commands cover ordered
+barriers, bounded streaming under deterministically gated endpoints, and MQTT
+v4/v5 checkpoint loading and state application through the production adapter
+and client restore paths. Each emits raw schema-version-1 samples plus p50,
+p95, and p99 metrics.

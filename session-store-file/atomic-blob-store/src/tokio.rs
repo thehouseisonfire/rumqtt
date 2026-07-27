@@ -42,6 +42,11 @@ pub struct AtomicBlobStore {
 }
 
 impl AtomicBlobStore {
+    #[cfg(all(test, any(unix, windows)))]
+    pub(crate) fn from_test_core(core: EngineHandle) -> Self {
+        Self { core }
+    }
+
     pub async fn open(
         root: impl Into<PathBuf>,
         namespace: impl AsRef<OsStr>,
@@ -74,6 +79,35 @@ impl AtomicBlobStore {
                 .unwrap_or(Err(AtomicBlobStoreError::EngineFailed))
                 .map(|core| Self { core })
         }
+    }
+
+    #[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
+    #[doc(hidden)]
+    pub async fn open_with_benchmark_events(
+        root: impl Into<PathBuf>,
+        namespace: impl AsRef<OsStr>,
+        options: AtomicBlobStoreOptions,
+        events: std::sync::mpsc::Sender<crate::bench_instrumentation::BenchmarkEvent>,
+    ) -> Result<Self, AtomicBlobStoreError> {
+        let root = root.into();
+        let namespace = namespace.as_ref().to_owned();
+        let (sender, receiver) = flume::bounded(1);
+        std::thread::Builder::new()
+            .name("atomic-blob-store-initialize".into())
+            .spawn(move || {
+                let result =
+                    EngineHandle::open_with_benchmark_events(root, namespace, options, events);
+                let _ = sender.send(result);
+            })
+            .map_err(|source| AtomicBlobStoreError::Io {
+                operation: crate::StoreOperation::StartInitialization,
+                source,
+            })?;
+        receiver
+            .recv_async()
+            .await
+            .unwrap_or(Err(AtomicBlobStoreError::EngineFailed))
+            .map(|core| Self { core })
     }
 
     #[cfg(all(test, any(unix, windows)))]

@@ -155,6 +155,11 @@ pub(crate) fn run_scheduler(
                     let _ = sender.send(Err(AtomicBlobStoreError::StoreClosed));
                     continue;
                 }
+                #[cfg(feature = "bench-instrumentation")]
+                emit_benchmark_event(
+                    config,
+                    crate::bench_instrumentation::BenchmarkEvent::FlushAccepted,
+                );
                 pending.push_back(PendingEvent::Flush(sender));
                 advance_pending_if_ready(
                     config,
@@ -314,6 +319,11 @@ pub(crate) fn advance_pending_if_ready(
                 let Some(PendingEvent::Flush(sender)) = pending.pop_front() else {
                     unreachable!("the pending event kind was inspected above");
                 };
+                #[cfg(all(test, any(unix, windows)))]
+                if let Some(hook) = &config.hook {
+                    hook(TestStage::FlushCompleted)
+                        .expect("test-requested flush completion failure");
+                }
                 let _ = sender.send(Ok(()));
             }
             Some(PendingEvent::Close(_)) => {

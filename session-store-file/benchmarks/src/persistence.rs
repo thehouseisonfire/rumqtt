@@ -6,6 +6,7 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -40,8 +41,57 @@ pub enum PersistenceCommand {
     FileStore(FileStoreArgs),
     Coordination(CoordinationArgs),
     Lifecycle(LifecycleArgs),
+    Maintenance(MaintenanceArgs),
+    Backpressure(BackpressureArgs),
+    Recovery(RecoveryArgs),
     Growth(GrowthArgs),
     Mqtt(MqttArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct MaintenanceArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    #[arg(long, default_value = "1048576")]
+    payload_size: usize,
+    #[arg(long, default_value = "4")]
+    max_concurrency: usize,
+    #[arg(long, default_value = "50")]
+    samples: usize,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackpressureDirection {
+    Source,
+    Destination,
+}
+
+#[derive(Args, Debug)]
+pub struct BackpressureArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    #[arg(long, value_enum)]
+    direction: BackpressureDirection,
+    #[arg(long, default_value = "1048576")]
+    payload_size: usize,
+    #[arg(long, default_value = "4")]
+    max_concurrency: usize,
+    #[arg(long, default_value = "50")]
+    samples: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct RecoveryArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    #[arg(long, default_value = "100")]
+    inflight: u16,
+    #[arg(long, default_value = "1024")]
+    payload_size: usize,
+    #[arg(long, default_value = "1", value_parser = super::parse_qos)]
+    qos: u8,
+    #[arg(long, default_value = "50")]
+    samples: usize,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -193,6 +243,9 @@ pub async fn run(command: PersistenceCommand) -> anyhow::Result<()> {
         PersistenceCommand::FileStore(args) => run_file_store(args).await,
         PersistenceCommand::Coordination(args) => run_coordination(args).await,
         PersistenceCommand::Lifecycle(args) => run_lifecycle(args),
+        PersistenceCommand::Maintenance(args) => run_maintenance(args),
+        PersistenceCommand::Backpressure(args) => run_backpressure(args).await,
+        PersistenceCommand::Recovery(args) => run_recovery(args).await,
         PersistenceCommand::Growth(args) => run_growth(&args),
         PersistenceCommand::Mqtt(args) => run_mqtt(args).await,
     }
@@ -355,6 +408,337 @@ fn run_lifecycle(args: LifecycleArgs) -> anyhow::Result<()> {
             "thread_measurement": "/proc/self/task delta",
             "rss_measurement": "/proc/self/status VmHWM",
             "allocation_measurement": "process-global counting allocator; measured save window",
+        }),
+        metrics,
+        samples,
+        environment: environment(),
+    })
+}
+
+struct BlockingGateReader {
+    payload: Cursor<Vec<u8>>,
+    reached: Option<std::sync::mpsc::SyncSender<()>>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+impl std::io::Read for BlockingGateReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(reached) = self.reached.take() {
+            reached
+                .send(())
+                .expect("maintenance observer remains alive");
+            self.release
+                .recv()
+                .expect("maintenance benchmark releases the source");
+        }
+        std::io::Read::read(&mut self.payload, output)
+    }
+}
+
+fn receive_benchmark_event(
+    receiver: &std::sync::mpsc::Receiver<envelope::BenchmarkEvent>,
+    expected: envelope::BenchmarkEvent,
+) -> anyhow::Result<()> {
+    loop {
+        let event = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .with_context(|| format!("timed out waiting for benchmark event {expected:?}"))?;
+        if event == expected {
+            return Ok(());
+        }
+    }
+}
+
+async fn wait_for_benchmark_event(
+    receiver: Arc<Mutex<std::sync::mpsc::Receiver<envelope::BenchmarkEvent>>>,
+    expected: envelope::BenchmarkEvent,
+) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let receiver = receiver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("benchmark event receiver lock was poisoned"))?;
+        receive_benchmark_event(&receiver, expected)
+    })
+    .await
+    .context("benchmark event observer task failed")?
+}
+
+fn drain_benchmark_events(
+    receiver: &Arc<Mutex<std::sync::mpsc::Receiver<envelope::BenchmarkEvent>>>,
+) -> anyhow::Result<()> {
+    let receiver = receiver
+        .lock()
+        .map_err(|_| anyhow::anyhow!("benchmark event receiver lock was poisoned"))?;
+    loop {
+        match receiver.try_recv() {
+            Ok(_) => {}
+            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                bail!("benchmark event channel disconnected")
+            }
+        }
+    }
+}
+
+fn run_maintenance(args: MaintenanceArgs) -> anyhow::Result<()> {
+    validate_samples(args.samples)?;
+    let maximum = NonZeroUsize::new(args.max_concurrency)
+        .context("--max-concurrency must be greater than zero")?;
+    let started_at = unix_secs();
+    let temporary = tempfile::tempdir()?;
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
+    let store = BlockingAtomicBlobStore::open_with_benchmark_events(
+        temporary.path(),
+        "maintenance",
+        benchmark_options().with_max_concurrent_operations(maximum),
+        event_sender,
+    )?;
+    let mut idle = Vec::with_capacity(args.samples);
+    let mut ordered = Vec::with_capacity(args.samples);
+    for sample in 0..args.samples {
+        let started = Instant::now();
+        store.flush()?;
+        receive_benchmark_event(&event_receiver, envelope::BenchmarkEvent::FlushAccepted)?;
+        idle.push(nanos_u64(started.elapsed().as_nanos()));
+
+        let (reached_sender, reached_receiver) = std::sync::mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+        let payload = payload(args.payload_size);
+        let save_store = store.clone();
+        let save = std::thread::spawn(move || {
+            let mut source = BlockingGateReader {
+                payload: Cursor::new(payload),
+                reached: Some(reached_sender),
+                release: release_receiver,
+            };
+            save_store.save_from(
+                format!("queued-{sample}").as_bytes(),
+                &mut source,
+                args.payload_size as u64,
+            )
+        });
+        reached_receiver.recv()?;
+        let flush_store = store.clone();
+        let (flush_sender, flush_receiver) = std::sync::mpsc::sync_channel(1);
+        let started = Instant::now();
+        let flush = std::thread::spawn(move || flush_sender.send(flush_store.flush()).unwrap());
+        receive_benchmark_event(&event_receiver, envelope::BenchmarkEvent::FlushAccepted)?;
+        assert!(matches!(
+            flush_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release_sender.send(())?;
+        flush_receiver.recv()??;
+        ordered.push(nanos_u64(started.elapsed().as_nanos()));
+        save.join().expect("save benchmark thread panicked")?;
+        flush.join().expect("flush benchmark thread panicked");
+    }
+    store.close()?;
+    let mut metrics = BTreeMap::new();
+    insert_distribution_metrics(&mut metrics, "idle_barrier", &idle);
+    insert_distribution_metrics(&mut metrics, "ordered_barrier", &ordered);
+    let mut samples = BTreeMap::new();
+    samples.insert(
+        "idle_barrier_latency_ns".to_owned(),
+        idle.into_iter().map(|value| value as f64).collect(),
+    );
+    samples.insert(
+        "ordered_barrier_latency_ns".to_owned(),
+        ordered.into_iter().map(|value| value as f64).collect(),
+    );
+    print_output(&BenchOutput {
+        schema_version: 1,
+        run_id: run_id(args.common.run_id.as_deref(), "persistence-maintenance"),
+        scenario: "persistence-maintenance-barrier".to_owned(),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "payload_size": args.payload_size,
+            "worker_bound": args.max_concurrency,
+            "samples": args.samples,
+            "barrier": "flush",
+            "ordered_work": "accepted streaming save with deterministically gated source",
+            "ordering_observation": "coordinator FlushAccepted event before source release",
+        }),
+        metrics,
+        samples,
+        environment: environment(),
+    })
+}
+
+struct GatedAsyncReader {
+    bytes: Cursor<Vec<u8>>,
+    release: tokio::sync::oneshot::Receiver<()>,
+    released: bool,
+}
+
+impl tokio::io::AsyncRead for GatedAsyncReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+        output: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.released {
+            if Pin::new(&mut self.release).poll(context).is_pending() {
+                return Poll::Pending;
+            }
+            self.released = true;
+        }
+        let mut buffer = vec![0; output.remaining()];
+        let count = std::io::Read::read(&mut self.bytes, &mut buffer)?;
+        output.put_slice(&buffer[..count]);
+        Poll::Ready(Ok(()))
+    }
+}
+
+struct GatedAsyncWriter {
+    release: tokio::sync::oneshot::Receiver<()>,
+    released: bool,
+    bytes: usize,
+}
+
+impl tokio::io::AsyncWrite for GatedAsyncWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if !self.released {
+            if Pin::new(&mut self.release).poll(context).is_pending() {
+                return Poll::Pending;
+            }
+            self.released = true;
+        }
+        self.bytes += bytes.len();
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _context: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+async fn run_backpressure(args: BackpressureArgs) -> anyhow::Result<()> {
+    validate_samples(args.samples)?;
+    let maximum = NonZeroUsize::new(args.max_concurrency)
+        .context("--max-concurrency must be greater than zero")?;
+    let minimum = envelope::STREAM_CHUNK_BYTES * (envelope::STREAM_CHANNEL_CAPACITY + 2);
+    if args.payload_size < minimum {
+        bail!("--payload-size must be at least {minimum} bytes");
+    }
+    let started_at = unix_secs();
+    let temporary = tempfile::tempdir()?;
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
+    let event_receiver = Arc::new(Mutex::new(event_receiver));
+    let store = AtomicBlobStore::open_with_benchmark_events(
+        temporary.path(),
+        "backpressure",
+        benchmark_options().with_max_concurrent_operations(maximum),
+        event_sender,
+    )
+    .await?;
+    let mut established = Vec::with_capacity(args.samples);
+    let mut completion = Vec::with_capacity(args.samples);
+    for sample in 0..args.samples {
+        let key = format!("key-{sample}");
+        let body = payload(args.payload_size);
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        match args.direction {
+            BackpressureDirection::Source => {
+                let mut source = GatedAsyncReader {
+                    bytes: Cursor::new(body),
+                    release: release_receiver,
+                    released: false,
+                };
+                drain_benchmark_events(&event_receiver)?;
+                let started = Instant::now();
+                let operation =
+                    store.save_from(key.as_bytes(), &mut source, args.payload_size as u64);
+                tokio::pin!(operation);
+                let backpressure = wait_for_benchmark_event(
+                    Arc::clone(&event_receiver),
+                    envelope::BenchmarkEvent::SaveStreamInputStarved,
+                );
+                tokio::select! {
+                    result = &mut operation => result?,
+                    result = backpressure => result?,
+                }
+                established.push(nanos_u64(started.elapsed().as_nanos()));
+                let released = Instant::now();
+                let _ = release_sender.send(());
+                operation.await?;
+                completion.push(nanos_u64(released.elapsed().as_nanos()));
+            }
+            BackpressureDirection::Destination => {
+                store.save(key.as_bytes(), body).await?;
+                let mut destination = GatedAsyncWriter {
+                    release: release_receiver,
+                    released: false,
+                    bytes: 0,
+                };
+                drain_benchmark_events(&event_receiver)?;
+                let started = Instant::now();
+                let completion_latency = {
+                    let operation = store.load_into(key.as_bytes(), &mut destination);
+                    tokio::pin!(operation);
+                    let backpressure = wait_for_benchmark_event(
+                        Arc::clone(&event_receiver),
+                        envelope::BenchmarkEvent::LoadStreamOutputBackpressured,
+                    );
+                    tokio::select! {
+                        result = &mut operation => { result?; },
+                        result = backpressure => result?,
+                    }
+                    established.push(nanos_u64(started.elapsed().as_nanos()));
+                    let released = Instant::now();
+                    let _ = release_sender.send(());
+                    operation.as_mut().await?;
+                    nanos_u64(released.elapsed().as_nanos())
+                };
+                completion.push(completion_latency);
+                assert_eq!(destination.bytes, args.payload_size);
+            }
+        }
+    }
+    store.close().await?;
+    let mut metrics = BTreeMap::new();
+    insert_distribution_metrics(&mut metrics, "backpressure_established", &established);
+    insert_distribution_metrics(&mut metrics, "completion_after_release", &completion);
+    let mut samples = BTreeMap::new();
+    samples.insert(
+        "backpressure_established_ns".to_owned(),
+        established.into_iter().map(|value| value as f64).collect(),
+    );
+    samples.insert(
+        "completion_after_release_ns".to_owned(),
+        completion.into_iter().map(|value| value as f64).collect(),
+    );
+    print_output(&BenchOutput {
+        schema_version: 1,
+        run_id: run_id(args.common.run_id.as_deref(), "persistence-backpressure"),
+        scenario: "persistence-streaming-backpressure".to_owned(),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "direction": format!("{:?}", args.direction).to_lowercase(),
+            "payload_size": args.payload_size,
+            "chunk_size": envelope::STREAM_CHUNK_BYTES,
+            "channel_capacity": envelope::STREAM_CHANNEL_CAPACITY,
+            "worker_bound": args.max_concurrency,
+            "samples": args.samples,
+            "coordination": "endpoint remains Pending until the worker reports an empty input or full output channel, then an explicit oneshot release",
+            "event_scope": "first pressure event per completed stream; queued events drained before each timed operation",
+            "fixture_scope": "destination fixture creation excluded from backpressure establishment",
         }),
         metrics,
         samples,
@@ -1168,6 +1552,127 @@ async fn run_coordination(args: CoordinationArgs) -> anyhow::Result<()> {
     )
 }
 
+async fn run_recovery(args: RecoveryArgs) -> anyhow::Result<()> {
+    validate_samples(args.samples)?;
+    if args.qos == 0 || args.inflight == 0 {
+        bail!("recovery fixtures require nonzero inflight QoS 1 or QoS 2 state");
+    }
+    let started_at = unix_secs();
+    let temporary = tempfile::tempdir()?;
+    let mut load_samples = Vec::with_capacity(args.samples);
+    let mut apply_samples = Vec::with_capacity(args.samples);
+    let checkpoint_size;
+    let replay_count;
+    match args.common.protocol {
+        Protocol::V4 => {
+            use rumqttc_store::v4::SessionFileStore;
+            use rumqttc_v4::{SessionStore, SessionStoreKey};
+
+            let fixture = fixture_v4(usize::from(args.inflight), args.payload_size, args.qos);
+            let key = SessionStoreKey::new("benchmark", "benchmark-client-v4");
+            let store = SessionFileStore::open(temporary.path()).await?;
+            store
+                .save(&key, &fixture)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            checkpoint_size = std::fs::metadata(store.checkpoint_path(&key)?)?.len();
+            let mut options = rumqttc_v4::MqttOptions::new("benchmark-client-v4", "localhost");
+            options.set_clean_session(false).set_inflight(args.inflight);
+            let mut observed_replay = 0;
+            for _ in 0..args.samples {
+                let started = Instant::now();
+                let loaded = store
+                    .load(&key)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?
+                    .context("checkpoint disappeared")?;
+                load_samples.push(nanos_u64(started.elapsed().as_nanos()));
+                let started = Instant::now();
+                observed_replay =
+                    rumqttc_v4::bench_instrumentation::apply_persisted_session(&options, &loaded)?;
+                apply_samples.push(nanos_u64(started.elapsed().as_nanos()));
+            }
+            replay_count = observed_replay;
+        }
+        Protocol::V5 => {
+            use rumqttc_store::v5::SessionFileStore;
+            use rumqttc_v5::{SessionStore, SessionStoreKey};
+
+            let fixture = fixture_v5(usize::from(args.inflight), args.payload_size, args.qos);
+            let key = SessionStoreKey::new("benchmark", "benchmark-client-v5");
+            let store = SessionFileStore::open(temporary.path()).await?;
+            store
+                .save(&key, &fixture)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            checkpoint_size = std::fs::metadata(store.checkpoint_path(&key)?)?.len();
+            let mut options = rumqttc_v5::MqttOptions::new("benchmark-client-v5", "localhost");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(3600))
+                .set_outgoing_inflight_upper_limit(args.inflight);
+            let mut observed_replay = 0;
+            for _ in 0..args.samples {
+                let started = Instant::now();
+                let loaded = store
+                    .load(&key)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?
+                    .context("checkpoint disappeared")?;
+                load_samples.push(nanos_u64(started.elapsed().as_nanos()));
+                let started = Instant::now();
+                observed_replay =
+                    rumqttc_v5::bench_instrumentation::apply_persisted_session(&options, &loaded)?;
+                apply_samples.push(nanos_u64(started.elapsed().as_nanos()));
+            }
+            replay_count = observed_replay;
+        }
+    }
+    if replay_count != usize::from(args.inflight) {
+        bail!(
+            "restored replay count {replay_count} did not match configured inflight {}",
+            args.inflight
+        );
+    }
+    let mut metrics = BTreeMap::from([("replay_count".to_owned(), replay_count as f64)]);
+    insert_distribution_metrics(&mut metrics, "adapter_load", &load_samples);
+    insert_distribution_metrics(&mut metrics, "state_apply", &apply_samples);
+    let mut samples = BTreeMap::new();
+    samples.insert(
+        "adapter_load_latency_ns".to_owned(),
+        load_samples.into_iter().map(|value| value as f64).collect(),
+    );
+    samples.insert(
+        "state_apply_latency_ns".to_owned(),
+        apply_samples
+            .into_iter()
+            .map(|value| value as f64)
+            .collect(),
+    );
+    print_output(&BenchOutput {
+        schema_version: 1,
+        run_id: run_id(args.common.run_id.as_deref(), "persistence-recovery"),
+        scenario: "persistence-mqtt-recovery".to_owned(),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "protocol": args.common.protocol,
+            "checkpoint_shape": "outgoing publish replay",
+            "payload_size": args.payload_size,
+            "inflight": args.inflight,
+            "qos": args.qos,
+            "checkpoint_size": checkpoint_size,
+            "samples": args.samples,
+            "filesystem_backend": if cfg!(unix) { "atomic-write-file" } else { "windows-native" },
+            "load_path": "production SessionFileStore::load",
+            "apply_path": "production MqttState persisted-session restore",
+        }),
+        metrics,
+        samples,
+        environment: environment(),
+    })
+}
+
 fn run_growth(args: &GrowthArgs) -> anyhow::Result<()> {
     if args.qos == 0 {
         bail!("growth fixtures require QoS 1 or QoS 2");
@@ -1368,6 +1873,14 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
     sorted[index]
 }
 
+fn insert_distribution_metrics(metrics: &mut BTreeMap<String, f64>, prefix: &str, samples: &[u64]) {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    metrics.insert(format!("{prefix}_p50_ns"), percentile(&sorted, 50) as f64);
+    metrics.insert(format!("{prefix}_p95_ns"), percentile(&sorted, 95) as f64);
+    metrics.insert(format!("{prefix}_p99_ns"), percentile(&sorted, 99) as f64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1396,5 +1909,24 @@ mod tests {
             envelope::decode(&format, &mut Cursor::new(actual), 1024).unwrap(),
             b"abc"
         );
+    }
+
+    #[test]
+    fn draining_benchmark_events_removes_prior_sample_observations() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(envelope::BenchmarkEvent::SaveStreamInputStarved)
+            .unwrap();
+        sender
+            .send(envelope::BenchmarkEvent::LoadStreamOutputBackpressured)
+            .unwrap();
+        let receiver = Arc::new(Mutex::new(receiver));
+
+        drain_benchmark_events(&receiver).unwrap();
+
+        assert!(matches!(
+            receiver.lock().unwrap().try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
     }
 }

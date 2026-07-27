@@ -61,6 +61,16 @@ store_bench=(cargo run --release --manifest-path session-store-file/Cargo.toml \
 "${store_bench[@]}" persistence coordination --concurrency 8 --operations 100
 "${store_bench[@]}" persistence lifecycle --stores 1 --max-concurrency 4 \
   --payload-size 4194304 --samples 30
+"${store_bench[@]}" persistence maintenance --payload-size 1048576 \
+  --max-concurrency 4 --samples 50
+"${store_bench[@]}" persistence backpressure --direction source \
+  --payload-size 1048576 --max-concurrency 4 --samples 50
+"${store_bench[@]}" persistence backpressure --direction destination \
+  --payload-size 1048576 --max-concurrency 4 --samples 50
+"${store_bench[@]}" persistence recovery --protocol v4 --inflight 100 \
+  --payload-size 1024 --qos 1 --samples 50
+"${store_bench[@]}" persistence recovery --protocol v5 --inflight 100 \
+  --payload-size 1024 --qos 2 --samples 50
 "${store_bench[@]}" persistence growth --protocol v5 --payload-size 1024 --qos 2
 python3 benchmarks/runner.py run \
   --scenario persistence-mqtt-v4-qos1-enabled \
@@ -81,6 +91,30 @@ cannot be reset, so each command must run in a fresh process. Allocation
 counters are process-global and count benchmark/runtime allocation as well as
 store allocation; paired runs must use identical commands and an otherwise
 idle process.
+
+`maintenance` records an idle flush separately from a flush queued behind an
+accepted streaming save. The save source is held by a channel and explicitly
+released only after the coordinator emits the feature-gated
+`FlushAccepted` observation. The harness also proves the flush has not
+completed before release, so the ordering measurement does not depend on
+thread scheduling or a sleep.
+
+`backpressure` uses an `AsyncRead` or `AsyncWrite` endpoint that returns
+`Pending` until an explicit oneshot release. Payloads must exceed the 64 KiB
+chunk size times the bounded channel capacity plus two additional chunks.
+Output records time until the worker observes an empty streaming-input channel
+or a full streaming-output channel immediately before its blocking transport
+operation, then completion latency after release. It also records chunk size,
+capacity, payload size, and worker bound. Pressure observations are emitted
+once per stream. After the preceding stream has completed, the harness drains
+the observation channel before starting the next timed operation. Destination
+fixture creation is outside the establishment timer.
+
+`recovery` first writes a checkpoint through the production protocol adapter.
+It records `SessionFileStore::load` separately from applying the decoded
+checkpoint with the same `MqttState` restore implementation used by the event
+loop. The protocol, QoS, payload, inflight shape, checkpoint size, backend, and
+observed replay count are retained in every result.
 
 ## Baseline report template
 

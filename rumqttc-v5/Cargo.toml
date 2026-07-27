@@ -22,6 +22,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["use-rustls"]
+bench-instrumentation = []
 use-rustls = ["use-rustls-aws-lc"]
 use-rustls-no-provider = ["dep:tokio-rustls", "dep:rustls-webpki", "dep:rustls-pki-types", "dep:rustls-native-certs", "async-tungstenite?/tokio-rustls-native-certs", "rumqttc-core/use-rustls-no-provider"]
 use-rustls-ring = ["use-rustls-no-provider", "tokio-rustls/ring", "rustls-webpki/ring", "rumqttc-core/use-rustls-ring"]

@@ -230,3 +230,22 @@ fn print_output(output: &BenchOutput) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_inflight_is_rejected_before_fixture_construction_when_it_exceeds_u16() {
+        let error = Cli::try_parse_from([
+            "rumqtt-session-store-file-bench",
+            "persistence",
+            "recovery",
+            "--inflight",
+            "65536",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+}

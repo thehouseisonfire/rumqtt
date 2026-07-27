@@ -248,3 +248,52 @@ larger than a chunk is enforced separately by deterministic facade tests.
 
 These measurements cover the local Unix implementation only. They do not
 constitute native evidence for any other platform.
+
+### Remaining TODO2 scenarios
+
+The maintained harness now includes deterministic ordered-barrier,
+slow-source/slow-destination backpressure, and MQTT v4/v5 recovery commands.
+Their schema-version-1 output separates idle from queued barrier latency,
+backpressure establishment from post-release completion, and adapter loading
+from client-state application. A queued barrier is released only after the
+coordinator reports accepting it. Slow endpoints remain gated until the worker
+reports the stream's first empty input channel or full output channel
+immediately before the blocking transport operation. Each completed stream is
+a synchronization point, and the observation queue is drained before the next
+timed operation. Destination fixture creation is outside the establishment
+timer. No sleep is part of either synchronization protocol.
+
+Paired release measurements for these commands are retained under
+`baselines/todo2-completion-linux-2026-07-26/` and
+`results/todo2-completion-linux-2026-07-26/`. They use the same completed
+harness overlay for baseline `607aac41fe7161cc37c2c0c8ffcc593b3ff33d1f`
+and final `cae75823b18eb8cf118ab5dd55563693e29b448a`, with 50 samples per
+scenario, a 1 MiB streaming payload, four workers, and 100 inflight 1 KiB
+publishes for recovery. Raw samples and exact environment metadata remain
+authoritative; short host-local differences are treated as noise unless the
+paired distributions show a consistent material shift.
+
+Earlier first-poll, thread-completion, cross-sample-event, and
+fixture-inclusive samples were invalidated and replaced.
+Two alternating fixed-harness sweeps measured idle-barrier medians of
+8.9–12.2 µs baseline and 10.7–16.8 µs final; queued-barrier medians were
+516–695 µs and 661–964 µs. The barrier distributions do not show a consistent
+regression.
+
+With first-pressure events scoped to one per completed stream, slow-source
+establishment medians were 60.9–75.8 µs baseline and 23.9–70.0 µs final;
+post-release medians were 393–479 µs and 366–408 µs. Slow-destination
+establishment medians, now excluding fixture creation, were 220–416 µs
+baseline and 341–468 µs final; post-release medians were 81.4–161 µs and
+132–192 µs. The destination p95 ranges were 272–648 µs versus 484–1,016 µs
+for establishment and 101–250 µs versus 180–593 µs after release. The paired
+median and tail ranges overlap and vary between repeats, so these short
+loaded-host measurements do not support a material source- or
+destination-side regression. Raw samples preserve the complete distributions
+for a quieter-host follow-up.
+
+V4/v5 adapter-load medians were 92.7/87.2 µs baseline and 71.7/85.1 µs final.
+State application was 26.9/26.3 µs baseline and 38.0/46.1 µs final. All runs
+restored exactly 100 replay entries. Client-state source also changed between
+the historical commits, so application timing is reported as an end-to-end
+recovery characteristic rather than attributed to the blob-store engine.

@@ -99,6 +99,22 @@ pub use session::{
     SessionStoreKey,
 };
 pub use state::{MqttState, MqttStateBuilder, OutboundDiagnostics, ProtocolViolation, StateError};
+
+#[cfg(feature = "bench-instrumentation")]
+#[doc(hidden)]
+pub mod bench_instrumentation {
+    use crate::{MqttOptions, MqttState, PersistedSession, SessionRestoreError};
+
+    pub fn apply_persisted_session(
+        options: &MqttOptions,
+        session: &PersistedSession,
+    ) -> Result<usize, SessionRestoreError> {
+        let mut state = MqttState::builder(session.max_inflight).build();
+        state
+            .restore_persisted_session(options, session)
+            .map(|replay| replay.len())
+    }
+}
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::Error as TlsError;
 #[cfg(feature = "use-native-tls")]

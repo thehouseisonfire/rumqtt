@@ -82,6 +82,23 @@ pub use session::{
     SessionStore, SessionStoreError, SessionStoreKey,
 };
 pub use state::{MqttState, MqttStateBuilder, OutboundDiagnostics, ProtocolViolation, StateError};
+
+#[cfg(feature = "bench-instrumentation")]
+#[doc(hidden)]
+pub mod bench_instrumentation {
+    use crate::{MqttOptions, MqttState, PersistedSession, SessionRestoreError};
+
+    pub fn apply_persisted_session(
+        options: &MqttOptions,
+        session: &PersistedSession,
+    ) -> Result<usize, SessionRestoreError> {
+        let maximum = session.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
+        let mut state = MqttState::builder(maximum).build();
+        state
+            .restore_persisted_session(options, session)
+            .map(|replay| replay.len())
+    }
+}
 pub use transport::Transport;
 
 /// Policy used for MQTT 5 client-side topic alias assignment.

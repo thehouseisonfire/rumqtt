@@ -62,6 +62,10 @@ __pycache__/
 benchmarks/results/
 benchmarks/__pycache__
 session-store-file/benchmarks/results/
+!session-store-file/benchmarks/results/
+session-store-file/benchmarks/results/*
+!session-store-file/benchmarks/results/todo2-completion-linux-2026-07-26/
+!session-store-file/benchmarks/results/todo2-completion-linux-2026-07-26/**
 
 
 # Runtime data

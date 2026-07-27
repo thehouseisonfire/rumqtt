@@ -168,6 +168,9 @@ pub(crate) struct StoreConfig {
     pub(crate) max_concurrent_operations: usize,
     #[cfg(all(test, any(unix, windows)))]
     pub(crate) hook: Option<Arc<dyn Fn(TestStage) -> io::Result<()> + Send + Sync>>,
+    #[cfg(feature = "bench-instrumentation")]
+    pub(crate) benchmark_events:
+        Option<std::sync::mpsc::Sender<crate::bench_instrumentation::BenchmarkEvent>>,
 }
 
 impl std::fmt::Debug for StoreConfig {
@@ -325,6 +328,25 @@ impl EngineHandle {
         let mut config =
             initialize_platform(root, namespace, format, maximum, max_concurrent_operations)?;
         config.hook = Some(hook);
+        Self::from_config(config)
+    }
+
+    #[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
+    pub(crate) fn open_with_benchmark_events(
+        root: impl Into<PathBuf>,
+        namespace: impl AsRef<OsStr>,
+        options: AtomicBlobStoreOptions,
+        events: std::sync::mpsc::Sender<crate::bench_instrumentation::BenchmarkEvent>,
+    ) -> Result<Self, AtomicBlobStoreError> {
+        let root = root.into();
+        let namespace = validate_namespace(namespace.as_ref())?;
+        validate_maximum(options.max_blob_size)?;
+        let maximum = options.max_blob_size;
+        let format = options.format;
+        let max_concurrent_operations = options.max_concurrent_operations.get();
+        let mut config =
+            initialize_platform(root, namespace, format, maximum, max_concurrent_operations)?;
+        config.benchmark_events = Some(events);
         Self::from_config(config)
     }
 
@@ -803,6 +825,7 @@ pub(crate) fn submit_operation(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TestStage {
     CoordinatorEvent,
+    FlushCompleted,
     CoordinatorStopping,
     WorkerStart,
     WorkerDispatch,
@@ -839,4 +862,14 @@ pub(crate) fn hit_test_stage(
         return Ok(());
     };
     hook(stage).map_err(|source| AtomicBlobStoreError::Io { operation, source })
+}
+
+#[cfg(all(feature = "bench-instrumentation", any(unix, windows)))]
+pub(crate) fn emit_benchmark_event(
+    config: &StoreConfig,
+    event: crate::bench_instrumentation::BenchmarkEvent,
+) {
+    if let Some(events) = &config.benchmark_events {
+        let _ = events.send(event);
+    }
 }

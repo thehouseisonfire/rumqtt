@@ -60,10 +60,23 @@ pub(crate) fn write_stream_envelope(
         })?;
     let mut checksum = crc32c::crc32c(&header);
     let mut written = 0_u64;
+    #[cfg(feature = "bench-instrumentation")]
+    let mut input_starvation_reported = false;
     #[cfg(all(test, any(unix, windows)))]
     let mut during_write_hook_hit = false;
 
-    while let Ok(message) = chunks.recv() {
+    loop {
+        #[cfg(feature = "bench-instrumentation")]
+        if !input_starvation_reported && chunks.is_empty() {
+            emit_benchmark_event(
+                config,
+                crate::bench_instrumentation::BenchmarkEvent::SaveStreamInputStarved,
+            );
+            input_starvation_reported = true;
+        }
+        let Ok(message) = chunks.recv() else {
+            break;
+        };
         match message {
             SaveStreamMessage::Chunk(chunk) => {
                 let count = u64::try_from(chunk.len()).expect("a chunk length always fits in u64");
@@ -167,6 +180,8 @@ pub(crate) fn load_blob_into_sender(
     })?;
 
     let mut remaining = metadata.payload_len;
+    #[cfg(feature = "bench-instrumentation")]
+    let mut output_backpressure_reported = false;
     while remaining != 0 {
         let requested = usize::try_from(remaining)
             .unwrap_or(usize::MAX)
@@ -174,6 +189,14 @@ pub(crate) fn load_blob_into_sender(
         let mut chunk = vec![0; requested];
         read_section(&mut file, &mut chunk, EnvelopeSection::Payload)?;
         remaining -= u64::try_from(requested).expect("a chunk length always fits in u64");
+        #[cfg(feature = "bench-instrumentation")]
+        if !output_backpressure_reported && chunks.is_full() {
+            emit_benchmark_event(
+                config,
+                crate::bench_instrumentation::BenchmarkEvent::LoadStreamOutputBackpressured,
+            );
+            output_backpressure_reported = true;
+        }
         chunks
             .send(chunk)
             .map_err(|_| AtomicBlobStoreError::StreamCancelled)?;
