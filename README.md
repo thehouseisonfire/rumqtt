@@ -1,92 +1,101 @@
 <div align="center">
-  <img alt="rumqtt Logo" src="docs/rumqtt.png" width="60%" />
+  <img alt="rumqtt logo" src="docs/rumqtt.png" width="60%" />
 </div>
+
 <div align="center">
-  <a href="https://coveralls.io/github/thehouseisonfire/rumqtt?branch=main">
-    <img src="https://coveralls.io/repos/github/thehouseisonfire/rumqtt/badge.svg?branch=main" alt="Coverage Status" />
+  <a href="https://crates.io/crates/rumqttc-next">
+    <img src="https://img.shields.io/crates/v/rumqttc-next.svg" alt="crates.io version" />
   </a>
+  <a href="https://crates.io/crates/rumqttc-next">
+    <img src="https://img.shields.io/crates/d/rumqttc-next.svg" alt="crates.io downloads" />
+  </a>
+  <a href="https://github.com/thehouseisonfire/rumqtt/commits/main">
+    <img
+      src="https://img.shields.io/github/commit-activity/m/thehouseisonfire/rumqtt"
+      alt="monthly commit activity"
+    />
+  </a>
+  <a href="https://coveralls.io/github/thehouseisonfire/rumqtt?branch=main">
+    <img
+      src="https://coveralls.io/repos/github/thehouseisonfire/rumqtt/badge.svg?branch=main"
+      alt="coverage status"
+    />
+  </a>
+  <img src="https://img.shields.io/badge/rustc-1.89%2B-blue" alt="rustc 1.89 or newer" />
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0 license" /></a>
 </div>
-<br/>
 
-## What is rumqtt?
+## Reliable MQTT clients for Rust
 
-rumqtt is an open source set of Rust libraries for MQTT clients and packet handling, built to stay simple,
-robust, and performant.
+rumqtt provides asynchronous and synchronous MQTT clients with a small, explicit
+API and close control over connection behavior. It supports MQTT 3.1.1 and MQTT
+5, TLS, WebSockets, proxies, persistent sessions, manual acknowledgements, and
+reconnect handling.
 
-| Package | Description | Version |
+This repository is an **actively maintained fork of
+[`rumqttc`](https://github.com/bytebeamio/rumqtt)**, started in response to a
+period of upstream inactivity. It preserves the original project's focus on
+simplicity and performance while continuing protocol hardening, operational
+tooling, and API development independently.
+
+See the [migration and API differences guide](./MIGRATION.md) for a practical
+comparison with upstream, and the [changelog](./CHANGELOG.md) for the complete
+list of additions and fixes. Highlights include:
+
+- separate, intentionally versioned MQTT 3.1.1 and MQTT 5 clients;
+- stricter packet and protocol-state validation, backed by
+  [spec-compliance references](./docs/spec/);
+- persistent session APIs, structured diagnostics, lifecycle tracing, and
+  explicit reconnect, acknowledgement, and topic-alias policies;
+- HTTP and SOCKS5 proxies, TLS and WebSocket transports, and opt-in Linux
+  Multipath TCP.
+
+## Choose a client
+
+| Use case | Cargo package | Rust crate |
 | -- | -- | -- |
-| [rumqttc-next](./rumqttc-next/) | Facade crate that re-exports the MQTT 5 client API | [![crates.io page](https://img.shields.io/crates/v/rumqttc-next.svg)](https://crates.io/crates/rumqttc-next) |
-| [rumqttc-v5-next](./rumqttc-v5/) | Explicit MQTT 5 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v5-next.svg)](https://crates.io/crates/rumqttc-v5-next) |
-| [rumqttc-v4-next](./rumqttc-v4/) | Explicit MQTT 3.1.1 client crate | [![crates.io page](https://img.shields.io/crates/v/rumqttc-v4-next.svg)](https://crates.io/crates/rumqttc-v4-next) |
-| [rumqttc-core-next](./rumqttc-core/) | Shared transport and connection plumbing for the client crates | [![crates.io page](https://img.shields.io/crates/v/rumqttc-core-next.svg)](https://crates.io/crates/rumqttc-core-next) |
-| [mqttbytes-core-next](./mqttbytes-core/) | Shared MQTT packet primitives for the client crates | [![crates.io page](https://img.shields.io/crates/v/mqttbytes-core-next.svg)](https://crates.io/crates/mqttbytes-core-next) |
+| MQTT 5 (recommended entry point) | [`rumqttc-next`](./rumqttc-next/) | `rumqttc` |
+| MQTT 5 (explicit package) | [`rumqttc-v5-next`](./rumqttc-v5/) | `rumqttc` |
+| MQTT 3.1.1 | [`rumqttc-v4-next`](./rumqttc-v4/) | `rumqttc` |
 
-Optional file-backed implementations of the client-owned `SessionStore` APIs
-are developed in the independent
-[`session-store-file` workspace](./session-store-file/README.md). That workspace
-contains a protocol-neutral filesystem core and one feature-gated MQTT 3.1.1
-and MQTT 5 adapter package; it is not part of the client dependency graph.
-
-rumqttc-next is a maintained fork of rumqtt with a variety of extra features.
-
-The client crates are published with `*-next` package names on crates.io, but their Rust library target is
-still named `rumqttc`. After adding a dependency, application code can use familiar imports such as
-`use rumqttc::MqttOptions;`.
-
-## Installation and Usage
-
-### Choose a client package
-
-| Use case | Package |
-| -- | -- |
-| Default MQTT 5 client | `rumqttc-next` |
-| Explicit MQTT 5 package name | `rumqttc-v5-next` |
-| MQTT 3.1.1 client | `rumqttc-v4-next` |
-
-Run one of these, depending on the protocol package you want:
+The `*-next` names are the packages published on crates.io; each library target
+is still named `rumqttc`, so application imports remain familiar.
 
 ```bash
-# Default MQTT 5 client
 cargo add rumqttc-next@0.34.0-alpha
-
-# Explicit MQTT 5 package
-cargo add rumqttc-v5-next@0.34.0-alpha
-
-# MQTT 3.1.1 package
-cargo add rumqttc-v4-next@0.34.0-alpha
 ```
 
-For more details, see [rumqttc-next/README.md](./rumqttc-next/README.md), [rumqttc-v5/README.md](./rumqttc-v5/README.md), and [rumqttc-v4/README.md](./rumqttc-v4/README.md).
+```rust
+use rumqttc::{AsyncClient, MqttOptions};
 
-Existing upstream `rumqttc` users should start with the [migration guide](./MIGRATION.md) for package names,
-API changes, and porting recipes.
+let options = MqttOptions::new("client-id", "localhost");
+let (client, mut eventloop) = AsyncClient::builder(options).capacity(10).build();
+```
 
-Production deployment examples for TLS, WebSockets, proxies, persistent
-sessions, reconnect handling, bounded channels, manual ACKs, and broker-specific
-setup notes are in the [recipe guide](./docs/recipes/README.md).
+Use `rumqttc-v4-next` in the command above for MQTT 3.1.1. For complete setup
+and usage, see the
+[`rumqttc-next`](./rumqttc-next/README.md),
+[`rumqttc-v5-next`](./rumqttc-v5/README.md), and
+[`rumqttc-v4-next`](./rumqttc-v4/README.md) crate documentation.
 
-On Linux, both clients support opt-in Multipath TCP through
-`NetworkOptions::set_mptcp`; see the [MPTCP recipe](./docs/recipes/mptcp.md).
+Shared transport and codec code is published as
+[`rumqttc-core-next`](./rumqttc-core/) and
+[`mqttbytes-core-next`](./mqttbytes-core/). Optional file-backed session stores
+live in the independent
+[`session-store-file` workspace](./session-store-file/README.md) and do not add
+filesystem dependencies to the clients.
 
-## Features
+## Guides and ecosystem
 
-### rumqttc-next / rumqttc-v5-next
-- [x] MQTT 5
-- [x] WebSocket transport
-- [x] TLS via rustls or native-tls
-- [x] MQTT 5 properties, reason codes, topic aliases, and enhanced auth hooks
+The [production recipes](./docs/recipes/README.md) cover TLS, WebSockets,
+proxies, persistent sessions, reconnect handling, bounded channels, manual
+ACKs, and broker-specific configuration.
 
-### rumqttc-v4-next
-- [x] MQTT 3.1.1
-- [x] WebSocket transport
-- [x] TLS via rustls or native-tls
-- [x] Strict MQTT 3.1.1 codec validation
-
-## Spec Compliance Docs
-
-- [MQTT 3.1.1 spec notes](./docs/spec/mqtt-v3.1.1.md) and [requirement index (full compliance verification ongoing)](./docs/spec/mqtt-v3.1.1.requirements.json)
-- [MQTT 5.0 spec notes](./docs/spec/mqtt-v5.0.md) and [requirement index (ongoing)](./docs/spec/mqtt-v5.0.requirements.json)
+Projects integrating this fork include
+[`mqtt-typed-client`](https://github.com/holovskyi/mqtt-typed-client), a
+type-safe MQTT layer with an optional `backend-rumqttc-next` backend. See each
+package's crates.io page for current download and reverse-dependency data.
 
 ## License
 
-This project is released under The Apache License, Version 2.0 ([LICENSE](./LICENSE) or http://www.apache.org/licenses/LICENSE-2.0)
+Licensed under the [Apache License, Version 2.0](./LICENSE).
