@@ -1,0 +1,65 @@
+{
+  "backend": "docker",
+  "broker_urls": {
+    "tcp": "mqtt://127.0.0.1:42883",
+    "tls": "mqtts://localhost:55521",
+    "websocket": "ws://127.0.0.1:59545/mqtt"
+  },
+  "ca_cert": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/smoke-mosquitto/ca.crt",
+  "completed": [],
+  "container": "rumqtt-bench-d5e0e89d1892",
+  "counts": {
+    "completed": 0,
+    "failed": 1,
+    "skipped": 0
+  },
+  "failed": [
+    "matched-v5-throughput-qos1-1kib-1p1s"
+  ],
+  "finished_at": "20260727-200933Z",
+  "image": "eclipse-mosquitto:2.0.22",
+  "image_digest": null,
+  "mode": "broker-validation",
+  "mosquitto_binary": null,
+  "ports": {
+    "tcp": 42883,
+    "tls": 55521,
+    "websocket": 59545
+  },
+  "scenarios": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmarks/runner.py",
+        "compare-libraries",
+        "--scenario",
+        "matched-v5-throughput-qos1-1kib-1p1s",
+        "--broker-url",
+        "mqtt://127.0.0.1:42883",
+        "--runs",
+        "1",
+        "--warmup-runs",
+        "0",
+        "--cargo-profile",
+        "dev",
+        "--timeout-sec",
+        "180",
+        "--output-dir",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/smoke-mosquitto/scenarios/matched-v5-throughput-qos1-1kib-1p1s"
+      ],
+      "name": "matched-v5-throughput-qos1-1kib-1p1s",
+      "output_dir": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/smoke-mosquitto/scenarios/matched-v5-throughput-qos1-1kib-1p1s",
+      "quality_status": "fail",
+      "returncode": 1,
+      "status": "failed",
+      "stderr": "error: 1 measured run(s) invalid; report written to /home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/smoke-mosquitto/scenarios/matched-v5-throughput-qos1-1kib-1p1s",
+      "transport": "tcp"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": [],
+  "started_at": "20260727-200858Z",
+  "status": "failed",
+  "synthetic_router_binary": null,
+  "synthetic_router_log": null
+}

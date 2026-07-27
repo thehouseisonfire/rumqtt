@@ -1709,11 +1709,11 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
         },
         "mode": "compare-libraries",
         "baseline_ref": "rumqttc-v5-next",
-        "target_ref": "mqtt5=0.37.2",
+        "target_ref": "mqtt5=0.38.0",
         "git": {"commit": resolve_ref(root, "HEAD")},
         "libraries": {
             "baseline": {"name": "rumqttc-v5-next", "source": "workspace"},
-            "target": {"name": "mqtt5", "version": "0.37.2", "source": "crates.io"},
+            "target": {"name": "mqtt5", "version": "0.38.0", "source": "crates.io"},
         },
         "command": {
             client: matched_command(
@@ -1801,7 +1801,7 @@ def build_parser() -> argparse.ArgumentParser:
     external.set_defaults(func=command_compare_external)
 
     libraries = sub.add_parser(
-        "compare-libraries", help="Compare workspace rumqttc-v5-next with mqtt5=0.37.2"
+        "compare-libraries", help="Compare workspace rumqttc-v5-next with mqtt5=0.38.0"
     )
     libraries.add_argument("--scenario", required=True)
     libraries.add_argument("--runs", type=int, default=12)

@@ -1,0 +1,65 @@
+{
+  "backend": "docker",
+  "broker_urls": {
+    "tcp": "mqtt://127.0.0.1:42421",
+    "tls": "mqtts://localhost:43181",
+    "websocket": "ws://127.0.0.1:50965/mqtt"
+  },
+  "ca_cert": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-throughput/ca.crt",
+  "completed": [],
+  "container": "rumqtt-bench-8dabfca8c2f8",
+  "counts": {
+    "completed": 0,
+    "failed": 1,
+    "skipped": 0
+  },
+  "failed": [
+    "matched-v5-throughput-qos1-1kib-1p1s"
+  ],
+  "finished_at": "20260727-203126Z",
+  "image": "eclipse-mosquitto:2.0.22",
+  "image_digest": null,
+  "mode": "broker-validation",
+  "mosquitto_binary": null,
+  "ports": {
+    "tcp": 42421,
+    "tls": 43181,
+    "websocket": 50965
+  },
+  "scenarios": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmarks/runner.py",
+        "compare-libraries",
+        "--scenario",
+        "matched-v5-throughput-qos1-1kib-1p1s",
+        "--broker-url",
+        "mqtt://127.0.0.1:42421",
+        "--runs",
+        "12",
+        "--warmup-runs",
+        "1",
+        "--cargo-profile",
+        "release",
+        "--timeout-sec",
+        "600",
+        "--output-dir",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-throughput/scenarios/matched-v5-throughput-qos1-1kib-1p1s"
+      ],
+      "name": "matched-v5-throughput-qos1-1kib-1p1s",
+      "output_dir": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-throughput/scenarios/matched-v5-throughput-qos1-1kib-1p1s",
+      "quality_status": "fail",
+      "returncode": 1,
+      "status": "failed",
+      "stderr": "error: 12 measured run(s) invalid; report written to /home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-throughput/scenarios/matched-v5-throughput-qos1-1kib-1p1s",
+      "transport": "tcp"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": [],
+  "started_at": "20260727-202452Z",
+  "status": "failed",
+  "synthetic_router_binary": null,
+  "synthetic_router_log": null
+}

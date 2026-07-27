@@ -45,7 +45,7 @@ The shared scenario runner routes those scenarios to that package automatically.
 payloads, topics, Correlation Data sequence/timestamps, pacing, timing,
 delivery accounting, resource sampling, and drain behavior; the adapters only
 perform MQTT operations. The comparison uses workspace `rumqttc-v5-next` and
-the exact locked dependency `mqtt5 = 0.37.2`. Matched scenarios support TCP
+the exact locked dependency `mqtt5 = 0.38.0`. Matched scenarios support TCP
 (`mqtt://`) and TLS (`mqtts://`); WebSocket is not supported by both adapters.
 For a TLS broker using a private CA, pass `--ca-cert /path/to/ca.pem`.
 

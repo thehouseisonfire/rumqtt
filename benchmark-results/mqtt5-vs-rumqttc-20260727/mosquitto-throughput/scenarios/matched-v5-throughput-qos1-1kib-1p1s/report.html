@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>rumqtt benchmark report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+    th { background: #f4f4f4; }
+  </style>
+</head>
+<body>
+  <h1>matched-v5-throughput-qos1-1kib-1p1s</h1>
+  <p>Direct-library MQTT 5 QoS 1 throughput with a 1 KiB immutable payload.</p>
+  <h2>Quality: fail</h2>
+  <table>
+    <thead>
+      <tr><th>Gate</th><th>Observed</th><th>Threshold</th><th>Status</th></tr>
+    </thead>
+    <tbody><tr><td>baseline_min_success_rate</td><td>1.0</td><td>1.0</td><td>pass</td></tr>
+<tr><td>target_min_success_rate</td><td>0.0</td><td>1.0</td><td>fail</td></tr>
+<tr><td>min_paired_runs</td><td>0</td><td>12</td><td>fail</td></tr>
+<tr><td>baseline_max_primary_cv_pct</td><td>3.0757744277898165</td><td>10.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_cv_pct</td><td>None</td><td>10.0</td><td>warn</td></tr>
+<tr><td>baseline_max_primary_mad_pct</td><td>2.823296850465177</td><td>5.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_mad_pct</td><td>None</td><td>5.0</td><td>warn</td></tr>
+<tr><td>max_relative_ci_width_pct</td><td>None</td><td>10.0</td><td>warn</td></tr></tbody>
+  </table>
+  <h2>Run summaries</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Section</th><th>Metric</th><th>Primary</th><th>Samples</th>
+        <th>Success rate</th><th>Median</th><th>MAD %</th><th>CV %</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>baseline</td><td>cpu_nanos</td><td></td><td>12</td><td>1.0</td><td>20781331500.0</td><td>0.8664796093551561</td><td>2.070939047074532</td></tr>
+<tr><td>baseline</td><td>cpu_nanos_per_delivery</td><td></td><td>12</td><td>1.0</td><td>17092.616947191367</td><td>1.0599130824961989</td><td>1.8779012103908965</td></tr>
+<tr><td>baseline</td><td>drain_deliveries</td><td></td><td>12</td><td>1.0</td><td>98.0</td><td>1.530612244897959</td><td>3.5383673047516035</td></tr>
+<tr><td>baseline</td><td>duplicates</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>elapsed_sec</td><td></td><td>12</td><td>1.0</td><td>10.0003619285</td><td>0.003300915530464458</td><td>0.005075428142873499</td></tr>
+<tr><td>baseline</td><td>elapsed_with_drain_sec</td><td></td><td>12</td><td>1.0</td><td>10.2284018225</td><td>0.1527746833882287</td><td>0.21622365776337804</td></tr>
+<tr><td>baseline</td><td>expected_deliveries</td><td></td><td>12</td><td>1.0</td><td>1216223.5</td><td>2.8253441904386816</td><td>3.0768872297629253</td></tr>
+<tr><td>baseline</td><td>in_window_unique_deliveries</td><td></td><td>12</td><td>1.0</td><td>1216124.5</td><td>2.825697533435105</td><td>3.0771453791785257</td></tr>
+<tr><td>baseline</td><td>late</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>locally_accepted</td><td></td><td>12</td><td>1.0</td><td>1216223.5</td><td>2.8253441904386816</td><td>3.0768872297629253</td></tr>
+<tr><td>baseline</td><td>lost</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>malformed</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>missed_deadlines</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>publish_attempts</td><td></td><td>12</td><td>1.0</td><td>1216223.5</td><td>2.8253441904386816</td><td>3.0768872297629253</td></tr>
+<tr><td>baseline</td><td>publish_completed</td><td></td><td>12</td><td>1.0</td><td>1216223.5</td><td>2.8253441904386816</td><td>3.0768872297629253</td></tr>
+<tr><td>baseline</td><td>rejected</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>rss_max_bytes</td><td></td><td>12</td><td>1.0</td><td>596410368.0</td><td>2.23751442228449</td><td>3.2806647058736123</td></tr>
+<tr><td>baseline</td><td>throughput_msg_sec</td><td>yes</td><td>12</td><td>1.0</td><td>121609.3978089543</td><td>2.823296850465177</td><td>3.0757744277898165</td></tr>
+<tr><td>baseline</td><td>unique_deliveries</td><td></td><td>12</td><td>1.0</td><td>1216223.5</td><td>2.8253441904386816</td><td>3.0768872297629253</td></tr></tbody>
+  </table>
+  <h2>Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th><th>Primary</th><th>Better</th><th>Baseline median</th>
+        <th>Target median</th><th>Delta %</th><th>CI width %</th><th>Pairs</th><th>Class</th>
+      </tr>
+    </thead>
+    <tbody><tr><td colspan='9'>No comparison data</td></tr></tbody>
+  </table>
+</body>
+</html>

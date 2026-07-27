@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>rumqtt benchmark report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+    th { background: #f4f4f4; }
+  </style>
+</head>
+<body>
+  <h1>matched-v5-latency-qos1-rate1000</h1>
+  <p>Direct-library MQTT 5 QoS 1 end-to-end latency at 1000 messages per second.</p>
+  <h2>Quality: fail</h2>
+  <table>
+    <thead>
+      <tr><th>Gate</th><th>Observed</th><th>Threshold</th><th>Status</th></tr>
+    </thead>
+    <tbody><tr><td>baseline_min_success_rate</td><td>0.0</td><td>1.0</td><td>fail</td></tr>
+<tr><td>target_min_success_rate</td><td>0.0</td><td>1.0</td><td>fail</td></tr>
+<tr><td>min_paired_runs</td><td>0</td><td>12</td><td>fail</td></tr>
+<tr><td>baseline_max_primary_cv_pct</td><td>None</td><td>10.0</td><td>warn</td></tr>
+<tr><td>target_max_primary_cv_pct</td><td>None</td><td>10.0</td><td>warn</td></tr>
+<tr><td>baseline_max_primary_mad_pct</td><td>None</td><td>5.0</td><td>warn</td></tr>
+<tr><td>target_max_primary_mad_pct</td><td>None</td><td>5.0</td><td>warn</td></tr>
+<tr><td>max_relative_ci_width_pct</td><td>None</td><td>10.0</td><td>warn</td></tr></tbody>
+  </table>
+  <h2>Run summaries</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Section</th><th>Metric</th><th>Primary</th><th>Samples</th>
+        <th>Success rate</th><th>Median</th><th>MAD %</th><th>CV %</th>
+      </tr>
+    </thead>
+    <tbody><tr><td colspan='8'>No summary data</td></tr></tbody>
+  </table>
+  <h2>Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th><th>Primary</th><th>Better</th><th>Baseline median</th>
+        <th>Target median</th><th>Delta %</th><th>CI width %</th><th>Pairs</th><th>Class</th>
+      </tr>
+    </thead>
+    <tbody><tr><td colspan='9'>No comparison data</td></tr></tbody>
+  </table>
+</body>
+</html>

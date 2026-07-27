@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>rumqtt benchmark report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+    th { background: #f4f4f4; }
+  </style>
+</head>
+<body>
+  <h1>matched-v5-throughput-qos1-1kib-1p1s</h1>
+  <p>Direct-library MQTT 5 QoS 1 throughput with a 1 KiB immutable payload.</p>
+  <h2>Quality: pass</h2>
+  <table>
+    <thead>
+      <tr><th>Gate</th><th>Observed</th><th>Threshold</th><th>Status</th></tr>
+    </thead>
+    <tbody><tr><td>baseline_min_success_rate</td><td>1.0</td><td>1.0</td><td>pass</td></tr>
+<tr><td>target_min_success_rate</td><td>1.0</td><td>1.0</td><td>pass</td></tr>
+<tr><td>min_paired_runs</td><td>12</td><td>12</td><td>pass</td></tr>
+<tr><td>baseline_max_primary_cv_pct</td><td>2.6524384183338396</td><td>10.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_cv_pct</td><td>3.623129711199063</td><td>10.0</td><td>pass</td></tr>
+<tr><td>baseline_max_primary_mad_pct</td><td>2.1959665828124972</td><td>5.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_mad_pct</td><td>2.866937664220882</td><td>5.0</td><td>pass</td></tr>
+<tr><td>max_relative_ci_width_pct</td><td>6.105880152630398</td><td>10.0</td><td>pass</td></tr></tbody>
+  </table>
+  <h2>Run summaries</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Section</th><th>Metric</th><th>Primary</th><th>Samples</th>
+        <th>Success rate</th><th>Median</th><th>MAD %</th><th>CV %</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>baseline</td><td>cpu_nanos</td><td></td><td>12</td><td>1.0</td><td>9220857000.0</td><td>0.9569121395115444</td><td>1.2379179379609524</td></tr>
+<tr><td>baseline</td><td>cpu_nanos_per_delivery</td><td></td><td>12</td><td>1.0</td><td>17072.151485790673</td><td>2.1598753420645265</td><td>2.4799177407804804</td></tr>
+<tr><td>baseline</td><td>drain_deliveries</td><td></td><td>12</td><td>1.0</td><td>100.0</td><td>0.0</td><td>0.8905940113029377</td></tr>
+<tr><td>baseline</td><td>duplicates</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>elapsed_sec</td><td></td><td>12</td><td>1.0</td><td>10.0002901585</td><td>0.0020755947748556376</td><td>0.003467148943328101</td></tr>
+<tr><td>baseline</td><td>elapsed_with_drain_sec</td><td></td><td>12</td><td>1.0</td><td>10.091637583</td><td>0.06115001603303839</td><td>0.09888379434667324</td></tr>
+<tr><td>baseline</td><td>expected_deliveries</td><td></td><td>12</td><td>1.0</td><td>538619.0</td><td>2.194779612304802</td><td>2.652703572278396</td></tr>
+<tr><td>baseline</td><td>in_window_unique_deliveries</td><td></td><td>12</td><td>1.0</td><td>538519.0</td><td>2.195187170740494</td><td>2.6532383560484685</td></tr>
+<tr><td>baseline</td><td>late</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>locally_accepted</td><td></td><td>12</td><td>1.0</td><td>538619.0</td><td>2.194779612304802</td><td>2.652703572278396</td></tr>
+<tr><td>baseline</td><td>lost</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>malformed</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>missed_deadlines</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>publish_attempts</td><td></td><td>12</td><td>1.0</td><td>538619.0</td><td>2.194779612304802</td><td>2.652703572278396</td></tr>
+<tr><td>baseline</td><td>publish_completed</td><td></td><td>12</td><td>1.0</td><td>538619.0</td><td>2.194779612304802</td><td>2.652703572278396</td></tr>
+<tr><td>baseline</td><td>rejected</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>rss_max_bytes</td><td></td><td>12</td><td>1.0</td><td>276566016.0</td><td>2.0526947171990937</td><td>2.438232781816623</td></tr>
+<tr><td>baseline</td><td>throughput_msg_sec</td><td>yes</td><td>12</td><td>1.0</td><td>53849.43360422115</td><td>2.1959665828124972</td><td>2.6524384183338396</td></tr>
+<tr><td>baseline</td><td>unique_deliveries</td><td></td><td>12</td><td>1.0</td><td>538619.0</td><td>2.194779612304802</td><td>2.652703572278396</td></tr>
+<tr><td>target</td><td>cpu_nanos</td><td></td><td>12</td><td>1.0</td><td>14757819000.0</td><td>0.6515427516762471</td><td>0.9737782109755138</td></tr>
+<tr><td>target</td><td>cpu_nanos_per_delivery</td><td></td><td>12</td><td>1.0</td><td>27122.303122718666</td><td>3.034044508862369</td><td>4.166370247057339</td></tr>
+<tr><td>target</td><td>drain_deliveries</td><td></td><td>12</td><td>1.0</td><td>100.0</td><td>1.0</td><td>0.9534625892455924</td></tr>
+<tr><td>target</td><td>duplicates</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>elapsed_sec</td><td></td><td>12</td><td>1.0</td><td>10.000662112</td><td>0.0018703161641270853</td><td>0.0028029406643297733</td></tr>
+<tr><td>target</td><td>elapsed_with_drain_sec</td><td></td><td>12</td><td>1.0</td><td>10.167510934</td><td>0.0363865160708089</td><td>0.06315881211362688</td></tr>
+<tr><td>target</td><td>expected_deliveries</td><td></td><td>12</td><td>1.0</td><td>541570.5</td><td>2.8705404005572683</td><td>3.6238786128812226</td></tr>
+<tr><td>target</td><td>in_window_unique_deliveries</td><td></td><td>12</td><td>1.0</td><td>541469.5</td><td>2.870798816923206</td><td>3.624505567696378</td></tr>
+<tr><td>target</td><td>late</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>locally_accepted</td><td></td><td>12</td><td>1.0</td><td>541570.5</td><td>2.8705404005572683</td><td>3.6238786128812226</td></tr>
+<tr><td>target</td><td>lost</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>malformed</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>missed_deadlines</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>publish_attempts</td><td></td><td>12</td><td>1.0</td><td>541570.5</td><td>2.8705404005572683</td><td>3.6238786128812226</td></tr>
+<tr><td>target</td><td>publish_completed</td><td></td><td>12</td><td>1.0</td><td>541570.5</td><td>2.8705404005572683</td><td>3.6238786128812226</td></tr>
+<tr><td>target</td><td>rejected</td><td></td><td>12</td><td>1.0</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>rss_max_bytes</td><td></td><td>12</td><td>1.0</td><td>446203904.0</td><td>3.300087665750231</td><td>3.952256976885283</td></tr>
+<tr><td>target</td><td>throughput_msg_sec</td><td>yes</td><td>12</td><td>1.0</td><td>54142.84995258317</td><td>2.866937664220882</td><td>3.623129711199063</td></tr>
+<tr><td>target</td><td>unique_deliveries</td><td></td><td>12</td><td>1.0</td><td>541570.5</td><td>2.8705404005572683</td><td>3.6238786128812226</td></tr></tbody>
+  </table>
+  <h2>Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th><th>Primary</th><th>Better</th><th>Baseline median</th>
+        <th>Target median</th><th>Delta %</th><th>CI width %</th><th>Pairs</th><th>Class</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>cpu_nanos</td><td></td><td>higher</td><td>9220857000.0</td><td>14757819000.0</td><td>59.68841573021976</td><td>3.3845107616531465</td><td>12</td><td>improvement</td></tr>
+<tr><td>cpu_nanos_per_delivery</td><td></td><td>higher</td><td>17072.151485790673</td><td>27122.303122718666</td><td>58.91582916373089</td><td>10.847820737396184</td><td>12</td><td>improvement</td></tr>
+<tr><td>drain_deliveries</td><td></td><td>higher</td><td>100.0</td><td>100.0</td><td>0.0</td><td>1.0</td><td>12</td><td>equivalent</td></tr>
+<tr><td>duplicates</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>elapsed_sec</td><td></td><td>lower</td><td>10.0002901585</td><td>10.000662112</td><td>0.0013878269187938058</td><td>0.005688829577760357</td><td>12</td><td>equivalent</td></tr>
+<tr><td>elapsed_with_drain_sec</td><td></td><td>higher</td><td>10.091637583</td><td>10.167510934</td><td>0.7248980360840338</td><td>0.14245043301438343</td><td>12</td><td>equivalent</td></tr>
+<tr><td>expected_deliveries</td><td></td><td>higher</td><td>538619.0</td><td>541570.5</td><td>1.6595250932972756</td><td>6.104363559922818</td><td>12</td><td>equivalent</td></tr>
+<tr><td>in_window_unique_deliveries</td><td></td><td>higher</td><td>538519.0</td><td>541469.5</td><td>1.659939065805108</td><td>6.105676551249031</td><td>12</td><td>equivalent</td></tr>
+<tr><td>late</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>locally_accepted</td><td></td><td>higher</td><td>538619.0</td><td>541570.5</td><td>1.6595250932972756</td><td>5.552371530915757</td><td>12</td><td>equivalent</td></tr>
+<tr><td>lost</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>malformed</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>missed_deadlines</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>publish_attempts</td><td></td><td>higher</td><td>538619.0</td><td>541570.5</td><td>1.6595250932972756</td><td>6.510655156016678</td><td>12</td><td>equivalent</td></tr>
+<tr><td>publish_completed</td><td></td><td>higher</td><td>538619.0</td><td>541570.5</td><td>1.6595250932972756</td><td>6.656355588929879</td><td>12</td><td>equivalent</td></tr>
+<tr><td>rejected</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>rss_max_bytes</td><td></td><td>lower</td><td>276566016.0</td><td>446203904.0</td><td>63.47443224650398</td><td>9.848947536105655</td><td>12</td><td>regression</td></tr>
+<tr><td>throughput_msg_sec</td><td>yes</td><td>higher</td><td>53849.43360422115</td><td>54142.84995258317</td><td>1.65741812771871</td><td>6.105880152630398</td><td>12</td><td>equivalent</td></tr>
+<tr><td>unique_deliveries</td><td></td><td>higher</td><td>538619.0</td><td>541570.5</td><td>1.6595250932972756</td><td>6.104363559922818</td><td>12</td><td>equivalent</td></tr></tbody>
+  </table>
+</body>
+</html>

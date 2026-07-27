@@ -31,6 +31,9 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- Benchmarks: Report the pinned `mqtt5 0.38.0` comparison version accurately
+  and wait for the pinned EMQX fixture's MQTT listener to finish starting before
+  launching measured clients.
 - `rumqttc` v4/v5: Reject malformed public codec packet states before
   serialization, including empty subscribe/unsubscribe and acknowledgement
   payloads, zero SUBACK/UNSUBACK packet identifiers, and failed CONNACK packets

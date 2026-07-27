@@ -1,0 +1,65 @@
+{
+  "backend": "docker",
+  "broker_urls": {
+    "tcp": "mqtt://127.0.0.1:46059",
+    "tls": "mqtts://localhost:52177",
+    "websocket": "ws://127.0.0.1:54441/mqtt"
+  },
+  "ca_cert": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-latency/ca.crt",
+  "completed": [],
+  "container": "rumqtt-bench-1b8c01267caf",
+  "counts": {
+    "completed": 0,
+    "failed": 1,
+    "skipped": 0
+  },
+  "failed": [
+    "matched-v5-latency-qos1-rate1000"
+  ],
+  "finished_at": "20260727-202430Z",
+  "image": "eclipse-mosquitto:2.0.22",
+  "image_digest": null,
+  "mode": "broker-validation",
+  "mosquitto_binary": null,
+  "ports": {
+    "tcp": 46059,
+    "tls": 52177,
+    "websocket": 54441
+  },
+  "scenarios": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmarks/runner.py",
+        "compare-libraries",
+        "--scenario",
+        "matched-v5-latency-qos1-rate1000",
+        "--broker-url",
+        "mqtt://127.0.0.1:46059",
+        "--runs",
+        "12",
+        "--warmup-runs",
+        "1",
+        "--cargo-profile",
+        "release",
+        "--timeout-sec",
+        "600",
+        "--output-dir",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-latency/scenarios/matched-v5-latency-qos1-rate1000"
+      ],
+      "name": "matched-v5-latency-qos1-rate1000",
+      "output_dir": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-latency/scenarios/matched-v5-latency-qos1-rate1000",
+      "quality_status": "fail",
+      "returncode": 1,
+      "status": "failed",
+      "stderr": "error: 24 measured run(s) invalid; report written to /home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/mosquitto-latency/scenarios/matched-v5-latency-qos1-rate1000",
+      "transport": "tcp"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": [],
+  "started_at": "20260727-201911Z",
+  "status": "failed",
+  "synthetic_router_binary": null,
+  "synthetic_router_log": null
+}

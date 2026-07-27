@@ -1212,7 +1212,7 @@ fn environment(backend: BackendKind) -> Value {
         "cargo_features": if cfg!(feature = "alloc-metrics") {vec!["alloc-metrics"]} else {Vec::<&str>::new()},
         "optimization_profile": if cfg!(debug_assertions) {"dev"} else {"release"},
         "library": backend.name(),
-        "library_version": match backend { BackendKind::Rumqttc => "0.34.0-alpha", BackendKind::Mqtt5 => "0.37.2" },
+        "library_version": match backend { BackendKind::Rumqttc => "0.34.0-alpha", BackendKind::Mqtt5 => "0.38.0" },
         "mqtt5_source": "registry+https://github.com/rust-lang/crates.io-index"
     })
 }

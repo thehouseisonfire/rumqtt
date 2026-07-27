@@ -1,0 +1,65 @@
+{
+  "backend": "docker-emqx",
+  "broker_urls": {
+    "tcp": "mqtt://127.0.0.1:45227",
+    "tls": "mqtts://localhost:52221",
+    "websocket": "ws://127.0.0.1:60195/mqtt"
+  },
+  "ca_cert": null,
+  "completed": [
+    "matched-v5-throughput-qos1-1kib-1p1s"
+  ],
+  "container": "rumqtt-bench-emqx-0c286f5e8133",
+  "counts": {
+    "completed": 1,
+    "failed": 0,
+    "skipped": 0
+  },
+  "failed": [],
+  "finished_at": "20260727-204924Z",
+  "image": "emqx/emqx:5.9.3",
+  "image_digest": "emqx/emqx@sha256:86632adf230bea06c4caad91318825c77aec1e57a820e6711b89fec7d0957eaf",
+  "mode": "broker-validation",
+  "mosquitto_binary": null,
+  "ports": {
+    "tcp": 45227,
+    "tls": 52221,
+    "websocket": 60195
+  },
+  "scenarios": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmarks/runner.py",
+        "compare-libraries",
+        "--scenario",
+        "matched-v5-throughput-qos1-1kib-1p1s",
+        "--broker-url",
+        "mqtt://127.0.0.1:45227",
+        "--runs",
+        "12",
+        "--warmup-runs",
+        "1",
+        "--cargo-profile",
+        "release",
+        "--timeout-sec",
+        "600",
+        "--output-dir",
+        "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/emqx-throughput/scenarios/matched-v5-throughput-qos1-1kib-1p1s"
+      ],
+      "name": "matched-v5-throughput-qos1-1kib-1p1s",
+      "output_dir": "/home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/emqx-throughput/scenarios/matched-v5-throughput-qos1-1kib-1p1s",
+      "quality_status": "pass",
+      "returncode": 0,
+      "status": "completed",
+      "stdout": "Matched library comparison complete: /home/eagle/MQTT/letsgo/rumqtt/benchmark-results/mqtt5-vs-rumqttc-20260727/emqx-throughput/scenarios/matched-v5-throughput-qos1-1kib-1p1s",
+      "transport": "tcp"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": [],
+  "started_at": "20260727-204357Z",
+  "status": "completed",
+  "synthetic_router_binary": null,
+  "synthetic_router_log": null
+}

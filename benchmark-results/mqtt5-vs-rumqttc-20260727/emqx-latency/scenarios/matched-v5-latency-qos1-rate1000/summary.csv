@@ -1,0 +1,35 @@
+section,metric,field,value
+metadata,,name,matched-v5-latency-qos1-rate1000
+metadata,,description,Direct-library MQTT 5 QoS 1 end-to-end latency at 1000 messages per second.
+metadata,,primary_metric,p99_us
+metadata,,higher_is_better,False
+metadata,,requires_broker,True
+metadata,,quality,"{'min_success_rate': 1.0, 'min_measured_runs': 12, 'max_primary_cv_pct': 10.0, 'max_primary_mad_pct': 5.0, 'max_relative_ci_width_pct': 10.0}"
+metadata,,group,matched
+metadata,,command,latency
+metadata,,transport,tcp
+quality,,status,fail
+quality,baseline_min_success_rate,observed,0.0
+quality,baseline_min_success_rate,threshold,1.0
+quality,baseline_min_success_rate,status,fail
+quality,target_min_success_rate,observed,0.0
+quality,target_min_success_rate,threshold,1.0
+quality,target_min_success_rate,status,fail
+quality,min_paired_runs,observed,0
+quality,min_paired_runs,threshold,12
+quality,min_paired_runs,status,fail
+quality,baseline_max_primary_cv_pct,observed,
+quality,baseline_max_primary_cv_pct,threshold,10.0
+quality,baseline_max_primary_cv_pct,status,warn
+quality,target_max_primary_cv_pct,observed,
+quality,target_max_primary_cv_pct,threshold,10.0
+quality,target_max_primary_cv_pct,status,warn
+quality,baseline_max_primary_mad_pct,observed,
+quality,baseline_max_primary_mad_pct,threshold,5.0
+quality,baseline_max_primary_mad_pct,status,warn
+quality,target_max_primary_mad_pct,observed,
+quality,target_max_primary_mad_pct,threshold,5.0
+quality,target_max_primary_mad_pct,status,warn
+quality,max_relative_ci_width_pct,observed,
+quality,max_relative_ci_width_pct,threshold,10.0
+quality,max_relative_ci_width_pct,status,warn

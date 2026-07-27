@@ -1,0 +1,88 @@
+{
+  "client": "mqtt5",
+  "command": [
+    "cargo",
+    "run",
+    "--release",
+    "-p",
+    "benchmarks",
+    "--bin",
+    "rumqtt-library-bench",
+    "--",
+    "--client",
+    "mqtt5",
+    "--run-id",
+    "matched-v5-connections-concurrency1-mqtt5-2",
+    "connections",
+    "--broker-url",
+    "mqtt://127.0.0.1:35133",
+    "--concurrency",
+    "1",
+    "--duration-sec",
+    "10",
+    "--keepalive-sec",
+    "30"
+  ],
+  "error": "benchmark quality.valid is false",
+  "is_warmup": false,
+  "metrics": {
+    "connections_sec": 552.2412462701246,
+    "elapsed_sec": 10.002874717,
+    "failed": 198.0,
+    "successful": 5524.0
+  },
+  "ok": false,
+  "payload": {
+    "client": "mqtt5",
+    "config": {
+      "broker_url": "mqtt://127.0.0.1:35133",
+      "ca_certificate": null,
+      "clean_start": true,
+      "concurrency": 1,
+      "duration_sec": 10,
+      "keepalive_sec": 30,
+      "protocol": "v5",
+      "session_expiry_interval": 0
+    },
+    "effective_config": {
+      "backend": "mqtt5",
+      "cycle_completion": "connack-and-disconnect-flush"
+    },
+    "environment": {
+      "allocator": "system",
+      "arch": "x86_64",
+      "cargo_features": [],
+      "cpu_model": "13th Gen Intel(R) Core(TM) i5-13500H",
+      "git_commit": "9bf0cc0c149ca3ec07f0c956ee11f1789c36fdac",
+      "library": "mqtt5",
+      "library_version": "0.38.0",
+      "logical_cpu_count": 16,
+      "mqtt5_source": "registry+https://github.com/rust-lang/crates.io-index",
+      "optimization_profile": "release",
+      "os": "linux",
+      "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)\nbinary: rustc\ncommit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd\ncommit-date: 2026-06-26\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.1\nLLVM version: 22.1.2",
+      "target": "x86_64-unknown-linux-gnu",
+      "total_memory_bytes": 24900841472
+    },
+    "finished_at_unix": 1785183186,
+    "metrics": {
+      "connections_sec": 552.2412462701246,
+      "elapsed_sec": 10.002874717,
+      "failed": 198.0,
+      "successful": 5524.0
+    },
+    "quality": {
+      "valid": false
+    },
+    "run_id": "matched-v5-connections-concurrency1-mqtt5-2",
+    "samples": {},
+    "scenario": "matched-library-connections",
+    "schema_version": 2,
+    "started_at_unix": 1785183176
+  },
+  "returncode": 0,
+  "run_id": "matched-v5-connections-concurrency1-mqtt5-2",
+  "run_index": 2,
+  "stderr": "    Finished `release` profile [optimized] target(s) in 0.07s\n     Running `target/release/rumqtt-library-bench --client mqtt5 --run-id matched-v5-connections-concurrency1-mqtt5-2 connections --broker-url 'mqtt://127.0.0.1:35133' --concurrency 1 --duration-sec 10 --keepalive-sec 30`\n",
+  "stdout": "{\n  \"schema_version\": 2,\n  \"run_id\": \"matched-v5-connections-concurrency1-mqtt5-2\",\n  \"scenario\": \"matched-library-connections\",\n  \"started_at_unix\": 1785183176,\n  \"finished_at_unix\": 1785183186,\n  \"client\": \"mqtt5\",\n  \"config\": {\n    \"broker_url\": \"mqtt://127.0.0.1:35133\",\n    \"ca_certificate\": null,\n    \"clean_start\": true,\n    \"concurrency\": 1,\n    \"duration_sec\": 10,\n    \"keepalive_sec\": 30,\n    \"protocol\": \"v5\",\n    \"session_expiry_interval\": 0\n  },\n  \"effective_config\": {\n    \"backend\": \"mqtt5\",\n    \"cycle_completion\": \"connack-and-disconnect-flush\"\n  },\n  \"metrics\": {\n    \"connections_sec\": 552.2412462701246,\n    \"elapsed_sec\": 10.002874717,\n    \"failed\": 198.0,\n    \"successful\": 5524.0\n  },\n  \"samples\": {},\n  \"quality\": {\n    \"valid\": false\n  },\n  \"environment\": {\n    \"allocator\": \"system\",\n    \"arch\": \"x86_64\",\n    \"cargo_features\": [],\n    \"cpu_model\": \"13th Gen Intel(R) Core(TM) i5-13500H\",\n    \"git_commit\": \"9bf0cc0c149ca3ec07f0c956ee11f1789c36fdac\",\n    \"library\": \"mqtt5\",\n    \"library_version\": \"0.38.0\",\n    \"logical_cpu_count\": 16,\n    \"mqtt5_source\": \"registry+https://github.com/rust-lang/crates.io-index\",\n    \"optimization_profile\": \"release\",\n    \"os\": \"linux\",\n    \"rustc\": \"rustc 1.96.1 (31fca3adb 2026-06-26)\\nbinary: rustc\\ncommit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd\\ncommit-date: 2026-06-26\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.96.1\\nLLVM version: 22.1.2\",\n    \"target\": \"x86_64-unknown-linux-gnu\",\n    \"total_memory_bytes\": 24900841472\n  }\n}\n"
+}

@@ -361,6 +361,14 @@ class EmqxDockerBroker:
         if not wait_for_port("127.0.0.1", self.ports.tcp, timeout_sec=30):
             logs = run_process(["docker", "logs", self.container_name], timeout=10)
             raise FixtureError(f"EMQX did not become ready: {(logs.stderr or logs.stdout).strip()}")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            logs = run_process(["docker", "logs", self.container_name], timeout=10)
+            output = f"{logs.stdout}\n{logs.stderr}"
+            if "EMQX Enterprise 5.9.3 is running now!" in output:
+                return
+            time.sleep(0.2)
+        raise FixtureError(f"EMQX MQTT listener did not become ready: {output.strip()}")
 
     def stop(self) -> None:
         run_process(["docker", "rm", "-f", self.container_name], timeout=30)

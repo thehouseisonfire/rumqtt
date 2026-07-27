@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>rumqtt benchmark report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+    th { background: #f4f4f4; }
+  </style>
+</head>
+<body>
+  <h1>matched-v5-connections-concurrency1</h1>
+  <p>Direct-library serial MQTT 5 CONNECT/CONNACK/DISCONNECT churn.</p>
+  <h2>Quality: fail</h2>
+  <table>
+    <thead>
+      <tr><th>Gate</th><th>Observed</th><th>Threshold</th><th>Status</th></tr>
+    </thead>
+    <tbody><tr><td>baseline_min_success_rate</td><td>0.5833333333333334</td><td>1.0</td><td>fail</td></tr>
+<tr><td>target_min_success_rate</td><td>0.3333333333333333</td><td>1.0</td><td>fail</td></tr>
+<tr><td>min_paired_runs</td><td>3</td><td>12</td><td>fail</td></tr>
+<tr><td>baseline_max_primary_cv_pct</td><td>12.157334707150726</td><td>10.0</td><td>warn</td></tr>
+<tr><td>target_max_primary_cv_pct</td><td>8.793577716318337</td><td>10.0</td><td>pass</td></tr>
+<tr><td>baseline_max_primary_mad_pct</td><td>4.7986786629180775</td><td>5.0</td><td>pass</td></tr>
+<tr><td>target_max_primary_mad_pct</td><td>4.771953459584928</td><td>5.0</td><td>pass</td></tr>
+<tr><td>max_relative_ci_width_pct</td><td>71.05508457889536</td><td>10.0</td><td>warn</td></tr></tbody>
+  </table>
+  <h2>Run summaries</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Section</th><th>Metric</th><th>Primary</th><th>Samples</th>
+        <th>Success rate</th><th>Median</th><th>MAD %</th><th>CV %</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>baseline</td><td>connections_sec</td><td>yes</td><td>7</td><td>0.5833333333333334</td><td>415.23953933754245</td><td>4.7986786629180775</td><td>12.157334707150726</td></tr>
+<tr><td>baseline</td><td>elapsed_sec</td><td></td><td>7</td><td>0.5833333333333334</td><td>10.001456043</td><td>0.005100557336922654</td><td>0.011002507010077607</td></tr>
+<tr><td>baseline</td><td>failed</td><td></td><td>7</td><td>0.5833333333333334</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>baseline</td><td>successful</td><td></td><td>7</td><td>0.5833333333333334</td><td>4153.0</td><td>4.815795810257645</td><td>12.155700211372931</td></tr>
+<tr><td>target</td><td>connections_sec</td><td>yes</td><td>4</td><td>0.3333333333333333</td><td>850.6240988076241</td><td>4.771953459584928</td><td>8.793577716318337</td></tr>
+<tr><td>target</td><td>elapsed_sec</td><td></td><td>4</td><td>0.3333333333333333</td><td>10.0009511005</td><td>0.0017717564881588252</td><td>0.0032361576949686503</td></tr>
+<tr><td>target</td><td>failed</td><td></td><td>4</td><td>0.3333333333333333</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>target</td><td>successful</td><td></td><td>4</td><td>0.3333333333333333</td><td>8507.0</td><td>4.772540260961561</td><td>8.791396999600169</td></tr></tbody>
+  </table>
+  <h2>Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th><th>Primary</th><th>Better</th><th>Baseline median</th>
+        <th>Target median</th><th>Delta %</th><th>CI width %</th><th>Pairs</th><th>Class</th>
+      </tr>
+    </thead>
+    <tbody><tr><td>connections_sec</td><td>yes</td><td>higher</td><td>435.1655505117324</td><td>831.7408487533629</td><td>69.97965139223422</td><td>71.05508457889536</td><td>3</td><td>inconclusive</td></tr>
+<tr><td>elapsed_sec</td><td></td><td>lower</td><td>10.001177805</td><td>10.000836642</td><td>-0.0034112282238328495</td><td>0.017758292181148373</td><td>3</td><td>equivalent</td></tr>
+<tr><td>failed</td><td></td><td>lower</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>successful</td><td></td><td>higher</td><td>4353.0</td><td>8318.0</td><td>69.95175740868366</td><td>71.04530244199145</td><td>3</td><td>improvement</td></tr></tbody>
+  </table>
+</body>
+</html>
