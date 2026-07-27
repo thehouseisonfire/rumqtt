@@ -1,13 +1,13 @@
 <div align="center">
-  <img alt="rumqtt logo" src="docs/rumqtt.png" width="60%" />
+  <img alt="rumqtt logo" src="docs/rumqtt-next.png" width="60%" />
 </div>
 
 <div align="center">
   <a href="https://crates.io/crates/rumqttc-next">
-    <img src="https://img.shields.io/crates/v/rumqttc-next.svg" alt="crates.io version" />
+    <img src="https://img.shields.io/crates/v/mqttbytes-core-next.svg" alt="crates.io version" />
   </a>
   <a href="https://crates.io/crates/rumqttc-next">
-    <img src="https://img.shields.io/crates/d/rumqttc-next.svg" alt="crates.io downloads" />
+    <img src="https://img.shields.io/crates/d/mqttbytes-core-next.svg" alt="crates.io downloads" />
   </a>
   <a href="https://github.com/thehouseisonfire/rumqtt/commits/main">
     <img
@@ -29,8 +29,8 @@
 
 rumqtt provides asynchronous and synchronous MQTT clients with a small, explicit
 API and close control over connection behavior. It supports MQTT 3.1.1 and MQTT
-5, TLS, WebSockets, proxies, persistent sessions, manual acknowledgements, and
-reconnect handling.
+5, TLS, WebSockets, proxies, tracking notice API, persistent sessions, manual
+acknowledgements, graceful disconnect, and reconnect handling.
 
 This repository is an **actively maintained fork of
 [`rumqttc`](https://github.com/bytebeamio/rumqtt)**, started in response to a
@@ -43,12 +43,16 @@ comparison with upstream, and the [changelog](./CHANGELOG.md) for the complete
 list of additions and fixes. Highlights include:
 
 - separate, intentionally versioned MQTT 3.1.1 and MQTT 5 clients;
+- client operations can be tracked to their actual protocol outcome;
+- manual and customizable acknowledgements;
 - stricter packet and protocol-state validation, backed by
   [spec-compliance references](./docs/spec/);
 - persistent session APIs, structured diagnostics, lifecycle tracing, and
   explicit reconnect, acknowledgement, and topic-alias policies;
-- HTTP and SOCKS5 proxies, TLS and WebSocket transports, and opt-in Linux
-  Multipath TCP.
+- HTTP and SOCKS5 proxies, TLS backends, and WebSocket transports, and
+  opt-in Linux Multipath TCP;
+- updated dependencies to address vulnerabilities reported in RUSTSEC
+  advisories.
 
 ## Choose a client
 
@@ -88,7 +92,7 @@ filesystem dependencies to the clients.
 ## Guides and ecosystem
 
 The [production recipes](./docs/recipes/README.md) cover TLS, WebSockets,
-proxies, persistent sessions, reconnect handling, bounded channels, manual
+proxies, Notice API, persistent sessions, reconnect handling, bounded channels, manual
 ACKs, and broker-specific configuration.
 
 Projects integrating this fork include
