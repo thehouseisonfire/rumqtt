@@ -30,7 +30,8 @@
 rumqtt provides asynchronous and synchronous MQTT clients with a small, explicit
 API and close control over connection behavior. It supports MQTT 3.1.1 and MQTT
 5, TLS, WebSockets, proxies, tracking notice API, persistent sessions, manual
-acknowledgements, graceful disconnect, and reconnect handling.
+acknowledgements, request and network-read batching, graceful disconnect, and
+reconnect handling.
 
 This repository is an **actively maintained fork of
 [`rumqttc`](https://github.com/bytebeamio/rumqtt)**, started in response to a
@@ -49,6 +50,8 @@ list of additions and fixes. Highlights include:
   [spec-compliance references](./docs/spec/);
 - persistent session APIs, structured diagnostics, lifecycle tracing, and
   explicit reconnect, acknowledgement, and topic-alias policies;
+- Configurable request and network-read batching, which can substantially
+  improve throughput under sustained load;
 - HTTP and SOCKS5 proxies, TLS backends, and WebSocket transports, and
   opt-in Linux Multipath TCP;
 - updated dependencies to address vulnerabilities reported in RUSTSEC
@@ -93,7 +96,7 @@ filesystem dependencies to the clients.
 
 The [production recipes](./docs/recipes/README.md) cover TLS, WebSockets,
 proxies, Notice API, persistent sessions, reconnect handling, bounded channels, manual
-ACKs, and broker-specific configuration.
+ACKs, broker-specific configuration, and others.
 
 Projects integrating this fork include
 [`mqtt-typed-client`](https://github.com/holovskyi/mqtt-typed-client), a
