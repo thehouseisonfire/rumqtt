@@ -20,6 +20,9 @@
 - Documentation: Expand the upstream migration guidance for WebSocket broker
   targets, `wss://` construction, broker/transport mismatch errors, and
   explicit TLS backend selection in dual-backend dependency graphs.
+- Storage: Extract `atomic-blob-store` and its protocol-neutral benchmarks,
+  tests, documentation, and release tooling into its standalone repository;
+  the file-session adapter now consumes version 0.1.0 from crates.io.
 - `rumqttc` v4/v5: Consolidate the optional file-backed session adapters into
   `rumqttc-session-store-file-next`, with independent `v4` and `v5` features.
 - `rumqttc` v4/v5 (Breaking Change): Replace public-field `Proxy`, `ProxyType`,

@@ -97,10 +97,10 @@ class RunnerTests(unittest.TestCase):
     def test_persistence_scenario_routes_to_nested_workspace(self):
         command = runner.scenario_command(
             self.scenario(
-                name="persistence-envelope-1mib",
+                name="persistence-codec-v4-qos1",
                 group="persistence",
-                command="envelope",
-                primary_metric="operations_sec",
+                command="codec",
+                primary_metric="bytes_sec",
                 args={"protocol": "v5", "payload_size": 1048576},
             ),
             run_id="run-1",
@@ -113,7 +113,7 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("rumqtt-session-store-file-bench", command)
 
     def test_named_persistence_scenario_uses_nested_catalog_and_results(self):
-        path, scenario = runner.load_scenario(REPO_ROOT, "persistence-envelope-1mib")
+        path, scenario = runner.load_scenario(REPO_ROOT, "persistence-codec-v4-qos1")
 
         self.assertEqual(
             path,
@@ -121,7 +121,7 @@ class RunnerTests(unittest.TestCase):
             / "session-store-file"
             / "benchmarks"
             / "scenarios"
-            / "persistence-envelope-1mib.toml",
+            / "persistence-codec-v4-qos1.toml",
         )
         output = runner.default_output_dir(REPO_ROOT, "runs", scenario)
         self.assertEqual(

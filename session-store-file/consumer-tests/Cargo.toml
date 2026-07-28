@@ -9,7 +9,6 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-atomic-blob-store = { path = "../atomic-blob-store" }
 rumqttc-session-store-file-next = { path = "../adapter", features = ["v4", "v5"] }
 rumqttc-v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", default-features = false }
 rumqttc-v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", default-features = false }

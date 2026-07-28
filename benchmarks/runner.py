@@ -210,7 +210,7 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
         "matched": {"throughput", "latency", "connections"},
         "codec": {"encode", "decode", "roundtrip"},
         "options": {"parse-url"},
-        "persistence": {"envelope", "codec", "file-store", "coordination", "growth", "mqtt"},
+        "persistence": {"codec", "growth", "recovery", "mqtt"},
     }
     if scenario["command"] not in commands[scenario["group"]]:
         raise RuntimeError(f"{path}: unsupported command for group '{scenario['group']}'")

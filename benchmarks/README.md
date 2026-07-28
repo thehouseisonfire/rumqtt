@@ -35,9 +35,11 @@ Supported workload groups:
 - `client throughput|latency|connections`
 - `options parse-url`
 
-File-backed persistence workloads live in the independent
+MQTT-specific file-backed persistence workloads live in the independent
 [`session-store-file` benchmark package](../session-store-file/benchmarks/README.md).
-The shared scenario runner routes those scenarios to that package automatically.
+Protocol-neutral storage benchmarks live in the standalone
+[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-storage)
+project.
 
 ## Matched Library Comparison
 

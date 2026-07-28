@@ -19,14 +19,10 @@ workspace_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_dir="$(git -C "$workspace_dir" rev-parse --show-toplevel)"
 cd "$workspace_dir"
 
-if [[ -n "${STORAGE_RELEASE_PACKAGES:-}" ]]; then
-    read -r -a packages <<<"$STORAGE_RELEASE_PACKAGES"
-else
-    packages=(atomic-blob-store rumqttc-session-store-file-next)
-fi
+packages=(rumqttc-session-store-file-next)
 for package in "${packages[@]}"; do
     case "$package" in
-        atomic-blob-store|rumqttc-session-store-file-next) ;;
+        rumqttc-session-store-file-next) ;;
         *)
             echo "error: unsupported storage package: $package" >&2
             exit 2
@@ -36,7 +32,7 @@ done
 
 versions="$({ cargo metadata --no-deps --format-version 1; } | python3 -c '
 import json, sys
-wanted = {"atomic-blob-store", "rumqttc-session-store-file-next"}
+wanted = {"rumqttc-session-store-file-next"}
 packages = {
     package["name"]: package["version"]
     for package in json.load(sys.stdin)["packages"]
@@ -44,7 +40,7 @@ packages = {
 }
 if set(packages) != wanted:
     raise SystemExit(f"storage packages are missing: {packages}")
-for name in ("atomic-blob-store", "rumqttc-session-store-file-next"):
+for name in ("rumqttc-session-store-file-next",):
     print(f"{name}={packages[name]}")
 ')"
 
@@ -77,11 +73,6 @@ done
 
 if [[ -n "$(git -C "$repo_dir" status --short)" ]]; then
     echo "error: release requires a clean worktree" >&2
-    exit 1
-fi
-if [[ " ${packages[*]} " == *" atomic-blob-store "* ]] &&
-    ! grep -Fq "## [${package_versions[atomic-blob-store]}] - " atomic-blob-store/CHANGELOG.md; then
-    echo "error: cut the atomic blob store changelog before publishing" >&2
     exit 1
 fi
 if [[ " ${packages[*]} " == *" rumqttc-session-store-file-next "* ]] &&
@@ -126,12 +117,7 @@ cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
 cargo test --locked --workspace --doc
 for package in "${packages[@]}"; do
-    if [[ "$package" == atomic-blob-store ]]; then
-        cargo package --locked --no-verify -p "$package"
-    else
-        # Full adapter packaging becomes possible after the core reaches crates.io.
-        cargo package --locked --list -p "$package" >/dev/null
-    fi
+    cargo package --locked --list -p "$package" >/dev/null
 done
 
 if [[ "$execute" != true ]]; then

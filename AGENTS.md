@@ -7,9 +7,9 @@ This repo contains two Rust workspaces. Main client-workspace members are:
 - `benchmarks/`: maintained client, codec, and options performance harness.
 - `docs/`: design notes and contributor conduct docs.
 
-The independent `session-store-file/` workspace contains the optional
-protocol-neutral file-store core, MQTT v4/v5 adapters, and persistence
-benchmarks. Run its Cargo commands with
+The independent `session-store-file/` workspace contains the optional MQTT
+v4/v5 file-store adapters and MQTT persistence benchmarks. Its protocol-neutral
+`atomic-blob-store` dependency is maintained in a separate repository. Run its Cargo commands with
 `--manifest-path session-store-file/Cargo.toml`.
 
 Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.

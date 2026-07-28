@@ -4,15 +4,7 @@
 
 ### Added
 
-- Add retained native Windows validation for the protocol-neutral blob store,
-  including deterministic interruption recovery, both facades, release builds,
-  and consumers built from the extracted package.
-- Add an independent, protocol-neutral blocking consumer exercise and a paired
-  persistence benchmark matrix for lifecycle latency, threads, RSS,
-  allocations, complete/streaming I/O, and coordination scaling.
-- Add bounded-memory streaming save/load support to the generic blob store and
-  route adapter persistence through it.
-- Depend on the independently versioned `atomic-blob-store` pre-release crate.
+- Depend on independently maintained `atomic-blob-store` 0.1.0 from crates.io.
 - Add `rumqttc-session-store-file-next`, whose independent additive `v4` and
   `v5` features support either or both clients while retaining their existing
   on-disk namespaces, key encodings, and checkpoint envelopes.
@@ -27,11 +19,6 @@
 
 ### Changed
 
-- Flush Windows namespace directory handles after committed blob renames, and
-  strengthen native validation with deterministic final-EOF cancellation,
-  per-test timeouts, and panic-time retention of test-owned directories.
-- Make every concurrent blob-store `close` caller wait for coordinator
-  termination and observe the shared join outcome.
 - Remove the obsolete "active Tokio runtime required" adapter error.
 - Preserve the existing `RUMQSESS` envelope and `.session` paths through the
   generic store's explicit format identity.
@@ -40,3 +27,5 @@
   CI, and release tooling accordingly.
 - Develop and release the file-store core and protocol adapters from their own
   workspace while retaining the existing package names and client compatibility.
+- Move the protocol-neutral blob store and its owned validation and benchmarks
+  to its standalone repository.

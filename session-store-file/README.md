@@ -3,13 +3,15 @@
 This independent workspace contains the optional file-backed implementations of
 the `SessionStore` APIs owned by `rumqttc-v4-next` and `rumqttc-v5-next`.
 
-- [`atomic-blob-store`](atomic-blob-store/README.md) provides neutral,
-  crash-consistent keyed blob streaming with complete-blob conveniences.
 - [`adapter`](adapter/README.md) provides independently selectable `v4` and
   `v5` modules in one package.
 - [`consumer-tests`](consumer-tests/) verifies the dual-protocol public API as
   a downstream crate.
 - [`benchmarks`](benchmarks/README.md) contains persistence-specific workloads.
+
+The adapter consumes the independently maintained
+[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-storage)
+crate from crates.io.
 
 From the repository root, run:
 

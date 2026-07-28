@@ -11,9 +11,7 @@ authors.workspace = true
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
-crc32c = "0.6"
 rand = "0.10"
-atomic_blob_store = { package = "atomic-blob-store", path = "../atomic-blob-store", features = ["bench-instrumentation", "tokio"] }
 rumqttc_store = { package = "rumqttc-session-store-file-next", path = "../adapter", features = ["v4", "v5"] }
 rumqttc_v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", features = ["bench-instrumentation"] }
 rumqttc_v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", features = ["bench-instrumentation"] }
