@@ -240,6 +240,8 @@ rumqttc supports two TLS backends:
 
 When both `use-rustls-no-provider` and `use-native-tls` features are enabled:
 
+- `TlsConfiguration` does not implement `Default`; this prevents an ambiguous
+  backend choice after Cargo feature unification
 - Configure TLS explicitly with `MqttOptions::set_transport(Transport::tls_with_config(...))`
 - Prefer `MqttOptions::websocket_with_tls_config("client-id", "wss://...", tls_config)` for secure websockets
 - For lower-level overrides, `Broker::websocket("ws://...")` plus `MqttOptions::set_transport(Transport::wss_with_config(...))` remains supported
@@ -252,6 +254,14 @@ Use `TlsConfiguration::default_rustls()` or `TlsConfiguration::default_native()`
 
 Native-tls WSS can use platform roots via `TlsConfiguration::default_native()` or a custom CA / identity via
 `TlsConfiguration::simple_native(...)`.
+
+### WebSocket Broker Targets
+
+Unlike upstream `rumqttc 0.25.x`, selecting `Transport::Ws` or
+`Transport::Wss` does not reinterpret a `(host, port)` broker as a WebSocket
+URL.
+See the [migration guide](https://github.com/thehouseisonfire/rumqtt/blob/main/MIGRATION.md#websocket-and-wss)
+for complete examples.
 
 ### Important notes
 

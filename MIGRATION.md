@@ -240,13 +240,28 @@ options.set_transport(Transport::tls_with_config(
 ));
 ```
 
-If both rustls and native-tls are enabled in a dependency graph, choose the
-backend explicitly with `TlsConfiguration::default_rustls()`,
+If both rustls and native-tls are enabled in a dependency graph,
+`TlsConfiguration` deliberately does not implement `Default`. Cargo features
+are additive, so a transitive dependency can produce this combination even
+when the application did not enable both features directly. Choose the backend
+explicitly with `TlsConfiguration::default_rustls()`,
 `TlsConfiguration::default_native()`, or a concrete custom configuration.
 
 ## WebSocket and WSS
 
-Plain WebSocket uses a websocket broker URL:
+Upstream `rumqttc 0.25.x` reads a WebSocket URL from its string broker address,
+so changing only the transport is sufficient there. In this fork the
+WebSocket URL is part of `Broker`; a `(host, port)` broker is always a TCP
+broker. This upstream-style translation is therefore invalid:
+
+```rust,ignore
+use rumqttc::{MqttOptions, Transport};
+
+let mut options = MqttOptions::new("ws-client", ("broker.example.com", 8080));
+options.set_transport(Transport::ws());
+```
+
+Use `Broker::websocket(...)` for plain WebSocket instead:
 
 ```rust,ignore
 use rumqttc::{Broker, MqttOptions, Transport};
@@ -258,23 +273,46 @@ let mut options = MqttOptions::new(
 options.set_transport(Transport::ws());
 ```
 
-Secure WebSocket still uses `Broker::websocket("ws://...")`; TLS is selected by
-the transport:
+Pairing a TCP broker with `Transport::Ws` or `Transport::Wss` returns
+`BrokerTransportMismatch`. Published releases through `0.34.0-alpha` report
+that mismatch from `EventLoop::poll()`, so a loop that retries every connection
+error will report it repeatedly. Current code can reject it before polling
+with `MqttOptions::validate()`; the fallible builders call this validation
+automatically:
 
 ```rust,ignore
-use rumqttc::{Broker, MqttOptions, TlsConfiguration, Transport};
+use rumqttc::{ConfigError, MqttOptions, Transport};
 
 let mut options = MqttOptions::new(
-    "wss-client",
-    Broker::websocket("ws://broker.example.com:443/mqtt")?,
+    "ws-client",
+    ("broker.example.com", 8080),
 );
-options.set_transport(Transport::wss_with_config(
-    TlsConfiguration::default_rustls(),
-));
+options.set_transport(Transport::ws());
+
+assert_eq!(
+    options.validate(),
+    Err(ConfigError::BrokerTransportMismatch),
+);
 ```
 
-`Broker::websocket("wss://...")` returns an error so callers do not silently get
-an unintended TLS backend.
+For secure WebSocket, prefer the combined constructor. It accepts the endpoint
+in its natural `wss://` form and requires an explicit TLS backend:
+
+```rust,ignore
+use rumqttc::{MqttOptions, TlsConfiguration};
+
+let options = MqttOptions::websocket_with_tls_config(
+    "wss-client",
+    "wss://broker.example.com/mqtt",
+    TlsConfiguration::default_rustls(),
+)?;
+```
+
+For lower-level overrides, `Broker::websocket("ws://...")` plus
+`Transport::wss_with_config(...)` remains supported. The direct
+`Broker::websocket("wss://...")` call returns
+`OptionError::WssRequiresExplicitTransport`; use the combined constructor
+above when retaining a `wss://` URL is important.
 
 ## Proxy and custom sockets
 
