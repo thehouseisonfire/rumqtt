@@ -37,6 +37,13 @@ QUALITY_FIELDS = {
     "max_primary_mad_pct",
     "max_relative_ci_width_pct",
 }
+LOWER_IS_BETTER_BACKLOG_METRICS = {
+    "common_publish_outstanding_at_deadline",
+    "common_publish_outstanding_peak",
+    "common_publish_outstanding_after_drain",
+    "cycles_in_flight_at_deadline",
+    "drain_successful_cycles",
+}
 
 
 def run_process(
@@ -77,6 +84,67 @@ def scenario_file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def parse_git_dirty(porcelain: str) -> bool:
+    return bool(porcelain.strip())
+
+
+def cargo_lock_sha256(root: Path) -> str | None:
+    path = root / "Cargo.lock"
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def resolved_packages(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    packages = metadata.get("packages")
+    if not isinstance(packages, list):
+        return {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for package in packages:
+        if not isinstance(package, dict) or package.get("name") not in {
+            "rumqttc-v5-next",
+            "mqtt5",
+        }:
+            continue
+        resolved[str(package["name"])] = {
+            "version": package.get("version"),
+            "source": package.get("source"),
+            "manifest_path": package.get("manifest_path"),
+        }
+    return resolved
+
+
+def collect_matched_provenance(
+    root: Path, *, cargo_profile: str, cargo_features: list[str]
+) -> dict[str, Any]:
+    commit_proc = run_process(["git", "rev-parse", "HEAD"], cwd=root)
+    dirty_proc = run_process(
+        ["git", "status", "--porcelain=v1", "--untracked-files=normal"], cwd=root
+    )
+    metadata_proc = run_process(
+        ["cargo", "metadata", "--locked", "--format-version", "1"],
+        cwd=root,
+    )
+    metadata: dict[str, Any] = {}
+    if metadata_proc.returncode == 0:
+        try:
+            parsed = json.loads(metadata_proc.stdout)
+            if isinstance(parsed, dict):
+                metadata = parsed
+        except json.JSONDecodeError:
+            pass
+    packages = resolved_packages(metadata)
+    return {
+        "workspace_commit": commit_proc.stdout.strip() if commit_proc.returncode == 0 else None,
+        "working_tree_dirty": (
+            parse_git_dirty(dirty_proc.stdout) if dirty_proc.returncode == 0 else None
+        ),
+        "cargo_lock_sha256": cargo_lock_sha256(root),
+        "cargo_profile": cargo_profile,
+        "cargo_features": sorted(set(cargo_features)),
+        "rumqttc-v5-next": packages.get("rumqttc-v5-next"),
+        "mqtt5": packages.get("mqtt5"),
+    }
+
+
 def certificate_metadata(ca_cert: str | None) -> dict[str, str] | None:
     if ca_cert is None:
         return None
@@ -102,6 +170,7 @@ def fallback_environment(root: Path) -> dict[str, Any]:
         "os": platform.system().lower(),
         "arch": platform.machine(),
         "cpu_count": os.cpu_count() or 1,
+        "cargo_lock_sha256": cargo_lock_sha256(root),
     }
 
 
@@ -156,6 +225,59 @@ def validate_scenario(path: Path, scenario: dict[str, Any]) -> None:
         expected = "true" if expected_requires_broker else "false"
         raise RuntimeError(f"{path}: requires_broker must be {expected} for {scenario['group']} scenarios")
     validate_quality(path, scenario.get("quality"))
+    if scenario["group"] == "matched":
+        validate_matched_args(path, scenario)
+
+
+def validate_matched_args(path: Path, scenario: dict[str, Any]) -> None:
+    args = scenario.get("args")
+    if not isinstance(args, dict):
+        raise RuntimeError(f"{path}: matched scenarios require an args table")
+    common = {
+        "duration_sec",
+        "keepalive_sec",
+    }
+    message = {
+        "warmup_sec",
+        "drain_sec",
+        "payload_size",
+        "qos",
+        "topic",
+        "window",
+        "receive_maximum",
+        "operation_timeout_sec",
+    }
+    required = common | (
+        {
+            "concurrency",
+            "connect_timeout_sec",
+            "disconnect_timeout_sec",
+            "drain_sec",
+        }
+        if scenario["command"] == "connections"
+        else message
+    )
+    if scenario["command"] == "throughput":
+        required |= {"publishers", "subscribers"}
+    elif scenario["command"] == "latency":
+        required.add("rate")
+    missing = sorted(required - set(args))
+    if missing:
+        raise RuntimeError(f"{path}: matched args missing fields: {', '.join(missing)}")
+    for key in required - {"topic", "qos", "payload_size", "warmup_sec"}:
+        value = args[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RuntimeError(f"{path}: args.{key} must be a positive integer")
+    for key in {"payload_size", "warmup_sec"} & required:
+        value = args[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(f"{path}: args.{key} must be a non-negative integer")
+    if "qos" in required and args["qos"] not in {0, 1}:
+        raise RuntimeError(f"{path}: args.qos must be 0 or 1")
+    if "topic" in required and (
+        not isinstance(args["topic"], str) or not args["topic"].strip()
+    ):
+        raise RuntimeError(f"{path}: args.topic must be a non-empty string")
 
 
 def validate_transport(path: Path, scenario: dict[str, Any]) -> None:
@@ -918,6 +1040,7 @@ def metric_higher_is_better(scenario: dict[str, Any], metric: str) -> bool:
     lower_is_better = (
         metric == "elapsed_sec"
         or metric == "failed"
+        or metric in LOWER_IS_BETTER_BACKLOG_METRICS
         or metric.startswith("connect_")
         or metric.endswith("_us")
         or (metric.startswith("rss_") and metric.endswith("_bytes"))
@@ -1700,6 +1823,14 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
         if isinstance(primary, dict) and "classification" in primary:
             primary["classification"] = "inconclusive"
             primary["inconclusive_reason"] = "quality_gates_failed"
+    provenance = collect_matched_provenance(
+        root,
+        cargo_profile=args.cargo_profile,
+        cargo_features=list(scenario.get("cargo_features", [])),
+    )
+    resolved_rumqttc = provenance.get("rumqttc-v5-next") or {}
+    resolved_mqtt5 = provenance.get("mqtt5") or {}
+    mqtt5_version = resolved_mqtt5.get("version") or "unavailable"
     summary = {
         "scenario": scenario["name"],
         "scenario_metadata": scenario_metadata(scenario),
@@ -1709,11 +1840,20 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
         },
         "mode": "compare-libraries",
         "baseline_ref": "rumqttc-v5-next",
-        "target_ref": "mqtt5=0.38.0",
+        "target_ref": f"mqtt5={mqtt5_version}",
         "git": {"commit": resolve_ref(root, "HEAD")},
         "libraries": {
-            "baseline": {"name": "rumqttc-v5-next", "source": "workspace"},
-            "target": {"name": "mqtt5", "version": "0.38.0", "source": "crates.io"},
+            "baseline": {
+                "name": "rumqttc-v5-next",
+                "version": resolved_rumqttc.get("version"),
+                "source": resolved_rumqttc.get("source") or "workspace",
+                "commit": provenance.get("workspace_commit"),
+            },
+            "target": {
+                "name": "mqtt5",
+                "version": resolved_mqtt5.get("version"),
+                "source": resolved_mqtt5.get("source"),
+            },
         },
         "command": {
             client: matched_command(
@@ -1727,6 +1867,7 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
             for client in ("rumqttc", "mqtt5")
         },
         "cargo_profile": args.cargo_profile,
+        "provenance": provenance,
         "ca_certificate": ca_certificate,
         "equivalence_band_pct": args.equivalence_band_pct,
         "environment": {

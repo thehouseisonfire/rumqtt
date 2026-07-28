@@ -26,7 +26,7 @@ equivalent.
 
 ## 1. Deterministic fault and accounting contract tests
 
-- [ ] Add narrowly scoped, deterministic fault controls to the synthetic MQTT
+- [x] Add narrowly scoped, deterministic fault controls to the synthetic MQTT
   router. Support exactly these independently selectable behaviors:
   - drop one matching delivery;
   - duplicate one matching delivery;
@@ -35,14 +35,14 @@ equivalent.
   - disconnect a client while a publish is outstanding;
   - withhold a completion/delivery long enough to force incomplete drain or
     operation timeout.
-- [ ] Make each fault deterministic by explicit trigger criteria such as packet
+- [x] Make each fault deterministic by explicit trigger criteria such as packet
   sequence, packet identifier, client role, or occurrence count. Do not use
   random fault selection.
-- [ ] Keep the normal synthetic-router path unchanged when no fault is
+- [x] Keep the normal synthetic-router path unchanged when no fault is
   configured.
-- [ ] Add adapter contract tests that run each relevant fault against both
+- [x] Add adapter contract tests that run each relevant fault against both
   `rumqttc` and `mqtt5`.
-- [ ] Assert the exact observable outcome of every fault:
+- [x] Assert the exact observable outcome of every fault:
   - drop increments loss or causes incomplete drain and invalidates the run;
   - duplicate increments duplicates and invalidates the run;
   - post-deadline delivery is excluded from timed throughput and reported as a
@@ -51,9 +51,9 @@ equivalent.
     invalidates the run;
   - disconnect and withheld completion terminate within the configured bound,
     report a classified error/timeout, and invalidate the run.
-- [ ] Verify fault tests never hang and leave no router, broker, or benchmark
+- [x] Verify fault tests never hang and leave no router, broker, or benchmark
   subprocess running.
-- [ ] Add the smallest useful CI smoke coverage for the fault contract. Keep CI
+- [x] Add the smallest useful CI smoke coverage for the fault contract. Keep CI
   deterministic and short.
 
 Acceptance criteria:
@@ -67,27 +67,27 @@ Acceptance criteria:
 
 ## 2. Compact representative matched scenario set
 
-- [ ] Expand the maintained `matched` scenarios without generating a full
+- [x] Expand the maintained `matched` scenarios without generating a full
   Cartesian matrix.
-- [ ] Add throughput scenarios covering:
+- [x] Add throughput scenarios covering:
   - QoS 0 and QoS 1;
   - 64-byte, 1-KiB, and 16-KiB payloads;
   - the existing 1-publisher/1-subscriber baseline;
   - one fan-in topology and one fan-out topology.
-- [ ] Add latency scenarios covering:
+- [x] Add latency scenarios covering:
   - QoS 0 and QoS 1;
   - one low offered rate intended to remain comfortably unsaturated;
   - one higher fixed offered rate intended to expose load sensitivity.
-- [ ] Add connection scenarios covering:
+- [x] Add connection scenarios covering:
   - serial concurrency;
   - one moderate concurrent connection level.
-- [ ] Add one maintained matched TLS smoke scenario using the existing private
+- [x] Add one maintained matched TLS smoke scenario using the existing private
   CA flow.
-- [ ] Give every scenario a unique topic, explicit transport, complete quality
+- [x] Give every scenario a unique topic, explicit transport, complete quality
   gates, fixed duration/warmup/drain values, and an unambiguous primary metric.
-- [ ] Ensure catalog validation and broker-fixture selection recognize every
+- [x] Ensure catalog validation and broker-fixture selection recognize every
   new scenario.
-- [ ] Document the intended purpose of each scenario family and state that the
+- [x] Document the intended purpose of each scenario family and state that the
   set is representative rather than exhaustive.
 
 Acceptance criteria:
@@ -101,20 +101,20 @@ Acceptance criteria:
 
 ## 3. Exact broker configuration preservation
 
-- [ ] Persist the exact effective Mosquitto configuration used by each broker
+- [x] Persist the exact effective Mosquitto configuration used by each broker
   fixture run inside its output directory before temporary fixture files are
   removed.
-- [ ] Record the persisted configuration's relative path and SHA-256 digest in
+- [x] Record the persisted configuration's relative path and SHA-256 digest in
   `broker-validation-summary.json`.
-- [ ] Record all effective EMQX fixture environment overrides and listener
+- [x] Record all effective EMQX fixture environment overrides and listener
   settings in the same summary, in stable sorted form.
-- [ ] Continue recording the broker image tag and locally resolved image
+- [x] Continue recording the broker image tag and locally resolved image
   digest.
-- [ ] Record active transports, bound host/ports, persistence setting,
+- [x] Record active transports, bound host/ports, persistence setting,
   anonymous/authentication setting, and TLS certificate mode in normalized
   broker metadata.
-- [ ] Do not record private keys, credentials, tokens, or other secrets.
-- [ ] Add tests proving that persisted metadata matches the configuration
+- [x] Do not record private keys, credentials, tokens, or other secrets.
+- [x] Add tests proving that persisted metadata matches the configuration
   actually passed to the broker process/container.
 
 Acceptance criteria:
@@ -128,25 +128,26 @@ Acceptance criteria:
 
 ## 4. Connection-churn correctness and diagnostics
 
-- [ ] Replace the aggregate connection failure counter with stable,
+- [x] Replace the aggregate connection failure counter with stable,
   adapter-neutral result classes:
   - successful connect and graceful disconnect;
   - connect timeout;
   - connect failure;
   - disconnect timeout;
   - disconnect failure.
-- [ ] Apply explicit connect and disconnect timeouts equally to both adapters.
-- [ ] Count a cycle as successful only after CONNACK and the configured
+- [x] Apply explicit connect and disconnect timeouts equally to both adapters.
+- [x] Count a cycle as successful only after CONNACK and the configured
   disconnect-completion condition.
-- [ ] Stop starting new cycles at the measurement deadline. Classify and bound
+- [x] Stop starting new cycles at the measurement deadline. Classify and bound
   cycles already in progress.
-- [ ] Report attempts, successful cycles, every failure class, cycles in flight
-  at the deadline, elapsed time, and successful connections per second.
-- [ ] Invalidate a connection run when:
+- [x] Report attempts, successful cycles completed by the measurement deadline,
+  successful cycles completed during drain, every failure class, cycles in
+  flight at the deadline, elapsed time, and successful connections per second.
+- [x] Invalidate a connection run when:
   - it records any failure class;
   - it completes zero successful cycles;
   - an in-progress cycle exceeds its timeout or cannot be drained.
-- [ ] Add deterministic tests for success, refused connection, connect timeout,
+- [x] Add deterministic tests for success, refused connection, connect timeout,
   disconnect failure/timeout where representable, and zero-success
   invalidation.
 
@@ -160,19 +161,19 @@ Acceptance criteria:
 
 ## 5. Lockfile and source provenance
 
-- [ ] Add the root `Cargo.lock` SHA-256 digest to matched run and comparison
+- [x] Add the root `Cargo.lock` SHA-256 digest to matched run and comparison
   provenance.
-- [ ] Record whether the repository working tree was dirty when the benchmark
+- [x] Record whether the repository working tree was dirty when the benchmark
   ran.
-- [ ] Record the resolved workspace commit for `rumqttc-v5-next`.
-- [ ] Record the exact locked `mqtt5` version and registry/source identity from
+- [x] Record the resolved workspace commit for `rumqttc-v5-next`.
+- [x] Record the exact locked `mqtt5` version and registry/source identity from
   resolved Cargo metadata rather than relying only on duplicated hard-coded
   strings.
-- [ ] Record the exact enabled benchmark feature set in a single canonical
+- [x] Record the exact enabled benchmark feature set in a single canonical
   field.
-- [ ] Preserve all existing environment fields and do not replace valid
+- [x] Preserve all existing environment fields and do not replace valid
   fallback values with null values.
-- [ ] Add tests for clean/dirty parsing, lockfile hashing, Cargo metadata
+- [x] Add tests for clean/dirty parsing, lockfile hashing, Cargo metadata
   extraction, and summary preservation.
 
 Acceptance criteria:
@@ -185,22 +186,24 @@ Acceptance criteria:
 
 ## 6. Common outstanding-publish diagnostics
 
-- [ ] Instrument only the shared harness-owned publish lifecycle. Do not infer
+- [x] Instrument only the shared harness-owned publish lifecycle. Do not infer
   private client queue state or expose asymmetric client-specific milestones.
-- [ ] Report:
+- [x] Report:
   - common publish operations outstanding at the measurement deadline;
   - the peak common outstanding count during measurement;
   - common operations still outstanding after the bounded completion/drain
     phase.
-- [ ] Define an outstanding operation consistently as a publish task that has
+- [x] Define an outstanding operation consistently as a publish task that has
   acquired the shared window permit and has not yet returned from the
   adapter's public publish-completion operation.
-- [ ] Ensure increments/decrements are cancellation-safe and cannot underflow.
-- [ ] Invalidate a run if common operations remain outstanding after the
+- [x] Derive the measurement-deadline count from timestamped publish
+  completions so coordinator scheduling delay cannot reduce it.
+- [x] Ensure increments/decrements are cancellation-safe and cannot underflow.
+- [x] Invalidate a run if common operations remain outstanding after the
   configured bound.
-- [ ] Add tests covering immediate completion, delayed completion, rejection,
+- [x] Add tests covering immediate completion, delayed completion, rejection,
   timeout, and cancellation.
-- [ ] Document that these are shared-harness diagnostics, not true internal
+- [x] Document that these are shared-harness diagnostics, not true internal
   local-admission, socket-write, or broker-ack queue depths.
 
 Acceptance criteria:
@@ -214,20 +217,20 @@ Acceptance criteria:
 
 ## Required final verification
 
-- [ ] Run `cargo fmt --all -- --check`.
-- [ ] Run `python3 -m unittest discover -s benchmarks/tests -p 'test_*.py'`.
-- [ ] Run `cargo check --locked -p benchmarks --all-targets`.
-- [ ] Run `cargo test --locked -p benchmarks --lib --bins`.
-- [ ] Run `cargo test --locked -p benchmarks --test codec_smoke`.
-- [ ] Run `cargo clippy --locked -p benchmarks --all-targets -- -D warnings`.
-- [ ] Run the corresponding `alloc-metrics` check and Clippy commands.
-- [ ] Run `git diff --check`.
-- [ ] Run short normal-path smoke tests for both matched adapters.
-- [ ] Run the deterministic fault contract smoke set.
-- [ ] If local facilities permit, run one matched TLS fixture smoke and one
+- [x] Run `cargo fmt --all -- --check`.
+- [x] Run `python3 -m unittest discover -s benchmarks/tests -p 'test_*.py'`.
+- [x] Run `cargo check --locked -p benchmarks --all-targets`.
+- [x] Run `cargo test --locked -p benchmarks --lib --bins`.
+- [x] Run `cargo test --locked -p benchmarks --test codec_smoke`.
+- [x] Run `cargo clippy --locked -p benchmarks --all-targets -- -D warnings`.
+- [x] Run the corresponding `alloc-metrics` check and Clippy commands.
+- [x] Run `git diff --check`.
+- [x] Run short normal-path smoke tests for both matched adapters.
+- [x] Run the deterministic fault contract smoke set.
+- [x] If local facilities permit, run one matched TLS fixture smoke and one
   EMQX TCP fixture smoke. Treat unavailable Docker/broker facilities as
   explicitly reported skipped verification, not as successful verification.
-- [ ] Confirm that no generated benchmark results, temporary certificates,
+- [x] Confirm that no generated benchmark results, temporary certificates,
   broker containers, or background processes remain in the repository or
   running after verification.
 

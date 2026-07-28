@@ -1,9 +1,9 @@
-name = "matched-v5-throughput-qos1-1kib-1p1s"
+name = "matched-v5-latency-qos1-rate100"
 group = "matched"
-command = "throughput"
-description = "Direct-library MQTT 5 QoS 1 throughput with a 1 KiB immutable payload."
-primary_metric = "throughput_msg_sec"
-higher_is_better = true
+command = "latency"
+description = "Matched MQTT 5 QoS 1 latency at an unsaturated 100 messages per second."
+primary_metric = "p99_us"
+higher_is_better = false
 requires_broker = true
 transport = "tcp"
 
@@ -20,9 +20,8 @@ warmup_sec = 2
 drain_sec = 5
 payload_size = 1024
 qos = 1
-topic = "bench/matched/v5/qos1/1kib/1p1s"
-publishers = 1
-subscribers = 1
+topic = "bench/matched/v5/latency/qos1/rate100"
+rate = 100
 window = 100
 receive_maximum = 100
 keepalive_sec = 30

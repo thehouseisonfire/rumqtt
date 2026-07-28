@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 RUNNER_PATH = Path(__file__).resolve().parents[1] / "runner.py"
@@ -268,6 +269,70 @@ running benchmark...
                 self.assertEqual(loaded_path, path)
                 self.assertEqual(scenario["name"], path.stem)
 
+    def test_matched_catalog_is_representative_and_has_unique_topics(self):
+        paths = sorted((REPO_ROOT / "benchmarks" / "scenarios").glob("matched-*.toml"))
+        scenarios = [runner.load_scenario(REPO_ROOT, str(path))[1] for path in paths]
+        self.assertEqual(len(scenarios), 15)
+        topics = [
+            scenario["args"]["topic"]
+            for scenario in scenarios
+            if scenario["command"] != "connections"
+        ]
+        self.assertEqual(len(topics), len(set(topics)))
+        throughput = [scenario for scenario in scenarios if scenario["command"] == "throughput"]
+        baseline = {
+            (scenario["args"]["qos"], scenario["args"]["payload_size"])
+            for scenario in throughput
+            if scenario["args"]["publishers"] == scenario["args"]["subscribers"] == 1
+            and scenario["transport"] == "tcp"
+        }
+        self.assertEqual(
+            baseline,
+            {(qos, size) for qos in (0, 1) for size in (64, 1024, 16384)},
+        )
+
+    def test_provenance_helpers_parse_dirty_lockfile_and_metadata(self):
+        self.assertFalse(runner.parse_git_dirty(""))
+        self.assertTrue(runner.parse_git_dirty(" M benchmarks/runner.py\n"))
+        self.assertEqual(
+            runner.cargo_lock_sha256(REPO_ROOT),
+            __import__("hashlib").sha256((REPO_ROOT / "Cargo.lock").read_bytes()).hexdigest(),
+        )
+        packages = runner.resolved_packages(
+            {
+                "packages": [
+                    {
+                        "name": "mqtt5",
+                        "version": "0.38.0",
+                        "source": "registry+example",
+                        "manifest_path": "/tmp/mqtt5/Cargo.toml",
+                    },
+                    {
+                        "name": "rumqttc-v5-next",
+                        "version": "0.34.0-alpha",
+                        "source": None,
+                        "manifest_path": "/repo/rumqttc-v5/Cargo.toml",
+                    },
+                ]
+            }
+        )
+        self.assertEqual(packages["mqtt5"]["version"], "0.38.0")
+        self.assertEqual(packages["mqtt5"]["source"], "registry+example")
+
+    def test_summary_environment_preserves_fallback_when_payload_has_null(self):
+        with mock.patch.object(
+            runner,
+            "fallback_environment",
+            return_value={"rustc": "fallback", "cargo_lock_sha256": "abc"},
+        ):
+            environment = runner.summary_environment(
+                REPO_ROOT,
+                [{"payload": {"environment": {"rustc": None, "target": "x86"}}}],
+            )
+        self.assertEqual(environment["rustc"], "fallback")
+        self.assertEqual(environment["cargo_lock_sha256"], "abc")
+        self.assertEqual(environment["target"], "x86")
+
     def test_validate_scenario_requires_metadata(self):
         scenario = self.scenario(primary_metric="")
 
@@ -432,6 +497,34 @@ running benchmark...
 
         self.assertFalse(comparison["rss_max_bytes"]["higher_is_better"])
         self.assertEqual(comparison["rss_max_bytes"]["classification"], "regression")
+
+    def test_backlog_metrics_are_lower_is_better(self):
+        metrics = [
+            "common_publish_outstanding_at_deadline",
+            "common_publish_outstanding_peak",
+            "common_publish_outstanding_after_drain",
+            "cycles_in_flight_at_deadline",
+            "drain_successful_cycles",
+        ]
+        scenario = self.scenario(
+            group="client",
+            command="throughput",
+            primary_metric="throughput_msg_sec",
+            requires_broker=True,
+        )
+
+        for metric in metrics:
+            with self.subTest(metric=metric):
+                comparison = runner.compare_summaries(
+                    [{"ok": True, "metrics": {"throughput_msg_sec": 100.0, metric: 1.0}}],
+                    [{"ok": True, "metrics": {"throughput_msg_sec": 100.0, metric: 2.0}}],
+                    scenario=scenario,
+                    bootstrap_samples=100,
+                    confidence=0.95,
+                )
+
+                self.assertFalse(comparison[metric]["higher_is_better"])
+                self.assertEqual(comparison[metric]["classification"], "regression")
 
     def test_metric_summary_reports_noise(self):
         summary = runner.metric_summary([10.0, 12.0, 14.0])

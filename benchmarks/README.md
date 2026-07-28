@@ -64,6 +64,23 @@ is retained in raw output but excluded from valid pairs. For a smoke check,
 use one development-profile run; shared CI runners are not performance
 evidence.
 
+The maintained matched catalog is representative, not exhaustive. It covers
+QoS 0/1 throughput at 64 B, 1 KiB, and 16 KiB; QoS 1 fan-in and fan-out;
+QoS 0/1 latency at 100 and 1000 messages/s; serial and 10-concurrent
+connection churn; and one private-CA TLS smoke. Scenario files explicitly
+declare timing, flow control, timeouts, transport, topics, and quality gates.
+
+Matched message runs report harness-owned publish operations outstanding at
+the deadline, their measurement peak, and those remaining after bounded drain.
+These span shared-window acquisition through return from the adapter's public
+publish operation. The deadline count is derived from timestamped publish
+completion observations, so drain-period completions cannot reduce it. These
+metrics are not internal queue or socket-write depths.
+Connection runs report attempts, successful CONNACK-plus-disconnect cycles,
+stable connect/disconnect failure classes, and cycles in flight at the
+deadline. Failures, timeouts, zero successes, or incomplete drain invalidate a
+run.
+
 Add `cargo_features = ["alloc-metrics"]` to a matched scenario to enable
 counting-system-allocator metrics. Allocation instrumentation is off by
 default because it perturbs the workload.
@@ -183,7 +200,14 @@ starts Mosquitto, runs selected scenarios through `benchmarks/runner.py`, writes
 `broker-validation-summary.json`, and removes the broker container on success or
 failure. The summary records the backend, Docker image, listener ports,
 completed/failed/skipped scenarios, and each scenario's runner output
-directory.
+directory. Mosquitto validation retains the exact effective configuration as
+`broker-config/mosquitto.conf` with its SHA-256 digest. Common broker metadata
+records normalized listeners, transports, persistence, anonymous access, TLS
+certificate mode, image tag/digest, and sorted EMQX environment overrides
+without retaining private keys or credentials.
+`selected_transports` identifies the workloads run, while `active_transports`
+and `listeners` are derived from the effective broker configuration and include
+listeners that were enabled but not selected by those workloads.
 
 Run only the two websocket throughput scenarios:
 
@@ -219,6 +243,10 @@ The synthetic backend supports MQTT 3.1.1/5 TCP CONNECT, subscriptions,
 QoS 0/1 publish routing, acknowledgements, keepalive, and disconnect. It
 intentionally does not implement authentication, persistence, QoS 2, TLS, or
 WebSockets and is not a production broker.
+Its deterministic negative-PUBACK rejection fault is MQTT-5-only because MQTT
+3.1.1 has no negative PUBACK reason code; triggering it from a v3.1.1
+connection closes that connection with an explicit router error and emits no
+malformed acknowledgement.
 
 Matched smoke tests can also use either pinned production broker:
 

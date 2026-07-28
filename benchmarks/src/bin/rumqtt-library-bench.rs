@@ -104,6 +104,8 @@ struct CommonArgs {
     receive_maximum: u16,
     #[arg(long, default_value_t = 30)]
     keepalive_sec: u16,
+    #[arg(long, default_value_t = 10)]
+    operation_timeout_sec: u64,
 }
 
 #[derive(Args, Clone)]
@@ -136,6 +138,12 @@ struct ConnectionArgs {
     concurrency: usize,
     #[arg(long, default_value_t = 30)]
     keepalive_sec: u16,
+    #[arg(long, default_value_t = 10)]
+    connect_timeout_sec: u64,
+    #[arg(long, default_value_t = 5)]
+    disconnect_timeout_sec: u64,
+    #[arg(long, default_value_t = 5)]
+    drain_sec: u64,
 }
 
 #[derive(Debug)]
@@ -166,6 +174,33 @@ trait ClientAdapter: Send + Sync {
 struct RumqttAdapter {
     client: rumqttc_v5::AsyncClient,
     deliveries: Mutex<Option<mpsc::UnboundedReceiver<Delivery>>>,
+    disconnect_timeout: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct AdapterTimeouts {
+    connect: Duration,
+    disconnect: Duration,
+}
+
+#[derive(Debug)]
+struct AdapterConnectTimeout;
+
+impl std::fmt::Display for AdapterConnectTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("adapter CONNACK timeout")
+    }
+}
+
+impl std::error::Error for AdapterConnectTimeout {}
+
+impl AdapterTimeouts {
+    const fn uniform(timeout: Duration) -> Self {
+        Self {
+            connect: timeout,
+            disconnect: timeout,
+        }
+    }
 }
 
 impl RumqttAdapter {
@@ -173,6 +208,7 @@ impl RumqttAdapter {
         id: String,
         args: &CommonArgs,
         ca_certificate: Option<&[u8]>,
+        timeouts: AdapterTimeouts,
     ) -> anyhow::Result<Self> {
         let (host, port, tls) = parse_broker(&args.broker_url)?;
         let mut options = rumqttc_v5::MqttOptions::new(id, (host, port));
@@ -222,13 +258,16 @@ impl RumqttAdapter {
                 }
             }
         });
-        tokio::time::timeout(Duration::from_secs(10), connected_rx)
-            .await
-            .context("rumqttc CONNACK timeout")?
-            .context("rumqttc event loop stopped before CONNACK")?;
+        match tokio::time::timeout(timeouts.connect, connected_rx).await {
+            Ok(connected) => {
+                connected.context("rumqttc event loop stopped before CONNACK")?;
+            }
+            Err(_) => return Err(AdapterConnectTimeout.into()),
+        }
         Ok(Self {
             client,
             deliveries: Mutex::new(Some(delivery_rx)),
+            disconnect_timeout: timeouts.disconnect,
         })
     }
 }
@@ -277,7 +316,7 @@ impl ClientAdapter for RumqttAdapter {
 
     async fn disconnect(&self) -> anyhow::Result<()> {
         self.client
-            .disconnect_with_timeout(Duration::from_secs(5))
+            .disconnect_with_timeout(self.disconnect_timeout)
             .await?;
         Ok(())
     }
@@ -386,10 +425,11 @@ async fn connect_adapter(
     id: String,
     args: &CommonArgs,
     ca_certificate: Option<&[u8]>,
+    timeouts: AdapterTimeouts,
 ) -> anyhow::Result<Arc<dyn ClientAdapter>> {
     match backend {
         BackendKind::Rumqttc => Ok(Arc::new(
-            RumqttAdapter::connect(id, args, ca_certificate).await?,
+            RumqttAdapter::connect(id, args, ca_certificate, timeouts).await?,
         )),
         BackendKind::Mqtt5 => Ok(Arc::new(
             Mqtt5Adapter::connect(id, args, ca_certificate).await?,
@@ -400,15 +440,72 @@ async fn connect_adapter(
 #[derive(Default)]
 struct Counters {
     attempts: AtomicU64,
+    publish_results_by_deadline: AtomicU64,
     accepted: AtomicU64,
     completed: AtomicU64,
     rejected: AtomicU64,
+    publish_failures: AtomicU64,
+    publish_timeouts: AtomicU64,
     unique: AtomicU64,
     in_window_unique: AtomicU64,
     duplicates: AtomicU64,
     malformed: AtomicU64,
     late: AtomicU64,
     missed_deadlines: AtomicU64,
+}
+
+impl Counters {
+    fn record_publish_result(&self, completed_at: Instant, measurement_deadline: Instant) {
+        if completed_at <= measurement_deadline {
+            self.publish_results_by_deadline
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn publishes_outstanding_at_deadline(&self) -> u64 {
+        self.attempts
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.publish_results_by_deadline.load(Ordering::Relaxed))
+    }
+}
+
+#[derive(Default)]
+struct OutstandingPublishes {
+    current: AtomicU64,
+    peak: AtomicU64,
+}
+
+impl OutstandingPublishes {
+    fn acquire(self: &Arc<Self>) -> OutstandingPublishGuard {
+        let current = self.current.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak.fetch_max(current, Ordering::AcqRel);
+        OutstandingPublishGuard {
+            tracker: Arc::clone(self),
+        }
+    }
+
+    fn current(&self) -> u64 {
+        self.current.load(Ordering::Acquire)
+    }
+
+    fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Acquire)
+    }
+
+    fn reset_peak(&self) {
+        self.peak.store(self.current(), Ordering::Release);
+    }
+}
+
+struct OutstandingPublishGuard {
+    tracker: Arc<OutstandingPublishes>,
+}
+
+impl Drop for OutstandingPublishGuard {
+    fn drop(&mut self) {
+        let previous = self.tracker.current.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "outstanding publish counter underflow");
+    }
 }
 
 #[derive(Serialize)]
@@ -473,6 +570,7 @@ async fn run_messages(
     let phase = Arc::new(AtomicU8::new(1));
     let origin = Instant::now();
     let counters = Arc::new(Counters::default());
+    let outstanding = Arc::new(OutstandingPublishes::default());
     let seen = Arc::new(Mutex::new(HashSet::<(usize, u64)>::new()));
     let latencies = Arc::new(Mutex::new(Vec::<u64>::new()));
     let running = Arc::new(AtomicBool::new(true));
@@ -481,15 +579,27 @@ async fn run_messages(
 
     let mut clients = Vec::<Arc<dyn ClientAdapter>>::new();
     let mut receiver_tasks = Vec::new();
+    let operation_timeout = Duration::from_secs(args.common.operation_timeout_sec);
+    let adapter_timeouts = AdapterTimeouts::uniform(operation_timeout);
     for index in 0..args.subscribers {
-        let client = connect_adapter(
-            backend,
-            format!("{run_id}-sub-{index}"),
-            &args.common,
-            ca_certificate.as_deref(),
+        let client = tokio::time::timeout(
+            operation_timeout,
+            connect_adapter(
+                backend,
+                format!("{run_id}-sub-{index}"),
+                &args.common,
+                ca_certificate.as_deref(),
+                adapter_timeouts,
+            ),
         )
-        .await?;
-        let mut receiver = client.subscribe(&filter, args.common.qos).await?;
+        .await
+        .context("subscriber connect timeout")??;
+        let mut receiver = tokio::time::timeout(
+            operation_timeout,
+            client.subscribe(&filter, args.common.qos),
+        )
+        .await
+        .context("subscriber subscribe timeout")??;
         let expected_topic = args.common.topic.clone();
         let expected_payload = Arc::clone(&payload);
         let counters = Arc::clone(&counters);
@@ -544,13 +654,18 @@ async fn run_messages(
     let mut publishers = Vec::new();
     for index in 0..args.publishers {
         publishers.push(
-            connect_adapter(
-                backend,
-                format!("{run_id}-pub-{index}"),
-                &args.common,
-                ca_certificate.as_deref(),
+            tokio::time::timeout(
+                operation_timeout,
+                connect_adapter(
+                    backend,
+                    format!("{run_id}-pub-{index}"),
+                    &args.common,
+                    ca_certificate.as_deref(),
+                    adapter_timeouts,
+                ),
             )
-            .await?,
+            .await
+            .context("publisher connect timeout")??,
         );
     }
     let mut publish_tasks = start_publishers(
@@ -561,6 +676,7 @@ async fn run_messages(
         Arc::clone(&phase),
         Arc::clone(&sequence),
         Arc::clone(&counters),
+        Arc::clone(&outstanding),
         nonce,
         origin,
         rate,
@@ -569,12 +685,20 @@ async fn run_messages(
 
     tokio::time::sleep(Duration::from_secs(args.common.warmup_sec)).await;
     running.store(false, Ordering::Release);
-    while publish_tasks.join_next().await.is_some() {}
+    let warmup_completed = finish_publishers(
+        &mut publish_tasks,
+        Duration::from_secs(args.common.operation_timeout_sec),
+    )
+    .await;
+    if !warmup_completed {
+        bail!("warmup publish completion exceeded operation timeout");
+    }
     wait_for_quiet(&counters.unique, Duration::from_secs(args.common.drain_sec)).await;
     phase.store(2, Ordering::Release);
     reset_counters(&counters);
     seen.lock().expect("seen lock").clear();
     latencies.lock().expect("latency lock").clear();
+    outstanding.reset_peak();
     running.store(true, Ordering::Release);
     let cpu_start = process_cpu_nanos();
     let alloc_start = allocation_snapshot();
@@ -591,6 +715,7 @@ async fn run_messages(
         Arc::clone(&phase),
         Arc::clone(&sequence),
         Arc::clone(&counters),
+        Arc::clone(&outstanding),
         nonce,
         origin,
         rate,
@@ -611,7 +736,13 @@ async fn run_messages(
     }
     let measured_elapsed = measure_start.elapsed().as_secs_f64();
     running.store(false, Ordering::Release);
-    while publish_tasks.join_next().await.is_some() {}
+    let (publish_completion, outstanding_after_drain) = finish_publishers_with_outstanding(
+        &mut publish_tasks,
+        Duration::from_secs(args.common.drain_sec),
+        &outstanding,
+    )
+    .await;
+    let outstanding_at_deadline = counters.publishes_outstanding_at_deadline();
     let expected = counters
         .accepted
         .load(Ordering::Relaxed)
@@ -631,7 +762,7 @@ async fn run_messages(
     let alloc = allocation_snapshot().delta(alloc_start);
 
     for client in publishers.iter().chain(clients.iter()) {
-        let _ = client.disconnect().await;
+        let _ = tokio::time::timeout(operation_timeout, client.disconnect()).await;
     }
     for task in receiver_tasks {
         task.abort();
@@ -653,14 +784,30 @@ async fn run_messages(
             >= requested as f64 * 0.99
     });
     let valid = drain.is_ok()
+        && publish_completion
         && lost == 0
         && counters.duplicates.load(Ordering::Relaxed) == 0
         && counters.malformed.load(Ordering::Relaxed) == 0
         && counters.rejected.load(Ordering::Relaxed) == 0
+        && counters.publish_failures.load(Ordering::Relaxed) == 0
+        && counters.publish_timeouts.load(Ordering::Relaxed) == 0
+        && outstanding_after_drain == 0
         && maintained_rate;
     let mut metrics = counter_metrics(&counters);
     metrics.insert("expected_deliveries".into(), expected as f64);
     metrics.insert("lost".into(), lost as f64);
+    metrics.insert(
+        "common_publish_outstanding_at_deadline".into(),
+        outstanding_at_deadline as f64,
+    );
+    metrics.insert(
+        "common_publish_outstanding_peak".into(),
+        outstanding.peak() as f64,
+    );
+    metrics.insert(
+        "common_publish_outstanding_after_drain".into(),
+        outstanding_after_drain as f64,
+    );
     metrics.insert("elapsed_sec".into(), measured_elapsed);
     metrics.insert("elapsed_with_drain_sec".into(), total_elapsed);
     insert_delivery_window_metrics(
@@ -721,6 +868,7 @@ async fn run_messages(
             "warmup_sec": args.common.warmup_sec, "duration_sec": args.common.duration_sec,
             "drain_sec": args.common.drain_sec, "window": args.common.window,
             "receive_maximum": args.common.receive_maximum, "keepalive_sec": args.common.keepalive_sec,
+            "operation_timeout_sec": args.common.operation_timeout_sec,
             "clean_start": true, "session_expiry_interval": 0,
             "publishers": args.publishers, "subscribers": args.subscribers, "rate": rate,
             "message_identity": "correlation-data-v1",
@@ -739,9 +887,14 @@ async fn run_messages(
         samples: samples_out,
         quality: json!({
             "valid": valid,
-            "complete_drain": drain.is_ok(),
+            "complete_drain": drain.is_ok() && publish_completion && outstanding_after_drain == 0,
             "overloaded": !maintained_rate,
-            "coordinated_omission_warning": counters.missed_deadlines.load(Ordering::Relaxed) != 0
+            "coordinated_omission_warning": counters.missed_deadlines.load(Ordering::Relaxed) != 0,
+            "error_classes": {
+                "publish_rejected": counters.rejected.load(Ordering::Relaxed),
+                "publish_failed": counters.publish_failures.load(Ordering::Relaxed),
+                "publish_timeout": counters.publish_timeouts.load(Ordering::Relaxed),
+            }
         }),
         environment: environment(backend),
     })
@@ -769,6 +922,7 @@ fn start_publishers(
     phase: Arc<AtomicU8>,
     sequence: Arc<AtomicU64>,
     counters: Arc<Counters>,
+    outstanding_tracker: Arc<OutstandingPublishes>,
     nonce: u64,
     origin: Instant,
     rate: Option<u64>,
@@ -782,10 +936,12 @@ fn start_publishers(
         let phase = Arc::clone(&phase);
         let sequence = Arc::clone(&sequence);
         let counters = Arc::clone(&counters);
+        let outstanding_tracker = Arc::clone(&outstanding_tracker);
         let semaphore = Arc::clone(&semaphore);
         let payload = Arc::clone(&payload);
         let topic = args.topic.clone();
         let qos = args.qos;
+        let operation_timeout = Duration::from_secs(args.operation_timeout_sec);
         let per_publisher_rate = rate.map(|value| (value / publishers.len() as u64).max(1));
         let interval = per_publisher_rate.map(|value| Duration::from_nanos(1_000_000_000 / value));
         tasks.spawn(async move {
@@ -822,18 +978,33 @@ fn start_publishers(
                     encode_correlation(nonce ^ u64::from(phase.load(Ordering::Acquire)), seq, sent);
                 let client = Arc::clone(&client);
                 let counters = Arc::clone(&counters);
+                let outstanding_tracker = Arc::clone(&outstanding_tracker);
                 let topic = topic.clone();
                 let payload = Arc::clone(&payload);
+                let outstanding_guard = outstanding_tracker.acquire();
                 outstanding.spawn(async move {
-                    match client.publish(&topic, &payload, correlation, qos).await {
-                        Ok(()) => {
+                    let result = tokio::time::timeout(
+                        operation_timeout,
+                        client.publish(&topic, &payload, correlation, qos),
+                    )
+                    .await;
+                    counters.record_publish_result(Instant::now(), stop_at);
+                    match result {
+                        Ok(Ok(())) => {
                             counters.accepted.fetch_add(1, Ordering::Relaxed);
                             counters.completed.fetch_add(1, Ordering::Relaxed);
                         }
+                        Ok(Err(error)) => {
+                            counters.publish_failures.fetch_add(1, Ordering::Relaxed);
+                            if publish_error_is_rejection(&error) {
+                                counters.rejected.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                         Err(_) => {
-                            counters.rejected.fetch_add(1, Ordering::Relaxed);
+                            counters.publish_timeouts.fetch_add(1, Ordering::Relaxed);
                         }
                     }
+                    drop(outstanding_guard);
                     drop(permit);
                 });
             }
@@ -841,6 +1012,47 @@ fn start_publishers(
         });
     }
     tasks
+}
+
+async fn finish_publishers(tasks: &mut JoinSet<()>, timeout: Duration) -> bool {
+    let completed = tokio::time::timeout(timeout, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_ok();
+    if !completed {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    completed
+}
+
+async fn finish_publishers_with_outstanding(
+    tasks: &mut JoinSet<()>,
+    timeout: Duration,
+    outstanding: &OutstandingPublishes,
+) -> (bool, u64) {
+    let completed = tokio::time::timeout(timeout, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_ok();
+    let after_bound = outstanding.current();
+    if !completed {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    (completed, after_bound)
+}
+
+fn publish_error_is_rejection(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    message.contains("publishfailed")
+        || message.contains("publish failed")
+        || message.contains("quota exceeded")
+        || message.contains("negative acknowledgement")
+        || message.contains("non-success reason")
+        || message.contains("publish rejected")
 }
 
 fn publishing_active(running: &AtomicBool, stop_at: Instant) -> bool {
@@ -855,14 +1067,15 @@ async fn run_connections(
     if args.concurrency == 0 {
         bail!("concurrency must be greater than zero");
     }
+    if args.duration_sec == 0 {
+        bail!("duration-sec must be greater than zero");
+    }
     let ca_certificate = Arc::new(load_ca_certificate(
         &args.broker_url,
         args.ca_cert.as_deref(),
     )?);
     let started_at = unix_secs();
-    let successful = Arc::new(AtomicU64::new(0));
-    let failed = Arc::new(AtomicU64::new(0));
-    let running = Arc::new(AtomicBool::new(true));
+    let counters = Arc::new(ConnectionCounters::default());
     let common = CommonArgs {
         broker_url: args.broker_url.clone(),
         ca_cert: args.ca_cert.clone(),
@@ -876,49 +1089,113 @@ async fn run_connections(
         window: 1,
         receive_maximum: 100,
         keepalive_sec: args.keepalive_sec,
+        operation_timeout_sec: args.connect_timeout_sec,
     };
     let start = Instant::now();
+    let measurement_deadline = start + Duration::from_secs(args.duration_sec);
+    let connect_timeout = Duration::from_secs(args.connect_timeout_sec);
+    let disconnect_timeout = Duration::from_secs(args.disconnect_timeout_sec);
     let mut tasks = JoinSet::new();
     for worker in 0..args.concurrency {
-        let successful = Arc::clone(&successful);
-        let failed = Arc::clone(&failed);
-        let running = Arc::clone(&running);
+        let counters = Arc::clone(&counters);
         let common = common.clone();
         let run_id = run_id.clone();
         let ca_certificate = Arc::clone(&ca_certificate);
         tasks.spawn(async move {
             let mut iteration = 0u64;
-            while running.load(Ordering::Acquire) {
-                match connect_adapter(
-                    backend,
-                    format!("{run_id}-{worker}-{iteration}"),
-                    &common,
-                    ca_certificate.as_deref(),
+            while Instant::now() < measurement_deadline {
+                counters.attempts.fetch_add(1, Ordering::Relaxed);
+                let _in_flight = ActiveCycleGuard::new(&counters.cycles_in_flight);
+                let connect = tokio::time::timeout(
+                    connect_timeout,
+                    connect_adapter(
+                        backend,
+                        format!("{run_id}-{worker}-{iteration}"),
+                        &common,
+                        ca_certificate.as_deref(),
+                        AdapterTimeouts {
+                            connect: connect_timeout,
+                            disconnect: disconnect_timeout,
+                        },
+                    ),
                 )
-                .await
-                {
-                    Ok(client) if client.disconnect().await.is_ok() => {
-                        successful.fetch_add(1, Ordering::Relaxed);
+                .await;
+                let client = match connect {
+                    Ok(Ok(client)) => client,
+                    Ok(Err(error)) => {
+                        let class = if error.downcast_ref::<AdapterConnectTimeout>().is_some() {
+                            ConnectionFailureClass::ConnectTimeout
+                        } else {
+                            ConnectionFailureClass::ConnectFailure
+                        };
+                        counters.record_failure(class, Instant::now(), measurement_deadline);
+                        iteration += 1;
+                        continue;
                     }
-                    _ => {
-                        failed.fetch_add(1, Ordering::Relaxed);
+                    Err(_) => {
+                        counters.record_failure(
+                            ConnectionFailureClass::ConnectTimeout,
+                            Instant::now(),
+                            measurement_deadline,
+                        );
+                        iteration += 1;
+                        continue;
+                    }
+                };
+                match tokio::time::timeout(disconnect_timeout, client.disconnect()).await {
+                    Ok(Ok(())) => {
+                        counters.record_successful_cycle(Instant::now(), measurement_deadline);
+                    }
+                    Ok(Err(_)) => {
+                        counters.record_failure(
+                            ConnectionFailureClass::DisconnectFailure,
+                            Instant::now(),
+                            measurement_deadline,
+                        );
+                    }
+                    Err(_) => {
+                        counters.record_failure(
+                            ConnectionFailureClass::DisconnectTimeout,
+                            Instant::now(),
+                            measurement_deadline,
+                        );
                     }
                 }
                 iteration += 1;
             }
         });
     }
-    tokio::time::sleep(Duration::from_secs(args.duration_sec)).await;
-    running.store(false, Ordering::Release);
-    while tasks.join_next().await.is_some() {}
-    let elapsed = start.elapsed().as_secs_f64();
-    let count = successful.load(Ordering::Relaxed);
-    let failures = failed.load(Ordering::Relaxed);
+    tokio::time::sleep_until(measurement_deadline.into()).await;
+    let elapsed = measurement_deadline.duration_since(start).as_secs_f64();
+    let drained = finish_publishers(&mut tasks, Duration::from_secs(args.drain_sec)).await;
+    let cycles_after_drain = counters.cycles_in_flight.load(Ordering::Acquire);
+    let count = counters.successful_cycles.load(Ordering::Relaxed);
+    let drain_successful_cycles = counters.drain_successful_cycles.load(Ordering::Relaxed);
+    let attempts = counters.attempts.load(Ordering::Relaxed);
+    let cycles_completed_by_deadline = counters
+        .cycles_completed_by_deadline
+        .load(Ordering::Relaxed);
+    let cycles_in_flight_at_deadline = attempts.saturating_sub(cycles_completed_by_deadline);
+    let connect_timeouts = counters.connect_timeouts.load(Ordering::Relaxed);
+    let connect_failures = counters.connect_failures.load(Ordering::Relaxed);
+    let disconnect_timeouts = counters.disconnect_timeouts.load(Ordering::Relaxed);
+    let disconnect_failures = counters.disconnect_failures.load(Ordering::Relaxed);
+    let has_failure = connect_timeouts != 0
+        || connect_failures != 0
+        || disconnect_timeouts != 0
+        || disconnect_failures != 0;
     let mut metrics = BTreeMap::new();
-    metrics.insert("successful".into(), count as f64);
-    metrics.insert("failed".into(), failures as f64);
+    metrics.insert("attempts".into(), attempts as f64);
+    insert_connection_window_metrics(&mut metrics, count, drain_successful_cycles, elapsed);
+    metrics.insert("connect_timeouts".into(), connect_timeouts as f64);
+    metrics.insert("connect_failures".into(), connect_failures as f64);
+    metrics.insert("disconnect_timeouts".into(), disconnect_timeouts as f64);
+    metrics.insert("disconnect_failures".into(), disconnect_failures as f64);
+    metrics.insert(
+        "cycles_in_flight_at_deadline".into(),
+        cycles_in_flight_at_deadline as f64,
+    );
     metrics.insert("elapsed_sec".into(), elapsed);
-    metrics.insert("connections_sec".into(), count as f64 / elapsed);
     print_output(Output {
         schema_version: 2,
         run_id,
@@ -929,16 +1206,116 @@ async fn run_connections(
         config: json!({"protocol":"v5", "broker_url":args.broker_url, "duration_sec":args.duration_sec,
         "concurrency":args.concurrency, "clean_start":true, "session_expiry_interval":0,
         "keepalive_sec":args.keepalive_sec,
+        "connect_timeout_sec":args.connect_timeout_sec,
+        "disconnect_timeout_sec":args.disconnect_timeout_sec,
+        "drain_sec":args.drain_sec,
         "ca_certificate": ca_certificate_metadata(
             args.ca_cert.as_deref(),
             ca_certificate.as_deref(),
         )}),
-        effective_config: json!({"backend":backend.name(), "cycle_completion":"connack-and-disconnect-flush"}),
+        effective_config: json!({
+            "backend":backend.name(),
+            "cycle_completion":"connack-and-public-graceful-disconnect-return"
+        }),
         metrics,
         samples: BTreeMap::new(),
-        quality: json!({"valid":failures == 0}),
+        quality: json!({
+            "valid": !has_failure && attempts != 0 && count != 0 && drained && cycles_after_drain == 0,
+            "complete_drain": drained && cycles_after_drain == 0,
+            "error_classes": {
+                "connect_timeout": connect_timeouts,
+                "connect_failure": connect_failures,
+                "disconnect_timeout": disconnect_timeouts,
+                "disconnect_failure": disconnect_failures,
+            }
+        }),
         environment: environment(backend),
     })
+}
+
+fn insert_connection_window_metrics(
+    metrics: &mut BTreeMap<String, f64>,
+    successful_cycles: u64,
+    drain_successful_cycles: u64,
+    elapsed: f64,
+) {
+    metrics.insert("successful_cycles".into(), successful_cycles as f64);
+    metrics.insert(
+        "drain_successful_cycles".into(),
+        drain_successful_cycles as f64,
+    );
+    metrics.insert("connections_sec".into(), successful_cycles as f64 / elapsed);
+}
+
+#[derive(Default)]
+struct ConnectionCounters {
+    attempts: AtomicU64,
+    successful_cycles: AtomicU64,
+    drain_successful_cycles: AtomicU64,
+    cycles_completed_by_deadline: AtomicU64,
+    connect_timeouts: AtomicU64,
+    connect_failures: AtomicU64,
+    disconnect_timeouts: AtomicU64,
+    disconnect_failures: AtomicU64,
+    cycles_in_flight: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+enum ConnectionFailureClass {
+    ConnectTimeout,
+    ConnectFailure,
+    DisconnectTimeout,
+    DisconnectFailure,
+}
+
+impl ConnectionCounters {
+    fn record_successful_cycle(&self, completed_at: Instant, measurement_deadline: Instant) {
+        let counter = if completed_at <= measurement_deadline {
+            self.cycles_completed_by_deadline
+                .fetch_add(1, Ordering::Relaxed);
+            &self.successful_cycles
+        } else {
+            &self.drain_successful_cycles
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_failure(
+        &self,
+        class: ConnectionFailureClass,
+        completed_at: Instant,
+        measurement_deadline: Instant,
+    ) {
+        if completed_at <= measurement_deadline {
+            self.cycles_completed_by_deadline
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let counter = match class {
+            ConnectionFailureClass::ConnectTimeout => &self.connect_timeouts,
+            ConnectionFailureClass::ConnectFailure => &self.connect_failures,
+            ConnectionFailureClass::DisconnectTimeout => &self.disconnect_timeouts,
+            ConnectionFailureClass::DisconnectFailure => &self.disconnect_failures,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct ActiveCycleGuard<'a> {
+    counter: &'a AtomicU64,
+}
+
+impl<'a> ActiveCycleGuard<'a> {
+    fn new(counter: &'a AtomicU64) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self { counter }
+    }
+}
+
+impl Drop for ActiveCycleGuard<'_> {
+    fn drop(&mut self) {
+        let previous = self.counter.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "active connection cycle counter underflow");
+    }
 }
 
 fn encode_correlation(nonce: u64, sequence: u64, sent_nanos: u64) -> Vec<u8> {
@@ -963,9 +1340,12 @@ fn decode_correlation(value: &[u8]) -> Option<(u64, u64, u64)> {
 fn reset_counters(counters: &Counters) {
     for counter in [
         &counters.attempts,
+        &counters.publish_results_by_deadline,
         &counters.accepted,
         &counters.completed,
         &counters.rejected,
+        &counters.publish_failures,
+        &counters.publish_timeouts,
         &counters.unique,
         &counters.in_window_unique,
         &counters.duplicates,
@@ -983,6 +1363,8 @@ fn counter_metrics(counters: &Counters) -> BTreeMap<String, f64> {
         ("locally_accepted", &counters.accepted),
         ("publish_completed", &counters.completed),
         ("rejected", &counters.rejected),
+        ("publish_failures", &counters.publish_failures),
+        ("publish_timeouts", &counters.publish_timeouts),
         ("unique_deliveries", &counters.unique),
         ("duplicates", &counters.duplicates),
         ("malformed", &counters.malformed),
@@ -1184,6 +1566,7 @@ fn ratio(value: u64, count: u64) -> f64 {
 }
 
 fn environment(backend: BackendKind) -> Value {
+    let workspace_root = workspace_root();
     let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
         .ok()
         .and_then(|contents| {
@@ -1201,25 +1584,116 @@ fn environment(backend: BackendKind) -> Value {
                     .map(|kb| kb * 1024)
             })
         });
+    let metadata = cargo_metadata(workspace_root);
+    let mqtt5 = metadata
+        .as_ref()
+        .and_then(|value| package_metadata(value, "mqtt5"));
+    let rumqttc = metadata
+        .as_ref()
+        .and_then(|value| package_metadata(value, "rumqttc-v5-next"));
+    let cargo_features = enabled_cargo_features();
     json!({
-        "git_commit": command_stdout("git", &["rev-parse", "HEAD"]),
-        "rustc": command_stdout("rustc", &["--version", "--verbose"]),
-        "target": command_stdout("rustc", &["-vV"]).and_then(|output| output.lines().find_map(|line| line.strip_prefix("host: ").map(str::to_owned))),
+        "git_commit": command_stdout_at(workspace_root, "git", &["rev-parse", "HEAD"]),
+        "git_dirty": git_dirty(workspace_root),
+        "cargo_lock_sha256": file_sha256(&workspace_root.join("Cargo.lock")),
+        "rustc": command_stdout_at(workspace_root, "rustc", &["--version", "--verbose"]),
+        "target": command_stdout_at(workspace_root, "rustc", &["-vV"]).and_then(|output| output.lines().find_map(|line| line.strip_prefix("host: ").map(str::to_owned))),
         "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "logical_cpu_count": std::thread::available_parallelism().map_or(1, usize::from),
         "cpu_model": cpu_model, "total_memory_bytes": memory_bytes,
         "allocator": if cfg!(feature = "alloc-metrics") {"system-counting"} else {"system"},
-        "cargo_features": if cfg!(feature = "alloc-metrics") {vec!["alloc-metrics"]} else {Vec::<&str>::new()},
+        "cargo_features": cargo_features,
         "optimization_profile": if cfg!(debug_assertions) {"dev"} else {"release"},
         "library": backend.name(),
-        "library_version": match backend { BackendKind::Rumqttc => "0.34.0-alpha", BackendKind::Mqtt5 => "0.38.0" },
-        "mqtt5_source": "registry+https://github.com/rust-lang/crates.io-index"
+        "library_version": match backend {
+            BackendKind::Rumqttc => rumqttc.as_ref().map_or("0.34.0-alpha", |package| package.0.as_str()),
+            BackendKind::Mqtt5 => mqtt5.as_ref().map_or("0.38.0", |package| package.0.as_str()),
+        },
+        "rumqttc_workspace_commit": command_stdout_at(workspace_root, "git", &["rev-parse", "HEAD"]),
+        "rumqttc_version": rumqttc.as_ref().map(|package| package.0.clone()),
+        "mqtt5_version": mqtt5.as_ref().map_or_else(|| "0.38.0".to_owned(), |package| package.0.clone()),
+        "mqtt5_source": mqtt5.as_ref().and_then(|package| package.1.clone()).unwrap_or_else(||
+            "registry+https://github.com/rust-lang/crates.io-index".to_owned()
+        )
     })
 }
 
-fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+fn enabled_cargo_features() -> Vec<&'static str> {
+    let mut features = Vec::new();
+    if cfg!(feature = "alloc-metrics") {
+        features.push("alloc-metrics");
+    }
+    if cfg!(feature = "profiling") {
+        features.push("profiling");
+    }
+    if cfg!(feature = "url") {
+        features.push("url");
+    }
+    if cfg!(feature = "websocket") {
+        features.push("websocket");
+    }
+    features
+}
+
+fn file_sha256(path: &Path) -> Option<String> {
+    std::fs::read(path).ok().map(|contents| {
+        Sha256::digest(contents)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    })
+}
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("benchmarks package must be inside the workspace root")
+}
+
+fn git_dirty(workspace_root: &Path) -> Option<bool> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+fn cargo_metadata(workspace_root: &Path) -> Option<Value> {
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--locked", "--format-version", "1"])
+        .arg("--manifest-path")
+        .arg(workspace_root.join("Cargo.toml"))
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+fn package_metadata(metadata: &Value, name: &str) -> Option<(String, Option<String>)> {
+    metadata["packages"].as_array()?.iter().find_map(|package| {
+        (package["name"].as_str()? == name).then(|| {
+            (
+                package["version"]
+                    .as_str()
+                    .unwrap_or("unavailable")
+                    .to_owned(),
+                package["source"].as_str().map(str::to_owned),
+            )
+        })
+    })
+}
+
+fn command_stdout_at(current_dir: &Path, program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
         .args(args)
+        .current_dir(current_dir)
         .output()
         .ok()?;
     output
@@ -1293,6 +1767,16 @@ mod tests {
     }
 
     #[test]
+    fn connection_throughput_excludes_cycles_completed_during_drain() {
+        let mut metrics = BTreeMap::new();
+        insert_connection_window_metrics(&mut metrics, 80, 20, 2.0);
+
+        assert_eq!(metrics["successful_cycles"], 80.0);
+        assert_eq!(metrics["drain_successful_cycles"], 20.0);
+        assert_eq!(metrics["connections_sec"], 40.0);
+    }
+
+    #[test]
     fn delivery_window_uses_adapter_observation_time() {
         let deadline = Instant::now();
         let before = deadline - Duration::from_nanos(1);
@@ -1359,6 +1843,123 @@ mod tests {
         );
     }
 
+    #[test]
+    fn outstanding_publish_guard_tracks_peak_and_completion() {
+        let tracker = Arc::new(OutstandingPublishes::default());
+        let first = tracker.acquire();
+        let second = tracker.acquire();
+        assert_eq!(tracker.current(), 2);
+        assert_eq!(tracker.peak(), 2);
+        drop(first);
+        drop(second);
+        assert_eq!(tracker.current(), 0);
+    }
+
+    #[test]
+    fn deadline_outstanding_uses_publish_completion_timestamps() {
+        let counters = Counters::default();
+        let deadline = Instant::now();
+        counters.attempts.store(2, Ordering::Relaxed);
+
+        counters.record_publish_result(deadline, deadline);
+        counters.record_publish_result(deadline + Duration::from_nanos(1), deadline);
+
+        assert_eq!(counters.publishes_outstanding_at_deadline(), 1);
+    }
+
+    #[tokio::test]
+    async fn outstanding_publish_guard_is_cancellation_safe() {
+        let tracker = Arc::new(OutstandingPublishes::default());
+        let task_tracker = Arc::clone(&tracker);
+        let task = tokio::spawn(async move {
+            let _guard = task_tracker.acquire();
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(tracker.current(), 1);
+        task.abort();
+        let _ = task.await;
+        assert_eq!(tracker.current(), 0);
+    }
+
+    #[test]
+    fn negative_ack_errors_are_classified_without_adapter_strings_in_metrics() {
+        assert!(publish_error_is_rejection(&anyhow::anyhow!(
+            "v5 puback returned non-success reason: QuotaExceeded"
+        )));
+        assert!(!publish_error_is_rejection(&anyhow::anyhow!(
+            "connection reset"
+        )));
+    }
+
+    #[test]
+    fn cargo_package_metadata_extracts_version_and_source() {
+        let metadata = json!({
+            "packages": [{
+                "name": "mqtt5",
+                "version": "0.38.0",
+                "source": "registry+example"
+            }]
+        });
+        assert_eq!(
+            package_metadata(&metadata, "mqtt5"),
+            Some(("0.38.0".into(), Some("registry+example".into())))
+        );
+        assert_eq!(package_metadata(&metadata, "missing"), None);
+    }
+
+    #[test]
+    fn provenance_workspace_root_is_independent_of_process_directory() {
+        let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("benchmarks manifest must have a parent");
+
+        assert_eq!(workspace_root(), expected);
+        assert_eq!(
+            file_sha256(&workspace_root().join("Cargo.lock")),
+            file_sha256(&expected.join("Cargo.lock"))
+        );
+        assert!(file_sha256(&workspace_root().join("Cargo.lock")).is_some());
+    }
+
+    #[test]
+    fn active_cycle_guard_decrements_on_drop() {
+        let active = AtomicU64::new(0);
+        {
+            let _guard = ActiveCycleGuard::new(&active);
+            assert_eq!(active.load(Ordering::Acquire), 1);
+        }
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn connection_results_have_stable_counters() {
+        let counters = ConnectionCounters::default();
+        let deadline = Instant::now();
+        counters.record_successful_cycle(deadline, deadline);
+        counters.record_successful_cycle(deadline + Duration::from_nanos(1), deadline);
+        for class in [
+            ConnectionFailureClass::ConnectTimeout,
+            ConnectionFailureClass::ConnectFailure,
+            ConnectionFailureClass::DisconnectTimeout,
+            ConnectionFailureClass::DisconnectFailure,
+        ] {
+            counters.record_failure(class, deadline, deadline);
+        }
+        assert_eq!(counters.successful_cycles.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.drain_successful_cycles.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            counters
+                .cycles_completed_by_deadline
+                .load(Ordering::Relaxed),
+            5
+        );
+        assert_eq!(counters.connect_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.connect_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.disconnect_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.disconnect_failures.load(Ordering::Relaxed), 1);
+    }
+
     #[tokio::test]
     async fn publisher_deadline_interrupts_rate_sleep_without_publishing() {
         let adapter = Arc::new(CountingAdapter {
@@ -1378,6 +1979,7 @@ mod tests {
             window: 1,
             receive_maximum: 1,
             keepalive_sec: 1,
+            operation_timeout_sec: 1,
         };
         let running = Arc::new(AtomicBool::new(true));
         let counters = Arc::new(Counters::default());
@@ -1390,6 +1992,7 @@ mod tests {
             Arc::new(AtomicU8::new(1)),
             Arc::new(AtomicU64::new(0)),
             Arc::clone(&counters),
+            Arc::new(OutstandingPublishes::default()),
             1,
             origin,
             Some(1),

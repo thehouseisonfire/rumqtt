@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import os
 import sys
 import tempfile
@@ -63,6 +64,10 @@ class BrokerFixtureTests(unittest.TestCase):
         self.assertIn("keyfile /certs/server.key", config)
         self.assertIn("listener 9001", config)
         self.assertIn("protocol websockets", config)
+        self.assertEqual(
+            broker_fixture.mosquitto_effective_transports(config),
+            ["tcp", "tls", "websocket"],
+        )
 
     def test_system_config_can_omit_websocket_listener(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -75,6 +80,10 @@ class BrokerFixtureTests(unittest.TestCase):
         self.assertIn("listener 1883 127.0.0.1", config)
         self.assertIn("listener 8883 127.0.0.1", config)
         self.assertNotIn("protocol websockets", config)
+        self.assertEqual(
+            broker_fixture.mosquitto_effective_transports(config),
+            ["tcp", "tls"],
+        )
 
     def test_system_config_binds_websocket_listener_to_loopback(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -103,6 +112,82 @@ class BrokerFixtureTests(unittest.TestCase):
         self.assertIn("127.0.0.1:19001:9001", command)
         self.assertIn("eclipse-mosquitto:2.0", command)
         self.assertTrue(any(value.endswith(":/mosquitto/config:ro") for value in command))
+
+    def test_persisted_mosquitto_config_is_exact_and_hashed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            paths = broker_fixture.BrokerPaths(
+                root=root,
+                config_dir=root,
+                config=root / "mosquitto.conf",
+                ca_cert=root / "ca.crt",
+                cert=root / "server.crt",
+                key=root / "server.key",
+            )
+            contents = b"persistence false\nallow_anonymous true\n"
+            paths.config.write_bytes(contents)
+            metadata = broker_fixture.persist_mosquitto_config(paths, root / "out")
+            persisted = root / "out" / metadata["path"]
+            self.assertEqual(persisted.read_bytes(), contents)
+            self.assertEqual(metadata["sha256"], hashlib.sha256(contents).hexdigest())
+
+    def test_normalized_broker_metadata_is_stable_and_secret_free(self):
+        metadata = broker_fixture.normalized_broker_metadata(
+            broker_kind="emqx",
+            metadata={
+                "backend": "docker-emqx",
+                "image": broker_fixture.PINNED_EMQX_IMAGE,
+                "image_digest": "emqx@sha256:test",
+                "environment_overrides": {"Z": "last", "A": "first"},
+            },
+            ports=broker_fixture.BrokerPorts(tcp=11883, tls=18883, websocket=19001),
+            selected_transports=["tcp"],
+            effective_transports=["tcp"],
+            config=None,
+        )
+        self.assertEqual(list(metadata["environment_overrides"]), ["A", "Z"])
+        self.assertEqual(metadata["listeners"][0]["port"], 11883)
+        self.assertEqual(metadata["authentication"]["mode"], "anonymous")
+        self.assertNotIn("key", str(metadata).lower())
+
+    def test_broker_metadata_reports_effective_mosquitto_listeners(self):
+        metadata = broker_fixture.normalized_broker_metadata(
+            broker_kind="mosquitto",
+            metadata={
+                "backend": "docker",
+                "image": broker_fixture.PINNED_MOSQUITTO_IMAGE,
+                "image_digest": "mosquitto@sha256:test",
+            },
+            ports=broker_fixture.BrokerPorts(tcp=11883, tls=18883, websocket=19001),
+            selected_transports=["tcp"],
+            effective_transports=["tcp", "tls", "websocket"],
+            config={"path": "broker-config/mosquitto.conf", "sha256": "abc"},
+        )
+        self.assertEqual(metadata["selected_transports"], ["tcp"])
+        self.assertEqual(
+            metadata["active_transports"],
+            ["tcp", "tls", "websocket"],
+        )
+        self.assertEqual(
+            [listener["transport"] for listener in metadata["listeners"]],
+            ["tcp", "tls", "websocket"],
+        )
+        self.assertEqual(
+            metadata["tls_certificate_mode"],
+            "generated-self-signed-private-ca",
+        )
+
+    def test_emqx_command_records_every_sorted_environment_override(self):
+        command = broker_fixture.build_emqx_docker_run_command(
+            container_name="emqx-test",
+            image=broker_fixture.PINNED_EMQX_IMAGE,
+            ports=broker_fixture.BrokerPorts(tcp=11883, tls=18883, websocket=19001),
+        )
+        assignments = [command[index + 1] for index, value in enumerate(command) if value == "-e"]
+        self.assertEqual(
+            assignments,
+            [f"{key}={value}" for key, value in sorted(broker_fixture.EMQX_ENV_OVERRIDES.items())],
+        )
 
     def test_select_scenarios_filters_transport_explicit_scenario_and_soak(self):
         scenarios = [

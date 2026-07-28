@@ -1,6 +1,10 @@
 ## [Unreleased]
 
 ### Added
+- Benchmarks: Harden matched `rumqttc-v5-next`/`mqtt5` comparisons with
+  deterministic router faults, bounded publish/connection accounting,
+  representative scenarios, source provenance, and reconstructable broker
+  fixture metadata.
 - Benchmarks: Add a controlled direct-library MQTT 5 comparison harness for
   workspace `rumqttc-v5-next` and exact-version `mqtt5`, with shared
   correctness accounting, paired schema-v2 reports, optional allocation

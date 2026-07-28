@@ -83,6 +83,11 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
   and contribute to loss/quality accounting, not timed throughput.
 - Matched latency ends at the same adapter observation timestamp, so channel
   backlog or later receiver-task scheduling is excluded from latency samples.
+- Common outstanding-publish metrics cover only harness work from shared
+  window acquisition through public adapter completion. They are not internal
+  admission, socket-write, or broker-ack queue depths.
+- The maintained matched catalog is representative rather than exhaustive and
+  is not dynamically expanded into a Cartesian matrix.
 - Soak scenarios intentionally run longer than normal throughput scenarios.
   Run them on controlled hardware and avoid mixing soak results with short
   throughput runs.
@@ -108,6 +113,10 @@ controlled. Treat casual laptop runs as smoke tests, not performance evidence.
 - Keep the generated `summary.json` and `raw/` directory with any claim. The
   summary records scenario hash, command, git refs, rustc, OS, CPU count, and
   quality status; raw files keep the full parsed benchmark payloads.
+- Matched reports also retain the workspace commit/dirty state, root lockfile
+  digest, resolved Cargo package versions/sources, optimization profile, and
+  sorted enabled features. Broker-validation evidence retains normalized
+  broker metadata plus the hashed effective Mosquitto configuration.
 - External comparisons are meaningful only when the recorded mqttv5-cli
   version, broker, transport, scenario, and machine are held fixed. Profiling
   runs perturb timing and must not be mixed into regression samples.

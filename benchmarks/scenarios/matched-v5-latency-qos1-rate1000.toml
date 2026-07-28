@@ -24,3 +24,5 @@ topic = "bench/matched/v5/latency/qos1"
 rate = 1000
 window = 100
 receive_maximum = 100
+keepalive_sec = 30
+operation_timeout_sec = 10

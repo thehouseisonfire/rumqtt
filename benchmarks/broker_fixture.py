@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -27,6 +28,9 @@ import runner  # noqa: E402
 
 PINNED_MOSQUITTO_IMAGE = "eclipse-mosquitto:2.0.22"
 PINNED_EMQX_IMAGE = "emqx/emqx:5.9.3"
+EMQX_ENV_OVERRIDES = {
+    "EMQX_DASHBOARD__LISTENERS__HTTP__BIND": "0",
+}
 CONTAINER_TCP_PORT = 1883
 CONTAINER_TLS_PORT = 8883
 CONTAINER_WEBSOCKET_PORT = 9001
@@ -193,6 +197,36 @@ def mosquitto_config(
     return "\n".join(lines)
 
 
+def mosquitto_effective_transports(config_text: str) -> list[str]:
+    listeners: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in config_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        directive, _, value = line.partition(" ")
+        if directive == "listener":
+            if current is not None:
+                listeners.append(current)
+            current = {"protocol": "mqtt", "tls": False}
+        elif current is not None and directive == "protocol":
+            current["protocol"] = value.strip()
+        elif current is not None and directive in {"cafile", "certfile", "keyfile"}:
+            current["tls"] = True
+    if current is not None:
+        listeners.append(current)
+
+    transports = set()
+    for listener in listeners:
+        if listener["protocol"] == "websockets":
+            transports.add("websocket")
+        elif listener["tls"]:
+            transports.add("tls")
+        else:
+            transports.add("tcp")
+    return sorted(transports)
+
+
 def create_self_signed_certificate(paths: BrokerPaths) -> None:
     if shutil.which("openssl") is None:
         raise FixtureError("openssl is required to generate the temporary Mosquitto TLS certificate")
@@ -265,6 +299,26 @@ def docker_image_from_env() -> str:
     return os.environ.get("RUMQTT_BENCH_MOSQUITTO_IMAGE", PINNED_MOSQUITTO_IMAGE)
 
 
+def image_digest(image: str) -> str | None:
+    inspect = run_process(
+        ["docker", "image", "inspect", image, "--format", "{{index .RepoDigests 0}}"],
+        timeout=10,
+    )
+    value = inspect.stdout.strip()
+    return value if inspect.returncode == 0 and value else None
+
+
+def persist_mosquitto_config(paths: BrokerPaths, output_dir: Path) -> dict[str, str]:
+    destination = output_dir / "broker-config" / "mosquitto.conf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    contents = paths.config.read_bytes()
+    destination.write_bytes(contents)
+    return {
+        "path": str(destination.relative_to(output_dir)),
+        "sha256": hashlib.sha256(contents).hexdigest(),
+    }
+
+
 def build_docker_run_command(
     *,
     container_name: str,
@@ -333,6 +387,7 @@ class DockerBroker:
             "backend": self.backend_name,
             "image": self.image,
             "container": self.container_name,
+            "image_digest": image_digest(self.image),
         }
 
 
@@ -349,12 +404,11 @@ class EmqxDockerBroker:
     def start(self) -> None:
         if shutil.which("docker") is None:
             raise FixtureError("docker is required for the EMQX fixture")
-        cmd = [
-            "docker", "run", "-d", "--name", self.container_name,
-            "-p", f"127.0.0.1:{self.ports.tcp}:1883",
-            "-e", "EMQX_DASHBOARD__LISTENERS__HTTP__BIND=0",
-            self.image,
-        ]
+        cmd = build_emqx_docker_run_command(
+            container_name=self.container_name,
+            image=self.image,
+            ports=self.ports,
+        )
         proc = run_process(cmd, cwd=REPO_ROOT)
         if proc.returncode != 0:
             raise FixtureError(f"failed to start EMQX Docker container: {proc.stderr.strip()}")
@@ -374,16 +428,80 @@ class EmqxDockerBroker:
         run_process(["docker", "rm", "-f", self.container_name], timeout=30)
 
     def metadata(self) -> dict[str, Any]:
-        inspect = run_process(
-            ["docker", "image", "inspect", self.image, "--format", "{{index .RepoDigests 0}}"],
-            timeout=10,
-        )
         return {
             "backend": self.backend_name,
             "image": self.image,
-            "image_digest": inspect.stdout.strip() if inspect.returncode == 0 else None,
+            "image_digest": image_digest(self.image),
             "container": self.container_name,
+            "environment_overrides": dict(sorted(EMQX_ENV_OVERRIDES.items())),
         }
+
+
+def build_emqx_docker_run_command(
+    *, container_name: str, image: str, ports: BrokerPorts
+) -> list[str]:
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "-p",
+        f"127.0.0.1:{ports.tcp}:1883",
+    ]
+    for key, value in sorted(EMQX_ENV_OVERRIDES.items()):
+        cmd.extend(["-e", f"{key}={value}"])
+    cmd.append(image)
+    return cmd
+
+
+def normalized_broker_metadata(
+    *,
+    broker_kind: str,
+    metadata: dict[str, Any],
+    ports: BrokerPorts,
+    selected_transports: list[str],
+    effective_transports: list[str],
+    config: dict[str, str] | None,
+) -> dict[str, Any]:
+    container_ports = {
+        "tcp": 1883,
+        "tls": 8883,
+        "websocket": 9001,
+    }
+    listeners = [
+        {
+            "transport": transport,
+            "host": "127.0.0.1",
+            "port": ports.as_dict()[transport],
+            "container_port": (
+                container_ports[transport] if metadata.get("image") is not None else None
+            ),
+        }
+        for transport in sorted(effective_transports)
+    ]
+    return {
+        "kind": broker_kind,
+        "backend": metadata["backend"],
+        "image": {
+            "tag": metadata.get("image"),
+            "digest": metadata.get("image_digest"),
+        },
+        "selected_transports": sorted(selected_transports),
+        "active_transports": sorted(effective_transports),
+        "listeners": listeners,
+        "persistence": False,
+        "authentication": {"mode": "anonymous", "allow_anonymous": True},
+        "tls_certificate_mode": (
+            "generated-self-signed-private-ca"
+            if broker_kind == "mosquitto" and "tls" in effective_transports
+            else "disabled"
+        ),
+        "configuration": config,
+        "environment_overrides": dict(
+            sorted(metadata.get("environment_overrides", {}).items())
+        ),
+    }
 
 
 def probe_system_mosquitto_websockets(mosquitto_bin: str) -> tuple[bool, str]:
@@ -788,7 +906,8 @@ def command_validate(args: argparse.Namespace) -> int:
         raise FixtureError("no scenarios selected")
 
     needs_websocket = any(scenario.transport == "websocket" for scenario in selected)
-    active_transports = sorted({scenario.transport or "tcp" for scenario in selected})
+    selected_transports = sorted({scenario.transport or "tcp" for scenario in selected})
+    effective_transports = list(selected_transports)
     if args.backend == "synthetic":
         validate_synthetic_scenarios(selected)
     if args.broker == "emqx" and (
@@ -810,6 +929,7 @@ def command_validate(args: argparse.Namespace) -> int:
     started_at = utc_timestamp()
     scenario_results: list[dict[str, Any]] = []
     broker: DockerBroker | EmqxDockerBroker | SystemBroker | SyntheticBroker | None = None
+    persisted_config: dict[str, str] | None = None
     summary_path = output_dir / SUMMARY_FILENAME
     ports = allocate_ports()
     urls = broker_urls(ports)
@@ -830,7 +950,9 @@ def command_validate(args: argparse.Namespace) -> int:
                 if args.backend == "docker"
                 else build_system_config(ports, temp_root, include_websocket=needs_websocket)
             )
+            effective_transports = mosquitto_effective_transports(config)
             paths = prepare_broker_paths(temp_root, config_text=config)
+            persisted_config = persist_mosquitto_config(paths, output_dir)
             shutil.copyfile(paths.ca_cert, persistent_ca_cert)
             broker = make_broker(
                 backend=args.backend,
@@ -838,7 +960,7 @@ def command_validate(args: argparse.Namespace) -> int:
                 paths=paths,
                 mosquitto_bin=args.mosquitto_bin,
                 image=docker_image_from_env(),
-                active_transports=active_transports,
+                active_transports=selected_transports,
             )
         broker.start()
         for scenario in selected:
@@ -878,6 +1000,18 @@ def command_validate(args: argparse.Namespace) -> int:
         "synthetic_router_log": metadata.get("synthetic_router_log"),
         "container": metadata.get("container"),
         "image_digest": metadata.get("image_digest"),
+        "broker": normalized_broker_metadata(
+            broker_kind=(
+                "synthetic"
+                if args.backend == "synthetic"
+                else "emqx" if args.broker == "emqx" else "mosquitto"
+            ),
+            metadata=metadata,
+            ports=ports,
+            selected_transports=selected_transports,
+            effective_transports=effective_transports,
+            config=persisted_config,
+        ),
         "ports": ports.as_dict(),
         "broker_urls": urls,
         "ca_cert": str(output_dir / "ca.crt") if (output_dir / "ca.crt").exists() else None,

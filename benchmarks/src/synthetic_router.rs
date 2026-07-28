@@ -10,6 +10,29 @@ use tokio::sync::{Mutex, mpsc};
 const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultAction {
+    DropDelivery,
+    DuplicateDelivery,
+    DelayDelivery,
+    RejectPublish,
+    DisconnectPublisher,
+    WithholdPuback,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaultConfig {
+    pub action: FaultAction,
+    pub topic: String,
+    pub occurrence: u64,
+    pub delay: std::time::Duration,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RouterConfig {
+    pub fault: Option<FaultConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Protocol {
     V4,
     V5,
@@ -28,14 +51,18 @@ struct Router {
     subscriptions: Mutex<Vec<Subscription>>,
     next_connection_id: AtomicU64,
     next_packet_id: AtomicU16,
+    fault: Option<FaultConfig>,
+    fault_matches: AtomicU64,
 }
 
 impl Router {
-    fn new() -> Self {
+    fn new(config: RouterConfig) -> Self {
         Self {
             subscriptions: Mutex::new(Vec::new()),
             next_connection_id: AtomicU64::new(1),
             next_packet_id: AtomicU16::new(1),
+            fault: config.fault,
+            fault_matches: AtomicU64::new(0),
         }
     }
 
@@ -47,10 +74,31 @@ impl Router {
             }
         }
     }
+
+    fn trigger(&self, action: FaultAction, topic: &str) -> bool {
+        let Some(fault) = &self.fault else {
+            return false;
+        };
+        if fault.action != action || fault.topic != topic {
+            return false;
+        }
+        self.fault_matches.fetch_add(1, Ordering::Relaxed) + 1 == fault.occurrence
+    }
 }
 
 pub async fn run(listener: TcpListener) -> anyhow::Result<()> {
-    let router = Arc::new(Router::new());
+    run_with_config(listener, RouterConfig::default()).await
+}
+
+pub async fn run_with_config(listener: TcpListener, config: RouterConfig) -> anyhow::Result<()> {
+    if config
+        .fault
+        .as_ref()
+        .is_some_and(|fault| fault.occurrence == 0)
+    {
+        bail!("fault occurrence must be greater than zero");
+    }
+    let router = Arc::new(Router::new(config));
     loop {
         let (stream, _) = listener.accept().await?;
         let router = Arc::clone(&router);
@@ -97,7 +145,11 @@ async fn handle_connection(stream: TcpStream, router: Arc<Router>) -> anyhow::Re
                 Err(error) => return Err(error),
             };
             match frame.packet_type() {
-                3 => handle_publish(&router, protocol, &frame, &sender).await?,
+                3 => {
+                    if handle_publish(&router, protocol, &frame, &sender).await? {
+                        break;
+                    }
+                }
                 4 => {}
                 8 => handle_subscribe(&router, connection_id, protocol, &frame, &sender).await?,
                 12 => sender
@@ -173,12 +225,24 @@ async fn handle_publish(
     protocol: Protocol,
     frame: &Frame,
     sender: &mpsc::UnboundedSender<Vec<u8>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let incoming_qos = (frame.first_byte >> 1) & 0x03;
     if incoming_qos > 1 {
         bail!("synthetic router supports only QoS 0 and QoS 1");
     }
     let publish = parse_publish(protocol, incoming_qos, &frame.body)?;
+    if incoming_qos == 1 && router.trigger(FaultAction::RejectPublish, &publish.topic) {
+        let packet_id = publish
+            .packet_id
+            .expect("QoS 1 publish has a packet identifier");
+        sender
+            .send(rejection_puback(protocol, packet_id)?)
+            .context("connection writer stopped")?;
+        return Ok(false);
+    }
+    if router.trigger(FaultAction::DisconnectPublisher, &publish.topic) {
+        return Ok(true);
+    }
     let subscriptions = router.subscriptions.lock().await.clone();
     for subscription in subscriptions {
         if !rumqttc_v4::mqttbytes::matches(&publish.topic, &subscription.filter) {
@@ -195,15 +259,46 @@ async fn handle_publish(
             &publish.properties,
             &publish.payload,
         );
+        if router.trigger(FaultAction::DropDelivery, &publish.topic) {
+            continue;
+        }
+        if router.trigger(FaultAction::DuplicateDelivery, &publish.topic) {
+            let _ = subscription.sender.send(outgoing.clone());
+            let _ = subscription.sender.send(outgoing);
+            continue;
+        }
+        if router.trigger(FaultAction::DelayDelivery, &publish.topic) {
+            let delay = router
+                .fault
+                .as_ref()
+                .map_or(std::time::Duration::ZERO, |fault| fault.delay);
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let _ = subscription.sender.send(outgoing);
+            });
+            continue;
+        }
         let _ = subscription.sender.send(outgoing);
     }
 
-    if let Some(packet_id) = publish.packet_id {
+    if let Some(packet_id) = publish.packet_id
+        && !router.trigger(FaultAction::WithholdPuback, &publish.topic)
+    {
         sender
             .send(frame_with_body(0x40, &packet_id.to_be_bytes()))
             .context("connection writer stopped")?;
     }
-    Ok(())
+    Ok(false)
+}
+
+fn rejection_puback(protocol: Protocol, packet_id: u16) -> anyhow::Result<Vec<u8>> {
+    if protocol != Protocol::V5 {
+        bail!("RejectPublish fault requires MQTT 5; MQTT 3.1.1 has no negative PUBACK");
+    }
+    Ok(frame_with_body(
+        0x40,
+        &[packet_id.to_be_bytes().as_slice(), &[0x97, 0x00]].concat(),
+    ))
 }
 
 struct Frame {
@@ -435,5 +530,86 @@ mod tests {
             encode_publish(Protocol::V5, false, 1, Some(9), "a", &[], b"x"),
             [0x32, 7, 0, 1, b'a', 0, 9, 0, b'x']
         );
+    }
+
+    #[test]
+    fn fault_trigger_is_deterministic_and_one_shot() {
+        let router = Router::new(RouterConfig {
+            fault: Some(FaultConfig {
+                action: FaultAction::DropDelivery,
+                topic: "bench/fault".into(),
+                occurrence: 2,
+                delay: std::time::Duration::ZERO,
+            }),
+        });
+        assert!(!router.trigger(FaultAction::DropDelivery, "other"));
+        assert!(!router.trigger(FaultAction::DropDelivery, "bench/fault"));
+        assert!(router.trigger(FaultAction::DropDelivery, "bench/fault"));
+        assert!(!router.trigger(FaultAction::DropDelivery, "bench/fault"));
+    }
+
+    #[test]
+    fn rejection_puback_is_mqtt5_only_and_well_formed() {
+        assert_eq!(
+            rejection_puback(Protocol::V5, 7).unwrap(),
+            [0x40, 0x04, 0x00, 0x07, 0x97, 0x00]
+        );
+        let error = rejection_puback(Protocol::V4, 7).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("MQTT 3.1.1 has no negative PUBACK")
+        );
+    }
+
+    #[tokio::test]
+    async fn v4_rejection_fault_closes_without_emitting_a_malformed_puback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = tokio::spawn(run_with_config(
+            listener,
+            RouterConfig {
+                fault: Some(FaultConfig {
+                    action: FaultAction::RejectPublish,
+                    topic: "bench/v4/reject".into(),
+                    occurrence: 1,
+                    delay: std::time::Duration::ZERO,
+                }),
+            },
+        ));
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(&[
+                0x10, 0x12, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02, 0x00, 0x0a, 0x00, 0x06,
+                b'c', b'l', b'i', b'e', b'n', b't',
+            ])
+            .await
+            .unwrap();
+        let mut connack = [0; 4];
+        stream.read_exact(&mut connack).await.unwrap();
+        assert_eq!(connack, [0x20, 0x02, 0x00, 0x00]);
+
+        let topic = b"bench/v4/reject";
+        let mut publish = vec![0x32, 20, 0, topic.len() as u8];
+        publish.extend_from_slice(topic);
+        publish.extend_from_slice(&[0, 7, b'x']);
+        stream.write_all(&publish).await.unwrap();
+
+        let mut response = [0; 6];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            stream.read(&mut response),
+        )
+        .await
+        .expect("router must terminate the unsupported v4 fault")
+        .unwrap();
+        assert_eq!(
+            read,
+            0,
+            "router emitted unexpected bytes: {:?}",
+            &response[..read]
+        );
+        router.abort();
+        let _ = router.await;
     }
 }

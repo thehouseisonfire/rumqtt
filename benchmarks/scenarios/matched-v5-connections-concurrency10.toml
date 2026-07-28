@@ -1,7 +1,7 @@
-name = "matched-v5-connections-concurrency1"
+name = "matched-v5-connections-concurrency10"
 group = "matched"
 command = "connections"
-description = "Direct-library serial MQTT 5 CONNECT/CONNACK/DISCONNECT churn."
+description = "Matched MQTT 5 connect/disconnect churn with ten concurrent cycles."
 primary_metric = "connections_sec"
 higher_is_better = true
 requires_broker = true
@@ -16,7 +16,7 @@ max_relative_ci_width_pct = 10.0
 
 [args]
 duration_sec = 10
-concurrency = 1
+concurrency = 10
 keepalive_sec = 30
 connect_timeout_sec = 10
 disconnect_timeout_sec = 5
