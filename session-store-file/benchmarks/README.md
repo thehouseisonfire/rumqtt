@@ -12,7 +12,7 @@ cargo run --release --manifest-path session-store-file/Cargo.toml \
 
 Protocol-neutral envelope, filesystem, coordination, lifecycle, maintenance,
 and backpressure benchmarks live with
-[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-storage).
+[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-store).
 The repository-level Python runner continues to route the retained
 `persistence-*` scenarios to this package.
 

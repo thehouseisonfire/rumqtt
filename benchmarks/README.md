@@ -38,7 +38,7 @@ Supported workload groups:
 MQTT-specific file-backed persistence workloads live in the independent
 [`session-store-file` benchmark package](../session-store-file/benchmarks/README.md).
 Protocol-neutral storage benchmarks live in the standalone
-[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-storage)
+[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-store)
 project.
 
 ## Matched Library Comparison

@@ -10,7 +10,7 @@ the `SessionStore` APIs owned by `rumqttc-v4-next` and `rumqttc-v5-next`.
 - [`benchmarks`](benchmarks/README.md) contains persistence-specific workloads.
 
 The adapter consumes the independently maintained
-[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-storage)
+[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-store)
 crate from crates.io.
 
 From the repository root, run:

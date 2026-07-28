@@ -92,7 +92,7 @@ live in the independent
 [`session-store-file` workspace](./session-store-file/README.md) and do not add
 filesystem dependencies to the clients.
 Its protocol-neutral storage engine is maintained separately as
-[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-storage).
+[`atomic-blob-store`](https://github.com/thehouseisonfire/atomic-blob-store).
 
 ## Guides and ecosystem
 
