@@ -3,12 +3,15 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: >
-          bash -c '
-          set -euo pipefail;
-          cargo fmt --all;
-          cargo fmt --manifest-path session-store-file/Cargo.toml --all
-          '
+        entry: cargo fmt --all
+        language: system
+        pass_filenames: false
+        always_run: false
+        require_serial: true
+
+      - id: session-store-file-fmt
+        name: session-store-file fmt
+        entry: cargo fmt --manifest-path session-store-file/Cargo.toml --all
         language: system
         pass_filenames: false
         always_run: false
@@ -21,21 +24,42 @@ repos:
         files: '(^|/).*\.md$|^scripts/check-markdown-links\.py$'
         pass_filenames: false
 
+      - id: session-store-file-markdown-links
+        name: session-store-file markdown links
+        entry: python3 scripts/check-markdown-links.py
+        language: system
+        files: 'session-store-file/.*\.md$|^scripts/check-markdown-links\.py$'
+        pass_filenames: false
+
       - id: clippy
         name: clippy
-        entry: |
+        entry: >
           bash -c '
           set -euo pipefail;
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
 
-          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next;
+          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next
+          '
+        language: system
+        pass_filenames: false
+        always_run: false
+        require_serial: true
 
-          (
-            cd session-store-file;
+      - id: session-store-file-clippy
+        name: session-store-file clippy
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
+
+          cd session-store-file;
+
+          RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery" \
             cargo clippy --fix --allow-dirty --all-targets --all-features -p rumqttc-session-store-file-next;
-            RUSTFLAGS="-D warnings" cargo clippy --fix --allow-dirty --all-targets -p session-store-file-benchmarks
-          )
+
+          RUSTFLAGS="-D warnings" \
+            cargo clippy --fix --allow-dirty --all-targets -p session-store-file-benchmarks
           '
         language: system
         pass_filenames: false
@@ -142,6 +166,61 @@ repos:
         require_serial: true
         stages: [manual]
 
+      - id: session-store-file-clippy-feature-powerset
+        name: session-store-file clippy feature powerset
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
+          export RUSTFLAGS="
+            -D warnings
+            -W clippy::pedantic
+            -W clippy::nursery
+            -D clippy::dbg_macro
+            -D clippy::todo
+            -D clippy::exit
+            -D clippy::clone_on_ref_ptr
+            -D clippy::empty_drop
+            -D clippy::let_underscore_must_use
+            -D clippy::unused_result_ok
+            -D clippy::undocumented_unsafe_blocks
+            -D clippy::unwrap_in_result
+            -D clippy::panic_in_result_fn
+            -D clippy::mem_forget
+            -D clippy::rest_pat_in_fully_bound_structs
+            -D clippy::string_slice
+            -D clippy::iter_over_hash_type
+            -D clippy::host_endian_bytes
+            -D clippy::little_endian_bytes
+            -D clippy::mixed_read_write_in_expression
+            -D clippy::suspicious_xor_used_as_pow
+            -D clippy::fn_to_numeric_cast_any
+            -D clippy::await_holding_lock
+            -D clippy::await_holding_refcell_ref
+            -D clippy::future_not_send
+            -D clippy::large_futures
+            -D clippy::large_stack_frames
+            -D clippy::large_enum_variant
+            -D clippy::mutex_atomic
+            -D clippy::rc_mutex
+            -D clippy::multiple_crate_versions
+          ";
+
+          cargo hack clippy
+          --fix
+          --allow-dirty
+          --all-targets
+          --feature-powerset
+          --exclude-all-features
+          --manifest-path session-store-file/Cargo.toml
+          -p rumqttc-session-store-file-next
+          '
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [manual]
+
       - id: tests
         name: tests
         entry: >
@@ -156,7 +235,20 @@ repos:
           --optional-deps url
           test
           -p rumqttc-v4-next
-          -p rumqttc-v5-next;
+          -p rumqttc-v5-next
+          '
+        language: system
+        pass_filenames: false
+        always_run: false
+        require_serial: true
+
+      - id: session-store-file-tests
+        name: session-store-file tests
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
+          export RUSTFLAGS="-D warnings";
 
           cargo test
           --manifest-path session-store-file/Cargo.toml
