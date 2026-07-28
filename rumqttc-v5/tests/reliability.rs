@@ -378,6 +378,196 @@ async fn automatic_protocol_responses_delay_keepalive_ping() {
 }
 
 #[tokio::test]
+async fn same_task_bounded_forwarding_self_blocks_after_buffered_burst() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("same-task-bounded-forwarding", ("127.0.0.1", port));
+    options.set_keep_alive(0).set_read_batch_size(8);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(3).build();
+    let broker = task::spawn(async move {
+        TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await
+    });
+
+    let connack = time::timeout(SETUP_TIMEOUT, eventloop.poll())
+        .await
+        .expect("connection setup timed out")
+        .expect("connection setup failed");
+    assert_matches!(connack, Event::Incoming(Packet::ConnAck(_)));
+
+    let mut broker = broker.await.expect("broker task panicked");
+    broker.publish_burst(8, QoS::AtMostOnce).await;
+
+    for forwarded in 1..=3 {
+        let event = time::timeout(PHASE_TIMEOUT, eventloop.poll())
+            .await
+            .expect("buffered publish poll timed out")
+            .expect("buffered publish poll failed");
+        assert_matches!(event, Event::Incoming(Packet::Publish(_)));
+        client
+            .publish(
+                "forwarded/topic",
+                [forwarded],
+                PublishOptions::new(QoS::AtMostOnce),
+            )
+            .await
+            .expect("request channel should still have capacity");
+    }
+
+    let event = time::timeout(PHASE_TIMEOUT, eventloop.poll())
+        .await
+        .expect("fourth buffered publish poll timed out")
+        .expect("fourth buffered publish poll failed");
+    assert_matches!(event, Event::Incoming(Packet::Publish(_)));
+    assert!(
+        time::timeout(
+            Duration::from_millis(100),
+            client.publish("forwarded/topic", [4], PublishOptions::new(QoS::AtMostOnce),),
+        )
+        .await
+        .is_err(),
+        "same-task publish should wait because only the suspended event loop can free capacity"
+    );
+
+    let diagnostics = eventloop.diagnostics();
+    assert_eq!(diagnostics.queues.requests_rx_len, 3);
+    assert_eq!(diagnostics.queues.queued_len, 0);
+    assert_eq!(diagnostics.config.effective_read_batch_size, 8);
+    assert!(!eventloop.state.events.is_empty());
+}
+
+#[tokio::test]
+async fn default_capacity_qos1_burst_is_acked_before_same_task_forwarding_blocks() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("default-qos1-forwarding", ("127.0.0.1", port));
+    options.set_keep_alive(0);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).build();
+    let broker = task::spawn(async move {
+        TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await
+    });
+
+    time::timeout(SETUP_TIMEOUT, eventloop.poll())
+        .await
+        .expect("connection setup timed out")
+        .expect("connection setup failed");
+    assert_eq!(
+        eventloop.diagnostics().config.effective_read_batch_size,
+        128
+    );
+
+    let mut broker = broker.await.expect("broker task panicked");
+    broker.publish_burst(12, QoS::AtLeastOnce).await;
+
+    let mut event = time::timeout(PHASE_TIMEOUT, eventloop.poll())
+        .await
+        .expect("initial burst poll timed out")
+        .expect("initial burst poll failed");
+
+    for expected_pkid in 1..=12 {
+        let ack = time::timeout(PHASE_TIMEOUT, broker.tick())
+            .await
+            .expect("automatic PUBACK timed out");
+        assert_matches!(
+            ack,
+            Event::Incoming(Packet::PubAck(PubAck { pkid, .. })) if pkid == expected_pkid
+        );
+    }
+
+    let mut forwarded = 0;
+    loop {
+        if matches!(event, Event::Incoming(Packet::Publish(_))) {
+            forwarded += 1;
+            let publish = client.publish(
+                "forwarded/topic",
+                [forwarded],
+                PublishOptions::new(QoS::AtLeastOnce),
+            );
+            if forwarded == 11 {
+                assert!(
+                    time::timeout(Duration::from_millis(100), publish)
+                        .await
+                        .is_err(),
+                    "eleventh forward should wait for default channel capacity"
+                );
+                break;
+            }
+            publish.await.expect("forward should fit before capacity");
+        }
+
+        event = time::timeout(PHASE_TIMEOUT, eventloop.poll())
+            .await
+            .expect("buffered event poll timed out")
+            .expect("buffered event poll failed");
+    }
+
+    let diagnostics = eventloop.diagnostics();
+    assert_eq!(diagnostics.queues.requests_rx_len, 10);
+    assert_eq!(diagnostics.queues.queued_len, 0);
+    assert_eq!(diagnostics.config.effective_read_batch_size, 16);
+    assert!(!eventloop.state.events.is_empty());
+}
+
+#[tokio::test]
+async fn try_publish_keeps_same_task_forwarding_pollable_under_buffered_burst() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("same-task-try-forwarding", ("127.0.0.1", port));
+    options.set_keep_alive(0).set_read_batch_size(8);
+
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(3).build();
+    let broker = task::spawn(async move {
+        TestBroker::from_listener(
+            listener,
+            ConnectBehavior::Accept {
+                session_saved: false,
+            },
+        )
+        .await
+    });
+
+    time::timeout(SETUP_TIMEOUT, eventloop.poll())
+        .await
+        .expect("connection setup timed out")
+        .expect("connection setup failed");
+
+    let mut broker = broker.await.expect("broker task panicked");
+    broker.publish_burst(8, QoS::AtMostOnce).await;
+
+    let mut accepted = 0;
+    let mut dropped = 0;
+    for payload in 1..=8 {
+        let event = time::timeout(PHASE_TIMEOUT, eventloop.poll())
+            .await
+            .expect("buffered publish poll timed out")
+            .expect("buffered publish poll failed");
+        assert_matches!(event, Event::Incoming(Packet::Publish(_)));
+
+        match client.try_publish(
+            "forwarded/topic",
+            [payload],
+            PublishOptions::new(QoS::AtMostOnce),
+        ) {
+            Ok(()) => accepted += 1,
+            Err(ClientError::RequestChannelFull(_)) => dropped += 1,
+            Err(error) => panic!("unexpected try_publish error: {error:?}"),
+        }
+    }
+
+    assert_eq!((accepted, dropped), (3, 5));
+}
+
+#[tokio::test]
 async fn detects_halfopen_connections_in_the_second_ping_request() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));

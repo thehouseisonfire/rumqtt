@@ -277,6 +277,20 @@ impl Broker {
         });
     }
 
+    /// Writes a fixed publish burst in one transport operation.
+    pub async fn publish_burst(&mut self, count: u16, qos: QoS) {
+        let mut bytes = BytesMut::new();
+        for pkid in 1..=count {
+            let mut publish = Publish::new("hello/world", qos, vec![1, 2, 3, pkid as u8], None);
+            if qos != QoS::AtMostOnce {
+                publish.pkid = pkid;
+            }
+            publish.write(&mut bytes).unwrap();
+        }
+
+        self.framed.socket.write_all(&bytes).await.unwrap();
+    }
+
     /// Selects between outgoing and incoming packets.
     ///
     /// # Panics
