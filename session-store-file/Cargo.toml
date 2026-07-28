@@ -4,10 +4,10 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.85"
 repository = "https://github.com/thehouseisonfire/rumqtt"
 license = "Apache-2.0"
-authors = ["tekjar <raviteja@bytebeam.io>"]
+authors = ["thehouseisonfire <lefttolive@proton.me>"]
 
 [profile.dev]
 debug = false

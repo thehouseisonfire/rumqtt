@@ -1,14 +1,6 @@
 ## [Unreleased]
 
 ### Added
-- Benchmarks: Harden matched `rumqttc-v5-next`/`mqtt5` comparisons with
-  deterministic router faults, bounded publish/connection accounting,
-  representative scenarios, source provenance, and reconstructable broker
-  fixture metadata.
-- Benchmarks: Add a controlled direct-library MQTT 5 comparison harness for
-  workspace `rumqttc-v5-next` and exact-version `mqtt5`, with shared
-  correctness accounting, paired schema-v2 reports, optional allocation
-  metrics, private-CA TLS support, and pinned Mosquitto/EMQX fixtures.
 - `rumqttc` v4/v5: Add first-party SOCKS5 proxy support, including proxy-side
   DNS resolution and RFC 1929 username/password authentication. Add independent
   `http-proxy` and `socks-proxy` features while retaining `proxy` as an umbrella
@@ -17,14 +9,12 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc`: Lower the published client crates' MSRV from Rust `1.89` to `1.85`.
 - Documentation: Explain how to assign distinct Cargo dependency names when
   one crate uses both `rumqttc-v4-next` and `rumqttc-v5-next`.
 - Documentation: Expand the upstream migration guidance for WebSocket broker
   targets, `wss://` construction, broker/transport mismatch errors, and
   explicit TLS backend selection in dual-backend dependency graphs.
-- Storage: Extract `atomic-blob-store` and its protocol-neutral benchmarks,
-  tests, documentation, and release tooling into its standalone repository;
-  the file-session adapter now consumes version 0.1.0 from crates.io.
 - `rumqttc` v4/v5: Consolidate the optional file-backed session adapters into
   `rumqttc-session-store-file-next`, with independent `v4` and `v5` features.
 - `rumqttc` v4/v5 (Breaking Change): Replace public-field `Proxy`, `ProxyType`,
@@ -43,9 +33,6 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
-- Benchmarks: Report the pinned `mqtt5 0.38.0` comparison version accurately
-  and wait for the pinned EMQX fixture's MQTT listener to finish starting before
-  launching measured clients.
 - `rumqttc` v4/v5: Reject malformed public codec packet states before
   serialization, including empty subscribe/unsubscribe and acknowledgement
   payloads, zero SUBACK/UNSUBACK packet identifiers, and failed CONNACK packets
@@ -57,9 +44,6 @@
   from fixed-header/filter helpers, WebSocket subprotocol setup, and TLS backend
   dispatch; invalid TLS backend combinations now return
   `UnsupportedBackendConfiguration`.
-- Benchmarks: Classify matched timed throughput and latency by adapter-observed
-  delivery timestamps, preserve complete schema-v2 environment provenance in
-  comparison summaries, and support bracketed IPv6 broker URLs.
 ### Security
 
 ---

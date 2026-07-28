@@ -72,7 +72,6 @@ scram = { package = "scram-rs", version = "0.22.0", default-features = false, fe
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
-wincode = { version = "0.6.0", features = ["derive"] }
 color-backtrace = "0.7.2"
 matches = "0.1"
 pretty_assertions = "1"
@@ -80,10 +79,11 @@ pretty_env_logger = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-tungstenite = "0.30"
-rcgen = "0.14"
-criterion = "0.8.2"
+rcgen = "=0.14.5"
+criterion = "0.7"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry"] }
 turmoil = "0.7.2"
+wincode = { version = "0.4.9", features = ["derive"] }
 
 [[example]]
 name = "async_auth_oauth"
@@ -123,6 +123,10 @@ path = "examples/subscription_ids.rs"
 name = "sync_auth_scram"
 path = "examples/sync_auth_scram.rs"
 required-features = ["auth-scram"]
+
+[[example]]
+name = "serde_v5"
+path = "examples/serde.rs"
 
 [[example]]
 name = "syncpubsub_v5"

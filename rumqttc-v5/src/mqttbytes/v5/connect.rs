@@ -698,7 +698,7 @@ impl ConnectAuth {
         }
     }
 
-    const fn len(&self) -> usize {
+    fn len(&self) -> usize {
         match self {
             Self::None => 0,
             Self::Username { username } => 2 + username.len(),

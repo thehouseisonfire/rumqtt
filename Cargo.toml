@@ -1,21 +1,21 @@
 [workspace]
 members = [
-  "mqttbytes-core",
-  "rumqttc-core",
-  "rumqttc-next",
-  "rumqttc-v4",
-  "rumqttc-v5",
-  "benchmarks",
+    "mqttbytes-core",
+    "rumqttc-core",
+    "rumqttc-next",
+    "rumqttc-v4",
+    "rumqttc-v5",
+    "benchmarks",
 ]
 exclude = ["session-store-file"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.85"
 repository = "https://github.com/thehouseisonfire/rumqtt"
 license = "Apache-2.0"
-authors = ["tekjar <raviteja@bytebeam.io>"]
+authors = ["thehouseisonfire <lefttolive@proton.me>", "tekjar <raviteja@bytebeam.io>"]
 
 [profile.dev]
 # producing debug info in builds takes up a lot of space on runner, and we

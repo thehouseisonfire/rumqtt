@@ -3,7 +3,8 @@
     reason = "SchemaRead derive from wincode emits mem::forget internally"
 )]
 
-use rumqttc::{Client, Event, Incoming, MqttOptions, PublishOptions, QoS};
+use rumqttc::mqttbytes::QoS;
+use rumqttc::{Client, Event, Incoming, MqttOptions, PublishOptions};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use wincode::{SchemaRead, SchemaWrite};
@@ -27,7 +28,7 @@ impl TryFrom<&[u8]> for Message {
 }
 
 fn main() {
-    let mqtt_opts = MqttOptions::new("test-1", "localhost");
+    let mqtt_opts = MqttOptions::new("test-1", ("localhost", 1884));
 
     let (client, mut connection) = Client::builder(mqtt_opts).capacity(10).build();
     client.subscribe("hello/rumqtt", QoS::AtMostOnce).unwrap();

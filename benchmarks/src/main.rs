@@ -1,7 +1,6 @@
 #![expect(clippy::cast_precision_loss)]
 #![expect(clippy::too_many_lines)]
 #![expect(clippy::too_many_arguments)]
-#![expect(clippy::manual_is_multiple_of)]
 
 use anyhow::{Context, bail};
 use bytes::{Bytes, BytesMut};

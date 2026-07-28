@@ -2164,10 +2164,10 @@ async fn mqtt_connect_inner(
                     return Err(err.into());
                 }
 
-                if let Some(props) = &connack.properties
-                    && let Some(keep_alive) = props.server_keep_alive
-                {
-                    options.keep_alive = Duration::from_secs(u64::from(keep_alive));
+                if let Some(props) = &connack.properties {
+                    if let Some(keep_alive) = props.server_keep_alive {
+                        options.keep_alive = Duration::from_secs(u64::from(keep_alive));
+                    }
                 }
 
                 if let Some(props) = &connack.properties {
@@ -2222,13 +2222,14 @@ fn validate_connack_response_information(
     // defaults to 0), the Server MUST NOT return Response Information in the
     // CONNACK.
     let request_response_info = options.request_response_info().unwrap_or(0);
-    if request_response_info == 0
-        && let Some(props) = &connack.properties
-        && props.response_information.is_some()
-    {
-        return Err(StateError::Deserialization(
-            super::mqttbytes::Error::ProtocolError,
-        ));
+    if request_response_info == 0 {
+        if let Some(props) = &connack.properties {
+            if props.response_information.is_some() {
+                return Err(StateError::Deserialization(
+                    super::mqttbytes::Error::ProtocolError,
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -2245,15 +2246,16 @@ fn validate_connack_session_present_for_reason_code(connack: &ConnAck) -> Result
 }
 
 async fn send_protocol_error_disconnect(network: &mut Network) {
-    if network
+    let write_succeeded = network
         .write(Packet::Disconnect(Disconnect::new(
             DisconnectReasonCode::ProtocolError,
         )))
         .await
-        .is_ok()
-        && let Err(error) = network.flush().await
-    {
-        warn!("ignoring protocol error disconnect flush failure: {error:?}");
+        .is_ok();
+    if write_succeeded {
+        if let Err(error) = network.flush().await {
+            warn!("ignoring protocol error disconnect flush failure: {error:?}");
+        }
     }
 }
 

@@ -18,12 +18,12 @@ impl SubAck {
         Self { pkid, return_codes }
     }
 
-    const fn len(&self) -> usize {
+    fn len(&self) -> usize {
         2 + self.return_codes.len()
     }
 
     #[must_use]
-    pub const fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         let len = self.len();
         let remaining_len_size = len_len(len);
         1 + remaining_len_size + len

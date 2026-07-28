@@ -130,7 +130,7 @@ impl SubscribeFilter {
         Self { path, qos }
     }
 
-    const fn len(&self) -> usize {
+    fn len(&self) -> usize {
         // filter len + filter + options
         2 + self.path.len() + 1
     }

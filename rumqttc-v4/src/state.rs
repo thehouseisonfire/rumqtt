@@ -1592,13 +1592,13 @@ impl MqttState {
     }
 
     fn check_collision(&mut self, pkid: u16) -> Option<(Publish, Option<PublishNoticeTx>)> {
-        if let Some(publish) = &self.collision
-            && publish.pkid == pkid
-        {
-            return self
-                .collision
-                .take()
-                .map(|publish| (publish, self.collision_notice.take()));
+        if let Some(publish) = &self.collision {
+            if publish.pkid == pkid {
+                return self
+                    .collision
+                    .take()
+                    .map(|publish| (publish, self.collision_notice.take()));
+            }
         }
 
         None

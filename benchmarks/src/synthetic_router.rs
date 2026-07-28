@@ -263,8 +263,8 @@ async fn handle_publish(
             continue;
         }
         if router.trigger(FaultAction::DuplicateDelivery, &publish.topic) {
-            let _ = subscription.sender.send(outgoing.clone());
-            let _ = subscription.sender.send(outgoing);
+            drop(subscription.sender.send(outgoing.clone()));
+            drop(subscription.sender.send(outgoing));
             continue;
         }
         if router.trigger(FaultAction::DelayDelivery, &publish.topic) {
@@ -274,11 +274,11 @@ async fn handle_publish(
                 .map_or(std::time::Duration::ZERO, |fault| fault.delay);
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
-                let _ = subscription.sender.send(outgoing);
+                drop(subscription.sender.send(outgoing));
             });
             continue;
         }
-        let _ = subscription.sender.send(outgoing);
+        drop(subscription.sender.send(outgoing));
     }
 
     if let Some(packet_id) = publish.packet_id
@@ -487,7 +487,7 @@ fn read_u16(input: &[u8], cursor: usize) -> anyhow::Result<u16> {
         .get(cursor..cursor + 2)
         .context("missing MQTT two-byte integer")?
         .try_into()
-        .expect("slice length was checked");
+        .map_err(|_| anyhow::anyhow!("slice length was checked"))?;
     Ok(u16::from_be_bytes(bytes))
 }
 

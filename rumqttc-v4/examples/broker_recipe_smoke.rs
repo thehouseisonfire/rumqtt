@@ -48,11 +48,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         loop {
             let event = eventloop.poll().await?;
             println!("Event = {event:?}");
-            if let Event::Incoming(Packet::Publish(publish)) = event
-                && publish.topic == topic
-                && publish.payload.as_ref() == payload
-            {
-                return Ok::<_, rumqttc::ConnectionError>(());
+            if let Event::Incoming(Packet::Publish(publish)) = event {
+                if publish.topic == topic && publish.payload.as_ref() == payload {
+                    return Ok::<_, rumqttc::ConnectionError>(());
+                }
             }
         }
     })

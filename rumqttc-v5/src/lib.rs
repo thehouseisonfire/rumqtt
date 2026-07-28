@@ -479,7 +479,7 @@ impl Broker {
     }
 
     #[must_use]
-    pub const fn tcp_address(&self) -> Option<(&str, u16)> {
+    pub fn tcp_address(&self) -> Option<(&str, u16)> {
         match &self.inner {
             BrokerInner::Tcp { host, port } => Some((host.as_str(), *port)),
             #[cfg(unix)]
@@ -502,7 +502,7 @@ impl Broker {
 
     #[cfg(feature = "websocket")]
     #[must_use]
-    pub const fn websocket_url(&self) -> Option<&str> {
+    pub fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
             BrokerInner::Websocket { url, .. } => Some(url.as_str()),
             BrokerInner::Tcp { .. } => None,
