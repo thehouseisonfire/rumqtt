@@ -17,6 +17,8 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- Documentation: Explain how to assign distinct Cargo dependency names when
+  one crate uses both `rumqttc-v4-next` and `rumqttc-v5-next`.
 - Documentation: Expand the upstream migration guidance for WebSocket broker
   targets, `wss://` construction, broker/transport mismatch errors, and
   explicit TLS backend selection in dual-backend dependency graphs.

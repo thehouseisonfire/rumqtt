@@ -21,6 +21,18 @@ common brokers, see the workspace [recipe guide](https://github.com/thehouseison
 cargo add rumqttc-v4-next@0.34.0-alpha
 ```
 
+If the same crate also uses `rumqttc-v5-next`, assign distinct dependency names
+because both packages expose a library target named `rumqttc`:
+
+```toml
+[dependencies]
+rumqttc_v4 = { package = "rumqttc-v4-next", version = "0.34.0-alpha" }
+rumqttc_v5 = { package = "rumqttc-v5-next", version = "0.34.0-alpha" }
+```
+
+Import them through those names, for example `use rumqttc_v4::MqttOptions` and
+`use rumqttc_v5::MqttOptions`.
+
 ## Examples
 
 A simple synchronous publish and subscribe

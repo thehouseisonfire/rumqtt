@@ -85,6 +85,28 @@ and usage, see the
 [`rumqttc-v5-next`](./rumqttc-v5/README.md), and
 [`rumqttc-v4-next`](./rumqttc-v4/README.md) crate documentation.
 
+### Using both MQTT versions
+
+The explicit v4 and v5 packages both expose a library target named `rumqttc`.
+When one crate depends on both packages, give each dependency a distinct name
+in `Cargo.toml`:
+
+```toml
+[dependencies]
+rumqttc_v4 = { package = "rumqttc-v4-next", version = "0.34.0-alpha" }
+rumqttc_v5 = { package = "rumqttc-v5-next", version = "0.34.0-alpha" }
+```
+
+The dependency names become the paths used by Rust code:
+
+```rust
+use rumqttc_v4::{AsyncClient as V4Client, MqttOptions as V4Options};
+use rumqttc_v5::{AsyncClient as V5Client, MqttOptions as V5Options};
+```
+
+Without distinct dependency names, both library targets would claim the
+`rumqttc` extern-crate name in the same target.
+
 Shared transport and codec code is published as
 [`rumqttc-core-next`](./rumqttc-core/) and
 [`mqttbytes-core-next`](./mqttbytes-core/). Optional file-backed session stores
