@@ -17,7 +17,7 @@ A successful CONNACK can alter the current connection or session:
 | MQTT 5 value | Implemented effect |
 | --- | --- |
 | Server Keep Alive | Replaces the keepalive interval used by the event loop. |
-| Receive Maximum | Caps outgoing QoS 1/2 PUBLISH packets to the smaller broker or client limit. |
+| Receive Maximum | Independently caps unacknowledged outgoing and incoming QoS 1/2 PUBLISH packets. |
 | Maximum Packet Size | Makes the encoder reject packets larger than the server accepts. |
 | Topic Alias Maximum | Limits client-to-server aliases for this network connection. |
 | Session Expiry Interval | Becomes the effective interval used for current-session persistence decisions. |
@@ -26,8 +26,10 @@ A successful CONNACK can alter the current connection or session:
 
 The client can advertise its Receive Maximum, Maximum Packet Size, and Topic
 Alias Maximum in CONNECT. Configured incoming packet-size limits are enforced
-by the decoder. The implementation enforces the broker's outgoing packet-size
-and publish-quota limits.
+by the decoder. The implementation enforces both Receive Maximum directions,
+including quota release at the protocol-defined acknowledgement milestones,
+while allowing non-PUBLISH control packets to progress when the outgoing
+publish quota is exhausted.
 
 The configured CONNECT Session Expiry Interval remains the application's
 baseline request for every connection. A broker value returned in CONNACK is
@@ -35,12 +37,14 @@ tracked separately as the effective interval for the current connection and is
 used for checkpoint and connection-closure decisions; it does not replace the
 value requested on a later reconnect.
 
-Baseline restoration and enforcement of all connection-scoped limits in both
-directions remain under audit in [`TODO6.md`](../TODO6.md). Server Keep Alive,
-broker Receive Maximum, Maximum Packet Size, Retain Available, and Topic Alias
-Maximum must not become durable session checkpoint state. The effective Session
-Expiry Interval is different: it is session-lifetime metadata and is
-deliberately stored in the V5 checkpoint, including a CONNACK override.
+The configured baselines for Server Keep Alive and the client-advertised
+limits remain unchanged across reconnects. Before each CONNACK is applied,
+connection-scoped negotiated values return to their MQTT defaults. Server Keep
+Alive, broker Receive Maximum, Maximum Packet Size, Retain Available, Topic
+Alias Maximum, quotas, and alias mappings do not become durable session
+checkpoint state. The effective Session Expiry Interval is different: it is
+session-lifetime metadata and is deliberately stored in the V5 checkpoint,
+including a CONNACK override.
 
 ## Connection-Scoped and Session-Scoped State
 
@@ -55,9 +59,8 @@ MQTT 5 assigns different lifetimes to closely related state:
 - Session Expiry Interval governs how long session state can survive after the
   network connection ends.
 
-Connection cleanup explicitly resets topic-alias and authentication exchange
-state. The remaining negotiated-value reset behavior is included in the audit
-described above.
+Connection cleanup resets topic-alias and authentication exchange state,
+negotiated limits, and both connection-local Receive Maximum quotas.
 
 ## Topic Alias Lifecycle
 

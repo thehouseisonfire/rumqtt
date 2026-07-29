@@ -371,6 +371,8 @@ pub struct EventLoop {
     network: Option<Network>,
     /// Keep alive time
     keepalive_timeout: Option<Pin<Box<Sleep>>>,
+    /// Keep alive interval effective for the current network connection.
+    effective_keep_alive: Duration,
     /// Dummy sleep used as a placeholder in select! when keepalive is disabled.
     /// Initialized once with `Duration::MAX` so that it never fires.
     no_sleep: Option<Pin<Box<Sleep>>>,
@@ -510,6 +512,8 @@ impl EventLoop {
         let ack_mode = options.ack_mode;
         let topic_alias_policy = options.topic_alias_policy();
         let client_topic_alias_max = options.topic_alias_max().unwrap_or(0);
+        let client_receive_maximum = options.receive_maximum().unwrap_or(u16::MAX);
+        let effective_keep_alive = options.keep_alive;
         let effective_session_expiry_interval = options.session_expiry_interval();
 
         let authenticator = options.authenticator();
@@ -522,6 +526,7 @@ impl EventLoop {
                 ack_mode,
                 topic_alias_policy,
                 client_topic_alias_max,
+                client_receive_maximum,
                 authentication_method,
                 authenticator,
             ),
@@ -535,6 +540,7 @@ impl EventLoop {
             queued: OutboundScheduler::default(),
             network: None,
             keepalive_timeout: None,
+            effective_keep_alive,
             no_sleep: None,
             session_client_id: None,
             session_store_key: None,
@@ -1014,6 +1020,7 @@ impl EventLoop {
             attempt
         };
 
+        self.effective_keep_alive = self.options.keep_alive;
         let (network, connack) = match time::timeout(
             self.options.connect_timeout(),
             connect(&mut self.options, &mut self.state),
@@ -1077,6 +1084,7 @@ impl EventLoop {
             return Err(error);
         }
         self.reconcile_outgoing_tracking_after_connack();
+        self.apply_connack_keep_alive(&connack);
 
         if !self.broker_only_session_resume {
             self.session_client_id = Some(self.options.client_id());
@@ -1084,8 +1092,8 @@ impl EventLoop {
         }
         self.network = Some(network);
 
-        if self.keepalive_timeout.is_none() && !self.options.keep_alive.is_zero() {
-            self.keepalive_timeout = Some(Box::pin(time::sleep(self.options.keep_alive)));
+        if self.keepalive_timeout.is_none() && !self.effective_keep_alive.is_zero() {
+            self.keepalive_timeout = Some(Box::pin(time::sleep(self.effective_keep_alive)));
         }
 
         #[cfg(feature = "tracing")]
@@ -1298,7 +1306,7 @@ impl EventLoop {
                         .expect("successful network read must queue an event"))
                 },
                 () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
-                    if self.keepalive_timeout.is_some() && !self.options.keep_alive.is_zero() => {
+                    if self.keepalive_timeout.is_some() && !self.effective_keep_alive.is_zero() => {
                     let (outgoing, _flush_notice) = self
                         .state
                         .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
@@ -1714,15 +1722,25 @@ impl EventLoop {
     }
 
     fn reset_keepalive_timeout(&mut self) {
-        if self.options.keep_alive.is_zero() {
+        if self.effective_keep_alive.is_zero() {
             return;
         }
 
         if let Some(timeout) = &mut self.keepalive_timeout {
             timeout
                 .as_mut()
-                .reset(Instant::now() + self.options.keep_alive);
+                .reset(Instant::now() + self.effective_keep_alive);
         }
+    }
+
+    fn apply_connack_keep_alive(&mut self, connack: &ConnAck) {
+        self.effective_keep_alive = connack
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.server_keep_alive)
+            .map_or(self.options.keep_alive, |keep_alive| {
+                Duration::from_secs(u64::from(keep_alive))
+            });
     }
 
     async fn try_next_request(
@@ -2097,7 +2115,9 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
+    network.set_max_outgoing_size(None);
     state.set_client_topic_alias_max(options.topic_alias_max());
+    state.set_client_receive_maximum(options.receive_maximum());
     let authentication_method = options.authentication_method();
     let auth_exchange_started = authentication_method.is_some();
     let start_auth_properties = state.begin_authentication_connect(authentication_method)?;
@@ -2162,12 +2182,6 @@ async fn mqtt_connect_inner(
                 {
                     send_protocol_error_disconnect(network).await;
                     return Err(err.into());
-                }
-
-                if let Some(props) = &connack.properties {
-                    if let Some(keep_alive) = props.server_keep_alive {
-                        options.keep_alive = Duration::from_secs(u64::from(keep_alive));
-                    }
                 }
 
                 if let Some(props) = &connack.properties {
@@ -3275,6 +3289,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3302,6 +3317,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3330,6 +3346,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3357,6 +3374,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3385,6 +3403,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             stale_authentication_method.map(str::to_owned),
             options.auth_manager(),
         );
@@ -3414,6 +3433,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3441,6 +3461,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3717,6 +3738,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mqtt_connect_keeps_configured_keep_alive_as_reconnect_baseline() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_keep_alive(60);
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().server_keep_alive = Some(1);
+
+        let (result, options) =
+            run_successful_mqtt_connect_with_connack_and_return_options(options, connack).await;
+
+        result.unwrap();
+        assert_eq!(options.keep_alive(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn eventloop_keep_alive_uses_each_connack_or_the_configured_baseline() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_keep_alive(30);
+        let (mut eventloop, _) = EventLoop::new_for_async_client(options, 1);
+
+        let mut connack = build_connack_with_receive_max(10);
+        connack.properties.as_mut().unwrap().server_keep_alive = Some(5);
+        eventloop.apply_connack_keep_alive(&connack);
+        assert_eq!(eventloop.effective_keep_alive, Duration::from_secs(5));
+
+        connack.properties.as_mut().unwrap().server_keep_alive = Some(45);
+        eventloop.apply_connack_keep_alive(&connack);
+        assert_eq!(eventloop.effective_keep_alive, Duration::from_secs(45));
+
+        connack.properties.as_mut().unwrap().server_keep_alive = None;
+        eventloop.apply_connack_keep_alive(&connack);
+        assert_eq!(eventloop.effective_keep_alive, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_resets_outgoing_packet_size_before_each_connack() {
+        for negotiated in [Some(32), Some(128), None] {
+            let (client, mut peer) = tokio::io::duplex(1024);
+            let mut network = Network::new(client, Some(1024));
+            network.set_max_outgoing_size(Some(1));
+            let mut options = MqttOptions::new("test-client", "localhost");
+            let mut state = MqttState::builder(10).build();
+            let mut connack = build_connack_with_receive_max(10);
+            connack.properties.as_mut().unwrap().max_packet_size = negotiated;
+
+            let broker = async {
+                let _connect = read_packet_bytes(&mut peer).await;
+                let mut encoded_connack = BytesMut::new();
+                connack.write(&mut encoded_connack).unwrap();
+                peer.write_all(&encoded_connack).await.unwrap();
+            };
+            let (result, ()) =
+                tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+
+            result.unwrap();
+            assert_eq!(network.max_outgoing_size(), negotiated);
+        }
+    }
+
+    #[tokio::test]
     async fn mqtt_connect_rejects_unexpected_packet_before_connack() {
         let options = MqttOptions::new("test-client", "localhost");
 
@@ -3768,6 +3848,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -3969,6 +4050,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -4019,6 +4101,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );
@@ -5276,7 +5359,7 @@ mod tests {
     }
 
     #[test]
-    fn connack_resize_skips_shrink_until_pending_retransmit_queue_is_empty() {
+    fn connack_receive_max_does_not_resize_packet_identifier_tracking() {
         let mut options = MqttOptions::new("test-client", "localhost");
         options.set_outgoing_inflight_upper_limit(10);
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
@@ -5299,9 +5382,9 @@ mod tests {
 
         eventloop.pending.clear();
         eventloop.reconcile_outgoing_tracking_after_connack();
-        assert_eq!(eventloop.state.outgoing_pub.len(), 4);
-        assert_eq!(eventloop.state.outgoing_pub_notice.len(), 4);
-        assert_eq!(eventloop.state.outgoing_rel_notice.len(), 4);
+        assert_eq!(eventloop.state.outgoing_pub.len(), 11);
+        assert_eq!(eventloop.state.outgoing_pub_notice.len(), 11);
+        assert_eq!(eventloop.state.outgoing_rel_notice.len(), 11);
     }
 
     #[tokio::test]
@@ -6978,6 +7061,7 @@ mod tests {
             AckMode::Automatic,
             options.topic_alias_policy(),
             options.topic_alias_max().unwrap_or(0),
+            options.receive_maximum().unwrap_or(u16::MAX),
             options.authentication_method(),
             options.auth_manager(),
         );

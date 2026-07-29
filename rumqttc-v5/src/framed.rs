@@ -122,6 +122,11 @@ impl Network {
         self.framed.codec_mut().max_outgoing_size = max_outgoing_size;
     }
 
+    #[cfg(test)]
+    pub(crate) fn max_outgoing_size(&self) -> Option<u32> {
+        self.framed.codec().max_outgoing_size
+    }
+
     async fn try_send_inbound_disconnect(&mut self, disconnect: InboundDisconnect) {
         let packet = Packet::Disconnect(Disconnect::new(disconnect.reason));
 
@@ -609,6 +614,44 @@ mod tests {
                 0xE0,
                 0x02,
                 DisconnectReasonCode::TopicAliasInvalid as u8,
+                0x00
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn readb_sends_receive_maximum_exceeded_disconnect_and_returns_error() {
+        let (client, mut peer) = duplex(64);
+        let mut network = Network::new(client, Some(1024));
+        let mut state = MqttState::builder(10)
+            .ack_mode(crate::AckMode::Manual)
+            .client_receive_maximum(1)
+            .build();
+
+        peer.write_all(&[0x32, 0x06, 0x00, 0x01, b'a', 0x00, 0x01, 0x00])
+            .await
+            .unwrap();
+        network.readb(&mut state, 1).await.unwrap();
+
+        peer.write_all(&[0x32, 0x06, 0x00, 0x01, b'b', 0x00, 0x02, 0x00])
+            .await
+            .unwrap();
+        let err = network.readb(&mut state, 1).await.unwrap_err().source;
+        assert!(matches!(
+            err,
+            StateError::Deserialization(mqttbytes::Error::ProtocolViolation(
+                DisconnectReasonCode::ReceiveMaximumExceeded
+            ))
+        ));
+
+        let mut response = [0; 4];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            [
+                0xE0,
+                0x02,
+                DisconnectReasonCode::ReceiveMaximumExceeded as u8,
                 0x00
             ]
         );

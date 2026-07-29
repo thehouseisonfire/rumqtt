@@ -2044,14 +2044,15 @@
       ],
       "mapping_status": "reviewed",
       "compliance_status": "compliant",
-      "mapping_reason": "The v5 eventloop's mqtt_connect_inner() reads the CONNACK properties and, if server_keep_alive is present, overrides options.keep_alive with the server's value (Duration::from_secs). This override happens before the keepalive_timeout timer is initialized, so subsequent PINGREQ intervals use the server-assigned value. The ConnAckProperties struct correctly parses the ServerKeepAlive property (id 0x13). This is a v5-only requirement with no v3.1.1 equivalent.",
+      "mapping_reason": "The v5 event loop derives an effective keepalive interval for each successful connection from CONNACK Server Keep Alive, falling back to the configured CONNECT value when omitted. Keepalive timers use the effective value without replacing the application's reconnect baseline. ConnAckProperties correctly parses ServerKeepAlive (id 0x13).",
       "evidence": [
         {
           "path": "rumqttc-v5/src/eventloop.rs",
           "symbols": [
-            "mqtt_connect_inner"
+            "EventLoop::apply_connack_keep_alive",
+            "EventLoop::reset_keepalive_timeout"
           ],
-          "reason": "After receiving a successful CONNACK, if connack.properties.server_keep_alive is Some, options.keep_alive is overridden with Duration::from_secs(u64::from(keep_alive)). The keepalive_timeout is initialized after mqtt_connect_inner returns, so it uses the overridden value."
+          "reason": "A successful CONNACK selects the connection's effective interval, and timer creation and reset consistently use it while MqttOptions retains the configured value."
         },
         {
           "path": "rumqttc-v5/src/mqttbytes/v5/connack.rs",
@@ -2067,9 +2068,11 @@
         "status": "covered",
         "tests": [
           "read_decodes_server_keep_alive",
-          "client_uses_server_keep_alive_from_connack"
+          "client_uses_server_keep_alive_from_connack",
+          "mqtt_connect_keeps_configured_keep_alive_as_reconnect_baseline",
+          "eventloop_keep_alive_uses_each_connack_or_the_configured_baseline"
         ],
-        "notes": "Unit test verifies CONNACK Server Keep Alive property decoding. Integration test verifies that the client overrides its keep_alive (originally 60s) with the server's Server Keep Alive value (1s) from CONNACK, and that subsequent PINGREQ intervals reflect the server-assigned value."
+        "notes": "Codec and event-loop tests cover property decoding, use of the server interval, restoration of the configured value when omitted, and preservation of the reconnect baseline."
       },
       "follow_up": null
     },
@@ -5157,10 +5160,46 @@
       "source_anchor": "_Toc462729133",
       "occurrences": 3,
       "candidate_paths": [
-        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/eventloop.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "MqttState maintains a connection-local outgoing PUBLISH quota capped by the broker's CONNACK Receive Maximum and the configured local upper limit. Only transmitted QoS 1/2 PUBLISH packets consume quota. PUBACK, PUBCOMP, and rejecting PUBREC release it, while successful PUBREC retains it until PUBCOMP. Reconnect cleanup resets the quota and replayed PUBREL packets do not consume it.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::can_send_publish",
+            "MqttState::acquire_outgoing_publish_quota",
+            "MqttState::release_outgoing_publish_quota",
+            "MqttState::handle_incoming_connack"
+          ],
+          "reason": "The state machine admits QoS 1/2 PUBLISH only below the effective limit, tracks quota ownership separately from session-lived QoS state, and releases quota at the MQTT-defined acknowledgement milestones."
+        },
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "classify_request",
+            "classify_replay_request"
+          ],
+          "reason": "The outbound scheduler classifies QoS 1/2 PUBLISH as flow-controlled work and consults MqttState readiness before sending."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "connack_connection_scoped_limits_restore_configured_defaults",
+          "broker_receive_max_limits_publish_count_not_packet_identifier_values",
+          "public_outgoing_transition_enforces_broker_receive_maximum",
+          "connack_preserves_quota_consumed_by_pre_connack_publish",
+          "outgoing_publish_with_max_inflight_is_ok",
+          "incoming_pubrec_failure_without_collision_decrements_inflight",
+          "outgoing_publish_cannot_reuse_pkid_reserved_for_pubrel_replay"
+        ],
+        "notes": "Tests cover the boundary, reconnect baseline restoration, all quota release paths, and PUBREL replay without new-connection quota consumption."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.4-8",
@@ -5171,10 +5210,32 @@
       "source_anchor": "_Toc462729133",
       "occurrences": 3,
       "candidate_paths": [
-        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+        "rumqttc-v5/src/eventloop.rs",
+        "rumqttc-v5/src/state.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "The scheduler blocks only QoS 1/2 PUBLISH work when the broker Receive Maximum quota is exhausted. Other MQTT Control Packet classes remain ready and can bypass the blocked publish.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/eventloop.rs",
+          "symbols": [
+            "classify_publish_or_control_request",
+            "OutboundScheduler::next"
+          ],
+          "reason": "QoS 1/2 PUBLISH is the sole FlowControlledPublish class; acknowledgement, PUBREL, subscription, authentication, ping, and disconnect traffic remains Control work."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "scheduler_sends_control_after_receive_max_blocked_publish",
+          "scheduler_allows_each_progress_and_control_class_after_blocked_publish",
+          "control_request_bypasses_blocked_publish_without_ack_progress"
+        ],
+        "notes": "Unit and reliability tests verify control progress while a QoS publish is blocked at Receive Maximum."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.4-9",
@@ -5185,10 +5246,42 @@
       "source_anchor": "_Toc462729133",
       "occurrences": 3,
       "candidate_paths": [
-        "rumqttc-v5/src/mqttbytes/v5/publish.rs"
+        "rumqttc-v5/src/state.rs",
+        "rumqttc-v5/src/framed.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "compliant",
+      "mapping_reason": "MqttState enforces the Receive Maximum advertised by the client in CONNECT for distinct incoming QoS 1/2 PUBLISH flows on the current connection. Overflow suppresses the PUBLISH event and produces DISCONNECT with ReceiveMaximumExceeded; the framed network path sends it best-effort and closes with the matching protocol error.",
+      "evidence": [
+        {
+          "path": "rumqttc-v5/src/state.rs",
+          "symbols": [
+            "MqttState::handle_incoming_publish",
+            "MqttState::release_incoming_publish_quota",
+            "MqttState::set_client_receive_maximum"
+          ],
+          "reason": "Distinct incoming flows acquire connection-local quota, retransmissions do not acquire twice, and sent PUBACK, PUBCOMP, or rejecting PUBREC releases quota."
+        },
+        {
+          "path": "rumqttc-v5/src/framed.rs",
+          "symbols": [
+            "Network::readb"
+          ],
+          "reason": "A state-produced error DISCONNECT is written best-effort and returned as a terminal protocol violation."
+        }
+      ],
+      "test_coverage": {
+        "status": "covered",
+        "tests": [
+          "incoming_receive_maximum_rejects_only_new_publish_flows",
+          "incoming_receive_maximum_is_released_by_puback_pubcomp_and_rejected_pubrec",
+          "non_success_pubrel_sends_pubcomp_and_releases_incoming_receive_quota",
+          "incoming_receive_maximum_resets_without_discarding_session_qos2_state",
+          "readb_sends_receive_maximum_exceeded_disconnect_and_returns_error"
+        ],
+        "notes": "Tests cover exact-limit acceptance, duplicate retransmissions, all release milestones, reconnect reset, and the wire-level DISCONNECT reason."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.3.4-10",
@@ -5201,8 +5294,16 @@
       "candidate_paths": [
         "rumqttc-v5/src/mqttbytes/v5/publish.rs"
       ],
-      "mapping_status": "unreviewed",
-      "mapping_reason": "Heuristic mapping from section prefix 3.3 to packet module."
+      "mapping_status": "reviewed",
+      "compliance_status": "not_applicable",
+      "mapping_reason": "This is a server-side scheduling obligation. A client cannot require a server to send its non-PUBLISH packets promptly; the client-applicable Receive Maximum enforcement and client control-packet progress obligations are covered by MQTT-3.3.4-7 through MQTT-3.3.4-9.",
+      "evidence": [],
+      "test_coverage": {
+        "status": "not_applicable",
+        "tests": [],
+        "notes": "No client-side behavior can implement the server's scheduling obligation."
+      },
+      "follow_up": null
     },
     {
       "id": "MQTT-3.4.2-1",

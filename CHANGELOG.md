@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` v5: Add `MqttStateBuilder::client_receive_maximum(u16)` and
+  `MqttState::set_client_receive_maximum(Option<u16>)` for low-level clients
+  enforcing the Receive Maximum they advertise in CONNECT.
 - `rumqttc` v4/v5: Add first-party SOCKS5 proxy support, including proxy-side
   DNS resolution and RFC 1929 username/password authentication. Add independent
   `http-proxy` and `socks-proxy` features while retaining `proxy` as an umbrella
@@ -35,6 +38,12 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc` v5: Scope negotiated Server Keep Alive, Receive Maximum, Maximum Packet Size,
+  Retain Available, and Topic Alias Maximum values to one network connection. Restore configured
+  defaults when CONNACK omits them, enforce the client-advertised Receive Maximum for incoming
+  QoS 1/2 publishes with `DISCONNECT(ReceiveMaximumExceeded)` on overflow, enforce the broker's
+  limit in the public low-level state transition (including publishes sent before CONNACK), and
+  keep non-PUBLISH control packets progressing when the outgoing publish quota is exhausted.
 - `rumqttc` v4/v5: Reject malformed public codec packet states before
   serialization, including empty subscribe/unsubscribe and acknowledgement
   payloads, zero SUBACK/UNSUBACK packet identifiers, and failed CONNACK packets
