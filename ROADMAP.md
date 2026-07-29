@@ -3,7 +3,6 @@
 ## Memory Stability and Performance
 
 - Stable and fast memory usage
-- Support devices with less than 10 MB of memory
 
 ## Features
 

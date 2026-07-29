@@ -6,6 +6,7 @@ members = [
     "rumqttc-v4",
     "rumqttc-v5",
     "benchmarks",
+    "tests/low-memory",
 ]
 exclude = ["session-store-file"]
 resolver = "3"

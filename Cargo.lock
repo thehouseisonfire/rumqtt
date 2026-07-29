@@ -1292,6 +1292,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "low-memory-acceptance"
+version = "0.0.0"
+dependencies = [
+ "rumqttc-v4-next",
+ "rumqttc-v5-next",
+ "tokio",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

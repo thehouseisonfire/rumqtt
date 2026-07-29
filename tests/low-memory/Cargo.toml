@@ -1,0 +1,19 @@
+[package]
+name = "low-memory-acceptance"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rumqttc-v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", default-features = false }
+rumqttc-v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", default-features = false }
+tokio = { version = "1.40", features = ["macros", "rt", "time"] }
+
+[[bin]]
+name = "low-memory-v4"
+path = "src/bin/v4.rs"
+
+[[bin]]
+name = "low-memory-v5"
+path = "src/bin/v5.rs"

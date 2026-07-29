@@ -4,6 +4,9 @@
 - `rumqttc` v5: Add `MqttStateBuilder::client_receive_maximum(u16)` and
   `MqttState::set_client_receive_maximum(Option<u16>)` for low-level clients
   enforcing the Receive Maximum they advertise in CONNECT.
+- Testing: Add a Linux/x86_64 static-musl acceptance profile that continuously
+  exercises both plain-TCP clients under a kernel-enforced 10 MiB process-memory
+  limit, including QoS 1 traffic, keep-alive, connection loss, and reconnection.
 - `rumqttc` v4/v5: Add first-party SOCKS5 proxy support, including proxy-side
   DNS resolution and RFC 1929 username/password authentication. Add independent
   `http-proxy` and `socks-proxy` features while retaining `proxy` as an umbrella

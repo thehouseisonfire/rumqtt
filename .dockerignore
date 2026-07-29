@@ -1,0 +1,7 @@
+.git
+target
+session-store-file/target
+benchmarks/results
+session-store-file/benchmarks/results
+**/__pycache__
+*.log
