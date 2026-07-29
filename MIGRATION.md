@@ -65,6 +65,8 @@ If an unbounded request channel is intentional, use `.unbounded()` explicitly.
 
 Publish methods now take the payload before a `PublishOptions` value. The
 separate byte/property variants were folded into one API.
+MQTT v4 and v5 share one `QoS` type; replace per-protocol trait implementations
+with one implementation for the shared type.
 
 Old upstream style:
 
@@ -167,6 +169,7 @@ async fn publish_with_properties() -> Result<(), rumqttc::ClientError> {
 Authentication is represented by version-specific `ConnectAuth` enums rather
 than an `Option<Login>`-style accessor. Empty strings or empty byte buffers are
 not used to infer field presence.
+Use `auth()` in place of the removed `credentials()` getter.
 
 Username/password:
 

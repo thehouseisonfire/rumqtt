@@ -7,11 +7,7 @@
 
 ## Features
 
-- Return packet IDs, tokens, or another identifier to clients
-- Graceful shutdown support
 - Full MQTT 5 support
-- Acknowledge messages after processing
-- Synchronous publishing with the broker, where the next message is published only after the previous acknowledgment
 - High-level client
 - Python, C, and JavaScript wrappers
 

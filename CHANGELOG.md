@@ -10,6 +10,8 @@
   reports MPTCP as unavailable or disabled.
 ### Changed
 - `rumqttc`: Lower the published client crates' MSRV from Rust `1.89` to `1.85`.
+- Documentation: Add a v4/v5 recipe for broker-acknowledged sequential publishing
+  with `publish_tracked()` and `wait_completion_async()`.
 - Documentation: Explain how to assign distinct Cargo dependency names when
   one crate uses both `rumqttc-v4-next` and `rumqttc-v5-next`.
 - Documentation: Expand the upstream migration guidance for WebSocket broker

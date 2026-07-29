@@ -21,6 +21,7 @@ deployment.
 | Persistent sessions | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
 | Reconnect resubscribe | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sessions](./sessions.md) |
 | Bounded client channels | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Backpressure](./backpressure.md) |
+| Broker-acknowledged sequential publishing | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Sequential publishing](./sequential-publishing.md) |
 | Manual ACKs | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Manual ACKs](./manual-acks.md) |
 | Structured lifecycle tracing | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `tracing` | [Tracing](./tracing.md) |
 | Runtime diagnostics snapshots | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Diagnostics](./diagnostics.md) |

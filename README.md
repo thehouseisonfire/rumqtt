@@ -27,7 +27,7 @@
 
 ## Reliable MQTT clients for Rust
 
-rumqtt provides asynchronous and synchronous MQTT clients with a small, explicit
+Rumqttc-next provides asynchronous and synchronous MQTT clients with a small, explicit
 API and close control over connection behavior. It supports MQTT 3.1.1 and MQTT
 5, TLS, WebSockets, proxies, tracking notice API, persistent sessions, manual
 acknowledgements, request and network-read batching, graceful disconnect, and
