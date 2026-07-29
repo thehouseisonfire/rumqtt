@@ -257,6 +257,21 @@ impl ConnAckProperties {
     }
 
     fn write_inner(&self, buffer: &mut BytesMut) -> Result<(), Error> {
+        for value in [
+            self.max_qos,
+            self.retain_available,
+            self.wildcard_subscription_available,
+            self.subscription_identifiers_available,
+            self.shared_subscription_available,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if value > 1 {
+                return Err(Error::ProtocolError);
+            }
+        }
+
         let len = self.len();
         write_remaining_length(buffer, len)?;
 
@@ -370,18 +385,11 @@ fn read_connack_property(
             *cursor += 2;
         }
         PropertyType::MaximumQos => {
-            properties.max_qos = Some(read_u8(bytes)?);
+            read_boolean_connack_property(bytes, &mut properties.max_qos)?;
             *cursor += 1;
         }
         PropertyType::RetainAvailable => {
-            if properties.retain_available.is_some() {
-                return Err(Error::ProtocolError);
-            }
-            let retain_available = read_u8(bytes)?;
-            if retain_available > 1 {
-                return Err(Error::ProtocolError);
-            }
-            properties.retain_available = Some(retain_available);
+            read_boolean_connack_property(bytes, &mut properties.retain_available)?;
             *cursor += 1;
         }
         PropertyType::AssignedClientIdentifier => {
@@ -412,15 +420,18 @@ fn read_connack_property(
             properties.user_properties.push((key, value));
         }
         PropertyType::WildcardSubscriptionAvailable => {
-            properties.wildcard_subscription_available = Some(read_u8(bytes)?);
+            read_boolean_connack_property(bytes, &mut properties.wildcard_subscription_available)?;
             *cursor += 1;
         }
         PropertyType::SubscriptionIdentifierAvailable => {
-            properties.subscription_identifiers_available = Some(read_u8(bytes)?);
+            read_boolean_connack_property(
+                bytes,
+                &mut properties.subscription_identifiers_available,
+            )?;
             *cursor += 1;
         }
         PropertyType::SharedSubscriptionAvailable => {
-            properties.shared_subscription_available = Some(read_u8(bytes)?);
+            read_boolean_connack_property(bytes, &mut properties.shared_subscription_available)?;
             *cursor += 1;
         }
         PropertyType::ServerKeepAlive => {
@@ -450,6 +461,22 @@ fn read_connack_property(
         _ => return Err(Error::InvalidPropertyType(property_type as u8)),
     }
 
+    Ok(())
+}
+
+fn read_boolean_connack_property(
+    bytes: &mut Bytes,
+    destination: &mut Option<u8>,
+) -> Result<(), Error> {
+    if destination.is_some() {
+        return Err(Error::ProtocolError);
+    }
+
+    let value = read_u8(bytes)?;
+    if value > 1 {
+        return Err(Error::ProtocolError);
+    }
+    *destination = Some(value);
     Ok(())
 }
 
@@ -627,6 +654,95 @@ mod test {
         let result = ConnAckProperties::read(&mut bytes);
 
         assert!(matches!(result, Err(Error::ProtocolError)));
+    }
+
+    #[test]
+    fn read_rejects_invalid_capability_property_values() {
+        for property_type in [
+            PropertyType::MaximumQos,
+            PropertyType::RetainAvailable,
+            PropertyType::WildcardSubscriptionAvailable,
+            PropertyType::SubscriptionIdentifierAvailable,
+            PropertyType::SharedSubscriptionAvailable,
+        ] {
+            let mut bytes = Bytes::from(vec![
+                0x02, // properties length
+                property_type as u8,
+                0x02, // invalid boolean/Maximum QoS value
+            ]);
+
+            let result = ConnAckProperties::read(&mut bytes);
+
+            assert!(
+                matches!(result, Err(Error::ProtocolError)),
+                "property {property_type:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn read_rejects_duplicate_capability_properties() {
+        for property_type in [
+            PropertyType::MaximumQos,
+            PropertyType::RetainAvailable,
+            PropertyType::WildcardSubscriptionAvailable,
+            PropertyType::SubscriptionIdentifierAvailable,
+            PropertyType::SharedSubscriptionAvailable,
+        ] {
+            let mut bytes = Bytes::from(vec![
+                0x04, // properties length
+                property_type as u8,
+                0x00,
+                property_type as u8,
+                0x01,
+            ]);
+
+            let result = ConnAckProperties::read(&mut bytes);
+
+            assert!(
+                matches!(result, Err(Error::ProtocolError)),
+                "duplicate property {property_type:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn write_rejects_invalid_capability_property_values_transactionally() {
+        for property_index in 0..5 {
+            let mut properties = ConnAckProperties {
+                session_expiry_interval: None,
+                receive_max: None,
+                max_qos: None,
+                retain_available: None,
+                max_packet_size: None,
+                assigned_client_identifier: None,
+                topic_alias_max: None,
+                reason_string: None,
+                user_properties: vec![],
+                wildcard_subscription_available: None,
+                subscription_identifiers_available: None,
+                shared_subscription_available: None,
+                server_keep_alive: None,
+                response_information: None,
+                server_reference: None,
+                authentication_method: None,
+                authentication_data: None,
+            };
+            match property_index {
+                0 => properties.max_qos = Some(2),
+                1 => properties.retain_available = Some(2),
+                2 => properties.wildcard_subscription_available = Some(2),
+                3 => properties.subscription_identifiers_available = Some(2),
+                4 => properties.shared_subscription_available = Some(2),
+                _ => unreachable!(),
+            }
+            let mut buffer = BytesMut::from(&b"prefix"[..]);
+
+            let result = properties.write(&mut buffer);
+
+            assert!(matches!(result, Err(Error::ProtocolError)));
+            assert_eq!(&buffer[..], b"prefix");
+        }
     }
 
     #[test]

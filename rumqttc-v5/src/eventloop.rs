@@ -3,6 +3,7 @@ use super::mqttbytes::v5::{
     ConnAck, Connect, ConnectProperties, Disconnect, DisconnectReasonCode, Packet, Publish,
     Subscribe, Unsubscribe,
 };
+use super::state::UnsupportedBrokerCapability;
 use super::{Incoming, MqttOptions, MqttState, Outgoing, Request, StateError, Transport};
 use crate::framed::AsyncReadWrite;
 use crate::notice::{
@@ -1480,13 +1481,11 @@ impl EventLoop {
             reject_broker_only_session_request(&request, notice);
             return Ok(BatchControl::Continue);
         }
-        if matches!(&request, Request::Publish(publish) if publish.retain)
-            && !self.state.retain_available()
-        {
+        if let Some(unsupported) = self.state.unsupported_broker_capability(&request) {
             if replay {
                 self.state.discard_replayed_request(&request);
             }
-            reject_unsupported_retained_publish(&request, notice);
+            reject_unsupported_request(&request, notice, unsupported);
             return Ok(BatchControl::Continue);
         }
 
@@ -1915,13 +1914,34 @@ fn reject_broker_only_session_request(request: &Request, notice: Option<TrackedN
     }
 }
 
-fn reject_unsupported_retained_publish(request: &Request, notice: Option<TrackedNoticeTx>) {
-    warn!(
-        "rejecting retained publish because the broker does not support retained messages: {request:?}"
-    );
+fn reject_unsupported_request(
+    request: &Request,
+    notice: Option<TrackedNoticeTx>,
+    unsupported: UnsupportedBrokerCapability,
+) {
+    warn!("rejecting request unsupported by broker capability {unsupported:?}: {request:?}");
 
-    if let Some(TrackedNoticeTx::Publish(notice)) = notice {
-        notice.error(PublishNoticeError::RetainNotSupported);
+    match (unsupported, notice) {
+        (UnsupportedBrokerCapability::RetainedPublish, Some(TrackedNoticeTx::Publish(notice))) => {
+            notice.error(PublishNoticeError::RetainNotSupported)
+        }
+        (
+            UnsupportedBrokerCapability::PublishQoS { requested, maximum },
+            Some(TrackedNoticeTx::Publish(notice)),
+        ) => notice.error(PublishNoticeError::QoSNotSupported { requested, maximum }),
+        (
+            UnsupportedBrokerCapability::SubscriptionIdentifiers,
+            Some(TrackedNoticeTx::Subscribe(notice)),
+        ) => notice.error(SubscribeNoticeError::SubscriptionIdentifiersNotSupported),
+        (
+            UnsupportedBrokerCapability::SharedSubscription,
+            Some(TrackedNoticeTx::Subscribe(notice)),
+        ) => notice.error(SubscribeNoticeError::SharedSubscriptionNotSupported),
+        (
+            UnsupportedBrokerCapability::WildcardSubscription,
+            Some(TrackedNoticeTx::Subscribe(notice)),
+        ) => notice.error(SubscribeNoticeError::WildcardSubscriptionNotSupported),
+        _ => {}
     }
 }
 
@@ -2288,7 +2308,8 @@ mod tests {
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{
         ConnAckProperties, PubAck, PubComp, PubCompReason, PubRec, PubRel, PublishProperties,
-        SubAck, SubscribeFilter, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+        SubAck, SubscribeFilter, SubscribeProperties, SubscribeReasonCode, UnsubAck,
+        UnsubAckReason,
     };
     use bytes::{Bytes, BytesMut};
     use flume::TryRecvError;
@@ -2733,6 +2754,21 @@ mod tests {
                 authentication_data: None,
             }),
         }
+    }
+
+    fn build_connack_with_capabilities(
+        max_qos: Option<u8>,
+        wildcard_subscription_available: Option<u8>,
+        subscription_identifiers_available: Option<u8>,
+        shared_subscription_available: Option<u8>,
+    ) -> ConnAck {
+        let mut connack = build_connack_with_receive_max(10);
+        let properties = connack.properties.as_mut().unwrap();
+        properties.max_qos = max_qos;
+        properties.wildcard_subscription_available = wildcard_subscription_available;
+        properties.subscription_identifiers_available = subscription_identifiers_available;
+        properties.shared_subscription_available = shared_subscription_available;
+        connack
     }
 
     fn build_connack_with_authentication_method(authentication_method: Option<&str>) -> ConnAck {
@@ -3980,6 +4016,52 @@ mod tests {
             disconnect,
             vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
         );
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_rejects_invalid_and_duplicate_connack_capabilities() {
+        for property_type in [0x24, 0x25, 0x28, 0x29, 0x2A] {
+            let invalid = [
+                0x20,
+                0x05, // remaining length
+                0x00, // acknowledge flags
+                0x00, // success
+                0x02, // property length
+                property_type,
+                0x02, // invalid value
+            ];
+            let duplicate = [
+                0x20,
+                0x07, // remaining length
+                0x00, // acknowledge flags
+                0x00, // success
+                0x04, // property length
+                property_type,
+                0x00,
+                property_type,
+                0x01,
+            ];
+
+            for connack in [&invalid[..], &duplicate[..]] {
+                let options = MqttOptions::new("test-client", "localhost");
+                let (result, disconnect) =
+                    run_mqtt_connect_with_raw_connack(options, connack, true).await;
+
+                assert!(
+                    matches!(
+                        result,
+                        Err(ConnectionError::MqttState(StateError::Deserialization(
+                            MqttError::ProtocolError
+                        )))
+                    ),
+                    "property {property_type:?} returned {result:?}"
+                );
+                assert_eq!(
+                    disconnect,
+                    vec![0xE0, 0x02, DisconnectReasonCode::ProtocolError as u8, 0x00]
+                );
+            }
+        }
     }
 
     #[test]
@@ -6110,6 +6192,231 @@ mod tests {
         assert_eq!(keep_batching, BatchControl::Continue);
         assert!(!eventloop.state.outbound_pkid_in_use.contains(7));
         assert_eq!(eventloop.state.outbound_pkid_count, 0);
+    }
+
+    #[tokio::test]
+    async fn unsupported_publish_qos_is_tracked_locally_without_dropping_connection() {
+        let mut eventloop = build_eventloop(true);
+        let (client, _peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_capabilities(
+                Some(0),
+                None,
+                None,
+                None,
+            )))
+            .unwrap();
+        eventloop.state.events.clear();
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        let keep_batching = eventloop
+            .handle_request_internal(
+                RequestEnvelope::tracked_publish(publish(QoS::AtLeastOnce), notice_tx),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keep_batching, BatchControl::Continue);
+        assert!(!should_flush);
+        assert!(eventloop.network.is_some());
+        assert!(eventloop.state.events.is_empty());
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::QoSNotSupported {
+                requested: QoS::AtLeastOnce,
+                maximum: QoS::AtMostOnce,
+            }
+        );
+
+        eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain(Request::Publish(publish(QoS::AtMostOnce))),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+        assert!(should_flush);
+        assert!(matches!(
+            eventloop.state.events.back(),
+            Some(Event::Outgoing(Outgoing::Publish(0)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsupported_publish_qos_replay_releases_reserved_packet_identifier() {
+        let mut eventloop = build_eventloop(true);
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_capabilities(
+                Some(0),
+                None,
+                None,
+                None,
+            )))
+            .unwrap();
+        let mut replay = publish(QoS::AtLeastOnce);
+        replay.pkid = 7;
+        eventloop.state.outbound_pkid_in_use.insert(7);
+        eventloop.state.outbound_pkid_count = 1;
+        let mut should_flush = false;
+        let mut qos0_notices = Vec::new();
+        let mut checkpoint_action = SessionCheckpointAction::Save;
+
+        eventloop
+            .handle_request_internal(
+                RequestEnvelope::plain_replay(Request::Publish(replay)),
+                &mut should_flush,
+                &mut qos0_notices,
+                &mut checkpoint_action,
+            )
+            .await
+            .unwrap();
+
+        assert!(!eventloop.state.outbound_pkid_in_use.contains(7));
+        assert_eq!(eventloop.state.outbound_pkid_count, 0);
+    }
+
+    #[tokio::test]
+    async fn unsupported_subscribe_capabilities_complete_tracked_notices_locally() {
+        for capability in 0..3 {
+            let connack = match capability {
+                0 => build_connack_with_capabilities(None, Some(0), None, None),
+                1 => build_connack_with_capabilities(None, None, Some(0), None),
+                2 => build_connack_with_capabilities(None, None, None, Some(0)),
+                _ => unreachable!(),
+            };
+            let unsupported_subscribe = match capability {
+                0 => Subscribe::new(SubscribeFilter::new("hello/+", QoS::AtMostOnce), None),
+                1 => Subscribe::new(
+                    SubscribeFilter::new("hello/world", QoS::AtMostOnce),
+                    Some(SubscribeProperties {
+                        id: Some(1),
+                        user_properties: vec![],
+                    }),
+                ),
+                2 => Subscribe::new(
+                    SubscribeFilter::new("$share/workers/hello/world", QoS::AtMostOnce),
+                    None,
+                ),
+                _ => unreachable!(),
+            };
+            let mut eventloop = build_eventloop(true);
+            let (client, _peer) = tokio::io::duplex(1024);
+            eventloop.network = Some(Network::new(client, Some(1024)));
+            eventloop
+                .state
+                .handle_incoming_packet(Incoming::ConnAck(connack))
+                .unwrap();
+            eventloop.state.events.clear();
+            let (notice_tx, notice) = SubscribeNoticeTx::new();
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+
+            let keep_batching = eventloop
+                .handle_request_internal(
+                    RequestEnvelope::tracked_subscribe(unsupported_subscribe, notice_tx),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(keep_batching, BatchControl::Continue);
+            assert!(!should_flush);
+            assert!(eventloop.network.is_some());
+            assert!(eventloop.state.events.is_empty());
+            let error = notice.wait_async().await.unwrap_err();
+            assert!(match capability {
+                0 => matches!(
+                    error,
+                    SubscribeNoticeError::WildcardSubscriptionNotSupported
+                ),
+                1 => matches!(
+                    error,
+                    SubscribeNoticeError::SubscriptionIdentifiersNotSupported
+                ),
+                2 => matches!(error, SubscribeNoticeError::SharedSubscriptionNotSupported),
+                _ => unreachable!(),
+            });
+
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::plain(Request::Subscribe(subscribe())),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+            assert!(should_flush);
+            assert!(matches!(
+                eventloop.state.events.back(),
+                Some(Event::Outgoing(Outgoing::Subscribe(_)))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_subscribe_replays_release_reserved_packet_identifiers() {
+        for capability in 0..3 {
+            let connack = match capability {
+                0 => build_connack_with_capabilities(None, Some(0), None, None),
+                1 => build_connack_with_capabilities(None, None, Some(0), None),
+                2 => build_connack_with_capabilities(None, None, None, Some(0)),
+                _ => unreachable!(),
+            };
+            let mut subscribe = match capability {
+                0 => Subscribe::new(SubscribeFilter::new("hello/#", QoS::AtMostOnce), None),
+                1 => Subscribe::new(
+                    SubscribeFilter::new("hello/world", QoS::AtMostOnce),
+                    Some(SubscribeProperties {
+                        id: Some(1),
+                        user_properties: vec![],
+                    }),
+                ),
+                2 => Subscribe::new(
+                    SubscribeFilter::new("$share/workers/hello/world", QoS::AtMostOnce),
+                    None,
+                ),
+                _ => unreachable!(),
+            };
+            subscribe.pkid = 7;
+            let mut eventloop = build_eventloop(true);
+            eventloop
+                .state
+                .handle_incoming_packet(Incoming::ConnAck(connack))
+                .unwrap();
+            eventloop.state.outbound_pkid_in_use.insert(7);
+            eventloop.state.outbound_pkid_count = 1;
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::plain_replay(Request::Subscribe(subscribe)),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+
+            assert!(!eventloop.state.outbound_pkid_in_use.contains(7));
+            assert_eq!(eventloop.state.outbound_pkid_count, 0);
+        }
     }
 
     #[test]

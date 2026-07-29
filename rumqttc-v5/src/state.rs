@@ -211,6 +211,14 @@ pub enum StateError {
     InvalidAlias { alias: u16, max: u16 },
     #[error("Cannot send a retained publish because the broker does not support retained messages")]
     RetainNotSupported,
+    #[error("Cannot send PUBLISH at QoS {requested:?} because the broker's maximum is {maximum:?}")]
+    QoSNotSupported { requested: QoS, maximum: QoS },
+    #[error("Cannot send a wildcard subscription because the broker does not support it")]
+    WildcardSubscriptionNotSupported,
+    #[error("Cannot send a subscription identifier because the broker does not support it")]
+    SubscriptionIdentifiersNotSupported,
+    #[error("Cannot send a shared subscription because the broker does not support it")]
+    SharedSubscriptionNotSupported,
     #[error(
         "Cannot send packet of size '{pkt_size:?}'. It's greater than the broker's maximum packet size of: '{max:?}'"
     )]
@@ -234,6 +242,29 @@ pub enum StateError {
     AuthenticatorNotSet,
     #[error("Authenticator lock poisoned")]
     AuthenticatorLockPoisoned,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UnsupportedBrokerCapability {
+    RetainedPublish,
+    PublishQoS { requested: QoS, maximum: QoS },
+    SubscriptionIdentifiers,
+    SharedSubscription,
+    WildcardSubscription,
+}
+
+impl UnsupportedBrokerCapability {
+    const fn state_error(self) -> StateError {
+        match self {
+            Self::RetainedPublish => StateError::RetainNotSupported,
+            Self::PublishQoS { requested, maximum } => {
+                StateError::QoSNotSupported { requested, maximum }
+            }
+            Self::SubscriptionIdentifiers => StateError::SubscriptionIdentifiersNotSupported,
+            Self::SharedSubscription => StateError::SharedSubscriptionNotSupported,
+            Self::WildcardSubscription => StateError::WildcardSubscriptionNotSupported,
+        }
+    }
 }
 
 /// MQTT protocol-state violations detected by the client state machine.
@@ -451,6 +482,14 @@ pub struct MqttState {
     connack_received: bool,
     /// Whether the broker supports retained messages on the current network connection.
     retain_available: bool,
+    /// Highest outgoing PUBLISH QoS accepted by the broker on the current connection.
+    maximum_qos: QoS,
+    /// Whether the broker supports wildcard subscriptions on the current connection.
+    wildcard_subscription_available: bool,
+    /// Whether the broker supports subscription identifiers on the current connection.
+    subscription_identifiers_available: bool,
+    /// Whether the broker supports shared subscriptions on the current connection.
+    shared_subscription_available: bool,
     /// Maximum number of allowed inflight `QoS1` & `QoS2` requests
     pub(crate) max_outgoing_inflight: u16,
     /// Upper limit on the maximum number of allowed inflight `QoS1` & `QoS2` requests
@@ -718,6 +757,10 @@ impl MqttState {
             topic_aliases: TopicAliasState::new(auto_topic_alias_policy, client_topic_alias_max),
             connack_received: false,
             retain_available: true,
+            maximum_qos: QoS::ExactlyOnce,
+            wildcard_subscription_available: true,
+            subscription_identifiers_available: true,
+            shared_subscription_available: true,
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
             authenticator,
@@ -907,6 +950,10 @@ impl MqttState {
     fn reset_connack_scoped_state(&mut self) {
         self.topic_aliases.reset_connection_scoped();
         self.retain_available = true;
+        self.maximum_qos = QoS::ExactlyOnce;
+        self.wildcard_subscription_available = true;
+        self.subscription_identifiers_available = true;
+        self.shared_subscription_available = true;
         self.max_outgoing_inflight = self.max_outgoing_inflight_upper_limit;
     }
 
@@ -1159,10 +1206,6 @@ impl MqttState {
             incoming_pubrec: self.incoming_pubrec.ones().count(),
             outbound_drained,
         }
-    }
-
-    pub(crate) const fn retain_available(&self) -> bool {
-        self.retain_available
     }
 
     /// Number of SUBSCRIBE requests waiting for a SUBACK.
@@ -1696,6 +1739,23 @@ impl MqttState {
             });
         }
 
+        if let Some(props) = &connack.properties {
+            for value in [
+                props.max_qos,
+                props.retain_available,
+                props.wildcard_subscription_available,
+                props.subscription_identifiers_available,
+                props.shared_subscription_available,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if value > 1 {
+                    return Err(StateError::Deserialization(MqttError::ProtocolError));
+                }
+            }
+        }
+
         self.auth.validate_successful_connack(connack)?;
         // Restore omitted negotiated properties to their MQTT defaults without
         // discarding quota already consumed on this network connection.
@@ -1715,6 +1775,22 @@ impl MqttState {
             }
             if let Some(retain_available) = props.retain_available {
                 self.retain_available = retain_available == 1;
+            }
+            if let Some(maximum_qos) = props.max_qos {
+                self.maximum_qos = if maximum_qos == 0 {
+                    QoS::AtMostOnce
+                } else {
+                    QoS::AtLeastOnce
+                };
+            }
+            if let Some(available) = props.wildcard_subscription_available {
+                self.wildcard_subscription_available = available == 1;
+            }
+            if let Some(available) = props.subscription_identifiers_available {
+                self.subscription_identifiers_available = available == 1;
+            }
+            if let Some(available) = props.shared_subscription_available {
+                self.shared_subscription_available = available == 1;
             }
         }
         self.connack_received = true;
@@ -2118,8 +2194,8 @@ impl MqttState {
         notice: Option<PublishNoticeTx>,
         replay: bool,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
-        if publish.retain && !self.retain_available {
-            return Err(StateError::RetainNotSupported);
+        if let Some(unsupported) = self.unsupported_publish_capability(&publish) {
+            return Err(unsupported.state_error());
         }
         if publish.qos != QoS::AtMostOnce && self.inflight >= self.max_outgoing_inflight {
             return Err(StateError::OutgoingPublishQuotaExceeded {
@@ -2351,9 +2427,7 @@ impl MqttState {
         mut subscription: Subscribe,
         notice: Option<SubscribeNoticeTx>,
     ) -> Result<Option<Packet>, StateError> {
-        if subscription.filters.is_empty() {
-            return Err(StateError::EmptySubscription);
-        }
+        self.validate_outgoing_subscribe(&subscription)?;
 
         let pkid = self.next_control_pkid()?;
         subscription.pkid = pkid;
@@ -2365,12 +2439,79 @@ impl MqttState {
         subscription: Subscribe,
         notice: Option<SubscribeNoticeTx>,
     ) -> Result<Option<Packet>, StateError> {
-        if subscription.filters.is_empty() {
-            return Err(StateError::EmptySubscription);
-        }
+        self.validate_outgoing_subscribe(&subscription)?;
 
         self.accept_replayed_outbound_pkid(subscription.pkid)?;
         Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
+    }
+
+    fn validate_outgoing_subscribe(&self, subscription: &Subscribe) -> Result<(), StateError> {
+        if subscription.filters.is_empty() {
+            return Err(StateError::EmptySubscription);
+        }
+        if let Some(unsupported) = self.unsupported_subscribe_capability(subscription) {
+            return Err(unsupported.state_error());
+        }
+
+        Ok(())
+    }
+
+    fn unsupported_publish_capability(
+        &self,
+        publish: &Publish,
+    ) -> Option<UnsupportedBrokerCapability> {
+        if publish.retain && !self.retain_available {
+            return Some(UnsupportedBrokerCapability::RetainedPublish);
+        }
+        if publish.qos > self.maximum_qos {
+            return Some(UnsupportedBrokerCapability::PublishQoS {
+                requested: publish.qos,
+                maximum: self.maximum_qos,
+            });
+        }
+        None
+    }
+
+    fn unsupported_subscribe_capability(
+        &self,
+        subscribe: &Subscribe,
+    ) -> Option<UnsupportedBrokerCapability> {
+        if !self.subscription_identifiers_available
+            && subscribe
+                .properties
+                .as_ref()
+                .is_some_and(|properties| properties.id.is_some())
+        {
+            return Some(UnsupportedBrokerCapability::SubscriptionIdentifiers);
+        }
+        if !self.shared_subscription_available
+            && subscribe
+                .filters
+                .iter()
+                .any(|filter| filter.path.starts_with("$share/"))
+        {
+            return Some(UnsupportedBrokerCapability::SharedSubscription);
+        }
+        if !self.wildcard_subscription_available
+            && subscribe
+                .filters
+                .iter()
+                .any(|filter| mqttbytes::has_wildcards(&filter.path))
+        {
+            return Some(UnsupportedBrokerCapability::WildcardSubscription);
+        }
+        None
+    }
+
+    pub(crate) fn unsupported_broker_capability(
+        &self,
+        request: &Request,
+    ) -> Option<UnsupportedBrokerCapability> {
+        match request {
+            Request::Publish(publish) => self.unsupported_publish_capability(publish),
+            Request::Subscribe(subscribe) => self.unsupported_subscribe_capability(subscribe),
+            _ => None,
+        }
     }
 
     fn save_outgoing_subscribe(
@@ -3465,6 +3606,10 @@ impl Clone for MqttState {
             topic_aliases: self.topic_aliases.clone(),
             connack_received: self.connack_received,
             retain_available: self.retain_available,
+            maximum_qos: self.maximum_qos,
+            wildcard_subscription_available: self.wildcard_subscription_available,
+            subscription_identifiers_available: self.subscription_identifiers_available,
+            shared_subscription_available: self.shared_subscription_available,
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
             authenticator: self.authenticator.clone(),
@@ -5119,6 +5264,22 @@ mod test {
         }
     }
 
+    fn build_capability_connack(
+        max_qos: Option<u8>,
+        retain_available: Option<u8>,
+        wildcard_subscription_available: Option<u8>,
+        subscription_identifiers_available: Option<u8>,
+        shared_subscription_available: Option<u8>,
+    ) -> ConnAck {
+        let mut connack = build_connack(None, retain_available);
+        let properties = connack.properties.as_mut().unwrap();
+        properties.max_qos = max_qos;
+        properties.wildcard_subscription_available = wildcard_subscription_available;
+        properties.subscription_identifiers_available = subscription_identifiers_available;
+        properties.shared_subscription_available = shared_subscription_available;
+        connack
+    }
+
     #[test]
     fn retained_publish_is_rejected_when_broker_does_not_support_retained_messages() {
         let mut mqtt = build_mqttstate();
@@ -5185,6 +5346,195 @@ mod test {
     }
 
     #[test]
+    fn maximum_qos_restricts_fresh_and_replayed_publishes() {
+        for (maximum, allowed, rejected) in [
+            (0, QoS::AtMostOnce, QoS::AtLeastOnce),
+            (1, QoS::AtLeastOnce, QoS::ExactlyOnce),
+        ] {
+            let mut mqtt = build_mqttstate();
+            mqtt.handle_incoming_packet(Incoming::ConnAck(build_capability_connack(
+                Some(maximum),
+                None,
+                None,
+                None,
+                None,
+            )))
+            .unwrap();
+            mqtt.events.clear();
+
+            assert!(
+                mqtt.handle_outgoing_packet(Request::Publish(build_outgoing_publish(allowed)))
+                    .unwrap()
+                    .is_some()
+            );
+
+            let mut rejected_publish = build_outgoing_publish(rejected);
+            rejected_publish.pkid = 7;
+            let error = mqtt
+                .handle_replayed_outgoing_packet_with_notice(
+                    Request::Publish(rejected_publish),
+                    None,
+                )
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                StateError::QoSNotSupported {
+                    requested,
+                    maximum: actual_maximum,
+                } if requested == rejected && actual_maximum as u8 == maximum
+            ));
+            assert!(!mqtt.outbound_pkid_in_use.contains(7));
+        }
+    }
+
+    #[test]
+    fn omitted_maximum_qos_allows_qos_two() {
+        let mut mqtt = build_mqttstate();
+        mqtt.handle_incoming_packet(Incoming::ConnAck(build_capability_connack(
+            None, None, None, None, None,
+        )))
+        .unwrap();
+
+        let packet = mqtt
+            .handle_outgoing_packet(Request::Publish(build_outgoing_publish(QoS::ExactlyOnce)))
+            .unwrap();
+
+        assert!(matches!(packet, Some(Packet::Publish(_))));
+    }
+
+    #[test]
+    fn subscribe_capabilities_reject_fresh_requests_before_state_mutation() {
+        let cases = [
+            (
+                build_capability_connack(None, None, Some(0), None, None),
+                Subscribe::new(SubscribeFilter::new("sensor/+", QoS::AtMostOnce), None),
+                0,
+            ),
+            (
+                build_capability_connack(None, None, None, Some(0), None),
+                Subscribe::new(
+                    SubscribeFilter::new("sensor/value", QoS::AtMostOnce),
+                    Some(SubscribeProperties {
+                        id: Some(1),
+                        user_properties: vec![],
+                    }),
+                ),
+                1,
+            ),
+            (
+                build_capability_connack(None, None, None, None, Some(0)),
+                Subscribe::new(
+                    SubscribeFilter::new("$share/workers/sensor/value", QoS::AtMostOnce),
+                    None,
+                ),
+                2,
+            ),
+        ];
+
+        for (connack, subscribe, expected) in cases {
+            let mut mqtt = build_mqttstate();
+            mqtt.handle_incoming_packet(Incoming::ConnAck(connack))
+                .unwrap();
+            mqtt.events.clear();
+
+            let error = mqtt
+                .handle_outgoing_packet(Request::Subscribe(subscribe))
+                .unwrap_err();
+
+            assert!(match expected {
+                0 => matches!(error, StateError::WildcardSubscriptionNotSupported),
+                1 => matches!(error, StateError::SubscriptionIdentifiersNotSupported),
+                2 => matches!(error, StateError::SharedSubscriptionNotSupported),
+                _ => unreachable!(),
+            });
+            assert_eq!(mqtt.last_pkid, 0);
+            assert!(mqtt.pending_subscribe.is_empty());
+            assert!(mqtt.events.is_empty());
+        }
+    }
+
+    #[test]
+    fn subscribe_capabilities_reject_replay_before_accepting_packet_identifier() {
+        let cases = [
+            (
+                build_capability_connack(None, None, Some(0), None, None),
+                Subscribe::new(SubscribeFilter::new("sensor/#", QoS::AtMostOnce), None),
+            ),
+            (
+                build_capability_connack(None, None, None, Some(0), None),
+                Subscribe::new(
+                    SubscribeFilter::new("sensor/value", QoS::AtMostOnce),
+                    Some(SubscribeProperties {
+                        id: Some(1),
+                        user_properties: vec![],
+                    }),
+                ),
+            ),
+            (
+                build_capability_connack(None, None, None, None, Some(0)),
+                Subscribe::new(
+                    SubscribeFilter::new("$share/workers/sensor/value", QoS::AtMostOnce),
+                    None,
+                ),
+            ),
+        ];
+
+        for (connack, mut subscribe) in cases {
+            let mut mqtt = build_mqttstate();
+            mqtt.handle_incoming_packet(Incoming::ConnAck(connack))
+                .unwrap();
+            subscribe.pkid = 7;
+
+            assert!(
+                mqtt.handle_replayed_outgoing_packet_with_notice(
+                    Request::Subscribe(subscribe),
+                    None,
+                )
+                .is_err()
+            );
+            assert!(!mqtt.outbound_pkid_in_use.contains(7));
+            assert!(mqtt.pending_subscribe.is_empty());
+        }
+    }
+
+    #[test]
+    fn available_subscribe_capabilities_allow_requests() {
+        let subscriptions = [
+            Subscribe::new(SubscribeFilter::new("sensor/+", QoS::ExactlyOnce), None),
+            Subscribe::new(
+                SubscribeFilter::new("sensor/value", QoS::AtMostOnce),
+                Some(SubscribeProperties {
+                    id: Some(1),
+                    user_properties: vec![],
+                }),
+            ),
+            Subscribe::new(
+                SubscribeFilter::new("$share/workers/sensor/value", QoS::AtMostOnce),
+                None,
+            ),
+        ];
+
+        for connack_values in [None, Some(1)] {
+            for subscribe in subscriptions.clone() {
+                let mut mqtt = build_mqttstate();
+                mqtt.handle_incoming_packet(Incoming::ConnAck(build_capability_connack(
+                    None,
+                    None,
+                    connack_values,
+                    connack_values,
+                    connack_values,
+                )))
+                .unwrap();
+
+                assert!(matches!(
+                    mqtt.handle_outgoing_packet(Request::Subscribe(subscribe)),
+                    Ok(Some(Packet::Subscribe(_)))
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn retained_publish_replay_is_rejected_by_new_broker_capability() {
         let mut mqtt = build_mqttstate();
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack(None, None)))
@@ -5230,11 +5580,19 @@ mod test {
         let mut connack = build_connack(Some(3), Some(0));
         let properties = connack.properties.as_mut().unwrap();
         properties.topic_alias_max = Some(2);
+        properties.max_qos = Some(0);
+        properties.wildcard_subscription_available = Some(0);
+        properties.subscription_identifiers_available = Some(0);
+        properties.shared_subscription_available = Some(0);
 
         mqtt.handle_incoming_packet(Incoming::ConnAck(connack))
             .unwrap();
         assert_eq!(mqtt.max_outgoing_inflight, 3);
         assert!(!mqtt.retain_available);
+        assert_eq!(mqtt.maximum_qos, QoS::AtMostOnce);
+        assert!(!mqtt.wildcard_subscription_available);
+        assert!(!mqtt.subscription_identifiers_available);
+        assert!(!mqtt.shared_subscription_available);
         assert_eq!(mqtt.broker_topic_alias_max(), 2);
 
         mqtt.reset_connection_scoped_state();
@@ -5251,7 +5609,34 @@ mod test {
             .unwrap();
         assert_eq!(mqtt.max_outgoing_inflight, 10);
         assert!(mqtt.retain_available);
+        assert_eq!(mqtt.maximum_qos, QoS::ExactlyOnce);
+        assert!(mqtt.wildcard_subscription_available);
+        assert!(mqtt.subscription_identifiers_available);
+        assert!(mqtt.shared_subscription_available);
         assert_eq!(mqtt.broker_topic_alias_max(), 0);
+    }
+
+    #[test]
+    fn state_rejects_constructed_connack_with_invalid_capability_values() {
+        for property_index in 0..5 {
+            let mut connack = build_capability_connack(None, None, None, None, None);
+            let properties = connack.properties.as_mut().unwrap();
+            match property_index {
+                0 => properties.max_qos = Some(2),
+                1 => properties.retain_available = Some(2),
+                2 => properties.wildcard_subscription_available = Some(2),
+                3 => properties.subscription_identifiers_available = Some(2),
+                4 => properties.shared_subscription_available = Some(2),
+                _ => unreachable!(),
+            }
+            let mut mqtt = build_mqttstate();
+
+            assert!(matches!(
+                mqtt.handle_incoming_packet(Incoming::ConnAck(connack)),
+                Err(StateError::Deserialization(super::MqttError::ProtocolError))
+            ));
+            assert!(!mqtt.connack_received);
+        }
     }
 
     #[test]

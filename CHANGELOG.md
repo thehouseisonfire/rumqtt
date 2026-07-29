@@ -41,6 +41,13 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc` v5: Validate duplicate and malformed CONNACK Maximum QoS, Retain Available,
+  Wildcard Subscription Available, Subscription Identifier Available, and Shared Subscription
+  Available properties, and enforce every advertised restriction for fresh, queued, and replayed
+  PUBLISH/SUBSCRIBE requests. Unsupported tracked requests now complete locally through
+  `PublishNoticeError::QoSNotSupported`, `PublishNoticeError::RetainNotSupported`, or the
+  corresponding capability-specific `SubscribeNoticeError` without closing the valid connection;
+  omitted properties restore their permissive MQTT defaults on reconnect.
 - `rumqttc` v5: Scope negotiated Server Keep Alive, Receive Maximum, Maximum Packet Size,
   Retain Available, and Topic Alias Maximum values to one network connection. Restore configured
   defaults when CONNACK omits them, enforce the client-advertised Receive Maximum for incoming
