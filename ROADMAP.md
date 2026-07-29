@@ -1,9 +1,5 @@
 # Rumqtt Roadmap
 
-## Memory Stability and Performance
-
-- Stable and fast memory usage
-
 ## Features
 
 - Full MQTT 5 support

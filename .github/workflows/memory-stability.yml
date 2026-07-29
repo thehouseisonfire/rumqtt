@@ -1,0 +1,31 @@
+name: Weekly memory stability
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  memory-stability:
+    name: Sustained v4 and v5 cgroup profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test result calculations
+        run: python3 -m unittest tests/low-memory/test_memory_stability_report.py
+
+      - name: Run the official memory-stability profile
+        run: scripts/test-memory-stability.sh --results-dir target/memory-stability/weekly-results
+
+      - name: Preserve memory-stability diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-stability-results
+          path: target/memory-stability/weekly-results
+          if-no-files-found: warn

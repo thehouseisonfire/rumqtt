@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Added
+- Testing: Add a sustained cgroup-v2 memory-stability acceptance profile for
+  both plain-TCP clients, with deterministic QoS 1 traffic, subscription churn,
+  broker restarts, objective growth/trend criteria, and preserved raw results.
 - `rumqttc` v5: Add `MqttStateBuilder::client_receive_maximum(u16)` and
   `MqttState::set_client_receive_maximum(Option<u16>)` for low-level clients
   enforcing the Receive Maximum they advertise in CONNECT.

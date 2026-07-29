@@ -17,3 +17,11 @@ path = "src/bin/v4.rs"
 [[bin]]
 name = "low-memory-v5"
 path = "src/bin/v5.rs"
+
+[[bin]]
+name = "memory-stability-v4"
+path = "src/bin/memory-stability-v4.rs"
+
+[[bin]]
+name = "memory-stability-v5"
+path = "src/bin/memory-stability-v5.rs"
