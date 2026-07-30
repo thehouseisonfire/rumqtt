@@ -232,6 +232,8 @@ pub enum StateError {
         reason_code: DisconnectReasonCode,
         reason_string: Option<String>,
     },
+    #[error("Server requested redirect: {0:?}")]
+    ServerRedirect(crate::RedirectOutcome),
     #[error("Connection failed with reason '{reason:?}' ")]
     ConnFail { reason: ConnectReturnCode },
     #[error("Connection closed by peer abruptly")]
@@ -1271,28 +1273,32 @@ impl MqttState {
         drained
     }
 
-    pub(crate) fn fail_pending_notices(&mut self) {
+    pub(crate) fn fail_pending_notices(&mut self, reason: NoticeFailureReason) {
         for notice in &mut self.outgoing_pub_notice {
             if let Some(tx) = notice.take() {
-                tx.error(PublishNoticeError::SessionReset);
+                tx.error(reason.publish_error());
             }
         }
 
         for notice in &mut self.outgoing_rel_notice {
             if let Some(tx) = notice.take() {
-                tx.error(PublishNoticeError::SessionReset);
+                tx.error(reason.publish_error());
             }
         }
 
         if let Some(tx) = self.collision_notice.take() {
-            tx.error(PublishNoticeError::SessionReset);
+            tx.error(reason.publish_error());
         }
-        self.drain_tracked_requests_as_failed(NoticeFailureReason::SessionReset);
+        self.drain_tracked_requests_as_failed(reason);
         self.clear_collision();
     }
 
     pub(crate) fn reset_session_state(&mut self) {
-        self.fail_pending_notices();
+        self.reset_session_state_with_reason(NoticeFailureReason::SessionReset);
+    }
+
+    pub(crate) fn reset_session_state_with_reason(&mut self, reason: NoticeFailureReason) {
+        self.fail_pending_notices(reason);
 
         let events = std::mem::take(&mut self.events);
         let auth = self.auth.clone();
@@ -1325,10 +1331,24 @@ impl MqttState {
         );
     }
 
+    pub(crate) fn fail_auth_exchange_due_to_redirect(&mut self) {
+        self.fail_auth_exchange(
+            AuthNoticeError::Redirected,
+            AuthError::Failed("authentication exchange crossed a redirect boundary".to_owned()),
+        );
+    }
+
     pub(crate) fn fail_reauth_exchange_due_to_session_reset(&mut self) {
-        let Some((method, notice_error)) = self
-            .auth
-            .reset_reauth(AuthNoticeError::SessionReset, &mut self.events)
+        self.fail_reauth_exchange_due_to(NoticeFailureReason::SessionReset);
+    }
+
+    pub(crate) fn fail_reauth_exchange_due_to_redirect(&mut self) {
+        self.fail_reauth_exchange_due_to(NoticeFailureReason::Redirected);
+    }
+
+    fn fail_reauth_exchange_due_to(&mut self, reason: NoticeFailureReason) {
+        let notice_error = reason.auth_error();
+        let Some((method, notice_error)) = self.auth.reset_reauth(notice_error, &mut self.events)
         else {
             return;
         };
@@ -1799,6 +1819,21 @@ impl MqttState {
 
     fn handle_incoming_disconn(disconn: &Disconnect) -> Result<Option<Packet>, StateError> {
         let reason_code = disconn.reason_code;
+        let redirect_reason = match reason_code {
+            DisconnectReasonCode::UseAnotherServer => Some(crate::RedirectReason::UseAnotherServer),
+            DisconnectReasonCode::ServerMoved => Some(crate::RedirectReason::ServerMoved),
+            _ => None,
+        };
+        if let Some(reason) = redirect_reason {
+            return Err(StateError::ServerRedirect(crate::RedirectOutcome {
+                reason,
+                server_reference: disconn
+                    .properties
+                    .as_ref()
+                    .and_then(|props| props.server_reference.clone()),
+                source: crate::RedirectSource::Disconnect,
+            }));
+        }
         let reason_string = disconn
             .properties
             .as_ref()
@@ -7132,7 +7167,7 @@ mod test {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
         mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
             .unwrap();
-        mqtt.fail_pending_notices();
+        mqtt.fail_pending_notices(NoticeFailureReason::SessionReset);
 
         let mut connack = build_connack_with_receive_max(10);
         connack.properties.as_mut().unwrap().authentication_method = Some(AUTH_METHOD.to_owned());
@@ -8952,5 +8987,43 @@ mod test {
             mqtt.events.pop_front(),
             Some(Event::Incoming(Incoming::Disconnect(disconnect)))
         );
+    }
+
+    #[test]
+    fn incoming_redirect_disconnect_correlates_reason_reference_and_source() {
+        for (reason_code, reason) in [
+            (
+                DisconnectReasonCode::UseAnotherServer,
+                crate::RedirectReason::UseAnotherServer,
+            ),
+            (
+                DisconnectReasonCode::ServerMoved,
+                crate::RedirectReason::ServerMoved,
+            ),
+        ] {
+            let mut mqtt = build_mqttstate();
+            let disconnect = Disconnect::new_with_properties(
+                reason_code,
+                DisconnectProperties {
+                    session_expiry_interval: None,
+                    reason_string: None,
+                    user_properties: vec![],
+                    server_reference: Some("backup.example:8883".to_owned()),
+                },
+            );
+
+            let error = mqtt
+                .handle_incoming_packet(Incoming::Disconnect(disconnect))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                StateError::ServerRedirect(crate::RedirectOutcome {
+                    reason: actual_reason,
+                    server_reference: Some(ref reference),
+                    source: crate::RedirectSource::Disconnect,
+                }) if actual_reason == reason && reference == "backup.example:8883"
+            ));
+            assert!(mqtt.events.is_empty());
+        }
     }
 }

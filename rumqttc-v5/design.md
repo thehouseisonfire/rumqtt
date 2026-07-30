@@ -111,6 +111,40 @@ The store is also cleared after a graceful DISCONNECT whose effective Session
 Expiry Interval is zero. A Session Expiry Interval on the client DISCONNECT
 overrides the CONNECT or CONNACK-derived value for that transition.
 
+## Broker Redirect Boundaries
+
+CONNACK and DISCONNECT reason codes `Use Another Server` and `Server Moved` are
+correlated with Server Reference before they reach generic connection-failure
+handling. Disabled, rejected, invalid, looping, exhausted, and failed redirects
+retain a `RedirectOutcome` containing the reason, raw reference, and source
+packet. Accepted policy decisions yield `Event::Redirect`; connection to the
+target starts on the next event-loop poll.
+
+The authority validator accepts the host, optional port, and bracketed IPv6
+forms suggested by MQTT 5 section 4.11. Schemes and URI components are rejected,
+and a policy can only select one of the validated advertised authorities. SRV
+names remain visible to policy but fail as unsupported before applying a
+transport default port, because the connector does not resolve DNS SRV targets.
+Normalized host and port identities plus a non-zero policy limit bound each
+redirect chain.
+
+A target is transactional: it is not committed until its successful CONNACK.
+Failure restores the previous connection options and reports both the redirect
+and target connection error. `Use Another Server` remains temporary and
+restores its predecessor after the target connection ends. `Server Moved`
+commits its target for the remaining lifetime of that `EventLoop`.
+
+An isolated target is a new security and session identity. Recognized CONNECT,
+enhanced-authentication, proxy, and websocket-header credentials are cleared;
+TLS configuration is explicitly supplied and verifies the target hostname; a
+fresh Client Identifier and clean zero-expiry session are used; and the old
+checkpoint remains stored under its old key. Pending tracked operations fail
+with redirect-specific notice errors rather than crossing the boundary.
+Applications can explicitly supply authentication, reuse a Client Identifier,
+or select a session-store scope. Live MQTT state is preserved only when both
+Client Identifier and store scope remain identical and session reuse was
+explicitly selected.
+
 ## Reason Codes and Completion
 
 MQTT 5 acknowledgement reason codes are application-visible protocol results,

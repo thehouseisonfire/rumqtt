@@ -389,3 +389,57 @@ for complete examples.
   `MqttOptions::new(..., Broker::unix(...))`. When the `url` feature is enabled,
   `MqttOptions::parse_url("unix:///tmp/mqtt.sock?client_id=...")` is also
   supported.
+
+## Broker redirects
+
+MQTT 5 brokers can return `Use Another Server` or `Server Moved` in CONNACK or
+DISCONNECT together with a Server Reference. rumqttc never changes endpoints
+silently: without a configured `RedirectPolicy`, polling returns a structured
+`ConnectionError::Redirect` containing the reason, reference, source packet,
+and `RedirectFailure::Disabled`.
+
+Automatic following is opt-in and bounded:
+
+```rust
+use std::num::NonZeroUsize;
+use rumqttc::{
+    MqttOptions, RedirectDecision, RedirectPolicy, RedirectTargetProfile, Transport,
+};
+
+let policy = RedirectPolicy::new(NonZeroUsize::new(3).unwrap(), |context| {
+    RedirectDecision::follow(RedirectTargetProfile::isolated(
+        context.references[0].clone(),
+        Transport::tcp(),
+    ))
+});
+let options = MqttOptions::builder("client", "primary.example")
+    .redirect_policy(policy)
+    .build();
+```
+
+An accepted decision yields `Event::Redirect` before the next `poll()` attempts
+the advertised target. Server References accept the MQTT authority forms
+`host`, `host:port`, and bracketed IPv6; URI schemes, paths, user information,
+and zero ports are rejected. SRV names are parsed for policy inspection but
+currently produce `RedirectFailure::UnsupportedTarget`, because target and port
+resolution through DNS SRV is not implemented. The built-in target application
+currently supports TCP broker targets, with `Transport::tcp()` or an explicitly
+supplied TLS transport. TLS verifies the redirected host name.
+
+`RedirectTargetProfile::isolated` is the security default. It clears CONNECT
+and enhanced authentication, proxy configuration, and websocket request
+modifiers; requests a fresh server-assigned Client Identifier; starts a clean
+zero-expiry session; disables the old session store; and fails pending tracked
+operations with their `Redirected` notice error. Supplying a TLS transport can
+explicitly reuse TLS client credentials. Authentication, Client Identifier,
+network credential hooks, and session scope have separate opt-in profile
+methods. An isolated redirect leaves the old endpoint's checkpoint untouched.
+
+`Use Another Server` applies to the redirected connection only and restores the
+previous endpoint after it ends. A successfully connected `Server Moved` target
+becomes the event loop's endpoint for its remaining lifetime. Redirect loops,
+unadvertised targets, policy rejection, attempt exhaustion, and target
+connection failures remain structured redirect errors; a failed target retains
+the broker's original redirect outcome and does not commit the new endpoint.
+If graceful or immediate client shutdown is already queued, shutdown takes
+precedence and no redirect policy or target transition is applied.

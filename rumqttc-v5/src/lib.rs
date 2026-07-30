@@ -40,6 +40,7 @@ mod framed;
 mod instrumentation;
 pub mod mqttbytes;
 mod notice;
+mod redirect;
 mod session;
 mod state;
 mod transport;
@@ -60,7 +61,7 @@ pub use client::{
     TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
 pub use eventloop::{
-    ConnectionError, Event, EventLoop, EventLoopDiagnostics, QueueDiagnostics,
+    ConnectionError, Event, EventLoop, EventLoopDiagnostics, QueueDiagnostics, RedirectDiagnostics,
     RuntimeConfigDiagnostics, SessionDiagnostics,
 };
 pub use mqttbytes::v5::*;
@@ -69,6 +70,11 @@ pub use notice::{
     AuthNotice, AuthNoticeError, NoticeFailureReason, PublishNotice, PublishNoticeError,
     PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
     UnsubscribeNoticeError,
+};
+pub use redirect::{
+    RedirectClientId, RedirectContext, RedirectDecision, RedirectError, RedirectFailure,
+    RedirectOutcome, RedirectPolicy, RedirectReason, RedirectReference, RedirectReferenceError,
+    RedirectSession, RedirectSource, RedirectTargetProfile, parse_server_references,
 };
 pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -598,6 +604,7 @@ impl From<&str> for AuthError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthFailureReason {
     SessionReset,
+    Redirected,
     ProtocolError,
     AuthenticationFailed(String),
     ConnectionClosed,
@@ -778,6 +785,7 @@ pub struct MqttOptions {
     session_store: Option<Arc<dyn SessionStore>>,
     /// Application-defined scope for durable session storage keys.
     session_store_scope: String,
+    redirect_policy: Option<RedirectPolicy>,
 }
 
 impl MqttOptions {
@@ -822,6 +830,7 @@ impl MqttOptions {
             authenticator: None,
             session_store: None,
             session_store_scope: String::new(),
+            redirect_policy: None,
         }
     }
 
@@ -924,6 +933,23 @@ impl MqttOptions {
     /// Broker target
     pub const fn broker(&self) -> &Broker {
         &self.broker
+    }
+
+    /// Set the opt-in bounded policy used for MQTT 5 broker redirects.
+    pub fn set_redirect_policy(&mut self, policy: RedirectPolicy) -> &mut Self {
+        self.redirect_policy = Some(policy);
+        self
+    }
+
+    /// Disable automatic MQTT 5 broker redirects.
+    pub fn clear_redirect_policy(&mut self) -> &mut Self {
+        self.redirect_policy = None;
+        self
+    }
+
+    /// Return the configured redirect policy, if any.
+    pub fn redirect_policy(&self) -> Option<RedirectPolicy> {
+        self.redirect_policy.clone()
     }
 
     /// Validate locally-checkable MQTT option invariants.
@@ -1958,6 +1984,13 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Set the opt-in bounded MQTT 5 broker redirect policy.
+    #[must_use]
+    pub fn redirect_policy(mut self, policy: RedirectPolicy) -> Self {
+        self.options.set_redirect_policy(policy);
+        self
+    }
+
     /// Set durable storage for MQTT 5 persistent client session state.
     ///
     /// See [`MqttOptions::set_session_store`] for persistence semantics.
@@ -2481,6 +2514,7 @@ impl Debug for MqttOptions {
             .field("ack_mode", &self.ack_mode)
             .field("connect properties", &self.connect_properties)
             .field("session_store", &self.session_store.is_some())
+            .field("redirect_policy", &self.redirect_policy)
             .finish_non_exhaustive()
     }
 }

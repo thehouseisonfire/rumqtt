@@ -11,30 +11,36 @@ use crate::{AuthFailureReason, AuthOutcome};
 pub enum NoticeFailureReason {
     /// Message dropped due to session reset.
     SessionReset,
+    /// Operation cannot cross an isolated broker redirect boundary.
+    Redirected,
 }
 
 impl NoticeFailureReason {
     pub(crate) const fn publish_error(self) -> PublishNoticeError {
         match self {
             Self::SessionReset => PublishNoticeError::SessionReset,
+            Self::Redirected => PublishNoticeError::Redirected,
         }
     }
 
     pub(crate) const fn subscribe_error(self) -> SubscribeNoticeError {
         match self {
             Self::SessionReset => SubscribeNoticeError::SessionReset,
+            Self::Redirected => SubscribeNoticeError::Redirected,
         }
     }
 
     pub(crate) const fn unsubscribe_error(self) -> UnsubscribeNoticeError {
         match self {
             Self::SessionReset => UnsubscribeNoticeError::SessionReset,
+            Self::Redirected => UnsubscribeNoticeError::Redirected,
         }
     }
 
     pub(crate) const fn auth_error(self) -> AuthNoticeError {
         match self {
             Self::SessionReset => AuthNoticeError::SessionReset,
+            Self::Redirected => AuthNoticeError::Redirected,
         }
     }
 }
@@ -65,6 +71,8 @@ pub enum PublishNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("message dropped at an isolated broker redirect boundary")]
+    Redirected,
     #[error("publish rejected because broker-only session resume has no local packet-id state")]
     BrokerOnlySessionResume,
     #[error("publish rejected because the broker does not support retained messages")]
@@ -195,6 +203,8 @@ pub enum SubscribeNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("subscribe dropped at an isolated broker redirect boundary")]
+    Redirected,
     #[error("subscribe rejected because broker-only session resume has no local packet-id state")]
     BrokerOnlySessionResume,
     #[error("subscribe rejected because the broker does not support wildcard subscriptions")]
@@ -278,6 +288,8 @@ pub enum UnsubscribeNoticeError {
     Recv,
     #[error("message dropped due to session reset")]
     SessionReset,
+    #[error("unsubscribe dropped at an isolated broker redirect boundary")]
+    Redirected,
     #[error("unsubscribe rejected because broker-only session resume has no local packet-id state")]
     BrokerOnlySessionResume,
     #[error("session state could not be persisted before unsubscribe completion: {0}")]
@@ -355,6 +367,8 @@ pub enum AuthNoticeError {
     Recv,
     #[error("authentication exchange was dropped due to session reset")]
     SessionReset,
+    #[error("authentication exchange was dropped at an isolated broker redirect boundary")]
+    Redirected,
     #[error("authentication exchange failed due to a protocol error")]
     ProtocolError,
     #[error("authentication failed: {0}")]
@@ -378,6 +392,7 @@ impl AuthFailureReason {
         match error {
             AuthNoticeError::Recv => Self::NoticeDropped,
             AuthNoticeError::SessionReset => Self::SessionReset,
+            AuthNoticeError::Redirected => Self::Redirected,
             AuthNoticeError::ProtocolError => Self::ProtocolError,
             AuthNoticeError::AuthenticationFailed(message) => Self::AuthenticationFailed(message),
             AuthNoticeError::ConnectionClosed => Self::ConnectionClosed,

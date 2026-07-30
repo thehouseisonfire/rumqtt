@@ -31,6 +31,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(Event::Incoming(packet)) => println!("Incoming = {packet:?}"),
             Ok(Event::Outgoing(packet)) => println!("Outgoing = {packet:?}"),
             Ok(Event::Auth(event)) => println!("Auth = {event:?}"),
+            Ok(Event::Redirect(redirect)) => println!("Redirect = {redirect:?}"),
             Err(error) => {
                 println!("Error = {error:?}");
                 return Ok(());

@@ -12,6 +12,11 @@ use crate::notice::{
 };
 use crate::session::{PersistedSession, SessionRestoreError, SessionStore, SessionStoreError};
 use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError, SubscribeNoticeError};
+use crate::{
+    RedirectClientId, RedirectContext, RedirectDecision, RedirectError, RedirectFailure,
+    RedirectOutcome, RedirectReason, RedirectSession, RedirectSource, RedirectTargetProfile,
+    parse_server_references, redirect::normalized_profile_key,
+};
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use rumqttc_core::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
@@ -20,6 +25,7 @@ use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
 use std::collections::VecDeque;
 use std::io;
+use std::net::Ipv6Addr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,6 +213,8 @@ pub enum ConnectionError {
     Io(#[from] io::Error),
     #[error("Connection refused, return code: `{0:?}`")]
     ConnectionRefused(ConnectReturnCode),
+    #[error(transparent)]
+    Redirect(#[from] RedirectError),
     #[error("Expected ConnAck packet, received: {0:?}")]
     NotConnAck(Box<Packet>),
     #[error("Broker replied with session_present={session_present} for clean_start={clean_start}")]
@@ -288,6 +296,8 @@ pub struct EventLoopDiagnostics {
     pub session: SessionDiagnostics,
     /// Configured and effective event-loop batching limits.
     pub config: RuntimeConfigDiagnostics,
+    /// MQTT 5 broker redirect lifecycle state.
+    pub redirect: RedirectDiagnostics,
 }
 
 /// Queue lengths observed by an [`EventLoop`].
@@ -343,6 +353,41 @@ pub struct RuntimeConfigDiagnostics {
     pub max_request_batch: usize,
 }
 
+/// Observation-only MQTT 5 broker redirect state.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedirectDiagnostics {
+    pub policy_configured: bool,
+    pub attempts: usize,
+    pub attempt_limit: Option<usize>,
+    pub visited_endpoints: usize,
+    pub active: bool,
+    pub target_established: bool,
+    pub reason: Option<RedirectReason>,
+}
+
+struct ActiveRedirect {
+    outcome: RedirectOutcome,
+    previous_options: MqttOptions,
+    origin_session: Option<RedirectOriginSession>,
+    session_preserved: bool,
+    established: bool,
+}
+
+struct RedirectOriginSession {
+    checkpoint: PersistedSession,
+    session_client_id: Option<String>,
+    session_store_key: Option<crate::SessionStoreKey>,
+    effective_session_expiry_interval: Option<u32>,
+    broker_only_session_resume: bool,
+}
+
+enum PendingServerRedirect {
+    HandshakeEvents(RedirectOutcome),
+    DrainEvents(RedirectOutcome),
+    Checkpoint(RedirectOutcome),
+}
+
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
     /// Options of the current mqtt connection
@@ -389,6 +434,11 @@ pub struct EventLoop {
     session_store: SessionStoreState,
     pending_disconnect: Option<PendingDisconnect>,
     disconnect_complete: bool,
+    active_redirect: Option<ActiveRedirect>,
+    pending_server_redirect: Option<PendingServerRedirect>,
+    pending_redirect_shutdown: bool,
+    redirect_attempts: usize,
+    redirect_visited: Vec<String>,
     #[cfg(feature = "tracing")]
     telemetry: crate::instrumentation::ConnectionTelemetry,
 }
@@ -400,6 +450,10 @@ pub enum Event {
     Incoming(Incoming),
     Outgoing(Outgoing),
     Auth(AuthEvent),
+    /// An application policy accepted an MQTT 5 broker redirect.
+    ///
+    /// The target connection is attempted by the next [`EventLoop::poll`] call.
+    Redirect(RedirectOutcome),
 }
 
 impl EventLoop {
@@ -550,6 +604,11 @@ impl EventLoop {
             session_store: SessionStoreState::new(),
             pending_disconnect: None,
             disconnect_complete: false,
+            active_redirect: None,
+            pending_server_redirect: None,
+            pending_redirect_shutdown: false,
+            redirect_attempts: 0,
+            redirect_visited: Vec::new(),
             #[cfg(feature = "tracing")]
             telemetry: crate::instrumentation::ConnectionTelemetry::default(),
         }
@@ -563,7 +622,29 @@ impl EventLoop {
     /// > Pending requests are managed internally by the event loop.
     /// > Use [`pending_len`](Self::pending_len) or [`pending_is_empty`](Self::pending_is_empty)
     /// > for observation-only checks.
+    /// >
+    /// > Cleaning an established temporary redirect restores its predecessor before returning.
     pub fn clean(&mut self) {
+        let temporary_redirect = self.active_redirect.as_ref().is_some_and(|active| {
+            active.established && active.outcome.reason == RedirectReason::UseAnotherServer
+        });
+        let isolated_temporary_redirect = temporary_redirect
+            && self
+                .active_redirect
+                .as_ref()
+                .is_some_and(|active| !active.session_preserved);
+        let reason = if isolated_temporary_redirect {
+            NoticeFailureReason::Redirected
+        } else {
+            NoticeFailureReason::SessionReset
+        };
+        self.clean_with_notice_reason(reason);
+        if temporary_redirect {
+            self.restore_redirect_origin();
+        }
+    }
+
+    fn clean_with_notice_reason(&mut self, reason: NoticeFailureReason) {
         #[cfg(feature = "tracing")]
         self.telemetry.finish_established_connection();
         self.network = None;
@@ -610,7 +691,14 @@ impl EventLoop {
             &self.diagnostics(),
         );
 
-        self.state.fail_auth_exchange_due_to_session_reset();
+        match reason {
+            NoticeFailureReason::SessionReset => {
+                self.state.fail_auth_exchange_due_to_session_reset();
+            }
+            NoticeFailureReason::Redirected => {
+                self.state.fail_auth_exchange_due_to_redirect();
+            }
+        }
         self.state.reset_connection_scoped_state();
         self.state.events.clear();
     }
@@ -675,7 +763,9 @@ impl EventLoop {
         let queued_len = self.queued.len();
         EventLoopDiagnostics {
             connected: self.network.is_some(),
-            disconnecting: self.pending_disconnect.is_some(),
+            disconnecting: self.pending_disconnect.is_some()
+                || self.pending_redirect_shutdown
+                || !self.immediate_disconnect_rx.is_empty(),
             disconnect_complete: self.disconnect_complete,
             queues: QueueDiagnostics {
                 pending_replay_len,
@@ -698,6 +788,24 @@ impl EventLoop {
                 configured_read_batch_size: self.options.read_batch_size(),
                 effective_read_batch_size: self.effective_read_batch_size(),
                 max_request_batch: self.options.max_request_batch(),
+            },
+            redirect: RedirectDiagnostics {
+                policy_configured: self.options.redirect_policy().is_some(),
+                attempts: self.redirect_attempts,
+                attempt_limit: self
+                    .options
+                    .redirect_policy()
+                    .map(|policy| policy.max_attempts().get()),
+                visited_endpoints: self.redirect_visited.len(),
+                active: self.active_redirect.is_some(),
+                target_established: self
+                    .active_redirect
+                    .as_ref()
+                    .is_some_and(|active| active.established),
+                reason: self
+                    .active_redirect
+                    .as_ref()
+                    .map(|active| active.outcome.reason),
             },
         }
     }
@@ -752,6 +860,23 @@ impl EventLoop {
         }
     }
 
+    fn drain_request_channels_as_failed(&mut self, reason: NoticeFailureReason) -> usize {
+        let mut drained = 0;
+        for envelope in self.requests_rx.drain() {
+            drained += 1;
+            if let Some(notice) = envelope.notice {
+                Self::fail_tracked_notice(notice, reason);
+            }
+        }
+        for envelope in self.control_requests_rx.drain() {
+            drained += 1;
+            if let Some(notice) = envelope.notice {
+                Self::fail_tracked_notice(notice, reason);
+            }
+        }
+        drained
+    }
+
     fn drop_unprocessed_requests(&mut self) {
         // These requests never became MQTT protocol state. Dropping their notice senders
         // resolves tracked handles with the existing Recv error.
@@ -768,6 +893,18 @@ impl EventLoop {
 
     fn reset_session_state_without_store_invalidation(&mut self) {
         self.reset_session_state_internal(SessionStoreResetAction::Keep);
+    }
+
+    fn reset_session_state_for_redirect(&mut self) {
+        self.drain_pending_as_failed(NoticeFailureReason::Redirected);
+        self.drain_request_channels_as_failed(NoticeFailureReason::Redirected);
+        self.state.fail_reauth_exchange_due_to_redirect();
+        self.state
+            .reset_session_state_with_reason(NoticeFailureReason::Redirected);
+        self.session_client_id = None;
+        self.session_store_key = None;
+        self.broker_only_session_resume = false;
+        self.session_store.loaded = false;
     }
 
     fn reset_session_state_internal(&mut self, store_reset: SessionStoreResetAction) {
@@ -1001,6 +1138,9 @@ impl EventLoop {
             for notice in notices {
                 notice.persistence_error(error.clone());
             }
+            if let StateError::ServerRedirect(outcome) = source {
+                self.pending_server_redirect = Some(PendingServerRedirect::DrainEvents(outcome));
+            }
             return err;
         }
 
@@ -1010,7 +1150,338 @@ impl EventLoop {
         ConnectionError::MqttState(source)
     }
 
-    async fn establish_connection(&mut self) -> Result<(), ConnectionError> {
+    fn clean_after_deferred_redirect_failure(&mut self) -> bool {
+        let outcome = match self.pending_server_redirect.take() {
+            Some(PendingServerRedirect::DrainEvents(outcome)) => outcome,
+            pending => {
+                self.pending_server_redirect = pending;
+                return false;
+            }
+        };
+
+        self.pending_redirect_shutdown |= self.redirect_shutdown_requested();
+        let events = std::mem::take(&mut self.state.events);
+        self.clean_with_notice_reason(NoticeFailureReason::Redirected);
+        self.state.events = events;
+        self.pending_server_redirect = Some(PendingServerRedirect::Checkpoint(outcome));
+        true
+    }
+
+    fn graceful_disconnect_requested(&mut self) -> bool {
+        if self.pending_disconnect.is_some()
+            || self
+                .pending
+                .iter()
+                .any(|envelope| is_graceful_disconnect_request(&envelope.request))
+            || self
+                .queued
+                .iter()
+                .any(|envelope| is_graceful_disconnect_request(&envelope.request))
+        {
+            return true;
+        }
+
+        let control_requests: Vec<_> = self.control_requests_rx.drain().collect();
+        let requested = control_requests
+            .iter()
+            .any(|envelope| is_graceful_disconnect_request(&envelope.request));
+        for envelope in control_requests {
+            self.queued.push_back(envelope);
+        }
+        requested
+    }
+
+    fn immediate_disconnect_requested(&mut self) -> bool {
+        let mut requested = false;
+        for envelope in self.immediate_disconnect_rx.drain() {
+            debug_assert!(matches!(envelope.request, Request::DisconnectNow(_)));
+            requested = true;
+        }
+        requested
+    }
+
+    fn redirect_shutdown_requested(&mut self) -> bool {
+        let graceful = self.graceful_disconnect_requested();
+        let immediate = self.immediate_disconnect_requested();
+        graceful || immediate
+    }
+
+    fn finish_redirected_shutdown(&mut self) -> ConnectionError {
+        self.pending_redirect_shutdown = false;
+        self.pending_disconnect = None;
+        self.drop_unprocessed_requests();
+        self.disconnect_complete = true;
+        ConnectionError::RequestsDone
+    }
+
+    fn current_redirect_endpoint_key(&self) -> Option<String> {
+        let transport = self.options.transport();
+        self.options
+            .broker()
+            .tcp_address()
+            .map(|(host, port)| normalized_profile_key(host, port, &transport))
+    }
+
+    fn redirect_origin_session(&self) -> Option<RedirectOriginSession> {
+        if self.options.clean_start()
+            || self.effective_session_expiry_interval.unwrap_or(0) == 0
+            || !self.has_local_session_state()
+        {
+            return None;
+        }
+
+        let pending_replay = self
+            .pending
+            .iter()
+            .filter(|envelope| envelope.replay)
+            .map(|envelope| &envelope.request);
+        let queued_replay = self
+            .queued
+            .iter()
+            .filter(|envelope| envelope.replay)
+            .map(|envelope| &envelope.request);
+        Some(RedirectOriginSession {
+            checkpoint: self.state.persisted_session(
+                &self.options,
+                self.effective_session_expiry_interval,
+                pending_replay.chain(queued_replay),
+            ),
+            session_client_id: self.session_client_id.clone(),
+            session_store_key: self.session_store_key.clone(),
+            effective_session_expiry_interval: self.effective_session_expiry_interval,
+            broker_only_session_resume: self.broker_only_session_resume,
+        })
+    }
+
+    fn restore_redirect_origin(&mut self) {
+        let Some(active) = self.active_redirect.take() else {
+            return;
+        };
+        self.options = active.previous_options;
+        if let Some(origin) = active.origin_session {
+            self.reset_session_state_for_redirect();
+            let replay = self
+                .state
+                .restore_persisted_session(&self.options, &origin.checkpoint)
+                .expect("an internally captured redirect session must remain restorable");
+            self.pending
+                .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
+            self.session_client_id = origin.session_client_id;
+            self.session_store_key = origin.session_store_key;
+            self.effective_session_expiry_interval = origin.effective_session_expiry_interval;
+            self.broker_only_session_resume = origin.broker_only_session_resume;
+            self.session_store.loaded = true;
+            self.session_store.clear_pending = false;
+        } else if active.session_preserved {
+            self.session_store.loaded = true;
+        } else {
+            self.reset_session_state_for_redirect();
+        }
+        self.redirect_attempts = 0;
+        self.redirect_visited.clear();
+    }
+
+    fn apply_redirect_profile(
+        &mut self,
+        profile: &RedirectTargetProfile,
+        default_port: u16,
+    ) -> bool {
+        let old_client_id = self.options.client_id();
+        let old_scope = self.options.session_store_scope().to_owned();
+        let old_authenticator = self.options.authenticator();
+
+        self.options.broker = crate::Broker::tcp(
+            profile.reference().host().to_owned(),
+            profile.reference().port().unwrap_or(default_port),
+        );
+        self.options.transport = profile.transport();
+
+        match profile.authentication_policy() {
+            Some(authentication) => {
+                self.options.set_auth(authentication.clone());
+                if !profile.reuses_authenticator() {
+                    self.options.authenticator = None;
+                    self.options.set_authentication_method(None);
+                    self.options.set_authentication_data(None);
+                } else {
+                    self.options.authenticator = old_authenticator;
+                }
+            }
+            None => {
+                self.options.clear_auth();
+                self.options.authenticator = None;
+                self.options.set_authentication_method(None);
+                self.options.set_authentication_data(None);
+            }
+        }
+        if !profile.reuses_network_credentials() {
+            #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+            {
+                self.options.proxy = None;
+            }
+            #[cfg(feature = "websocket")]
+            {
+                self.options.request_modifier = None;
+                self.options.fallible_request_modifier = None;
+            }
+        }
+
+        match profile.client_id_policy() {
+            RedirectClientId::Fresh => {
+                self.options.set_client_id(String::new());
+            }
+            RedirectClientId::Reuse => {}
+            RedirectClientId::Replace(client_id) => {
+                self.options.set_client_id(client_id.clone());
+            }
+        }
+
+        let preserve_session = match profile.session_policy() {
+            RedirectSession::Isolated => {
+                self.options.set_clean_start(true);
+                self.options.set_session_expiry_interval(Some(0));
+                self.options.clear_session_store();
+                self.options.clear_session_store_scope();
+                false
+            }
+            RedirectSession::Reuse { store_scope } => {
+                self.options.set_session_store_scope(store_scope.clone());
+                matches!(profile.client_id_policy(), RedirectClientId::Reuse)
+                    && old_client_id == self.options.client_id()
+                    && old_scope == *store_scope
+            }
+        };
+
+        if !preserve_session {
+            self.reset_session_state_for_redirect();
+        } else {
+            self.session_store.loaded = true;
+        }
+        preserve_session
+    }
+
+    fn redirect_failure(
+        &mut self,
+        outcome: RedirectOutcome,
+        failure: RedirectFailure,
+    ) -> ConnectionError {
+        if self.active_redirect.is_some() {
+            self.restore_redirect_origin();
+        }
+        RedirectError { outcome, failure }.into()
+    }
+
+    fn handle_redirect_outcome(
+        &mut self,
+        outcome: RedirectOutcome,
+    ) -> Result<Event, ConnectionError> {
+        if self.pending_redirect_shutdown || self.redirect_shutdown_requested() {
+            return Err(self.finish_redirected_shutdown());
+        }
+
+        let Some(policy) = self.options.redirect_policy() else {
+            return Err(self.redirect_failure(outcome, RedirectFailure::Disabled));
+        };
+
+        if self.redirect_attempts >= policy.max_attempts().get() {
+            return Err(self.redirect_failure(outcome, RedirectFailure::AttemptLimit));
+        }
+
+        let references = match parse_server_references(outcome.server_reference.as_deref()) {
+            Ok(references) => references,
+            Err(error) => {
+                return Err(
+                    self.redirect_failure(outcome, RedirectFailure::InvalidReference(error))
+                );
+            }
+        };
+        let context = RedirectContext {
+            outcome: &outcome,
+            references: &references,
+            attempt: self.redirect_attempts + 1,
+        };
+        let RedirectDecision::Follow(profile) = policy.decide(&context) else {
+            return Err(self.redirect_failure(outcome, RedirectFailure::Rejected));
+        };
+        if !references.contains(profile.reference()) {
+            return Err(self.redirect_failure(outcome, RedirectFailure::UnadvertisedTarget));
+        }
+
+        // SRV references need RFC 2782 target and port resolution. Treating the
+        // owner name as a host and applying a transport default can reach the
+        // wrong endpoint, so reject them until the connector supports SRV.
+        if profile.reference().is_srv_name() {
+            return Err(self.redirect_failure(outcome, RedirectFailure::UnsupportedTarget));
+        }
+        if self.options.broker().tcp_address().is_none() {
+            return Err(self.redirect_failure(outcome, RedirectFailure::UnsupportedTarget));
+        }
+        let Some(target_default_port) = profile.default_port() else {
+            return Err(self.redirect_failure(outcome, RedirectFailure::UnsupportedTarget));
+        };
+        if self.redirect_visited.is_empty() {
+            if let Some(endpoint) = self.current_redirect_endpoint_key() {
+                self.redirect_visited.push(endpoint);
+            }
+        }
+        let target_transport = profile.transport();
+        let endpoint = profile
+            .reference()
+            .endpoint_key(target_default_port, &target_transport);
+        if self.redirect_visited.contains(&endpoint) {
+            return Err(self.redirect_failure(outcome, RedirectFailure::Loop));
+        }
+
+        let current_origin_session = self.redirect_origin_session();
+        let (previous_options, previous_origin_session, previous_session_preserved) =
+            self.active_redirect.take().map_or_else(
+                || (self.options.clone(), current_origin_session, true),
+                |active| {
+                    (
+                        active.previous_options,
+                        active.origin_session,
+                        active.session_preserved,
+                    )
+                },
+            );
+        let hop_session_preserved = self.apply_redirect_profile(&profile, target_default_port);
+        let session_preserved = previous_session_preserved && hop_session_preserved;
+        self.redirect_attempts += 1;
+        self.redirect_visited.push(endpoint);
+        self.active_redirect = Some(ActiveRedirect {
+            outcome: outcome.clone(),
+            previous_options,
+            origin_session: if session_preserved {
+                None
+            } else {
+                previous_origin_session
+            },
+            session_preserved,
+            established: false,
+        });
+        Ok(Event::Redirect(outcome))
+    }
+
+    async fn establish_connection(&mut self) -> Result<Option<Event>, ConnectionError> {
+        let result = self.establish_connection_attempt().await;
+        let Some(active) = self.active_redirect.as_ref() else {
+            return result;
+        };
+        if active.established || result.is_ok() {
+            return result;
+        }
+
+        let error = result.unwrap_err();
+        let outcome = active.outcome.clone();
+        self.restore_redirect_origin();
+        Err(RedirectError {
+            outcome,
+            failure: RedirectFailure::FollowFailed(Box::new(error)),
+        }
+        .into())
+    }
+
+    async fn establish_connection_attempt(&mut self) -> Result<Option<Event>, ConnectionError> {
         self.reset_session_state_if_client_id_changed();
         self.load_persisted_session_if_needed().await?;
 
@@ -1036,6 +1507,14 @@ impl EventLoop {
                     failure.phase,
                     &failure.error,
                 );
+                if let ConnectionError::Redirect(redirect) = failure.error {
+                    if let Some(event) = self.state.events.pop_front() {
+                        self.pending_server_redirect =
+                            Some(PendingServerRedirect::HandshakeEvents(redirect.outcome));
+                        return Ok(Some(event));
+                    }
+                    return self.handle_redirect_outcome(redirect.outcome).map(Some);
+                }
                 return Err(failure.error);
             }
             Err(elapsed) => {
@@ -1093,6 +1572,15 @@ impl EventLoop {
         }
         self.network = Some(network);
 
+        if let Some(active) = self.active_redirect.as_mut() {
+            active.established = true;
+            if active.outcome.reason == RedirectReason::ServerMoved {
+                self.active_redirect = None;
+                self.redirect_attempts = 0;
+                self.redirect_visited.clear();
+            }
+        }
+
         if self.keepalive_timeout.is_none() && !self.effective_keep_alive.is_zero() {
             self.keepalive_timeout = Some(Box::pin(time::sleep(self.effective_keep_alive)));
         }
@@ -1103,7 +1591,7 @@ impl EventLoop {
             crate::instrumentation::connection_established(attempt, connack.session_present);
         }
 
-        Ok(())
+        Ok(None)
     }
 
     async fn handle_network_result(
@@ -1112,6 +1600,14 @@ impl EventLoop {
     ) -> Result<Event, ConnectionError> {
         match result {
             Ok(v) => Ok(v),
+            Err(ConnectionError::MqttState(StateError::ServerRedirect(outcome))) => {
+                if let Some(event) = self.state.events.pop_front() {
+                    self.pending_server_redirect =
+                        Some(PendingServerRedirect::DrainEvents(outcome));
+                    return Ok(event);
+                }
+                self.complete_server_redirect(outcome, true).await
+            }
             Err(ConnectionError::DisconnectTimeout) => {
                 let error = ConnectionError::DisconnectTimeout;
                 #[cfg(feature = "tracing")]
@@ -1135,7 +1631,7 @@ impl EventLoop {
                 // The timeout closes the network without sending DISCONNECT. Normalize
                 // all in-flight protocol state into replay envelopes before replacing
                 // the durable checkpoint, then discard terminal in-memory work.
-                self.clean();
+                self.clean_with_notice_reason(NoticeFailureReason::SessionReset);
                 self.disconnect_complete = true;
                 self.checkpoint_after_connection_loss().await?;
                 self.drop_unprocessed_requests();
@@ -1148,13 +1644,57 @@ impl EventLoop {
                     &e,
                     &self.diagnostics(),
                 );
+                if self.clean_after_deferred_redirect_failure() {
+                    return Err(e);
+                }
                 // MQTT requires that packets pending acknowledgement should be republished on session resume.
                 // Move pending messages from state to eventloop.
-                self.clean();
-                self.checkpoint_after_connection_loss().await?;
+                let restoring_isolated_redirect = self
+                    .active_redirect
+                    .as_ref()
+                    .is_some_and(|active| active.established && !active.session_preserved);
+                if restoring_isolated_redirect {
+                    self.clean_with_notice_reason(NoticeFailureReason::Redirected);
+                } else {
+                    self.clean_with_notice_reason(NoticeFailureReason::SessionReset);
+                }
+                let checkpoint = self.checkpoint_after_connection_loss().await;
+                let restore_temporary_origin = self
+                    .active_redirect
+                    .as_ref()
+                    .is_some_and(|active| active.established);
+                if restore_temporary_origin {
+                    self.restore_redirect_origin();
+                }
+                checkpoint?;
                 Err(e)
             }
         }
+    }
+
+    async fn complete_server_redirect(
+        &mut self,
+        outcome: RedirectOutcome,
+        cleanup_required: bool,
+    ) -> Result<Event, ConnectionError> {
+        self.pending_redirect_shutdown |= self.redirect_shutdown_requested();
+        if cleanup_required {
+            #[cfg(feature = "tracing")]
+            crate::instrumentation::connection_lost(
+                self.telemetry.last_attempt(),
+                &ConnectionError::MqttState(StateError::ServerRedirect(outcome.clone())),
+                &self.diagnostics(),
+            );
+            self.clean_with_notice_reason(NoticeFailureReason::Redirected);
+        }
+        if let Err(error) = self.checkpoint_after_connection_loss().await {
+            self.pending_server_redirect = Some(PendingServerRedirect::Checkpoint(outcome));
+            return Err(error);
+        }
+        if self.pending_redirect_shutdown {
+            return Err(self.finish_redirected_shutdown());
+        }
+        self.handle_redirect_outcome(outcome)
     }
 
     /// Yields Next notification or outgoing request and periodically pings
@@ -1171,13 +1711,35 @@ impl EventLoop {
             return Err(ConnectionError::RequestsDone);
         }
 
+        if self.pending_server_redirect.is_some() {
+            if let Some(event) = self.state.events.pop_front() {
+                return Ok(event);
+            }
+            let pending = self
+                .pending_server_redirect
+                .take()
+                .expect("pending redirect must be present");
+            let (outcome, cleanup_required) = match pending {
+                PendingServerRedirect::HandshakeEvents(outcome) => {
+                    return self.handle_redirect_outcome(outcome);
+                }
+                PendingServerRedirect::DrainEvents(outcome) => (outcome, true),
+                PendingServerRedirect::Checkpoint(outcome) => (outcome, false),
+            };
+            return self
+                .complete_server_redirect(outcome, cleanup_required)
+                .await;
+        }
+
         if self.network.is_none() {
             if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
                 self.disconnect_complete = true;
                 drop(envelope.notice);
                 return Err(ConnectionError::RequestsDone);
             }
-            self.establish_connection().await?;
+            if let Some(event) = self.establish_connection().await? {
+                return Ok(event);
+            }
         }
 
         let result = self.select().await;
@@ -1952,6 +2514,13 @@ const fn is_disconnect_request(request: &Request) -> bool {
     )
 }
 
+const fn is_graceful_disconnect_request(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _)
+    )
+}
+
 /// This stream internally processes requests from the request stream provided to the eventloop
 /// while also consuming byte stream from the network and yielding mqtt packets as the output of
 /// the stream.
@@ -1990,6 +2559,18 @@ async fn connect(
         .map_err(|error| ConnectFailure::new(error, "mqtt_handshake"))?;
 
     Ok((network, connack))
+}
+
+fn socket_address(host: &str, port: u16) -> String {
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    if unbracketed.parse::<Ipv6Addr>().is_ok() {
+        format!("[{unbracketed}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 #[expect(clippy::too_many_lines)]
@@ -2048,14 +2629,14 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 )
                 .await?
         } else {
-            let addr = format!("{domain}:{port}");
+            let addr = socket_address(&domain, port);
             options
                 .socket_connect(addr, options.network_options())
                 .await?
         }
         #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
         {
-            let addr = format!("{domain}:{port}");
+            let addr = socket_address(&domain, port);
             options
                 .socket_connect(addr, options.network_options())
                 .await?
@@ -2150,7 +2731,11 @@ async fn mqtt_connect(
 
     let result = mqtt_connect_inner(options, network, state, connect_properties).await;
     if result.is_err() && auth_exchange_started {
-        state.fail_auth_exchange_due_to_connection_closed();
+        if matches!(&result, Err(ConnectionError::Redirect(_))) {
+            state.fail_auth_exchange_due_to_redirect();
+        } else {
+            state.fail_auth_exchange_due_to_connection_closed();
+        }
     }
     result
 }
@@ -2195,6 +2780,26 @@ async fn mqtt_connect_inner(
                 }
 
                 if connack.code != ConnectReturnCode::Success {
+                    let redirect_reason = match connack.code {
+                        ConnectReturnCode::UseAnotherServer => {
+                            Some(RedirectReason::UseAnotherServer)
+                        }
+                        ConnectReturnCode::ServerMoved => Some(RedirectReason::ServerMoved),
+                        _ => None,
+                    };
+                    if let Some(reason) = redirect_reason {
+                        return Err(ConnectionError::Redirect(RedirectError {
+                            outcome: RedirectOutcome {
+                                reason,
+                                server_reference: connack
+                                    .properties
+                                    .as_ref()
+                                    .and_then(|properties| properties.server_reference.clone()),
+                                source: RedirectSource::ConnAck,
+                            },
+                            failure: RedirectFailure::Disabled,
+                        }));
+                    }
                     return Err(ConnectionError::ConnectionRefused(connack.code));
                 }
 
@@ -3574,6 +4179,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_batch_persistence_retains_server_redirect_for_next_poll() {
+        let store = CapturingSessionStore::new();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("test-client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone())
+            .set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop.session_store.loaded = true;
+        store.fail_next_save();
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::Disconnect,
+            Some("backup.example"),
+        );
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        let error = ReadBatchError {
+            source: StateError::ServerRedirect(outcome.clone()),
+            batch: ReadBatch {
+                outcome: ReadBatchOutcome::NoResponseWritten,
+                notices: vec![DeferredNotice::Publish(
+                    notice_tx,
+                    PublishResult::Qos1(PubAck::new(1, None)),
+                )],
+            },
+        };
+        let preceding_publish = Publish::new("before/redirect", QoS::AtMostOnce, vec![1], None);
+        let preceding_event = Event::Incoming(Incoming::Publish(preceding_publish));
+        eventloop.state.events.push_back(preceding_event.clone());
+
+        let persistence_error = eventloop.complete_failed_read_batch(error).await;
+        assert!(matches!(
+            persistence_error,
+            ConnectionError::SessionStore(_)
+        ));
+        assert!(matches!(
+            eventloop
+                .handle_network_result(Err(persistence_error))
+                .await,
+            Err(ConnectionError::SessionStore(_))
+        ));
+        assert!(matches!(
+            &eventloop.pending_server_redirect,
+            Some(PendingServerRedirect::Checkpoint(pending)) if pending == &outcome
+        ));
+        assert!(matches!(
+            notice.wait_async().await,
+            Err(PublishNoticeError::SessionPersistence(_))
+        ));
+
+        assert_eq!(eventloop.poll().await.unwrap(), preceding_event);
+        assert_eq!(eventloop.poll().await.unwrap(), Event::Redirect(outcome));
+        assert!(eventloop.pending_server_redirect.is_none());
+    }
+
+    #[tokio::test]
     async fn read_batch_subscribe_notice_reports_persistence_failure_before_success() {
         let mut eventloop = eventloop_with_failing_session_store();
         let (notice_tx, notice) = SubscribeNoticeTx::new();
@@ -3997,6 +4667,36 @@ mod tests {
                 ConnectReturnCode::ClientIdentifierNotValid
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_correlates_both_connack_redirect_reasons_and_references() {
+        for (code, reason) in [
+            (
+                ConnectReturnCode::UseAnotherServer,
+                RedirectReason::UseAnotherServer,
+            ),
+            (ConnectReturnCode::ServerMoved, RedirectReason::ServerMoved),
+        ] {
+            let options = MqttOptions::new("test-client", "localhost");
+            let mut connack = build_connack_with_receive_max(10);
+            connack.code = code;
+            connack.properties.as_mut().unwrap().server_reference =
+                Some("backup.example:8883".to_owned());
+
+            let result = run_successful_mqtt_connect_with_connack(options, connack).await;
+            assert!(matches!(
+                result,
+                Err(ConnectionError::Redirect(RedirectError {
+                    outcome: RedirectOutcome {
+                        reason: actual_reason,
+                        server_reference: Some(ref reference),
+                        source: RedirectSource::ConnAck,
+                    },
+                    failure: RedirectFailure::Disabled,
+                })) if actual_reason == reason && reference == "backup.example:8883"
+            ));
+        }
     }
 
     #[tokio::test]
@@ -7760,6 +8460,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enhanced_auth_events_are_drained_before_a_connack_redirect() {
+        const AUTH_METHOD: &str = "SCRAM-SHA-256";
+
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let attempted_endpoints = Arc::new(Mutex::new(Vec::new()));
+        let captured_endpoints = attempted_endpoints.clone();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("test-client", "primary.example");
+        options
+            .set_authentication_method(Some(AUTH_METHOD.to_owned()))
+            .set_auth_manager(Arc::new(Mutex::new(StaticAuthManager {
+                response: Ok(Some(AuthProperties {
+                    method: Some(AUTH_METHOD.to_owned()),
+                    ..Default::default()
+                })),
+            })))
+            .set_redirect_policy(policy)
+            .set_socket_connector(move |endpoint, _network_options| {
+                let peer_tx = peer_tx.clone();
+                let captured_endpoints = captured_endpoints.clone();
+                async move {
+                    captured_endpoints.lock().unwrap().push(endpoint.clone());
+                    if endpoint == "primary.example:1883" {
+                        let (client, peer) = tokio::io::duplex(1024);
+                        peer_tx.send(peer).unwrap();
+                        Ok(client)
+                    } else {
+                        Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            "redirect target not available",
+                        ))
+                    }
+                }
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+
+            let mut challenge = BytesMut::new();
+            Packet::Auth(Auth::new(
+                AuthReasonCode::Continue,
+                Some(AuthProperties {
+                    method: Some(AUTH_METHOD.to_owned()),
+                    ..Default::default()
+                }),
+            ))
+            .write(&mut challenge, None)
+            .unwrap();
+            peer.write_all(&challenge).await.unwrap();
+            let _auth_reply = read_packet_bytes(&mut peer).await;
+
+            let mut connack = build_connack_with_authentication_method(Some(AUTH_METHOD));
+            connack.code = ConnectReturnCode::UseAnotherServer;
+            connack.properties.as_mut().unwrap().server_reference =
+                Some("backup.example".to_owned());
+            let mut encoded = BytesMut::new();
+            connack.write(&mut encoded).unwrap();
+            peer.write_all(&encoded).await.unwrap();
+        });
+
+        let mut saw_incoming_auth = false;
+        let mut saw_redirect_failure = false;
+        let mut saw_redirect = false;
+        for _ in 0..12 {
+            let event = eventloop.poll().await.unwrap();
+            assert_eq!(
+                attempted_endpoints.lock().unwrap().as_slice(),
+                ["primary.example:1883"],
+                "redirect target was attempted before original handshake events drained"
+            );
+            match event {
+                Event::Incoming(Incoming::Auth(_)) => saw_incoming_auth = true,
+                Event::Auth(crate::AuthEvent::Failed {
+                    reason: crate::AuthFailureReason::Redirected,
+                    ..
+                }) => saw_redirect_failure = true,
+                Event::Auth(_) | Event::Outgoing(Outgoing::Auth) => {}
+                Event::Redirect(_) => {
+                    saw_redirect = true;
+                    break;
+                }
+                other => panic!("unexpected pre-redirect handshake event: {other:?}"),
+            }
+        }
+        broker.await.unwrap();
+        assert!(saw_incoming_auth);
+        assert!(saw_redirect_failure);
+        assert!(saw_redirect);
+
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::FollowFailed(_),
+                ..
+            }))
+        ));
+        assert_eq!(
+            attempted_endpoints.lock().unwrap().as_slice(),
+            ["primary.example:1883", "backup.example:1883"]
+        );
+    }
+
+    #[tokio::test]
     async fn duplicate_connack_after_connection_establishment_sends_protocol_error_disconnect() {
         let (peer_tx, peer_rx) = flume::bounded(1);
         let mut options = MqttOptions::new("test-client", "localhost");
@@ -8064,5 +8875,1377 @@ mod tests {
             Packet::read(&mut second_stream, Some(1024)).unwrap(),
             Packet::PingReq
         ));
+    }
+
+    fn redirect_outcome(
+        reason: RedirectReason,
+        source: RedirectSource,
+        reference: Option<&str>,
+    ) -> RedirectOutcome {
+        RedirectOutcome {
+            reason,
+            source,
+            server_reference: reference.map(str::to_owned),
+        }
+    }
+
+    #[cfg(feature = "use-rustls-no-provider")]
+    fn redirect_test_tls_transport() -> Transport {
+        Transport::tls(Vec::new(), None, None)
+    }
+
+    #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
+    fn redirect_test_tls_transport() -> Transport {
+        Transport::tls_with_default_config()
+    }
+
+    #[test]
+    fn redirect_is_structured_when_policy_is_disabled() {
+        let mut eventloop = EventLoop::new(MqttOptions::new("client", "localhost"), 1);
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::ConnAck,
+            Some("backup.example:8883"),
+        );
+
+        let error = eventloop
+            .handle_redirect_outcome(outcome.clone())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ConnectionError::Redirect(RedirectError {
+                outcome: actual,
+                failure: RedirectFailure::Disabled,
+            }) if actual == outcome
+        ));
+    }
+
+    #[tokio::test]
+    async fn batched_events_are_delivered_before_a_redirect_transition() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_read_batch_size(10).set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(10)))
+            .unwrap();
+        eventloop.state.events.clear();
+
+        let (client, mut broker) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        let publish = Publish::new(
+            "redirect/batch",
+            QoS::AtMostOnce,
+            b"before redirect".to_vec(),
+            None,
+        );
+        let disconnect = Disconnect::new_with_properties(
+            DisconnectReasonCode::UseAnotherServer,
+            crate::DisconnectProperties {
+                session_expiry_interval: None,
+                reason_string: None,
+                user_properties: vec![],
+                server_reference: Some("backup.example".to_owned()),
+            },
+        );
+        let mut packets = BytesMut::new();
+        publish.write(&mut packets).unwrap();
+        disconnect.write(&mut packets).unwrap();
+        broker.write_all(&packets).await.unwrap();
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Incoming::Publish(actual))
+                if actual.topic == "redirect/batch"
+                    && actual.payload == Bytes::from_static(b"before redirect")
+        ));
+        assert!(eventloop.pending_server_redirect.is_some());
+        assert!(eventloop.network.is_some());
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Redirect(RedirectOutcome {
+                reason: RedirectReason::UseAnotherServer,
+                source: RedirectSource::Disconnect,
+                ..
+            })
+        ));
+        assert!(eventloop.pending_server_redirect.is_none());
+        assert!(eventloop.network.is_none());
+    }
+
+    #[tokio::test]
+    async fn isolated_connack_redirect_fails_requests_still_waiting_in_channels() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let (mut eventloop, request_tx, control_tx, _immediate_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(2),
+            );
+        let (publish_tx, publish_notice) = PublishNoticeTx::new();
+        request_tx
+            .try_send(RequestEnvelope::tracked_publish(
+                Publish::new("queued", QoS::AtLeastOnce, vec![1], None),
+                publish_tx,
+            ))
+            .unwrap();
+        let (auth_tx, auth_notice) = AuthNoticeTx::new();
+        control_tx
+            .try_send(RequestEnvelope::tracked_auth(
+                Auth::new(AuthReasonCode::ReAuthenticate, None),
+                auth_tx,
+            ))
+            .unwrap();
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("backup.example"),
+            ))
+            .unwrap();
+
+        assert!(eventloop.requests_rx.is_empty());
+        assert!(eventloop.control_requests_rx.is_empty());
+        assert_eq!(
+            publish_notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::Redirected
+        );
+        assert_eq!(
+            auth_notice.wait_async().await.unwrap_err(),
+            crate::notice::AuthNoticeError::Redirected
+        );
+    }
+
+    #[test]
+    fn queued_graceful_disconnect_prevents_following_a_connack_redirect() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let (mut eventloop, _request_tx, control_tx, _immediate_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(1),
+            );
+        control_tx
+            .try_send(RequestEnvelope::plain(Request::Disconnect(
+                Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            )))
+            .unwrap();
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("temporary.example"),
+            )),
+            Err(ConnectionError::RequestsDone)
+        ));
+        assert!(eventloop.disconnect_complete);
+        assert!(eventloop.active_redirect.is_none());
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+    }
+
+    #[test]
+    fn queued_immediate_disconnect_prevents_following_a_connack_redirect() {
+        let policy_calls = Arc::new(Mutex::new(0));
+        let captured_policy_calls = policy_calls.clone();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), move |context| {
+                *captured_policy_calls.lock().unwrap() += 1;
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let (mut eventloop, _request_tx, _control_tx, immediate_tx) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(1),
+            );
+        immediate_tx
+            .try_send(RequestEnvelope::plain(Request::DisconnectNow(
+                Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            )))
+            .unwrap();
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("temporary.example"),
+            )),
+            Err(ConnectionError::RequestsDone)
+        ));
+        assert_eq!(*policy_calls.lock().unwrap(), 0);
+        assert!(eventloop.immediate_disconnect_rx.is_empty());
+        assert!(eventloop.disconnect_complete);
+        assert!(eventloop.active_redirect.is_none());
+        assert_eq!(eventloop.redirect_attempts, 0);
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+    }
+
+    #[tokio::test]
+    async fn active_graceful_disconnect_prevents_following_a_server_redirect() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            Some(Duration::from_secs(10)),
+        ));
+
+        assert!(matches!(
+            eventloop
+                .complete_server_redirect(
+                    redirect_outcome(
+                        RedirectReason::UseAnotherServer,
+                        RedirectSource::Disconnect,
+                        Some("temporary.example"),
+                    ),
+                    true,
+                )
+                .await,
+            Err(ConnectionError::RequestsDone)
+        ));
+        assert!(eventloop.disconnect_complete);
+        assert!(eventloop.pending_disconnect.is_none());
+        assert!(eventloop.active_redirect.is_none());
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_disconnect_fails_active_reauthentication_as_redirected() {
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let mut eventloop = EventLoop::new(options, 1);
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            eventloop
+                .complete_server_redirect(
+                    redirect_outcome(
+                        RedirectReason::ServerMoved,
+                        RedirectSource::Disconnect,
+                        Some("backup.example"),
+                    ),
+                    true,
+                )
+                .await,
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Disabled,
+                ..
+            }))
+        ));
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            crate::notice::AuthNoticeError::Redirected
+        );
+    }
+
+    #[test]
+    fn accepted_redirect_is_observable_and_isolates_connection_identity() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "localhost");
+        options
+            .set_credentials("user", "secret")
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store_scope("primary")
+            .set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_publish(
+                Publish::new("pending", QoS::AtLeastOnce, vec![1], None),
+                notice_tx,
+            ));
+        let outcome = redirect_outcome(
+            RedirectReason::ServerMoved,
+            RedirectSource::Disconnect,
+            Some("backup.example:8883 other.example"),
+        );
+
+        assert_eq!(
+            eventloop.handle_redirect_outcome(outcome.clone()).unwrap(),
+            Event::Redirect(outcome)
+        );
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("backup.example", 8883))
+        );
+        assert!(eventloop.options.client_id().is_empty());
+        assert!(matches!(eventloop.options.auth(), crate::ConnectAuth::None));
+        assert!(eventloop.options.clean_start());
+        assert_eq!(eventloop.options.session_expiry_interval(), Some(0));
+        assert!(eventloop.options.session_store().is_none());
+        assert_eq!(eventloop.redirect_attempts, 1);
+        assert_eq!(notice.wait(), Err(PublishNoticeError::Redirected));
+    }
+
+    #[test]
+    fn redirect_policy_rejection_loop_and_attempt_limit_are_structured() {
+        let reject = crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |_| {
+            RedirectDecision::Reject
+        });
+        let mut rejected_options = MqttOptions::new("client", "localhost");
+        rejected_options.set_redirect_policy(reject);
+        let mut rejected = EventLoop::new(rejected_options, 1);
+        assert!(matches!(
+            rejected.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("backup.example")
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Rejected,
+                ..
+            }))
+        ));
+
+        let follow =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "localhost");
+        options.set_redirect_policy(follow);
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("backup.example"),
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("third.example")
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::AttemptLimit,
+                ..
+            }))
+        ));
+
+        let follow =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "localhost");
+        options.set_redirect_policy(follow);
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("backup.example"),
+            ))
+            .unwrap();
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("localhost")
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Loop,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn every_hop_in_an_isolated_redirect_chain_applies_its_target_profile() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("first-hop.example:1884"),
+            ))
+            .unwrap();
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("first-hop.example", 1884))
+        );
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("second-hop.example:1885"),
+            ))
+            .unwrap();
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("second-hop.example", 1885))
+        );
+        assert_eq!(eventloop.redirect_attempts, 2);
+        assert_eq!(eventloop.redirect_visited.len(), 3);
+        assert_eq!(
+            eventloop
+                .active_redirect
+                .as_ref()
+                .unwrap()
+                .previous_options
+                .broker()
+                .tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(
+            !eventloop
+                .active_redirect
+                .as_ref()
+                .unwrap()
+                .session_preserved
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_after_uncommitted_server_moved_restores_the_original_target() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_redirect_policy(policy)
+            .set_socket_connector(|_host, _network_options| async {
+                Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "target unavailable",
+                ))
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::ConnAck,
+                Some("permanent.example"),
+            ))
+            .unwrap();
+        let temporary = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::ConnAck,
+            Some("temporary.example"),
+        );
+        eventloop
+            .handle_redirect_outcome(temporary.clone())
+            .unwrap();
+
+        let error = eventloop.establish_connection().await.unwrap_err();
+        assert!(matches!(
+            error,
+            ConnectionError::Redirect(RedirectError {
+                outcome,
+                failure: RedirectFailure::FollowFailed(source),
+            }) if outcome == temporary && matches!(*source, ConnectionError::Io(_))
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(eventloop.active_redirect.is_none());
+    }
+
+    #[tokio::test]
+    async fn server_moved_after_temporary_hop_restores_the_original_target_on_failure() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_redirect_policy(policy)
+            .set_socket_connector(|_host, _network_options| async {
+                Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "target unavailable",
+                ))
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("temporary.example"),
+            ))
+            .unwrap();
+        let permanent = redirect_outcome(
+            RedirectReason::ServerMoved,
+            RedirectSource::ConnAck,
+            Some("permanent.example"),
+        );
+        eventloop
+            .handle_redirect_outcome(permanent.clone())
+            .unwrap();
+
+        let error = eventloop.establish_connection().await.unwrap_err();
+        assert!(matches!(
+            error,
+            ConnectionError::Redirect(RedirectError {
+                outcome,
+                failure: RedirectFailure::FollowFailed(source),
+            }) if outcome == permanent && matches!(*source, ConnectionError::Io(_))
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(eventloop.active_redirect.is_none());
+    }
+
+    #[test]
+    fn invalid_and_unsupported_redirect_targets_are_structured() {
+        let follow =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "localhost");
+        options.set_redirect_policy(follow.clone());
+        let mut eventloop = EventLoop::new(options, 1);
+
+        for (reference, expected) in [
+            (None, crate::RedirectReferenceError::Missing),
+            (
+                Some("mqtt://backup.example"),
+                crate::RedirectReferenceError::Scheme,
+            ),
+            (
+                Some("backup.example:0"),
+                crate::RedirectReferenceError::InvalidPort,
+            ),
+        ] {
+            assert!(matches!(
+                eventloop.handle_redirect_outcome(redirect_outcome(
+                    RedirectReason::UseAnotherServer,
+                    RedirectSource::ConnAck,
+                    reference,
+                )),
+                Err(ConnectionError::Redirect(RedirectError {
+                    failure: RedirectFailure::InvalidReference(actual),
+                    ..
+                })) if actual == expected
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            let mut options = MqttOptions::new("client", crate::Broker::unix("/tmp/mqtt.sock"));
+            options.set_redirect_policy(follow);
+            let mut eventloop = EventLoop::new(options, 1);
+            assert!(matches!(
+                eventloop.handle_redirect_outcome(redirect_outcome(
+                    RedirectReason::UseAnotherServer,
+                    RedirectSource::Disconnect,
+                    Some("backup.example"),
+                )),
+                Err(ConnectionError::Redirect(RedirectError {
+                    failure: RedirectFailure::UnsupportedTarget,
+                    ..
+                }))
+            ));
+        }
+    }
+
+    #[test]
+    fn srv_redirect_targets_are_rejected_before_defaulting_the_port() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", crate::Broker::tcp("primary.example", 2883));
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::ConnAck,
+            Some("_mqtt._tcp.example.com"),
+        );
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(outcome.clone()),
+            Err(ConnectionError::Redirect(RedirectError {
+                outcome: actual,
+                failure: RedirectFailure::UnsupportedTarget,
+            })) if actual == outcome
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 2883))
+        );
+        assert_eq!(eventloop.redirect_attempts, 0);
+        assert!(eventloop.active_redirect.is_none());
+    }
+
+    #[test]
+    fn host_only_tcp_redirect_uses_the_target_transport_default_port() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", crate::Broker::tcp("primary.example", 2883));
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::ConnAck,
+                Some("tcp-target.example"),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("tcp-target.example", 1883))
+        );
+        assert!(
+            eventloop
+                .redirect_visited
+                .contains(&"tcp://tcp-target.example:1883".to_owned())
+        );
+    }
+
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[test]
+    fn host_only_tls_redirect_uses_the_target_transport_default_port() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    redirect_test_tls_transport(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", crate::Broker::tcp("primary.example", 2883));
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::ConnAck,
+                Some("tls-target.example"),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("tls-target.example", 8883))
+        );
+        assert!(matches!(eventloop.options.transport(), Transport::Tls(_)));
+        assert!(
+            eventloop
+                .redirect_visited
+                .contains(&"tls://tls-target.example:8883".to_owned())
+        );
+    }
+
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[test]
+    fn redirect_loop_identity_distinguishes_tcp_from_tls() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    redirect_test_tls_transport(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", crate::Broker::tcp("broker.example", 1883));
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::Disconnect,
+            Some("broker.example:1883"),
+        );
+
+        assert_eq!(
+            eventloop.handle_redirect_outcome(outcome.clone()).unwrap(),
+            Event::Redirect(outcome)
+        );
+        assert_eq!(
+            eventloop.redirect_visited,
+            [
+                "tcp://broker.example:1883".to_owned(),
+                "tls://broker.example:1883".to_owned(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_same_identity_session_reuse_preserves_pending_work_without_reloading() {
+        let store = ClearFailingSessionStore::new();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .client_id(RedirectClientId::Reuse)
+                    .session(RedirectSession::Reuse {
+                        store_scope: "cluster-a".to_owned(),
+                    }),
+                )
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_store(store.clone())
+            .set_session_store_scope("cluster-a")
+            .set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop.session_store.loaded = true;
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain(Request::Publish(Publish::new(
+                "pending",
+                QoS::AtLeastOnce,
+                vec![1],
+                None,
+            ))));
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::Disconnect,
+                Some("backup.example"),
+            ))
+            .unwrap();
+
+        assert_eq!(eventloop.pending.len(), 1);
+        assert_eq!(eventloop.options.client_id(), "client");
+        assert_eq!(eventloop.options.session_store_scope(), "cluster-a");
+        assert!(!eventloop.options.clean_start());
+        assert!(eventloop.session_store.loaded);
+
+        eventloop.load_persisted_session_if_needed().await.unwrap();
+        assert_eq!(store.load_count(), 0);
+        assert_eq!(eventloop.pending.len(), 1);
+    }
+
+    #[test]
+    fn ipv6_origin_and_redirect_reference_use_the_same_loop_key() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", crate::Broker::tcp("0:0:0:0:0:0:0:1", 1883));
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::Disconnect,
+                Some("[::1]:1883"),
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Loop,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn dns_root_dot_does_not_bypass_redirect_loop_detection() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "broker.example");
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("broker.example."),
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Loop,
+                ..
+            }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_failure_retains_redirect_for_retry() {
+        let store = CapturingSessionStore::new();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone())
+            .set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop.session_store.loaded = true;
+        store.fail_next_save();
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::Disconnect,
+            Some("backup.example"),
+        );
+
+        assert!(matches!(
+            eventloop
+                .complete_server_redirect(outcome.clone(), true)
+                .await,
+            Err(ConnectionError::SessionStore(_))
+        ));
+        assert!(matches!(
+            &eventloop.pending_server_redirect,
+            Some(PendingServerRedirect::Checkpoint(pending)) if pending == &outcome
+        ));
+
+        assert_eq!(eventloop.poll().await.unwrap(), Event::Redirect(outcome));
+        assert!(eventloop.pending_server_redirect.is_none());
+        assert_eq!(store.history().len(), 1);
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("backup.example", 1883))
+        );
+    }
+
+    #[tokio::test]
+    async fn post_connack_redirect_failure_restores_origin_and_preserves_redirect() {
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_redirect_policy(policy)
+            .set_socket_connector(move |_host, _network_options| {
+                let peer_tx = peer_tx.clone();
+                async move {
+                    let (client, peer) = tokio::io::duplex(1024);
+                    peer_tx.send(peer).unwrap();
+                    Ok(client)
+                }
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::Disconnect,
+            Some("backup.example"),
+        );
+        eventloop.handle_redirect_outcome(outcome.clone()).unwrap();
+
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            let _connect = read_packet_bytes(&mut peer).await;
+            let mut connack = build_connack_with_receive_max(10);
+            connack.session_present = true;
+            connack
+                .properties
+                .as_mut()
+                .unwrap()
+                .assigned_client_identifier = Some("redirect-client".to_owned());
+            let mut encoded = BytesMut::new();
+            connack.write(&mut encoded).unwrap();
+            peer.write_all(&encoded).await.unwrap();
+        });
+
+        let error = eventloop.establish_connection().await.unwrap_err();
+        broker.await.unwrap();
+        assert!(matches!(
+            error,
+            ConnectionError::Redirect(RedirectError {
+                outcome: actual,
+                failure: RedirectFailure::FollowFailed(source),
+            }) if actual == outcome
+                && matches!(*source, ConnectionError::SessionStateMismatch { .. })
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(eventloop.active_redirect.is_none());
+    }
+
+    #[tokio::test]
+    async fn redirected_connection_failure_preserves_redirect_and_restores_origin() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_redirect_policy(policy)
+            .set_socket_connector(|_host, _network_options| async {
+                Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "target unavailable",
+                ))
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::ConnAck,
+            Some("backup.example"),
+        );
+        eventloop.handle_redirect_outcome(outcome.clone()).unwrap();
+
+        let error = eventloop.establish_connection().await.unwrap_err();
+        assert!(matches!(
+            error,
+            ConnectionError::Redirect(RedirectError {
+                outcome: actual,
+                failure: RedirectFailure::FollowFailed(source),
+            }) if actual == outcome && matches!(*source, ConnectionError::Io(_))
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(eventloop.active_redirect.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_temporary_isolated_redirect_restores_the_in_memory_origin_session() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_redirect_policy(policy)
+            .set_socket_connector(|_host, _network_options| async {
+                Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "target unavailable",
+                ))
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop.state.last_pkid = 7;
+        let mut replay = Publish::new("origin/replay", QoS::AtLeastOnce, vec![1], None);
+        replay.pkid = 7;
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain_replay(Request::Publish(replay)));
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("temporary.example"),
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            eventloop.establish_connection().await,
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::FollowFailed(_),
+                ..
+            }))
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert_eq!(eventloop.state.last_pkid, 7);
+        assert_eq!(eventloop.pending.len(), 1);
+        assert!(eventloop.has_local_session_state());
+        eventloop.reconcile_connack_session(true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnected_temporary_isolated_redirect_restores_the_in_memory_origin_session() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop.state.last_pkid = 7;
+        let mut replay = Publish::new("origin/replay", QoS::AtLeastOnce, vec![1], None);
+        replay.pkid = 7;
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain_replay(Request::Publish(replay)));
+
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("temporary.example"),
+            ))
+            .unwrap();
+        eventloop.active_redirect.as_mut().unwrap().established = true;
+
+        assert!(matches!(
+            eventloop
+                .handle_network_result(Err(ConnectionError::MqttState(
+                    StateError::ConnectionAborted,
+                )))
+                .await,
+            Err(ConnectionError::MqttState(StateError::ConnectionAborted))
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert_eq!(eventloop.state.last_pkid, 7);
+        assert_eq!(eventloop.pending.len(), 1);
+        assert!(eventloop.has_local_session_state());
+        eventloop.reconcile_connack_session(true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ipv6_redirect_brackets_the_direct_dial_address() {
+        let attempted_endpoints = Arc::new(Mutex::new(Vec::new()));
+        let captured_endpoints = attempted_endpoints.clone();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy).set_socket_connector(
+            move |endpoint, _network_options| {
+                let captured_endpoints = captured_endpoints.clone();
+                async move {
+                    captured_endpoints.lock().unwrap().push(endpoint);
+                    Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "connection refused",
+                    ))
+                }
+            },
+        );
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("[2001:db8::1]:1884"),
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            eventloop.establish_connection().await,
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::FollowFailed(_),
+                ..
+            }))
+        ));
+        assert_eq!(
+            attempted_endpoints.lock().unwrap().as_slice(),
+            ["[2001:db8::1]:1884"]
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_isolated_target_work_fails_as_redirected_on_origin_restore() {
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("temporary.example"),
+            ))
+            .unwrap();
+        eventloop.active_redirect.as_mut().unwrap().established = true;
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_publish(
+                Publish::new("temporary/work", QoS::AtLeastOnce, vec![1], None),
+                notice_tx,
+            ));
+
+        assert!(matches!(
+            eventloop
+                .handle_network_result(Err(ConnectionError::MqttState(
+                    StateError::ConnectionAborted,
+                )))
+                .await,
+            Err(ConnectionError::MqttState(StateError::ConnectionAborted))
+        ));
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::Redirected
+        );
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+    }
+
+    #[tokio::test]
+    async fn public_clean_restores_an_established_temporary_redirect() {
+        let attempted_endpoints = Arc::new(Mutex::new(Vec::new()));
+        let captured_endpoints = attempted_endpoints.clone();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                ))
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_redirect_policy(policy)
+            .set_socket_connector(move |endpoint, _network_options| {
+                let captured_endpoints = captured_endpoints.clone();
+                async move {
+                    captured_endpoints.lock().unwrap().push(endpoint);
+                    Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "connection refused",
+                    ))
+                }
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("temporary.example"),
+            ))
+            .unwrap();
+        eventloop.active_redirect.as_mut().unwrap().established = true;
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::tracked_publish(
+                Publish::new("temporary/work", QoS::AtLeastOnce, vec![1], None),
+                notice_tx,
+            ));
+
+        eventloop.clean();
+
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::Redirected
+        );
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(eventloop.active_redirect.is_none());
+        assert!(eventloop.has_local_session_state());
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::Io(_))
+        ));
+        assert_eq!(
+            attempted_endpoints.lock().unwrap().as_slice(),
+            ["primary.example:1883"]
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_target_checkpoint_failure_restores_origin_before_next_poll() {
+        let store = CapturingSessionStore::new();
+        let attempted_endpoints = Arc::new(Mutex::new(Vec::new()));
+        let captured_endpoints = attempted_endpoints.clone();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .client_id(RedirectClientId::Reuse)
+                    .session(RedirectSession::Reuse {
+                        store_scope: "cluster-a".to_owned(),
+                    }),
+                )
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone())
+            .set_session_store_scope("cluster-a")
+            .set_redirect_policy(policy)
+            .set_socket_connector(move |endpoint, _network_options| {
+                let captured_endpoints = captured_endpoints.clone();
+                async move {
+                    captured_endpoints.lock().unwrap().push(endpoint);
+                    Err::<tokio::io::DuplexStream, _>(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "connection refused",
+                    ))
+                }
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+        mark_local_session(&mut eventloop);
+        eventloop.session_store.loaded = true;
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("temporary.example"),
+            ))
+            .unwrap();
+        eventloop.active_redirect.as_mut().unwrap().established = true;
+        store.fail_next_save();
+
+        assert!(matches!(
+            eventloop
+                .handle_network_result(Err(ConnectionError::MqttState(
+                    StateError::ConnectionAborted,
+                )))
+                .await,
+            Err(ConnectionError::SessionStore(_))
+        ));
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+        assert!(eventloop.active_redirect.is_none());
+
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::Io(_))
+        ));
+        assert_eq!(
+            attempted_endpoints.lock().unwrap().as_slice(),
+            ["primary.example:1883"]
+        );
     }
 }

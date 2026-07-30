@@ -4,6 +4,15 @@
 - Testing: Add a sustained cgroup-v2 memory-stability acceptance profile for
   both plain-TCP clients, with deterministic QoS 1 traffic, subscription churn,
   broker restarts, objective growth/trend criteria, and preserved raw results.
+- `rumqttc` v5: Add explicit bounded MQTT 5 broker redirects through
+  `RedirectPolicy`, `RedirectTargetProfile`, `RedirectOutcome`, `Event::Redirect`,
+  and structured `ConnectionError::Redirect` failures. CONNACK and DISCONNECT
+  `Use Another Server`/`Server Moved` responses now retain their Server Reference
+  and source packet, validate MQTT authority targets, detect loops, and preserve
+  the original redirect when a target connection fails. SRV references are
+  exposed to redirect policy but fail as unsupported until DNS SRV target and
+  port resolution is available. Queued graceful and immediate disconnects take
+  precedence over following a redirect.
 - `rumqttc` v5: Add `MqttStateBuilder::client_receive_maximum(u16)` and
   `MqttState::set_client_receive_maximum(Option<u16>)` for low-level clients
   enforcing the Receive Maximum they advertise in CONNECT.
@@ -69,6 +78,12 @@
   dispatch; invalid TLS backend combinations now return
   `UnsupportedBackendConfiguration`.
 ### Security
+- `rumqttc` v5 redirects are disabled by default. Isolated redirect profiles
+  clear CONNECT/enhanced authentication, proxy and websocket credential hooks,
+  Client Identifier, and session/checkpoint reuse unless the application
+  explicitly opts each boundary back in. TLS identity is derived from the
+  redirected hostname, and old endpoint checkpoints are not loaded or deleted
+  by an isolated target.
 
 ---
 

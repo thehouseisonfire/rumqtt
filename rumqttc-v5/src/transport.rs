@@ -45,6 +45,40 @@ impl Default for Transport {
 }
 
 impl Transport {
+    pub(crate) const fn redirect_identity(&self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+            Self::Tls(_) => "tls",
+            #[cfg(unix)]
+            Self::Unix => "unix",
+            #[cfg(feature = "websocket")]
+            Self::Ws => "ws",
+            #[cfg(all(
+                any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+                feature = "websocket"
+            ))]
+            Self::Wss(_) => "wss",
+        }
+    }
+
+    pub(crate) const fn redirect_default_port(&self) -> Option<u16> {
+        match self {
+            Self::Tcp => Some(1883),
+            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+            Self::Tls(_) => Some(8883),
+            #[cfg(unix)]
+            Self::Unix => None,
+            #[cfg(feature = "websocket")]
+            Self::Ws => None,
+            #[cfg(all(
+                any(feature = "use-rustls-no-provider", feature = "use-native-tls"),
+                feature = "websocket"
+            ))]
+            Self::Wss(_) => None,
+        }
+    }
+
     /// Use regular tcp as transport (default)
     #[must_use]
     pub const fn tcp() -> Self {

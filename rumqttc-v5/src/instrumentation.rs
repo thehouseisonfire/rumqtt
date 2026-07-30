@@ -193,6 +193,7 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         ConnectionError::Tls(_) => "tls",
         ConnectionError::ConnectionRefused(_) => "refused",
+        ConnectionError::Redirect(_) => "redirect",
         ConnectionError::SessionStore(_) => "session_store",
         ConnectionError::SessionRestore(_) => "session_restore",
         ConnectionError::BrokerTransportMismatch => "configuration",
