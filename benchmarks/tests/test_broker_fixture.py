@@ -259,7 +259,7 @@ class BrokerFixtureTests(unittest.TestCase):
             )
 
         self.assertEqual(command[0], sys.executable)
-        self.assertIn("benchmarks/runner.py", command[1])
+        self.assertEqual(Path(command[1]), broker_fixture.BENCHMARKS_DIR / "runner.py")
         self.assertIn("mqtts://localhost:18883", command)
         self.assertIn("--ca-cert", command)
         self.assertIn(str(ca_cert), command)
@@ -324,15 +324,24 @@ class BrokerFixtureTests(unittest.TestCase):
 
     def test_system_mosquitto_websocket_probe_reports_unsupported(self):
         with tempfile.TemporaryDirectory() as temp:
-            fake_mosquitto = Path(temp) / "fake_mosquitto.py"
-            fake_mosquitto.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "print('Error: Websockets support not available.', file=sys.stderr)\n"
-                "raise SystemExit(1)\n",
-                encoding="utf-8",
-            )
-            fake_mosquitto.chmod(0o755)
+            if os.name == "nt":
+                fake_mosquitto = Path(temp) / "fake_mosquitto.bat"
+                fake_mosquitto.write_text(
+                    "@echo off\r\n"
+                    "echo Error: Websockets support not available. 1>&2\r\n"
+                    "exit /b 1\r\n",
+                    encoding="utf-8",
+                )
+            else:
+                fake_mosquitto = Path(temp) / "fake_mosquitto"
+                fake_mosquitto.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import sys\n"
+                    "print('Error: Websockets support not available.', file=sys.stderr)\n"
+                    "raise SystemExit(1)\n",
+                    encoding="utf-8",
+                )
+                fake_mosquitto.chmod(0o755)
 
             supported, message = broker_fixture.probe_system_mosquitto_websockets(str(fake_mosquitto))
 
