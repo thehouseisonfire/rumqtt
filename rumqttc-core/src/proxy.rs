@@ -39,6 +39,22 @@ enum ProxyKind {
     Socks5,
 }
 
+impl fmt::Debug for ProxyKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(feature = "http-proxy")]
+            Self::Http => formatter.write_str("Http"),
+            #[cfg(all(
+                feature = "http-proxy",
+                any(feature = "use-rustls-no-provider", feature = "use-native-tls")
+            ))]
+            Self::Https(_) => formatter.write_str("Https"),
+            #[cfg(feature = "socks-proxy")]
+            Self::Socks5 => formatter.write_str("Socks5"),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ProxyCredentials {
     username: String,
@@ -58,7 +74,7 @@ impl fmt::Debug for Proxy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = formatter.debug_struct("Proxy");
         debug
-            .field("protocol", &self.protocol())
+            .field("kind", &self.kind)
             .field("host", &self.host)
             .field("port", &self.port);
 
@@ -145,6 +161,7 @@ impl Proxy {
         self
     }
 
+    #[must_use]
     pub const fn protocol(&self) -> ProxyProtocol {
         match self.kind {
             #[cfg(feature = "http-proxy")]
@@ -159,14 +176,17 @@ impl Proxy {
         }
     }
 
+    #[must_use]
     pub fn host(&self) -> &str {
         &self.host
     }
 
+    #[must_use]
     pub const fn port(&self) -> u16 {
         self.port
     }
 
+    #[must_use]
     pub const fn has_credentials(&self) -> bool {
         self.credentials.is_some()
     }

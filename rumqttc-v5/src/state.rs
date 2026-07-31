@@ -184,7 +184,7 @@ pub enum StateError {
     /// Invalid state for a given operation
     #[error("Invalid state for a given operation")]
     InvalidState,
-    /// Sending another QoS 1/2 PUBLISH would exceed the broker's Receive Maximum.
+    /// Sending another `QoS` 1/2 PUBLISH would exceed the broker's Receive Maximum.
     #[error(
         "Cannot send another QoS 1/2 PUBLISH because the broker's Receive Maximum of {maximum} is exhausted"
     )]
@@ -247,7 +247,7 @@ pub enum StateError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UnsupportedBrokerCapability {
+pub enum UnsupportedBrokerCapability {
     RetainedPublish,
     PublishQoS { requested: QoS, maximum: QoS },
     SubscriptionIdentifiers,
@@ -425,6 +425,7 @@ impl IncomingPacketEffects {
 // Bad acks or out of order acks aren't O(n) causing cpu spikes
 // Any missing acks from the broker are detected during the next recycled use of packet ids
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MqttState {
     ping: PingState,
     /// Last incoming packet time
@@ -437,7 +438,7 @@ pub struct MqttState {
     pub(crate) last_puback: u16,
     /// Number of outgoing inflight publishes
     pub(crate) inflight: u16,
-    /// Outgoing QoS 1/2 publishes consuming broker Receive Maximum quota on this connection.
+    /// Outgoing `QoS` 1/2 publishes consuming broker Receive Maximum quota on this connection.
     outgoing_publish_quota: FixedBitSet,
     /// Outgoing `QoS` 1, 2 publishes which aren't acked yet
     pub(crate) outgoing_pub: Vec<Option<Publish>>,
@@ -457,9 +458,9 @@ pub struct MqttState {
     pub(crate) incoming_pub: FixedBitSet,
     /// Packet ids on incoming `QoS` 2 publishes for which PUBREC has been sent
     pub(crate) incoming_pubrec: FixedBitSet,
-    /// Incoming QoS 1/2 publishes consuming Receive Maximum quota on this connection.
+    /// Incoming `QoS` 1/2 publishes consuming Receive Maximum quota on this connection.
     incoming_publish_quota: FixedBitSet,
-    /// Number of incoming QoS 1/2 publishes consuming quota on this connection.
+    /// Number of incoming `QoS` 1/2 publishes consuming quota on this connection.
     incoming_inflight: u16,
     /// Receive Maximum advertised by the client for this connection.
     max_incoming_inflight: u16,
@@ -484,7 +485,7 @@ pub struct MqttState {
     connack_received: bool,
     /// Whether the broker supports retained messages on the current network connection.
     retain_available: bool,
-    /// Highest outgoing PUBLISH QoS accepted by the broker on the current connection.
+    /// Highest outgoing PUBLISH `QoS` accepted by the broker on the current connection.
     maximum_qos: QoS,
     /// Whether the broker supports wildcard subscriptions on the current connection.
     wildcard_subscription_available: bool,

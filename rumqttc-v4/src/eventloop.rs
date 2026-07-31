@@ -1149,45 +1149,52 @@ impl EventLoop {
                     .network
                     .as_mut()
                     .expect("connected event loop must have an active network")
-                    .readb(&mut self.state, read_batch_size) => {
-                    let batch = match o {
-                        Ok(batch) => batch,
-                        Err(err) => {
-                            return Err(self.complete_failed_read_batch(err).await);
-                        }
-                    };
-                    let outcome = self.complete_read_batch(batch).await?;
-                    if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
-                        self.reset_keepalive_timeout();
-                    }
-                    Ok(self
-                        .state
-                        .events
-                        .pop_front()
-                        .expect("successful network read must queue an event"))
-                },
+                    .readb(&mut self.state, read_batch_size) => self.handle_network_read(o).await,
                 () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
                     if self.keepalive_timeout.is_some() && !self.mqtt_options.keep_alive.is_zero() => {
-                    let (outgoing, _flush_notice) = self
-                        .state
-                        .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
-                    if let Some(outgoing) = outgoing {
-                        self.network
-                            .as_mut()
-                            .expect("connected event loop must have an active network")
-                            .write(outgoing)
-                            .await?;
-                    }
-                    self.flush_network().await?;
-                    self.reset_keepalive_timeout();
-                    Ok(self
-                        .state
-                        .events
-                        .pop_front()
-                        .expect("successful ping transition must queue an event"))
+                    self.handle_keepalive_ping().await
                 }
             };
         }
+    }
+
+    async fn handle_network_read(
+        &mut self,
+        batch: Result<ReadBatch, ReadBatchError>,
+    ) -> Result<Event, ConnectionError> {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(err) => return Err(self.complete_failed_read_batch(err).await),
+        };
+        let outcome = self.complete_read_batch(batch).await?;
+        if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
+            self.reset_keepalive_timeout();
+        }
+        Ok(self
+            .state
+            .events
+            .pop_front()
+            .expect("successful network read must queue an event"))
+    }
+
+    async fn handle_keepalive_ping(&mut self) -> Result<Event, ConnectionError> {
+        let (outgoing, _flush_notice) = self
+            .state
+            .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
+        if let Some(outgoing) = outgoing {
+            self.network
+                .as_mut()
+                .expect("connected event loop must have an active network")
+                .write(outgoing)
+                .await?;
+        }
+        self.flush_network().await?;
+        self.reset_keepalive_timeout();
+        Ok(self
+            .state
+            .events
+            .pop_front()
+            .expect("successful ping transition must queue an event"))
     }
 
     async fn handle_immediate_disconnect(

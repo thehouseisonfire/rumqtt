@@ -94,16 +94,18 @@ impl Connect {
         auth: &ConnectAuth,
         buffer: &mut BytesMut,
     ) -> Result<usize, Error> {
-        transactional_write(buffer, |buffer| self.write_inner(will, auth, buffer))
+        transactional_write(buffer, |buffer| {
+            self.write_inner(will.as_ref(), auth, buffer)
+        })
     }
 
     fn write_inner(
         &self,
-        will: &Option<LastWill>,
+        will: Option<&LastWill>,
         auth: &ConnectAuth,
         buffer: &mut BytesMut,
     ) -> Result<usize, Error> {
-        let len = self.len(will.as_ref(), auth);
+        let len = self.len(will, auth);
 
         buffer.put_u8(0b0001_0000);
         let count = write_remaining_length(buffer, len)?;

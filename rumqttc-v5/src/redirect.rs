@@ -58,7 +58,7 @@ impl RedirectReference {
     }
 }
 
-pub(crate) fn normalized_profile_key(host: &str, port: u16, transport: &Transport) -> String {
+pub fn normalized_profile_key(host: &str, port: u16, transport: &Transport) -> String {
     format!(
         "{}://{}",
         transport.redirect_identity(),
@@ -66,18 +66,19 @@ pub(crate) fn normalized_profile_key(host: &str, port: u16, transport: &Transpor
     )
 }
 
-pub(crate) fn normalized_endpoint_key(host: &str, port: u16) -> String {
+pub fn normalized_endpoint_key(host: &str, port: u16) -> String {
     let unbracketed = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    if let Ok(address) = unbracketed.parse::<Ipv6Addr>() {
-        format!("[{address}]:{port}")
-    } else {
-        let host = host.to_ascii_lowercase();
-        let host = host.strip_suffix('.').unwrap_or(&host);
-        format!("{host}:{port}")
-    }
+    unbracketed.parse::<Ipv6Addr>().map_or_else(
+        |_| {
+            let host = host.to_ascii_lowercase();
+            let host = host.strip_suffix('.').unwrap_or(&host);
+            format!("{host}:{port}")
+        },
+        |address| format!("[{address}]:{port}"),
+    )
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -97,6 +98,11 @@ pub enum RedirectReferenceError {
 }
 
 /// Parse the space-separated authority list described by MQTT 5 section 4.11.
+///
+/// # Errors
+///
+/// Returns a [`RedirectReferenceError`] if the value is missing, empty, or
+/// contains an invalid authority.
 pub fn parse_server_references(
     value: Option<&str>,
 ) -> Result<Vec<RedirectReference>, RedirectReferenceError> {
@@ -213,7 +219,7 @@ pub struct RedirectTargetProfile {
 impl RedirectTargetProfile {
     /// Construct a profile which clears authentication and starts an isolated clean session.
     #[must_use]
-    pub fn isolated(reference: RedirectReference, transport: Transport) -> Self {
+    pub const fn isolated(reference: RedirectReference, transport: Transport) -> Self {
         Self {
             reference,
             transport,
@@ -258,13 +264,13 @@ impl RedirectTargetProfile {
     /// These hooks can carry endpoint credentials, so isolated profiles clear
     /// them unless this method is called.
     #[must_use]
-    pub fn reuse_network_credentials(mut self) -> Self {
+    pub const fn reuse_network_credentials(mut self) -> Self {
         self.reuse_network_credentials = true;
         self
     }
 
     #[must_use]
-    pub fn reference(&self) -> &RedirectReference {
+    pub const fn reference(&self) -> &RedirectReference {
         &self.reference
     }
 
@@ -276,15 +282,15 @@ impl RedirectTargetProfile {
         self.transport.redirect_default_port()
     }
 
-    pub(crate) fn client_id_policy(&self) -> &RedirectClientId {
+    pub(crate) const fn client_id_policy(&self) -> &RedirectClientId {
         &self.client_id
     }
 
-    pub(crate) fn session_policy(&self) -> &RedirectSession {
+    pub(crate) const fn session_policy(&self) -> &RedirectSession {
         &self.session
     }
 
-    pub(crate) fn authentication_policy(&self) -> Option<&ConnectAuth> {
+    pub(crate) const fn authentication_policy(&self) -> Option<&ConnectAuth> {
         self.authentication.as_ref()
     }
 

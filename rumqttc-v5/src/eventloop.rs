@@ -860,7 +860,7 @@ impl EventLoop {
         }
     }
 
-    fn drain_request_channels_as_failed(&mut self, reason: NoticeFailureReason) -> usize {
+    fn drain_request_channels_as_failed(&self, reason: NoticeFailureReason) -> usize {
         let mut drained = 0;
         for envelope in self.requests_rx.drain() {
             drained += 1;
@@ -1191,7 +1191,7 @@ impl EventLoop {
         requested
     }
 
-    fn immediate_disconnect_requested(&mut self) -> bool {
+    fn immediate_disconnect_requested(&self) -> bool {
         let mut requested = false;
         for envelope in self.immediate_disconnect_rx.drain() {
             debug_assert!(matches!(envelope.request, Request::DisconnectNow(_)));
@@ -1296,23 +1296,20 @@ impl EventLoop {
         );
         self.options.transport = profile.transport();
 
-        match profile.authentication_policy() {
-            Some(authentication) => {
-                self.options.set_auth(authentication.clone());
-                if !profile.reuses_authenticator() {
-                    self.options.authenticator = None;
-                    self.options.set_authentication_method(None);
-                    self.options.set_authentication_data(None);
-                } else {
-                    self.options.authenticator = old_authenticator;
-                }
-            }
-            None => {
-                self.options.clear_auth();
+        if let Some(authentication) = profile.authentication_policy() {
+            self.options.set_auth(authentication.clone());
+            if profile.reuses_authenticator() {
+                self.options.authenticator = old_authenticator;
+            } else {
                 self.options.authenticator = None;
                 self.options.set_authentication_method(None);
                 self.options.set_authentication_data(None);
             }
+        } else {
+            self.options.clear_auth();
+            self.options.authenticator = None;
+            self.options.set_authentication_method(None);
+            self.options.set_authentication_data(None);
         }
         if !profile.reuses_network_credentials() {
             #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
@@ -1352,10 +1349,10 @@ impl EventLoop {
             }
         };
 
-        if !preserve_session {
-            self.reset_session_state_for_redirect();
-        } else {
+        if preserve_session {
             self.session_store.loaded = true;
+        } else {
+            self.reset_session_state_for_redirect();
         }
         preserve_session
     }
@@ -1528,7 +1525,8 @@ impl EventLoop {
         self.apply_connack_session_expiry_interval(&connack);
 
         #[cfg(feature = "tracing")]
-        self.reconcile_connack_session(connack.session_present)
+        self.reconcile_connack_session_and_persisted_state(connack.session_present)
+            .await
             .inspect_err(|error| {
                 crate::instrumentation::connection_attempt_failed(
                     attempt,
@@ -1537,22 +1535,8 @@ impl EventLoop {
                 );
             })?;
         #[cfg(not(feature = "tracing"))]
-        self.reconcile_connack_session(connack.session_present)?;
-
-        if !connack.session_present {
-            #[cfg(feature = "tracing")]
-            self.clear_persisted_session_or_block_reload()
-                .await
-                .inspect_err(|error| {
-                    crate::instrumentation::connection_attempt_failed(
-                        attempt,
-                        "session_reconciliation",
-                        error,
-                    );
-                })?;
-            #[cfg(not(feature = "tracing"))]
-            self.clear_persisted_session_or_block_reload().await?;
-        }
+        self.reconcile_connack_session_and_persisted_state(connack.session_present)
+            .await?;
 
         if let Err(source) = self
             .state
@@ -1592,6 +1576,17 @@ impl EventLoop {
         }
 
         Ok(None)
+    }
+
+    async fn reconcile_connack_session_and_persisted_state(
+        &mut self,
+        session_present: bool,
+    ) -> Result<(), ConnectionError> {
+        self.reconcile_connack_session(session_present)?;
+        if !session_present {
+            self.clear_persisted_session_or_block_reload().await?;
+        }
+        Ok(())
     }
 
     async fn handle_network_result(
@@ -1706,6 +1701,10 @@ impl EventLoop {
     ///
     /// Returns a [`ConnectionError`] if connecting, reading, writing, or
     /// protocol handling fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a pending server redirect is expected but missing.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
         if self.disconnect_complete {
             return Err(ConnectionError::RequestsDone);
@@ -1851,45 +1850,52 @@ impl EventLoop {
                     .network
                     .as_mut()
                     .expect("connected event loop must have an active network")
-                    .readb(&mut self.state, read_batch_size) => {
-                    let batch = match o {
-                        Ok(batch) => batch,
-                        Err(err) => {
-                            return Err(self.complete_failed_read_batch(err).await);
-                        }
-                    };
-                    let outcome = self.complete_read_batch(batch).await?;
-                    if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
-                        self.reset_keepalive_timeout();
-                    }
-                    Ok(self
-                        .state
-                        .events
-                        .pop_front()
-                        .expect("successful network read must queue an event"))
-                },
+                    .readb(&mut self.state, read_batch_size) => self.handle_network_read(o).await,
                 () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
                     if self.keepalive_timeout.is_some() && !self.effective_keep_alive.is_zero() => {
-                    let (outgoing, _flush_notice) = self
-                        .state
-                        .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
-                    if let Some(outgoing) = outgoing {
-                        self.network
-                            .as_mut()
-                            .expect("connected event loop must have an active network")
-                            .write(outgoing)
-                            .await?;
-                    }
-                    self.flush_network().await?;
-                    self.reset_keepalive_timeout();
-                    Ok(self
-                        .state
-                        .events
-                        .pop_front()
-                        .expect("successful ping transition must queue an event"))
+                    self.handle_keepalive_ping().await
                 }
             };
         }
+    }
+
+    async fn handle_network_read(
+        &mut self,
+        batch: Result<ReadBatch, ReadBatchError>,
+    ) -> Result<Event, ConnectionError> {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(err) => return Err(self.complete_failed_read_batch(err).await),
+        };
+        let outcome = self.complete_read_batch(batch).await?;
+        if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
+            self.reset_keepalive_timeout();
+        }
+        Ok(self
+            .state
+            .events
+            .pop_front()
+            .expect("successful network read must queue an event"))
+    }
+
+    async fn handle_keepalive_ping(&mut self) -> Result<Event, ConnectionError> {
+        let (outgoing, _flush_notice) = self
+            .state
+            .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
+        if let Some(outgoing) = outgoing {
+            self.network
+                .as_mut()
+                .expect("connected event loop must have an active network")
+                .write(outgoing)
+                .await?;
+        }
+        self.flush_network().await?;
+        self.reset_keepalive_timeout();
+        Ok(self
+            .state
+            .events
+            .pop_front()
+            .expect("successful ping transition must queue an event"))
     }
 
     async fn handle_immediate_disconnect(
@@ -2485,7 +2491,7 @@ fn reject_unsupported_request(
 
     match (unsupported, notice) {
         (UnsupportedBrokerCapability::RetainedPublish, Some(TrackedNoticeTx::Publish(notice))) => {
-            notice.error(PublishNoticeError::RetainNotSupported)
+            notice.error(PublishNoticeError::RetainNotSupported);
         }
         (
             UnsupportedBrokerCapability::PublishQoS { requested, maximum },
