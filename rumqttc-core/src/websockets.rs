@@ -160,11 +160,10 @@ fn domain(uri: &http::Uri) -> Option<String> {
         //
         // The URI from the request is guaranteed to be valid, so we don't need a separate
         // check for the closing bracket.
-        let host = if host.starts_with('[') {
-            &host[1..host.len() - 1]
-        } else {
-            host
-        };
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
 
         host.to_owned()
     })

@@ -132,6 +132,7 @@ struct Counters {
     unsubscriptions: u16,
 }
 
+#[allow(clippy::future_not_send)]
 pub async fn run<H: Harness>(
     harness: &mut H,
     protocol: &str,
@@ -235,6 +236,7 @@ async fn reconnect<H: Harness>(
     Ok(())
 }
 
+#[allow(clippy::future_not_send)]
 async fn finish_round<H: Harness>(
     harness: &H,
     kind: &str,

@@ -128,13 +128,11 @@ fn parse_authority(authority: &str) -> Result<RedirectReference, RedirectReferen
     }
 
     if let Some(bracketed) = authority.strip_prefix('[') {
-        let close = bracketed
-            .find(']')
+        let (host, suffix) = bracketed
+            .split_once(']')
             .ok_or(RedirectReferenceError::InvalidHost)?;
-        let host = &bracketed[..close];
         host.parse::<Ipv6Addr>()
             .map_err(|_| RedirectReferenceError::InvalidHost)?;
-        let suffix = &bracketed[close + 1..];
         let port = if suffix.is_empty() {
             None
         } else {
