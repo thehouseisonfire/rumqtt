@@ -1,0 +1,53 @@
+on:
+  pull_request:
+    branches:
+      - main
+      - mqtt5-client
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - '.github/workflows/python-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+
+name: Python tooling
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  python-lint:
+    name: Ruff lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Check formatting
+        run: uvx ruff format --check .
+
+      - name: Check linting
+        run: uvx ruff check .
+
+  python-typecheck:
+    name: Pyrefly typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Run pyrefly
+        run: uvx pyrefly check .

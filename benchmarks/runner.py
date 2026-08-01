@@ -19,10 +19,10 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from pathlib import Path
 from typing import Any
 
+import tomllib
 
 OUTPUT_SCHEMA_VERSION = 1
 MATCHED_OUTPUT_SCHEMA_VERSION = 2
@@ -112,13 +112,9 @@ def resolved_packages(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return resolved
 
 
-def collect_matched_provenance(
-    root: Path, *, cargo_profile: str, cargo_features: list[str]
-) -> dict[str, Any]:
+def collect_matched_provenance(root: Path, *, cargo_profile: str, cargo_features: list[str]) -> dict[str, Any]:
     commit_proc = run_process(["git", "rev-parse", "HEAD"], cwd=root)
-    dirty_proc = run_process(
-        ["git", "status", "--porcelain=v1", "--untracked-files=normal"], cwd=root
-    )
+    dirty_proc = run_process(["git", "status", "--porcelain=v1", "--untracked-files=normal"], cwd=root)
     metadata_proc = run_process(
         ["cargo", "metadata", "--locked", "--format-version", "1"],
         cwd=root,
@@ -134,9 +130,7 @@ def collect_matched_provenance(
     packages = resolved_packages(metadata)
     return {
         "workspace_commit": commit_proc.stdout.strip() if commit_proc.returncode == 0 else None,
-        "working_tree_dirty": (
-            parse_git_dirty(dirty_proc.stdout) if dirty_proc.returncode == 0 else None
-        ),
+        "working_tree_dirty": (parse_git_dirty(dirty_proc.stdout) if dirty_proc.returncode == 0 else None),
         "cargo_lock_sha256": cargo_lock_sha256(root),
         "cargo_profile": cargo_profile,
         "cargo_features": sorted(set(cargo_features)),
@@ -274,9 +268,7 @@ def validate_matched_args(path: Path, scenario: dict[str, Any]) -> None:
             raise RuntimeError(f"{path}: args.{key} must be a non-negative integer")
     if "qos" in required and args["qos"] not in {0, 1}:
         raise RuntimeError(f"{path}: args.qos must be 0 or 1")
-    if "topic" in required and (
-        not isinstance(args["topic"], str) or not args["topic"].strip()
-    ):
+    if "topic" in required and (not isinstance(args["topic"], str) or not args["topic"].strip()):
         raise RuntimeError(f"{path}: args.topic must be a non-empty string")
 
 
@@ -356,14 +348,14 @@ def scenario_metadata(scenario: dict[str, Any]) -> dict[str, Any]:
 
 def validate_broker_requirement(scenario: dict[str, Any], broker_url: str | None) -> None:
     if scenario["requires_broker"] and broker_url is None:
+        transport: str = scenario.get("transport") or "mqtt"
         example_scheme = {
             "tcp": "mqtt",
             "tls": "mqtts",
             "websocket": "ws",
-        }.get(scenario.get("transport"), "mqtt")
+        }.get(transport, "mqtt")
         raise RuntimeError(
-            f"{scenario['name']} requires an external broker; "
-            f"pass --broker-url {example_scheme}://host:port"
+            f"{scenario['name']} requires an external broker; pass --broker-url {example_scheme}://host:port"
         )
     if broker_url is None or "transport" not in scenario:
         return
@@ -382,8 +374,7 @@ def validate_broker_requirement(scenario: dict[str, Any], broker_url: str | None
     if scheme not in expected_schemes:
         expected = ", ".join(f"{value}://" for value in sorted(expected_schemes))
         raise RuntimeError(
-            f"{scenario['name']} expects {scenario['transport']} broker transport; "
-            f"use one of: {expected}"
+            f"{scenario['name']} expects {scenario['transport']} broker transport; use one of: {expected}"
         )
 
 
@@ -411,15 +402,17 @@ def scenario_command(
         if scenario["group"] == "persistence"
         else ("benchmarks", "rumqtt-bench")
     )
-    cmd.extend([
-        "-p",
-        package,
-        "--bin",
-        binary,
-        "--",
-        scenario["group"],
-        scenario["command"],
-    ])
+    cmd.extend(
+        [
+            "-p",
+            package,
+            "--bin",
+            binary,
+            "--",
+            scenario["group"],
+            scenario["command"],
+        ]
+    )
     args = dict(scenario.get("args", {}))
     args["run-id"] = run_id
     if broker_url is not None and (scenario["group"] == "client" or scenario["command"] == "mqtt"):
@@ -455,10 +448,20 @@ def matched_command(
     features = sorted(set(scenario.get("cargo_features", [])))
     if features:
         cmd.extend(["--features", ",".join(features)])
-    cmd.extend([
-        "-p", "benchmarks", "--bin", "rumqtt-library-bench", "--",
-        "--client", client, "--run-id", run_id, scenario["command"],
-    ])
+    cmd.extend(
+        [
+            "-p",
+            "benchmarks",
+            "--bin",
+            "rumqtt-library-bench",
+            "--",
+            "--client",
+            client,
+            "--run-id",
+            run_id,
+            scenario["command"],
+        ]
+    )
     args = dict(scenario.get("args", {}))
     args["broker-url"] = broker_url
     if ca_cert is not None:
@@ -482,15 +485,13 @@ def validate_external_scenario(scenario: dict[str, Any]) -> None:
         or args.get("protocol") != "v5"
     ):
         raise RuntimeError(
-            "external mqttv5 comparison requires an MQTT v5 client throughput, latency, "
-            "or connections scenario"
+            "external mqttv5 comparison requires an MQTT v5 client throughput, latency, or connections scenario"
         )
     if scenario.get("transport") not in {"tcp", "tls"}:
         raise RuntimeError("external mqttv5 comparison supports only TCP and TLS scenarios")
     if scenario["command"] == "latency" and args.get("rate", 1000) != 1000:
         raise RuntimeError(
-            "mqttv5-cli latency currently uses a fixed 1000 msg/s rate; "
-            "select a scenario with rate = 1000"
+            "mqttv5-cli latency currently uses a fixed 1000 msg/s rate; select a scenario with rate = 1000"
         )
 
 
@@ -635,9 +636,7 @@ def normalize_external_payload(
     }[mode]
     raw_samples = results.get("samples", [])
     if not isinstance(raw_samples, list) or any(
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(value)
+        isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value)
         for value in raw_samples
     ):
         raise RuntimeError("mqttv5 results.samples must be an array of finite numbers")
@@ -822,9 +821,7 @@ def run_once(
     result["ok"] = True
     result["payload"] = payload
     result["metrics"] = {
-        key: float(value)
-        for key, value in payload["metrics"].items()
-        if isinstance(value, int | float)
+        key: float(value) for key, value in payload["metrics"].items() if isinstance(value, int | float)
     }
     return result
 
@@ -953,9 +950,7 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "successful_runs": len(successful),
         "success_rate": len(successful) / len(runs) if runs else 0.0,
         "metrics": {
-            metric: metric_summary(
-                [run["metrics"][metric] for run in successful if metric in run["metrics"]]
-            )
+            metric: metric_summary([run["metrics"][metric] for run in successful if metric in run["metrics"]])
             for metric in metric_names
         },
     }
@@ -983,8 +978,7 @@ def bootstrap_delta(
     if base_median == 0.0:
         return {"error": "baseline median is zero"}
     paired_deltas = [
-        ((target_value - baseline_value) / baseline_value) * 100.0
-        for baseline_value, target_value in pairs
+        ((target_value - baseline_value) / baseline_value) * 100.0 for baseline_value, target_value in pairs
     ]
 
     deltas = []
@@ -996,8 +990,8 @@ def bootstrap_delta(
 
     deltas.sort()
     alpha = 1.0 - confidence
-    lo_idx = max(0, int(math.floor((alpha / 2.0) * (len(deltas) - 1))))
-    hi_idx = min(len(deltas) - 1, int(math.ceil((1.0 - (alpha / 2.0)) * (len(deltas) - 1))))
+    lo_idx = max(0, math.floor((alpha / 2.0) * (len(deltas) - 1)))
+    hi_idx = min(len(deltas) - 1, math.ceil((1.0 - (alpha / 2.0)) * (len(deltas) - 1)))
     low = deltas[lo_idx]
     high = deltas[hi_idx]
     point = median(paired_deltas)
@@ -1252,13 +1246,7 @@ def summary_environment(root: Path, runs: list[dict[str, Any]]) -> dict[str, Any
     environment = fallback_environment(root)
     payload_environment = first_payload_environment(runs)
     if payload_environment is not None:
-        environment.update(
-            {
-                key: value
-                for key, value in payload_environment.items()
-                if value is not None
-            }
-        )
+        environment.update({key: value for key, value in payload_environment.items() if value is not None})
     return environment
 
 
@@ -1286,11 +1274,7 @@ def write_raw_run(raw_dir: Path, run: dict[str, Any], index: int) -> str:
 
 
 def strip_raw_payload(run: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in run.items()
-        if key not in {"payload", "stdout"} and (key != "stderr" or value)
-    }
+    return {key: value for key, value in run.items() if key not in {"payload", "stdout"} and (key != "stderr" or value)}
 
 
 def persist_raw_runs(output_dir: Path, summary: dict[str, Any]) -> None:
@@ -1321,9 +1305,7 @@ def persist_raw_runs(output_dir: Path, summary: dict[str, Any]) -> None:
 def write_report(output_dir: Path, summary: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     persist_raw_runs(output_dir, summary)
-    (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
     with (output_dir / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -1477,9 +1459,7 @@ def timestamp() -> str:
 
 def default_output_dir(root: Path, kind: str, scenario: dict[str, Any]) -> Path:
     benchmark_root = (
-        root / "session-store-file" / "benchmarks"
-        if scenario["group"] == "persistence"
-        else root / "benchmarks"
+        root / "session-store-file" / "benchmarks" if scenario["group"] == "persistence" else root / "benchmarks"
     )
     return benchmark_root / "results" / kind / timestamp()
 
@@ -1488,11 +1468,7 @@ def command_run(args: argparse.Namespace) -> None:
     root = repo_root()
     scenario_path, scenario = load_scenario(root, args.scenario)
     validate_broker_requirement(scenario, args.broker_url)
-    output_dir = (
-        Path(args.output_dir).resolve()
-        if args.output_dir
-        else default_output_dir(root, "runs", scenario)
-    )
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else default_output_dir(root, "runs", scenario)
     runs = []
     total = args.warmup_runs + args.runs
     for index in range(total):
@@ -1560,9 +1536,7 @@ def command_compare(args: argparse.Namespace) -> None:
     baseline_ref = resolve_ref(root, args.baseline_ref or current_ref(root))
     target_ref = resolve_ref(root, args.target_ref)
     output_dir = (
-        Path(args.output_dir).resolve()
-        if args.output_dir
-        else default_output_dir(root, "comparisons", scenario)
+        Path(args.output_dir).resolve() if args.output_dir else default_output_dir(root, "comparisons", scenario)
     )
     temp_root = Path(tempfile.mkdtemp(prefix="rumqtt-bench-compare-"))
     worktrees: dict[str, Path] = {}
@@ -1739,9 +1713,7 @@ def command_compare_external(args: argparse.Namespace) -> None:
         "baseline": baseline_summary,
         "target": target_summary,
         "comparison": comparison,
-        "quality": evaluate_compare_quality(
-            scenario, baseline_summary, target_summary, comparison
-        ),
+        "quality": evaluate_compare_quality(scenario, baseline_summary, target_summary, comparison),
         "runs": runs,
     }
     write_report(output_dir, summary)
@@ -1787,14 +1759,8 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
             run["run_index"] = index
             runs[client].append(run)
 
-    measured = {
-        client: [run for run in client_runs if not run["is_warmup"]]
-        for client, client_runs in runs.items()
-    }
-    by_index = {
-        client: {run["run_index"]: run for run in client_runs}
-        for client, client_runs in measured.items()
-    }
+    measured = {client: [run for run in client_runs if not run["is_warmup"]] for client, client_runs in runs.items()}
+    by_index = {client: {run["run_index"]: run for run in client_runs} for client, client_runs in measured.items()}
     paired_indices = sorted(set(by_index["rumqttc"]) & set(by_index["mqtt5"]))
     paired_rumqttc = []
     paired_mqtt5 = []
@@ -1815,9 +1781,7 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
         confidence=args.confidence,
         equivalence_band_pct=args.equivalence_band_pct,
     )
-    quality = evaluate_compare_quality(
-        scenario, baseline_summary, target_summary, comparison
-    )
+    quality = evaluate_compare_quality(scenario, baseline_summary, target_summary, comparison)
     if quality["status"] != "pass":
         primary = comparison.get(scenario["primary_metric"])
         if isinstance(primary, dict) and "classification" in primary:
@@ -1920,45 +1884,33 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--output-dir")
     compare.set_defaults(func=command_compare)
 
-    external = sub.add_parser(
-        "compare-external", help="Compare a rumqtt MQTT v5 scenario against mqttv5-cli"
-    )
+    external = sub.add_parser("compare-external", help="Compare a rumqtt MQTT v5 scenario against mqttv5-cli")
     external.add_argument("--scenario", required=True)
     external.add_argument("--external-bin", default="mqttv5")
     external.add_argument("--runs", type=int, default=12)
     external.add_argument("--warmup-runs", type=int, default=1)
     external.add_argument("--broker-url", required=True)
     external.add_argument("--ca-cert")
-    external.add_argument(
-        "--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release"
-    )
+    external.add_argument("--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release")
     external.add_argument("--timeout-sec", type=int, default=300)
     external.add_argument("--bootstrap-samples", type=int, default=1000)
     external.add_argument("--confidence", type=float, default=0.95)
-    external.add_argument(
-        "--alternate-order", action=argparse.BooleanOptionalAction, default=True
-    )
+    external.add_argument("--alternate-order", action=argparse.BooleanOptionalAction, default=True)
     external.add_argument("--output-dir")
     external.set_defaults(func=command_compare_external)
 
-    libraries = sub.add_parser(
-        "compare-libraries", help="Compare workspace rumqttc-v5-next with mqtt5=0.38.0"
-    )
+    libraries = sub.add_parser("compare-libraries", help="Compare workspace rumqttc-v5-next with mqtt5=0.38.0")
     libraries.add_argument("--scenario", required=True)
     libraries.add_argument("--runs", type=int, default=12)
     libraries.add_argument("--warmup-runs", type=int, default=1)
     libraries.add_argument("--broker-url", required=True)
     libraries.add_argument("--ca-cert")
-    libraries.add_argument(
-        "--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release"
-    )
+    libraries.add_argument("--cargo-profile", choices=sorted(VALID_CARGO_PROFILES), default="release")
     libraries.add_argument("--timeout-sec", type=int, default=300)
     libraries.add_argument("--bootstrap-samples", type=int, default=1000)
     libraries.add_argument("--confidence", type=float, default=0.95)
     libraries.add_argument("--equivalence-band-pct", type=float, default=5.0)
-    libraries.add_argument(
-        "--alternate-order", action=argparse.BooleanOptionalAction, default=True
-    )
+    libraries.add_argument("--alternate-order", action=argparse.BooleanOptionalAction, default=True)
     libraries.add_argument("--output-dir")
     libraries.set_defaults(func=command_compare_libraries)
     return parser

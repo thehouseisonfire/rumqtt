@@ -5,12 +5,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 RUNNER_PATH = Path(__file__).resolve().parents[1] / "runner.py"
 REPO_ROOT = RUNNER_PATH.parents[1]
 SPEC = importlib.util.spec_from_file_location("runner", RUNNER_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise ImportError(f"cannot load spec from {RUNNER_PATH}")
 runner = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
 SPEC.loader.exec_module(runner)
 
 
@@ -117,16 +117,10 @@ class RunnerTests(unittest.TestCase):
 
         self.assertEqual(
             path,
-            REPO_ROOT
-            / "session-store-file"
-            / "benchmarks"
-            / "scenarios"
-            / "persistence-codec-v4-qos1.toml",
+            REPO_ROOT / "session-store-file" / "benchmarks" / "scenarios" / "persistence-codec-v4-qos1.toml",
         )
         output = runner.default_output_dir(REPO_ROOT, "runs", scenario)
-        self.assertEqual(
-            output.parents[1], REPO_ROOT / "session-store-file" / "benchmarks" / "results"
-        )
+        self.assertEqual(output.parents[1], REPO_ROOT / "session-store-file" / "benchmarks" / "results")
 
     def test_scenario_command_includes_declared_cargo_features(self):
         command = runner.scenario_command(
@@ -256,11 +250,7 @@ running benchmark...
 
     def test_all_real_scenarios_validate(self):
         scenario_files = sorted((REPO_ROOT / "benchmarks" / "scenarios").glob("*.toml"))
-        scenario_files.extend(
-            sorted(
-                (REPO_ROOT / "session-store-file" / "benchmarks" / "scenarios").glob("*.toml")
-            )
-        )
+        scenario_files.extend(sorted((REPO_ROOT / "session-store-file" / "benchmarks" / "scenarios").glob("*.toml")))
 
         self.assertGreaterEqual(len(scenario_files), 60)
         for path in scenario_files:
@@ -273,18 +263,13 @@ running benchmark...
         paths = sorted((REPO_ROOT / "benchmarks" / "scenarios").glob("matched-*.toml"))
         scenarios = [runner.load_scenario(REPO_ROOT, str(path))[1] for path in paths]
         self.assertEqual(len(scenarios), 15)
-        topics = [
-            scenario["args"]["topic"]
-            for scenario in scenarios
-            if scenario["command"] != "connections"
-        ]
+        topics = [scenario["args"]["topic"] for scenario in scenarios if scenario["command"] != "connections"]
         self.assertEqual(len(topics), len(set(topics)))
         throughput = [scenario for scenario in scenarios if scenario["command"] == "throughput"]
         baseline = {
             (scenario["args"]["qos"], scenario["args"]["payload_size"])
             for scenario in throughput
-            if scenario["args"]["publishers"] == scenario["args"]["subscribers"] == 1
-            and scenario["transport"] == "tcp"
+            if scenario["args"]["publishers"] == scenario["args"]["subscribers"] == 1 and scenario["transport"] == "tcp"
         }
         self.assertEqual(
             baseline,

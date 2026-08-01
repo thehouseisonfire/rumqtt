@@ -1,6 +1,30 @@
 repos:
   - repo: local
     hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --check --diff
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        always_run: false
+
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix --diff
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        always_run: false
+
+      - id: pyrefly
+        name: pyrefly typecheck
+        entry: pyrefly check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        always_run: false
+
       - id: cargo-fmt
         name: cargo fmt
         entry: cargo fmt --all

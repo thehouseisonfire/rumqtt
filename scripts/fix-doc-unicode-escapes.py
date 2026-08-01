@@ -54,9 +54,7 @@ def fix_file(path: Path, check: bool) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Decode JSON \\uXXXX escapes in documentation requirement files only."
-    )
+    parser = argparse.ArgumentParser(description="Decode JSON \\uXXXX escapes in documentation requirement files only.")
     parser.add_argument(
         "--check",
         action="store_true",

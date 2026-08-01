@@ -11,12 +11,13 @@ import shutil
 import subprocess
 import sys
 import time
-import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPES = ROOT / "docs" / "recipes"
@@ -109,10 +110,7 @@ def validate_examples(metadata: dict) -> None:
             package = package_for_directory[directory]
             example = relative.stem
             if example not in registered.get(package, set()):
-                fail(
-                    f"{path.relative_to(ROOT)}:{line}: {relative} is not a registered "
-                    f"example of {package}"
-                )
+                fail(f"{path.relative_to(ROOT)}:{line}: {relative} is not a registered example of {package}")
 
 
 def validate_external_links() -> None:

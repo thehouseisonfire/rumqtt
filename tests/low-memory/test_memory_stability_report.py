@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).with_name("memory_stability_report.py")
 SPEC = importlib.util.spec_from_file_location("memory_stability_report", MODULE_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise ImportError(f"cannot load spec from {MODULE_PATH}")
 report = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
 SPEC.loader.exec_module(report)
 
 
@@ -22,30 +22,20 @@ class AnalyzeValuesTests(unittest.TestCase):
         values = [8_000_000 + offset for offset in (0, 4096, -4096, 8192, 0) * 4]
         result = report.analyze_values(values)
         self.assertLessEqual(result["growth_bytes"], result["allowed_growth_bytes"])
-        self.assertLessEqual(
-            result["projected_positive_trend_bytes"], result["allowed_growth_bytes"]
-        )
+        self.assertLessEqual(result["projected_positive_trend_bytes"], result["allowed_growth_bytes"])
 
     def test_clearly_increasing_memory(self):
-        result = report.analyze_values(
-            [8_000_000 + round_number * 100_000 for round_number in range(20)]
-        )
-        self.assertGreater(
-            result["projected_positive_trend_bytes"], result["allowed_growth_bytes"]
-        )
+        result = report.analyze_values([8_000_000 + round_number * 100_000 for round_number in range(20)])
+        self.assertGreater(result["projected_positive_trend_bytes"], result["allowed_growth_bytes"])
 
     def test_temporary_spike_followed_by_plateau(self):
         values = [8_000_000] * 8 + [11_000_000] + [8_100_000] * 11
         result = report.analyze_values(values)
         self.assertLessEqual(result["growth_bytes"], result["allowed_growth_bytes"])
-        self.assertLessEqual(
-            result["projected_positive_trend_bytes"], result["allowed_growth_bytes"]
-        )
+        self.assertLessEqual(result["projected_positive_trend_bytes"], result["allowed_growth_bytes"])
 
     def test_negative_growth(self):
-        result = report.analyze_values(
-            [9_000_000 - round_number * 25_000 for round_number in range(20)]
-        )
+        result = report.analyze_values([9_000_000 - round_number * 25_000 for round_number in range(20)])
         self.assertLess(result["growth_bytes"], 0)
         self.assertEqual(result["projected_positive_trend_bytes"], 0)
 
@@ -85,14 +75,10 @@ class ReadRoundsTests(unittest.TestCase):
                     writer.writerow([elapsed, elapsed, 8_000_000 + elapsed])
             with boundaries.open("w", newline="", encoding="utf-8") as destination:
                 writer = csv.writer(destination)
-                writer.writerow(
-                    ["kind", "round", "detected_elapsed_ms", "client_elapsed_ms"]
-                )
+                writer.writerow(["kind", "round", "detected_elapsed_ms", "client_elapsed_ms"])
                 for round_number in range(1, 11):
                     detected = round_number * 1_000
-                    writer.writerow(
-                        ["measured", round_number, detected, detected]
-                    )
+                    writer.writerow(["measured", round_number, detected, detected])
             report.extract_rounds(samples, boundaries, output)
             with output.open(encoding="utf-8") as source:
                 rows = list(csv.DictReader(source))

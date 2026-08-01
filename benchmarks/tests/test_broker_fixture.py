@@ -1,5 +1,5 @@
-import importlib.util
 import hashlib
+import importlib.util
 import os
 import sys
 import tempfile
@@ -7,12 +7,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "broker_fixture.py"
 REPO_ROOT = FIXTURE_PATH.parents[1]
 SPEC = importlib.util.spec_from_file_location("broker_fixture", FIXTURE_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise ImportError(f"cannot load spec from {FIXTURE_PATH}")
 broker_fixture = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
 sys.modules["broker_fixture"] = broker_fixture
 SPEC.loader.exec_module(broker_fixture)
 
@@ -327,9 +327,7 @@ class BrokerFixtureTests(unittest.TestCase):
             if os.name == "nt":
                 fake_mosquitto = Path(temp) / "fake_mosquitto.bat"
                 fake_mosquitto.write_text(
-                    "@echo off\r\n"
-                    "echo Error: Websockets support not available. 1>&2\r\n"
-                    "exit /b 1\r\n",
+                    "@echo off\r\necho Error: Websockets support not available. 1>&2\r\nexit /b 1\r\n",
                     encoding="utf-8",
                 )
             else:

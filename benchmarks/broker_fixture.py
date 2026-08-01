@@ -376,7 +376,7 @@ class DockerBroker:
             logs = run_process(["docker", "logs", self.container_name], timeout=10)
             detail = logs.stderr.strip() or logs.stdout.strip()
             if detail:
-                raise FixtureError(f"broker container did not become ready: {detail}")
+                raise FixtureError(f"broker container did not become ready: {detail}") from None
             raise
 
     def stop(self) -> None:
@@ -437,9 +437,7 @@ class EmqxDockerBroker:
         }
 
 
-def build_emqx_docker_run_command(
-    *, container_name: str, image: str, ports: BrokerPorts
-) -> list[str]:
+def build_emqx_docker_run_command(*, container_name: str, image: str, ports: BrokerPorts) -> list[str]:
     cmd = [
         "docker",
         "run",
@@ -474,9 +472,7 @@ def normalized_broker_metadata(
             "transport": transport,
             "host": "127.0.0.1",
             "port": ports.as_dict()[transport],
-            "container_port": (
-                container_ports[transport] if metadata.get("image") is not None else None
-            ),
+            "container_port": (container_ports[transport] if metadata.get("image") is not None else None),
         }
         for transport in sorted(effective_transports)
     ]
@@ -498,9 +494,7 @@ def normalized_broker_metadata(
             else "disabled"
         ),
         "configuration": config,
-        "environment_overrides": dict(
-            sorted(metadata.get("environment_overrides", {}).items())
-        ),
+        "environment_overrides": dict(sorted(metadata.get("environment_overrides", {}).items())),
     }
 
 
@@ -697,11 +691,7 @@ def select_scenarios(
     for name in sorted(requested_set - set(available)):
         skipped.append({"name": name, "reason": "not_found"})
 
-    candidates = [
-        scenario
-        for scenario in scenarios
-        if not requested_set or scenario.name in requested_set
-    ]
+    candidates = [scenario for scenario in scenarios if not requested_set or scenario.name in requested_set]
     for scenario in candidates:
         reason = None
         if not scenario.requires_broker:
@@ -729,8 +719,7 @@ def validate_synthetic_scenarios(scenarios: list[ScenarioRef]) -> None:
             unsupported.append(scenario.name)
     if unsupported:
         raise FixtureError(
-            "the synthetic backend supports only TCP QoS 0/1 scenarios; unsupported: "
-            + ", ".join(sorted(unsupported))
+            "the synthetic backend supports only TCP QoS 0/1 scenarios; unsupported: " + ", ".join(sorted(unsupported))
         )
 
 
@@ -878,8 +867,10 @@ def command_validate(args: argparse.Namespace) -> int:
         raise FixtureError(f"unsupported transport: {args.transport}")
 
     root = REPO_ROOT
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else (
-        root / "benchmarks" / "results" / "broker-validation" / utc_timestamp()
+    output_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else (root / "benchmarks" / "results" / "broker-validation" / utc_timestamp())
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     selected, skipped = select_scenarios(
@@ -983,10 +974,14 @@ def command_validate(args: argparse.Namespace) -> int:
 
     completed = [result["name"] for result in scenario_results if result["status"] == "completed"]
     failed = [result["name"] for result in scenario_results if result["status"] == "failed"]
-    metadata = broker.metadata() if broker is not None else {
-        "backend": args.backend,
-        "image": docker_image_from_env() if args.backend == "docker" else None,
-    }
+    metadata = (
+        broker.metadata()
+        if broker is not None
+        else {
+            "backend": args.backend,
+            "image": docker_image_from_env() if args.backend == "docker" else None,
+        }
+    )
     summary = {
         "schema_version": 1,
         "mode": "broker-validation",
@@ -1002,9 +997,7 @@ def command_validate(args: argparse.Namespace) -> int:
         "image_digest": metadata.get("image_digest"),
         "broker": normalized_broker_metadata(
             broker_kind=(
-                "synthetic"
-                if args.backend == "synthetic"
-                else "emqx" if args.broker == "emqx" else "mosquitto"
+                "synthetic" if args.backend == "synthetic" else "emqx" if args.broker == "emqx" else "mosquitto"
             ),
             metadata=metadata,
             ports=ports,

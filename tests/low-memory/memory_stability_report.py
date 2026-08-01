@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import statistics
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 MIB = 1024 * 1024
 BASELINE_ROUNDS = 5
@@ -46,13 +46,7 @@ def analyze_values(values: Sequence[int]) -> dict[str, float]:
     x_mean = (count + 1) / 2.0
     y_mean = sum(values) / count
     denominator = sum((index - x_mean) ** 2 for index in range(1, count + 1))
-    slope = (
-        sum(
-            (index - x_mean) * (value - y_mean)
-            for index, value in enumerate(values, start=1)
-        )
-        / denominator
-    )
+    slope = sum((index - x_mean) * (value - y_mean) for index, value in enumerate(values, start=1)) / denominator
     growth = ending - baseline
     allowed_growth = max(float(MIB), baseline * 0.10)
     projected_trend = max(0.0, slope) * (count - 1)
@@ -91,10 +85,7 @@ def read_round_values(path: Path) -> tuple[list[int], list[dict[str, str]]]:
         if round_number != expected_round:
             raise ReportError("rounds CSV must contain consecutive rounds starting at 1")
         if sample_count < ROUND_SAMPLE_COUNT:
-            raise ReportError(
-                f"round {round_number} has {sample_count} samples; "
-                f"{ROUND_SAMPLE_COUNT} are required"
-            )
+            raise ReportError(f"round {round_number} has {sample_count} samples; {ROUND_SAMPLE_COUNT} are required")
         if value < 0:
             raise ReportError("round memory values must be non-negative")
         values.append(value)
@@ -116,9 +107,7 @@ def extract_rounds(samples_path: Path, boundaries_path: Path, output_path: Path)
     parsed_samples: list[tuple[int, int]] = []
     for sample in samples:
         try:
-            parsed_samples.append(
-                (int(sample["elapsed_ms"]), int(sample["memory_current_bytes"]))
-            )
+            parsed_samples.append((int(sample["elapsed_ms"]), int(sample["memory_current_bytes"])))
         except (KeyError, TypeError, ValueError) as error:
             raise ReportError("memory-current CSV is malformed") from error
 
@@ -134,9 +123,7 @@ def extract_rounds(samples_path: Path, boundaries_path: Path, output_path: Path)
         except (KeyError, TypeError, ValueError) as error:
             raise ReportError("boundary CSV is malformed") from error
 
-        round_duration = (
-            0 if previous_client_elapsed is None else client_elapsed - previous_client_elapsed
-        )
+        round_duration = 0 if previous_client_elapsed is None else client_elapsed - previous_client_elapsed
         previous_client_elapsed = client_elapsed
         if kind != "measured":
             continue
@@ -146,14 +133,10 @@ def extract_rounds(samples_path: Path, boundaries_path: Path, output_path: Path)
         selected = [
             value
             for elapsed, value in parsed_samples
-            if detected + ROUND_SETTLE_MS
-            <= elapsed
-            <= detected + ROUND_SAMPLE_WINDOW_MS
+            if detected + ROUND_SETTLE_MS <= elapsed <= detected + ROUND_SAMPLE_WINDOW_MS
         ][:ROUND_SAMPLE_COUNT]
         if len(selected) < ROUND_SAMPLE_COUNT:
-            raise ReportError(
-                f"measured round {round_number} has only {len(selected)} settled samples"
-            )
+            raise ReportError(f"measured round {round_number} has only {len(selected)} settled samples")
         measured_rows.append(
             {
                 "round": round_number,
@@ -208,20 +191,15 @@ def classify_run(args: argparse.Namespace) -> dict[str, Any]:
         result = "Fail — functional"
     elif analysis_error is not None:
         result = "Inconclusive"
-    elif (
+    elif analysis is not None and (
         analysis["growth_bytes"] > analysis["allowed_growth_bytes"]
-        or analysis["projected_positive_trend_bytes"]
-        > analysis["allowed_growth_bytes"]
+        or analysis["projected_positive_trend_bytes"] > analysis["allowed_growth_bytes"]
     ):
         result = "Fail — growth"
     else:
         result = "Pass"
 
-    throughput = (
-        args.completed_messages * 1000.0 / args.duration_ms
-        if args.duration_ms > 0
-        else None
-    )
+    throughput = args.completed_messages * 1000.0 / args.duration_ms if args.duration_ms > 0 else None
     payload: dict[str, Any] = {
         "client": args.protocol,
         "run": args.run,
@@ -416,9 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "analyze-run":
             payload = classify_run(args)
-            write_run_report(
-                payload, Path(args.output_json), Path(args.output_text)
-            )
+            write_run_report(payload, Path(args.output_json), Path(args.output_text))
             return 0 if payload["result"] == "Pass" else 1
         passed = aggregate(
             [Path(path) for path in args.reports],

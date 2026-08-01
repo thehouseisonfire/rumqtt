@@ -10,12 +10,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-INLINE_LINK_RE = re.compile(
-    r"!?\[[^\]]*\]\((?P<target><[^>]+>|[^\s)]+)(?:\s+['\"][^'\"]*['\"])?\)"
-)
-REFERENCE_LINK_RE = re.compile(
-    r"^\s{0,3}\[[^\]]+\]:\s*(?P<target><[^>]+>|\S+)", re.MULTILINE
-)
+INLINE_LINK_RE = re.compile(r"!?\[[^\]]*\]\((?P<target><[^>]+>|[^\s)]+)(?:\s+['\"][^'\"]*['\"])?\)")
+REFERENCE_LINK_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(?P<target><[^>]+>|\S+)", re.MULTILINE)
 EXTERNAL_SCHEMES = {"http", "https", "mailto"}
 
 

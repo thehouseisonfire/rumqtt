@@ -15,6 +15,7 @@ on:
       - '*/Cargo.*'
       - 'clippy.toml'
       - '.pre-commit-config.yaml'
+      - 'pyproject.toml'
       - 'scripts/check-markdown-links.py'
       - 'scripts/check-recipes.py'
       - 'scripts/smoke-production-recipes.sh'

@@ -14,9 +14,7 @@ def normalize(obj):
     global changed
 
     if isinstance(obj, dict):
-        if isinstance(obj.get("follow_up"), str) and obj["follow_up"].startswith(
-            "No follow"
-        ):
+        if isinstance(obj.get("follow_up"), str) and obj["follow_up"].startswith("No follow"):
             obj["follow_up"] = None
             changed += 1
 
