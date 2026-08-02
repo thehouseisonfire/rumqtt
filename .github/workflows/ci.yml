@@ -81,7 +81,7 @@ jobs:
       - name: Check client feature matrix
         run: |
           cargo hack --locked --each-feature --exclude-all-features \
-            --optional-deps url check \
+            check \
             -p rumqttc-v4-next \
             -p rumqttc-v5-next
 
@@ -154,8 +154,8 @@ jobs:
             if [[ "${{ runner.os }}" == 'Linux' ]]; then
               fix_args=(--fix --allow-dirty)
             fi
-            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next
-            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5-next
+            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next
+            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v5-next
 
       - name: Check standalone crates
         env:
@@ -168,8 +168,8 @@ jobs:
       - name: Check docs
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
-            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next
-            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v5-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v5-next
 
       - name: Check standalone crate docs
         if: ${{ matrix.os != 'windows-latest' }}
@@ -180,8 +180,8 @@ jobs:
 
       - name: Doctests
         run: |
-            cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v4-next
-            cargo hack --each-feature --exclude-all-features --optional-deps url test --doc -p rumqttc-v5-next
+            cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-v4-next
+            cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-v5-next
 
       - name: Standalone crate doctests
         run: |
@@ -191,8 +191,8 @@ jobs:
 
       - name: Test rumqttc
         run: |
-            cargo hack --each-feature --exclude-all-features --optional-deps url nextest run -p rumqttc-v4-next
-            cargo hack --each-feature --exclude-all-features --optional-deps url nextest run -p rumqttc-v5-next
+            cargo hack --each-feature --exclude-all-features nextest run -p rumqttc-v4-next
+            cargo hack --each-feature --exclude-all-features nextest run -p rumqttc-v5-next
 
       - name: Test standalone crates
         run: |
@@ -327,8 +327,8 @@ jobs:
       - name: Generate coverage report
         run: |
             cargo llvm-cov clean --workspace
-            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov --no-clean -p rumqttc-v4-next nextest
-            cargo hack --each-feature --exclude-all-features --optional-deps url llvm-cov --no-clean -p rumqttc-v5-next nextest
+            cargo hack --each-feature --exclude-all-features llvm-cov --no-clean -p rumqttc-v4-next nextest
+            cargo hack --each-feature --exclude-all-features llvm-cov --no-clean -p rumqttc-v5-next nextest
             cargo llvm-cov report --lcov --output-path coverage.lcov
 
       - name: Upload coverage report

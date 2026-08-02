@@ -105,7 +105,7 @@ multiple public backend variants constructible.
 Run the following when adding a panic-like operation to a library path:
 
 ```text
-cargo hack --each-feature --exclude-all-features --optional-deps url clippy \
+cargo hack --each-feature --exclude-all-features clippy \
   -p rumqttc-v4-next -p rumqttc-v5-next --lib -- \
   -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic
 ```

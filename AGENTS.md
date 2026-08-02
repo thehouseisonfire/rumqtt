@@ -32,8 +32,8 @@ because the un-suffixed package names are not owned in crates.io. Their library 
 - `cargo test -p rumqttc-v4-next --test reliability -- --nocapture`: run v4 reliability integration tests with logs.
 - `cargo fmt --all`: format Rust code.
 - `cargo fmt --manifest-path session-store-file/Cargo.toml --all`: format the file-store workspace.
-- `cargo hack --each-feature --exclude-all-features --optional-deps url test -p rumqttc-v4-next -p rumqttc-v5-next`: CI-style feature matrix test (requires `cargo-hack`).
-- `cargo hack clippy --each-feature --exclude-all-features --no-dev-deps --optional-deps url -p rumqttc-v4-next -p rumqttc-v5-next`: lint parity with pre-commit/CI.
+- `cargo hack --each-feature --exclude-all-features test -p rumqttc-v4-next -p rumqttc-v5-next`: CI-style feature matrix test (requires `cargo-hack`).
+- `cargo hack clippy --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next -p rumqttc-v5-next`: lint parity with pre-commit/CI.
 
 ## Coding Style & Naming Conventions
 Rust edition is `2024` (workspace-level). Follow `.editorconfig`: LF endings, spaces (4), trimmed trailing whitespace, and 120-char max line length for general files. Prefer idiomatic Rust naming:
