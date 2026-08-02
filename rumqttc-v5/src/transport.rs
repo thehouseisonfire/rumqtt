@@ -62,6 +62,10 @@ impl Transport {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "other targets and feature sets include transports without a default port"
+    )]
     pub(crate) const fn redirect_default_port(&self) -> Option<u16> {
         match self {
             Self::Tcp => Some(1883),

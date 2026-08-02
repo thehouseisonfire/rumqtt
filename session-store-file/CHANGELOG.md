@@ -4,7 +4,7 @@
 
 ### Added
 
-- Depend on independently maintained `atomic-blob-store` 0.1.0 from crates.io.
+- Depend on independently maintained `atomic-blob-store` 0.1.2.
 - Add `rumqttc-session-store-file-next`, whose independent additive `v4` and
   `v5` features support either or both clients while retaining their existing
   on-disk namespaces, key encodings, and checkpoint envelopes.

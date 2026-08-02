@@ -171,6 +171,9 @@ fn accept_before(listener: &TcpListener, deadline: Instant) -> TcpStream {
         match listener.accept() {
             Ok((stream, _)) => {
                 stream
+                    .set_nonblocking(false)
+                    .expect("configure blocking broker connection");
+                stream
                     .set_read_timeout(Some(IO_TIMEOUT))
                     .expect("set broker read timeout");
                 stream
