@@ -2400,6 +2400,16 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
 }
 
 fn classify_replay_request(state: &MqttState, request: &Request) -> ScheduledRequest {
+    if let Request::PubRel(pubrel) = request {
+        return ScheduledRequest {
+            class: RequestClass::Control,
+            readiness: if state.can_send_pubrel(pubrel.pkid) {
+                RequestReadiness::Ready
+            } else {
+                RequestReadiness::Blocked
+            },
+        };
+    }
     classify_publish_or_control_request(
         request,
         |publish| state.can_send_replayed_publish(publish),
@@ -5579,6 +5589,36 @@ mod tests {
             ))),
             Some(Request::Disconnect(_))
         ));
+    }
+
+    #[test]
+    fn scheduler_allows_restored_pubrel_when_publish_quota_is_full() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_outgoing_inflight_upper_limit(1);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        fill_publish_window(&mut eventloop);
+        eventloop.state.outgoing_rel_replay.grow(3);
+        eventloop.state.outgoing_rel_replay.insert(2);
+        eventloop.state.rebuild_outbound_pkid_index();
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain_replay(Request::PubRel(PubRel::new(
+                2, None,
+            ))));
+
+        let envelope = eventloop.next_scheduled_request().unwrap();
+        assert!(envelope.replay);
+        assert!(matches!(&envelope.request, Request::PubRel(pubrel) if pubrel.pkid == 2));
+        eventloop
+            .state
+            .handle_replayed_outgoing_packet_with_notice(envelope.request, None)
+            .unwrap();
+        assert_eq!(eventloop.state.inflight(), 1);
     }
 
     #[test]
@@ -9969,7 +10009,7 @@ mod tests {
             eventloop.options.broker().tcp_address(),
             Some(("primary.example", 1883))
         );
-        assert_eq!(eventloop.state.last_pkid, 7);
+        assert_eq!(eventloop.state.last_pkid, 0);
         assert_eq!(eventloop.pending.len(), 1);
         assert!(eventloop.has_local_session_state());
         eventloop.reconcile_connack_session(true).unwrap();
@@ -10019,7 +10059,7 @@ mod tests {
             eventloop.options.broker().tcp_address(),
             Some(("primary.example", 1883))
         );
-        assert_eq!(eventloop.state.last_pkid, 7);
+        assert_eq!(eventloop.state.last_pkid, 0);
         assert_eq!(eventloop.pending.len(), 1);
         assert!(eventloop.has_local_session_state());
         eventloop.reconcile_connack_session(true).unwrap();

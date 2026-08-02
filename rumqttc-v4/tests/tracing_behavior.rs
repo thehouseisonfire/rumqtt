@@ -64,13 +64,11 @@ impl SessionStore for MemorySessionStore {
 
 fn persisted_qos1_session(client_id: &str) -> PersistedSession {
     PersistedSession {
-        format_version: 1,
+        format_version: 2,
         client_id: client_id.to_owned(),
         clean_session: false,
         max_inflight: 100,
         ack_mode: PersistedAckMode::Automatic,
-        last_pkid: 1,
-        last_puback: 0,
         replay: vec![PersistedRequest::Publish(PersistedPublish {
             dup: true,
             qos: PersistedQoS::AtLeastOnce,

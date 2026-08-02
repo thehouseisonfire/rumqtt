@@ -1611,6 +1611,16 @@ fn classify_request(state: &MqttState, request: &Request) -> ScheduledRequest {
 }
 
 fn classify_replay_request(state: &MqttState, request: &Request) -> ScheduledRequest {
+    if let Request::PubRel(pubrel) = request {
+        return ScheduledRequest {
+            class: RequestClass::Control,
+            readiness: if state.can_send_pubrel(pubrel.pkid) {
+                RequestReadiness::Ready
+            } else {
+                RequestReadiness::Blocked
+            },
+        };
+    }
     classify_publish_or_control_request(
         request,
         |publish| state.can_send_replayed_publish(publish),
@@ -2000,13 +2010,11 @@ mod tests {
 
     fn persisted_qos1_session(client_id: &str) -> PersistedSession {
         PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: client_id.to_owned(),
             clean_session: false,
             max_inflight: 100,
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 1,
-            last_puback: 0,
             replay: vec![PersistedRequest::Publish(PersistedPublish {
                 dup: true,
                 qos: PersistedQoS::AtLeastOnce,
@@ -2943,10 +2951,6 @@ mod tests {
             Some(Request::PubRec(_))
         ));
         assert!(matches!(
-            next_after_blocked_publish(Request::PubRel(PubRel::new(9))),
-            Some(Request::PubRel(_))
-        ));
-        assert!(matches!(
             next_after_blocked_publish(Request::PubComp(PubComp::new(10))),
             Some(Request::PubComp(_))
         ));
@@ -2968,6 +2972,31 @@ mod tests {
         assert!(matches!(
             next_after_blocked_publish(Request::Disconnect(Disconnect)),
             Some(Request::Disconnect(_))
+        ));
+    }
+
+    #[test]
+    fn scheduler_allows_active_pubrel_retransmission_when_window_is_full() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_inflight(1);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.state.outgoing_rel.insert(1);
+        eventloop.state.inflight = 1;
+        eventloop.state.rebuild_outbound_pkid_index();
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(publish(
+                QoS::AtLeastOnce,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PubRel(PubRel::new(1))));
+
+        assert!(matches!(
+            eventloop
+                .next_scheduled_request()
+                .map(|envelope| envelope.request),
+            Some(Request::PubRel(_))
         ));
     }
 

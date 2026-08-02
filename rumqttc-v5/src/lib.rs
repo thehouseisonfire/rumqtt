@@ -1810,15 +1810,16 @@ impl MqttOptions {
         connector(host, network_options).await
     }
 
-    /// Get the upper limit on maximum number of inflight outgoing publishes.
-    /// The server may set its own maximum inflight limit, the smaller of the two will be used.
+    /// Set the local upper limit on the number of outgoing `QoS` 1/2 PUBLISH packets.
+    ///
+    /// The effective connection limit is the smaller of this value and the broker's
+    /// Receive Maximum. This setting does not limit MQTT packet identifier values.
     pub const fn set_outgoing_inflight_upper_limit(&mut self, limit: u16) -> &mut Self {
         self.outgoing_inflight_upper_limit = Some(limit);
         self
     }
 
-    /// Set the upper limit on maximum number of inflight outgoing publishes.
-    /// The server may set its own maximum inflight limit, the smaller of the two will be used.
+    /// Get the configured local upper limit on outgoing `QoS` 1/2 PUBLISH packets.
     pub const fn get_outgoing_inflight_upper_limit(&self) -> Option<u16> {
         self.outgoing_inflight_upper_limit
     }

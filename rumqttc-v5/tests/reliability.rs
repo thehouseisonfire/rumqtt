@@ -72,14 +72,12 @@ impl SessionStore for MemorySessionStore {
 
 fn persisted_qos1_session(client_id: &str) -> PersistedSession {
     PersistedSession {
-        format_version: 1,
+        format_version: 2,
         client_id: client_id.to_owned(),
         clean_start: false,
         session_expiry_interval: Some(PERSISTENT_SESSION_EXPIRY),
         outgoing_inflight_upper_limit: None,
         ack_mode: PersistedAckMode::Automatic,
-        last_pkid: 1,
-        last_puback: 0,
         replay: vec![PersistedRequest::Publish(PersistedPublish {
             dup: true,
             qos: PersistedQoS::AtLeastOnce,
@@ -923,8 +921,8 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
         let packet = broker
             .read_publish_with_timeout(PHASE_TIMEOUT)
             .await
-            .expect("missing publish after freeing packet id 3");
-        assert_eq!(packet.pkid, 3);
+            .expect("missing publish after freeing outgoing quota");
+        assert_eq!(packet.pkid, 5);
         assert_eq!(packet.payload[0], 5);
         broker.ack(packet.pkid).await;
         ack_first_rx.await.expect("ack release signal dropped");
@@ -941,9 +939,8 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
         }
     });
 
-    // Sends 4 requests. The 5th request should use the first packet id made
-    // available by the out-of-order acknowledgements instead of waiting for
-    // the wrapped packet id 1.
+    // Sends 4 requests. The 5th request should advance through the full packet
+    // identifier namespace after out-of-order acknowledgements free quota.
     time::timeout(TEST_TIMEOUT, async {
         loop {
             let event = poll_ignoring_connect_races(&mut eventloop)
@@ -973,7 +970,7 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
             match event {
                 Event::Incoming(Packet::PubAck(_)) => acked += 1,
                 Event::Outgoing(Outgoing::Publish(pkid)) => {
-                    assert_eq!(pkid, 3);
+                    assert_eq!(pkid, 5);
                     reused_available_pkid = true;
                 }
                 _ => {}

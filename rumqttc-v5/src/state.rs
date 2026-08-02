@@ -1,7 +1,7 @@
 use super::mqttbytes::v5::{
     Auth, ConnAck, ConnectReturnCode, Disconnect, DisconnectReasonCode, Packet, PubAck,
-    PubAckReason, PubComp, PubCompReason, PubRec, PubRecReason, PubRel, PubRelReason, Publish,
-    PublishProperties, RetainForwardRule, SubAck, Subscribe, SubscribeFilter, SubscribeProperties,
+    PubAckReason, PubComp, PubCompReason, PubRec, PubRel, PubRelReason, Publish, PublishProperties,
+    RetainForwardRule, SubAck, Subscribe, SubscribeFilter, SubscribeProperties,
     SubscribeReasonCode, UnsubAck, UnsubAckReason, Unsubscribe, UnsubscribeProperties,
 };
 use super::mqttbytes::{self, Error as MqttError, PacketType, QoS};
@@ -184,9 +184,9 @@ pub enum StateError {
     /// Invalid state for a given operation
     #[error("Invalid state for a given operation")]
     InvalidState,
-    /// Sending another `QoS` 1/2 PUBLISH would exceed the broker's Receive Maximum.
+    /// Sending another `QoS` 1/2 PUBLISH would exceed the effective outgoing limit.
     #[error(
-        "Cannot send another QoS 1/2 PUBLISH because the broker's Receive Maximum of {maximum} is exhausted"
+        "Cannot send another QoS 1/2 PUBLISH because the effective outgoing limit of {maximum} is exhausted"
     )]
     OutgoingPublishQuotaExceeded { maximum: u16 },
     /// Received a packet (ack) which isn't asked for
@@ -339,9 +339,6 @@ pub struct OutboundDiagnostics {
     pub outgoing_publish: usize,
     /// Stored outgoing publishes with completion notices attached.
     pub outgoing_publish_notices: usize,
-    /// Publish acknowledgements received out of order and retained until the contiguous
-    /// acknowledgement frontier advances.
-    pub outgoing_puback_waiting: usize,
     /// Outgoing `QoS` 2 flows in the `PUBREL`/`PUBCOMP` phase.
     pub outgoing_pubrel: usize,
     /// Outgoing `PUBREL` packets retained for replay after reconnect.
@@ -420,8 +417,7 @@ impl IncomingPacketEffects {
 
 /// State of the mqtt connection.
 // Design: Methods will just modify the state of the object without doing any network operations
-// Design: All inflight queues are maintained in a pre initialized vec with index as packet id.
-// This is done for 2 reasons
+// Design: Indexed inflight storage grows on demand with packet identifiers. This is done for 2 reasons
 // Bad acks or out of order acks aren't O(n) causing cpu spikes
 // Any missing acks from the broker are detected during the next recycled use of packet ids
 #[derive(Debug)]
@@ -434,22 +430,24 @@ pub struct MqttState {
     last_outgoing: Instant,
     /// Packet id of the last outgoing packet
     pub(crate) last_pkid: u16,
-    /// Packet id of the last acked publish
-    pub(crate) last_puback: u16,
     /// Number of outgoing inflight publishes
     pub(crate) inflight: u16,
     /// Outgoing `QoS` 1/2 publishes consuming broker Receive Maximum quota on this connection.
     outgoing_publish_quota: FixedBitSet,
     /// Outgoing `QoS` 1, 2 publishes which aren't acked yet
     pub(crate) outgoing_pub: Vec<Option<Publish>>,
+    /// Packet identifiers of outgoing publishes in original send order.
+    outgoing_pub_order: VecDeque<u16>,
     /// Notice handles for outgoing `QoS` 1, 2 publishes
     pub(crate) outgoing_pub_notice: Vec<Option<PublishNoticeTx>>,
-    /// Packet ids acked by broker while waiting to advance last contiguous ack boundary
-    pub(crate) outgoing_pub_ack: FixedBitSet,
     /// Packet ids of released `QoS` 2 publishes
     pub(crate) outgoing_rel: FixedBitSet,
+    /// Packet identifiers of active outgoing `PUBREL` flows in receipt order.
+    outgoing_rel_order: VecDeque<u16>,
     /// Packet ids of released `QoS` 2 publishes queued for replay after clean
     pub(crate) outgoing_rel_replay: FixedBitSet,
+    /// Packet identifiers of replayable `PUBREL` flows in replay order.
+    outgoing_rel_replay_order: VecDeque<u16>,
     /// Notice handles for outgoing `QoS` 2 pubrels
     pub(crate) outgoing_rel_notice: Vec<Option<PublishNoticeTx>>,
     /// Packet ids on incoming `QoS` 1 publishes waiting for PUBACK
@@ -468,7 +466,7 @@ pub struct MqttState {
     pub(crate) outbound_pkid_in_use: FixedBitSet,
     /// Number of non-zero packet ids reserved in `outbound_pkid_in_use`.
     pub(crate) outbound_pkid_count: u16,
-    /// Last collision due to broker not acking in order
+    /// Deferred PUBLISH whose explicit packet identifier is still owned by another PUBLISH flow.
     pub collision: Option<Publish>,
     /// Notice handle for the collision publish
     pub(crate) collision_notice: Option<PublishNoticeTx>,
@@ -493,9 +491,9 @@ pub struct MqttState {
     subscription_identifiers_available: bool,
     /// Whether the broker supports shared subscriptions on the current connection.
     shared_subscription_available: bool,
-    /// Maximum number of allowed inflight `QoS1` & `QoS2` requests
+    /// Effective connection limit on outgoing `QoS` 1/2 PUBLISH packets.
     pub(crate) max_outgoing_inflight: u16,
-    /// Upper limit on the maximum number of allowed inflight `QoS1` & `QoS2` requests
+    /// Configured local upper limit on outgoing `QoS` 1/2 PUBLISH packets.
     max_outgoing_inflight_upper_limit: u16,
     /// Authentication callback
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
@@ -520,7 +518,7 @@ pub struct MqttStateBuilder {
 }
 
 impl MqttStateBuilder {
-    /// Create a new [`MqttState`] builder.
+    /// Create a new [`MqttState`] builder with a local outgoing PUBLISH limit.
     #[must_use]
     pub const fn new(max_inflight: u16) -> Self {
         Self {
@@ -605,6 +603,8 @@ impl MqttStateBuilder {
 }
 
 impl MqttState {
+    const WARM_TRACKING_SLOTS: usize = 32;
+
     const fn initial_events_capacity() -> usize {
         128
     }
@@ -613,16 +613,22 @@ impl MqttState {
         u16::MAX as usize + 1
     }
 
-    fn outgoing_tracking_len(max_inflight: u16) -> usize {
-        usize::from(max_inflight) + 1
+    const fn outgoing_tracking_len(max_inflight: u16) -> usize {
+        max_inflight as usize + 1
+    }
+
+    const fn warm_tracking_len(max_inflight: u16) -> usize {
+        let full_len = Self::outgoing_tracking_len(max_inflight);
+        let warm_len = Self::WARM_TRACKING_SLOTS + 1;
+        if full_len < warm_len {
+            full_len
+        } else {
+            warm_len
+        }
     }
 
     fn new_notice_slots_with_len(size: usize) -> Vec<Option<PublishNoticeTx>> {
         std::iter::repeat_with(|| None).take(size).collect()
-    }
-
-    fn new_notice_slots(max_inflight: u16) -> Vec<Option<PublishNoticeTx>> {
-        Self::new_notice_slots_with_len(Self::outgoing_tracking_len(max_inflight))
     }
 
     fn clean_pending_capacity(&self) -> usize {
@@ -636,20 +642,12 @@ impl MqttState {
             + self.pending_unsubscribe.len()
     }
 
-    const fn next_publish_pkid_after(&self, pkid: u16) -> u16 {
-        if pkid >= self.max_outgoing_inflight_upper_limit {
-            1
-        } else {
-            pkid + 1
-        }
-    }
-
     fn packet_identifier_in_use(&self, pkid: u16) -> bool {
         self.outbound_pkid_in_use.contains(usize::from(pkid))
     }
 
-    const fn validate_outgoing_pkid_bound(&self, pkid: u16) -> Result<(), StateError> {
-        if pkid == 0 || pkid > self.max_outgoing_inflight_upper_limit {
+    const fn validate_outgoing_pkid(&self, pkid: u16) -> Result<(), StateError> {
+        if pkid == 0 {
             return Err(StateError::Unsolicited(pkid));
         }
 
@@ -669,8 +667,7 @@ impl MqttState {
             return self.next_publish_pkid().is_some();
         }
 
-        publish.pkid != 0
-            && publish.pkid <= self.max_outgoing_inflight_upper_limit
+        self.validate_outgoing_pkid(publish.pkid).is_ok()
             && !self.packet_identifier_in_use(publish.pkid)
     }
 
@@ -684,7 +681,7 @@ impl MqttState {
         }
 
         let pkid = publish.pkid;
-        self.validate_outgoing_pkid_bound(pkid).is_ok()
+        self.validate_outgoing_pkid(pkid).is_ok()
             && self.packet_identifier_in_use(pkid)
             && self
                 .outgoing_pub
@@ -703,6 +700,14 @@ impl MqttState {
             && !self.outgoing_rel_replay.contains(usize::from(pkid))
             && !self.pending_subscribe.contains_key(&pkid)
             && !self.pending_unsubscribe.contains_key(&pkid)
+    }
+
+    pub(crate) fn can_send_pubrel(&self, pkid: u16) -> bool {
+        if pkid == 0 {
+            return false;
+        }
+        let index = usize::from(pkid);
+        self.outgoing_rel.contains(index) || self.outgoing_rel_replay.contains(index)
     }
 
     pub(crate) const fn control_packet_identifier_available(&self) -> bool {
@@ -728,21 +733,23 @@ impl MqttState {
         authentication_method: Option<String>,
         authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     ) -> Self {
+        let tracking_len = Self::warm_tracking_len(max_inflight);
         Self {
             ping: PingState::new(),
             last_incoming: Instant::now(),
             last_outgoing: Instant::now(),
             last_pkid: 0,
-            last_puback: 0,
             inflight: 0,
             outgoing_publish_quota: FixedBitSet::with_capacity(Self::full_packet_identifier_len()),
             // index 0 is wasted as 0 is not a valid packet id
-            outgoing_pub: vec![None; usize::from(max_inflight) + 1],
-            outgoing_pub_notice: Self::new_notice_slots(max_inflight),
-            outgoing_pub_ack: FixedBitSet::with_capacity(usize::from(max_inflight) + 1),
-            outgoing_rel: FixedBitSet::with_capacity(usize::from(max_inflight) + 1),
-            outgoing_rel_replay: FixedBitSet::with_capacity(usize::from(max_inflight) + 1),
-            outgoing_rel_notice: Self::new_notice_slots(max_inflight),
+            outgoing_pub: std::iter::repeat_with(|| None).take(tracking_len).collect(),
+            outgoing_pub_order: VecDeque::new(),
+            outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
+            outgoing_rel: FixedBitSet::with_capacity(tracking_len),
+            outgoing_rel_order: VecDeque::new(),
+            outgoing_rel_replay: FixedBitSet::with_capacity(tracking_len),
+            outgoing_rel_replay_order: VecDeque::new(),
+            outgoing_rel_notice: Self::new_notice_slots_with_len(tracking_len),
             incoming_puback: FixedBitSet::with_capacity(usize::from(u16::MAX) + 1),
             incoming_pub: FixedBitSet::with_capacity(usize::from(u16::MAX) + 1),
             incoming_pubrec: FixedBitSet::with_capacity(usize::from(u16::MAX) + 1),
@@ -874,10 +881,6 @@ impl MqttState {
             self.outgoing_rel_notice.resize_with(target_len, || None);
         }
 
-        if self.outgoing_pub_ack.len() < target_len {
-            self.outgoing_pub_ack.grow(target_len);
-        }
-
         if self.outgoing_rel.len() < target_len {
             self.outgoing_rel.grow(target_len);
         }
@@ -894,11 +897,13 @@ impl MqttState {
             && self.pending_subscribe.is_empty()
             && self.pending_unsubscribe.is_empty()
             && self.outgoing_pub.iter().all(Option::is_none)
+            && self.outgoing_pub_order.is_empty()
             && self.outgoing_pub_notice.iter().all(Option::is_none)
             && self.outgoing_rel_notice.iter().all(Option::is_none)
-            && self.outgoing_pub_ack.ones().next().is_none()
             && self.outgoing_rel.ones().next().is_none()
+            && self.outgoing_rel_order.is_empty()
             && self.outgoing_rel_replay.ones().next().is_none()
+            && self.outgoing_rel_replay_order.is_empty()
             && self.outbound_pkid_count == 0
     }
 
@@ -908,7 +913,7 @@ impl MqttState {
         format!(
             "inflight={}, collision={}, collision_notice={}, pending_subscribe={}, \
              pending_unsubscribe={}, outgoing_pub={}, outgoing_pub_notice={}, \
-             outgoing_rel_notice={}, outgoing_pub_ack={}, \
+             outgoing_rel_notice={}, \
              outgoing_rel={}, outgoing_rel_replay={}, incoming_pub={}",
             diagnostics.inflight,
             diagnostics.collision,
@@ -918,36 +923,33 @@ impl MqttState {
             diagnostics.outgoing_publish,
             diagnostics.outgoing_publish_notices,
             diagnostics.outgoing_pubrel_notices,
-            diagnostics.outgoing_puback_waiting,
             diagnostics.outgoing_pubrel,
             diagnostics.outgoing_pubrel_replay,
             diagnostics.incoming_pub
         )
     }
 
-    fn maybe_shrink_outgoing_tracking_capacity(&mut self, target_len: usize, pending_empty: bool) {
-        if !pending_empty
-            || self.outgoing_pub.len() <= target_len
-            || !self.outbound_requests_drained()
-        {
+    fn maybe_shrink_outgoing_tracking_capacity(&mut self) {
+        let target_len = Self::warm_tracking_len(self.max_outgoing_inflight_upper_limit);
+        if self.outgoing_pub.len() <= target_len || !self.outbound_requests_drained() {
             return;
         }
 
         self.outgoing_pub.truncate(target_len);
         self.outgoing_pub_notice.truncate(target_len);
         self.outgoing_rel_notice.truncate(target_len);
-        self.outgoing_pub_ack = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel = FixedBitSet::with_capacity(target_len);
+        self.outgoing_rel_order.clear();
         self.outgoing_rel_replay = FixedBitSet::with_capacity(target_len);
+        self.outgoing_rel_replay_order.clear();
         // Ensure future packet id reuse starts from the beginning of the new range.
         self.last_pkid = 0;
-        self.last_puback = 0;
     }
 
     pub(crate) fn reconcile_outgoing_tracking_capacity(&mut self, pending_empty: bool) {
-        let target_len = Self::outgoing_tracking_len(self.max_outgoing_inflight_upper_limit);
-        self.ensure_outgoing_tracking_capacity(target_len);
-        self.maybe_shrink_outgoing_tracking_capacity(target_len, pending_empty);
+        if pending_empty {
+            self.maybe_shrink_outgoing_tracking_capacity();
+        }
     }
 
     fn reset_connack_scoped_state(&mut self) {
@@ -1023,21 +1025,26 @@ impl MqttState {
         &mut self,
         keep_replay_pkids_reserved: bool,
     ) -> Vec<CleanRequest> {
+        // Keep tests and defensive state seeding deterministic even if an order tracker was not
+        // populated alongside its indexed storage.
+        for (pkid, publish) in self.outgoing_pub.iter().enumerate().skip(1) {
+            let pkid = u16::try_from(pkid).expect("outgoing tracking index fits in u16");
+            if publish.is_some() && !self.outgoing_pub_order.contains(&pkid) {
+                self.outgoing_pub_order.push_back(pkid);
+            }
+        }
+        for pkid in self.outgoing_rel.ones() {
+            let pkid = u16::try_from(pkid).expect("PUBREL identifier fits in u16");
+            if !self.outgoing_rel_order.contains(&pkid) {
+                self.outgoing_rel_order.push_back(pkid);
+            }
+        }
+
         let mut pending = Vec::with_capacity(self.clean_pending_capacity());
         let mut released_publish_pkids = Vec::new();
-        let (first_half, second_half) = self
-            .outgoing_pub
-            .split_at_mut(usize::from(self.last_puback) + 1);
-        let (notice_first_half, notice_second_half) = self
-            .outgoing_pub_notice
-            .split_at_mut(usize::from(self.last_puback) + 1);
-
-        for (publish, notice) in second_half
-            .iter_mut()
-            .zip(notice_second_half.iter_mut())
-            .chain(first_half.iter_mut().zip(notice_first_half.iter_mut()))
-        {
-            if let Some(mut publish) = publish.take() {
+        for pkid in self.outgoing_pub_order.drain(..) {
+            let index = usize::from(pkid);
+            if let Some(mut publish) = self.outgoing_pub[index].take() {
                 if publish.qos != QoS::AtMostOnce {
                     publish.dup = true;
                 }
@@ -1047,11 +1054,11 @@ impl MqttState {
                 let request = Request::Publish(publish);
                 pending.push(CleanRequest {
                     request,
-                    notice: notice.take().map(TrackedNoticeTx::Publish),
+                    notice: self.outgoing_pub_notice[index]
+                        .take()
+                        .map(TrackedNoticeTx::Publish),
                     replay: true,
                 });
-            } else {
-                _ = notice.take();
             }
         }
         for pkid in released_publish_pkids {
@@ -1067,20 +1074,28 @@ impl MqttState {
         }
 
         // remove and collect pending releases
-        for pkid in self.outgoing_rel.ones() {
-            let pkid = u16::try_from(pkid).expect("fixedbitset index always fits in u16");
+        let mut newly_replayed_pubrel = Vec::new();
+        for pkid in self.outgoing_rel_order.drain(..) {
+            newly_replayed_pubrel.push(pkid);
             let request = Request::PubRel(PubRel::new(pkid, None));
             pending.push(CleanRequest {
                 request,
-                notice: self.outgoing_rel_notice[usize::from(pkid)]
+                notice: self
+                    .outgoing_rel_notice
+                    .get_mut(usize::from(pkid))
+                    .expect("outgoing PUBREL identifier within notice storage")
                     .take()
                     .map(TrackedNoticeTx::Publish),
                 replay: true,
             });
         }
-        self.outgoing_rel_replay = self.outgoing_rel.clone();
+        for pkid in newly_replayed_pubrel {
+            self.outgoing_rel_replay.insert(usize::from(pkid));
+            if !self.outgoing_rel_replay_order.contains(&pkid) {
+                self.outgoing_rel_replay_order.push_back(pkid);
+            }
+        }
         self.outgoing_rel.clear();
-        self.outgoing_pub_ack.clear();
 
         for (pkid, mut pending_subscribe) in std::mem::take(&mut self.pending_subscribe) {
             pending_subscribe.subscribe.pkid = pkid;
@@ -1112,6 +1127,9 @@ impl MqttState {
         self.ping.reset();
         self.outgoing_publish_quota.clear();
         self.inflight = 0;
+        if pending.is_empty() {
+            self.maybe_shrink_outgoing_tracking_capacity();
+        }
         pending
     }
 
@@ -1168,7 +1186,6 @@ impl MqttState {
             .iter()
             .filter(|notice| notice.is_some())
             .count();
-        let outgoing_puback_waiting = self.outgoing_pub_ack.ones().count();
         let outgoing_pubrel = self.outgoing_rel.ones().count();
         let outgoing_pubrel_replay = self.outgoing_rel_replay.ones().count();
         let outgoing_pubrel_notices = self
@@ -1183,7 +1200,6 @@ impl MqttState {
             && pending_unsubscribe == 0
             && outgoing_publish == 0
             && outgoing_publish_notices == 0
-            && outgoing_puback_waiting == 0
             && outgoing_pubrel == 0
             && outgoing_pubrel_replay == 0
             && outgoing_pubrel_notices == 0
@@ -1200,7 +1216,6 @@ impl MqttState {
             pending_unsubscribe,
             outgoing_publish,
             outgoing_publish_notices,
-            outgoing_puback_waiting,
             outgoing_pubrel,
             outgoing_pubrel_replay,
             outgoing_pubrel_notices,
@@ -1698,7 +1713,6 @@ impl MqttState {
             .pending_subscribe
             .remove(&suback.pkid)
             .expect("tracked subscribe checked before SUBACK validation");
-        self.mark_control_packet_id_complete(suback.pkid);
         self.release_outbound_pkid(suback.pkid);
         let mut effects = IncomingPacketEffects::outgoing(None);
         if let Some(notice) = pending_subscribe.notice {
@@ -1738,7 +1752,6 @@ impl MqttState {
             .pending_unsubscribe
             .remove(&unsuback.pkid)
             .expect("tracked unsubscribe checked before UNSUBACK validation");
-        self.mark_control_packet_id_complete(unsuback.pkid);
         self.release_outbound_pkid(unsuback.pkid);
         let mut effects = IncomingPacketEffects::outgoing(None);
         if let Some(notice) = pending_unsubscribe.notice {
@@ -1790,9 +1803,6 @@ impl MqttState {
             if let Some(max_inflight) = props.receive_max {
                 self.max_outgoing_inflight =
                     max_inflight.min(self.max_outgoing_inflight_upper_limit);
-                // Shrinking depends on pending retransmission state in eventloop.
-                // Grow immediately so incoming/outgoing packet-id indexed tracking stays valid.
-                self.reconcile_outgoing_tracking_capacity(false);
             }
             if let Some(retain_available) = props.retain_available {
                 self.retain_available = retain_available == 1;
@@ -1935,7 +1945,7 @@ impl MqttState {
             error!("Unsolicited puback packet: {:?}", puback.pkid);
             return Err(StateError::Unsolicited(puback.pkid));
         }
-        self.mark_outgoing_packet_id_complete(puback.pkid);
+        remove_ordered_pkid(&mut self.outgoing_pub_order, puback.pkid);
         self.release_outbound_pkid(puback.pkid);
 
         let notice = self.outgoing_pub_notice[usize::from(puback.pkid)].take();
@@ -1958,6 +1968,9 @@ impl MqttState {
             ));
         }
 
+        if effects.outgoing.is_none() {
+            self.maybe_shrink_outgoing_tracking_capacity();
+        }
         Ok(effects)
     }
 
@@ -1974,16 +1987,14 @@ impl MqttState {
             error!("Unsolicited pubrec packet: {:?}", pubrec.pkid);
             return Err(StateError::Unsolicited(pubrec.pkid));
         }
+        remove_ordered_pkid(&mut self.outgoing_pub_order, pubrec.pkid);
 
         let notice = self.outgoing_pub_notice[usize::from(pubrec.pkid)].take();
-        if pubrec.reason != PubRecReason::Success
-            && pubrec.reason != PubRecReason::NoMatchingSubscribers
-        {
+        if (pubrec.reason as u8) >= 0x80 {
             warn!(
                 "PubRec Pkid = {:?}, reason: {:?}",
                 pubrec.pkid, pubrec.reason
             );
-            self.mark_outgoing_packet_id_complete(pubrec.pkid);
             self.release_outbound_pkid(pubrec.pkid);
             self.release_outgoing_publish_quota(pubrec.pkid);
             let mut effects =
@@ -1994,11 +2005,15 @@ impl MqttState {
                     PublishResult::Qos2PubRecRejected(pubrec.clone()),
                 ));
             }
+            if effects.outgoing.is_none() {
+                self.maybe_shrink_outgoing_tracking_capacity();
+            }
             return Ok(effects);
         }
 
-        // NOTE: Inflight - 1 for qos2 in comp
+        // Successful QoS 2 retains its connection send-quota slot through PUBCOMP.
         self.outgoing_rel.insert(usize::from(pubrec.pkid));
+        self.outgoing_rel_order.push_back(pubrec.pkid);
         self.outgoing_rel_notice[usize::from(pubrec.pkid)] = notice;
         let event = Event::Outgoing(Outgoing::PubRel(pubrec.pkid));
         self.events.push_back(event);
@@ -2053,8 +2068,8 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubcomp.pkid));
         }
         self.outgoing_rel.set(usize::from(pubcomp.pkid), false);
+        remove_ordered_pkid(&mut self.outgoing_rel_order, pubcomp.pkid);
         let notice = self.outgoing_rel_notice[usize::from(pubcomp.pkid)].take();
-        self.mark_outgoing_packet_id_complete(pubcomp.pkid);
         self.release_outbound_pkid(pubcomp.pkid);
         self.release_outgoing_publish_quota(pubcomp.pkid);
 
@@ -2073,6 +2088,9 @@ impl MqttState {
             ));
         }
 
+        if effects.outgoing.is_none() {
+            self.maybe_shrink_outgoing_tracking_capacity();
+        }
         Ok(effects)
     }
 
@@ -2080,9 +2098,11 @@ impl MqttState {
         self.check_collision(pkid).map(|(publish, notice)| {
             let pkid = publish.pkid;
             let replay_publish = self.publish_for_replay_tracking(&publish);
+            self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
             self.reserve_outbound_pkid(pkid)
                 .expect("collision replay packet identifier should have been released");
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
+            self.outgoing_pub_order.push_back(pkid);
             self.outgoing_pub_notice[usize::from(pkid)] = notice;
             self.acquire_outgoing_publish_quota(pkid);
             self.record_outgoing_topic_alias(&publish);
@@ -2252,7 +2272,8 @@ impl MqttState {
             }
 
             let pkid = publish.pkid;
-            self.validate_outgoing_pkid_bound(pkid)?;
+            self.validate_outgoing_pkid(pkid)?;
+            self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
             if self
                 .outgoing_pub
                 .get(usize::from(publish.pkid))
@@ -2287,8 +2308,8 @@ impl MqttState {
             }
             let replay_publish = self.publish_for_replay_tracking(&publish);
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
+            self.outgoing_pub_order.push_back(pkid);
             self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
-            self.outgoing_pub_ack.set(usize::from(pkid), false);
             self.acquire_outgoing_publish_quota(pkid);
         }
 
@@ -2415,7 +2436,10 @@ impl MqttState {
         let index = usize::from(pkid);
         if !self.outgoing_publish_quota.contains(index) {
             self.outgoing_publish_quota.insert(index);
-            self.inflight += 1;
+            self.inflight = self
+                .inflight
+                .checked_add(1)
+                .expect("outgoing publish quota must not overflow");
         }
     }
 
@@ -2465,8 +2489,11 @@ impl MqttState {
     ) -> Result<Option<Packet>, StateError> {
         self.validate_outgoing_subscribe(&subscription)?;
 
-        let pkid = self.next_control_pkid()?;
-        subscription.pkid = pkid;
+        if subscription.pkid == 0 {
+            subscription.pkid = self.next_control_pkid()?;
+        } else {
+            self.reserve_control_pkid(subscription.pkid)?;
+        }
         Ok(Some(self.save_outgoing_subscribe(subscription, notice)))
     }
 
@@ -2583,8 +2610,11 @@ impl MqttState {
             return Err(StateError::EmptyUnsubscription);
         }
 
-        let pkid = self.next_control_pkid()?;
-        unsub.pkid = pkid;
+        if unsub.pkid == 0 {
+            unsub.pkid = self.next_control_pkid()?;
+        } else {
+            self.reserve_control_pkid(unsub.pkid)?;
+        }
         Ok(self.save_outgoing_unsubscribe(unsub, notice))
     }
 
@@ -2726,7 +2756,7 @@ impl MqttState {
         pubrel: PubRel,
         notice: Option<PublishNoticeTx>,
     ) -> Result<PubRel, StateError> {
-        self.validate_outgoing_pkid_bound(pubrel.pkid)?;
+        self.validate_outgoing_pkid(pubrel.pkid)?;
         let pkid_index = usize::from(pubrel.pkid);
         let replaying_pubrel = self.outgoing_rel_replay.contains(pkid_index);
         if !self.outgoing_rel.contains(pkid_index) && !replaying_pubrel {
@@ -2734,53 +2764,17 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubrel.pkid));
         }
 
+        self.ensure_outgoing_tracking_capacity(pkid_index + 1);
         if replaying_pubrel {
             self.outgoing_rel_replay.set(pkid_index, false);
+            remove_ordered_pkid(&mut self.outgoing_rel_replay_order, pubrel.pkid);
+            self.outgoing_rel.insert(pkid_index);
+            self.outgoing_rel_order.push_back(pubrel.pkid);
         }
-        self.outgoing_rel.insert(pkid_index);
-        self.outgoing_rel_notice[pkid_index] = notice;
+        if notice.is_some() || self.outgoing_rel_notice[pkid_index].is_none() {
+            self.outgoing_rel_notice[pkid_index] = notice;
+        }
         Ok(pubrel)
-    }
-
-    fn mark_outgoing_packet_id_complete(&mut self, pkid: u16) {
-        self.outgoing_pub_ack.set(usize::from(pkid), true);
-        self.advance_last_puback_frontier();
-    }
-
-    fn mark_control_packet_id_complete(&mut self, pkid: u16) {
-        if self.control_packet_id_needs_frontier_completion(pkid) {
-            self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
-            self.mark_outgoing_packet_id_complete(pkid);
-        }
-    }
-
-    const fn control_packet_id_needs_frontier_completion(&self, pkid: u16) -> bool {
-        pkid != 0
-            && pkid <= self.max_outgoing_inflight_upper_limit
-            && pkid != self.last_puback
-            && (self.last_puback >= self.max_outgoing_inflight_upper_limit
-                || pkid > self.last_puback)
-    }
-
-    fn advance_last_puback_frontier(&mut self) {
-        let mut next = self.next_puback_boundary_pkid(self.last_puback);
-        while next != 0 && self.outgoing_pub_ack.contains(usize::from(next)) {
-            self.outgoing_pub_ack.set(usize::from(next), false);
-            self.last_puback = next;
-            next = self.next_puback_boundary_pkid(self.last_puback);
-        }
-    }
-
-    const fn next_puback_boundary_pkid(&self, pkid: u16) -> u16 {
-        if self.max_outgoing_inflight_upper_limit == 0 {
-            return 0;
-        }
-
-        if pkid >= self.max_outgoing_inflight_upper_limit {
-            1
-        } else {
-            pkid + 1
-        }
     }
 
     fn reserve_outbound_pkid(&mut self, pkid: u16) -> Result<(), StateError> {
@@ -2824,6 +2818,7 @@ impl MqttState {
             Request::PubRel(pubrel) => {
                 self.outgoing_rel_replay
                     .set(usize::from(pubrel.pkid), false);
+                remove_ordered_pkid(&mut self.outgoing_rel_replay_order, pubrel.pkid);
                 self.release_outbound_pkid(pubrel.pkid);
             }
             Request::Subscribe(subscribe) => {
@@ -2916,35 +2911,14 @@ impl MqttState {
         None
     }
 
-    /// <http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation>
-    /// Packet ids are incremented till maximum set inflight messages and reset to 1 after that.
-    ///
     fn next_publish_pkid(&self) -> Option<u16> {
-        let mut pkid = self.next_publish_pkid_after(self.last_pkid);
-        for _ in 0..usize::from(self.max_outgoing_inflight_upper_limit) {
-            if !self.packet_identifier_in_use(pkid) {
-                return Some(pkid);
-            }
-            pkid = self.next_publish_pkid_after(pkid);
-        }
-
-        None
+        self.next_free_outbound_pkid_after(self.last_pkid)
     }
 
     fn next_pkid(&mut self) -> Option<u16> {
-        let next_pkid = self.next_publish_pkid()?;
-
-        // When next packet id is at the edge of inflight queue,
-        // set await flag. This instructs eventloop to stop
-        // processing requests until all the inflight publishes
-        // are acked
-        if next_pkid == self.max_outgoing_inflight_upper_limit {
-            self.last_pkid = 0;
-            return Some(next_pkid);
-        }
-
-        self.last_pkid = next_pkid;
-        Some(next_pkid)
+        let pkid = self.next_publish_pkid()?;
+        self.last_pkid = pkid;
+        Some(pkid)
     }
 
     fn next_control_pkid(&mut self) -> Result<u16, StateError> {
@@ -2954,6 +2928,13 @@ impl MqttState {
         self.reserve_outbound_pkid(pkid)?;
         self.last_pkid = pkid;
         Ok(pkid)
+    }
+
+    fn reserve_control_pkid(&mut self, pkid: u16) -> Result<(), StateError> {
+        self.validate_outgoing_pkid(pkid)?;
+        self.reserve_outbound_pkid(pkid)?;
+        self.last_pkid = pkid;
+        Ok(())
     }
 
     fn publish_topic_alias(publish: &Publish) -> Option<u16> {
@@ -3157,14 +3138,12 @@ impl MqttState {
         );
 
         PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: options.client_id(),
             clean_start: options.clean_start(),
             session_expiry_interval,
             outgoing_inflight_upper_limit: options.get_outgoing_inflight_upper_limit(),
             ack_mode: persisted_ack_mode(options.ack_mode()),
-            last_pkid: self.last_pkid,
-            last_puback: self.last_puback,
             replay,
             incoming_qos2: self
                 .incoming_pubrec
@@ -3180,20 +3159,19 @@ impl MqttState {
 
     fn persisted_replay_requests(&self) -> Vec<PersistedRequest> {
         let mut replay = Vec::with_capacity(self.clean_pending_capacity());
-        let (first_half, second_half) = self
-            .outgoing_pub
-            .split_at(usize::from(self.last_puback) + 1);
-
-        for publish in second_half.iter().chain(first_half.iter()).flatten() {
-            if let Some(persisted) = persisted_publish(publish) {
+        for pkid in &self.outgoing_pub_order {
+            if let Some(persisted) = self.outgoing_pub[usize::from(*pkid)]
+                .as_ref()
+                .and_then(persisted_publish)
+            {
                 replay.push(PersistedRequest::Publish(persisted));
             }
         }
 
         replay.extend(
-            self.outgoing_rel
-                .ones()
-                .filter_map(|pkid| u16::try_from(pkid).ok())
+            self.outgoing_rel_order
+                .iter()
+                .copied()
                 .map(|pkid| PersistedRequest::PubRel(PersistedPubRel { pkid })),
         );
 
@@ -3234,8 +3212,6 @@ impl MqttState {
         self.validate_persisted_session_packet_ids(session)?;
 
         self.reset_session_state();
-        self.last_pkid = session.last_pkid;
-        self.last_puback = session.last_puback;
 
         for incoming in &session.incoming_qos2 {
             self.incoming_pub.insert(usize::from(incoming.pkid));
@@ -3251,6 +3227,7 @@ impl MqttState {
                 PersistedRequest::PubRel(pubrel) => {
                     self.ensure_outgoing_tracking_capacity(usize::from(pubrel.pkid) + 1);
                     self.outgoing_rel_replay.insert(usize::from(pubrel.pkid));
+                    self.outgoing_rel_replay_order.push_back(pubrel.pkid);
                     pubrel.pkid
                 }
                 PersistedRequest::Subscribe(subscribe) => subscribe.pkid,
@@ -3260,11 +3237,8 @@ impl MqttState {
         }
         self.outbound_pkid_in_use.set(0, false);
         let outbound_pkid_count = self.outbound_pkid_in_use.ones().count();
-        self.outbound_pkid_count = u16::try_from(outbound_pkid_count).map_err(|_| {
-            SessionRestoreError::OutgoingPacketIdentifierCountOutOfRange {
-                count: outbound_pkid_count,
-            }
-        })?;
+        self.outbound_pkid_count = u16::try_from(outbound_pkid_count)
+            .expect("unique non-zero MQTT packet identifier count fits in u16");
 
         session
             .replay
@@ -3277,15 +3251,28 @@ impl MqttState {
         &self,
         session: &PersistedSession,
     ) -> Result<(), SessionRestoreError> {
-        validate_last_puback(session.last_puback, self.max_outgoing_inflight_upper_limit)?;
-
         for incoming in &session.incoming_qos2 {
             validate_pkid(incoming.pkid)?;
         }
 
-        session.replay.iter().try_for_each(|request| {
-            validate_persisted_replay_request_pkid(request, self.max_outgoing_inflight_upper_limit)
-        })?;
+        let mut packet_ids = FixedBitSet::with_capacity(Self::full_packet_identifier_len());
+        let mut publish_count = 0usize;
+        for request in &session.replay {
+            let pkid = validate_persisted_replay_request(request)?;
+            if packet_ids.contains(usize::from(pkid)) {
+                return Err(SessionRestoreError::DuplicateOutgoingPacketIdentifier(pkid));
+            }
+            packet_ids.insert(usize::from(pkid));
+            if matches!(request, PersistedRequest::Publish(_)) {
+                publish_count += 1;
+            }
+        }
+        if publish_count > usize::from(self.max_outgoing_inflight_upper_limit) {
+            return Err(SessionRestoreError::OutgoingPublishWindowExceeded {
+                count: publish_count,
+                max_inflight: self.max_outgoing_inflight_upper_limit,
+            });
+        }
 
         Ok(())
     }
@@ -3295,7 +3282,7 @@ fn validate_persisted_session_signature(
     options: &MqttOptions,
     session: &PersistedSession,
 ) -> Result<(), SessionRestoreError> {
-    if session.format_version != 1 {
+    if session.format_version != 2 {
         return Err(SessionRestoreError::UnsupportedFormatVersion {
             actual: session.format_version,
         });
@@ -3338,49 +3325,29 @@ const fn validate_pkid(pkid: u16) -> Result<(), SessionRestoreError> {
     Ok(())
 }
 
-fn validate_outgoing_pkid(
-    pkid: u16,
-    max_outgoing_inflight: u16,
-) -> Result<(), SessionRestoreError> {
-    validate_pkid(pkid)?;
-
-    if pkid > max_outgoing_inflight {
-        return Err(SessionRestoreError::OutgoingPacketIdentifierOutOfRange {
-            pkid,
-            max_outgoing_inflight,
-        });
-    }
-
-    Ok(())
-}
-
-const fn validate_last_puback(
-    last_puback: u16,
-    max_outgoing_inflight: u16,
-) -> Result<(), SessionRestoreError> {
-    if last_puback > max_outgoing_inflight {
-        return Err(SessionRestoreError::LastPubAckOutOfRange {
-            last_puback,
-            max_outgoing_inflight,
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_persisted_replay_request_pkid(
+fn validate_persisted_replay_request(
     request: &PersistedRequest,
-    max_outgoing_inflight: u16,
-) -> Result<(), SessionRestoreError> {
+) -> Result<u16, SessionRestoreError> {
     match request {
         PersistedRequest::Publish(publish) => {
-            validate_outgoing_pkid(publish.pkid, max_outgoing_inflight)
+            validate_pkid(publish.pkid)?;
+            if publish.qos == PersistedQoS::AtMostOnce {
+                return Err(SessionRestoreError::InvalidOutgoingPublishQoS { pkid: publish.pkid });
+            }
+            Ok(publish.pkid)
         }
         PersistedRequest::PubRel(pubrel) => {
-            validate_outgoing_pkid(pubrel.pkid, max_outgoing_inflight)
+            validate_pkid(pubrel.pkid)?;
+            Ok(pubrel.pkid)
         }
-        PersistedRequest::Subscribe(subscribe) => validate_pkid(subscribe.pkid),
-        PersistedRequest::Unsubscribe(unsubscribe) => validate_pkid(unsubscribe.pkid),
+        PersistedRequest::Subscribe(subscribe) => {
+            validate_pkid(subscribe.pkid)?;
+            Ok(subscribe.pkid)
+        }
+        PersistedRequest::Unsubscribe(unsubscribe) => {
+            validate_pkid(unsubscribe.pkid)?;
+            Ok(unsubscribe.pkid)
+        }
     }
 }
 
@@ -3585,6 +3552,12 @@ fn unsubscribe_properties_from_persisted(
     }
 }
 
+fn remove_ordered_pkid(order: &mut VecDeque<u16>, pkid: u16) {
+    if let Some(position) = order.iter().position(|candidate| *candidate == pkid) {
+        order.remove(position);
+    }
+}
+
 impl Clone for MqttState {
     fn clone(&self) -> Self {
         Self {
@@ -3592,14 +3565,15 @@ impl Clone for MqttState {
             last_incoming: self.last_incoming,
             last_outgoing: self.last_outgoing,
             last_pkid: self.last_pkid,
-            last_puback: self.last_puback,
             inflight: self.inflight,
             outgoing_publish_quota: self.outgoing_publish_quota.clone(),
             outgoing_pub: self.outgoing_pub.clone(),
+            outgoing_pub_order: self.outgoing_pub_order.clone(),
             outgoing_pub_notice: Self::new_notice_slots_with_len(self.outgoing_pub.len()),
-            outgoing_pub_ack: self.outgoing_pub_ack.clone(),
             outgoing_rel: self.outgoing_rel.clone(),
+            outgoing_rel_order: self.outgoing_rel_order.clone(),
             outgoing_rel_replay: self.outgoing_rel_replay.clone(),
+            outgoing_rel_replay_order: self.outgoing_rel_replay_order.clone(),
             outgoing_rel_notice: Self::new_notice_slots_with_len(self.outgoing_rel_notice.len()),
             incoming_puback: self.incoming_puback.clone(),
             incoming_pub: self.incoming_pub.clone(),
@@ -3667,7 +3641,8 @@ mod test {
     };
     use crate::{
         AckMode, MqttOptions, NoticeFailureReason, PersistedAckMode, PersistedPubRel,
-        PersistedRequest, PersistedSession, SessionMode, SessionRestoreError, TopicAliasPolicy,
+        PersistedPublish, PersistedQoS, PersistedRequest, PersistedSession, SessionMode,
+        SessionRestoreError, TopicAliasPolicy,
     };
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
@@ -3683,6 +3658,18 @@ mod test {
         let mut publish = Publish::new(topic, QoS::AtLeastOnce, payload, None);
         publish.qos = qos;
         publish
+    }
+
+    fn build_persisted_publish(pkid: u16, qos: PersistedQoS) -> PersistedPublish {
+        PersistedPublish {
+            dup: true,
+            qos,
+            retain: false,
+            topic: b"hello/world".to_vec(),
+            pkid,
+            payload: vec![1, 2, 3],
+            properties: None,
+        }
     }
 
     fn publish_properties_with_alias(alias: u16) -> PublishProperties {
@@ -4228,14 +4215,12 @@ mod test {
         let mut unsubscribe = Unsubscribe::new("c/d", None);
         unsubscribe.pkid = 3;
         let session = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "client".to_owned(),
             clean_start: false,
             session_expiry_interval: options.session_expiry_interval(),
             outgoing_inflight_upper_limit: Some(1),
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 3,
-            last_puback: 0,
             replay: vec![
                 PersistedRequest::Subscribe(super::persisted_subscribe(&subscribe)),
                 PersistedRequest::Unsubscribe(super::persisted_unsubscribe(&unsubscribe)),
@@ -4254,38 +4239,28 @@ mod test {
     }
 
     #[test]
-    fn persisted_session_rejects_pubrel_replay_above_outgoing_inflight_limit() {
+    fn persisted_session_accepts_pubrel_replay_above_outgoing_inflight_limit() {
         let options = MqttOptions::builder("client", "localhost")
             .session_mode(SessionMode::Persistent)
             .outgoing_inflight_upper_limit(1)
             .build();
         let session = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "client".to_owned(),
             clean_start: false,
             session_expiry_interval: options.session_expiry_interval(),
             outgoing_inflight_upper_limit: Some(1),
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 0,
-            last_puback: 0,
             replay: vec![PersistedRequest::PubRel(PersistedPubRel { pkid: 2 })],
             incoming_qos2: vec![],
         };
         let mut restored = MqttState::builder(1).build();
-        restored.last_pkid = 9;
-
-        let err = restored
+        let replay = restored
             .restore_persisted_session(&options, &session)
-            .unwrap_err();
+            .expect("PUBREL does not consume the new connection's publish quota");
 
-        assert_eq!(
-            err,
-            SessionRestoreError::OutgoingPacketIdentifierOutOfRange {
-                pkid: 2,
-                max_outgoing_inflight: 1,
-            }
-        );
-        assert_eq!(restored.last_pkid, 9);
+        assert!(matches!(&replay[0], Request::PubRel(pubrel) if pubrel.pkid == 2));
+        assert_eq!(restored.inflight(), 0);
     }
 
     #[test]
@@ -4295,14 +4270,12 @@ mod test {
             .outgoing_inflight_upper_limit(10)
             .build();
         let session = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "client".to_owned(),
             clean_start: false,
             session_expiry_interval: options.session_expiry_interval(),
             outgoing_inflight_upper_limit: Some(10),
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 0,
-            last_puback: 0,
             replay: vec![PersistedRequest::PubRel(PersistedPubRel { pkid: 10 })],
             incoming_qos2: vec![],
         };
@@ -4321,25 +4294,25 @@ mod test {
     }
 
     #[test]
-    fn persisted_session_rejects_last_puback_above_outgoing_inflight_limit() {
+    fn persisted_session_rejects_duplicate_outgoing_packet_identifiers() {
         let options = MqttOptions::builder("client", "localhost")
             .session_mode(SessionMode::Persistent)
             .outgoing_inflight_upper_limit(10)
             .build();
         let session = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "client".to_owned(),
             clean_start: false,
             session_expiry_interval: options.session_expiry_interval(),
             outgoing_inflight_upper_limit: Some(10),
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 0,
-            last_puback: 100,
-            replay: vec![],
+            replay: vec![
+                PersistedRequest::PubRel(PersistedPubRel { pkid: 7 }),
+                PersistedRequest::PubRel(PersistedPubRel { pkid: 7 }),
+            ],
             incoming_qos2: vec![],
         };
         let mut restored = MqttState::builder(10).build();
-        restored.last_puback = 4;
 
         let err = restored
             .restore_persisted_session(&options, &session)
@@ -4347,12 +4320,122 @@ mod test {
 
         assert_eq!(
             err,
-            SessionRestoreError::LastPubAckOutOfRange {
-                last_puback: 100,
-                max_outgoing_inflight: 10,
+            SessionRestoreError::DuplicateOutgoingPacketIdentifier(7)
+        );
+    }
+
+    #[test]
+    fn persisted_session_accepts_high_identifiers_across_all_outgoing_flows() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(4)
+            .build();
+        let mut session = MqttState::builder(4).build().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
+        let mut subscribe = Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None);
+        subscribe.pkid = 65_002;
+        let mut unsubscribe = Unsubscribe::new("a/b", None);
+        unsubscribe.pkid = 65_003;
+        session.replay = vec![
+            PersistedRequest::Publish(build_persisted_publish(65_000, PersistedQoS::AtLeastOnce)),
+            PersistedRequest::PubRel(PersistedPubRel { pkid: 65_001 }),
+            PersistedRequest::Subscribe(super::persisted_subscribe(&subscribe)),
+            PersistedRequest::Unsubscribe(super::persisted_unsubscribe(&unsubscribe)),
+        ];
+
+        let mut restored = MqttState::builder(4).build();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .unwrap();
+
+        assert_eq!(replay.len(), 4);
+        for pkid in 65_000..=65_003 {
+            assert!(restored.packet_identifier_in_use(pkid));
+        }
+    }
+
+    #[test]
+    fn persisted_session_rejects_zero_identifiers_and_qos0_publish() {
+        let options = persistent_options();
+        let mut session = build_mqttstate().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
+        session.replay = vec![PersistedRequest::PubRel(PersistedPubRel { pkid: 0 })];
+        assert_eq!(
+            build_mqttstate()
+                .restore_persisted_session(&options, &session)
+                .unwrap_err(),
+            SessionRestoreError::InvalidPacketIdentifier(0)
+        );
+
+        session.replay = vec![PersistedRequest::Publish(build_persisted_publish(
+            1,
+            PersistedQoS::AtMostOnce,
+        ))];
+        assert_eq!(
+            build_mqttstate()
+                .restore_persisted_session(&options, &session)
+                .unwrap_err(),
+            SessionRestoreError::InvalidOutgoingPublishQoS { pkid: 1 }
+        );
+    }
+
+    #[test]
+    fn persisted_session_counts_only_publish_entries_against_local_upper_limit() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(1)
+            .build();
+        let mut session = MqttState::builder(1).build().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
+        session.replay = vec![
+            PersistedRequest::Publish(build_persisted_publish(1, PersistedQoS::AtLeastOnce)),
+            PersistedRequest::Publish(build_persisted_publish(2, PersistedQoS::ExactlyOnce)),
+            PersistedRequest::PubRel(PersistedPubRel { pkid: 3 }),
+        ];
+        assert_eq!(
+            MqttState::builder(1)
+                .build()
+                .restore_persisted_session(&options, &session)
+                .unwrap_err(),
+            SessionRestoreError::OutgoingPublishWindowExceeded {
+                count: 2,
+                max_inflight: 1,
             }
         );
-        assert_eq!(restored.last_puback, 4);
+
+        session.replay.remove(1);
+        let replay = MqttState::builder(1)
+            .build()
+            .restore_persisted_session(&options, &session)
+            .unwrap();
+        assert_eq!(replay.len(), 2);
+    }
+
+    #[test]
+    fn persisted_session_rejects_old_model_version() {
+        let options = persistent_options();
+        let mut session = build_mqttstate().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
+        session.format_version = 1;
+
+        assert_eq!(
+            build_mqttstate()
+                .restore_persisted_session(&options, &session)
+                .unwrap_err(),
+            SessionRestoreError::UnsupportedFormatVersion { actual: 1 }
+        );
     }
 
     #[test]
@@ -4550,7 +4633,6 @@ mod test {
         mqtt.outgoing_pub[1] = Some(build_outgoing_publish(QoS::AtLeastOnce));
         let (publish_notice, _) = PublishNoticeTx::new();
         mqtt.outgoing_pub_notice[1] = Some(publish_notice);
-        mqtt.outgoing_pub_ack.insert(1);
         mqtt.outgoing_rel.insert(2);
         mqtt.outgoing_rel_replay.insert(2);
         let (pubrel_notice, _) = PublishNoticeTx::new();
@@ -4594,7 +4676,6 @@ mod test {
         assert_eq!(diagnostics.pending_unsubscribe, 1);
         assert_eq!(diagnostics.outgoing_publish, 1);
         assert_eq!(diagnostics.outgoing_publish_notices, 1);
-        assert_eq!(diagnostics.outgoing_puback_waiting, 1);
         assert_eq!(diagnostics.outgoing_pubrel, 1);
         assert_eq!(diagnostics.outgoing_pubrel_replay, 1);
         assert_eq!(diagnostics.outgoing_pubrel_notices, 1);
@@ -5019,7 +5100,7 @@ mod test {
     }
 
     #[test]
-    fn control_acks_above_publish_tracking_capacity_complete_without_publish_frontier() {
+    fn control_acks_above_publish_tracking_capacity_complete_without_growing_it() {
         let mut mqtt = MqttState::builder(10).build();
         let pkid = 11;
 
@@ -5038,7 +5119,7 @@ mod test {
             },
         );
 
-        assert!(mqtt.outgoing_pub_ack.len() <= usize::from(pkid));
+        let publish_tracking_len = mqtt.outgoing_pub.len();
         mqtt.handle_incoming_suback(&SubAck {
             pkid,
             return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
@@ -5053,8 +5134,7 @@ mod test {
         .unwrap();
 
         assert!(mqtt.outbound_requests_drained());
-        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
-        assert_eq!(mqtt.last_puback, 0);
+        assert_eq!(mqtt.outgoing_pub.len(), publish_tracking_len);
     }
 
     #[test]
@@ -5606,7 +5686,6 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 11);
         assert_eq!(mqtt.outgoing_pub_notice.len(), 11);
         assert_eq!(mqtt.outgoing_rel_notice.len(), 11);
-        assert_eq!(mqtt.outgoing_pub_ack.len(), 11);
         assert_eq!(mqtt.outgoing_rel.len(), 11);
     }
 
@@ -5676,10 +5755,9 @@ mod test {
     }
 
     #[test]
-    fn connack_receive_max_preserves_packet_identifier_frontiers() {
+    fn connack_receive_max_preserves_allocator_cursor() {
         let mut mqtt = MqttState::builder(10).build();
         mqtt.last_pkid = 9;
-        mqtt.last_puback = 8;
 
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
             .unwrap();
@@ -5689,10 +5767,8 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 11);
         assert_eq!(mqtt.outgoing_pub_notice.len(), 11);
         assert_eq!(mqtt.outgoing_rel_notice.len(), 11);
-        assert_eq!(mqtt.outgoing_pub_ack.len(), 11);
         assert_eq!(mqtt.outgoing_rel.len(), 11);
         assert_eq!(mqtt.last_pkid, 9);
-        assert_eq!(mqtt.last_puback, 8);
     }
 
     #[test]
@@ -5873,25 +5949,197 @@ mod test {
     }
 
     #[test]
+    fn large_configured_publish_limit_uses_warm_tracking_storage() {
+        let mqtt = MqttState::builder(u16::MAX).build();
+
+        assert_eq!(mqtt.outgoing_pub.len(), MqttState::WARM_TRACKING_SLOTS + 1);
+        assert_eq!(
+            mqtt.outgoing_pub_notice.len(),
+            MqttState::WARM_TRACKING_SLOTS + 1
+        );
+        assert_eq!(
+            mqtt.outgoing_rel_notice.len(),
+            MqttState::WARM_TRACKING_SLOTS + 1
+        );
+    }
+
+    #[test]
     fn broker_receive_max_limits_publish_count_not_packet_identifier_values() {
         let mut mqtt = MqttState::builder(10).build();
         mqtt.handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(2)))
             .unwrap();
 
         let mut first = build_outgoing_publish(QoS::AtLeastOnce);
-        first.pkid = 8;
+        first.pkid = 65_000;
         assert!(mqtt.can_send_publish(&first));
         mqtt.outgoing_publish(first).unwrap();
 
         let mut second = build_outgoing_publish(QoS::AtLeastOnce);
-        second.pkid = 9;
+        second.pkid = 65_001;
         assert!(mqtt.can_send_publish(&second));
         mqtt.outgoing_publish(second).unwrap();
 
         let mut third = build_outgoing_publish(QoS::AtLeastOnce);
-        third.pkid = 10;
+        third.pkid = 65_002;
         assert!(!mqtt.can_send_publish(&third));
         assert_eq!(mqtt.inflight, 2);
+    }
+
+    #[test]
+    fn allocator_wraps_across_the_full_nonzero_packet_identifier_range() {
+        let mut mqtt = MqttState::builder(2).build();
+        mqtt.last_pkid = u16::MAX - 1;
+
+        let packet = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(packet, Packet::Publish(publish) if publish.pkid == u16::MAX));
+        mqtt.handle_incoming_puback(&PubAck::new(u16::MAX, None))
+            .unwrap();
+
+        let packet = mqtt
+            .outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(packet, Packet::Publish(publish) if publish.pkid == 1));
+    }
+
+    #[test]
+    fn explicit_high_control_identifiers_share_the_outgoing_namespace() {
+        let mut mqtt = MqttState::builder(1).build();
+        let mut subscribe = Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None);
+        subscribe.pkid = 60_000;
+        let packet = mqtt.outgoing_subscribe(subscribe, None).unwrap().unwrap();
+        assert!(matches!(packet, Packet::Subscribe(subscribe) if subscribe.pkid == 60_000));
+
+        let mut unsubscribe = Unsubscribe::new("a/b", None);
+        unsubscribe.pkid = 60_000;
+        assert!(matches!(
+            mqtt.outgoing_unsubscribe(unsubscribe.clone(), None),
+            Err(StateError::InvalidState)
+        ));
+
+        mqtt.handle_incoming_suback(&SubAck {
+            pkid: 60_000,
+            return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
+            properties: None,
+        })
+        .unwrap();
+        let packet = mqtt.outgoing_unsubscribe(unsubscribe, None).unwrap();
+        assert!(matches!(packet, Packet::Unsubscribe(unsubscribe) if unsubscribe.pkid == 60_000));
+    }
+
+    #[test]
+    fn qos2_quota_is_held_through_pubrel_and_released_only_by_pubcomp() {
+        let mut mqtt = MqttState::builder(1).build();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+        assert_eq!(mqtt.inflight(), 1);
+
+        mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
+        assert_eq!(mqtt.inflight(), 1);
+        assert!(matches!(
+            mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce)),
+            Err(StateError::OutgoingPublishQuotaExceeded { maximum: 1 })
+        ));
+
+        mqtt.outgoing_pubrel_with_notice(PubRel::new(1, None), None)
+            .unwrap();
+        assert_eq!(mqtt.inflight(), 1);
+        mqtt.handle_incoming_pubcomp(&PubComp::new(1, None))
+            .unwrap();
+        assert_eq!(mqtt.inflight(), 0);
+    }
+
+    #[test]
+    fn restored_pubrel_neither_acquires_nor_over_releases_send_quota() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(1)
+            .build();
+        let mut session = MqttState::builder(1).build().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
+        session.replay = vec![PersistedRequest::PubRel(PersistedPubRel { pkid: 60_000 })];
+
+        let mut restored = MqttState::builder(1).build();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .unwrap();
+        assert_eq!(restored.inflight(), 0);
+        restored
+            .handle_replayed_outgoing_packet_with_notice(replay[0].clone(), None)
+            .unwrap();
+        assert_eq!(restored.inflight(), 0);
+        restored
+            .handle_incoming_pubcomp(&PubComp::new(60_000, None))
+            .unwrap();
+        assert_eq!(restored.inflight(), 0);
+
+        restored
+            .outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
+        assert_eq!(restored.inflight(), 1);
+    }
+
+    #[test]
+    fn restored_publish_backlog_uses_each_connections_negotiated_quota() {
+        let options = MqttOptions::builder("client", "localhost")
+            .session_mode(SessionMode::Persistent)
+            .outgoing_inflight_upper_limit(3)
+            .build();
+        let mut session = MqttState::builder(3).build().persisted_session(
+            &options,
+            options.session_expiry_interval(),
+            std::iter::empty(),
+        );
+        session.replay = (10..=12)
+            .map(|pkid| {
+                PersistedRequest::Publish(build_persisted_publish(pkid, PersistedQoS::AtLeastOnce))
+            })
+            .collect();
+
+        let mut restored = MqttState::builder(3).build();
+        let replay = restored
+            .restore_persisted_session(&options, &session)
+            .unwrap();
+        restored
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(1)))
+            .unwrap();
+        assert!(
+            matches!(&replay[0], Request::Publish(publish) if restored.can_send_replayed_publish(publish))
+        );
+        restored
+            .handle_replayed_outgoing_packet_with_notice(replay[0].clone(), None)
+            .unwrap();
+        assert!(
+            matches!(&replay[1], Request::Publish(publish) if !restored.can_send_replayed_publish(publish))
+        );
+
+        let mut next_connection_replay: Vec<Request> = restored
+            .clean_with_notices_for_reconnect()
+            .into_iter()
+            .map(|clean| clean.request)
+            .collect();
+        next_connection_replay.extend(replay.into_iter().skip(1));
+        restored.reset_connection_scoped_state();
+        restored
+            .handle_incoming_packet(Incoming::ConnAck(build_connack_with_receive_max(3)))
+            .unwrap();
+
+        for request in next_connection_replay {
+            let Request::Publish(publish) = &request else {
+                panic!("expected restored publish");
+            };
+            assert!(restored.can_send_replayed_publish(publish));
+            restored
+                .handle_replayed_outgoing_packet_with_notice(request, None)
+                .unwrap();
+        }
+        assert_eq!(restored.inflight(), 3);
     }
 
     #[test]
@@ -5951,14 +6199,7 @@ mod test {
 
         for i in 1..=100 {
             let pkid = mqtt.next_pkid().unwrap();
-
-            // loops between 0-99. % 100 == 0 implies border
-            let expected = i % 100;
-            if expected == 0 {
-                break;
-            }
-
-            assert_eq!(expected, pkid);
+            assert_eq!(i, pkid);
         }
     }
 
@@ -5979,7 +6220,7 @@ mod test {
             .unwrap()
             .unwrap();
         match packet {
-            Packet::Publish(publish) => assert_eq!(publish.pkid, 2),
+            Packet::Publish(publish) => assert_eq!(publish.pkid, 6),
             packet => panic!("Unexpected packet: {packet:?}"),
         }
     }
@@ -5988,18 +6229,10 @@ mod test {
     fn next_pkid_returns_none_when_all_publish_packet_identifiers_are_in_use() {
         let mut mqtt = MqttState::builder(4).build();
 
-        for pkid in 1..=4 {
-            let filter = SubscribeFilter::new("a/b", QoS::AtMostOnce);
-            let (notice, _) = SubscribeNoticeTx::new();
-            mqtt.pending_subscribe.insert(
-                pkid,
-                PendingSubscribe {
-                    subscribe: Subscribe::new(filter, None),
-                    notice: Some(notice),
-                },
-            );
+        for pkid in 1..=u16::MAX {
+            mqtt.outbound_pkid_in_use.insert(usize::from(pkid));
         }
-        mqtt.rebuild_outbound_pkid_index();
+        mqtt.outbound_pkid_count = u16::MAX;
 
         assert!(!mqtt.can_send_publish(&build_outgoing_publish(QoS::AtLeastOnce)));
         assert!(mqtt.next_pkid().is_none());
@@ -6136,16 +6369,16 @@ mod test {
         assert_eq!(mqtt.last_pkid, 1);
         assert_eq!(mqtt.inflight, 1);
 
-        // Packet id should be set back down to 0, since we hit the limit
+        // The publish limit does not alter allocator progress.
         mqtt.outgoing_publish(publish.clone()).unwrap();
-        assert_eq!(mqtt.last_pkid, 0);
+        assert_eq!(mqtt.last_pkid, 2);
         assert_eq!(mqtt.inflight, 2);
 
         assert!(matches!(
             mqtt.outgoing_publish(publish.clone()),
             Err(StateError::OutgoingPublishQuotaExceeded { maximum: 2 })
         ));
-        assert_eq!(mqtt.last_pkid, 0);
+        assert_eq!(mqtt.last_pkid, 2);
         assert_eq!(mqtt.inflight, 2);
         assert!(mqtt.collision.is_none());
 
@@ -6155,7 +6388,7 @@ mod test {
 
         // Now there should be space in the outgoing queue
         mqtt.outgoing_publish(publish).unwrap();
-        assert_eq!(mqtt.last_pkid, 1);
+        assert_eq!(mqtt.last_pkid, 3);
         assert_eq!(mqtt.inflight, 1);
     }
 
@@ -6181,7 +6414,7 @@ mod test {
 
         let mut mqtt = build_mqttstate();
         mqtt.outgoing_pub = build_outgoing_pub();
-        mqtt.last_puback = 3;
+        mqtt.outgoing_pub_order = VecDeque::from([6, 1, 2, 3]);
         let requests = mqtt.clean();
         let expected = vec![6, 1, 2, 3];
         for (req, pkid) in requests.iter().zip(expected) {
@@ -6193,7 +6426,7 @@ mod test {
         }
 
         mqtt.outgoing_pub = build_outgoing_pub();
-        mqtt.last_puback = 0;
+        mqtt.outgoing_pub_order = VecDeque::from([1, 2, 3, 6]);
         let requests = mqtt.clean();
         let expected = vec![1, 2, 3, 6];
         for (req, pkid) in requests.iter().zip(expected) {
@@ -6205,7 +6438,7 @@ mod test {
         }
 
         mqtt.outgoing_pub = build_outgoing_pub();
-        mqtt.last_puback = 6;
+        mqtt.outgoing_pub_order = VecDeque::from([1, 2, 3, 6]);
         let requests = mqtt.clean();
         let expected = vec![1, 2, 3, 6];
         for (req, pkid) in requests.iter().zip(expected) {
@@ -8292,24 +8525,24 @@ mod test {
     }
 
     #[test]
-    fn incoming_puback_updates_last_puback() {
+    fn incoming_puback_removes_publish_from_order() {
         let mut mqtt = build_mqttstate();
 
         let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
         let publish2 = build_outgoing_publish(QoS::AtLeastOnce);
         mqtt.outgoing_publish(publish1).unwrap();
         mqtt.outgoing_publish(publish2).unwrap();
-        assert_eq!(mqtt.last_puback, 0);
+        assert_eq!(mqtt.outgoing_pub_order, VecDeque::from([1, 2]));
 
         mqtt.handle_incoming_puback(&PubAck::new(1, None)).unwrap();
-        assert_eq!(mqtt.last_puback, 1);
+        assert_eq!(mqtt.outgoing_pub_order, VecDeque::from([2]));
 
         mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
-        assert_eq!(mqtt.last_puback, 2);
+        assert!(mqtt.outgoing_pub_order.is_empty());
     }
 
     #[test]
-    fn incoming_puback_advances_last_puback_only_on_contiguous_boundary() {
+    fn out_of_order_puback_preserves_remaining_publish_order() {
         let mut mqtt = build_mqttstate();
 
         mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
@@ -8318,16 +8551,16 @@ mod test {
             .unwrap();
         mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
             .unwrap();
-        assert_eq!(mqtt.last_puback, 0);
+        assert_eq!(mqtt.outgoing_pub_order, VecDeque::from([1, 2, 3]));
 
         mqtt.handle_incoming_puback(&PubAck::new(2, None)).unwrap();
-        assert_eq!(mqtt.last_puback, 0);
+        assert_eq!(mqtt.outgoing_pub_order, VecDeque::from([1, 3]));
 
         mqtt.handle_incoming_puback(&PubAck::new(1, None)).unwrap();
-        assert_eq!(mqtt.last_puback, 2);
+        assert_eq!(mqtt.outgoing_pub_order, VecDeque::from([3]));
 
         mqtt.handle_incoming_puback(&PubAck::new(3, None)).unwrap();
-        assert_eq!(mqtt.last_puback, 3);
+        assert!(mqtt.outgoing_pub_order.is_empty());
     }
 
     #[test]
@@ -8351,16 +8584,15 @@ mod test {
 
         assert_eq!(mqtt.inflight, 0);
         assert!(mqtt.outbound_requests_drained());
-        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
     }
 
     #[test]
-    fn control_packet_id_behind_frontier_does_not_leave_stale_ack_bit() {
+    fn control_packet_completion_does_not_change_publish_order() {
         let mut mqtt = build_mqttstate();
-        mqtt.last_puback = 10;
-        mqtt.last_pkid = 10;
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::AtLeastOnce))
+            .unwrap();
         mqtt.pending_subscribe.insert(
-            1,
+            10,
             PendingSubscribe {
                 subscribe: Subscribe::new(SubscribeFilter::new("a/b", QoS::AtMostOnce), None),
                 notice: None,
@@ -8368,14 +8600,13 @@ mod test {
         );
 
         mqtt.handle_incoming_suback(&SubAck {
-            pkid: 1,
+            pkid: 10,
             return_codes: vec![SubscribeReasonCode::Success(QoS::AtMostOnce)],
             properties: None,
         })
         .unwrap();
 
-        assert!(mqtt.outbound_requests_drained());
-        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
+        assert_eq!(mqtt.outgoing_pub_order, VecDeque::from([1]));
     }
 
     #[test]
@@ -8473,7 +8704,6 @@ mod test {
 
         assert_eq!(mqtt.inflight, 0);
         assert!(mqtt.outbound_requests_drained());
-        assert!(mqtt.outgoing_pub_ack.ones().next().is_none());
         assert!(mqtt.outgoing_rel.ones().next().is_none());
     }
 
@@ -8500,6 +8730,30 @@ mod test {
             .collect();
 
         assert_eq!(pending_pkids, vec![1, 3]);
+    }
+
+    #[test]
+    fn pubrel_replay_order_follows_successful_pubrec_receipt_order() {
+        let mut mqtt = build_mqttstate();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+        mqtt.outgoing_publish(build_outgoing_publish(QoS::ExactlyOnce))
+            .unwrap();
+
+        mqtt.handle_incoming_pubrec(&PubRec::new(2, None)).unwrap();
+        mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
+        assert_eq!(mqtt.inflight(), 2);
+
+        let replay: Vec<u16> = mqtt
+            .clean()
+            .into_iter()
+            .map(|request| match request {
+                Request::PubRel(pubrel) => pubrel.pkid,
+                request => panic!("unexpected replay request: {request:?}"),
+            })
+            .collect();
+        assert_eq!(replay, vec![2, 1]);
+        assert_eq!(mqtt.inflight(), 0);
     }
 
     #[test]

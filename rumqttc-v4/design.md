@@ -17,8 +17,17 @@ acknowledgement packets identify the exchange without a reason-code field. The
 state machine therefore treats a syntactically valid PUBACK, PUBREC, PUBREL, or
 PUBCOMP primarily as progress for its packet identifier.
 
-The outgoing in-flight publish limit is local configuration rather than a
-broker-negotiated Receive Maximum.
+The outgoing in-flight publish limit is a local QoS 1/2 PUBLISH window, not a
+broker-negotiated Receive Maximum and not a packet-identifier ceiling. Outgoing
+publishes may use any currently unused non-zero 16-bit Packet Identifier.
+QoS 1 occupies a window slot until PUBACK. QoS 2 keeps the same slot through
+PUBLISH, PUBREC, and PUBREL, releasing it only at PUBCOMP; MQTT 3.1.1 PUBREC has
+no rejecting reason code that can end the exchange early.
+
+When the window is full, the event-loop scheduler holds later QoS 1/2 PUBLISH
+work while allowing protocol-valid acknowledgements, keepalive, subscription
+management, PUBREL retransmission, and disconnect processing to progress.
+The public low-level `MqttState` transition enforces the same publish count.
 
 ## Clean Session and Session Present
 
@@ -51,10 +60,19 @@ eligible publications as new application work is tracked in
 ## Persistent Checkpoint Contents
 
 V4 checkpoints record `clean_session`, the configured maximum in-flight value,
-acknowledgement mode, packet-identifier progress, replayable outbound exchanges,
-and incomplete incoming QoS 2 state. Restoration is enabled only for
+acknowledgement mode, replayable outbound exchanges with their original packet
+identifiers and protocol order, and incomplete incoming QoS 2 state.
+Restoration is enabled only for
 `clean_session = false` and validates that the checkpoint belongs to the
 configured Client Identifier and compatible local options.
+
+The maximum in-flight value is checkpoint compatibility metadata. Current
+window occupancy, packet-identifier allocation cursors, acknowledgement
+frontiers, collision state, ping state, and scheduler blockage are
+connection-local and are not serialized. Cleanup resets occupancy to zero;
+replayed PUBLISH and PUBREL work reacquires slots on the next connection.
+Checkpoint format version 2 removes the former allocator and acknowledgement
+frontier fields, so version 1 canonical checkpoints are rejected.
 
 The separately returned live QoS 1/2 PUBLISH uses `DUP=0`, as required by the
 first-transmission obligations MQTT-4.3.2-1 and MQTT-4.3.3-1. Persisted and

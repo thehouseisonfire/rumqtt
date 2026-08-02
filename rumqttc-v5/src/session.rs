@@ -48,7 +48,7 @@ impl SessionStoreKey {
 ///
 /// `SessionStore` persists MQTT protocol recovery state that has already been
 /// admitted into the client state machine. This includes in-flight `QoS`
-/// flows, packet identifier ownership and progress, pending
+/// flows, packet identifier ownership, pending
 /// SUBSCRIBE/UNSUBSCRIBE protocol state, and incoming `QoS` 2 state.
 ///
 /// Implementations must make `save` and `clear` crash-consistent. A later
@@ -112,8 +112,8 @@ pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
 ///
 /// The structure is intentionally public so applications can serialize it with
 /// their own format and compatibility policy. Restore validates that the
-/// checkpoint belongs to the configured client and is compatible with packet-id
-/// tracking, acknowledgement mode, and other local options; invalid checkpoint
+/// checkpoint belongs to the configured client and is compatible with the
+/// acknowledgement mode and other local options; invalid checkpoint
 /// contents are reported as [`SessionRestoreError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistedSession {
@@ -129,14 +129,11 @@ pub struct PersistedSession {
     /// received in CONNACK. A checkpoint saved after a graceful client
     /// DISCONNECT records its Session Expiry Interval override instead.
     pub session_expiry_interval: Option<u32>,
-    /// Configured outgoing inflight upper limit, if any.
+    /// Configured outgoing PUBLISH inflight upper limit, retained as restore-compatibility
+    /// metadata. It does not constrain packet identifier values.
     pub outgoing_inflight_upper_limit: Option<u16>,
     /// Acknowledgement mode associated with incoming `QoS` state.
     pub ack_mode: PersistedAckMode,
-    /// Last allocated client packet identifier.
-    pub last_pkid: u16,
-    /// Last contiguous completed outgoing publish packet identifier.
-    pub last_puback: u16,
     /// Outgoing publish/control requests that must be replayed after reconnect.
     ///
     /// These requests have already been admitted into MQTT protocol state and
@@ -175,7 +172,7 @@ pub struct PersistedPublish {
     ///
     /// This is the conservative recovery representation, not the live
     /// first-send packet, which remains `DUP=0`. New checkpoints emit `true`,
-    /// and restore treats `false` from an older compatible checkpoint as
+    /// and restore conservatively normalizes a caller-supplied `false` to
     /// `true`. See the persistence design documentation for the
     /// crash-before-send qualification.
     pub dup: bool,
@@ -303,7 +300,7 @@ pub struct PersistedUnsubscribeProperties {
 
 const SESSION_MAGIC: &[u8; 7] = b"RMQSESS";
 const SESSION_PROTOCOL: u8 = 5;
-const SESSION_CODEC_VERSION: u16 = 1;
+const SESSION_CODEC_VERSION: u16 = 2;
 const MAX_BINARY_LEN: usize = 268_435_455;
 const MAX_COLLECTION_LEN: usize = 1_000_000;
 
@@ -358,8 +355,6 @@ impl PersistedSession {
         writer.option_u32(self.session_expiry_interval);
         writer.option_u16(self.outgoing_inflight_upper_limit);
         writer.u8(encode_ack_mode(self.ack_mode));
-        writer.u16(self.last_pkid);
-        writer.u16(self.last_puback);
         writer.vec("replay", &self.replay, write_request)?;
         writer.vec("incoming_qos2", &self.incoming_qos2, |writer, incoming| {
             writer.u16(incoming.pkid);
@@ -395,8 +390,6 @@ impl PersistedSession {
             session_expiry_interval: reader.option_u32("session_expiry_interval")?,
             outgoing_inflight_upper_limit: reader.option_u16("outgoing_inflight_upper_limit")?,
             ack_mode: decode_ack_mode(reader.u8("ack_mode")?)?,
-            last_pkid: reader.u16("last_pkid")?,
-            last_puback: reader.u16("last_puback")?,
             replay: reader.vec("replay", read_request)?,
             incoming_qos2: reader.vec("incoming_qos2", |reader| {
                 Ok(PersistedIncomingQos2 {
@@ -1002,22 +995,16 @@ pub enum SessionRestoreError {
     AckModeMismatch,
     #[error("persisted request contains invalid packet identifier {0}")]
     InvalidPacketIdentifier(u16),
+    #[error("persisted outgoing work contains duplicate packet identifier {0}")]
+    DuplicateOutgoingPacketIdentifier(u16),
     #[error(
-        "persisted request packet identifier {pkid} exceeds outgoing inflight limit {max_outgoing_inflight}"
+        "persisted session contains {count} outgoing PUBLISH entries, exceeding configured upper limit {max_inflight}"
     )]
-    OutgoingPacketIdentifierOutOfRange {
-        pkid: u16,
-        max_outgoing_inflight: u16,
-    },
+    OutgoingPublishWindowExceeded { count: usize, max_inflight: u16 },
+    #[error("persisted outgoing PUBLISH {pkid} has non-replayable QoS 0")]
+    InvalidOutgoingPublishQoS { pkid: u16 },
     #[error("persisted session contains too many outgoing packet identifiers: {count}")]
     OutgoingPacketIdentifierCountOutOfRange { count: usize },
-    #[error(
-        "persisted last_puback {last_puback} exceeds outgoing inflight limit {max_outgoing_inflight}"
-    )]
-    LastPubAckOutOfRange {
-        last_puback: u16,
-        max_outgoing_inflight: u16,
-    },
 }
 
 #[cfg(test)]
@@ -1035,14 +1022,12 @@ mod tests {
     #[test]
     fn canonical_codec_round_trips_all_v5_request_variants() {
         let session = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "client".to_owned(),
             clean_start: false,
             session_expiry_interval: Some(60),
             outgoing_inflight_upper_limit: Some(10),
             ack_mode: PersistedAckMode::Manual,
-            last_pkid: 9,
-            last_puback: 3,
             replay: vec![
                 PersistedRequest::Publish(PersistedPublish {
                     dup: true,
@@ -1094,14 +1079,12 @@ mod tests {
     #[test]
     fn canonical_codec_has_stable_minimal_v5_vector() {
         let session = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "c".to_owned(),
             clean_start: false,
             session_expiry_interval: Some(60),
             outgoing_inflight_upper_limit: None,
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 2,
-            last_puback: 3,
             replay: Vec::new(),
             incoming_qos2: Vec::new(),
         };
@@ -1109,8 +1092,8 @@ mod tests {
         assert_eq!(
             session.encode().unwrap(),
             vec![
-                b'R', b'M', b'Q', b'S', b'E', b'S', b'S', 5, 0, 1, 0, 1, 0, 0, 0, 1, b'c', 0, 1, 0,
-                0, 0, 60, 0, 1, 0, 2, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+                b'R', b'M', b'Q', b'S', b'E', b'S', b'S', 5, 0, 2, 0, 2, 0, 0, 0, 1, b'c', 0, 1, 0,
+                0, 0, 60, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
             ]
         );
     }
@@ -1123,14 +1106,12 @@ mod tests {
         ));
 
         let mut wrong_protocol = PersistedSession {
-            format_version: 1,
+            format_version: 2,
             client_id: "c".to_owned(),
             clean_start: false,
             session_expiry_interval: Some(60),
             outgoing_inflight_upper_limit: None,
             ack_mode: PersistedAckMode::Automatic,
-            last_pkid: 2,
-            last_puback: 3,
             replay: Vec::new(),
             incoming_qos2: Vec::new(),
         }
@@ -1140,6 +1121,15 @@ mod tests {
         assert!(matches!(
             PersistedSession::decode(&wrong_protocol),
             Err(SessionDecodeError::WrongProtocol { actual: 4 })
+        ));
+
+        let mut old_codec = wrong_protocol.clone();
+        old_codec[7] = 5;
+        old_codec[8] = 0;
+        old_codec[9] = 1;
+        assert!(matches!(
+            PersistedSession::decode(&old_codec),
+            Err(SessionDecodeError::UnsupportedCodecVersion { actual: 1 })
         ));
 
         let mut trailing = wrong_protocol;

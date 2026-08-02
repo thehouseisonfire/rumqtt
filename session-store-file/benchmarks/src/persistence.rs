@@ -880,13 +880,11 @@ fn fixture_v4(count: usize, payload_size: usize, qos: u8) -> rumqttc_v4::Persist
         })
         .collect();
     rumqttc_v4::PersistedSession {
-        format_version: 1,
+        format_version: 2,
         client_id: "benchmark-client-v4".to_owned(),
         clean_session: false,
         max_inflight: u16::try_from(count.max(1)).expect("fixture count fits u16"),
         ack_mode: PersistedAckMode::Automatic,
-        last_pkid: u16::try_from(count).expect("fixture count fits u16"),
-        last_puback: 0,
         replay,
         incoming_qos2: Vec::new(),
     }
@@ -913,7 +911,7 @@ fn fixture_v5(count: usize, payload_size: usize, qos: u8) -> rumqttc_v5::Persist
         })
         .collect();
     rumqttc_v5::PersistedSession {
-        format_version: 1,
+        format_version: 2,
         client_id: "benchmark-client-v5".to_owned(),
         clean_start: false,
         session_expiry_interval: Some(3600),
@@ -921,8 +919,6 @@ fn fixture_v5(count: usize, payload_size: usize, qos: u8) -> rumqttc_v5::Persist
             u16::try_from(count.max(1)).expect("fixture count fits u16"),
         ),
         ack_mode: PersistedAckMode::Automatic,
-        last_pkid: u16::try_from(count).expect("fixture count fits u16"),
-        last_puback: 0,
         replay,
         incoming_qos2: Vec::new(),
     }

@@ -1,21 +1,20 @@
 use atomic_blob_store::AtomicBlobStoreError;
 use rumqttc_v5::{
-    PersistedAckMode, PersistedSession, SessionDecodeError, SessionStore, SessionStoreKey,
+    PersistedAckMode, PersistedPubRel, PersistedRequest, PersistedSession, SessionDecodeError,
+    SessionStore, SessionStoreKey,
 };
 
 use super::*;
 
-fn session(last_pkid: u16) -> PersistedSession {
+fn session(pkid: u16) -> PersistedSession {
     PersistedSession {
-        format_version: 1,
+        format_version: 2,
         client_id: "client".to_owned(),
         clean_start: false,
         session_expiry_interval: Some(60),
         outgoing_inflight_upper_limit: Some(10),
         ack_mode: PersistedAckMode::Automatic,
-        last_pkid,
-        last_puback: 0,
-        replay: Vec::new(),
+        replay: vec![PersistedRequest::PubRel(PersistedPubRel { pkid })],
         incoming_qos2: Vec::new(),
     }
 }
@@ -44,13 +43,14 @@ async fn existing_checkpoint_round_trip_works() {
     let root = tempfile::tempdir().unwrap();
     let store = SessionFileStore::open(root.path()).await.unwrap();
     let key = SessionStoreKey::new("scope", "client");
-    store.save(&key, &session(7)).await.unwrap();
-    assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
+    let checkpoint = session(7);
+    store.save(&key, &checkpoint).await.unwrap();
+    assert_eq!(store.load(&key).await.unwrap().unwrap(), checkpoint);
     assert_eq!(
         store.inspect(&key).await.unwrap().state,
         CheckpointState::Present
     );
-    assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
+    assert_eq!(store.load(&key).await.unwrap().unwrap(), checkpoint);
     store.clear(&key).await.unwrap();
     assert_eq!(
         store.inspect(&key).await.unwrap().state,
@@ -64,19 +64,19 @@ async fn existing_checkpoint_round_trip_works() {
 async fn checkpoint_fixture_is_byte_for_byte_stable() {
     const EXPECTED: &[u8] = &[
         0x52, 0x55, 0x4d, 0x51, 0x53, 0x45, 0x53, 0x53, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x2c, 0x52, 0x4d, 0x51, 0x53, 0x45, 0x53, 0x53, 0x05, 0x00, 0x01, 0x00, 0x01,
+        0x00, 0x00, 0x2b, 0x52, 0x4d, 0x51, 0x53, 0x45, 0x53, 0x53, 0x05, 0x00, 0x02, 0x00, 0x02,
         0x00, 0x00, 0x00, 0x06, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x3c, 0x01, 0x00, 0x0a, 0x01, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x68, 0x6c, 0xc3, 0xbe,
+        0x3c, 0x01, 0x00, 0x0a, 0x01, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x07, 0x00, 0x00, 0x00,
+        0x00, 0x7d, 0xf8, 0xc6, 0x52,
     ];
     let root = tempfile::tempdir().unwrap();
     let store = SessionFileStore::open(root.path()).await.unwrap();
     let key = SessionStoreKey::new("scope", "client");
-    std::fs::write(store.checkpoint_path(&key).unwrap(), EXPECTED).unwrap();
-    assert_eq!(store.load(&key).await.unwrap().unwrap().last_pkid, 7);
     store.save(&key, &session(7)).await.unwrap();
     let actual = std::fs::read(store.checkpoint_path(&key).unwrap()).unwrap();
     assert_eq!(actual, EXPECTED);
+    std::fs::write(store.checkpoint_path(&key).unwrap(), EXPECTED).unwrap();
+    assert_eq!(store.load(&key).await.unwrap().unwrap(), session(7));
 }
 
 #[cfg(any(unix, windows))]

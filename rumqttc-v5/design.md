@@ -17,7 +17,7 @@ A successful CONNACK can alter the current connection or session:
 | MQTT 5 value | Implemented effect |
 | --- | --- |
 | Server Keep Alive | Replaces the keepalive interval used by the event loop. |
-| Receive Maximum | Independently caps unacknowledged outgoing and incoming QoS 1/2 PUBLISH packets. |
+| Receive Maximum | The broker's CONNACK value caps outgoing QoS 1/2 PUBLISH packets; the client's CONNECT value independently caps incoming QoS 1/2 PUBLISH packets. |
 | Maximum Packet Size | Makes the encoder reject packets larger than the server accepts. |
 | Topic Alias Maximum | Limits client-to-server aliases for this network connection. |
 | Session Expiry Interval | Becomes the effective interval used for current-session persistence decisions. |
@@ -30,6 +30,27 @@ by the decoder. The implementation enforces both Receive Maximum directions,
 including quota release at the protocol-defined acknowledgement milestones,
 while allowing non-PUBLISH control packets to progress when the outgoing
 publish quota is exhausted.
+
+## Packet Identifiers and Send Quota
+
+Outgoing PUBLISH, PUBREL, SUBSCRIBE, and UNSUBSCRIBE flows share the MQTT
+packet-identifier namespace `1..=65,535`. The configured outgoing inflight
+upper limit and the broker's Receive Maximum do not restrict identifier values;
+they limit only the number of QoS 1/2 PUBLISH packets consuming send quota. The
+effective limit for a connection is the smaller of those two values.
+
+A QoS 1 PUBLISH releases quota and its identifier on PUBACK. A successful QoS 2
+exchange retains both through PUBREC and PUBREL, releasing them on PUBCOMP. A
+PUBREC reason code of `0x80` or greater terminates the exchange and releases
+both immediately. Sending or retransmitting PUBREL never consumes another
+quota slot. In particular, a restored PUBREL reserves its durable session
+identifier but consumes no quota on the new connection.
+
+Send quota, the negotiated Receive Maximum, and the allocator cursor are
+connection-local runtime state. They reset for every network connection and are
+not stored in session checkpoints. A restored PUBLISH backlog is therefore
+replayed gradually under the newly negotiated effective limit, which may be
+smaller or larger than on the previous connection.
 
 The configured CONNECT Session Expiry Interval remains the application's
 baseline request for every connection. A broker value returned in CONNACK is
@@ -61,6 +82,14 @@ MQTT 5 assigns different lifetimes to closely related state:
 
 Connection cleanup resets topic-alias and authentication exchange state,
 negotiated limits, and both connection-local Receive Maximum quotas.
+
+The v5 checkpoint model and canonical codec are version 2. Checkpoints contain
+ordered replayable PUBLISH, PUBREL, SUBSCRIBE, and UNSUBSCRIBE work, incomplete
+incoming QoS 2 state, session-expiry metadata, and configuration compatibility
+fields. They do not contain allocator cursors, acknowledgement frontiers,
+quota, negotiated Receive Maximum, or other connection-local counters. Version
+1 canonical checkpoints are intentionally incompatible and are rejected rather
+than migrated or reinterpreted.
 
 ## Topic Alias Lifecycle
 

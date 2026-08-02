@@ -53,6 +53,23 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc` v4: Treat the configured in-flight value exclusively as the local
+  outgoing QoS 1/2 PUBLISH count. Packet identifiers now use the full MQTT
+  non-zero 16-bit range, control traffic remains schedulable when the publish
+  window is full, QoS 2 retains its slot through PUBCOMP, and reconnect replay
+  reconstructs connection-local occupancy. The v4 persisted-session format is
+  bumped to version 2 and no longer stores allocator or acknowledgement-frontier
+  counters; version 1 canonical checkpoints are rejected. The obsolete v4
+  `OutboundDiagnostics::outgoing_puback_waiting` field is removed with that
+  acknowledgement-frontier implementation.
+- `rumqttc` v5: Decouple the unified non-zero 16-bit packet-identifier namespace
+  from both the configured outgoing upper limit and the broker's Receive
+  Maximum. Those values now limit only outgoing QoS 1/2 PUBLISH send quota;
+  successful QoS 2 retains quota through PUBCOMP, rejected PUBREC releases it,
+  and restored PUBREL consumes no new-connection quota. The v5 persisted-session
+  model and codec are bumped to version 2, remove allocator and acknowledgement-
+  frontier fields, and explicitly reject version 1 canonical checkpoints. The
+  obsolete v5 `OutboundDiagnostics::outgoing_puback_waiting` field is removed.
 - `rumqttc` v5: Validate duplicate and malformed CONNACK Maximum QoS, Retain Available,
   Wildcard Subscription Available, Subscription Identifier Available, and Shared Subscription
   Available properties, and enforce every advertised restriction for fresh, queued, and replayed

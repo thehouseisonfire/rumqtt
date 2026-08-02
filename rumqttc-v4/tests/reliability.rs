@@ -807,7 +807,7 @@ async fn tracked_unsubscribe_bypasses_blocked_publish_without_ack_progress() {
 }
 
 #[tokio::test]
-async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
+async fn blocked_publish_advances_packet_id_after_out_of_order_acks() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options.set_inflight(4);
@@ -844,8 +844,8 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
         let packet = broker
             .read_publish_with_timeout(PHASE_TIMEOUT)
             .await
-            .expect("missing publish after freeing packet id 3");
-        assert_eq!(packet.pkid, 3);
+            .expect("missing publish after freeing a window slot");
+        assert_eq!(packet.pkid, 5);
         assert_eq!(packet.payload[0], 5);
         broker.ack(packet.pkid).await;
         ack_first_rx.await.expect("ack release signal dropped");
@@ -862,9 +862,9 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
         }
     });
 
-    // Sends 4 requests. The 5th request should use the first packet id made
-    // available by the out-of-order acknowledgements instead of waiting for
-    // the wrapped packet id 1.
+    // Sends 4 requests. The 5th request should advance through the full MQTT
+    // packet-identifier range after an out-of-order acknowledgement frees a
+    // local publish-window slot.
     time::timeout(TEST_TIMEOUT, async {
         loop {
             let event = poll_ignoring_connect_races(&mut eventloop)
@@ -884,9 +884,9 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
         .expect("broker task already exited");
 
     let mut acked = 0;
-    let mut reused_available_pkid = false;
+    let mut advanced_pkid = false;
     time::timeout(TEST_TIMEOUT, async {
-        while acked < 2 || !reused_available_pkid {
+        while acked < 2 || !advanced_pkid {
             let event = poll_ignoring_connect_races(&mut eventloop)
                 .await
                 .expect("poll should not fail");
@@ -894,8 +894,8 @@ async fn blocked_publish_uses_available_packet_id_after_out_of_order_acks() {
             match event {
                 Event::Incoming(Packet::PubAck(_)) => acked += 1,
                 Event::Outgoing(Outgoing::Publish(pkid)) => {
-                    assert_eq!(pkid, 3);
-                    reused_available_pkid = true;
+                    assert_eq!(pkid, 5);
+                    advanced_pkid = true;
                 }
                 _ => {}
             }

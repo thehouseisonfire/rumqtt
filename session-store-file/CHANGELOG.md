@@ -19,6 +19,12 @@
 
 ### Changed
 
+- Update MQTT 3.1.1 file checkpoints to the rumqttc v4 session format version 2,
+  which removes connection-local packet-allocation and acknowledgement-frontier
+  counters. Existing v1 v4 checkpoint files are rejected and must be cleared.
+- Update MQTT 5 file checkpoints to the rumqttc v5 session format version 2,
+  which removes connection-local allocator and acknowledgement-frontier state.
+  Existing v1 v5 checkpoint files are rejected and must be cleared.
 - Remove the obsolete "active Tokio runtime required" adapter error.
 - Preserve the existing `RUMQSESS` envelope and `.session` paths through the
   generic store's explicit format identity.
