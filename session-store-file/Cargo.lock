@@ -102,7 +102,8 @@ dependencies = [
 [[package]]
 name = "atomic-blob-store"
 version = "0.1.2"
-source = "git+https://github.com/thehouseisonfire/atomic-blob-store?rev=10c6a933be94bab32c501f46355851761340d2a2#10c6a933be94bab32c501f46355851761340d2a2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0041329053dc348fe83c76e181b8016249d50013ec8b95a6b47bfa77e0584e9"
 dependencies = [
  "atomic-write-file",
  "blake3",
