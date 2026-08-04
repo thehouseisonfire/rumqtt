@@ -23,8 +23,7 @@ This is an MQTT 5 client change. Do not add SRV behavior to `rumqttc-v4-next`.
 
 ### Prerequisite and assumed baseline
 
-Complete `docs/mqtt-v5-uri-redirect-exploration.md` first. This TODO assumes
-that work has landed, including:
+This TODO assumes that `docs/mqtt-v5-uri-redirect-exploration.md` work has landed, including:
 
 - feature-neutral authority/URI variants in `RedirectReference`;
 - fallible `RedirectTargetProfile` construction;
