@@ -19,6 +19,8 @@
 
 ### Changed
 
+- Re-license as MIT OR Apache-2.0 with separate `LICENSE-MIT` and
+  `LICENSE-APACHE` files.
 - Update MQTT 3.1.1 file checkpoints to the rumqttc v4 session format version 2,
   which removes connection-local packet-allocation and acknowledgement-frontier
   counters. Existing v1 v4 checkpoint files are rejected and must be cleared.
