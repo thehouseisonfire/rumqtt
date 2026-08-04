@@ -21,7 +21,7 @@
       alt="coverage status"
     />
   </a>
-  <img src="https://img.shields.io/badge/rustc-1.85%2B-blue" alt="rustc 1.85 or newer" />
+  <img src="https://img.shields.io/badge/rustc-1.88%2B-blue" alt="rustc 1.88 or newer" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0 license" /></a>
 </div>
 

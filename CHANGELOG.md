@@ -13,9 +13,12 @@
   the original redirect when a target connection fails. WebSocket redirect
   paths and queries are retained as the handshake request target. Fallible
   profile construction reports scheme/transport and disabled-feature failures
-  without deriving credentials from the URI. SRV references remain visible to
-  policy but report a structured unavailable-target error until DNS SRV target
-  and port resolution is available. Queued graceful and immediate disconnects
+  without deriving credentials from the URI. Application-approved
+  `_service._tcp.domain` authorities now resolve asynchronously through DNS SRV,
+  follow RFC 2782 priority and weight ordering, and fail over across transport
+  establishment failures. Applications can inject an `SrvResolver` for controlled
+  DNS environments; the opt-in `system-srv-resolver` feature lazily uses host
+  system configuration through Hickory. Queued graceful and immediate disconnects
   take precedence over following a redirect.
 - `rumqttc` v5: Add `MqttStateBuilder::client_receive_maximum(u16)` and
   `MqttState::set_client_receive_maximum(Option<u16>)` for low-level clients
@@ -31,7 +34,8 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
-- `rumqttc`: Lower the published client crates' MSRV from Rust `1.89` to `1.85`.
+- `rumqttc`: Set the published client crates' MSRV to Rust `1.88`, enabling the
+  maintained Hickory 0.26 resolver line and current security fixes.
 - Documentation: Add a v4/v5 recipe for broker-acknowledged sequential publishing
   with `publish_tracked()` and `wait_completion_async()`.
 - Documentation: Explain how to assign distinct Cargo dependency names when

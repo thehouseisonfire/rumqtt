@@ -34,7 +34,7 @@ scripts/test-low-memory.sh --memory-mib 12
 | Setting | Value |
 | --- | --- |
 | Host and architecture | Linux, x86_64 |
-| Rust toolchain and target | Rust 1.85.0, `x86_64-unknown-linux-musl` |
+| Rust toolchain and target | Rust 1.88.0, `x86_64-unknown-linux-musl` |
 | Build | Workspace release profile, locked dependencies, LTO, stripped |
 | Client features | `default-features = false`; no optional features |
 | Runtime | Tokio current-thread |
@@ -87,23 +87,23 @@ kernel reports an OOM event, Docker reports an OOM kill, the process exits from
 
 ## Measured result
 
-The following strict run was recorded on 2026-07-29:
+The following strict run was recorded on 2026-08-04:
 
 | Client | Result | `memory.peak` | OOM-killed | Exit | Duration |
 | --- | --- | ---: | --- | ---: | ---: |
-| MQTT 3.1.1 / v4 | Pass | 8,318,976 bytes (7.93 MiB) | No | 0 | 4,991 ms |
-| MQTT 5 / v5 | Pass | 8,257,536 bytes (7.88 MiB) | No | 0 | 5,235 ms |
+| MQTT 3.1.1 / v4 | Pass | 8,351,744 bytes (7.96 MiB) | No | 0 | 4,888 ms |
+| MQTT 5 / v5 | Pass | 7,737,344 bytes (7.38 MiB) | No | 0 | 5,717 ms |
 
 Both cgroups reported zero `oom`, `oom_kill`, and `memory.max` events. The
-measurement host used Linux 7.1.5 on x86_64, Docker 29.6.2 with the systemd
-cgroup driver and cgroup v2, the pinned Rust 1.85.0 Alpine builder image, static
-musl 1.2.5 linking, and the pinned Mosquitto 2.0.22 image. The relevant output
-was:
+measurement host used Linux 7.1.5 on x86_64, Docker 29.7.1 with the systemd
+cgroup driver and cgroup v2, the pinned Rust 1.88.0 Alpine builder image,
+static musl 1.2.5 linking, and the pinned Mosquitto 2.0.22 image. The relevant
+output was:
 
 ```text
 Running clients with memory.max=10485760 bytes and memory.swap.max=0...
-v4  PASS  peak=8318976 bytes oom_killed=false exit=0 duration=4991ms
-v5  PASS  peak=8257536 bytes oom_killed=false exit=0 duration=5235ms
+v4  PASS  peak=8351744 bytes oom_killed=false exit=0 duration=4888ms
+v5  PASS  peak=7737344 bytes oom_killed=false exit=0 duration=5717ms
 ```
 
 ## Limits of the claim

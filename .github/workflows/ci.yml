@@ -60,12 +60,12 @@ jobs:
           if-no-files-found: warn
 
   msrv:
-    name: Rust 1.85 MSRV
+    name: Rust 1.88 MSRV
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
 
       - uses: Swatinem/rust-cache@v2
         with:

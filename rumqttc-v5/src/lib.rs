@@ -42,6 +42,7 @@ pub mod mqttbytes;
 mod notice;
 mod redirect;
 mod session;
+mod srv;
 mod state;
 mod transport;
 
@@ -88,6 +89,7 @@ pub use session::{
     PersistedUnsubscribeProperties, SessionDecodeError, SessionEncodeError, SessionRestoreError,
     SessionStore, SessionStoreError, SessionStoreKey,
 };
+pub use srv::{SrvLookupError, SrvLookupErrorKind, SrvRecord, SrvResolver, SrvResolverMode};
 pub use state::{MqttState, MqttStateBuilder, OutboundDiagnostics, ProtocolViolation, StateError};
 
 #[cfg(feature = "bench-instrumentation")]
@@ -794,6 +796,9 @@ pub struct MqttOptions {
     /// Application-defined scope for durable session storage keys.
     session_store_scope: String,
     redirect_policy: Option<RedirectPolicy>,
+    srv_resolver: Option<SrvResolver>,
+    #[cfg(feature = "system-srv-resolver")]
+    system_srv_resolver: srv::SystemSrvResolver,
 }
 
 impl MqttOptions {
@@ -839,6 +844,9 @@ impl MqttOptions {
             session_store: None,
             session_store_scope: String::new(),
             redirect_policy: None,
+            srv_resolver: None,
+            #[cfg(feature = "system-srv-resolver")]
+            system_srv_resolver: srv::SystemSrvResolver::new(),
         }
     }
 
@@ -958,6 +966,49 @@ impl MqttOptions {
     /// Return the configured redirect policy, if any.
     pub fn redirect_policy(&self) -> Option<RedirectPolicy> {
         self.redirect_policy.clone()
+    }
+
+    /// Set the asynchronous resolver used for MQTT 5 SRV redirects.
+    pub fn set_srv_resolver(&mut self, resolver: SrvResolver) -> &mut Self {
+        self.srv_resolver = Some(resolver);
+        self
+    }
+
+    /// Remove the custom resolver and restore the feature-selected resolver mode.
+    pub fn clear_srv_resolver(&mut self) -> &mut Self {
+        self.srv_resolver = None;
+        self
+    }
+
+    /// Return the explicitly configured custom SRV resolver, if any.
+    pub fn srv_resolver(&self) -> Option<SrvResolver> {
+        self.srv_resolver.clone()
+    }
+
+    /// Return the effective resolver mode without exposing resolver internals.
+    #[must_use]
+    pub const fn srv_resolver_mode(&self) -> SrvResolverMode {
+        if self.srv_resolver.is_some() {
+            SrvResolverMode::Custom
+        } else if cfg!(feature = "system-srv-resolver") {
+            SrvResolverMode::System
+        } else {
+            SrvResolverMode::Unavailable
+        }
+    }
+
+    pub(crate) fn effective_srv_resolver(&self) -> srv::EffectiveSrvResolver {
+        if let Some(resolver) = &self.srv_resolver {
+            return srv::EffectiveSrvResolver::Custom(resolver.clone());
+        }
+        #[cfg(feature = "system-srv-resolver")]
+        {
+            srv::EffectiveSrvResolver::System(self.system_srv_resolver.clone())
+        }
+        #[cfg(not(feature = "system-srv-resolver"))]
+        {
+            srv::EffectiveSrvResolver::Unavailable
+        }
     }
 
     /// Validate locally-checkable MQTT option invariants.
@@ -2000,6 +2051,13 @@ impl MqttOptionsBuilder {
         self
     }
 
+    /// Set the asynchronous resolver used for MQTT 5 SRV redirects.
+    #[must_use]
+    pub fn srv_resolver(mut self, resolver: SrvResolver) -> Self {
+        self.options.set_srv_resolver(resolver);
+        self
+    }
+
     /// Set durable storage for MQTT 5 persistent client session state.
     ///
     /// See [`MqttOptions::set_session_store`] for persistence semantics.
@@ -2524,6 +2582,7 @@ impl Debug for MqttOptions {
             .field("connect properties", &self.connect_properties)
             .field("session_store", &self.session_store.is_some())
             .field("redirect_policy", &self.redirect_policy)
+            .field("srv_resolver_mode", &self.srv_resolver_mode())
             .finish_non_exhaustive()
     }
 }

@@ -404,7 +404,7 @@ Automatic following is opt-in and bounded:
 use std::num::NonZeroUsize;
 use rumqttc::{
     MqttOptions, RedirectDecision, RedirectPolicy, RedirectTargetError,
-    RedirectTargetProfile, Transport,
+    RedirectTargetProfile, SrvLookupError, SrvRecord, SrvResolver, Transport,
 };
 
 let policy = RedirectPolicy::try_new(NonZeroUsize::new(3).unwrap(), |context| {
@@ -413,9 +413,20 @@ let policy = RedirectPolicy::try_new(NonZeroUsize::new(3).unwrap(), |context| {
     let profile = RedirectTargetProfile::isolated(reference, Transport::tcp())?;
     Ok(RedirectDecision::follow(profile))
 });
-let options = MqttOptions::builder("client", "primary.example")
+let mut options = MqttOptions::builder("client", "primary.example")
     .redirect_policy(policy)
     .build();
+
+// Optional: inject controlled DNS instead of the lazy host-system resolver.
+options.set_srv_resolver(SrvResolver::new(|owner| async move {
+    assert_eq!(owner, "_mqtt._tcp.cluster.example.com.");
+    Ok::<_, SrvLookupError>(vec![SrvRecord {
+        priority: 10,
+        weight: 20,
+        port: 8883,
+        target: "broker-2.example.net.".into(),
+    }])
+}));
 ```
 
 An accepted decision yields `Event::Redirect` before the next `poll()` attempts
@@ -425,9 +436,38 @@ and `wss` URIs. URI schemes constrain the selected transport; secure schemes
 require an explicitly supplied TLS configuration. `ws` and `wss` paths and
 queries are preserved verbatim as the WebSocket request target. User
 information, fragments, invalid ports, and TCP-MQTT URI paths or queries are
-rejected. SRV names remain available for policy inspection, but selecting one
-produces `RedirectFailure::Target(RedirectTargetError::SrvUnavailable)` until
-DNS SRV resolution is implemented.
+rejected. Authority references matching `_service._tcp.non-empty-domain` use
+DNS SRV; the service label is broker-selected and an explicit authority port is
+rejected because each SRV record supplies its own port. `_udp` and incomplete
+SRV-shaped names remain ordinary authorities.
+
+After policy approval, SRV lookup begins on the poll after `Event::Redirect`.
+The complete answer is validated, bounded to 32 usable targets, and ordered by
+RFC 2782 priority and weight. Only socket, proxy, TLS, or other target-transport
+establishment failures advance to the next candidate; a CONNACK, MQTT
+authentication, protocol, or session error does not. Lookup errors and exhausted
+answers never fall back to the underscored owner or a default MQTT port.
+
+The selected SRV target and port are passed unchanged to custom socket
+connectors and proxies. For TLS redirects, the selected target hostname—not the
+underscored SRV owner or an eagerly resolved address—is used for SNI and DNS-ID
+certificate verification. This is routing behavior only; it does not implement
+SRV-ID, DANE/TLSA, or DNSSEC authentication and does not authorize credentials.
+
+The opt-in `system-srv-resolver` feature provides lazy, cached lookup through
+Hickory using the host DNS configuration. Enable it explicitly in the dependency:
+
+```toml
+rumqttc-v5-next = { version = "0.34.0-alpha", features = ["system-srv-resolver"] }
+```
+
+The SRV types and custom resolver API remain available without Hickory. An
+explicitly configured `SrvResolver` always takes precedence. Clearing it restores
+system resolution when the feature is enabled, or the `Unavailable` mode otherwise.
+In the latter mode, approving an SRV reference still yields `Event::Redirect`, and
+the following poll returns `RedirectFailure::SrvResolverUnavailable` without
+attempting a connection. Use `MqttOptions::srv_resolver_mode()` to inspect the
+effective mode.
 
 `RedirectReference::ensure_supported()` lets policy inspect feature
 availability before selection. Builds without WebSocket or TLS support still
@@ -446,6 +486,9 @@ network credential hooks, and session scope have separate opt-in profile
 methods. URI queries are opaque WebSocket routing data and never configure
 MQTT, TLS, proxy, or HTTP credentials. An isolated redirect leaves the old
 endpoint's checkpoint untouched.
+
+`RedirectTargetProfile::broker()` returns `Some` for directly materialized
+authority/URI targets and `None` while an SRV target awaits resolution.
 
 `Use Another Server` applies to the redirected connection only and restores the
 previous endpoint after it ends. A successfully connected `Server Moved` target

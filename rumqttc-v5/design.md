@@ -182,16 +182,19 @@ IPv6 authority forms suggested by MQTT 5 section 4.11, plus absolute `mqtt`,
 `mqtts`, `ws`, and `wss` URIs. URI schemes constrain the selected transport;
 WebSocket paths and queries remain part of the derived broker and handshake.
 A policy can only select a validated advertised reference, and the resulting
-profile privately owns the complete broker derived from it. SRV names remain
-visible to policy but produce `RedirectTargetError::SrvUnavailable`, because
-the connector does not resolve DNS SRV targets.
+profile privately owns either the complete broker derived from it or a deferred
+SRV owner. A selected `_service._tcp.domain` owner resolves after the accepted
+redirect event, then installs one validated target and SRV-supplied port at a
+time. The ordered candidate plan follows RFC 2782 and advances only when target
+transport establishment fails.
 
 Parsing does not depend on transport features. Materialization reports
 structured unavailable-feature and transport-mismatch errors through a
 fallible policy callback. Loop identities normalize transport, host, effective
 port, and WebSocket resource names; distinct WebSocket paths or queries remain
-distinct targets. The normalized identity plus a non-zero policy limit bounds
-each redirect chain.
+distinct targets. SRV loop identities use the selected target and record port,
+not the owner. The normalized identity plus a non-zero policy limit bounds each
+redirect chain.
 
 A target is transactional: it is not committed until its successful CONNACK.
 Failure restores the previous connection options and reports both the redirect

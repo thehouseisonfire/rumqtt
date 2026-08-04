@@ -157,7 +157,7 @@ docker info >/dev/null 2>&1 || fail_inconclusive "the Docker daemon is unavailab
     docker info --format 'cgroup_version={{.CgroupVersion}} cgroup_driver={{.CgroupDriver}} docker_os={{.OperatingSystem}} docker_arch={{.Architecture}}'
     echo "host_rustc=$(rustc --version 2>/dev/null || echo unavailable)"
     echo "host_cargo=$(cargo --version 2>/dev/null || echo unavailable)"
-    echo "builder=rust:1.85.0-alpine3.21"
+    echo "builder=rust:1.88.0-alpine3.21"
     echo "target=x86_64-unknown-linux-musl"
     echo "musl=1.2.5"
     echo "broker_image=$BROKER_IMAGE"
@@ -185,7 +185,7 @@ else
 fi
 echo "Results will be preserved in $results_dir"
 
-echo "Building static memory-stability client images with Rust 1.85.0..."
+echo "Building static memory-stability client images with Rust 1.88.0..."
 if ! docker build --file "$DOCKERFILE" --target stability-v4 --tag "$v4_image" "$ROOT_DIR"; then
     echo "Failed to build the v4 memory-stability image" >&2
     exit 1

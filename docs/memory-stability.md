@@ -44,7 +44,7 @@ machine-readable output and does not replace the documented official profile.
 | Setting | Value |
 | --- | --- |
 | Host requirement | Linux, x86_64, Docker, cgroup v2 |
-| Rust toolchain and target | Rust 1.85.0, `x86_64-unknown-linux-musl` |
+| Rust toolchain and target | Rust 1.88.0, `x86_64-unknown-linux-musl` |
 | Build | Workspace release profile, locked dependencies, LTO, stripped, static musl 1.2.5 |
 | Client features | `default-features = false`; no optional features |
 | Runtime and transport | Tokio current-thread; plain TCP with TCP_NODELAY |
@@ -206,9 +206,10 @@ requires 3/3 per-run passes; the maintainer acceptance conclusion treats this
 non-reproduced measurement outlier as external to the client and accepts v4.
 
 The measurement host used Linux 7.1.5 on x86_64, Docker 29.6.2 with the systemd
-cgroup driver and cgroup v2, the pinned Rust 1.85.0 Alpine builder, static musl
-1.2.5 linking, and pinned Mosquitto 2.0.22. The host toolchain was Rust 1.96.1;
-it did not build the measured binaries. The concise official output was:
+cgroup driver and cgroup v2, the then-pinned Rust 1.85.0 Alpine builder, static
+musl 1.2.5 linking, and pinned Mosquitto 2.0.22. The host toolchain was Rust
+1.96.1; it did not build the measured binaries. The concise official output
+was:
 
 ```text
 v4 run=1 Pass growth=-282624 trend=0 peak=8040448 messages/s=341.275
@@ -220,6 +221,9 @@ v5 run=3 Pass growth=614400 trend=0 peak=8413184 messages/s=361.559
 v4 overall=Fail passing_runs=2/3
 v5 overall=Pass passing_runs=3/3
 ```
+
+These recorded values predate the Rust 1.88 MSRV update; current profile runs
+use the Rust 1.88.0 builder declared above.
 
 ## Throughput observations
 

@@ -104,7 +104,7 @@ command -v docker >/dev/null || fail_inconclusive "Docker is not installed"
     fail_inconclusive "cgroup v2 is not mounted at /sys/fs/cgroup"
 docker info >/dev/null 2>&1 || fail_inconclusive "the Docker daemon is unavailable"
 
-echo "Building static low-memory client images with Rust 1.85.0 (x86_64-unknown-linux-musl)..."
+echo "Building static low-memory client images with Rust 1.88.0 (x86_64-unknown-linux-musl)..."
 if ! docker build --file "$DOCKERFILE" --target v4 --tag "$v4_image" "$ROOT_DIR"; then
     echo "Failed to build the v4 low-memory image" >&2
     exit 1

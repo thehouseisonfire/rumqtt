@@ -1,4 +1,6 @@
-use crate::{ConnectionError, EventLoopDiagnostics, ProtocolViolation, StateError};
+use crate::{
+    ConnectionError, EventLoopDiagnostics, ProtocolViolation, RedirectFailure, StateError,
+};
 
 const PROTOCOL: &str = "v5";
 const TARGET: &str = "rumqttc::lifecycle";
@@ -193,7 +195,7 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         ConnectionError::Tls(_) => "tls",
         ConnectionError::ConnectionRefused(_) => "refused",
-        ConnectionError::Redirect(_) => "redirect",
+        ConnectionError::Redirect(error) => redirect_failure_kind(&error.failure),
         ConnectionError::SessionStore(_) => "session_store",
         ConnectionError::SessionRestore(_) => "session_restore",
         ConnectionError::BrokerTransportMismatch => "configuration",
@@ -204,6 +206,27 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
         ConnectionError::Proxy(_) => "proxy",
         ConnectionError::MqttState(_) => "state",
+    }
+}
+
+const fn redirect_failure_kind(failure: &RedirectFailure) -> &'static str {
+    match failure {
+        RedirectFailure::Disabled => "redirect_disabled",
+        RedirectFailure::Rejected => "redirect_rejected",
+        RedirectFailure::InvalidReference(_) => "redirect_invalid_reference",
+        RedirectFailure::Target(_) => "redirect_target",
+        RedirectFailure::UnadvertisedTarget => "redirect_unadvertised_target",
+        RedirectFailure::Loop => "redirect_loop",
+        RedirectFailure::AttemptLimit => "redirect_attempt_limit",
+        RedirectFailure::SrvResolverUnavailable { .. } => "redirect_srv_resolver_unavailable",
+        RedirectFailure::SrvLookup { .. } => "redirect_srv_lookup",
+        RedirectFailure::SrvLookupTimeout { .. } => "redirect_srv_lookup_timeout",
+        RedirectFailure::SrvServiceUnavailable { .. } => "redirect_srv_service_unavailable",
+        RedirectFailure::SrvAnswerTooLarge { .. } => "redirect_srv_answer_too_large",
+        RedirectFailure::SrvNoUsableTargets { .. } => "redirect_srv_no_usable_targets",
+        RedirectFailure::SrvAllTargetsVisited { .. } => "redirect_srv_all_targets_visited",
+        RedirectFailure::SrvTargetsExhausted { .. } => "redirect_srv_targets_exhausted",
+        RedirectFailure::FollowFailed(_) => "redirect_follow_failed",
     }
 }
 

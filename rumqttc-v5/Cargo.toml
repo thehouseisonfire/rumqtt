@@ -17,12 +17,13 @@ readme = "README.md"
 name = "rumqttc"
 
 [package.metadata.docs.rs]
-features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "http-proxy", "socks-proxy", "auth-scram", "url", "stream", "tracing", "tracing-log-compat"]
+features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "http-proxy", "socks-proxy", "auth-scram", "url", "stream", "tracing", "tracing-log-compat", "system-srv-resolver"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["use-rustls"]
 bench-instrumentation = []
+system-srv-resolver = ["dep:hickory-resolver"]
 use-rustls = ["use-rustls-aws-lc"]
 use-rustls-no-provider = ["dep:tokio-rustls", "dep:rustls-webpki", "dep:rustls-pki-types", "dep:rustls-native-certs", "async-tungstenite?/tokio-rustls-native-certs", "rumqttc-core/use-rustls-no-provider"]
 use-rustls-ring = ["use-rustls-no-provider", "tokio-rustls/ring", "rustls-webpki/ring", "rumqttc-core/use-rustls-ring"]
@@ -51,6 +52,8 @@ thiserror = "2.0.8"
 http = "1.0.0"
 rumqttc-core = { package = "rumqttc-core-next", path = "../rumqttc-core", version = "0.34.0-alpha", default-features = false }
 mqttbytes-core = { package = "mqttbytes-core-next", path = "../mqttbytes-core", version = "0.34.0-alpha" }
+hickory-resolver = { version = "0.26.1", optional = true, default-features = false, features = ["system-config", "tokio"] }
+rand = "0.10"
 
 # Optional
 # rustls

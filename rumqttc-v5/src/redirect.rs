@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use crate::{Broker, ConnectAuth, Transport, broker_transport_matches};
+use crate::{Broker, ConnectAuth, SrvLookupError, Transport, broker_transport_matches};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedirectReason {
@@ -66,6 +66,24 @@ enum RedirectReferenceKind {
         port: Option<u16>,
         resource_name: String,
     },
+    Srv {
+        owner: SrvOwner,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SrvOwner {
+    normalized: String,
+}
+
+impl SrvOwner {
+    pub(crate) fn query_name(&self) -> String {
+        format!("{}.", self.normalized)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.normalized
+    }
 }
 
 /// One validated token from an MQTT 5 Server Reference.
@@ -86,7 +104,7 @@ impl RedirectReference {
     #[must_use]
     pub const fn scheme(&self) -> Option<RedirectScheme> {
         match self.kind {
-            RedirectReferenceKind::Authority { .. } => None,
+            RedirectReferenceKind::Authority { .. } | RedirectReferenceKind::Srv { .. } => None,
             RedirectReferenceKind::Uri { scheme, .. } => Some(scheme),
         }
     }
@@ -96,6 +114,7 @@ impl RedirectReference {
         match &self.kind {
             RedirectReferenceKind::Authority { host, .. }
             | RedirectReferenceKind::Uri { host, .. } => host,
+            RedirectReferenceKind::Srv { owner } => owner.as_str(),
         }
     }
 
@@ -104,6 +123,7 @@ impl RedirectReference {
         match self.kind {
             RedirectReferenceKind::Authority { port, .. }
             | RedirectReferenceKind::Uri { port, .. } => port,
+            RedirectReferenceKind::Srv { .. } => None,
         }
     }
 
@@ -123,7 +143,12 @@ impl RedirectReference {
     /// Check whether the current feature set can materialize this reference.
     ///
     /// This does not select TLS configuration or any other credentials.
-    pub fn ensure_supported(&self) -> Result<(), RedirectTargetError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns a feature-specific error when the reference needs WebSocket or
+    /// TLS support which is not enabled in this build.
+    pub const fn ensure_supported(&self) -> Result<(), RedirectTargetError> {
         match self.scheme() {
             Some(RedirectScheme::Ws | RedirectScheme::Wss) if !cfg!(feature = "websocket") => {
                 Err(RedirectTargetError::WebsocketUnavailable)
@@ -136,24 +161,28 @@ impl RedirectReference {
             {
                 Err(RedirectTargetError::TlsUnavailable)
             }
-            _ if self.is_srv_name() => Err(RedirectTargetError::SrvUnavailable),
             _ => Ok(()),
         }
     }
 
-    pub(crate) fn is_srv_name(&self) -> bool {
-        if self.scheme().is_some() {
-            return false;
+    const fn is_srv_name(&self) -> bool {
+        matches!(self.kind, RedirectReferenceKind::Srv { .. })
+    }
+
+    /// Return the normalized DNS SRV owner, if this is an SRV reference.
+    #[must_use]
+    pub fn srv_owner(&self) -> Option<&str> {
+        match &self.kind {
+            RedirectReferenceKind::Srv { owner } => Some(owner.as_str()),
+            _ => None,
         }
-        let mut labels = self.host().split('.');
-        matches!(
-            (labels.next(), labels.next()),
-            (Some(service), Some(protocol))
-                if service.starts_with('_')
-                    && service.len() > 1
-                    && protocol.starts_with('_')
-                    && protocol.len() > 1
-        )
+    }
+
+    pub(crate) fn srv_owner_value(&self) -> Option<SrvOwner> {
+        match &self.kind {
+            RedirectReferenceKind::Srv { owner } => Some(owner.clone()),
+            _ => None,
+        }
     }
 
     fn effective_port(&self, transport: &Transport) -> Option<u16> {
@@ -176,22 +205,27 @@ impl RedirectReference {
         Some(format!("{}://{host}{port}{resource}", scheme.as_str()))
     }
 
-    pub(crate) fn endpoint_key(&self, transport: &Transport) -> Option<String> {
+    pub(super) fn endpoint_key(&self, transport: &Transport) -> Option<String> {
+        if self.is_srv_name() {
+            return None;
+        }
         let port = self.effective_port(transport)?;
         let endpoint = normalized_endpoint_key(self.host(), port);
-        match self.websocket_resource_name() {
-            Some(resource) => Some(format!(
-                "{}://{}{}",
-                transport.redirect_identity(),
-                endpoint,
-                normalize_resource_name(resource)
-            )),
-            None => Some(format!("{}://{}", transport.redirect_identity(), endpoint)),
-        }
+        self.websocket_resource_name().map_or_else(
+            || Some(format!("{}://{}", transport.redirect_identity(), endpoint)),
+            |resource| {
+                Some(format!(
+                    "{}://{}{}",
+                    transport.redirect_identity(),
+                    endpoint,
+                    normalize_resource_name(resource)
+                ))
+            },
+        )
     }
 }
 
-pub(crate) fn normalized_broker_key(broker: &Broker, transport: &Transport) -> Option<String> {
+pub fn normalized_broker_key(broker: &Broker, transport: &Transport) -> Option<String> {
     if let Some((host, port)) = broker.tcp_address() {
         return Some(normalized_profile_key(host, port, transport));
     }
@@ -280,6 +314,8 @@ pub enum RedirectReferenceError {
     InvalidHost,
     #[error("Server Reference contains an invalid port")]
     InvalidPort,
+    #[error("an SRV Server Reference must not contain an explicit port")]
+    SrvExplicitPort,
 }
 
 /// Parse the space-separated authority or absolute URI list described by MQTT 5 section 4.11.
@@ -349,10 +385,9 @@ fn parse_uri(raw: &str) -> Result<RedirectReference, RedirectReferenceError> {
     let host = validate_uri_host(host)?;
     let port = parse_uri_port(authority.as_str(), uri.port_u16())?;
 
-    let (path, query) = match uri.path_and_query() {
-        Some(path_and_query) => (path_and_query.path(), path_and_query.query()),
-        None => ("", None),
-    };
+    let (path, query) = uri.path_and_query().map_or(("", None), |path_and_query| {
+        (path_and_query.path(), path_and_query.query())
+    });
     let resource_name = match scheme {
         RedirectScheme::Mqtt | RedirectScheme::Mqtts => {
             if !matches!(path, "" | "/") || query.is_some() {
@@ -420,11 +455,10 @@ fn parse_uri_port(
     authority: &str,
     parsed: Option<u16>,
 ) -> Result<Option<u16>, RedirectReferenceError> {
-    let suffix = if let Some(bracket_end) = authority.rfind(']') {
-        &authority[bracket_end + 1..]
-    } else {
-        authority.rsplit_once(':').map_or("", |(_, suffix)| suffix)
-    };
+    let suffix = authority.rfind(']').map_or_else(
+        || authority.rsplit_once(':').map_or("", |(_, suffix)| suffix),
+        |bracket_end| &authority[bracket_end + 1..],
+    );
     if authority.ends_with(':') || (!suffix.is_empty() && parsed.is_none()) {
         return Err(RedirectReferenceError::InvalidPort);
     }
@@ -500,10 +534,61 @@ fn parse_authority(authority: &str) -> Result<RedirectReference, RedirectReferen
         (host.to_ascii_lowercase(), port)
     };
 
+    let kind = match parse_srv_owner(&host) {
+        Some(_) if port.is_some() => return Err(RedirectReferenceError::SrvExplicitPort),
+        Some(owner) => RedirectReferenceKind::Srv { owner },
+        None => RedirectReferenceKind::Authority { host, port },
+    };
+
     Ok(RedirectReference {
         raw: authority.to_owned(),
-        kind: RedirectReferenceKind::Authority { host, port },
+        kind,
     })
+}
+
+fn parse_srv_owner(host: &str) -> Option<SrvOwner> {
+    let normalized = host.to_ascii_lowercase();
+    let normalized = normalized.strip_suffix('.').unwrap_or(&normalized);
+    let mut labels = normalized.split('.');
+    let service = labels.next()?;
+    let protocol = labels.next()?;
+    let domain = labels.collect::<Vec<_>>();
+    if normalized.len() > 253
+        || !service.starts_with('_')
+        || service.len() == 1
+        || service.len() > 63
+        || !service[1..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || !protocol.eq_ignore_ascii_case("_tcp")
+        || domain.is_empty()
+        || !valid_dns_labels(&domain)
+    {
+        return None;
+    }
+    Some(SrvOwner {
+        normalized: normalized.to_owned(),
+    })
+}
+
+fn valid_dns_labels(labels: &[&str]) -> bool {
+    let total = labels.iter().map(|label| label.len()).sum::<usize>() + labels.len() - 1;
+    total <= 253
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
 }
 
 fn parse_port(value: &str) -> Result<u16, RedirectReferenceError> {
@@ -541,7 +626,7 @@ fn normalize_percent_encoding(value: &str) -> String {
         {
             let high = (bytes[index + 1] as char).to_digit(16).expect("hex digit");
             let low = (bytes[index + 2] as char).to_digit(16).expect("hex digit");
-            let decoded = ((high << 4) | low) as u8;
+            let decoded = u8::try_from((high << 4) | low).expect("two hex digits fit in one byte");
             if decoded.is_ascii_alphanumeric() || matches!(decoded, b'-' | b'.' | b'_' | b'~') {
                 output.push(decoded as char);
             } else {
@@ -620,8 +705,6 @@ pub enum RedirectTargetError {
     WebsocketUnavailable,
     #[error("Server Reference requires an enabled TLS backend and explicit TLS configuration")]
     TlsUnavailable,
-    #[error("Server Reference names an unsupported SRV target")]
-    SrvUnavailable,
     #[error("Server Reference did not provide a selectable target")]
     NoTarget,
 }
@@ -630,13 +713,19 @@ pub enum RedirectTargetError {
 #[derive(Clone)]
 pub struct RedirectTargetProfile {
     reference: RedirectReference,
-    broker: Broker,
+    target: RedirectProfileTarget,
     transport: Transport,
     client_id: RedirectClientId,
     session: RedirectSession,
     authentication: Option<ConnectAuth>,
     reuse_authenticator: bool,
     reuse_network_credentials: bool,
+}
+
+#[derive(Clone, Debug)]
+enum RedirectProfileTarget {
+    Direct(Broker),
+    SrvPending(SrvOwner),
 }
 
 impl RedirectTargetProfile {
@@ -651,34 +740,41 @@ impl RedirectTargetProfile {
         transport: Transport,
     ) -> Result<Self, RedirectTargetError> {
         reference.ensure_supported()?;
-        let port =
-            reference
-                .effective_port(&transport)
-                .ok_or(RedirectTargetError::TransportMismatch {
-                    scheme: reference.scheme(),
-                })?;
-        let broker = match reference.scheme() {
-            None | Some(RedirectScheme::Mqtt | RedirectScheme::Mqtts) => {
-                Broker::tcp(reference.host().to_owned(), port)
-            }
-            #[cfg(feature = "websocket")]
-            Some(RedirectScheme::Ws | RedirectScheme::Wss) => Broker::redirect_websocket(
-                reference.websocket_url().expect("websocket URI reference"),
-                matches!(reference.scheme(), Some(RedirectScheme::Wss)),
-            ),
-            #[cfg(not(feature = "websocket"))]
-            Some(RedirectScheme::Ws | RedirectScheme::Wss) => unreachable!("checked above"),
-        };
-        if !reference.transport_matches_scheme(&transport)
-            || !broker_transport_matches(&broker, &transport)
-        {
+        if !reference.transport_matches_scheme(&transport) {
             return Err(RedirectTargetError::TransportMismatch {
                 scheme: reference.scheme(),
             });
         }
+        let target = if let Some(owner) = reference.srv_owner_value() {
+            RedirectProfileTarget::SrvPending(owner)
+        } else {
+            let port = reference.effective_port(&transport).ok_or_else(|| {
+                RedirectTargetError::TransportMismatch {
+                    scheme: reference.scheme(),
+                }
+            })?;
+            let broker = match reference.scheme() {
+                None | Some(RedirectScheme::Mqtt | RedirectScheme::Mqtts) => {
+                    Broker::tcp(reference.host().to_owned(), port)
+                }
+                #[cfg(feature = "websocket")]
+                Some(RedirectScheme::Ws | RedirectScheme::Wss) => Broker::redirect_websocket(
+                    reference.websocket_url().expect("websocket URI reference"),
+                    matches!(reference.scheme(), Some(RedirectScheme::Wss)),
+                ),
+                #[cfg(not(feature = "websocket"))]
+                Some(RedirectScheme::Ws | RedirectScheme::Wss) => unreachable!("checked above"),
+            };
+            if !broker_transport_matches(&broker, &transport) {
+                return Err(RedirectTargetError::TransportMismatch {
+                    scheme: reference.scheme(),
+                });
+            }
+            RedirectProfileTarget::Direct(broker)
+        };
         Ok(Self {
             reference,
-            broker,
+            target,
             transport,
             client_id: RedirectClientId::Fresh,
             session: RedirectSession::Isolated,
@@ -689,8 +785,18 @@ impl RedirectTargetProfile {
     }
 
     #[must_use]
-    pub fn broker(&self) -> &Broker {
-        &self.broker
+    pub const fn broker(&self) -> Option<&Broker> {
+        match &self.target {
+            RedirectProfileTarget::Direct(broker) => Some(broker),
+            RedirectProfileTarget::SrvPending(_) => None,
+        }
+    }
+
+    pub(super) const fn srv_owner(&self) -> Option<&SrvOwner> {
+        match &self.target {
+            RedirectProfileTarget::Direct(_) => None,
+            RedirectProfileTarget::SrvPending(owner) => Some(owner),
+        }
     }
 
     #[must_use]
@@ -778,7 +884,7 @@ impl Debug for RedirectTargetProfile {
         formatter
             .debug_struct("RedirectTargetProfile")
             .field("reference", &self.reference)
-            .field("broker", &self.broker)
+            .field("target", &self.target)
             .field("client_id", &self.client_id)
             .field("session", &self.session)
             .field("authentication_configured", &self.authentication.is_some())
@@ -861,6 +967,7 @@ impl Debug for RedirectPolicy {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum RedirectFailure {
     #[error("automatic redirects are disabled")]
@@ -877,6 +984,35 @@ pub enum RedirectFailure {
     Loop,
     #[error("redirect attempt limit reached")]
     AttemptLimit,
+    #[error("no DNS SRV resolver is available for `{owner}`")]
+    SrvResolverUnavailable { owner: String },
+    #[error("SRV lookup for `{owner}` failed: {source}")]
+    SrvLookup {
+        owner: String,
+        #[source]
+        source: SrvLookupError,
+    },
+    #[error("SRV lookup for `{owner}` timed out")]
+    SrvLookupTimeout { owner: String },
+    #[error("SRV owner `{owner}` explicitly reports that the service is unavailable")]
+    SrvServiceUnavailable { owner: String },
+    #[error("SRV answer for `{owner}` contains {count} usable targets; the limit is {max}")]
+    SrvAnswerTooLarge {
+        owner: String,
+        count: usize,
+        max: usize,
+    },
+    #[error("SRV answer for `{owner}` contains no usable targets ({rejected} malformed records)")]
+    SrvNoUsableTargets { owner: String, rejected: usize },
+    #[error("every SRV target for `{owner}` was already visited")]
+    SrvAllTargetsVisited { owner: String },
+    #[error("all {attempted} SRV targets for `{owner}` failed: {last_error}")]
+    SrvTargetsExhausted {
+        owner: String,
+        attempted: usize,
+        #[source]
+        last_error: Box<crate::ConnectionError>,
+    },
     #[error("redirected connection failed: {0}")]
     FollowFailed(#[source] Box<crate::ConnectionError>),
 }
@@ -937,14 +1073,52 @@ mod tests {
     }
 
     #[test]
-    fn retains_authority_srv_behavior() {
+    fn recognizes_complete_tcp_srv_authorities() {
         let reference = &parse_server_references(Some("_mqtt._tcp.example.com")).unwrap()[0];
         assert!(reference.is_srv_name());
-        assert_eq!(
-            reference.ensure_supported(),
-            Err(RedirectTargetError::SrvUnavailable)
-        );
+        assert_eq!(reference.srv_owner(), Some("_mqtt._tcp.example.com"));
+        assert_eq!(reference.ensure_supported(), Ok(()));
         assert!(!parse_server_references(Some("broker.example")).unwrap()[0].is_srv_name());
+    }
+
+    #[test]
+    fn classifies_only_complete_usable_srv_authorities() {
+        for (input, expected_owner) in [
+            (
+                "_MQTT._TCP.Cluster.Example.COM.",
+                Some("_mqtt._tcp.cluster.example.com"),
+            ),
+            (
+                "_custom-1._tcp.example.com",
+                Some("_custom-1._tcp.example.com"),
+            ),
+            ("_mqtt._udp.example.com", None),
+            ("_mqtt._tcp", None),
+            ("_mqtt._tcp..example.com", None),
+            ("_mqtt.example.com", None),
+            ("broker_name.example.com", None),
+        ] {
+            let reference = parse_server_references(Some(input)).unwrap().remove(0);
+            assert_eq!(reference.srv_owner(), expected_owner, "{input}");
+        }
+
+        assert_eq!(
+            parse_server_references(Some("_mqtt._tcp.example.com:1883")),
+            Err(RedirectReferenceError::SrvExplicitPort)
+        );
+    }
+
+    #[test]
+    fn srv_profile_is_deferred_without_a_placeholder_broker() {
+        let reference = parse_server_references(Some("_mqtt._tcp.example.com"))
+            .unwrap()
+            .remove(0);
+        let profile = RedirectTargetProfile::isolated(reference, Transport::tcp()).unwrap();
+        assert!(profile.broker().is_none());
+        assert_eq!(
+            profile.srv_owner().unwrap().as_str(),
+            "_mqtt._tcp.example.com"
+        );
     }
 
     #[test]
@@ -1017,7 +1191,7 @@ mod tests {
             .remove(0);
         let profile = RedirectTargetProfile::isolated(mqtt, Transport::tcp()).unwrap();
         assert_eq!(
-            profile.broker().tcp_address(),
+            profile.broker().unwrap().tcp_address(),
             Some(("broker.example", 1883))
         );
 
@@ -1026,7 +1200,7 @@ mod tests {
             .remove(0);
         let profile = RedirectTargetProfile::isolated(authority, Transport::tcp()).unwrap();
         assert_eq!(
-            profile.broker().tcp_address(),
+            profile.broker().unwrap().tcp_address(),
             Some(("broker.example", 1883))
         );
 
@@ -1037,7 +1211,7 @@ mod tests {
             RedirectTargetProfile::isolated(mqtts, Transport::tcp()),
             Err(RedirectTargetError::TransportMismatch {
                 scheme: Some(RedirectScheme::Mqtts)
-            }) | Err(RedirectTargetError::TlsUnavailable)
+            } | RedirectTargetError::TlsUnavailable)
         ));
     }
 
@@ -1051,7 +1225,7 @@ mod tests {
         .remove(0);
         let profile = RedirectTargetProfile::isolated(reference, Transport::ws()).unwrap();
         assert_eq!(
-            profile.broker().websocket_url(),
+            profile.broker().unwrap().websocket_url(),
             Some("ws://broker.example:8080/mqtt/%7ev5?tenant=green%2fblue")
         );
         assert!(matches!(
@@ -1097,7 +1271,7 @@ mod tests {
         ));
         let profile = RedirectTargetProfile::isolated(reference, transport).unwrap();
         assert_eq!(
-            profile.broker().tcp_address(),
+            profile.broker().unwrap().tcp_address(),
             Some(("secure.example", 8883))
         );
     }
@@ -1114,7 +1288,7 @@ mod tests {
         let transport = test_wss_transport();
         let profile = RedirectTargetProfile::isolated(reference, transport).unwrap();
         assert_eq!(
-            profile.broker().websocket_url(),
+            profile.broker().unwrap().websocket_url(),
             Some("wss://secure.example/mqtt?tenant=green")
         );
     }

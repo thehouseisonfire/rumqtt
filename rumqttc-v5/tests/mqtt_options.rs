@@ -5,6 +5,41 @@ use std::sync::Arc;
 #[cfg(not(feature = "websocket"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[test]
+fn v5_srv_resolver_configuration_is_cloneable_and_clearable() {
+    use rumqttc::SrvResolverMode;
+
+    let resolver = rumqttc::SrvResolver::new(|_| async { Ok(Vec::new()) });
+    let mut options = rumqttc::MqttOptions::new("test-client-v5", "127.0.0.1");
+    assert!(options.srv_resolver().is_none());
+    #[cfg(feature = "system-srv-resolver")]
+    {
+        assert_eq!(options.srv_resolver_mode(), SrvResolverMode::System);
+        assert!(format!("{options:?}").contains("srv_resolver_mode: System"));
+    }
+    #[cfg(not(feature = "system-srv-resolver"))]
+    {
+        assert_eq!(options.srv_resolver_mode(), SrvResolverMode::Unavailable);
+        assert!(format!("{options:?}").contains("srv_resolver_mode: Unavailable"));
+    }
+    options.set_srv_resolver(resolver);
+    assert!(options.srv_resolver().is_some());
+    assert_eq!(options.srv_resolver_mode(), SrvResolverMode::Custom);
+    assert!(format!("{options:?}").contains("srv_resolver_mode: Custom"));
+    options.clear_srv_resolver();
+    assert!(options.srv_resolver().is_none());
+    #[cfg(feature = "system-srv-resolver")]
+    assert_eq!(options.srv_resolver_mode(), SrvResolverMode::System);
+    #[cfg(not(feature = "system-srv-resolver"))]
+    assert_eq!(options.srv_resolver_mode(), SrvResolverMode::Unavailable);
+
+    let built = rumqttc::MqttOptions::builder("builder", "localhost")
+        .srv_resolver(rumqttc::SrvResolver::new(|_| async { Ok(Vec::new()) }))
+        .build();
+    assert!(built.srv_resolver().is_some());
+    assert_eq!(built.srv_resolver_mode(), SrvResolverMode::Custom);
+}
+
 #[cfg(not(feature = "websocket"))]
 #[tokio::test]
 async fn v5_custom_socket_connector_is_invoked() {

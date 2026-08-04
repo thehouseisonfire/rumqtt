@@ -20,10 +20,10 @@ The implementation must:
   public DNS.
 
 The SRV model and custom-resolver injection API are unconditional. The
-host-system resolver implementation is provided by a default-enabled,
-independently disableable `system-srv-resolver` Cargo feature so applications
-which do not need system DNS SRV resolution do not have to compile or link
-Hickory and its cache/protocol dependency graph.
+host-system resolver implementation is provided by an opt-in
+`system-srv-resolver` Cargo feature so applications which do not need system DNS
+SRV resolution do not have to compile or link Hickory and its cache/protocol
+dependency graph.
 
 This is an MQTT 5 client change. Do not add SRV behavior to `rumqttc-v4-next`.
 
@@ -127,7 +127,7 @@ documentation should identify Hickory as the implementation behind the
 `system-srv-resolver` feature. `Debug` output should report only the effective
 resolver mode (`custom`, `system`, or `unavailable`), never resolver internals.
 
-Add a default-enabled Cargo feature with this exact contract:
+Add an opt-in Cargo feature with this exact contract:
 
 Raise the client workspace MSRV from Rust 1.85 to Rust 1.88 as part of this
 change. This permits using the maintained Hickory 0.26 line, including its
@@ -137,7 +137,7 @@ any documentation or acceptance profiles which identify Rust 1.85.
 
 ```toml
 [features]
-default = ["use-rustls", "system-srv-resolver"]
+default = ["use-rustls"]
 system-srv-resolver = ["dep:hickory-resolver"]
 
 [dependencies]
@@ -412,7 +412,7 @@ enums consistently with the repository's existing non-exhaustive policy.
 - [x] Raise the workspace MSRV to Rust 1.88 and update its manifest, CI job,
   README badge, changelog, and Rust-version-specific documentation and
   acceptance profiles.
-- [x] Add the default-enabled `system-srv-resolver` feature and make
+- [x] Add the opt-in `system-srv-resolver` feature and make
   `hickory-resolver` an optional dependency with only `system-config` and
   `tokio`; require version 0.26.1.
 - [x] Add lazy Hickory system resolution plus the feature-disabled/no-custom
@@ -428,10 +428,9 @@ enums consistently with the repository's existing non-exhaustive policy.
 - [x] Change loop detection to use resolved target/port identities.
 - [x] Add errors, diagnostics, tracing classification, and regression tests.
 - [x] Update `CHANGELOG.md`, `rumqttc-v5/README.md`, redirect API rustdoc, and
-  any affected examples. Document that `system-srv-resolver` is enabled by
-  default, how footprint-sensitive users disable it, how to inject a resolver,
-  and when `SrvResolverUnavailable` is returned. Include the feature in the
-  docs.rs build metadata.
+  any affected examples. Document how users enable `system-srv-resolver`, how
+  to inject a resolver without it, and when `SrvResolverUnavailable` is
+  returned. Include the feature in the docs.rs build metadata.
 - [x] Replace the post-URI `SrvUnavailable` materialization path and tests which
   assert SRV rejection only after every replacement test passes.
 
@@ -544,9 +543,9 @@ and failover follow RFC 2782; TLS, proxy, loop, redirect, and session identities
 remain correct; all failures are structured; tests use no public DNS; the full
 feature matrix and MSRV pass; Hickory is absent from the feature-off dependency
 graph; custom injection still resolves SRV redirects without Hickory;
-default builds retain lazy system SRV resolution; the workspace and published
-client crates consistently declare and test Rust 1.88; and the README documents
-both resolver modes and the `SrvResolverUnavailable` failure.
+feature-enabled builds retain lazy system SRV resolution; the workspace and
+published client crates consistently declare and test Rust 1.88; and the README
+documents both resolver modes and the `SrvResolverUnavailable` failure.
 
 ## References
 

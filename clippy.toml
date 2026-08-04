@@ -1,2 +1,2 @@
-msrv = "1.85"
+msrv = "1.88"
 allowed-duplicate-crates = ["cpufeatures", "syn", "windows-sys"]
