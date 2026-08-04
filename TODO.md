@@ -19,6 +19,12 @@ The implementation must:
 - remain deterministic under unit and integration tests without requiring live
   public DNS.
 
+The SRV model and custom-resolver injection API are unconditional. The
+host-system resolver implementation is provided by a default-enabled,
+independently disableable `system-srv-resolver` Cargo feature so applications
+which do not need system DNS SRV resolution do not have to compile or link
+Hickory and its cache/protocol dependency graph.
+
 This is an MQTT 5 client change. Do not add SRV behavior to `rumqttc-v4-next`.
 
 ### Prerequisite and assumed baseline
@@ -80,7 +86,7 @@ Keep ordinary underscore-containing hostnames observable as direct authorities
 unless they match the complete SRV form above. Add table-driven parser tests for
 short names, empty labels, `_udp`, explicit ports, mixed case, and terminal dots.
 
-### 2. Add a resolver abstraction without leaking Hickory types
+### 2. Keep resolver injection unconditional and make Hickory optional
 
 Add an async, cloneable SRV resolver abstraction in `rumqttc-v5`. Mirror the
 existing socket-connector pattern: use an `Arc`-backed callback or small wrapper
@@ -114,18 +120,71 @@ impl SrvResolver {
 Provide `MqttOptions::set_srv_resolver(...)`, a matching builder method, and a
 getter/clearer consistent with the existing option APIs. This injection point
 is required for deterministic tests and applications with a controlled DNS
-environment. `Debug` output should report only whether a custom resolver is
-configured.
+environment. These types and methods must compile and work with
+`--no-default-features`; they must not mention Hickory in their public types,
+trait bounds, error source types, or other public signatures. Public
+documentation should identify Hickory as the implementation behind the
+`system-srv-resolver` feature. `Debug` output should report only the effective
+resolver mode (`custom`, `system`, or `unavailable`), never resolver internals.
 
-When no custom resolver is configured, use `hickory-resolver`'s Tokio resolver
-with the host system resolver configuration and its cache. Start with
-`hickory-resolver = "0.26.1"`, disabling unrelated encrypted-DNS and crypto
-features. Confirm that the selected features build on every CI platform and do
-not raise the workspace Rust 1.85 MSRV; if 0.26.1 is incompatible, use the
-newest maintained Hickory release that satisfies the existing MSRV and record
-the reason in the dependency declaration or PR description.
+Add a default-enabled Cargo feature with this exact contract:
 
-Construct and retain the default resolver lazily behind shared state. Do not
+Raise the client workspace MSRV from Rust 1.85 to Rust 1.88 as part of this
+change. This permits using the maintained Hickory 0.26 line, including its
+updated Apple/Android system-resolver integration and the security fixes in
+0.26.1. Update the workspace manifest, CI MSRV job, README badge, changelog, and
+any documentation or acceptance profiles which identify Rust 1.85.
+
+```toml
+[features]
+default = ["use-rustls", "system-srv-resolver"]
+system-srv-resolver = ["dep:hickory-resolver"]
+
+[dependencies]
+hickory-resolver = {
+    version = "0.26.1",
+    optional = true,
+    default-features = false,
+    features = ["system-config", "tokio"],
+}
+```
+
+Do not use `system-srv-resolver` to gate SRV parsing, `SrvRecord`,
+`SrvResolver`, answer validation, RFC 2782 ordering, redirect state, or custom
+resolver execution. It gates only the built-in host-system resolver backend and
+its Hickory dependency.
+
+Resolver precedence is deterministic:
+
+1. An explicitly configured custom `SrvResolver` is always used, regardless of
+   feature selection.
+2. Otherwise, a build with `system-srv-resolver` uses Hickory's Tokio resolver,
+   host system configuration, and cache.
+3. Otherwise, resolution fails on the poll after `Event::Redirect` with
+   `RedirectFailure::SrvResolverUnavailable`. Do not reject the reference during
+   parsing or profile construction and do not fall back to A/AAAA resolution,
+   public resolvers, or a default MQTT port.
+
+`clear_srv_resolver()` removes only the custom override: it restores the lazy
+system backend when `system-srv-resolver` is enabled and the unavailable state
+when it is disabled. The resolver getter returns only an explicitly configured
+custom resolver. Add a rumqttc-owned, non-exhaustive
+`SrvResolverMode::{Custom, System, Unavailable}` enum and
+`MqttOptions::srv_resolver_mode()` so applications can inspect the effective
+mode without parsing `Debug` output. The builder does not need a separate mode
+method because mode follows feature selection and custom configuration.
+
+Keep the custom callback and system backend separate internally. In particular,
+do not place a Hickory type in an unconditional `SrvResolver` field or variant:
+`MqttOptions` should own an unconditional `Option<SrvResolver>` custom override
+and, only under `cfg(feature = "system-srv-resolver")`, an
+`Arc<OnceLock<Result<HickoryResolver, _>>>` (or equivalent) shared lazy system
+backend. Setting or clearing a custom resolver must not discard an initialized
+system cache. The private effective-resolver selection may use a feature-gated
+enum or helper, but compiling with the feature disabled must not type-check any
+Hickory path.
+
+Construct and retain the Hickory resolver lazily behind shared state. Do not
 create a new resolver for every redirect, bypass its cache, call a synchronous
 resolver API, or use `spawn_blocking` around libc as the primary implementation.
 Map resolver initialization, timeout, NXDOMAIN, no-data, and transport failures
@@ -161,7 +220,7 @@ candidate list. The broker selected SRV semantics by advertising an SRV owner.
 
 Extract selection into a pure helper that accepts the records and an injected
 random-number generator. Add a direct `rand = "0.10"` dependency only if the
-chosen version satisfies Rust 1.85; do not rely on a transitive dependency.
+chosen version satisfies Rust 1.88; do not rely on a transitive dependency.
 
 Ordering must work as follows:
 
@@ -328,6 +387,9 @@ Add structured variants rather than collapsing DNS failures into the post-URI
 `RedirectTargetError::SrvUnavailable` or a generic `io::Error`. The final names
 may follow local style, but callers must be able to distinguish at least:
 
+- no resolver backend is available because `system-srv-resolver` is disabled
+  and no custom resolver is configured
+  (`RedirectFailure::SrvResolverUnavailable { owner }`);
 - resolver initialization/query failure;
 - lookup timeout;
 - explicit service unavailable (`Target = "."`);
@@ -343,25 +405,34 @@ enums consistently with the repository's existing non-exhaustive policy.
 
 ## Implementation sequence
 
-- [ ] Add strict SRV-reference classification and parser tests in
+- [x] Add strict SRV-reference classification and parser tests in
   `rumqttc-v5/src/redirect.rs`.
-- [ ] Add rumqttc-owned SRV record/resolver/error types and `MqttOptions`
-  configuration APIs.
-- [ ] Add the Hickory default resolver with only required features and verify
-  the Rust 1.85 MSRV.
-- [ ] Add answer normalization, validation, and the 32-target bound.
-- [ ] Add the pure RFC 2782 weighted-ordering helper and deterministic tests.
-- [ ] Refactor `ActiveRedirect` into an unresolved/resolved candidate plan while
+- [x] Add rumqttc-owned SRV record/resolver/error types and `MqttOptions`
+  configuration APIs which work without Hickory.
+- [x] Raise the workspace MSRV to Rust 1.88 and update its manifest, CI job,
+  README badge, changelog, and Rust-version-specific documentation and
+  acceptance profiles.
+- [x] Add the default-enabled `system-srv-resolver` feature and make
+  `hickory-resolver` an optional dependency with only `system-config` and
+  `tokio`; require version 0.26.1.
+- [x] Add lazy Hickory system resolution plus the feature-disabled/no-custom
+  `SrvResolverUnavailable` path.
+- [x] Add answer normalization, validation, and the 32-target bound.
+- [x] Add the pure RFC 2782 weighted-ordering helper and deterministic tests.
+- [x] Refactor `ActiveRedirect` into an unresolved/resolved candidate plan while
   preserving `Event::Redirect` ordering.
-- [ ] Separate one-time redirect isolation from per-candidate endpoint
+- [x] Separate one-time redirect isolation from per-candidate endpoint
   installation.
-- [ ] Preserve `ConnectFailure` phase and implement transport-only candidate
+- [x] Preserve `ConnectFailure` phase and implement transport-only candidate
   failover.
-- [ ] Change loop detection to use resolved target/port identities.
-- [ ] Add errors, diagnostics, tracing classification, and regression tests.
-- [ ] Update `CHANGELOG.md`, `rumqttc-v5/README.md`, redirect API rustdoc, and
-  any affected examples.
-- [ ] Replace the post-URI `SrvUnavailable` materialization path and tests which
+- [x] Change loop detection to use resolved target/port identities.
+- [x] Add errors, diagnostics, tracing classification, and regression tests.
+- [x] Update `CHANGELOG.md`, `rumqttc-v5/README.md`, redirect API rustdoc, and
+  any affected examples. Document that `system-srv-resolver` is enabled by
+  default, how footprint-sensitive users disable it, how to inject a resolver,
+  and when `SrvResolverUnavailable` is returned. Include the feature in the
+  docs.rs build metadata.
+- [x] Replace the post-URI `SrvUnavailable` materialization path and tests which
   assert SRV rejection only after every replacement test passes.
 
 ## Test plan
@@ -376,8 +447,15 @@ Add tests in `redirect.rs` or a focused `srv.rs` for:
 - explicit-port rejection;
 - answer-size bounds;
 - priority/weight ordering with deterministic randomness;
-- loop-key normalization for case and terminal dots; and
-- custom resolver error preservation.
+- loop-key normalization for case and terminal dots;
+- custom resolver error preservation;
+- custom resolver operation in a `--no-default-features` build;
+- resolver precedence and `clear_srv_resolver()` behavior with the system
+  feature enabled and disabled;
+- `SrvResolverMode` and `MqttOptions` `Debug` reporting in all three effective
+  modes; and
+- absence of Hickory from the normal dependency graph when
+  `system-srv-resolver` is disabled.
 
 ### Event-loop tests
 
@@ -397,6 +475,11 @@ Use an injected scripted resolver and local Tokio listeners. Cover:
 - credentials and session state remain isolated across every candidate;
 - shutdown queued before resolution prevents DNS and connection attempts;
 - lookup timeout/error and exhausted candidates retain the original outcome;
+- a build without `system-srv-resolver` follows an SRV redirect through an
+  injected resolver;
+- the same build without an injected resolver emits
+  `SrvResolverUnavailable` after `Event::Redirect` and performs no connection
+  attempt;
 - repeated targets and direct/SRV aliases cannot bypass loop detection; and
 - custom socket connectors and HTTP/SOCKS proxy paths receive the selected
   target hostname and SRV port rather than an eagerly resolved IP address.
@@ -417,6 +500,7 @@ Run while iterating:
 cargo test -p rumqttc-v5-next redirect -- --nocapture
 cargo test -p rumqttc-v5-next srv -- --nocapture
 cargo test -p rumqttc-v5-next --test reliability -- --nocapture
+cargo test -p rumqttc-v5-next --no-default-features srv -- --nocapture
 ```
 
 Before completion:
@@ -425,17 +509,32 @@ Before completion:
 cargo fmt --all -- --check
 cargo test -p rumqttc-v5-next
 cargo check --workspace
+cargo check -p rumqttc-v5-next --no-default-features
+cargo check -p rumqttc-v5-next --no-default-features --features system-srv-resolver
 cargo hack --each-feature --exclude-all-features test \
   -p rumqttc-v4-next -p rumqttc-v5-next
 cargo hack clippy --each-feature --exclude-all-features --no-dev-deps \
   -p rumqttc-v4-next -p rumqttc-v5-next
 ```
 
-Also compile the documented MSRV configuration with Rust 1.85 and test at least
-Linux, macOS, and Windows resolver construction in CI. If the dependency cannot
-obtain host DNS configuration on a supported target, return a structured setup
-error and keep custom-resolver injection available; do not panic or silently
-fall back to public resolvers.
+Verify the dependency boundary explicitly:
+
+```bash
+if cargo tree -p rumqttc-v5-next --no-default-features --edges normal \
+    | rg -q hickory-resolver; then
+    echo "hickory-resolver must be absent without system-srv-resolver" >&2
+    exit 1
+fi
+cargo tree -p rumqttc-v5-next --no-default-features \
+    --features system-srv-resolver --edges normal | rg -q hickory-resolver
+```
+
+Also compile the documented MSRV configuration with Rust 1.88 and test at least
+Linux, macOS, and Windows resolver construction in CI with
+`system-srv-resolver` enabled. On each platform, also compile the feature-off
+custom-resolver path. If Hickory cannot obtain host DNS configuration on a
+supported target, return a structured setup error and keep custom-resolver
+injection available; do not panic or silently fall back to public resolvers.
 
 ## Definition of done
 
@@ -443,8 +542,11 @@ This task is complete when an application-approved SRV Server Reference can
 resolve and connect through the normal rumqttc transport path; candidate order
 and failover follow RFC 2782; TLS, proxy, loop, redirect, and session identities
 remain correct; all failures are structured; tests use no public DNS; the full
-feature matrix and MSRV pass; and the README no longer says DNS SRV resolution
-is unsupported.
+feature matrix and MSRV pass; Hickory is absent from the feature-off dependency
+graph; custom injection still resolves SRV redirects without Hickory;
+default builds retain lazy system SRV resolution; the workspace and published
+client crates consistently declare and test Rust 1.88; and the README documents
+both resolver modes and the `SrvResolverUnavailable` failure.
 
 ## References
 
