@@ -2,7 +2,7 @@
 
 ## Features
 
-- Full MQTT 5 support
+- Full MQTT 3.1.1 support
 - High-level client
 - Python, C, and JavaScript wrappers
 
