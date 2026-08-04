@@ -429,7 +429,7 @@ impl MqttState {
         self.last_pkid = 0;
     }
 
-    const fn validate_outgoing_pkid(&self, pkid: u16) -> Result<(), StateError> {
+    const fn validate_outgoing_pkid(pkid: u16) -> Result<(), StateError> {
         if pkid == 0 {
             return Err(StateError::Unsolicited(pkid));
         }
@@ -454,7 +454,7 @@ impl MqttState {
             return self.next_publish_pkid().is_some();
         }
 
-        self.validate_outgoing_pkid(publish.pkid).is_ok()
+        Self::validate_outgoing_pkid(publish.pkid).is_ok()
             && !self.packet_identifier_in_use(publish.pkid)
     }
 
@@ -468,7 +468,7 @@ impl MqttState {
         }
 
         let pkid = publish.pkid;
-        self.validate_outgoing_pkid(pkid).is_ok()
+        Self::validate_outgoing_pkid(pkid).is_ok()
             && self.packet_identifier_in_use(pkid)
             && self
                 .outgoing_pub
@@ -1335,7 +1335,7 @@ impl MqttState {
             }
 
             let pkid = publish.pkid;
-            self.validate_outgoing_pkid(pkid)?;
+            Self::validate_outgoing_pkid(pkid)?;
             self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
             if self
                 .outgoing_pub
@@ -1621,7 +1621,7 @@ impl MqttState {
         pubrel: PubRel,
         notice: Option<PublishNoticeTx>,
     ) -> Result<PubRel, StateError> {
-        self.validate_outgoing_pkid(pubrel.pkid)?;
+        Self::validate_outgoing_pkid(pubrel.pkid)?;
         let pkid_index = usize::from(pubrel.pkid);
         let replaying_pubrel = self.outgoing_rel_replay.contains(pkid_index);
         if !self.outgoing_rel.contains(pkid_index) && !replaying_pubrel {
