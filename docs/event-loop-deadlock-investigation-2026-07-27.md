@@ -15,8 +15,8 @@ application queues one outgoing PUBLISH for each event, the eleventh
 `publish().await` waits for channel capacity while the only event loop able to
 free that capacity is owned by the same suspended task.
 
-No production scheduler change is recommended. The public API already documents
-this progress contract and provides two bounded alternatives:
+The production scheduler was left unchanged. The public API documents this
+progress contract and provides two bounded alternatives:
 
 - drive the event loop in a genuinely independent task; or
 - use `try_publish()` when dropping a forwarded publish is the intended overload
@@ -24,8 +24,8 @@ this progress contract and provides two bounded alternatives:
 
 Draining blocked requests from the bounded channel into the internal scheduler
 would move the backlog rather than solve it, weakening meaningful bounded-memory
-backpressure. This investigation therefore recommends regression coverage and
-more explicit forwarding documentation.
+backpressure. Regression coverage and explicit forwarding documentation now
+record the supported behavior and its failure boundary.
 
 ## Current implementation
 
@@ -160,8 +160,8 @@ Local history was sufficient; no upstream browsing was needed.
 - `e8ea555` added the shared protocol-aware outbound scheduler and separate
   request lanes while intentionally preserving bounded backpressure under
   publish flow control.
-- `334e471` documented same-task bounded-channel self-blocking and recommended
-  independent polling or `try_publish()`.
+- `334e471` documented same-task bounded-channel self-blocking, independent
+  polling, and `try_publish()`.
 
 No local commit claimed to eliminate this issue. At the investigated commit, no
 test encoded same-task bounded publishing as a supported progress guarantee.
@@ -203,27 +203,3 @@ Any future design must preserve:
 Buffered-event-first scheduling is not itself mandated by MQTT, but it is
 longstanding observable API behavior. Incoming-before-derived-outgoing ordering
 is also intentionally tested and documented in the state machines.
-
-## Recommendation and resulting changes
-
-Do not change production scheduling.
-
-Add mirrored MQTT 3.1.1 and MQTT 5 regression tests that:
-
-1. create one eight-packet broker burst in a single transport write;
-2. verify that capacity-three same-task forwarding waits on the fourth send
-   while diagnostics show a full receiver and untouched buffered events; and
-3. verify that `try_publish()` consumes all eight buffered incoming events while
-   accepting three forwards and explicitly rejecting five;
-4. reproduce the default-capacity QoS 1 case; and
-5. verify that every automatic PUBACK from the burst reaches the broker before
-   application event draining reaches the blocked eleventh forward.
-
-The backpressure recipe should distinguish a genuinely independent polling task
-from merely moving publication to another task. Its forwarding example should
-use a bounded application queue with a nonblocking handoff and an explicit drop
-policy. Lossless forwarding requires an independently driven durable queue or
-another design whose consumer does not depend on event-loop progress.
-
-Production source, configuration defaults, protocol behavior, and changelog do
-not need to change for this recommendation.
