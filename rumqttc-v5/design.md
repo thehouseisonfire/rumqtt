@@ -140,6 +140,34 @@ The store is also cleared after a graceful DISCONNECT whose effective Session
 Expiry Interval is zero. A Session Expiry Interval on the client DISCONNECT
 overrides the CONNECT or CONNACK-derived value for that transition.
 
+The automated recovery matrix treats these boundaries as distinct named cases:
+
+| Boundary | Local result | Durable result | Wire result |
+| --- | --- | --- | --- |
+| `Clean Start = 1`, `Session Present = 0` | Reset before admitting work | Clear the old key | Only fresh packets, starting from independently allocated identifiers |
+| `Clean Start = 1`, `Session Present = 1` | Reject the CONNACK | Retain the last complete checkpoint | No replay |
+| Matching local state, `Session Present = 1` | Resume | Retain/update the checkpoint | Replay in checkpoint order with original identifiers; replayed PUBLISH uses `DUP=1` |
+| Matching local state, `Session Present = 0` | Reset before admitting work | Clear, then checkpoint only newly admitted work | No stale replay; fresh PUBLISH uses `DUP=0` |
+| Missing local state, strict policy, `Session Present = 1` | Reject the CONNACK | No checkpoint is invented | No client-owned packet identifier is used |
+| Missing local state, broker-only compatibility policy | Continue without reconstructed ownership | No synthetic local checkpoint | Reject operations that allocate client packet identifiers |
+| Changed Client Identifier or store scope | Treat as a distinct session identity | Leave the old key untouched | Never replay old-identity packets |
+
+Abrupt transport loss and graceful-disconnect timeout apply the effective
+CONNECT/CONNACK expiry because no client DISCONNECT reaches the broker. A
+successfully flushed client DISCONNECT property overrides that value for the
+closing transition. Zero clears local recovery state; nonzero retains the
+complete replay checkpoint. A crash may leave the last complete zero-expiry
+admission checkpoint on disk, but a later `Session Present = 0` reconciliation
+must clear it before fresh work is processed.
+
+Persistence boundaries fail closed. A load failure occurs before CONNECT. A
+save failure prevents the corresponding packet or completion notice from being
+reported as durable. A mandatory clear failure leaves invalidation pending:
+the old bytes may remain on disk, but they cannot be loaded, replayed, or
+followed by fresh packet-identifier allocation until a later clear succeeds.
+Retries operate on the last complete checkpoint; partial checkpoints are never
+accepted.
+
 ## Broker Redirect Boundaries
 
 CONNACK and DISCONNECT reason codes `Use Another Server` and `Server Moved` are

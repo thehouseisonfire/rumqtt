@@ -1,4 +1,5 @@
 use matches::assert_matches;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io::ErrorKind;
 use std::pin::Pin;
@@ -24,6 +25,96 @@ const PERSISTENT_SESSION_EXPIRY: u32 = 60;
 #[derive(Clone, Debug)]
 struct MemorySessionStore {
     session: Arc<Mutex<Option<PersistedSession>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoreOperation {
+    Load,
+    Save,
+    Clear,
+}
+
+#[derive(Debug)]
+struct FaultStoreState {
+    session: Option<PersistedSession>,
+    failures: VecDeque<StoreOperation>,
+    calls: Vec<StoreOperation>,
+}
+
+#[derive(Clone, Debug)]
+struct FaultSessionStore {
+    state: Arc<Mutex<FaultStoreState>>,
+}
+
+impl FaultSessionStore {
+    fn new(session: Option<PersistedSession>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(FaultStoreState {
+                session,
+                failures: VecDeque::new(),
+                calls: Vec::new(),
+            })),
+        }
+    }
+
+    fn fail_next(&self, operation: StoreOperation) {
+        self.state.lock().unwrap().failures.push_back(operation);
+    }
+
+    fn current(&self) -> Option<PersistedSession> {
+        self.state.lock().unwrap().session.clone()
+    }
+
+    fn calls(&self) -> Vec<StoreOperation> {
+        self.state.lock().unwrap().calls.clone()
+    }
+
+    fn begin(&self, operation: StoreOperation) -> Result<(), SessionStoreError> {
+        let mut state = self.state.lock().unwrap();
+        state.calls.push(operation);
+        if state.failures.front() == Some(&operation) {
+            state.failures.pop_front();
+            return Err(std::io::Error::other(format!("injected {operation:?} failure")).into());
+        }
+        Ok(())
+    }
+}
+
+impl SessionStore for FaultSessionStore {
+    fn load<'a>(
+        &'a self,
+        _key: &'a SessionStoreKey,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<PersistedSession>, SessionStoreError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.begin(StoreOperation::Load)?;
+            Ok(self.current())
+        })
+    }
+
+    fn save<'a>(
+        &'a self,
+        _key: &'a SessionStoreKey,
+        session: &'a PersistedSession,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.begin(StoreOperation::Save)?;
+            self.state.lock().unwrap().session = Some(session.clone());
+            Ok(())
+        })
+    }
+
+    fn clear<'a>(
+        &'a self,
+        _key: &'a SessionStoreKey,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.begin(StoreOperation::Clear)?;
+            self.state.lock().unwrap().session = None;
+            Ok(())
+        })
+    }
 }
 
 impl MemorySessionStore {
@@ -71,6 +162,10 @@ impl SessionStore for MemorySessionStore {
 }
 
 fn persisted_qos1_session(client_id: &str) -> PersistedSession {
+    persisted_qos1_session_with_pkid(client_id, 1)
+}
+
+fn persisted_qos1_session_with_pkid(client_id: &str, pkid: u16) -> PersistedSession {
     PersistedSession {
         format_version: 2,
         client_id: client_id.to_owned(),
@@ -83,7 +178,7 @@ fn persisted_qos1_session(client_id: &str) -> PersistedSession {
             qos: PersistedQoS::AtLeastOnce,
             retain: false,
             topic: b"hello/world".to_vec(),
-            pkid: 1,
+            pkid,
             payload: vec![9, 1, 2, 3],
             properties: None,
         })],
@@ -1131,6 +1226,393 @@ async fn refused_connack_with_session_present_is_protocol_error() {
         ))
     );
     broker.await.unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MatrixLocalState {
+    Matching,
+    Missing,
+    Incompatible,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MatrixOutcome {
+    Resume { pkid: u16 },
+    ResetAndAdmitFresh,
+    BrokerOnly,
+    RejectSessionState,
+    RejectCheckpoint,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RecoveryBoundaryCase {
+    name: &'static str,
+    clean_start: bool,
+    session_present: bool,
+    local_state: MatrixLocalState,
+    policy: BrokerSessionResumePolicy,
+    outcome: MatrixOutcome,
+}
+
+#[tokio::test]
+async fn recovery_boundary_matrix_reconciles_connack_before_admitting_work() {
+    const CASES: &[RecoveryBoundaryCase] = &[
+        RecoveryBoundaryCase {
+            name: "clean_start_discards_matching_checkpoint",
+            clean_start: true,
+            session_present: false,
+            local_state: MatrixLocalState::Matching,
+            policy: BrokerSessionResumePolicy::Strict,
+            outcome: MatrixOutcome::ResetAndAdmitFresh,
+        },
+        RecoveryBoundaryCase {
+            name: "clean_start_rejects_session_present",
+            clean_start: true,
+            session_present: true,
+            local_state: MatrixLocalState::Matching,
+            policy: BrokerSessionResumePolicy::Strict,
+            outcome: MatrixOutcome::RejectSessionState,
+        },
+        RecoveryBoundaryCase {
+            name: "matching_checkpoint_resumes",
+            clean_start: false,
+            session_present: true,
+            local_state: MatrixLocalState::Matching,
+            policy: BrokerSessionResumePolicy::Strict,
+            outcome: MatrixOutcome::Resume { pkid: 7 },
+        },
+        RecoveryBoundaryCase {
+            name: "missing_broker_session_discards_matching_checkpoint",
+            clean_start: false,
+            session_present: false,
+            local_state: MatrixLocalState::Matching,
+            policy: BrokerSessionResumePolicy::Strict,
+            outcome: MatrixOutcome::ResetAndAdmitFresh,
+        },
+        RecoveryBoundaryCase {
+            name: "strict_mode_rejects_broker_only_session",
+            clean_start: false,
+            session_present: true,
+            local_state: MatrixLocalState::Missing,
+            policy: BrokerSessionResumePolicy::Strict,
+            outcome: MatrixOutcome::RejectSessionState,
+        },
+        RecoveryBoundaryCase {
+            name: "compatibility_mode_accepts_broker_only_session",
+            clean_start: false,
+            session_present: true,
+            local_state: MatrixLocalState::Missing,
+            policy: BrokerSessionResumePolicy::AllowBrokerOnly,
+            outcome: MatrixOutcome::BrokerOnly,
+        },
+        RecoveryBoundaryCase {
+            name: "incompatible_checkpoint_fails_before_connect",
+            clean_start: false,
+            session_present: true,
+            local_state: MatrixLocalState::Incompatible,
+            policy: BrokerSessionResumePolicy::Strict,
+            outcome: MatrixOutcome::RejectCheckpoint,
+        },
+    ];
+
+    for case in CASES {
+        let (listener, port) = reserve_listener().await;
+        let checkpoint = match case.local_state {
+            MatrixLocalState::Matching => {
+                Some(persisted_qos1_session_with_pkid("matrix-client", 7))
+            }
+            MatrixLocalState::Missing => None,
+            MatrixLocalState::Incompatible => {
+                Some(persisted_qos1_session_with_pkid("different-client", 7))
+            }
+        };
+        let store = MemorySessionStore::new(checkpoint);
+        let mut options = MqttOptions::new("matrix-client", ("127.0.0.1", port));
+        options
+            .set_clean_start(case.clean_start)
+            .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
+            .set_broker_session_resume_policy(case.policy)
+            .set_session_store(store.clone());
+
+        let broker = if matches!(case.outcome, MatrixOutcome::RejectCheckpoint) {
+            drop(listener);
+            None
+        } else {
+            let session_present = case.session_present;
+            Some(task::spawn(async move {
+                let mut broker = TestBroker::from_listener(
+                    listener,
+                    ConnectBehavior::AcceptExplicit {
+                        session_present,
+                        session_expiry_interval: None,
+                    },
+                )
+                .await;
+                match broker
+                    .read_packet_with_timeout(Duration::from_millis(500))
+                    .await
+                {
+                    Some(Packet::Publish(publish)) => Some(publish),
+                    None => None,
+                    Some(packet) => panic!("unexpected recovery matrix packet: {packet:?}"),
+                }
+            }))
+        };
+
+        let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
+        let first = time::timeout(TEST_TIMEOUT, eventloop.poll())
+            .await
+            .unwrap_or_else(|_| panic!("{}: first poll timed out", case.name));
+
+        match case.outcome {
+            MatrixOutcome::Resume { pkid } => {
+                assert_matches!(
+                    first,
+                    Ok(Event::Incoming(Packet::ConnAck(ConnAck {
+                        session_present: true,
+                        ..
+                    })))
+                );
+                let replay_event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+                    .await
+                    .unwrap_or_else(|_| panic!("{}: replay poll timed out", case.name))
+                    .unwrap();
+                assert_eq!(
+                    replay_event,
+                    Event::Outgoing(Outgoing::Publish(pkid)),
+                    "{}",
+                    case.name
+                );
+                let publish = broker
+                    .unwrap()
+                    .await
+                    .unwrap()
+                    .expect("expected replayed publish");
+                assert_eq!(publish.pkid, pkid, "{}", case.name);
+                assert!(publish.dup, "{}: replay must set DUP=1", case.name);
+                assert!(store.current().is_some(), "{}", case.name);
+            }
+            MatrixOutcome::ResetAndAdmitFresh => {
+                assert_matches!(
+                    first,
+                    Ok(Event::Incoming(Packet::ConnAck(ConnAck {
+                        session_present: false,
+                        ..
+                    })))
+                );
+                assert!(
+                    store.current().is_none(),
+                    "{}: stale checkpoint retained",
+                    case.name
+                );
+                client
+                    .publish(
+                        "matrix/fresh",
+                        "fresh",
+                        PublishOptions::new(QoS::AtLeastOnce),
+                    )
+                    .await
+                    .unwrap();
+                let fresh_event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+                    .await
+                    .unwrap_or_else(|_| panic!("{}: fresh work poll timed out", case.name))
+                    .unwrap();
+                assert_eq!(
+                    fresh_event,
+                    Event::Outgoing(Outgoing::Publish(1)),
+                    "{}",
+                    case.name
+                );
+                let publish = broker
+                    .unwrap()
+                    .await
+                    .unwrap()
+                    .expect("expected fresh publish");
+                assert_eq!(publish.pkid, 1, "{}", case.name);
+                assert!(
+                    !publish.dup,
+                    "{}: first transmission must set DUP=0",
+                    case.name
+                );
+            }
+            MatrixOutcome::BrokerOnly => {
+                assert_matches!(
+                    first,
+                    Ok(Event::Incoming(Packet::ConnAck(ConnAck {
+                        session_present: true,
+                        ..
+                    })))
+                );
+                let notice = client
+                    .publish_tracked(
+                        "matrix/broker-only",
+                        "must-not-be-sent",
+                        PublishOptions::new(QoS::AtLeastOnce),
+                    )
+                    .await
+                    .expect("queue tracked broker-only publish");
+                let poll_task = task::spawn(async move { eventloop.poll().await });
+                assert_eq!(
+                    time::timeout(TEST_TIMEOUT, notice.wait_async())
+                        .await
+                        .expect("broker-only rejection notice timed out")
+                        .unwrap_err(),
+                    PublishNoticeError::BrokerOnlySessionResume
+                );
+                assert!(broker.unwrap().await.unwrap().is_none(), "{}", case.name);
+                poll_task.abort();
+                assert!(
+                    poll_task.await.is_err(),
+                    "broker-only poll task should remain pending after local rejection"
+                );
+            }
+            MatrixOutcome::RejectSessionState => {
+                assert_matches!(first, Err(ConnectionError::SessionStateMismatch { .. }));
+                assert!(broker.unwrap().await.unwrap().is_none(), "{}", case.name);
+            }
+            MatrixOutcome::RejectCheckpoint => {
+                assert_matches!(first, Err(ConnectionError::SessionRestore(_)));
+                assert!(store.current().is_some(), "{}", case.name);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_load_failure_prevents_connect_and_preserves_durable_state() {
+    let (listener, port) = reserve_listener().await;
+    let checkpoint = persisted_qos1_session_with_pkid("load-failure", 7);
+    let store = FaultSessionStore::new(Some(checkpoint.clone()));
+    store.fail_next(StoreOperation::Load);
+    let mut options = MqttOptions::new("load-failure", ("127.0.0.1", port));
+    options
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
+        .set_session_store(store.clone());
+    let (_client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
+
+    let error = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("load failure poll timed out")
+        .unwrap_err();
+
+    assert_matches!(error, ConnectionError::SessionStore(_));
+    assert_eq!(store.current(), Some(checkpoint));
+    assert_eq!(store.calls(), vec![StoreOperation::Load]);
+    assert!(
+        time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "load failure must occur before the client opens a broker connection"
+    );
+}
+
+#[tokio::test]
+async fn fresh_session_clear_failure_blocks_reload_and_fresh_admission_until_retry() {
+    let (listener, port) = reserve_listener().await;
+    let store = FaultSessionStore::new(Some(persisted_qos1_session_with_pkid("clear-failure", 7)));
+    store.fail_next(StoreOperation::Clear);
+    let mut options = MqttOptions::new("clear-failure", ("127.0.0.1", port));
+    options
+        .set_clean_start(false)
+        .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY))
+        .set_session_store(store.clone());
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(4).build();
+
+    let first_broker = task::spawn(async move {
+        let mut broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::AcceptExplicit {
+                session_present: false,
+                session_expiry_interval: None,
+            },
+        )
+        .await;
+        match broker
+            .read_packet_with_timeout(Duration::from_millis(300))
+            .await
+        {
+            Some(Packet::Publish(publish)) => Some(publish),
+            None => None,
+            Some(packet) => panic!("unexpected packet while clear was failing: {packet:?}"),
+        }
+    });
+
+    let error = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("clear failure poll timed out")
+        .unwrap_err();
+    assert_matches!(error, ConnectionError::SessionStore(_));
+    assert!(first_broker.await.unwrap().is_none());
+    assert!(store.current().is_some());
+    assert_eq!(
+        store.calls(),
+        vec![StoreOperation::Load, StoreOperation::Clear]
+    );
+
+    let listener = listener_on(port).await;
+    let second_broker = task::spawn(async move {
+        let mut broker = TestBroker::from_listener(
+            listener,
+            ConnectBehavior::AcceptExplicit {
+                session_present: false,
+                session_expiry_interval: None,
+            },
+        )
+        .await;
+        match broker
+            .read_packet_with_timeout(Duration::from_secs(2))
+            .await
+        {
+            Some(Packet::Publish(publish)) => Some(publish),
+            None => None,
+            Some(packet) => panic!("unexpected packet after clear retry: {packet:?}"),
+        }
+    });
+
+    let event = time::timeout(TEST_TIMEOUT, eventloop.poll())
+        .await
+        .expect("clear retry poll timed out")
+        .unwrap();
+    assert_matches!(
+        event,
+        Event::Incoming(Packet::ConnAck(ConnAck {
+            session_present: false,
+            ..
+        }))
+    );
+    assert!(store.current().is_none());
+    assert_eq!(
+        store.calls(),
+        vec![
+            StoreOperation::Load,
+            StoreOperation::Clear,
+            StoreOperation::Clear,
+            StoreOperation::Clear,
+        ]
+    );
+
+    client
+        .publish(
+            "clear-failure/fresh",
+            "fresh",
+            PublishOptions::new(QoS::AtLeastOnce),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        time::timeout(TEST_TIMEOUT, eventloop.poll())
+            .await
+            .expect("fresh publish poll timed out")
+            .unwrap(),
+        Event::Outgoing(Outgoing::Publish(1))
+    );
+    let publish = second_broker
+        .await
+        .unwrap()
+        .expect("fresh publish should be admitted after clear retry");
+    assert_eq!(publish.pkid, 1);
+    assert!(!publish.dup);
 }
 
 #[tokio::test]

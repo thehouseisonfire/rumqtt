@@ -23,6 +23,10 @@ pub enum ConnectBehavior {
         session_saved: bool,
         keep_alive_secs: u16,
     },
+    AcceptExplicit {
+        session_present: bool,
+        session_expiry_interval: Option<u32>,
+    },
     RefuseBadUserNamePassword,
     RefuseBadUserNamePasswordWithSessionPresent,
     StallAfterConnect,
@@ -101,6 +105,39 @@ impl Broker {
                         properties: Some(props),
                     };
                     framed.connack(connack).await.unwrap();
+                }
+                ConnectBehavior::AcceptExplicit {
+                    session_present,
+                    session_expiry_interval,
+                } => {
+                    let properties =
+                        session_expiry_interval.map(|session_expiry_interval| ConnAckProperties {
+                            session_expiry_interval: Some(session_expiry_interval),
+                            receive_max: None,
+                            max_qos: None,
+                            retain_available: None,
+                            max_packet_size: None,
+                            assigned_client_identifier: None,
+                            topic_alias_max: None,
+                            reason_string: None,
+                            user_properties: Vec::new(),
+                            wildcard_subscription_available: None,
+                            subscription_identifiers_available: None,
+                            shared_subscription_available: None,
+                            server_keep_alive: None,
+                            response_information: None,
+                            server_reference: None,
+                            authentication_method: None,
+                            authentication_data: None,
+                        });
+                    framed
+                        .connack(ConnAck {
+                            code: ConnectReturnCode::Success,
+                            session_present,
+                            properties,
+                        })
+                        .await
+                        .unwrap();
                 }
                 ConnectBehavior::RefuseBadUserNamePassword => {
                     let connack = ConnAck {
