@@ -55,7 +55,7 @@ When the broker reports `Session Present = 0`, old packet identifiers cannot be
 replayed as if the earlier session survived. The current implementation fails
 tracked state discarded by this reset. A possible policy for reclassifying
 eligible publications as new application work is tracked in
-[`TODO6.md`](../TODO6.md), but it must preserve ambiguous-delivery semantics.
+[`TODO4.md`](../TODO4.md), but it must preserve ambiguous-delivery semantics.
 
 ## Persistent Checkpoint Contents
 
