@@ -8,11 +8,15 @@
   `RedirectPolicy`, `RedirectTargetProfile`, `RedirectOutcome`, `Event::Redirect`,
   and structured `ConnectionError::Redirect` failures. CONNACK and DISCONNECT
   `Use Another Server`/`Server Moved` responses now retain their Server Reference
-  and source packet, validate MQTT authority targets, detect loops, and preserve
-  the original redirect when a target connection fails. SRV references are
-  exposed to redirect policy but fail as unsupported until DNS SRV target and
-  port resolution is available. Queued graceful and immediate disconnects take
-  precedence over following a redirect.
+  and source packet, validate MQTT authority targets plus absolute `mqtt`,
+  `mqtts`, `ws`, and `wss` URIs, detect normalized endpoint loops, and preserve
+  the original redirect when a target connection fails. WebSocket redirect
+  paths and queries are retained as the handshake request target. Fallible
+  profile construction reports scheme/transport and disabled-feature failures
+  without deriving credentials from the URI. SRV references remain visible to
+  policy but report a structured unavailable-target error until DNS SRV target
+  and port resolution is available. Queued graceful and immediate disconnects
+  take precedence over following a redirect.
 - `rumqttc` v5: Add `MqttStateBuilder::client_receive_maximum(u16)` and
   `MqttState::set_client_receive_maximum(Option<u16>)` for low-level clients
   enforcing the Receive Maximum they advertise in CONNECT.

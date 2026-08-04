@@ -403,14 +403,15 @@ Automatic following is opt-in and bounded:
 ```rust
 use std::num::NonZeroUsize;
 use rumqttc::{
-    MqttOptions, RedirectDecision, RedirectPolicy, RedirectTargetProfile, Transport,
+    MqttOptions, RedirectDecision, RedirectPolicy, RedirectTargetError,
+    RedirectTargetProfile, Transport,
 };
 
-let policy = RedirectPolicy::new(NonZeroUsize::new(3).unwrap(), |context| {
-    RedirectDecision::follow(RedirectTargetProfile::isolated(
-        context.references[0].clone(),
-        Transport::tcp(),
-    ))
+let policy = RedirectPolicy::try_new(NonZeroUsize::new(3).unwrap(), |context| {
+    let reference = context.references.first().cloned()
+        .ok_or(RedirectTargetError::NoTarget)?;
+    let profile = RedirectTargetProfile::isolated(reference, Transport::tcp())?;
+    Ok(RedirectDecision::follow(profile))
 });
 let options = MqttOptions::builder("client", "primary.example")
     .redirect_policy(policy)
@@ -419,12 +420,21 @@ let options = MqttOptions::builder("client", "primary.example")
 
 An accepted decision yields `Event::Redirect` before the next `poll()` attempts
 the advertised target. Server References accept the MQTT authority forms
-`host`, `host:port`, and bracketed IPv6; URI schemes, paths, user information,
-and zero ports are rejected. SRV names are parsed for policy inspection but
-currently produce `RedirectFailure::UnsupportedTarget`, because target and port
-resolution through DNS SRV is not implemented. The built-in target application
-currently supports TCP broker targets, with `Transport::tcp()` or an explicitly
-supplied TLS transport. TLS verifies the redirected host name.
+`host`, `host:port`, and bracketed IPv6, plus absolute `mqtt`, `mqtts`, `ws`,
+and `wss` URIs. URI schemes constrain the selected transport; secure schemes
+require an explicitly supplied TLS configuration. `ws` and `wss` paths and
+queries are preserved verbatim as the WebSocket request target. User
+information, fragments, invalid ports, and TCP-MQTT URI paths or queries are
+rejected. SRV names remain available for policy inspection, but selecting one
+produces `RedirectFailure::Target(RedirectTargetError::SrvUnavailable)` until
+DNS SRV resolution is implemented.
+
+`RedirectReference::ensure_supported()` lets policy inspect feature
+availability before selection. Builds without WebSocket or TLS support still
+parse those URI schemes, while attempted materialization reports
+`WebsocketUnavailable` or `TlsUnavailable`. `RedirectPolicy::new` remains the
+infallible convenience API; use `try_new` when constructing profiles so target
+errors remain structured.
 
 `RedirectTargetProfile::isolated` is the security default. It clears CONNECT
 and enhanced authentication, proxy configuration, and websocket request
@@ -433,7 +443,9 @@ zero-expiry session; disables the old session store; and fails pending tracked
 operations with their `Redirected` notice error. Supplying a TLS transport can
 explicitly reuse TLS client credentials. Authentication, Client Identifier,
 network credential hooks, and session scope have separate opt-in profile
-methods. An isolated redirect leaves the old endpoint's checkpoint untouched.
+methods. URI queries are opaque WebSocket routing data and never configure
+MQTT, TLS, proxy, or HTTP credentials. An isolated redirect leaves the old
+endpoint's checkpoint untouched.
 
 `Use Another Server` applies to the redirected connection only and restores the
 previous endpoint after it ends. A successfully connected `Server Moved` target

@@ -73,8 +73,9 @@ pub use notice::{
 };
 pub use redirect::{
     RedirectClientId, RedirectContext, RedirectDecision, RedirectError, RedirectFailure,
-    RedirectOutcome, RedirectPolicy, RedirectReason, RedirectReference, RedirectReferenceError,
-    RedirectSession, RedirectSource, RedirectTargetProfile, parse_server_references,
+    RedirectOutcome, RedirectPolicy, RedirectPolicyResult, RedirectReason, RedirectReference,
+    RedirectReferenceError, RedirectScheme, RedirectSession, RedirectSource, RedirectTargetError,
+    RedirectTargetProfile, parse_server_references,
 };
 pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -459,6 +460,13 @@ impl Broker {
             }
             Some("wss") => Err(OptionError::WssRequiresExplicitTransport),
             _ => Err(OptionError::Scheme),
+        }
+    }
+
+    #[cfg(feature = "websocket")]
+    pub(crate) fn redirect_websocket(url: String, secure: bool) -> Self {
+        Self {
+            inner: BrokerInner::Websocket { url, secure },
         }
     }
 
@@ -2242,7 +2250,7 @@ impl MqttOptionsBuilder {
     }
 }
 
-const fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
+pub(crate) const fn broker_transport_matches(broker: &Broker, transport: &Transport) -> bool {
     match transport {
         Transport::Tcp => matches!(broker.inner, BrokerInner::Tcp { .. }),
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]

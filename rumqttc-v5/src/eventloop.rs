@@ -15,7 +15,7 @@ use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError, SubscribeNoticeE
 use crate::{
     RedirectClientId, RedirectContext, RedirectDecision, RedirectError, RedirectFailure,
     RedirectOutcome, RedirectReason, RedirectSession, RedirectSource, RedirectTargetProfile,
-    parse_server_references, redirect::normalized_profile_key,
+    parse_server_references, redirect::normalized_broker_key,
 };
 
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
@@ -1216,10 +1216,7 @@ impl EventLoop {
 
     fn current_redirect_endpoint_key(&self) -> Option<String> {
         let transport = self.options.transport();
-        self.options
-            .broker()
-            .tcp_address()
-            .map(|(host, port)| normalized_profile_key(host, port, &transport))
+        normalized_broker_key(self.options.broker(), &transport)
     }
 
     fn redirect_origin_session(&self) -> Option<RedirectOriginSession> {
@@ -1281,19 +1278,12 @@ impl EventLoop {
         self.redirect_visited.clear();
     }
 
-    fn apply_redirect_profile(
-        &mut self,
-        profile: &RedirectTargetProfile,
-        default_port: u16,
-    ) -> bool {
+    fn apply_redirect_profile(&mut self, profile: &RedirectTargetProfile) -> bool {
         let old_client_id = self.options.client_id();
         let old_scope = self.options.session_store_scope().to_owned();
         let old_authenticator = self.options.authenticator();
 
-        self.options.broker = crate::Broker::tcp(
-            profile.reference().host().to_owned(),
-            profile.reference().port().unwrap_or(default_port),
-        );
+        self.options.broker = profile.broker().clone();
         self.options.transport = profile.transport();
 
         if let Some(authentication) = profile.authentication_policy() {
@@ -1397,25 +1387,19 @@ impl EventLoop {
             references: &references,
             attempt: self.redirect_attempts + 1,
         };
-        let RedirectDecision::Follow(profile) = policy.decide(&context) else {
+        let decision = match policy.decide(&context) {
+            Ok(decision) => decision,
+            Err(error) => {
+                return Err(self.redirect_failure(outcome, RedirectFailure::Target(error)));
+            }
+        };
+        let RedirectDecision::Follow(profile) = decision else {
             return Err(self.redirect_failure(outcome, RedirectFailure::Rejected));
         };
         if !references.contains(profile.reference()) {
             return Err(self.redirect_failure(outcome, RedirectFailure::UnadvertisedTarget));
         }
 
-        // SRV references need RFC 2782 target and port resolution. Treating the
-        // owner name as a host and applying a transport default can reach the
-        // wrong endpoint, so reject them until the connector supports SRV.
-        if profile.reference().is_srv_name() {
-            return Err(self.redirect_failure(outcome, RedirectFailure::UnsupportedTarget));
-        }
-        if self.options.broker().tcp_address().is_none() {
-            return Err(self.redirect_failure(outcome, RedirectFailure::UnsupportedTarget));
-        }
-        let Some(target_default_port) = profile.default_port() else {
-            return Err(self.redirect_failure(outcome, RedirectFailure::UnsupportedTarget));
-        };
         if self.redirect_visited.is_empty() {
             if let Some(endpoint) = self.current_redirect_endpoint_key() {
                 self.redirect_visited.push(endpoint);
@@ -1424,7 +1408,8 @@ impl EventLoop {
         let target_transport = profile.transport();
         let endpoint = profile
             .reference()
-            .endpoint_key(target_default_port, &target_transport);
+            .endpoint_key(&target_transport)
+            .expect("a validated redirect profile has an endpoint identity");
         if self.redirect_visited.contains(&endpoint) {
             return Err(self.redirect_failure(outcome, RedirectFailure::Loop));
         }
@@ -1441,7 +1426,7 @@ impl EventLoop {
                     )
                 },
             );
-        let hop_session_preserved = self.apply_redirect_profile(&profile, target_default_port);
+        let hop_session_preserved = self.apply_redirect_profile(&profile);
         let session_preserved = previous_session_preserved && hop_session_preserved;
         self.redirect_attempts += 1;
         self.redirect_visited.push(endpoint);
@@ -4199,10 +4184,13 @@ mod tests {
         let store = CapturingSessionStore::new();
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("test-client", "primary.example");
         options
@@ -8514,10 +8502,13 @@ mod tests {
         let captured_endpoints = attempted_endpoints.clone();
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("test-client", "primary.example");
         options
@@ -8970,10 +8961,13 @@ mod tests {
     async fn batched_events_are_delivered_before_a_redirect_transition() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_read_batch_size(10).set_redirect_policy(policy);
@@ -9031,10 +9025,13 @@ mod tests {
     async fn isolated_connack_redirect_fails_requests_still_waiting_in_channels() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy);
@@ -9082,10 +9079,13 @@ mod tests {
     fn queued_graceful_disconnect_prevents_following_a_connack_redirect() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy);
@@ -9123,10 +9123,13 @@ mod tests {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), move |context| {
                 *captured_policy_calls.lock().unwrap() += 1;
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy);
@@ -9164,10 +9167,13 @@ mod tests {
     async fn active_graceful_disconnect_prevents_following_a_server_redirect() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy);
@@ -9239,10 +9245,13 @@ mod tests {
     fn accepted_redirect_is_observable_and_isolates_connection_identity() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "localhost");
         options
@@ -9304,10 +9313,13 @@ mod tests {
 
         let follow =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "localhost");
         options.set_redirect_policy(follow);
@@ -9334,10 +9346,13 @@ mod tests {
 
         let follow =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "localhost");
         options.set_redirect_policy(follow);
@@ -9366,10 +9381,13 @@ mod tests {
     fn every_hop_in_an_isolated_redirect_chain_applies_its_target_profile() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy);
@@ -9423,10 +9441,13 @@ mod tests {
     async fn redirect_after_uncommitted_server_moved_restores_the_original_target() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -9474,10 +9495,13 @@ mod tests {
     async fn server_moved_after_temporary_hop_restores_the_original_target_on_failure() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(3).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -9525,10 +9549,13 @@ mod tests {
     fn invalid_and_unsupported_redirect_targets_are_structured() {
         let follow =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "localhost");
         options.set_redirect_policy(follow.clone());
@@ -9537,8 +9564,8 @@ mod tests {
         for (reference, expected) in [
             (None, crate::RedirectReferenceError::Missing),
             (
-                Some("mqtt://backup.example"),
-                crate::RedirectReferenceError::Scheme,
+                Some("ftp://backup.example"),
+                crate::RedirectReferenceError::UnsupportedScheme("ftp".to_owned()),
             ),
             (
                 Some("backup.example:0"),
@@ -9558,33 +9585,17 @@ mod tests {
             ));
         }
 
-        #[cfg(unix)]
-        {
-            let mut options = MqttOptions::new("client", crate::Broker::unix("/tmp/mqtt.sock"));
-            options.set_redirect_policy(follow);
-            let mut eventloop = EventLoop::new(options, 1);
-            assert!(matches!(
-                eventloop.handle_redirect_outcome(redirect_outcome(
-                    RedirectReason::UseAnotherServer,
-                    RedirectSource::Disconnect,
-                    Some("backup.example"),
-                )),
-                Err(ConnectionError::Redirect(RedirectError {
-                    failure: RedirectFailure::UnsupportedTarget,
-                    ..
-                }))
-            ));
-        }
+        drop(follow);
     }
 
     #[test]
     fn srv_redirect_targets_are_rejected_before_defaulting_the_port() {
         let policy =
-            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
+            crate::RedirectPolicy::try_new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                Ok(RedirectDecision::follow(RedirectTargetProfile::isolated(
                     context.references[0].clone(),
                     Transport::tcp(),
-                ))
+                )?))
             });
         let mut options = MqttOptions::new("client", crate::Broker::tcp("primary.example", 2883));
         options.set_redirect_policy(policy);
@@ -9599,7 +9610,7 @@ mod tests {
             eventloop.handle_redirect_outcome(outcome.clone()),
             Err(ConnectionError::Redirect(RedirectError {
                 outcome: actual,
-                failure: RedirectFailure::UnsupportedTarget,
+                failure: RedirectFailure::Target(crate::RedirectTargetError::SrvUnavailable),
             })) if actual == outcome
         ));
         assert_eq!(
@@ -9614,10 +9625,13 @@ mod tests {
     fn host_only_tcp_redirect_uses_the_target_transport_default_port() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", crate::Broker::tcp("primary.example", 2883));
         options.set_redirect_policy(policy);
@@ -9647,10 +9661,13 @@ mod tests {
     fn host_only_tls_redirect_uses_the_target_transport_default_port() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    redirect_test_tls_transport(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        redirect_test_tls_transport(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", crate::Broker::tcp("primary.example", 2883));
         options.set_redirect_policy(policy);
@@ -9681,10 +9698,13 @@ mod tests {
     fn redirect_loop_identity_distinguishes_tcp_from_tls() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    redirect_test_tls_transport(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        redirect_test_tls_transport(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", crate::Broker::tcp("broker.example", 1883));
         options.set_redirect_policy(policy);
@@ -9718,6 +9738,7 @@ mod tests {
                         context.references[0].clone(),
                         Transport::tcp(),
                     )
+                    .expect("valid advertised redirect target")
                     .client_id(RedirectClientId::Reuse)
                     .session(RedirectSession::Reuse {
                         store_scope: "cluster-a".to_owned(),
@@ -9765,10 +9786,13 @@ mod tests {
     fn ipv6_origin_and_redirect_reference_use_the_same_loop_key() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", crate::Broker::tcp("0:0:0:0:0:0:0:1", 1883));
         options.set_redirect_policy(policy);
@@ -9791,10 +9815,13 @@ mod tests {
     fn dns_root_dot_does_not_bypass_redirect_loop_detection() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "broker.example");
         options.set_redirect_policy(policy);
@@ -9813,15 +9840,111 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn mqtt_uri_alias_does_not_bypass_authority_loop_detection() {
+        let policy =
+            crate::RedirectPolicy::try_new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                Ok(RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::tcp(),
+                )?))
+            });
+        let mut options = MqttOptions::new("client", "broker.example");
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::Disconnect,
+                Some("mqtt://BROKER.EXAMPLE.:1883/"),
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Loop,
+                ..
+            }))
+        ));
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_loop_identity_normalizes_resource_names_but_keeps_distinct_queries() {
+        let policy =
+            crate::RedirectPolicy::try_new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                Ok(RedirectDecision::follow(RedirectTargetProfile::isolated(
+                    context.references[0].clone(),
+                    Transport::ws(),
+                )?))
+            });
+        let broker = crate::Broker::websocket("ws://BROKER.EXAMPLE:80/a/./b?tenant=green").unwrap();
+        let mut options = MqttOptions::new("client", broker);
+        options.set_redirect_policy(policy.clone());
+        let mut eventloop = EventLoop::new(options, 1);
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::Disconnect,
+                Some("ws://broker.example/a/b?tenant=green"),
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Loop,
+                ..
+            }))
+        ));
+
+        let broker = crate::Broker::websocket("ws://broker.example/a/b?tenant=green").unwrap();
+        let mut options = MqttOptions::new("client", broker);
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+        eventloop
+            .handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::Disconnect,
+                Some("ws://broker.example/a/b?tenant=blue"),
+            ))
+            .unwrap();
+        assert_eq!(
+            eventloop.options.broker().websocket_url(),
+            Some("ws://broker.example/a/b?tenant=blue")
+        );
+    }
+
+    #[test]
+    fn fallible_redirect_policy_preserves_target_error() {
+        let policy =
+            crate::RedirectPolicy::try_new(std::num::NonZeroUsize::new(1).unwrap(), |_| {
+                Err(crate::RedirectTargetError::NoTarget)
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options.set_redirect_policy(policy);
+        let mut eventloop = EventLoop::new(options, 1);
+
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::UseAnotherServer,
+                RedirectSource::ConnAck,
+                Some("mqtt://backup.example"),
+            )),
+            Err(ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Target(crate::RedirectTargetError::NoTarget),
+                ..
+            }))
+        ));
+    }
+
     #[tokio::test]
     async fn checkpoint_failure_retains_redirect_for_retry() {
         let store = CapturingSessionStore::new();
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -9864,10 +9987,13 @@ mod tests {
         let (peer_tx, peer_rx) = flume::bounded(1);
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -9924,10 +10050,13 @@ mod tests {
     async fn redirected_connection_failure_preserves_redirect_and_restores_origin() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -9965,10 +10094,13 @@ mod tests {
     async fn failed_temporary_isolated_redirect_restores_the_in_memory_origin_session() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -10019,10 +10151,13 @@ mod tests {
     async fn disconnected_temporary_isolated_redirect_restores_the_in_memory_origin_session() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -10071,10 +10206,13 @@ mod tests {
         let captured_endpoints = attempted_endpoints.clone();
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy).set_socket_connector(
@@ -10115,10 +10253,13 @@ mod tests {
     async fn temporary_isolated_target_work_fails_as_redirected_on_origin_restore() {
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options.set_redirect_policy(policy);
@@ -10163,10 +10304,13 @@ mod tests {
         let captured_endpoints = attempted_endpoints.clone();
         let policy =
             crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
-                RedirectDecision::follow(RedirectTargetProfile::isolated(
-                    context.references[0].clone(),
-                    Transport::tcp(),
-                ))
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .expect("valid advertised redirect target"),
+                )
             });
         let mut options = MqttOptions::new("client", "primary.example");
         options
@@ -10235,6 +10379,7 @@ mod tests {
                         context.references[0].clone(),
                         Transport::tcp(),
                     )
+                    .expect("valid advertised redirect target")
                     .client_id(RedirectClientId::Reuse)
                     .session(RedirectSession::Reuse {
                         store_scope: "cluster-a".to_owned(),

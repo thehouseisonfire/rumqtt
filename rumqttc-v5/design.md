@@ -177,13 +177,21 @@ retain a `RedirectOutcome` containing the reason, raw reference, and source
 packet. Accepted policy decisions yield `Event::Redirect`; connection to the
 target starts on the next event-loop poll.
 
-The authority validator accepts the host, optional port, and bracketed IPv6
-forms suggested by MQTT 5 section 4.11. Schemes and URI components are rejected,
-and a policy can only select one of the validated advertised authorities. SRV
-names remain visible to policy but fail as unsupported before applying a
-transport default port, because the connector does not resolve DNS SRV targets.
-Normalized host and port identities plus a non-zero policy limit bound each
-redirect chain.
+The feature-neutral validator accepts the host, optional port, and bracketed
+IPv6 authority forms suggested by MQTT 5 section 4.11, plus absolute `mqtt`,
+`mqtts`, `ws`, and `wss` URIs. URI schemes constrain the selected transport;
+WebSocket paths and queries remain part of the derived broker and handshake.
+A policy can only select a validated advertised reference, and the resulting
+profile privately owns the complete broker derived from it. SRV names remain
+visible to policy but produce `RedirectTargetError::SrvUnavailable`, because
+the connector does not resolve DNS SRV targets.
+
+Parsing does not depend on transport features. Materialization reports
+structured unavailable-feature and transport-mismatch errors through a
+fallible policy callback. Loop identities normalize transport, host, effective
+port, and WebSocket resource names; distinct WebSocket paths or queries remain
+distinct targets. The normalized identity plus a non-zero policy limit bounds
+each redirect chain.
 
 A target is transactional: it is not committed until its successful CONNACK.
 Failure restores the previous connection options and reports both the redirect

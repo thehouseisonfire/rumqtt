@@ -10,16 +10,12 @@ use rcgen::{
 use rumqttc::PublishOptions;
 #[cfg(feature = "use-native-tls")]
 use rumqttc::TlsConfiguration;
-#[cfg(any(
-    feature = "use-native-tls",
-    all(
-        feature = "use-rustls-no-provider",
-        any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
-    )
-))]
 use rumqttc::Transport;
-use rumqttc::mqttbytes::v5::{ConnAck, ConnectReturnCode, Packet};
-use rumqttc::{AsyncClient, Broker, MqttOptions, QoS};
+use rumqttc::mqttbytes::v5::{ConnAck, ConnAckProperties, ConnectReturnCode, Packet};
+use rumqttc::{
+    AsyncClient, Broker, Event, EventLoop, MqttOptions, QoS, RedirectClientId, RedirectDecision,
+    RedirectPolicy, RedirectTargetProfile,
+};
 #[cfg(all(
     feature = "use-rustls-no-provider",
     any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
@@ -32,7 +28,7 @@ use std::sync::{
 use std::time::Duration;
 #[cfg(feature = "use-native-tls")]
 use std::time::SystemTime;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 #[cfg(feature = "use-native-tls")]
@@ -89,6 +85,29 @@ fn encode_packet(packet: Packet) -> Vec<u8> {
     buffer.to_vec()
 }
 
+fn connack_properties_with_server_reference(server_reference: String) -> ConnAckProperties {
+    ConnAckProperties {
+        session_expiry_interval: None,
+        receive_max: None,
+        max_qos: None,
+        retain_available: None,
+        max_packet_size: None,
+        assigned_client_identifier: None,
+        topic_alias_max: None,
+        reason_string: None,
+        user_properties: Vec::new(),
+        wildcard_subscription_available: None,
+        subscription_identifiers_available: None,
+        shared_subscription_available: None,
+        server_keep_alive: None,
+        response_information: None,
+        server_reference: Some(server_reference),
+        authentication_method: None,
+        authentication_data: None,
+    }
+}
+
+#[allow(clippy::result_large_err)]
 fn websocket_handshake_callback(
     request: &Request,
     mut response: Response,
@@ -271,6 +290,155 @@ async fn websocket_client_reconnects_and_delivers_all_messages() {
     assert!(connection_count.load(Ordering::SeqCst) >= 2);
 }
 
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn mqtt_redirect_to_websocket_preserves_the_advertised_request_target() {
+    let redirect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirect_port = redirect_listener.local_addr().unwrap().port();
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let advertised = format!("ws://127.0.0.1:{redirect_port}/mqtt/v5/%7etenant?region=sa%2fbr");
+
+    let origin_task = tokio::spawn({
+        let advertised = advertised.clone();
+        async move {
+            let (mut stream, _) = origin_listener.accept().await.unwrap();
+            let mut connect = [0_u8; 1024];
+            let _ = stream.read(&mut connect).await.unwrap();
+            let connack = ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::UseAnotherServer,
+                properties: Some(connack_properties_with_server_reference(advertised)),
+            };
+            stream
+                .write_all(&encode_packet(Packet::ConnAck(connack)))
+                .await
+                .unwrap();
+        }
+    });
+
+    let (target_tx, target_rx) = flume::bounded(1);
+    let websocket_task = tokio::spawn(async move {
+        let (stream, _) = redirect_listener.accept().await.unwrap();
+        let mut websocket =
+            accept_hdr_async(stream, move |request: &Request, mut response: Response| {
+                target_tx.send(request.uri().to_string()).unwrap();
+                response
+                    .headers_mut()
+                    .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
+                Ok(response)
+            })
+            .await
+            .unwrap();
+        let publish_counter = AtomicUsize::new(0);
+        process_websocket_connection(&mut websocket, &publish_counter, None).await;
+    });
+
+    let policy = RedirectPolicy::try_new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+        let reference = context
+            .references
+            .first()
+            .cloned()
+            .ok_or(rumqttc::RedirectTargetError::NoTarget)?;
+        let profile = RedirectTargetProfile::isolated(reference, Transport::ws())?
+            .client_id(RedirectClientId::Reuse);
+        Ok(RedirectDecision::follow(profile))
+    });
+    let mut options = MqttOptions::new("redirect-websocket", Broker::tcp("127.0.0.1", origin_port));
+    options.set_redirect_policy(policy);
+    let mut eventloop = EventLoop::new(options, 10);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(eventloop.poll().await.unwrap(), Event::Redirect(_)) {
+                break;
+            }
+        }
+        loop {
+            if matches!(
+                eventloop.poll().await.unwrap(),
+                Event::Incoming(Packet::ConnAck(_))
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        target_rx.recv_async().await.unwrap(),
+        "/mqtt/v5/%7etenant?region=sa%2fbr"
+    );
+    origin_task.await.unwrap();
+    websocket_task.abort();
+}
+
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+async fn follow_secure_websocket_redirect(
+    advertised: String,
+    transport: Transport,
+    target_rx: flume::Receiver<String>,
+    websocket_task: tokio::task::JoinHandle<()>,
+    expected_target: &str,
+) {
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_task = tokio::spawn({
+        let advertised = advertised.clone();
+        async move {
+            let (mut stream, _) = origin_listener.accept().await.unwrap();
+            let mut connect = [0_u8; 1024];
+            let _ = stream.read(&mut connect).await.unwrap();
+            let connack = ConnAck {
+                session_present: false,
+                code: ConnectReturnCode::UseAnotherServer,
+                properties: Some(connack_properties_with_server_reference(advertised)),
+            };
+            stream
+                .write_all(&encode_packet(Packet::ConnAck(connack)))
+                .await
+                .unwrap();
+        }
+    });
+
+    let policy = RedirectPolicy::try_new(std::num::NonZeroUsize::new(1).unwrap(), move |context| {
+        let reference = context
+            .references
+            .first()
+            .cloned()
+            .ok_or(rumqttc::RedirectTargetError::NoTarget)?;
+        let profile = RedirectTargetProfile::isolated(reference, transport.clone())?
+            .client_id(RedirectClientId::Reuse);
+        Ok(RedirectDecision::follow(profile))
+    });
+    let mut options = MqttOptions::new("secure-redirect", Broker::tcp("127.0.0.1", origin_port));
+    options.set_redirect_policy(policy);
+    let mut eventloop = EventLoop::new(options, 10);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(eventloop.poll().await.unwrap(), Event::Redirect(_)) {
+                break;
+            }
+        }
+        loop {
+            if matches!(
+                eventloop.poll().await.unwrap(),
+                Event::Incoming(Packet::ConnAck(_))
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(target_rx.recv_async().await.unwrap(), expected_target);
+    origin_task.await.unwrap();
+    websocket_task.abort();
+}
+
 #[cfg(all(
     feature = "use-rustls-no-provider",
     any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
@@ -333,6 +501,83 @@ fn make_native_wss_acceptor_and_ca() -> (NativeTlsAcceptor, Vec<u8>) {
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
 
     (NativeTlsAcceptor::from(acceptor), ca.pem().into_bytes())
+}
+
+#[cfg(all(
+    feature = "use-rustls-no-provider",
+    any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc")
+))]
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn mqtt_redirect_to_rustls_websocket_preserves_the_advertised_request_target() {
+    let (tls_acceptor, cert_pem) = make_rustls_wss_acceptor_and_ca();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (target_tx, target_rx) = flume::bounded(1);
+    let websocket_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let tls_stream = tls_acceptor.accept(stream).await.unwrap();
+        let mut websocket = accept_hdr_async(
+            tls_stream,
+            move |request: &Request, mut response: Response| {
+                target_tx.send(request.uri().to_string()).unwrap();
+                response
+                    .headers_mut()
+                    .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
+        let publish_counter = AtomicUsize::new(0);
+        process_websocket_connection(&mut websocket, &publish_counter, None).await;
+    });
+
+    follow_secure_websocket_redirect(
+        format!("wss://localhost:{port}/mqtt/v5?tenant=rustls%2fsa"),
+        Transport::wss(cert_pem, None, None),
+        target_rx,
+        websocket_task,
+        "/mqtt/v5?tenant=rustls%2fsa",
+    )
+    .await;
+}
+
+#[cfg(feature = "use-native-tls")]
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn mqtt_redirect_to_native_tls_websocket_preserves_the_advertised_request_target() {
+    let (tls_acceptor, cert_pem) = make_native_wss_acceptor_and_ca();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (target_tx, target_rx) = flume::bounded(1);
+    let websocket_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let tls_stream = tls_acceptor.accept(stream).await.unwrap();
+        let mut websocket = accept_hdr_async(
+            tls_stream,
+            move |request: &Request, mut response: Response| {
+                target_tx.send(request.uri().to_string()).unwrap();
+                response
+                    .headers_mut()
+                    .insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
+        let publish_counter = AtomicUsize::new(0);
+        process_websocket_connection(&mut websocket, &publish_counter, None).await;
+    });
+
+    follow_secure_websocket_redirect(
+        format!("wss://localhost:{port}/mqtt/v5?tenant=native%2fsa"),
+        Transport::wss_with_config(TlsConfiguration::simple_native(cert_pem, None)),
+        target_rx,
+        websocket_task,
+        "/mqtt/v5?tenant=native%2fsa",
+    )
+    .await;
 }
 
 #[cfg(all(

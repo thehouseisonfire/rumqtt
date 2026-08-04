@@ -1,9 +1,9 @@
 use std::fmt::{self, Debug, Formatter};
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use crate::{ConnectAuth, Transport};
+use crate::{Broker, ConnectAuth, Transport, broker_transport_matches};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedirectReason {
@@ -24,25 +24,128 @@ pub struct RedirectOutcome {
     pub source: RedirectSource,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// URI scheme advertised by an MQTT 5 Server Reference.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RedirectScheme {
+    Mqtt,
+    Mqtts,
+    Ws,
+    Wss,
+}
+
+impl RedirectScheme {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mqtt => "mqtt",
+            Self::Mqtts => "mqtts",
+            Self::Ws => "ws",
+            Self::Wss => "wss",
+        }
+    }
+
+    const fn default_port(self) -> u16 {
+        match self {
+            Self::Mqtt => 1883,
+            Self::Mqtts => 8883,
+            Self::Ws => 80,
+            Self::Wss => 443,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum RedirectReferenceKind {
+    Authority {
+        host: String,
+        port: Option<u16>,
+    },
+    Uri {
+        scheme: RedirectScheme,
+        host: String,
+        port: Option<u16>,
+        resource_name: String,
+    },
+}
+
+/// One validated token from an MQTT 5 Server Reference.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RedirectReference {
-    host: String,
-    port: Option<u16>,
+    raw: String,
+    kind: RedirectReferenceKind,
 }
 
 impl RedirectReference {
+    /// Return the advertised token exactly as received.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// Return the URI scheme, or `None` for an authority reference.
+    #[must_use]
+    pub const fn scheme(&self) -> Option<RedirectScheme> {
+        match self.kind {
+            RedirectReferenceKind::Authority { .. } => None,
+            RedirectReferenceKind::Uri { scheme, .. } => Some(scheme),
+        }
+    }
+
     #[must_use]
     pub fn host(&self) -> &str {
-        &self.host
+        match &self.kind {
+            RedirectReferenceKind::Authority { host, .. }
+            | RedirectReferenceKind::Uri { host, .. } => host,
+        }
     }
 
     #[must_use]
     pub const fn port(&self) -> Option<u16> {
-        self.port
+        match self.kind {
+            RedirectReferenceKind::Authority { port, .. }
+            | RedirectReferenceKind::Uri { port, .. } => port,
+        }
+    }
+
+    /// Return the WebSocket request target, including its query string.
+    #[must_use]
+    pub fn websocket_resource_name(&self) -> Option<&str> {
+        match &self.kind {
+            RedirectReferenceKind::Uri {
+                scheme: RedirectScheme::Ws | RedirectScheme::Wss,
+                resource_name,
+                ..
+            } => Some(resource_name),
+            _ => None,
+        }
+    }
+
+    /// Check whether the current feature set can materialize this reference.
+    ///
+    /// This does not select TLS configuration or any other credentials.
+    pub fn ensure_supported(&self) -> Result<(), RedirectTargetError> {
+        match self.scheme() {
+            Some(RedirectScheme::Ws | RedirectScheme::Wss) if !cfg!(feature = "websocket") => {
+                Err(RedirectTargetError::WebsocketUnavailable)
+            }
+            Some(RedirectScheme::Mqtts | RedirectScheme::Wss)
+                if !cfg!(any(
+                    feature = "use-rustls-no-provider",
+                    feature = "use-native-tls"
+                )) =>
+            {
+                Err(RedirectTargetError::TlsUnavailable)
+            }
+            _ if self.is_srv_name() => Err(RedirectTargetError::SrvUnavailable),
+            _ => Ok(()),
+        }
     }
 
     pub(crate) fn is_srv_name(&self) -> bool {
-        let mut labels = self.host.split('.');
+        if self.scheme().is_some() {
+            return false;
+        }
+        let mut labels = self.host().split('.');
         matches!(
             (labels.next(), labels.next()),
             (Some(service), Some(protocol))
@@ -53,9 +156,67 @@ impl RedirectReference {
         )
     }
 
-    pub(crate) fn endpoint_key(&self, default_port: u16, transport: &Transport) -> String {
-        normalized_profile_key(&self.host, self.port.unwrap_or(default_port), transport)
+    fn effective_port(&self, transport: &Transport) -> Option<u16> {
+        self.port().or_else(|| {
+            self.scheme()
+                .map(RedirectScheme::default_port)
+                .or_else(|| transport.redirect_default_port())
+        })
     }
+
+    #[cfg(feature = "websocket")]
+    fn websocket_url(&self) -> Option<String> {
+        let scheme = self.scheme()?;
+        let resource = self.websocket_resource_name()?;
+        let host = uri_host(self.host());
+        let port = self
+            .port()
+            .map(|port| format!(":{port}"))
+            .unwrap_or_default();
+        Some(format!("{}://{host}{port}{resource}", scheme.as_str()))
+    }
+
+    pub(crate) fn endpoint_key(&self, transport: &Transport) -> Option<String> {
+        let port = self.effective_port(transport)?;
+        let endpoint = normalized_endpoint_key(self.host(), port);
+        match self.websocket_resource_name() {
+            Some(resource) => Some(format!(
+                "{}://{}{}",
+                transport.redirect_identity(),
+                endpoint,
+                normalize_resource_name(resource)
+            )),
+            None => Some(format!("{}://{}", transport.redirect_identity(), endpoint)),
+        }
+    }
+}
+
+pub(crate) fn normalized_broker_key(broker: &Broker, transport: &Transport) -> Option<String> {
+    if let Some((host, port)) = broker.tcp_address() {
+        return Some(normalized_profile_key(host, port, transport));
+    }
+    #[cfg(feature = "websocket")]
+    if let Some(url) = broker.websocket_url() {
+        let uri = url.parse::<http::Uri>().ok()?;
+        let host = unbracket_host(uri.host()?).to_owned();
+        let port = uri
+            .port_u16()
+            .or_else(|| match transport.redirect_identity() {
+                "ws" => Some(80),
+                "wss" => Some(443),
+                _ => None,
+            })?;
+        let resource = uri
+            .path_and_query()
+            .map_or("/", http::uri::PathAndQuery::as_str);
+        return Some(format!(
+            "{}://{}{}",
+            transport.redirect_identity(),
+            normalized_endpoint_key(&host, port),
+            normalize_resource_name(resource)
+        ));
+    }
+    None
 }
 
 pub fn normalized_profile_key(host: &str, port: u16, transport: &Transport) -> String {
@@ -67,42 +228,66 @@ pub fn normalized_profile_key(host: &str, port: u16, transport: &Transport) -> S
 }
 
 pub fn normalized_endpoint_key(host: &str, port: u16) -> String {
-    let unbracketed = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    unbracketed.parse::<Ipv6Addr>().map_or_else(
+    let unbracketed = unbracket_host(host);
+    unbracketed.parse::<IpAddr>().map_or_else(
         |_| {
-            let host = host.to_ascii_lowercase();
+            let host = unbracketed.to_ascii_lowercase();
             let host = host.strip_suffix('.').unwrap_or(&host);
             format!("{host}:{port}")
         },
-        |address| format!("[{address}]:{port}"),
+        |address| match address {
+            IpAddr::V4(address) => format!("{address}:{port}"),
+            IpAddr::V6(address) => format!("[{address}]:{port}"),
+        },
     )
 }
 
+fn unbracket_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+#[cfg(feature = "websocket")]
+fn uri_host(host: &str) -> String {
+    if host.parse::<Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
+}
+
+#[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RedirectReferenceError {
     #[error("Server Reference is missing")]
     Missing,
     #[error("Server Reference contains an empty authority")]
     Empty,
-    #[error("URI schemes are not supported in Server Reference authorities")]
-    Scheme,
+    #[error("Server Reference uses unsupported URI scheme `{0}`")]
+    UnsupportedScheme(String),
+    #[error("Server Reference contains an invalid URI")]
+    InvalidUri,
     #[error("Server Reference authority contains a path, query, fragment, or user information")]
     NonAuthority,
+    #[error("Server Reference URI contains user information")]
+    UserInformation,
+    #[error("Server Reference URI contains a fragment")]
+    Fragment,
+    #[error("Server Reference URI contains a path or query not supported by its scheme")]
+    InvalidResource,
     #[error("Server Reference contains an invalid host")]
     InvalidHost,
     #[error("Server Reference contains an invalid port")]
     InvalidPort,
 }
 
-/// Parse the space-separated authority list described by MQTT 5 section 4.11.
+/// Parse the space-separated authority or absolute URI list described by MQTT 5 section 4.11.
 ///
 /// # Errors
 ///
 /// Returns a [`RedirectReferenceError`] if the value is missing, empty, or
-/// contains an invalid authority.
+/// contains an invalid reference.
 pub fn parse_server_references(
     value: Option<&str>,
 ) -> Result<Vec<RedirectReference>, RedirectReferenceError> {
@@ -112,14 +297,163 @@ pub fn parse_server_references(
     }
     value
         .split_ascii_whitespace()
-        .map(parse_authority)
+        .map(|reference| {
+            if reference.contains("://") {
+                parse_uri(reference)
+            } else {
+                parse_authority(reference)
+            }
+        })
         .collect()
 }
 
-fn parse_authority(authority: &str) -> Result<RedirectReference, RedirectReferenceError> {
-    if authority.contains("://") {
-        return Err(RedirectReferenceError::Scheme);
+fn parse_uri(raw: &str) -> Result<RedirectReference, RedirectReferenceError> {
+    if raw
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b'\\')
+    {
+        return Err(RedirectReferenceError::InvalidUri);
     }
+    validate_percent_triplets(raw)?;
+    if raw.contains('#') {
+        return Err(RedirectReferenceError::Fragment);
+    }
+
+    let (scheme, _) = raw
+        .split_once("://")
+        .ok_or(RedirectReferenceError::InvalidUri)?;
+    let scheme_name = scheme.to_ascii_lowercase();
+    let scheme = match scheme_name.as_str() {
+        "mqtt" => RedirectScheme::Mqtt,
+        "mqtts" => RedirectScheme::Mqtts,
+        "ws" => RedirectScheme::Ws,
+        "wss" => RedirectScheme::Wss,
+        _ if valid_scheme_name(scheme) => {
+            return Err(RedirectReferenceError::UnsupportedScheme(scheme_name));
+        }
+        _ => return Err(RedirectReferenceError::InvalidUri),
+    };
+
+    // `http::Uri` recognizes URI schemes case-insensitively but accepts only
+    // lowercase known forms reliably across versions, so normalize only the
+    // scheme before generic parsing while retaining `raw` for policy.
+    let normalized_input = format!("{}{}", scheme.as_str(), &raw[scheme_name.len()..]);
+    let uri = normalized_input
+        .parse::<http::Uri>()
+        .map_err(|_| classify_uri_parse_error(raw))?;
+    let authority = uri.authority().ok_or(RedirectReferenceError::InvalidHost)?;
+    if authority.as_str().contains('@') {
+        return Err(RedirectReferenceError::UserInformation);
+    }
+    let host = uri.host().ok_or(RedirectReferenceError::InvalidHost)?;
+    let host = validate_uri_host(host)?;
+    let port = parse_uri_port(authority.as_str(), uri.port_u16())?;
+
+    let (path, query) = match uri.path_and_query() {
+        Some(path_and_query) => (path_and_query.path(), path_and_query.query()),
+        None => ("", None),
+    };
+    let resource_name = match scheme {
+        RedirectScheme::Mqtt | RedirectScheme::Mqtts => {
+            if !matches!(path, "" | "/") || query.is_some() {
+                return Err(RedirectReferenceError::InvalidResource);
+            }
+            String::new()
+        }
+        RedirectScheme::Ws | RedirectScheme::Wss => uri
+            .path_and_query()
+            .map_or_else(|| "/".to_owned(), ToString::to_string),
+    };
+
+    Ok(RedirectReference {
+        raw: raw.to_owned(),
+        kind: RedirectReferenceKind::Uri {
+            scheme,
+            host,
+            port,
+            resource_name,
+        },
+    })
+}
+
+fn valid_scheme_name(scheme: &str) -> bool {
+    let mut bytes = scheme.bytes();
+    matches!(bytes.next(), Some(first) if first.is_ascii_alphabetic())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn classify_uri_parse_error(raw: &str) -> RedirectReferenceError {
+    let authority = raw
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?']).next().unwrap_or(rest))
+        .unwrap_or_default();
+    if authority.rsplit_once(':').is_some_and(|(_, port)| {
+        !authority.ends_with(']')
+            && (port.is_empty() || port.bytes().all(|byte| byte.is_ascii_digit()))
+    }) {
+        RedirectReferenceError::InvalidPort
+    } else {
+        RedirectReferenceError::InvalidUri
+    }
+}
+
+fn validate_uri_host(host: &str) -> Result<String, RedirectReferenceError> {
+    let bracketed = host.starts_with('[');
+    let host = unbracket_host(host);
+    if host.is_empty() {
+        return Err(RedirectReferenceError::InvalidHost);
+    }
+    if bracketed {
+        host.parse::<Ipv6Addr>()
+            .map_err(|_| RedirectReferenceError::InvalidHost)?;
+    } else if host.contains(':')
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return Err(RedirectReferenceError::InvalidHost);
+    }
+    Ok(host.to_ascii_lowercase())
+}
+
+fn parse_uri_port(
+    authority: &str,
+    parsed: Option<u16>,
+) -> Result<Option<u16>, RedirectReferenceError> {
+    let suffix = if let Some(bracket_end) = authority.rfind(']') {
+        &authority[bracket_end + 1..]
+    } else {
+        authority.rsplit_once(':').map_or("", |(_, suffix)| suffix)
+    };
+    if authority.ends_with(':') || (!suffix.is_empty() && parsed.is_none()) {
+        return Err(RedirectReferenceError::InvalidPort);
+    }
+    if parsed == Some(0) {
+        return Err(RedirectReferenceError::InvalidPort);
+    }
+    Ok(parsed)
+}
+
+fn validate_percent_triplets(value: &str) -> Result<(), RedirectReferenceError> {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return Err(RedirectReferenceError::InvalidUri);
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn parse_authority(authority: &str) -> Result<RedirectReference, RedirectReferenceError> {
     if authority
         .chars()
         .any(|character| matches!(character, '/' | '?' | '#' | '@'))
@@ -127,7 +461,7 @@ fn parse_authority(authority: &str) -> Result<RedirectReference, RedirectReferen
         return Err(RedirectReferenceError::NonAuthority);
     }
 
-    if let Some(bracketed) = authority.strip_prefix('[') {
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
         let (host, suffix) = bracketed
             .split_once(']')
             .ok_or(RedirectReferenceError::InvalidHost)?;
@@ -142,36 +476,33 @@ fn parse_authority(authority: &str) -> Result<RedirectReference, RedirectReferen
                     .ok_or(RedirectReferenceError::InvalidPort)?,
             )?)
         };
-        return Ok(RedirectReference {
-            host: host.to_ascii_lowercase(),
-            port,
-        });
-    }
-
-    if authority.contains('[') || authority.contains(']') {
-        return Err(RedirectReferenceError::InvalidHost);
-    }
-
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => {
-            if host.contains(':') {
-                return Err(RedirectReferenceError::InvalidHost);
-            }
-            (host, Some(parse_port(port)?))
+        (host.to_ascii_lowercase(), port)
+    } else {
+        if authority.contains('[') || authority.contains(']') {
+            return Err(RedirectReferenceError::InvalidHost);
         }
-        None => (authority, None),
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => {
+                if host.contains(':') {
+                    return Err(RedirectReferenceError::InvalidHost);
+                }
+                (host, Some(parse_port(port)?))
+            }
+            None => (authority, None),
+        };
+        if host.is_empty()
+            || !host.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+            })
+        {
+            return Err(RedirectReferenceError::InvalidHost);
+        }
+        (host.to_ascii_lowercase(), port)
     };
-    if host.is_empty()
-        || !host.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-        })
-    {
-        return Err(RedirectReferenceError::InvalidHost);
-    }
 
     Ok(RedirectReference {
-        host: host.to_ascii_lowercase(),
-        port,
+        raw: authority.to_owned(),
+        kind: RedirectReferenceKind::Authority { host, port },
     })
 }
 
@@ -183,6 +514,84 @@ fn parse_port(value: &str) -> Result<u16, RedirectReferenceError> {
         return Err(RedirectReferenceError::InvalidPort);
     }
     Ok(port)
+}
+
+fn normalize_resource_name(resource: &str) -> String {
+    let (path, query) = resource
+        .split_once('?')
+        .map_or((resource, None), |(path, query)| (path, Some(query)));
+    let path = remove_dot_segments(if path.is_empty() { "/" } else { path });
+    let mut normalized = normalize_percent_encoding(&path);
+    if let Some(query) = query {
+        normalized.push('?');
+        normalized.push_str(&normalize_percent_encoding(query));
+    }
+    normalized
+}
+
+fn normalize_percent_encoding(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && bytes[index + 1].is_ascii_hexdigit()
+            && bytes[index + 2].is_ascii_hexdigit()
+        {
+            let high = (bytes[index + 1] as char).to_digit(16).expect("hex digit");
+            let low = (bytes[index + 2] as char).to_digit(16).expect("hex digit");
+            let decoded = ((high << 4) | low) as u8;
+            if decoded.is_ascii_alphanumeric() || matches!(decoded, b'-' | b'.' | b'_' | b'~') {
+                output.push(decoded as char);
+            } else {
+                output.push('%');
+                output.push(char::from(bytes[index + 1]).to_ascii_uppercase());
+                output.push(char::from(bytes[index + 2]).to_ascii_uppercase());
+            }
+            index += 3;
+        } else {
+            output.push(bytes[index] as char);
+            index += 1;
+        }
+    }
+    output
+}
+
+fn remove_dot_segments(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut segments = Vec::new();
+    let source: Vec<_> = path.split('/').collect();
+    for (index, segment) in source.iter().copied().enumerate() {
+        if absolute && index == 0 {
+            continue;
+        }
+        match segment {
+            "." => {
+                if index + 1 == source.len() {
+                    segments.push("");
+                }
+            }
+            ".." => {
+                segments.pop();
+                if index + 1 == source.len() {
+                    segments.push("");
+                }
+            }
+            segment => segments.push(segment),
+        }
+    }
+    let mut output = if absolute {
+        "/".to_owned()
+    } else {
+        String::new()
+    };
+    output.push_str(&segments.join("/"));
+    if output.is_empty() {
+        "/".to_owned()
+    } else {
+        output
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -202,10 +611,26 @@ pub enum RedirectSession {
     },
 }
 
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RedirectTargetError {
+    #[error("Server Reference scheme {scheme:?} is incompatible with the selected transport")]
+    TransportMismatch { scheme: Option<RedirectScheme> },
+    #[error("Server Reference requires the disabled `websocket` feature")]
+    WebsocketUnavailable,
+    #[error("Server Reference requires an enabled TLS backend and explicit TLS configuration")]
+    TlsUnavailable,
+    #[error("Server Reference names an unsupported SRV target")]
+    SrvUnavailable,
+    #[error("Server Reference did not provide a selectable target")]
+    NoTarget,
+}
+
 /// Application-approved connection profile for one advertised redirect target.
 #[derive(Clone)]
 pub struct RedirectTargetProfile {
     reference: RedirectReference,
+    broker: Broker,
     transport: Transport,
     client_id: RedirectClientId,
     session: RedirectSession,
@@ -216,17 +641,56 @@ pub struct RedirectTargetProfile {
 
 impl RedirectTargetProfile {
     /// Construct a profile which clears authentication and starts an isolated clean session.
-    #[must_use]
-    pub const fn isolated(reference: RedirectReference, transport: Transport) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedirectTargetError`] when the reference cannot be materialized by this build or
+    /// is incompatible with `transport`.
+    pub fn isolated(
+        reference: RedirectReference,
+        transport: Transport,
+    ) -> Result<Self, RedirectTargetError> {
+        reference.ensure_supported()?;
+        let port =
+            reference
+                .effective_port(&transport)
+                .ok_or(RedirectTargetError::TransportMismatch {
+                    scheme: reference.scheme(),
+                })?;
+        let broker = match reference.scheme() {
+            None | Some(RedirectScheme::Mqtt | RedirectScheme::Mqtts) => {
+                Broker::tcp(reference.host().to_owned(), port)
+            }
+            #[cfg(feature = "websocket")]
+            Some(RedirectScheme::Ws | RedirectScheme::Wss) => Broker::redirect_websocket(
+                reference.websocket_url().expect("websocket URI reference"),
+                matches!(reference.scheme(), Some(RedirectScheme::Wss)),
+            ),
+            #[cfg(not(feature = "websocket"))]
+            Some(RedirectScheme::Ws | RedirectScheme::Wss) => unreachable!("checked above"),
+        };
+        if !reference.transport_matches_scheme(&transport)
+            || !broker_transport_matches(&broker, &transport)
+        {
+            return Err(RedirectTargetError::TransportMismatch {
+                scheme: reference.scheme(),
+            });
+        }
+        Ok(Self {
             reference,
+            broker,
             transport,
             client_id: RedirectClientId::Fresh,
             session: RedirectSession::Isolated,
             authentication: None,
             reuse_authenticator: false,
             reuse_network_credentials: false,
-        }
+        })
+    }
+
+    #[must_use]
+    pub fn broker(&self) -> &Broker {
+        &self.broker
     }
 
     #[must_use]
@@ -241,7 +705,6 @@ impl RedirectTargetProfile {
         self
     }
 
-    /// Reuse the supplied current CONNECT authentication and enhanced authenticator.
     #[must_use]
     pub fn reuse_authentication(mut self, auth: ConnectAuth) -> Self {
         self.authentication = Some(auth);
@@ -249,7 +712,6 @@ impl RedirectTargetProfile {
         self
     }
 
-    /// Replace CONNECT authentication without reusing the enhanced authenticator.
     #[must_use]
     pub fn authentication(mut self, auth: ConnectAuth) -> Self {
         self.authentication = Some(auth);
@@ -257,10 +719,6 @@ impl RedirectTargetProfile {
         self
     }
 
-    /// Explicitly retain proxy configuration and websocket request modifiers.
-    ///
-    /// These hooks can carry endpoint credentials, so isolated profiles clear
-    /// them unless this method is called.
     #[must_use]
     pub const fn reuse_network_credentials(mut self) -> Self {
         self.reuse_network_credentials = true;
@@ -274,10 +732,6 @@ impl RedirectTargetProfile {
 
     pub(crate) fn transport(&self) -> Transport {
         self.transport.clone()
-    }
-
-    pub(crate) const fn default_port(&self) -> Option<u16> {
-        self.transport.redirect_default_port()
     }
 
     pub(crate) const fn client_id_policy(&self) -> &RedirectClientId {
@@ -301,11 +755,30 @@ impl RedirectTargetProfile {
     }
 }
 
+impl RedirectReference {
+    fn transport_matches_scheme(&self, transport: &Transport) -> bool {
+        match self.scheme() {
+            None => {
+                matches!(transport, Transport::Tcp)
+                    || cfg!(any(
+                        feature = "use-rustls-no-provider",
+                        feature = "use-native-tls"
+                    )) && transport.redirect_identity() == "tls"
+            }
+            Some(RedirectScheme::Mqtt) => matches!(transport, Transport::Tcp),
+            Some(RedirectScheme::Mqtts) => transport.redirect_identity() == "tls",
+            Some(RedirectScheme::Ws) => transport.redirect_identity() == "ws",
+            Some(RedirectScheme::Wss) => transport.redirect_identity() == "wss",
+        }
+    }
+}
+
 impl Debug for RedirectTargetProfile {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RedirectTargetProfile")
             .field("reference", &self.reference)
+            .field("broker", &self.broker)
             .field("client_id", &self.client_id)
             .field("session", &self.session)
             .field("authentication_configured", &self.authentication.is_some())
@@ -336,7 +809,8 @@ impl RedirectDecision {
     }
 }
 
-type RedirectHandler = dyn for<'a> Fn(&RedirectContext<'a>) -> RedirectDecision + Send + Sync;
+pub type RedirectPolicyResult = Result<RedirectDecision, RedirectTargetError>;
+type RedirectHandler = dyn for<'a> Fn(&RedirectContext<'a>) -> RedirectPolicyResult + Send + Sync;
 
 /// Opt-in bounded application policy for MQTT 5 redirects.
 #[derive(Clone)]
@@ -353,6 +827,17 @@ impl RedirectPolicy {
     {
         Self {
             max_attempts,
+            handler: Arc::new(move |context| Ok(handler(context))),
+        }
+    }
+
+    #[must_use]
+    pub fn try_new<F>(max_attempts: NonZeroUsize, handler: F) -> Self
+    where
+        F: for<'a> Fn(&RedirectContext<'a>) -> RedirectPolicyResult + Send + Sync + 'static,
+    {
+        Self {
+            max_attempts,
             handler: Arc::new(handler),
         }
     }
@@ -362,7 +847,7 @@ impl RedirectPolicy {
         self.max_attempts
     }
 
-    pub(crate) fn decide(&self, context: &RedirectContext<'_>) -> RedirectDecision {
+    pub(crate) fn decide(&self, context: &RedirectContext<'_>) -> RedirectPolicyResult {
         (self.handler)(context)
     }
 }
@@ -384,8 +869,8 @@ pub enum RedirectFailure {
     Rejected,
     #[error("invalid Server Reference: {0}")]
     InvalidReference(#[from] RedirectReferenceError),
-    #[error("redirect target is incompatible with the current broker form")]
-    UnsupportedTarget,
+    #[error("redirect target could not be materialized: {0}")]
+    Target(#[from] RedirectTargetError),
     #[error("redirect policy selected a target not present in Server Reference")]
     UnadvertisedTarget,
     #[error("redirect loop detected")]
@@ -408,53 +893,241 @@ pub struct RedirectError {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "use-rustls-no-provider")]
+    fn test_tls_transport() -> Transport {
+        Transport::tls(Vec::new(), None, None)
+    }
+
+    #[cfg(all(feature = "use-native-tls", not(feature = "use-rustls-no-provider")))]
+    fn test_tls_transport() -> Transport {
+        Transport::tls_with_default_config()
+    }
+
+    #[cfg(all(feature = "websocket", feature = "use-rustls-no-provider"))]
+    fn test_wss_transport() -> Transport {
+        Transport::wss(Vec::new(), None, None)
+    }
+
+    #[cfg(all(
+        feature = "websocket",
+        feature = "use-native-tls",
+        not(feature = "use-rustls-no-provider")
+    ))]
+    fn test_wss_transport() -> Transport {
+        Transport::wss_with_default_config()
+    }
+
     #[test]
-    fn parses_mqtt_authority_examples() {
+    fn parses_authorities_and_absolute_uris() {
         let references = parse_server_references(Some(
-            "myserver.xyz.org myserver.xyz.org:8883 10.10.151.22:8883 [fe80::9610:3eff:fe1c]:1883",
+            "myserver.xyz.org myserver.xyz.org:8883 10.10.151.22:8883 [fe80::9610:3eff:fe1c]:1883 MQTT://BROKER.EXAMPLE mqtts://secure.example/ ws://socket.example/mqtt/v5?tenant=green wss://[2001:db8::1]:8443",
         ))
         .unwrap();
-
-        assert_eq!(references.len(), 4);
+        assert_eq!(references.len(), 8);
         assert_eq!(references[0].host(), "myserver.xyz.org");
-        assert_eq!(references[0].port(), None);
-        assert_eq!(references[1].port(), Some(8883));
-        assert_eq!(references[2].host(), "10.10.151.22");
         assert_eq!(references[3].host(), "fe80::9610:3eff:fe1c");
-        assert_eq!(references[3].port(), Some(1883));
+        assert_eq!(references[4].scheme(), Some(RedirectScheme::Mqtt));
+        assert_eq!(references[4].port(), None);
         assert_eq!(
-            parse_server_references(Some("_mqtt._tcp.example.com")).unwrap()[0].host(),
-            "_mqtt._tcp.example.com"
+            references[6].websocket_resource_name(),
+            Some("/mqtt/v5?tenant=green")
         );
-        assert!(parse_server_references(Some("_mqtt._tcp.example.com")).unwrap()[0].is_srv_name());
+        assert_eq!(references[7].host(), "2001:db8::1");
+        assert_eq!(references[7].websocket_resource_name(), Some("/"));
+    }
+
+    #[test]
+    fn retains_authority_srv_behavior() {
+        let reference = &parse_server_references(Some("_mqtt._tcp.example.com")).unwrap()[0];
+        assert!(reference.is_srv_name());
+        assert_eq!(
+            reference.ensure_supported(),
+            Err(RedirectTargetError::SrvUnavailable)
+        );
         assert!(!parse_server_references(Some("broker.example")).unwrap()[0].is_srv_name());
     }
 
     #[test]
-    fn rejects_missing_empty_malformed_and_scheme_references() {
+    fn applies_scheme_specific_resource_rules() {
+        for accepted in [
+            "mqtt://broker.example",
+            "mqtt://broker.example/",
+            "mqtts://broker.example/",
+            "ws://broker.example",
+            "ws://broker.example?tenant=green",
+            "wss://broker.example/mqtt?tenant=green",
+        ] {
+            parse_server_references(Some(accepted))
+                .unwrap_or_else(|error| panic!("{accepted}: {error}"));
+        }
+        for rejected in [
+            "mqtt://broker.example/mqtt",
+            "mqtt://broker.example?tenant=green",
+            "mqtts://broker.example/#fragment",
+        ] {
+            assert!(
+                parse_server_references(Some(rejected)).is_err(),
+                "{rejected}"
+            );
+        }
+
+        let reference = parse_server_references(Some("WS://BROKER.EXAMPLE?tenant=green"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(reference.raw(), "WS://BROKER.EXAMPLE?tenant=green");
+        assert_eq!(reference.scheme(), Some(RedirectScheme::Ws));
+        assert_eq!(reference.host(), "broker.example");
+        assert_eq!(reference.websocket_resource_name(), Some("/?tenant=green"));
+    }
+
+    #[test]
+    fn rejects_invalid_uri_security_components() {
         assert_eq!(
-            parse_server_references(None),
-            Err(RedirectReferenceError::Missing)
+            parse_server_references(Some("ftp://broker.example")),
+            Err(RedirectReferenceError::UnsupportedScheme("ftp".to_owned()))
         );
+        for invalid in [
+            "ws://user@broker.example/mqtt",
+            "ws://broker.example/#fragment",
+            "ws://broker.example:0/mqtt",
+            "ws://broker.example:/mqtt",
+            "ws://broker.example:65536/mqtt",
+            "ws://fe80::1/mqtt",
+            "ws://broker_example/mqtt",
+            "ws://broker.example/bad%2",
+            "ws://broker.example\\mqtt",
+        ] {
+            assert!(parse_server_references(Some(invalid)).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn normalizes_websocket_loop_resources() {
         assert_eq!(
-            parse_server_references(Some("  ")),
-            Err(RedirectReferenceError::Empty)
+            normalize_resource_name("/a/./b/../c/%7euser?x=%2f"),
+            "/a/c/~user?x=%2F"
         );
+        assert_eq!(normalize_resource_name("//a///b"), "//a///b");
+    }
+
+    #[test]
+    fn materializes_mqtt_and_authority_profiles() {
+        let mqtt = parse_server_references(Some("mqtt://BROKER.EXAMPLE"))
+            .unwrap()
+            .remove(0);
+        let profile = RedirectTargetProfile::isolated(mqtt, Transport::tcp()).unwrap();
         assert_eq!(
-            parse_server_references(Some("mqtt://broker.example")),
-            Err(RedirectReferenceError::Scheme)
+            profile.broker().tcp_address(),
+            Some(("broker.example", 1883))
         );
+
+        let authority = parse_server_references(Some("broker.example"))
+            .unwrap()
+            .remove(0);
+        let profile = RedirectTargetProfile::isolated(authority, Transport::tcp()).unwrap();
         assert_eq!(
-            parse_server_references(Some("broker.example:0")),
-            Err(RedirectReferenceError::InvalidPort)
+            profile.broker().tcp_address(),
+            Some(("broker.example", 1883))
         );
+
+        let mqtts = parse_server_references(Some("mqtts://broker.example"))
+            .unwrap()
+            .remove(0);
+        assert!(matches!(
+            RedirectTargetProfile::isolated(mqtts, Transport::tcp()),
+            Err(RedirectTargetError::TransportMismatch {
+                scheme: Some(RedirectScheme::Mqtts)
+            }) | Err(RedirectTargetError::TlsUnavailable)
+        ));
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn materializes_websocket_profile_with_exact_resource() {
+        let reference = parse_server_references(Some(
+            "ws://BROKER.EXAMPLE:8080/mqtt/%7ev5?tenant=green%2fblue",
+        ))
+        .unwrap()
+        .remove(0);
+        let profile = RedirectTargetProfile::isolated(reference, Transport::ws()).unwrap();
         assert_eq!(
-            parse_server_references(Some("user@broker.example")),
-            Err(RedirectReferenceError::NonAuthority)
+            profile.broker().websocket_url(),
+            Some("ws://broker.example:8080/mqtt/%7ev5?tenant=green%2fblue")
         );
+        assert!(matches!(
+            RedirectTargetProfile::isolated(
+                parse_server_references(Some("ws://broker.example"))
+                    .unwrap()
+                    .remove(0),
+                Transport::tcp()
+            ),
+            Err(RedirectTargetError::TransportMismatch {
+                scheme: Some(RedirectScheme::Ws)
+            })
+        ));
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    #[test]
+    fn reports_disabled_websocket_feature_when_selected() {
+        let reference = parse_server_references(Some("ws://broker.example/mqtt"))
+            .unwrap()
+            .remove(0);
         assert_eq!(
-            parse_server_references(Some("fe80::1")),
-            Err(RedirectReferenceError::InvalidHost)
+            RedirectTargetProfile::isolated(reference, Transport::tcp()).unwrap_err(),
+            RedirectTargetError::WebsocketUnavailable
+        );
+    }
+
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    #[test]
+    fn materializes_secure_mqtt_with_explicit_tls() {
+        let mqtt = parse_server_references(Some("mqtt://plain.example"))
+            .unwrap()
+            .remove(0);
+        let reference = parse_server_references(Some("mqtts://secure.example"))
+            .unwrap()
+            .remove(0);
+        let transport = test_tls_transport();
+        assert!(matches!(
+            RedirectTargetProfile::isolated(mqtt, transport.clone()),
+            Err(RedirectTargetError::TransportMismatch {
+                scheme: Some(RedirectScheme::Mqtt)
+            })
+        ));
+        let profile = RedirectTargetProfile::isolated(reference, transport).unwrap();
+        assert_eq!(
+            profile.broker().tcp_address(),
+            Some(("secure.example", 8883))
+        );
+    }
+
+    #[cfg(all(
+        feature = "websocket",
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls")
+    ))]
+    #[test]
+    fn materializes_secure_websocket_with_explicit_tls() {
+        let reference = parse_server_references(Some("wss://secure.example/mqtt?tenant=green"))
+            .unwrap()
+            .remove(0);
+        let transport = test_wss_transport();
+        let profile = RedirectTargetProfile::isolated(reference, transport).unwrap();
+        assert_eq!(
+            profile.broker().websocket_url(),
+            Some("wss://secure.example/mqtt?tenant=green")
+        );
+    }
+
+    #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
+    #[test]
+    fn reports_disabled_tls_feature_when_selected() {
+        let reference = parse_server_references(Some("mqtts://secure.example"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            RedirectTargetProfile::isolated(reference, Transport::tcp()).unwrap_err(),
+            RedirectTargetError::TlsUnavailable
         );
     }
 }
