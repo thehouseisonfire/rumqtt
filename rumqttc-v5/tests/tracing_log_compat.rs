@@ -57,6 +57,6 @@ async fn tracing_events_fall_back_to_one_log_record_each() {
             .any(|(_, message)| message.contains("attempt_id=1"))
     );
     assert!(records.iter().any(|(_, message)| {
-        message.contains("phase=\"connection\"") && message.contains("error_kind=\"timeout\"")
+        message.contains("phase=\"transport\"") && message.contains("error_kind=\"timeout\"")
     }));
 }

@@ -1873,10 +1873,11 @@ impl MqttState {
         // [MQTT-3.1.2-27] If Topic Alias Maximum is absent or zero, the
         // Server MUST NOT send any Topic Aliases to the Client.
         if let Some(alias) = topic_alias
-            && alias > self.topic_aliases.client_max {
-                let disconnect = Disconnect::new(DisconnectReasonCode::TopicAliasInvalid);
-                return Ok(Some(self.outgoing_disconnect(disconnect)));
-            }
+            && alias > self.topic_aliases.client_max
+        {
+            let disconnect = Disconnect::new(DisconnectReasonCode::TopicAliasInvalid);
+            return Ok(Some(self.outgoing_disconnect(disconnect)));
+        }
 
         if !publish.topic.is_empty() {
             if let Some(alias) = topic_alias {
@@ -2198,20 +2199,21 @@ impl MqttState {
 
     fn fail_auth_exchange(&mut self, notice_error: AuthNoticeError, callback_error: AuthError) {
         if let Some((kind, method)) = self.auth.active_exchange()
-            && let Some(authenticator) = self.authenticator.clone() {
-                match authenticator.lock() {
-                    Ok(mut locked) => locked.failure(
-                        AuthContext {
-                            kind,
-                            method: &method,
-                        },
-                        callback_error,
-                    ),
-                    Err(_) => debug!(
-                        "authenticator lock poisoned while failing auth exchange: {notice_error:?}"
-                    ),
-                }
+            && let Some(authenticator) = self.authenticator.clone()
+        {
+            match authenticator.lock() {
+                Ok(mut locked) => locked.failure(
+                    AuthContext {
+                        kind,
+                        method: &method,
+                    },
+                    callback_error,
+                ),
+                Err(_) => debug!(
+                    "authenticator lock poisoned while failing auth exchange: {notice_error:?}"
+                ),
             }
+        }
         self.auth.reset(notice_error, &mut self.events);
     }
 
@@ -2738,12 +2740,13 @@ impl MqttState {
 
     fn check_collision(&mut self, pkid: u16) -> Option<(Publish, Option<PublishNoticeTx>)> {
         if let Some(publish) = &self.collision
-            && publish.pkid == pkid {
-                return self
-                    .collision
-                    .take()
-                    .map(|publish| (publish, self.collision_notice.take()));
-            }
+            && publish.pkid == pkid
+        {
+            return self
+                .collision
+                .take()
+                .map(|publish| (publish, self.collision_notice.take()));
+        }
 
         None
     }
@@ -3075,44 +3078,46 @@ impl MqttState {
         let mut replay_publish = publish.clone();
         if replay_publish.topic.is_empty()
             && let Some(alias) = Self::publish_topic_alias(&replay_publish)
-                && let Some(topic) = self.topic_aliases.outgoing.get(&alias) {
-                    topic.clone_into(&mut replay_publish.topic);
-                }
+            && let Some(topic) = self.topic_aliases.outgoing.get(&alias)
+        {
+            topic.clone_into(&mut replay_publish.topic);
+        }
 
         replay_publish
     }
 
     fn validate_outgoing_topic_alias(&self, publish: &Publish) -> Result<(), StateError> {
         if let Some(alias) = Self::publish_topic_alias(publish)
-            && (alias == 0 || alias > self.topic_aliases.broker_max) {
-                // We MUST NOT send a Topic Alias of 0 or one greater than the
-                // broker's Topic Alias Maximum.
-                return Err(StateError::InvalidAlias {
-                    alias,
-                    max: self.topic_aliases.broker_max,
-                });
-            }
+            && (alias == 0 || alias > self.topic_aliases.broker_max)
+        {
+            // We MUST NOT send a Topic Alias of 0 or one greater than the
+            // broker's Topic Alias Maximum.
+            return Err(StateError::InvalidAlias {
+                alias,
+                max: self.topic_aliases.broker_max,
+            });
+        }
 
         Ok(())
     }
 
     fn record_outgoing_topic_alias(&mut self, publish: &Publish) {
         if !publish.topic.is_empty()
-            && let Some(alias) = Self::publish_topic_alias(publish) {
-                if let Some(previous_topic) = self
-                    .topic_aliases
-                    .outgoing
-                    .insert(alias, publish.topic.clone())
-                    && previous_topic != publish.topic {
-                        self.topic_aliases.auto_outgoing.remove(&previous_topic);
-                        self.topic_aliases.auto_lru.retain(|entry| *entry != alias);
-                    }
-                self.topic_aliases
-                    .auto_outgoing
-                    .retain(|topic, mapped_alias| {
-                        *mapped_alias != alias || topic == &publish.topic
-                    });
+            && let Some(alias) = Self::publish_topic_alias(publish)
+        {
+            if let Some(previous_topic) = self
+                .topic_aliases
+                .outgoing
+                .insert(alias, publish.topic.clone())
+                && previous_topic != publish.topic
+            {
+                self.topic_aliases.auto_outgoing.remove(&previous_topic);
+                self.topic_aliases.auto_lru.retain(|entry| *entry != alias);
             }
+            self.topic_aliases
+                .auto_outgoing
+                .retain(|topic, mapped_alias| *mapped_alias != alias || topic == &publish.topic);
+        }
     }
 
     pub(crate) fn persisted_session<'a>(
@@ -3227,9 +3232,12 @@ impl MqttState {
             self.outbound_pkid_in_use.insert(usize::from(pkid));
         }
         self.outbound_pkid_in_use.set(0, false);
-        let outbound_pkid_count = self.outbound_pkid_in_use.ones().count();
-        self.outbound_pkid_count = u16::try_from(outbound_pkid_count)
-            .expect("unique non-zero MQTT packet identifier count fits in u16");
+        // Every set bit represents a unique, non-zero `u16` packet identifier,
+        // so the count cannot exceed `u16::MAX`.
+        self.outbound_pkid_count = self
+            .outbound_pkid_in_use
+            .ones()
+            .fold(0_u16, |count, _| count + 1);
 
         session
             .replay

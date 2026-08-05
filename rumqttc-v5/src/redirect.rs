@@ -355,7 +355,7 @@ fn parse_uri(raw: &str) -> Result<RedirectReference, RedirectReferenceError> {
         return Err(RedirectReferenceError::Fragment);
     }
 
-    let (scheme, _) = raw
+    let (scheme, remainder) = raw
         .split_once("://")
         .ok_or(RedirectReferenceError::InvalidUri)?;
     let scheme_name = scheme.to_ascii_lowercase();
@@ -373,7 +373,7 @@ fn parse_uri(raw: &str) -> Result<RedirectReference, RedirectReferenceError> {
     // `http::Uri` recognizes URI schemes case-insensitively but accepts only
     // lowercase known forms reliably across versions, so normalize only the
     // scheme before generic parsing while retaining `raw` for policy.
-    let normalized_input = format!("{}{}", scheme.as_str(), &raw[scheme_name.len()..]);
+    let normalized_input = format!("{}://{remainder}", scheme.as_str());
     let uri = normalized_input
         .parse::<http::Uri>()
         .map_err(|_| classify_uri_parse_error(raw))?;
@@ -455,9 +455,9 @@ fn parse_uri_port(
     authority: &str,
     parsed: Option<u16>,
 ) -> Result<Option<u16>, RedirectReferenceError> {
-    let suffix = authority.rfind(']').map_or_else(
+    let suffix = authority.rsplit_once(']').map_or_else(
         || authority.rsplit_once(':').map_or("", |(_, suffix)| suffix),
-        |bracket_end| &authority[bracket_end + 1..],
+        |(_, suffix)| suffix,
     );
     if authority.ends_with(':') || (!suffix.is_empty() && parsed.is_none()) {
         return Err(RedirectReferenceError::InvalidPort);
@@ -557,7 +557,9 @@ fn parse_srv_owner(host: &str) -> Option<SrvOwner> {
         || !service.starts_with('_')
         || service.len() == 1
         || service.len() > 63
-        || !service[1..]
+        || !service
+            .strip_prefix('_')
+            .unwrap_or_default()
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         || !protocol.eq_ignore_ascii_case("_tcp")

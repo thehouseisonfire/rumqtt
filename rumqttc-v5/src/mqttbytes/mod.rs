@@ -211,12 +211,13 @@ pub fn check(stream: Iter<u8>, max_packet_size: Option<u32>) -> Result<FixedHead
     // Disconnect them before reading all that data
     let packet_size = fixed_header.frame_length();
     if let Some(max_size) = max_packet_size
-        && packet_size > max_size as usize {
-            return Err(Error::PayloadSizeLimitExceeded {
-                pkt_size: packet_size,
-                max: max_size,
-            });
-        }
+        && packet_size > max_size as usize
+    {
+        return Err(Error::PayloadSizeLimitExceeded {
+            pkt_size: packet_size,
+            max: max_size,
+        });
+    }
 
     let frame_length = fixed_header.frame_length();
     if stream_len < frame_length {

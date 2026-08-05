@@ -191,12 +191,13 @@ impl Packet {
     pub fn write(&self, write: &mut BytesMut, max_size: Option<u32>) -> Result<usize, Error> {
         transactional_write(write, |write| {
             if let Some(max_size) = max_size
-                && self.size() > max_size as usize {
-                    return Err(Error::OutgoingPacketTooLarge {
-                        pkt_size: u32::try_from(self.size()).unwrap_or(u32::MAX),
-                        max: max_size,
-                    });
-                }
+                && self.size() > max_size as usize
+            {
+                return Err(Error::OutgoingPacketTooLarge {
+                    pkt_size: u32::try_from(self.size()).unwrap_or(u32::MAX),
+                    max: max_size,
+                });
+            }
 
             match self {
                 Self::Auth(auth) => auth.write(write),

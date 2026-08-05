@@ -123,9 +123,10 @@ impl AuthLifecycle {
         };
         let method = self.state.method().unwrap_or_default().to_owned();
         if let AuthState::Reauth { notice, .. } = &mut self.state
-            && let Some(notice) = notice.take() {
-                notice.error(reason.clone());
-            }
+            && let Some(notice) = notice.take()
+        {
+            notice.error(reason.clone());
+        }
         vec![Event::Auth(AuthEvent::Failed {
             kind,
             method,
@@ -249,9 +250,10 @@ impl AuthLifecycle {
         events: &mut VecDeque<Event>,
     ) {
         if let AuthState::Reauth { notice, .. } = &mut self.state
-            && let Some(notice) = notice.take() {
-                notice.success(AuthOutcome::Success);
-            }
+            && let Some(notice) = notice.take()
+        {
+            notice.success(AuthOutcome::Success);
+        }
         events.push_back(Event::Auth(AuthEvent::Succeeded { kind, method }));
         self.state = AuthState::Idle;
     }

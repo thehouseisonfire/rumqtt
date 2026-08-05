@@ -3140,11 +3140,12 @@ fn validate_connack_response_information(
     let request_response_info = options.request_response_info().unwrap_or(0);
     if request_response_info == 0
         && let Some(props) = &connack.properties
-            && props.response_information.is_some() {
-                return Err(StateError::Deserialization(
-                    super::mqttbytes::Error::ProtocolError,
-                ));
-            }
+        && props.response_information.is_some()
+    {
+        return Err(StateError::Deserialization(
+            super::mqttbytes::Error::ProtocolError,
+        ));
+    }
 
     Ok(())
 }
@@ -3166,10 +3167,9 @@ async fn send_protocol_error_disconnect(network: &mut Network) {
         )))
         .await
         .is_ok();
-    if write_succeeded
-        && let Err(error) = network.flush().await {
-            warn!("ignoring protocol error disconnect flush failure: {error:?}");
-        }
+    if write_succeeded && let Err(error) = network.flush().await {
+        warn!("ignoring protocol error disconnect flush failure: {error:?}");
+    }
 }
 
 const fn should_replay_after_reconnect(request: &Request) -> bool {

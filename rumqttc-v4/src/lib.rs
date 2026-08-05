@@ -886,7 +886,10 @@ impl MqttOptions {
     ///
     /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if
     /// `clean_session` is false when `client_id` is empty.
-    pub const fn try_set_clean_session(&mut self, clean_session: bool) -> Result<&mut Self, ConfigError> {
+    pub const fn try_set_clean_session(
+        &mut self,
+        clean_session: bool,
+    ) -> Result<&mut Self, ConfigError> {
         if self.client_id.is_empty() && !clean_session {
             return Err(ConfigError::PersistentSessionRequiresClientId);
         }
@@ -922,7 +925,10 @@ impl MqttOptions {
     ///
     /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if mode is
     /// [`SessionMode::Persistent`] when `client_id` is empty.
-    pub const fn try_set_session_mode(&mut self, mode: SessionMode) -> Result<&mut Self, ConfigError> {
+    pub const fn try_set_session_mode(
+        &mut self,
+        mode: SessionMode,
+    ) -> Result<&mut Self, ConfigError> {
         self.try_set_clean_session(matches!(mode, SessionMode::Clean))
     }
 
