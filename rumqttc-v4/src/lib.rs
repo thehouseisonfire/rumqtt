@@ -498,7 +498,7 @@ impl Broker {
     }
 
     #[must_use]
-    pub fn tcp_address(&self) -> Option<(&str, u16)> {
+    pub const fn tcp_address(&self) -> Option<(&str, u16)> {
         match &self.inner {
             BrokerInner::Tcp { host, port } => Some((host.as_str(), *port)),
             #[cfg(unix)]
@@ -521,7 +521,7 @@ impl Broker {
 
     #[cfg(feature = "websocket")]
     #[must_use]
-    pub fn websocket_url(&self) -> Option<&str> {
+    pub const fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
             BrokerInner::Websocket { url, .. } => Some(url.as_str()),
             BrokerInner::Tcp { .. } => None,
@@ -764,7 +764,7 @@ impl MqttOptions {
     ///
     /// Returns [`ConfigError`] for invalid broker/transport combinations or
     /// option values that can be detected before opening a network connection.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    pub const fn validate(&self) -> Result<(), ConfigError> {
         if !broker_transport_matches(&self.broker, &self.transport) {
             return Err(ConfigError::BrokerTransportMismatch);
         }
@@ -886,7 +886,7 @@ impl MqttOptions {
     ///
     /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if
     /// `clean_session` is false when `client_id` is empty.
-    pub fn try_set_clean_session(&mut self, clean_session: bool) -> Result<&mut Self, ConfigError> {
+    pub const fn try_set_clean_session(&mut self, clean_session: bool) -> Result<&mut Self, ConfigError> {
         if self.client_id.is_empty() && !clean_session {
             return Err(ConfigError::PersistentSessionRequiresClientId);
         }
@@ -922,7 +922,7 @@ impl MqttOptions {
     ///
     /// Returns [`ConfigError::PersistentSessionRequiresClientId`] if mode is
     /// [`SessionMode::Persistent`] when `client_id` is empty.
-    pub fn try_set_session_mode(&mut self, mode: SessionMode) -> Result<&mut Self, ConfigError> {
+    pub const fn try_set_session_mode(&mut self, mode: SessionMode) -> Result<&mut Self, ConfigError> {
         self.try_set_clean_session(matches!(mode, SessionMode::Clean))
     }
 

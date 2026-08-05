@@ -466,7 +466,7 @@ impl Broker {
     }
 
     #[cfg(feature = "websocket")]
-    pub(crate) fn redirect_websocket(url: String, secure: bool) -> Self {
+    pub(crate) const fn redirect_websocket(url: String, secure: bool) -> Self {
         Self {
             inner: BrokerInner::Websocket { url, secure },
         }
@@ -495,7 +495,7 @@ impl Broker {
     }
 
     #[must_use]
-    pub fn tcp_address(&self) -> Option<(&str, u16)> {
+    pub const fn tcp_address(&self) -> Option<(&str, u16)> {
         match &self.inner {
             BrokerInner::Tcp { host, port } => Some((host.as_str(), *port)),
             #[cfg(unix)]
@@ -518,7 +518,7 @@ impl Broker {
 
     #[cfg(feature = "websocket")]
     #[must_use]
-    pub fn websocket_url(&self) -> Option<&str> {
+    pub const fn websocket_url(&self) -> Option<&str> {
         match &self.inner {
             BrokerInner::Websocket { url, .. } => Some(url.as_str()),
             BrokerInner::Tcp { .. } => None,

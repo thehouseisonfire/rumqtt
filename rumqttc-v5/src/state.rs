@@ -1872,12 +1872,11 @@ impl MqttState {
         // than the Topic Alias Maximum the Client advertised in CONNECT.
         // [MQTT-3.1.2-27] If Topic Alias Maximum is absent or zero, the
         // Server MUST NOT send any Topic Aliases to the Client.
-        if let Some(alias) = topic_alias {
-            if alias > self.topic_aliases.client_max {
+        if let Some(alias) = topic_alias
+            && alias > self.topic_aliases.client_max {
                 let disconnect = Disconnect::new(DisconnectReasonCode::TopicAliasInvalid);
                 return Ok(Some(self.outgoing_disconnect(disconnect)));
             }
-        }
 
         if !publish.topic.is_empty() {
             if let Some(alias) = topic_alias {
@@ -2198,8 +2197,8 @@ impl MqttState {
     }
 
     fn fail_auth_exchange(&mut self, notice_error: AuthNoticeError, callback_error: AuthError) {
-        if let Some((kind, method)) = self.auth.active_exchange() {
-            if let Some(authenticator) = self.authenticator.clone() {
+        if let Some((kind, method)) = self.auth.active_exchange()
+            && let Some(authenticator) = self.authenticator.clone() {
                 match authenticator.lock() {
                     Ok(mut locked) => locked.failure(
                         AuthContext {
@@ -2213,7 +2212,6 @@ impl MqttState {
                     ),
                 }
             }
-        }
         self.auth.reset(notice_error, &mut self.events);
     }
 
@@ -2739,14 +2737,13 @@ impl MqttState {
     }
 
     fn check_collision(&mut self, pkid: u16) -> Option<(Publish, Option<PublishNoticeTx>)> {
-        if let Some(publish) = &self.collision {
-            if publish.pkid == pkid {
+        if let Some(publish) = &self.collision
+            && publish.pkid == pkid {
                 return self
                     .collision
                     .take()
                     .map(|publish| (publish, self.collision_notice.take()));
             }
-        }
 
         None
     }
@@ -3076,20 +3073,18 @@ impl MqttState {
 
     fn publish_for_replay_tracking(&self, publish: &Publish) -> Publish {
         let mut replay_publish = publish.clone();
-        if replay_publish.topic.is_empty() {
-            if let Some(alias) = Self::publish_topic_alias(&replay_publish) {
-                if let Some(topic) = self.topic_aliases.outgoing.get(&alias) {
+        if replay_publish.topic.is_empty()
+            && let Some(alias) = Self::publish_topic_alias(&replay_publish)
+                && let Some(topic) = self.topic_aliases.outgoing.get(&alias) {
                     topic.clone_into(&mut replay_publish.topic);
                 }
-            }
-        }
 
         replay_publish
     }
 
     fn validate_outgoing_topic_alias(&self, publish: &Publish) -> Result<(), StateError> {
-        if let Some(alias) = Self::publish_topic_alias(publish) {
-            if alias == 0 || alias > self.topic_aliases.broker_max {
+        if let Some(alias) = Self::publish_topic_alias(publish)
+            && (alias == 0 || alias > self.topic_aliases.broker_max) {
                 // We MUST NOT send a Topic Alias of 0 or one greater than the
                 // broker's Topic Alias Maximum.
                 return Err(StateError::InvalidAlias {
@@ -3097,31 +3092,27 @@ impl MqttState {
                     max: self.topic_aliases.broker_max,
                 });
             }
-        }
 
         Ok(())
     }
 
     fn record_outgoing_topic_alias(&mut self, publish: &Publish) {
-        if !publish.topic.is_empty() {
-            if let Some(alias) = Self::publish_topic_alias(publish) {
+        if !publish.topic.is_empty()
+            && let Some(alias) = Self::publish_topic_alias(publish) {
                 if let Some(previous_topic) = self
                     .topic_aliases
                     .outgoing
                     .insert(alias, publish.topic.clone())
-                {
-                    if previous_topic != publish.topic {
+                    && previous_topic != publish.topic {
                         self.topic_aliases.auto_outgoing.remove(&previous_topic);
                         self.topic_aliases.auto_lru.retain(|entry| *entry != alias);
                     }
-                }
                 self.topic_aliases
                     .auto_outgoing
                     .retain(|topic, mapped_alias| {
                         *mapped_alias != alias || topic == &publish.topic
                     });
             }
-        }
     }
 
     pub(crate) fn persisted_session<'a>(
