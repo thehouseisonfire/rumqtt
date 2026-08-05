@@ -95,7 +95,9 @@ pub use state::{MqttState, MqttStateBuilder, OutboundDiagnostics, ProtocolViolat
 #[cfg(feature = "bench-instrumentation")]
 #[doc(hidden)]
 pub mod bench_instrumentation {
-    use crate::{MqttOptions, MqttState, PersistedSession, SessionRestoreError};
+    use bytes::BytesMut;
+
+    use crate::{MqttOptions, MqttState, PersistedSession, SessionRestoreError, mqttbytes};
 
     pub fn apply_persisted_session(
         options: &MqttOptions,
@@ -106,6 +108,18 @@ pub mod bench_instrumentation {
         state
             .restore_persisted_session(options, session)
             .map(|replay| replay.len())
+    }
+
+    /// Encodes a PUBLISH whose topic has already been validated.
+    ///
+    /// This benchmark-only entry point isolates the cost of the codec's topic
+    /// validation. All other encoder checks, including property validation,
+    /// remain enabled.
+    pub fn write_prevalidated_publish(
+        publish: &mqttbytes::v5::Publish,
+        buffer: &mut BytesMut,
+    ) -> Result<usize, mqttbytes::Error> {
+        publish.write_prevalidated(buffer)
     }
 }
 pub use transport::Transport;

@@ -100,10 +100,18 @@ impl Publish {
     }
 
     pub fn write(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
-        transactional_write(buffer, |buffer| self.write_inner(buffer))
+        transactional_write(buffer, |buffer| self.write_inner::<true>(buffer))
     }
 
-    fn write_inner(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+    #[cfg(feature = "bench-instrumentation")]
+    pub(crate) fn write_prevalidated(&self, buffer: &mut BytesMut) -> Result<usize, Error> {
+        transactional_write(buffer, |buffer| self.write_inner::<false>(buffer))
+    }
+
+    fn write_inner<const VALIDATE_TOPIC: bool>(
+        &self,
+        buffer: &mut BytesMut,
+    ) -> Result<usize, Error> {
         if self.qos == QoS::AtMostOnce && self.dup {
             return Err(Error::MalformedPacket);
         }
@@ -116,7 +124,9 @@ impl Publish {
         buffer.put_u8(0b0011_0000 | retain | (qos << 1) | (dup << 3));
 
         let count = write_remaining_length(buffer, len)?;
-        validate_publish_topic_name(&self.topic)?;
+        if VALIDATE_TOPIC {
+            validate_publish_topic_name(&self.topic)?;
+        }
         write_mqtt_bytes(buffer, &self.topic)?;
 
         if self.qos != QoS::AtMostOnce {

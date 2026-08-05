@@ -32,6 +32,8 @@ Supported workload groups:
 
 - `codec encode|decode|roundtrip` for MQTT v4, MQTT v5, and the NATS PUB
   wire-format baseline
+- `codec validation-cost` for a paired MQTT v4/v5 experiment that measures
+  checked PUBLISH encoding against encoding of an already validated topic
 - `client throughput|latency|connections`
 - `options parse-url`
 
@@ -110,6 +112,30 @@ not equivalent protocol features:
 cargo run -p benchmarks --bin rumqtt-bench -- \
   codec roundtrip --protocol nats --qos 0 --messages 100000 --payload-size 64
 ```
+
+### PUBLISH Topic Validation Cost
+
+Use `validation-cost` to measure the upper-bound benefit of carrying a
+prevalidated topic through the encoder. The benchmark-only path skips exactly
+the codec's topic-name scan. Packet length, QoS/DUP and packet identifier
+checks remain enabled; MQTT 5 property validation also remains enabled.
+
+```bash
+cargo run --release -p benchmarks --bin rumqtt-bench -- \
+  codec validation-cost \
+  --protocol v5 \
+  --rounds 10 \
+  --messages 1000000 \
+  --topic bench/codec \
+  --payload-size 64 \
+  --qos 1
+```
+
+The two variants are run in alternating order and reported as paired elapsed
+samples. `validation_share_percent` estimates the checked encoder time spent
+on the skipped scan, while `prevalidated_speedup_percent` reports throughput
+improvement. This is a codec microbenchmark and therefore an upper bound, not
+evidence of the same improvement in a broker-backed client workload.
 
 ## Codec Profiling
 

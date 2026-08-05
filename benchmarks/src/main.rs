@@ -57,6 +57,7 @@ enum CodecCommand {
     Encode(CodecArgs),
     Decode(CodecArgs),
     Roundtrip(CodecArgs),
+    ValidationCost(CodecValidationArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -207,6 +208,30 @@ struct CodecArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct CodecValidationArgs {
+    #[arg(long, value_enum, default_value = "v5")]
+    protocol: Protocol,
+
+    #[arg(long)]
+    run_id: Option<String>,
+
+    #[arg(long, default_value = "10")]
+    rounds: usize,
+
+    #[arg(long, default_value = "100000")]
+    messages: usize,
+
+    #[arg(long, default_value = "64")]
+    payload_size: usize,
+
+    #[arg(long, default_value = "1", value_parser = parse_qos)]
+    qos: u8,
+
+    #[arg(long, default_value = "bench/codec")]
+    topic: String,
+}
+
+#[derive(Args, Debug, Clone)]
 struct OptionsParseUrlArgs {
     #[command(flatten)]
     common: CommonArgs,
@@ -282,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
             CodecCommand::Encode(args) => run_codec(args, CodecMode::Encode),
             CodecCommand::Decode(args) => run_codec(args, CodecMode::Decode),
             CodecCommand::Roundtrip(args) => run_codec(args, CodecMode::Roundtrip),
+            CodecCommand::ValidationCost(args) => run_codec_validation_cost(args),
         },
         CommandGroup::Options { command } => match command {
             OptionsCommand::ParseUrl(args) => run_options_parse_url(args),
@@ -869,6 +895,231 @@ fn run_options_parse_url(args: OptionsParseUrlArgs) -> anyhow::Result<()> {
 struct CodecResult {
     elapsed_sec: f64,
     bytes: usize,
+}
+
+fn run_codec_validation_cost(args: CodecValidationArgs) -> anyhow::Result<()> {
+    if args.rounds == 0 || args.messages == 0 {
+        bail!("--rounds and --messages must be greater than zero");
+    }
+
+    let started_at = unix_secs();
+    let run_id = run_id(args.run_id.as_deref(), "codec-validation-cost");
+    let (checked_samples, prevalidated_samples, packet_size) = match args.protocol {
+        Protocol::V4 => benchmark_v4_validation_cost(&args)?,
+        Protocol::V5 => benchmark_v5_validation_cost(&args)?,
+    };
+    let checked_median = median(&checked_samples);
+    let prevalidated_median = median(&prevalidated_samples);
+    let validation_share = (checked_median - prevalidated_median) / checked_median;
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("messages".to_owned(), args.messages as f64);
+    metrics.insert("rounds".to_owned(), args.rounds as f64);
+    metrics.insert("packet_size".to_owned(), packet_size as f64);
+    metrics.insert("checked_median_sec".to_owned(), checked_median);
+    metrics.insert("prevalidated_median_sec".to_owned(), prevalidated_median);
+    metrics.insert(
+        "checked_messages_sec".to_owned(),
+        args.messages as f64 / checked_median,
+    );
+    metrics.insert(
+        "prevalidated_messages_sec".to_owned(),
+        args.messages as f64 / prevalidated_median,
+    );
+    metrics.insert(
+        "validation_share_percent".to_owned(),
+        validation_share * 100.0,
+    );
+    metrics.insert(
+        "prevalidated_speedup_percent".to_owned(),
+        (checked_median / prevalidated_median - 1.0) * 100.0,
+    );
+
+    let mut samples = BTreeMap::new();
+    samples.insert("checked_elapsed_sec".to_owned(), checked_samples);
+    samples.insert("prevalidated_elapsed_sec".to_owned(), prevalidated_samples);
+
+    print_output(BenchOutput {
+        schema_version: 1,
+        run_id,
+        scenario: format!("codec-{}-validation-cost", args.protocol.as_str()),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "protocol": args.protocol,
+            "rounds": args.rounds,
+            "messages": args.messages,
+            "payload_size": args.payload_size,
+            "topic": args.topic,
+            "topic_len": args.topic.len(),
+            "qos": args.qos,
+        }),
+        metrics,
+        samples,
+        environment: environment(),
+    })
+}
+
+fn benchmark_v4_validation_cost(
+    args: &CodecValidationArgs,
+) -> anyhow::Result<(Vec<f64>, Vec<f64>, usize)> {
+    let mut publish = rumqttc_v4::mqttbytes::v4::Publish::new(
+        args.topic.clone(),
+        v4_qos(args.qos),
+        vec![0_u8; args.payload_size],
+    );
+    if args.qos != 0 {
+        publish.pkid = 1;
+    }
+    let packet_size = publish.size();
+    let capacity = packet_size
+        .checked_mul(args.messages)
+        .context("benchmark output buffer capacity overflowed")?;
+    let mut buffer = BytesMut::with_capacity(capacity);
+
+    publish.write(&mut buffer)?;
+    buffer.clear();
+    rumqttc_v4::bench_instrumentation::write_prevalidated_publish(&publish, &mut buffer)?;
+    buffer.clear();
+
+    let mut checked = Vec::with_capacity(args.rounds);
+    let mut prevalidated = Vec::with_capacity(args.rounds);
+    for round in 0..args.rounds {
+        if round % 2 == 0 {
+            checked.push(time_v4_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                true,
+            )?);
+            prevalidated.push(time_v4_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                false,
+            )?);
+        } else {
+            prevalidated.push(time_v4_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                false,
+            )?);
+            checked.push(time_v4_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                true,
+            )?);
+        }
+    }
+    Ok((checked, prevalidated, packet_size))
+}
+
+fn time_v4_publish_writes(
+    publish: &rumqttc_v4::mqttbytes::v4::Publish,
+    buffer: &mut BytesMut,
+    messages: usize,
+    checked: bool,
+) -> anyhow::Result<f64> {
+    buffer.clear();
+    let started = Instant::now();
+    for _ in 0..messages {
+        if checked {
+            publish.write(buffer)?;
+        } else {
+            rumqttc_v4::bench_instrumentation::write_prevalidated_publish(publish, buffer)?;
+        }
+    }
+    std::hint::black_box(&buffer);
+    Ok(started.elapsed().as_secs_f64())
+}
+
+fn benchmark_v5_validation_cost(
+    args: &CodecValidationArgs,
+) -> anyhow::Result<(Vec<f64>, Vec<f64>, usize)> {
+    let mut publish = rumqttc_v5::mqttbytes::v5::Publish::new(
+        args.topic.clone(),
+        v5_qos(args.qos),
+        Bytes::from(vec![0_u8; args.payload_size]),
+        None,
+    );
+    if args.qos != 0 {
+        publish.pkid = 1;
+    }
+    let packet_size = publish.size();
+    let capacity = packet_size
+        .checked_mul(args.messages)
+        .context("benchmark output buffer capacity overflowed")?;
+    let mut buffer = BytesMut::with_capacity(capacity);
+
+    publish.write(&mut buffer)?;
+    buffer.clear();
+    rumqttc_v5::bench_instrumentation::write_prevalidated_publish(&publish, &mut buffer)?;
+    buffer.clear();
+
+    let mut checked = Vec::with_capacity(args.rounds);
+    let mut prevalidated = Vec::with_capacity(args.rounds);
+    for round in 0..args.rounds {
+        if round % 2 == 0 {
+            checked.push(time_v5_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                true,
+            )?);
+            prevalidated.push(time_v5_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                false,
+            )?);
+        } else {
+            prevalidated.push(time_v5_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                false,
+            )?);
+            checked.push(time_v5_publish_writes(
+                &publish,
+                &mut buffer,
+                args.messages,
+                true,
+            )?);
+        }
+    }
+    Ok((checked, prevalidated, packet_size))
+}
+
+fn time_v5_publish_writes(
+    publish: &rumqttc_v5::mqttbytes::v5::Publish,
+    buffer: &mut BytesMut,
+    messages: usize,
+    checked: bool,
+) -> anyhow::Result<f64> {
+    buffer.clear();
+    let started = Instant::now();
+    for _ in 0..messages {
+        if checked {
+            publish.write(buffer)?;
+        } else {
+            rumqttc_v5::bench_instrumentation::write_prevalidated_publish(publish, buffer)?;
+        }
+    }
+    std::hint::black_box(&buffer);
+    Ok(started.elapsed().as_secs_f64())
+}
+
+fn median(samples: &[f64]) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let middle = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    } else {
+        sorted[middle]
+    }
 }
 
 fn codec_v4_encode(args: &CodecArgs) -> anyhow::Result<CodecResult> {

@@ -31,6 +31,37 @@ fn run_codec(protocol: &str) -> Value {
     serde_json::from_slice(&output.stdout).expect("benchmark output must be JSON")
 }
 
+fn run_validation_cost(protocol: &str) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_rumqtt-bench"))
+        .args([
+            "codec",
+            "validation-cost",
+            "--protocol",
+            protocol,
+            "--rounds",
+            "3",
+            "--messages",
+            "1000",
+            "--payload-size",
+            "8",
+            "--qos",
+            "1",
+            "--run-id",
+            "validation-cost-smoke",
+        ])
+        .output()
+        .expect("failed to run rumqtt-bench");
+
+    assert!(
+        output.status.success(),
+        "benchmark failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    serde_json::from_slice(&output.stdout).expect("benchmark output must be JSON")
+}
+
 #[test]
 fn nats_codec_roundtrip_emits_stable_json() {
     let json = run_codec("nats");
@@ -134,6 +165,45 @@ fn v5_codec_roundtrip_emits_stable_json() {
     assert_eq!(json["config"]["protocol"], "v5");
     assert_eq!(json["metrics"]["messages"], 1000.0);
     assert!(json["metrics"]["messages_sec"].as_f64().unwrap_or(0.0) > 0.0);
+}
+
+#[test]
+fn codec_validation_cost_emits_paired_samples_for_both_protocols() {
+    for protocol in ["v4", "v5"] {
+        let json = run_validation_cost(protocol);
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["run_id"], "validation-cost-smoke");
+        assert_eq!(
+            json["scenario"],
+            format!("codec-{protocol}-validation-cost")
+        );
+        assert_eq!(json["config"]["protocol"], protocol);
+        assert_eq!(json["metrics"]["rounds"], 3.0);
+        assert_eq!(
+            json["samples"]["checked_elapsed_sec"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            json["samples"]["prevalidated_elapsed_sec"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert!(
+            json["metrics"]["checked_messages_sec"]
+                .as_f64()
+                .unwrap_or(0.0)
+                > 0.0
+        );
+        assert!(
+            json["metrics"]["prevalidated_messages_sec"]
+                .as_f64()
+                .unwrap_or(0.0)
+                > 0.0
+        );
+    }
 }
 
 #[cfg(feature = "url")]
