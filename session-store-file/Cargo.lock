@@ -890,6 +890,7 @@ dependencies = [
  "http",
  "log",
  "mqttbytes-core-next",
+ "rand 0.10.2",
  "rumqttc-core-next",
  "rustls-native-certs",
  "rustls-pki-types",

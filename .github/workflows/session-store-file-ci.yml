@@ -96,13 +96,11 @@ jobs:
           python3 -m unittest benchmarks/tests/test_runner.py benchmarks/tests/test_broker_fixture.py
 
   msrv:
-    name: Rust 1.89 and WASM
+    name: Rust 1.88 MSRV
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.89
-        with:
-          targets: wasm32-unknown-unknown
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: Linux-session-store-file-msrv
