@@ -71,7 +71,7 @@ percent-encoding = { version = "2", optional = true }
 url = { version = "2", default-features = false, optional = true }
 fixedbitset = "0.5.7"
 #auth
-scram = { package = "scram-rs", version = "0.23.0", default-features = false, features = ["std"], optional = true }
+scram = { package = "scram-rs", version = "0.24.0", default-features = false, features = ["std"], optional = true }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
@@ -80,7 +80,7 @@ matches = "0.1"
 pretty_assertions = "1"
 pretty_env_logger = "0.5"
 tokio-tungstenite = "0.30"
-rcgen = "=0.14.5"
+rcgen = "=0.14.8"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry"] }
 turmoil = "0.7.2"
 wincode = { version = "0.4.9", features = ["derive"] }
