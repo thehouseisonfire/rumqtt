@@ -27,6 +27,7 @@ pub struct ParsedFixedHeader {
 
 impl ParsedFixedHeader {
     #[must_use]
+    #[inline]
     pub const fn frame_length(self) -> usize {
         1 + self.remaining_len_len + self.remaining_len
     }
@@ -126,6 +127,7 @@ pub fn length(stream: Iter<u8>) -> Result<(usize, usize), Error> {
 ///
 /// Returns an error when the stream does not contain enough bytes for the
 /// length prefix or the declared payload length crosses the packet boundary.
+#[inline]
 pub fn read_mqtt_bytes(stream: &mut Bytes) -> Result<Bytes, Error> {
     let len = usize::from(read_u16(stream)?);
 
@@ -261,6 +263,7 @@ pub const fn len_len(len: usize) -> usize {
 /// # Errors
 ///
 /// Returns [`Error::MalformedPacket`] when fewer than two bytes remain.
+#[inline]
 pub fn read_u16(stream: &mut Bytes) -> Result<u16, Error> {
     if stream.len() < 2 {
         return Err(Error::MalformedPacket);
@@ -274,6 +277,7 @@ pub fn read_u16(stream: &mut Bytes) -> Result<u16, Error> {
 /// # Errors
 ///
 /// Returns [`Error::MalformedPacket`] when the stream is empty.
+#[inline]
 pub fn read_u8(stream: &mut Bytes) -> Result<u8, Error> {
     if stream.is_empty() {
         return Err(Error::MalformedPacket);
@@ -287,6 +291,7 @@ pub fn read_u8(stream: &mut Bytes) -> Result<u8, Error> {
 /// # Errors
 ///
 /// Returns [`Error::MalformedPacket`] when fewer than four bytes remain.
+#[inline]
 pub fn read_u32(stream: &mut Bytes) -> Result<u32, Error> {
     if stream.len() < 4 {
         return Err(Error::MalformedPacket);

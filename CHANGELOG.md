@@ -34,6 +34,8 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc` v4/v5: Improve small-packet decoding by exposing selected shared codec primitives to
+  cross-crate inlining.
 - `rumqttc`: Set the published client crates' MSRV to Rust `1.88`, enabling the
   maintained Hickory 0.26 resolver line and current security fixes.
 - Documentation: Add a v4/v5 recipe for broker-acknowledged sequential publishing
