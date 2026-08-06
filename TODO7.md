@@ -10,6 +10,23 @@ Favor an explicit pull-based API with opaque handles. Callbacks can be added in
 a later ABI version after their threading, reentrancy, and teardown contracts
 are proven necessary.
 
+### Protocol packaging contract
+
+Ship one C library and header supporting both MQTT 3.1.1 and MQTT 5. Every
+configuration explicitly selects one protocol, and every client created from
+that configuration uses only that version for its complete lifetime. To use
+another version, create another configuration and client.
+
+Do not auto-negotiate, silently fall back between versions, or expose a handle
+that switches protocols after construction. Keep one common ABI for operations
+whose semantics overlap, while using tagged values or protocol-specific
+setters for behavior that differs. Reject MQTT 5-only configuration or command
+data for an MQTT 3.1.1 client rather than ignoring it.
+
+Separate protocol-specific libraries are not the baseline distribution. Add
+such artifacts only if measured binary-size, platform, or dependency
+constraints justify the additional ABI and test matrix.
+
 ## Prerequisite
 
 Use the shared driver and owned boundary values from `TODO5.md`. The C crate is
@@ -178,6 +195,11 @@ tests where supported.
 Use an opaque mutable builder so its representation can evolve:
 
 ```c
+typedef enum {
+    RUMQTTC_PROTOCOL_V311 = 1,
+    RUMQTTC_PROTOCOL_V5 = 2
+} rumqttc_protocol_t;
+
 rumqttc_status_t rumqttc_config_new(
     rumqttc_protocol_t protocol,
     rumqttc_config_t **out,
@@ -185,6 +207,10 @@ rumqttc_status_t rumqttc_config_new(
 
 void rumqttc_config_destroy(rumqttc_config_t *config);
 ```
+
+The protocol discriminants are stable ABI values. Reject unknown values and
+store the selected protocol in the opaque configuration. A client created from
+that configuration cannot change the selection later.
 
 Add setters for the initial fields in `TODO5.md`. Setters validate and copy
 their input. Use protocol-specific names for semantics that are not genuinely

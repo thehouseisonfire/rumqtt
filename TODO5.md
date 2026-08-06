@@ -72,6 +72,31 @@ rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5" }
 Keep this crate private (`publish = false`) until at least the C and JavaScript
 wrappers have validated the boundary.
 
+## Protocol support contract
+
+`rumqtt-wrapper-core` and each native host-language wrapper should support MQTT
+3.1.1 and MQTT 5 through one crate or distributed package. This is
+dual-protocol package support, not a connection that speaks both versions.
+
+Every client instance must:
+
+- explicitly select exactly one protocol at construction;
+- retain that selection for its complete lifetime;
+- construct only the matching v4 or v5 client and event loop;
+- reject options and commands that are invalid for the selected protocol; and
+- require a new client instance to use another protocol.
+
+Do not implement silent protocol fallback or automatic version negotiation.
+CONNECT packet formats and session semantics differ, and retrying with another
+version could change externally visible clean-session, clean-start, expiry, and
+delivery behavior.
+
+Normalize commands, completions, events, and errors only where semantics
+genuinely overlap. Keep protocol-specific configuration and MQTT 5 properties
+in tagged structures. Never silently discard an MQTT 5-only field when the
+client selected MQTT 3.1.1, and never invent MQTT 5 reason information for an
+MQTT 3.1.1 acknowledgement that does not carry it.
+
 ## 1. Define the owned boundary model
 
 ### 1.1 Protocol and configuration

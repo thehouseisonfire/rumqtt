@@ -11,6 +11,26 @@ runtime implementation language is not a supported extension boundary; Rust
 has no stable cross-project ABI. Treat Node-API behavior and the wrapper's test
 matrix as the compatibility contract.
 
+### Protocol packaging contract
+
+Ship one JavaScript/TypeScript package and one `MqttClient` type supporting both
+MQTT 3.1.1 and MQTT 5. Each `MqttClient` instance explicitly selects one
+protocol in its construction options, and that selection is immutable for the
+instance's lifetime. Using another protocol requires constructing another
+client.
+
+Do not auto-negotiate, silently fall back between versions, or retry a rejected
+connection with a different protocol. Do not expose separate v4-only and
+v5-only npm packages unless measured artifact constraints later justify them.
+Protocol-specific convenience classes may be thin adapters over the same
+implementation, but they must retain identical lifecycle, completion,
+backpressure, and shutdown behavior.
+
+Reject protocol-incompatible options before starting the native client. In
+particular, reject MQTT 5 properties and session settings for an MQTT 3.1.1
+instance instead of ignoring them. Preserve MQTT 3.1.1 clean-session and MQTT 5
+clean-start/session-expiry semantics as distinct TypeScript option shapes.
+
 Browser JavaScript, Web Workers, Deno Deploy, and other sandboxes that cannot
 load native addons are out of scope. Track browser/WASM transport support as a
 separate project.
@@ -73,6 +93,19 @@ The initial public surface should include:
 export type ProtocolVersion = "3.1.1" | "5.0";
 export type QoS = 0 | 1 | 2;
 
+export type ProtocolOptions =
+  | {
+      protocol: "3.1.1";
+      cleanSession?: boolean;
+    }
+  | {
+      protocol: "5.0";
+      cleanStart?: boolean;
+      sessionExpiryInterval?: number;
+    };
+
+export type MqttClientOptions = CommonMqttClientOptions & ProtocolOptions;
+
 export class MqttClient {
   constructor(options: MqttClientOptions);
 
@@ -112,7 +145,10 @@ network work.
 ### 1.1 Options
 
 Support the first-release common options defined in `TODO5.md`, plus typed MQTT
-5 option/property objects where implemented. Validate:
+5 option/property objects where implemented. Make the protocol portion a
+discriminated union so TypeScript rejects incompatible session options before
+runtime where possible. Native validation remains authoritative for plain
+JavaScript callers and values crossing the Node-API boundary. Validate:
 
 - finite integers and numeric ranges before converting to Rust integers;
 - protocol-specific options instead of silently ignoring them;
