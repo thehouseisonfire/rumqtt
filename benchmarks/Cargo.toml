@@ -20,7 +20,7 @@ anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 itoa = "1"
-mqtt5 = { version = "=0.38.1", default-features = false }
+mqtt5 = { version = "=0.38.2", default-features = false }
 rumqttc_v4 = { package = "rumqttc-v4-next", path = "../rumqttc-v4", features = ["bench-instrumentation"] }
 rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5", features = ["bench-instrumentation"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
