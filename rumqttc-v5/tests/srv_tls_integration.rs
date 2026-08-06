@@ -1,4 +1,8 @@
-#![cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+#![cfg(any(
+    feature = "use-rustls-ring",
+    feature = "use-rustls-aws-lc",
+    feature = "use-native-tls"
+))]
 
 use bytes::BytesMut;
 use rcgen::{
@@ -22,7 +26,7 @@ use tokio::time::timeout;
 
 #[cfg(feature = "use-native-tls")]
 use tokio_native_tls::{TlsAcceptor as NativeTlsAcceptor, native_tls::Identity};
-#[cfg(feature = "use-rustls-no-provider")]
+#[cfg(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
 use tokio_rustls::{
     TlsAcceptor as RustlsTlsAcceptor,
     rustls::{
@@ -204,7 +208,16 @@ fn options(
     options
 }
 
-#[cfg(feature = "use-rustls-no-provider")]
+#[cfg(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
+fn install_rustls_provider() {
+    #[cfg(feature = "use-rustls-ring")]
+    drop(tokio_rustls::rustls::crypto::ring::default_provider().install_default());
+
+    #[cfg(all(not(feature = "use-rustls-ring"), feature = "use-rustls-aws-lc"))]
+    drop(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default());
+}
+
+#[cfg(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
 fn rustls_acceptor(cert: &[u8], key: &[u8]) -> RustlsTlsAcceptor {
     let chain = CertificateDer::pem_slice_iter(cert)
         .collect::<Result<Vec<_>, _>>()
@@ -218,7 +231,7 @@ fn rustls_acceptor(cert: &[u8], key: &[u8]) -> RustlsTlsAcceptor {
     ))
 }
 
-#[cfg(feature = "use-rustls-no-provider")]
+#[cfg(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
 async fn spawn_rustls_server(
     acceptor: RustlsTlsAcceptor,
     code: ConnectReturnCode,
@@ -282,9 +295,10 @@ async fn assert_mqtt_failure(mut eventloop: EventLoop, tasks: Vec<tokio::task::J
     }
 }
 
-#[cfg(feature = "use-rustls-no-provider")]
+#[cfg(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
 #[tokio::test]
 async fn rustls_authenticates_the_srv_target_and_retries_identity_failure() {
+    install_rustls_provider();
     let certs = certificates();
     let (origin_port, origin) = spawn_origin().await;
     let (first_port, first) = spawn_rustls_server(
@@ -318,9 +332,10 @@ async fn rustls_authenticates_the_srv_target_and_retries_identity_failure() {
     );
 }
 
-#[cfg(feature = "use-rustls-no-provider")]
+#[cfg(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))]
 #[tokio::test]
 async fn rustls_mqtt_failure_does_not_advance_srv_candidates() {
+    install_rustls_provider();
     let certs = certificates();
     let (origin_port, origin) = spawn_origin().await;
     let (first_port, first) = spawn_rustls_server(
