@@ -760,10 +760,15 @@ impl RedirectTargetProfile {
                     Broker::tcp(reference.host().to_owned(), port)
                 }
                 #[cfg(feature = "websocket")]
-                Some(RedirectScheme::Ws | RedirectScheme::Wss) => Broker::redirect_websocket(
-                    reference.websocket_url().expect("websocket URI reference"),
-                    matches!(reference.scheme(), Some(RedirectScheme::Wss)),
-                ),
+                Some(RedirectScheme::Ws | RedirectScheme::Wss) => {
+                    let Some(websocket) = reference.websocket_url() else {
+                        unreachable!("Ws/Wss references always carry a resource name")
+                    };
+                    Broker::redirect_websocket(
+                        websocket,
+                        matches!(reference.scheme(), Some(RedirectScheme::Wss)),
+                    )
+                }
                 #[cfg(not(feature = "websocket"))]
                 Some(RedirectScheme::Ws | RedirectScheme::Wss) => unreachable!("checked above"),
             };
