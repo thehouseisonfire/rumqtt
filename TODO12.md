@@ -38,17 +38,47 @@ three `mqttbytes` crates (`core`, `v4`, `v5`) build as `no_std + alloc`.
       for `TryFrom`); gate the `Io(#[from] std::io::Error)` error variant behind
       a `std` feature (its only consumer, the tokio `framed` codec layer, is
       std-only anyway); ensure `Vec`/`String` packet fields use `alloc`.
+- [ ] Flip dependency features in all three manifests: `bytes` with
+      `default-features = false, features = ["alloc"]`, `thiserror` with
+      `default-features = false`.
 
-## 3. Tidy up and verify
+## 4. Make accidental `std` usage hard
+
+- [ ] In each crate's `lib.rs`:
+
+  ```rust
+  #![no_std]
+  #![deny(clippy::std_instead_of_core)]
+  #![deny(clippy::std_instead_of_alloc)]
+
+  extern crate alloc;
+  ```
+
+  The Clippy restriction lints catch sloppy `use std::mem;` / `use std::vec::Vec;`
+  during normal development on host targets.
+- [ ] Add the bare-metal check to CI — this is the real enforcement, because
+  `#![no_std]` alone doesn't prevent accidental `std` from entering the
+  dependency closure (that's why the manifest feature flips above matter):
+
+  ```bash
+  rustup target add thumbv7em-none-eabi
+  cargo check --no-default-features --target thumbv7em-none-eabi
+  ```
+
+  Lib only, e.g. no `--all-targets`: test harnesses need `std` and will fail
+  this job even when the library is clean. The target provides only
+  `core`/`alloc`, so any stray `std` (own code or dependency) fails to compile.
+- [ ] Keep the `std` feature build in the existing CI and `.pre-commit-config.yaml` feature matrix so the
+      `Io` variant, tokio codec path, and client-side code stay compile-checked.
+
+## 5. Tidy up and verify
 
 - [ ] Discard any helpers made redundant by the extraction; confirm the shared
       `primitives` and `ping` stay only in `mqttbytes-core`.
 - [ ] Run `cargo fmt --all`, `cargo check --workspace`, and the full
       `rumqttc-v4-next`/`rumqttc-v5-next` test suites.
-- [ ] Check both crates build for a `no_std` target (e.g. `thumbv7em-none-eabihf`)
-      with the `std` feature off.
-- [ ] Publish all three crates in lockstep (`0.34.0-alpha` family) and note the
-      re-exports in `CHANGELOG.md`.
+- [ ] Check both crates build for a `no_std` target (e.g. `thumbv7em-none-eabi`)
+      with the `std` feature off (covered by the CI job in section 4).
 
 ## Non-goals
 
