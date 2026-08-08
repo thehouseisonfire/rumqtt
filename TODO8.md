@@ -1,83 +1,41 @@
-# Browser JavaScript and WebAssembly Wrapper
+# Python and asyncio Wrapper
 
 ## Goal
 
-Ship a browser-focused JavaScript/TypeScript MQTT client compiled to WebAssembly
-and backed by the v4 and v5 rumqtt clients. The wrapper must provide idiomatic
-promises, asynchronous event consumption, bounded memory behavior, explicit
-MQTT completion semantics, and browser-native MQTT-over-WebSocket transport.
+Ship one native Python package backed by `rumqttc-v4-next` and
+`rumqttc-v5-next`. Provide an idiomatic `asyncio` API with typed options,
+awaitable MQTT-aware completions, asynchronous event consumption, bounded
+memory behavior, and deterministic native cleanup.
 
-This TODO deliberately does not choose how the clients are decoupled from
-Tokio, how the runtime-neutral core is divided into crates, or whether the
-portable client is expressed through traits, callbacks, polling interfaces, or
-another design. Implement this wrapper against the architecture that has
-actually landed.
+Target CPython first through PyO3. Do not expose Rust futures, Tokio handles,
+packet layouts, or the Rust extension module as the supported API. The Python
+facade and its documented behavior are the compatibility contract.
 
-## Scope and non-goals
+Alternative interpreters, limited-API wheels, subinterpreters, and free-threaded
+CPython are not supported merely because the extension imports. Advertise each
+only after its complete lifecycle and concurrency suite passes.
 
-The supported environment is an ordinary browser page or Dedicated Worker that
-can load a WebAssembly module and open a browser `WebSocket`.
+## Prerequisite
 
-The initial wrapper supports:
+Implement the useful portions of `TODO5.md` first, especially the owned event
+model, tracked completions, dedicated driver, bounded event delivery, and
+deterministic shutdown. Do not duplicate MQTT lifecycle or v4/v5 translation
+inside Python callbacks.
 
-- MQTT 3.1.1 and MQTT 5;
-- `ws://` and `wss://` MQTT-over-WebSocket connections;
-- QoS 0, 1, and 2 publish completion;
-- subscribe, unsubscribe, incoming publish, and manual acknowledgements;
-- reconnect and MQTT session behavior provided by the underlying clients;
-- bounded command and event buffering;
-- typed JavaScript errors and MQTT 5 properties;
-- optional browser-backed persistent session storage; and
-- direct browser and bundler-based npm consumption.
-
-The following are out of scope unless browser capabilities materially change:
-
-- raw MQTT over TCP or Unix sockets;
-- arbitrary TCP socket connectors;
-- native TLS provider selection, custom trust roots, or custom certificate
-  verification;
-- HTTP and SOCKS proxy selection by the MQTT library;
-- arbitrary WebSocket upgrade headers;
-- Node.js, Deno, and Bun native-addon support, which belongs in `TODO6.md`;
-- Deno Deploy and other non-browser WASM hosts without the required web APIs;
-- automatic operation in a Service Worker whose lifetime the browser may end;
-- a pure-JavaScript MQTT fallback; and
-- a stable raw WebAssembly ABI for consumers bypassing the JavaScript facade.
-
-Do not claim general WASM support merely because the crate compiles for one
-WASM target. The released contract is the tested browser environments and web
-APIs described here.
-
-## Readiness criteria
-
-Begin implementation only when the landed clients can demonstrate all of the
-following without target-specific patches in the wrapper repository:
-
-- the selected browser WASM target compiles with the required client features;
-- no enabled dependency unconditionally requires Tokio networking, `mio`, a
-  native thread, filesystem access, or another unavailable host facility;
-- the client can be continuously driven on a single-threaded browser executor;
-- transport input/output can be connected to the browser WebSocket adapter;
-- time, timers, and randomness have working browser implementations;
-- cancellation of one poll/future does not corrupt connection or session state;
-- packet payloads and queues can use `alloc` or an equivalent available
-  allocator; and
-- core v4/v5 protocol tests pass under the chosen WASM test environment where
-  they do not require native sockets.
-
-These are capability requirements, not a prescribed decoupling architecture.
-If the landed API names or ownership model differ from examples in this TODO,
-use the actual APIs while preserving the behavior and boundaries below.
-
-## Proposed deliverables
-
-Use names consistent with the final repository organization. A tentative
-layout is:
+## Proposed layout
 
 ```text
-rumqtt-browser/
+rumqtt-python/
 ├── Cargo.toml
+├── pyproject.toml
 ├── README.md
+├── python/
+│   └── rumqttc/
+│       ├── __init__.py
+│       ├── _client.py
+│       ├── _events.py
+│       ├── _types.py
+│       └── py.typed
 ├── src/
 │   ├── lib.rs
 │   ├── client.rs
@@ -85,373 +43,377 @@ rumqtt-browser/
 │   ├── config.rs
 │   ├── error.rs
 │   ├── event.rs
-│   ├── persistence.rs
-│   ├── runtime.rs
-│   └── websocket.rs
-├── js/
-│   ├── index.ts
-│   ├── loader.ts
-│   ├── types.ts
-│   └── worker.ts
-├── package.json
+│   └── runtime.rs
 └── tests/
-    ├── browser/
-    ├── fixtures/
-    └── types/
+    ├── integration/
+    ├── lifecycle/
+    ├── typing/
+    └── wheels/
 ```
 
-Publish a dedicated package such as `@rumqtt/browser`. Do not hide the browser
-implementation behind runtime detection in the native Node-API package. A
-small package containing TypeScript types shared with `TODO6.md` is acceptable
-only when it avoids duplication without forcing browser users to install or
-resolve native-addon packages.
+Use PyO3 and `maturin` unless a compatibility spike demonstrates a concrete
+blocker. Keep the compiled module private, for example `rumqttc._native`, and
+export the supported surface from Python modules. This permits small ergonomic
+and typing adapters without making generated PyO3 details public API.
 
-## 1. Implement the browser transport
+Choose the minimum CPython version from maintained Python releases when
+implementation begins. Initially build version-specific CPython wheels. Adopt
+PyO3's `abi3` limited API only after tests prove that it supports every API used
+for futures, loop scheduling, exceptions, buffers, and finalization; do not use
+`abi3` solely to reduce the wheel count.
 
-### 1.1 WebSocket establishment
+## 1. Define and freeze the initial Python API
 
-Use the browser `WebSocket` API and request the MQTT subprotocol:
+Expose importable runtime types and matching type annotations. Prefer immutable
+dataclasses and enums for boundary values, while allowing validated mappings
+only where they materially improve ergonomics.
 
-```js
-new WebSocket(url, ["mqtt"])
+The initial public surface should include:
+
+```python
+from collections.abc import AsyncIterator, Sequence
+from typing import Any
+
+class MqttClient:
+    def __init__(self, options: MqttClientOptions) -> None: ...
+
+    async def connect(self) -> ConnectResult: ...
+
+    async def enqueue_publish(
+        self,
+        topic: str,
+        payload: bytes | bytearray | memoryview | str,
+        options: PublishOptions | None = None,
+    ) -> AdmissionResult: ...
+
+    async def publish(
+        self,
+        topic: str,
+        payload: bytes | bytearray | memoryview | str,
+        options: PublishOptions | None = None,
+    ) -> PublishCompletion: ...
+
+    async def subscribe(
+        self, subscriptions: Sequence[Subscription]
+    ) -> SubscribeCompletion: ...
+
+    async def unsubscribe(self, filters: Sequence[str]) -> UnsubscribeCompletion: ...
+    def events(self) -> AsyncIterator[MqttEvent]: ...
+    async def diagnostics(self) -> ClientDiagnostics: ...
+    async def close(self, *, timeout: float | None = None) -> None: ...
+    async def close_now(self) -> None: ...
+
+    async def __aenter__(self) -> "MqttClient": ...
+    async def __aexit__(self, *exc_info: Any) -> None: ...
 ```
 
-Require an explicit `ws://` or `wss://` URL, including any broker-specific path
-and query. Do not guess `/mqtt`, rewrite schemes, or silently downgrade WSS to
-WS. After connection, verify that the browser reports the negotiated `mqtt`
-subprotocol; fail clearly if the broker accepts the upgrade without the
-required subprotocol.
+`connect()` starts the shared driver and waits for the initial CONNACK.
+`enqueue_publish()` completes on request-channel admission. `publish()`,
+`subscribe()`, and `unsubscribe()` use tracked operations and complete only at
+their documented MQTT milestones. Document QoS 0 as local transport flush, not
+broker delivery; QoS 1 as PUBACK; and QoS 2 as the completed PUBCOMP exchange.
 
-Set `binaryType = "arraybuffer"` before processing messages. Treat a text frame
-or an unexpected `Blob` after configuration as a transport error rather than
-coercing it into MQTT bytes. Preserve WebSocket message order while feeding
-received byte sequences to the MQTT decoder.
+Do not name an admission-only method `publish`. Cancelling an `asyncio` task or
+future drops only the Python waiter: it does not recall work already admitted
+to the MQTT driver and does not prove that the broker did not receive it.
 
-Map `open`, `message`, `error`, and `close` callbacks into the landed client
-transport/runtime interface. Retain callback closures only while the transport
-is live and unregister them during every close/failure path. A late callback
-from an earlier socket generation must not mutate a reconnected client.
+The asynchronous context manager calls `connect()` on entry and graceful
+`close()` on exit. If graceful close fails or times out while another exception
+is already propagating, preserve the original exception and attach or log the
+shutdown failure according to a documented rule.
 
-### 1.2 Browser-owned networking behavior
+### 1.1 Options and Python values
 
-Document that the browser controls DNS, TCP, TLS, certificate validation,
-system proxy use, cookies allowed by browser policy, and the `Origin` header.
-Reject configuration fields that imply the library controls those facilities.
+Support the common first-release options from `TODO5.md`, with contained v4
+and v5 option types for protocol-specific behavior. Validate:
 
-Surface useful close code and reason information without treating browser
-WebSocket error events as if they contained native I/O error detail. Explain
-common failures involving broker origin policy, missing MQTT subprotocol,
-mixed-content restrictions, Content Security Policy `connect-src`, and an
-untrusted WSS certificate.
+- integers without accepting `bool` accidentally, and all Rust numeric ranges;
+- finite, nonnegative timeout values before conversion to durations;
+- protocol-specific fields instead of silently ignoring them;
+- topic and topic-filter validity through the client library;
+- mutually exclusive TLS credential sources; and
+- explicit opt-in for an unbounded request channel, if exposed at all.
 
-Do not place credentials in a URL generated by the wrapper. MQTT username and
-password belong in CONNECT fields. If a caller explicitly supplies URL userinfo,
-reject it unless a future browser compatibility investigation establishes a
-safe, portable contract.
+Accept `str` payloads as UTF-8 and bytes-like payloads as arbitrary bytes.
+Acquire a `Py_buffer` only long enough to copy its contents during call
+admission. Do not retain a borrowed `memoryview`, pointer into mutable Python
+storage, or any Python object on the driver thread. Return incoming payloads as
+immutable `bytes` in the first release; zero-copy views can be considered only
+with an explicit lifetime and buffer-ownership contract.
 
-### 1.3 Read and write backpressure
+Use `float` seconds for idiomatic public timeout parameters, with `None` meaning
+the method's documented finite default or no caller deadline as appropriate.
+Reject NaN, infinity, negative values, and values that overflow the internal
+duration. State whether a zero timeout means a poll or immediate timeout for
+each operation.
 
-Browser WebSocket sends do not expose an awaitable flush operation. Implement a
-bounded outbound adapter using `WebSocket.bufferedAmount` and browser timers:
+### 1.2 Events and manual acknowledgements
 
-- define configurable low and high watermarks with safe defaults;
-- stop accepting additional transport writes above the high watermark;
-- recheck after a bounded timer interval without busy-spinning;
-- resume below the low watermark;
-- fail the connection on a configured stall timeout; and
-- wake the MQTT driver promptly on close or error.
+Expose documented event classes forming a closed type union:
 
-Keep the MQTT request-channel limit separate from the browser WebSocket byte
-watermark. A successful `send()` call means bytes were accepted by the browser,
-not flushed to the network or acknowledged by the broker. Map the underlying
-client's tracked QoS 0 completion only at the milestone the landed transport
-contract can honestly support; do not strengthen it based solely on
-`WebSocket.send()` returning.
+```python
+MqttEvent = (
+    Connected
+    | Disconnected
+    | IncomingPublish
+    | Outgoing
+    | Closed
+    | DriverError
+)
 
-Bound inbound buffering between JavaScript callbacks and the MQTT decoder.
-Never accumulate arbitrary `ArrayBuffer` objects because the application has
-stopped consuming events.
-
-## 2. Drive the client in a browser executor
-
-Run one connection driver per client using browser-compatible local futures and
-wakeups. Do not block the JavaScript thread, emulate blocking with spin loops,
-or assume WebAssembly threads/atomics are available.
-
-The driver must:
-
-- start only once for a client;
-- continuously make MQTT progress while running;
-- continue after recoverable connection errors so reconnection remains active;
-- serialize state changes even when JavaScript calls methods reentrantly;
-- avoid polling after terminal close;
-- release WebSocket callbacks, timers, futures, and JavaScript references on
-  shutdown; and
-- turn an unexpected Rust panic into a terminal JavaScript `MqttError` rather
-  than leaving promises pending forever.
-
-Support construction inside a Dedicated Worker and on the window main thread.
-Recommend a worker for high message rates, but do not require cross-origin
-isolation, `SharedArrayBuffer`, or WASM threads in the baseline build.
-
-Do not automatically create a Worker in the first release. Applications may
-import and construct the client inside their own worker. A later worker-proxy
-entry point must define transferable payload ownership, event backpressure,
-termination, and error propagation before it is added.
-
-## 3. Define the JavaScript and TypeScript API
-
-Keep names and result semantics aligned with the native wrapper in `TODO6.md`
-where browser capabilities allow. The initial surface should be equivalent to:
-
-```ts
-export type ProtocolVersion = "3.1.1" | "5.0";
-export type QoS = 0 | 1 | 2;
-
-export class MqttClient {
-  static connect(options: BrowserMqttClientOptions): Promise<MqttClient>;
-
-  enqueuePublish(
-    topic: string,
-    payload: Uint8Array | string,
-    options?: PublishOptions,
-  ): Promise<AdmissionResult>;
-
-  publish(
-    topic: string,
-    payload: Uint8Array | string,
-    options?: PublishOptions,
-  ): Promise<PublishCompletion>;
-
-  subscribe(filters: Subscription[]): Promise<SubscribeCompletion>;
-  unsubscribe(filters: string[]): Promise<UnsubscribeCompletion>;
-  events(): AsyncIterable<MqttEvent>;
-  diagnostics(): Promise<ClientDiagnostics>;
-  close(options?: CloseOptions): Promise<void>;
-  closeNow(): Promise<void>;
-}
+@dataclass(frozen=True, slots=True)
+class IncomingPublish:
+    topic: str
+    payload: bytes
+    qos: QoS
+    retain: bool
+    duplicate: bool
+    properties: V5PublishProperties | None
+    acknowledgement: Acknowledgement | None
 ```
 
-`connect()` resolves only after an accepted CONNACK. Coalesce concurrent
-connection attempts for the same object if the implementation exposes a public
-constructor; reject calls after closing begins. Initial failure and later
-recoverable disconnection must have unambiguous promise/event ordering.
+Make `events()` a single-consumer asynchronous iterator in the first release.
+Raise a stable state error when a second iterator is active. This avoids
+undefined fan-out and prevents duplication of manual-ack responsibility.
 
-`enqueuePublish` resolves at bounded request admission. `publish`, `subscribe`,
-and `unsubscribe` use tracked completion notices. Preserve the underlying
-client's exact QoS milestones and broker reason codes. Promise cancellation or
-garbage collection drops only the JavaScript waiter and must not claim that
-already admitted MQTT work was cancelled.
+In manual-ack mode, eligible publishes carry an `Acknowledgement` whose
+`ack()` coroutine consumes the shared `AckToken` at most once. QoS 0 messages
+must not expose an acknowledgement. Dropping an unacknowledged event does not
+implicitly acknowledge it. Reject token reuse, use with another client, and
+acknowledgement after terminal shutdown.
 
-### 3.1 JavaScript values
+Do not add callback handlers or a background `async for` task hidden by the
+library. A future callback adapter must define exception handling, slow-handler
+backpressure, ordering, manual acknowledgements, and removal synchronization.
 
-Accept strings for MQTT UTF-8 fields and `Uint8Array` for arbitrary bytes.
-Optionally accept string publish payloads by encoding them as UTF-8 explicitly.
-Do not use Node.js `Buffer` in the browser declarations.
+### 1.3 Exceptions
 
-Copy a mutable `Uint8Array` before retaining it across an asynchronous boundary,
-unless a documented consuming API transfers ownership. Returned payloads must
-remain valid after the next event is polled. Avoid repeated conversions through
-JSON, base64, or per-byte JavaScript calls.
+Export a stable exception hierarchy rooted at `MqttError`:
 
-Represent packet identifiers and bounded MQTT integers as JavaScript numbers
-only when their full range is exactly representable. Use `bigint` for counters
-that may exceed the safe integer range.
+```python
+class MqttError(Exception):
+    code: str
+    kind: ErrorKind
+    operation_id: int | None
+    retryable: bool | None
+    ambiguous: bool | None
 
-### 3.2 Events and acknowledgement
+class ConfigurationError(MqttError): ...
+class BackpressureError(MqttError): ...
+class ProtocolError(MqttError): ...
+class BrokerRejectedError(MqttError): ...
+class ClientClosedError(MqttError): ...
+```
 
-Use the discriminated `MqttEvent` union defined for the native wrapper, with
-browser-relevant transport details. Make `events()` single-consumer initially
-and reject a second active iterator.
+Keep exception text diagnostic and non-stable. Applications match `code`,
+`kind`, and documented subclasses, not formatted Rust messages. Preserve MQTT
+5 reason codes and relevant completion details as typed attributes. Use built-in
+`TypeError` for incorrect Python call shapes and `ValueError` for locally
+invalid scalar values only when the distinction is clear; configuration and
+runtime failures use the wrapper hierarchy consistently.
 
-In manual-ack mode, attach a one-shot acknowledgement operation backed by an
-opaque token. Reject token reuse, use with another client, and use after a
-session boundary that invalidates it. Do not expose an arbitrary packet-ID
-acknowledgement API.
+Catch panics inside every native task boundary. Convert them to an
+`INTERNAL_PANIC` terminal driver error, fail outstanding futures, and shut down
+the affected client. Never unwind through Python or abort the interpreter as
+ordinary error handling.
 
-Do not silently drop incoming publishes. Use a configurable bounded event
-buffer and an independent terminal-status path. If the consumer fails to drain
-the buffer within the configured delivery timeout, close the connection,
-reject pending wrapper operations appropriately, and surface
-`EVENT_BUFFER_OVERFLOW`. Revisit this behavior if the landed core can continue
-protocol-critical progress independently of application notification delivery.
+## 2. Integrate with asyncio safely
 
-### 3.3 Errors
+### 2.1 Driver and event-loop ownership
 
-Export the same stable `MqttError` shape and error categories as `TODO6.md`
-where applicable. Add browser-specific stable codes for at least:
+Start the shared dedicated driver when `connect()` is first awaited. Never run
+`EventLoop::poll`, blocking channel receive, thread join, DNS, TLS, or broker
+I/O on the Python event-loop thread. Do not install or reuse the application's
+Tokio runtime.
 
-- WebSocket construction failure;
-- MQTT subprotocol not negotiated;
-- unexpected WebSocket data type;
-- WebSocket close before CONNACK;
-- browser outbound-buffer stall;
-- event-buffer overflow;
-- WASM initialization failure;
-- unsupported browser configuration; and
-- persistence unavailable or denied.
+Bind a client to the running `asyncio` loop used for its first asynchronous
+operation. Reject later use from another loop with a stable error rather than
+resolving futures on the wrong loop. Ordinary command methods may be invoked
+by tasks on that loop; cross-thread callers must schedule through Python's
+documented loop mechanisms themselves.
 
-Keep browser-provided messages and close reasons diagnostic. Do not infer a
-retryable authentication, TLS, or network category from an opaque WebSocket
-error when the browser does not reveal that information.
+Make `connect()` idempotent while connected and coalesce concurrent initial
+calls onto one pending connection result. Reject calls after closing begins.
+Distinguish initial connection failure from a recoverable disconnection after
+a successful connection so the connect future and event stream do not report
+contradictory states.
 
-## 4. Package and initialize WebAssembly
+### 2.2 Future completion and cancellation
 
-Use the established Rust-to-browser binding toolchain selected at implementation
-time. Generate an ES module, `.wasm` artifact, and TypeScript declarations, but
-treat the hand-reviewed TypeScript facade as the stable API rather than exposing
-all generated Rust bindings.
+Create and complete `asyncio.Future` objects only while holding the GIL on a
+valid interpreter thread. The Rust driver sends owned Rust results through a
+native channel; a small bridge schedules result delivery with the bound loop's
+thread-safe callback facility. Never call arbitrary Python code directly from
+the MQTT driver thread.
 
-Support:
+Maintain a registry from shared `OperationId` to Python completion state.
+Remove entries exactly once on completion, cancellation of the waiter,
+interpreter shutdown, or terminal driver failure. If the Python waiter is
+cancelled after admission, discard only its eventual result. Keep enough native
+state to process the MQTT acknowledgement correctly without retaining the
+cancelled future indefinitely.
 
-- modern bundlers through normal npm ESM imports;
-- direct browser ESM loading through a documented initialization entry point;
-- asynchronous streaming instantiation when the server supplies the correct
-  WASM MIME type, with a clear fallback or error contract; and
-- construction inside a Dedicated Worker.
+Handle races among completion, `Future.cancel()`, loop closure, and client
+shutdown without `InvalidStateError` leaking from a scheduling callback.
+Scheduling onto a closed loop must transition native state to cleanup; it must
+not retry forever or leave the driver blocked.
 
-Do not start network activity at module import time. Module initialization may
-be cached, but clients must not share mutable protocol state. Report CSP and
-MIME-type initialization failures with actionable messages.
+### 2.3 Event delivery and overload
 
-Pin the binding CLI and crate versions together in CI. Verify that the npm
-tarball contains the exact `.wasm`, JavaScript, declarations, license, and
-README files referenced by package exports. Add release checksums and
-provenance.
+Bridge the shared bounded event receiver into `__anext__()` without an
+unbounded Python-side queue. Keep at most the documented bounded native events
+plus one pending iterator future. Do not repeatedly schedule callbacks merely
+to discover that no consumer is waiting.
 
-Track release-build size and initialization time. Strip debug/name sections
-from production artifacts unless deliberately shipped separately, enable
-appropriate size optimization, and record material regressions. Do not trade
-away protocol validation or bounded-memory behavior solely to reduce WASM size.
+Apply the `TODO5.md` terminal overflow policy and surface
+`EVENT_BUFFER_OVERFLOW` through the iterator, diagnostics, and all pending
+operations. After overflow, require a new client. An iterator cancelled while
+waiting must release its pending receive slot without consuming or silently
+dropping the next event.
 
-## 5. Browser persistence
+Preserve event order. Once terminal closure is delivered, later `__anext__()`
+calls raise `StopAsyncIteration`; terminal driver failure raises its documented
+exception exactly once before iteration ends, unless the selected iterator
+contract documents persistent failure instead.
 
-Make browser persistence optional and capability-detected. If the landed client
-session-store interface can be implemented correctly with IndexedDB, provide a
-store that:
+## 3. Manage the GIL, objects, and interpreter shutdown
 
-- namespaces records by origin, broker identity, protocol version, client ID,
-  and an explicit application scope;
-- preserves the checkpoint versioning and validation used by the clients;
-- commits one logical checkpoint atomically in a transaction;
-- detects corrupt or incompatible data and reports a structured restore error;
-- supports explicit clear and storage-scope deletion;
-- handles quota, denied access, private-browsing restrictions, and database
-  closure without panicking; and
-- never stores URL credentials or unrelated JavaScript configuration.
+Keep all Python references out of `rumqtt-wrapper-core` and out of long-lived
+driver state wherever possible. Native threads may manipulate only owned Rust
+data until explicitly entering a short Python delivery callback.
 
-Do not advertise durable recovery until real-browser crash/reload tests prove
-the ordering contract. IndexedDB completion and network transmission cannot be
-one atomic operation; retain the clients' documented conservative duplicate
-and ambiguous-delivery semantics.
+`close()` is idempotent and performs the graceful barrier using a finite
+default timeout. `close_now()` is idempotent and requests immediate shutdown.
+Neither blocks the event-loop thread while joining. Completion occurs only
+after the bounded native join succeeds or returns a clear cleanup error.
 
-If the landed persistence interface cannot be driven safely in a browser, ship
-the first wrapper without persistence and record the precise missing capability
-instead of inventing a second session format in JavaScript.
+`MqttClient.__del__` requests nonblocking immediate shutdown. It must not await,
+join indefinitely, import modules, schedule new application work, or assume
+that `asyncio` is still operational. Provide a best-effort warning for a client
+garbage-collected while open, but suppress unsafe warning machinery during
+interpreter finalization.
 
-## 6. Browser lifecycle and security
+Register process/interpreter cleanup only through PyO3 and CPython facilities
+whose ordering contract is understood. Before Python finalization destroys the
+loop or module state:
 
-`close()` performs a finite graceful MQTT shutdown; `closeNow()` performs
-immediate teardown without a delivery claim. Both are idempotent. Object
-finalization may request best-effort local cleanup but must not be required for
-correctness or timely broker notification.
+- mark delivery state as unavailable;
+- prevent new callbacks into Python;
+- wake native command and completion waiters;
+- request immediate shutdown of live drivers; and
+- perform only a bounded join from a safe cleanup context.
 
-Do not promise graceful DISCONNECT from `beforeunload`, page termination,
-worker termination, browser crash, or mobile suspension. Do not disconnect
-merely because a page becomes hidden. Document that browser timer throttling
-and suspension can delay keepalive and cause broker reconnects.
+Do not rely on daemon threads to make process exit appear successful. Test
+normal process exit, `sys.exit()`, loop closure with a live client, garbage
+collection cycles, module teardown, and abrupt child-process termination.
 
-Listen to `online`/`offline` only as hints if doing so improves retry timing.
-Those events must not override MQTT session reconciliation or claim that a
-connection is healthy. Remove every global lifecycle listener on client close.
+Treat each interpreter as owning independent module state. Do not claim
+subinterpreter support until clients can be created, used, destroyed, and the
+subinterpreter finalized repeatedly without global PyObject references or
+callbacks crossing interpreter boundaries. Similarly, do not claim support for
+free-threaded CPython until PyO3 supports the chosen mode and the suite passes
+with concurrent calls and object destruction; retaining a GIL-era safety
+assumption is not acceptable.
 
-Document:
+## 4. Package wheels and typing metadata
 
-- the broker must expose a browser-reachable MQTT-over-WebSocket endpoint;
-- WSS is required when page mixed-content policy disallows WS;
-- the broker may need to allow the page's `Origin` and the `mqtt` subprotocol;
-- CSP must permit the broker in `connect-src` and permit the chosen WASM loading
-  method;
-- native addons and WASM execute trusted package code outside any MQTT-level
-  security boundary; and
-- credentials and decrypted payloads exist in page/WASM memory and are subject
-  to the application's XSS threat model.
+Publish one distribution name, tentatively `rumqttc`, containing the private
+extension, Python facade, inline annotations, and `py.typed`. Do not require end
+users to install Rust, Cargo, a C compiler, or system OpenSSL for supported
+wheel combinations.
 
-## 7. Feature and compatibility reporting
+Build with `maturin` and publish wheels for the CPython versions and platforms
+that CI can execute. The initial target matrix should include at least:
 
-Publish a maintained feature matrix comparing browser and native wrappers.
-Mark unsupported configuration at construction time instead of silently
-ignoring it. At minimum, distinguish:
+- Linux x86_64 and aarch64 using an appropriate manylinux baseline;
+- Linux x86_64 musl using a declared musllinux baseline;
+- macOS x86_64 and arm64 with an explicit minimum deployment target; and
+- Windows x86_64.
 
-| Capability | Browser wrapper |
-| --- | --- |
-| MQTT 3.1.1 / MQTT 5 | Supported |
-| WS / WSS | Supported |
-| Raw TCP / Unix socket | Unsupported |
-| Browser-managed TLS validation | Supported through WSS |
-| Custom CA / TLS provider | Unsupported |
-| HTTP / SOCKS proxy configuration | Unsupported |
-| Custom WebSocket headers | Unsupported |
-| Automatic and manual ACK | Supported |
-| Session persistence | Optional, after IndexedDB verification |
-| WASM threads | Not required |
+Add Windows arm64 and other architectures only when CI can run import and MQTT
+smoke tests, not merely cross-compile. If universal2 macOS wheels are produced,
+test both slices. Audit Linux wheels for forbidden external dependencies and
+verify wheel tags against their actual libc and Python ABI requirements.
 
-Choose minimum Chrome, Firefox, Safari/WebKit, and Edge versions from executed
-CI evidence, not from syntax assumptions. Avoid enabling WASM proposals not
-available across that baseline. Feature-detect optional browser APIs and report
-a structured error when a required API is absent.
+An sdist may be provided for unsupported systems, but document that it requires
+the Rust toolchain and native build prerequisites. Failure to find a compatible
+wheel must produce an ordinary packaging error; never download an executable
+from an install-time script or silently substitute a different Python MQTT
+implementation.
 
-## 8. Verification
+Generate checksums and provenance in the release workflow. Test installation
+into clean virtual environments using the minimum and newest supported `pip`,
+and verify that the wheel contains `py.typed`, annotations, license files, and
+the expected extension binary.
 
-Use real headless browser engines and a deterministic local MQTT broker with
-WebSocket support. Do not substitute Node.js WASM tests for browser tests.
+## 5. Verification matrix
 
-Run the same behavioral suite in Chromium, Firefox, and WebKit for:
+Run the same behavior suite for MQTT 3.1.1 and MQTT 5:
 
-- module initialization through npm/bundler and direct ESM loading;
-- v4 and v5 connect with verified `mqtt` subprotocol;
-- binary payloads containing zero bytes;
-- multiple MQTT packets in one WebSocket message, back-to-back WebSocket
-  messages, and a large message fragmented into WebSocket frames by the test
-  server;
-- QoS 0, 1, and 2 tracked completion;
-- subscribe, incoming publish, unsubscribe;
-- automatic and manual acknowledgement;
-- MQTT 5 properties and negative reason codes;
-- reconnect after broker close and browser offline/online transitions;
-- browser outbound high-watermark and stall behavior;
-- bounded command and event overload;
-- graceful close, immediate close, and close during connection establishment;
-- dropped JavaScript completion waiters;
-- repeated create/connect/close with no retained timers, callbacks, or sockets;
-- construction and operation inside a Dedicated Worker;
-- invalid URL, missing subprotocol, text frame, and opaque WebSocket failure;
-- WSS with a CI-trusted test certificate;
-- IndexedDB save, reload/restore, clear, corruption, and quota failure when the
-  persistence feature is enabled; and
-- TypeScript declarations matching runtime exports.
+- connect and CONNACK, including concurrent and repeated `connect()`;
+- binary publish payloads and mutable buffers containing zero bytes;
+- QoS 0, 1, and 2 tracked completion semantics;
+- subscribe, incoming publish, and unsubscribe;
+- automatic and manual acknowledgement, including double-ack rejection;
+- reconnect after broker interruption;
+- TLS verification and rejected certificates;
+- bounded request backpressure and event-buffer overflow;
+- graceful close, timeout, immediate close, and repeated close;
+- cancellation before admission, after admission, and racing completion;
+- cancellation of a pending `__anext__()` call;
+- event-loop closure and interpreter exit with a live client;
+- use from a different event loop and scheduling from another thread;
+- repeated create/connect/close without native thread, task, or object leaks;
+- panic containment through a test-only injected native failure; and
+- exception attributes and reason-code preservation.
 
-Add targeted Rust/WASM tests for callback-generation isolation, cancellation,
-timer cleanup, byte conversion, error mapping, and parser/state-machine parity.
-Test a production-built npm tarball rather than only a workspace import.
+Run type-checking tests with the selected supported versions of mypy and pyright
+and runtime API tests confirming that annotations match exported names. Test
+both `asyncio.run()` and manually created loops. If another event-loop policy
+such as uvloop is advertised, execute the complete lifecycle suite under it
+rather than assuming asyncio compatibility.
 
-The release workflow should run formatting, native core tests affected by the
-portable changes, WASM compilation, browser unit tests, the three-engine
-integration matrix, TypeScript checks, package-content validation, and artifact
-size reporting. Use the exact commands selected by the eventual toolchain and
-record them in the wrapper README and CI configuration.
+Build and install each wheel in a clean environment, then execute an import,
+connect, publish, receive, and close smoke test on every host architecture
+available in CI. Use a deterministic local broker fixture; release tests must
+not depend on a public MQTT service.
+
+Recommended repository checks should include the actually selected Python
+versions and tools, for example:
+
+```text
+cargo fmt --all
+cargo test -p rumqtt-wrapper-core
+cargo test -p rumqtt-python
+maturin develop
+python -m pytest
+python -m mypy python/rumqttc tests/typing
+python -m pyright python/rumqttc tests/typing
+maturin build --release
+```
+
+Run Rust clippy for the extension and use Python linters/formatters selected by
+the repository. Add sanitizer or leak-check runs for the Rust boundary where
+the Python build and platform support them, plus child-process tests that can
+detect hung native threads at interpreter exit.
 
 ## Documentation and completion criteria
 
-Document installation, asynchronous module initialization, broker WebSocket
-configuration, the TypeScript API, admission versus MQTT completion, manual
-acknowledgement, reconnect behavior, event-consumption requirements, browser
-limitations, worker usage, persistence guarantees, security, and shutdown.
-Add the wrapper to `CHANGELOG.md` when it becomes user-facing.
+Document the supported Python implementations and versions, wheel platforms,
+installation from wheels and source, `asyncio` loop affinity, admission versus
+MQTT completion, cancellation ambiguity, continuous event consumption,
+reconnect behavior, manual acknowledgements, TLS configuration, and graceful
+versus immediate shutdown. Include examples using `async with`, a dedicated
+event-consumer task, tracked publish, cancellation-safe application cleanup,
+and MQTT 5 properties.
 
-This TODO is complete when a published browser package passes the full v4/v5
-behavioral suite in every advertised browser engine, operates on the main
-thread and in a Dedicated Worker without blocking, uses bounded memory, cleans
-up all browser resources deterministically, exposes no unsupported native
-configuration, and requires no commitment to a decoupling architecture beyond
-the capabilities listed in this document.
+State unsupported behavior plainly: no synchronous facade, no callback API,
+no cross-loop client use, and no subinterpreter, free-threaded, PyPy, or other
+interpreter support until its matrix passes. Add the wrapper to `CHANGELOG.md`
+when it becomes user-facing.
+
+This TODO is complete when one typed Python distribution passes the shared MQTT
+behavior, asyncio cancellation, bounded-memory, interpreter-shutdown, wheel,
+and leak suites on every advertised CPython version and platform, with no Rust
+panic, borrowed Python memory, or background callback able to cross an invalid
+Python interpreter boundary.
