@@ -3,7 +3,7 @@
 ## Goal
 
 Determine whether the per-client dedicated-thread model in
-`rumqtt-wrapper-core` should remain the only execution mode, remain the default
+`rumqttc-wrapper-core` should remain the only execution mode, remain the default
 alongside a second mode, or be replaced after real native wrappers establish
 their lifecycle and scheduling requirements.
 
@@ -35,7 +35,7 @@ Tokio is an internal execution dependency because the rumqtt clients already
 use Tokio networking, timers, and event-loop futures. The host does not provide
 an executor and cannot accidentally stop MQTT progress by failing to poll a
 host future. Python, JavaScript, and C scheduling, callback, promise, GIL, and
-ABI behavior remains outside `rumqtt-wrapper-core`.
+ABI behavior remains outside `rumqttc-wrapper-core`.
 
 The model deliberately incurs:
 
@@ -58,7 +58,7 @@ dedicated thread.
 
 Begin this investigation only after:
 
-- `rumqtt-wrapper-core` is used by at least two native wrappers;
+- `rumqttc-wrapper-core` is used by at least two native wrappers;
 - one consumer exercises an asynchronous host runtime, preferably the
   JavaScript wrapper from `TODO6.md` or a Python asyncio wrapper;
 - one consumer exercises explicit native ownership and teardown, preferably
@@ -217,7 +217,7 @@ For each alternative:
 6. record the result in an architecture decision document; and
 7. remove unselected APIs, features, and prototype code.
 
-Prefer compatible internal refactoring while `rumqtt-wrapper-core` remains
+Prefer compatible internal refactoring while `rumqttc-wrapper-core` remains
 private. After wrappers expose stable behavior, preserve their progress,
 completion, overload, and shutdown contracts even if execution changes.
 
@@ -255,4 +255,4 @@ This TODO is complete when:
 - unused prototypes and speculative executor abstractions have been removed.
 
 Until then, keep dedicated-thread execution as the supported implementation and
-keep `rumqtt-wrapper-core` private.
+keep `rumqttc-wrapper-core` private.

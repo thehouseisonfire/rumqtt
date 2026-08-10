@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-use rumqtt_wrapper_core::{ClientConfig, ErrorKind, NativeClient, WrapperEvent};
+use rumqttc_wrapper_core::{ClientConfig, ErrorKind, NativeClient, WrapperEvent};
 
 #[test]
 fn full_event_buffer_terminates_through_reserved_status_path() {

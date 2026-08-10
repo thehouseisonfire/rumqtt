@@ -2,7 +2,7 @@
 
 ## Goal
 
-Review the provisional `rumqtt-wrapper-core` boundaries after real C and
+Review the provisional `rumqttc-wrapper-core` boundaries after real C and
 JavaScript or Python wrappers have shaped their public APIs. For each area in
 this document, determine from wrapper requirements, measurements, and failure
 tests whether the current implementation should be retained, documented more
@@ -21,7 +21,7 @@ execution mode selected there.
 
 Start this review after:
 
-- at least two native wrappers consume `rumqtt-wrapper-core`;
+- at least two native wrappers consume `rumqttc-wrapper-core`;
 - their public command, completion, event, error, and cleanup APIs have working
   integration tests;
 - the C wrapper exercises explicit ownership and timed blocking operations;
@@ -334,5 +334,5 @@ This TODO is complete when:
 - TLS provider policy is compatible with every released artifact; and
 - unselected prototypes and speculative abstractions have been removed.
 
-Until then, treat `rumqtt-wrapper-core` as private, revisable infrastructure and
+Until then, treat `rumqttc-wrapper-core` as private, revisable infrastructure and
 avoid promising stability for these internal APIs.

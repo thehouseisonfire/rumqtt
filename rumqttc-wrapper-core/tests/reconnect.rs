@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rumqtt_wrapper_core::{ClientConfig, Command, NativeClient, WrapperEvent};
+use rumqttc_wrapper_core::{ClientConfig, Command, NativeClient, WrapperEvent};
 
 fn read_frame(stream: &mut TcpStream) -> Option<u8> {
     let mut header = [0];

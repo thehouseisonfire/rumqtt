@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use rumqtt_wrapper_core::{
+use rumqttc_wrapper_core::{
     ClientConfig, Command, Completion, DiagnosticsSnapshot, ErrorKind, NativeClient,
     ProtocolVersion, PublishCommand, PublishCompletion, QoS, SubscribeCommand, Subscription,
     WrapperEvent,
@@ -91,7 +91,7 @@ fn read_frame(stream: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
     Some((header[0], body))
 }
 
-fn wait_connected(events: &mut rumqtt_wrapper_core::EventConsumer) {
+fn wait_connected(events: &mut rumqttc_wrapper_core::EventConsumer) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if matches!(

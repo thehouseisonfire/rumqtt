@@ -1,4 +1,4 @@
-# rumqtt-wrapper-core
+# rumqttc-wrapper-core
 
 Private Rust infrastructure shared by native rumqtt wrappers. The crate owns
 the MQTT event loop on a dedicated thread and exposes owned, protocol-neutral

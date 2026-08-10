@@ -17,6 +17,7 @@ use rumqttc::{
     RedirectPolicy, RedirectTargetProfile, SrvRecord, SrvResolver, Transport,
 };
 use std::collections::HashMap;
+use std::io;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -122,12 +123,12 @@ fn connack(code: ConnectReturnCode, reference: Option<&str>) -> Vec<u8> {
     encoded.to_vec()
 }
 
-async fn read_connect<S: AsyncRead + Unpin>(stream: &mut S) {
-    assert_eq!(stream.read_u8().await.unwrap() >> 4, 1);
+async fn read_connect<S: AsyncRead + Unpin>(stream: &mut S) -> io::Result<()> {
+    assert_eq!(stream.read_u8().await? >> 4, 1);
     let mut remaining = 0usize;
     let mut multiplier = 1usize;
     loop {
-        let byte = stream.read_u8().await.unwrap();
+        let byte = stream.read_u8().await?;
         remaining += usize::from(byte & 0x7f) * multiplier;
         if byte & 0x80 == 0 {
             break;
@@ -135,7 +136,8 @@ async fn read_connect<S: AsyncRead + Unpin>(stream: &mut S) {
         multiplier *= 128;
     }
     let mut body = vec![0; remaining];
-    stream.read_exact(&mut body).await.unwrap();
+    stream.read_exact(&mut body).await?;
+    Ok(())
 }
 
 async fn spawn_origin() -> (u16, tokio::task::JoinHandle<()>) {
@@ -143,7 +145,7 @@ async fn spawn_origin() -> (u16, tokio::task::JoinHandle<()>) {
     let port = listener.local_addr().unwrap().port();
     let task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        read_connect(&mut stream).await;
+        read_connect(&mut stream).await.unwrap();
         stream
             .write_all(&connack(ConnectReturnCode::UseAnotherServer, Some(OWNER)))
             .await
@@ -244,7 +246,7 @@ async fn spawn_rustls_server(
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         if let Ok(mut stream) = acceptor.accept(stream).await {
-            read_connect(&mut stream).await;
+            read_connect(&mut stream).await.unwrap();
             stream.write_all(&connack(code, None)).await.unwrap();
         }
     });
@@ -266,8 +268,9 @@ async fn spawn_native_server(
     let port = listener.local_addr().unwrap().port();
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        if let Ok(mut stream) = acceptor.accept(stream).await {
-            read_connect(&mut stream).await;
+        if let Ok(mut stream) = acceptor.accept(stream).await
+            && read_connect(&mut stream).await.is_ok()
+        {
             stream.write_all(&connack(code, None)).await.unwrap();
         }
     });

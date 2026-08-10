@@ -69,33 +69,33 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
-- `rumqttc` v4/v5 / `rumqtt-wrapper-core`: Reject publish Topic Names containing U+0000 or
+- `rumqttc` v4/v5 / `rumqttc-wrapper-core`: Reject publish Topic Names containing U+0000 or
   exceeding MQTT's 65,535-byte UTF-8 string limit before request admission, preventing malformed
   publications from reaching serialization or reconnect replay.
-- `rumqtt-wrapper-core`: Keep immediate shutdown observable after its one-shot wake-up is consumed,
+- `rumqttc-wrapper-core`: Keep immediate shutdown observable after its one-shot wake-up is consumed,
   preventing later event deliveries from turning shutdown into an event-buffer timeout. Treat MQTT
   5 publish capabilities as unknown before CONNACK and during reconnect, so capability-dependent
   nonblocking admission reports transient backpressure and asynchronous admission resumes after
   negotiation instead of admitting work against permissive defaults.
-- `rumqtt-wrapper-core`: Validate MQTT 5 publishes against the broker's negotiated Maximum QoS and
+- `rumqttc-wrapper-core`: Validate MQTT 5 publishes against the broker's negotiated Maximum QoS and
   Retain Available capabilities before admission and Topic Alias mutation, preventing a locally
   rejected binding from authorizing a later alias-only publish.
-- `rumqtt-wrapper-core`: Complete diagnostics admitted before a graceful-disconnect barrier with
+- `rumqttc-wrapper-core`: Complete diagnostics admitted before a graceful-disconnect barrier with
   the final cached driver snapshot instead of abandoning their handles during shutdown.
-- `rumqtt-wrapper-core`: Accept password-only CONNECT authentication for MQTT 5 while retaining
+- `rumqttc-wrapper-core`: Accept password-only CONNECT authentication for MQTT 5 while retaining
   MQTT 3.1.1's username dependency. Reject client identifiers and usernames containing U+0000 or
   exceeding the MQTT two-byte UTF-8 length, and reject oversized binary passwords, before starting
   the background driver.
-- `rumqttc` v5 / `rumqtt-wrapper-core` (Breaking Change): Preserve whether an active QoS 2
+- `rumqttc` v5 / `rumqttc-wrapper-core` (Breaking Change): Preserve whether an active QoS 2
   `PUBREL` was replayed during recovery until its `PUBCOMP` arrives. Recovery reason
   `PacketIdentifierNotFound` (`0x92`) now produces the explicit successful
   `PublishResult::Qos2Recovered` outcome and wrapper `Qos2Completed` completion, while the same
   reason outside recovery remains a broker rejection. Client-originated wrapper publishes also
   reject an empty Topic Name without a nonzero Topic Alias in the wrapper validation layer.
-- `rumqtt-wrapper-core`: Wake capacity-waiting synchronous and asynchronous admissions when the
+- `rumqttc-wrapper-core`: Wake capacity-waiting synchronous and asynchronous admissions when the
   driver reaches a terminal lifecycle state, so terminal failures cannot leave admissions blocked
   after the MQTT request receiver has closed.
-- `rumqttc` v5 / `rumqtt-wrapper-core` (Breaking Change): Make the producer-synchronized
+- `rumqttc` v5 / `rumqttc-wrapper-core` (Breaking Change): Make the producer-synchronized
   reconnect-boundary repair for Topic Alias publishes retain its seed at the exact cleanup drain
   boundary and apply later rebindings in admission order. This prevents an earlier alias-only
   publish from being resolved through a later rebinding. The repair method no longer accepts a

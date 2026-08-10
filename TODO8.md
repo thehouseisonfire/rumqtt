@@ -278,7 +278,7 @@ contract documents persistent failure instead.
 
 ## 3. Manage the GIL, objects, and interpreter shutdown
 
-Keep all Python references out of `rumqtt-wrapper-core` and out of long-lived
+Keep all Python references out of `rumqttc-wrapper-core` and out of long-lived
 driver state wherever possible. Native threads may manipulate only owned Rust
 data until explicitly entering a short Python delivery callback.
 
@@ -383,7 +383,7 @@ versions and tools, for example:
 
 ```text
 cargo fmt --all
-cargo test -p rumqtt-wrapper-core
+cargo test -p rumqttc-wrapper-core
 cargo test -p rumqtt-python
 maturin develop
 python -m pytest

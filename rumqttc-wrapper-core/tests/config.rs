@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use rumqtt_wrapper_core::{ClientConfig, ErrorKind, TlsConfig, TransportConfig};
+use rumqttc_wrapper_core::{ClientConfig, ErrorKind, TlsConfig, TransportConfig};
 
 #[test]
 fn rejects_password_without_username() {

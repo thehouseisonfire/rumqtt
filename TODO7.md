@@ -372,7 +372,7 @@ Recommended repository checks include:
 
 ```text
 cargo fmt --all
-cargo test -p rumqtt-wrapper-core
+cargo test -p rumqttc-wrapper-core
 cargo test -p rumqttc-c
 cargo clippy -p rumqttc-c --all-targets -- -D warnings
 ```

@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use bytes::Bytes;
-use rumqtt_wrapper_core::{
+use rumqttc_wrapper_core::{
     AckMode, AckToken, Command, DeliveryStatus, ErrorKind, NativeClient, PublishCommand, QoS,
     V5PublishProperties, WrapperEvent,
 };
@@ -28,7 +28,7 @@ fn read_frame(stream: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
     Some((header[0], body))
 }
 
-fn recv_ack_token(events: &mut rumqtt_wrapper_core::EventConsumer, duplicate: bool) -> AckToken {
+fn recv_ack_token(events: &mut rumqttc_wrapper_core::EventConsumer, duplicate: bool) -> AckToken {
     loop {
         match events.recv_timeout(Duration::from_secs(2)).unwrap() {
             Some(WrapperEvent::IncomingPublish(publish)) if publish.duplicate == duplicate => {
@@ -62,7 +62,7 @@ fn mqtt5_publish_rejection_preserves_reason_code() {
         }
     });
 
-    let mut native = NativeClient::start(rumqtt_wrapper_core::ClientConfig::v5(
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
         "negative-ack",
         "127.0.0.1",
         port,
@@ -112,7 +112,7 @@ fn rejects_invalid_client_originated_mqtt5_publish_properties() {
         }
     });
 
-    let mut native = NativeClient::start(rumqtt_wrapper_core::ClientConfig::v5(
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
         "invalid-subscription-id",
         "127.0.0.1",
         port,
@@ -244,7 +244,7 @@ fn rejects_unmapped_topic_alias_with_empty_topic() {
         }
     });
 
-    let mut native = NativeClient::start(rumqtt_wrapper_core::ClientConfig::v5(
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
         "unmapped-topic-alias",
         "127.0.0.1",
         port,
@@ -298,7 +298,7 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
         }
     });
 
-    let mut native = NativeClient::start(rumqtt_wrapper_core::ClientConfig::v5(
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
         "valid-topic-alias",
         "127.0.0.1",
         port,
@@ -383,7 +383,7 @@ fn manual_ack_token_is_single_use() {
         }
     });
 
-    let mut config = rumqtt_wrapper_core::ClientConfig::v311("manual-ack", "127.0.0.1", port);
+    let mut config = rumqttc_wrapper_core::ClientConfig::v311("manual-ack", "127.0.0.1", port);
     config.common.ack_mode = AckMode::Manual;
     config.common.event_buffer_capacity = 1;
     config.common.event_delivery_timeout = Duration::from_secs(5);
@@ -402,7 +402,7 @@ fn manual_ack_token_is_single_use() {
         stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
         while read_frame(&mut stream).is_some() {}
     });
-    let mut other = NativeClient::start(rumqtt_wrapper_core::ClientConfig::v311(
+    let mut other = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v311(
         "other-client",
         "127.0.0.1",
         other_port,

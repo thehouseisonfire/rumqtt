@@ -65,7 +65,7 @@ repos:
 
           cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next -p mqttbytes-v5-next -p rumqttc-v4-next -p rumqttc-v5-next;
 
-          cargo clippy --fix --allow-dirty --all-targets --no-deps -p rumqtt-wrapper-core
+          cargo clippy --fix --allow-dirty --all-targets --no-deps -p rumqttc-wrapper-core
           '
         language: system
         pass_filenames: false
@@ -263,7 +263,7 @@ repos:
           -p rumqttc-v4-next
           -p rumqttc-v5-next;
 
-          cargo test -p rumqtt-wrapper-core
+          cargo test -p rumqttc-wrapper-core
           '
         language: system
         pass_filenames: false

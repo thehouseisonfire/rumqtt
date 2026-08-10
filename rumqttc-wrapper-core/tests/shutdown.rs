@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use rumqtt_wrapper_core::{
+use rumqttc_wrapper_core::{
     ClientConfig, Command, Completion, DeliveryStatus, NativeClient, ProtocolVersion,
     PublishCommand, PublishCompletion, QoS, WrapperEvent,
 };
@@ -14,7 +14,7 @@ fn read_frame(stream: &mut TcpStream) -> Option<u8> {
     read_frame_with_body(stream).map(|(header, _)| header)
 }
 
-fn wait_connected(events: &mut rumqtt_wrapper_core::EventConsumer) {
+fn wait_connected(events: &mut rumqttc_wrapper_core::EventConsumer) {
     loop {
         match events.recv_timeout(Duration::from_secs(2)).unwrap() {
             Some(WrapperEvent::Connected { .. }) => return,

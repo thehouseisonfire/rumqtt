@@ -12,7 +12,7 @@ or Rust's ABI will be exposed to foreign callers.
 
 ## Scope and non-goals
 
-Create a workspace crate tentatively named `rumqtt-wrapper-core`. All native
+Create a workspace crate tentatively named `rumqttc-wrapper-core`. All native
 wrappers should consume it unless implementation experience shows that a
 particular wrapper cannot do so without compromising its host runtime.
 
@@ -42,7 +42,7 @@ the underlying client option directly.
 ## Proposed crate layout
 
 ```text
-rumqtt-wrapper-core/
+rumqttc-wrapper-core/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs
@@ -74,7 +74,7 @@ wrappers have validated the boundary.
 
 ## Protocol support contract
 
-`rumqtt-wrapper-core` and each native host-language wrapper should support MQTT
+`rumqttc-wrapper-core` and each native host-language wrapper should support MQTT
 3.1.1 and MQTT 5 through one crate or distributed package. This is
 dual-protocol package support, not a connection that speaks both versions.
 
@@ -306,7 +306,7 @@ out-parameters, and caller-freed event/completion objects. It owns panic
 containment and ABI versioning.
 
 Do not add conditional `pyo3`, `napi`, or C header-generation features to
-`rumqtt-wrapper-core`.
+`rumqttc-wrapper-core`.
 
 ## 4. Verification
 
@@ -329,7 +329,7 @@ Run at minimum:
 
 ```text
 cargo fmt --all
-cargo test -p rumqtt-wrapper-core
+cargo test -p rumqttc-wrapper-core
 cargo test -p rumqttc-v4-next
 cargo test -p rumqttc-v5-next
 ```
