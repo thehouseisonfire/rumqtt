@@ -27,23 +27,25 @@ allocator-free operation.
 ## Required capability tiers
 
 The public feature contract for all three crates must have three explicit
-tiers:
+capability tiers. The two protocol crates add a fourth, opt-in framing tier:
 
 | Enabled features | Required environment | Available API |
 | --- | --- | --- |
 | none | `core` only | Complete borrowed packet codec and slice-based framing |
 | `alloc` | `core` plus a global allocator | Owned packet types and allocation-backed compatibility helpers |
-| `std` | standard library | `alloc` API plus I/O integration such as the `tokio-util` codec |
+| `std` | standard library | `alloc` API plus standard-library integration |
+| `codec` (v4/v5 only) | standard library | `std` API plus the `tokio-util` framed codec |
 
-`std` must imply `alloc`. Default features may remain `std` to preserve the
-normal desktop experience. `bytes` and `tokio-util` must be optional and must
-not occur in the feature-free target's normal dependency graph. If an
-allocation-backed dependency is retained, its feature must be forwarded only
-from this repository's `alloc` or `std` features.
+`std` must imply `alloc`, and `codec` must imply `std`. Default features may
+remain `std` to preserve the normal desktop experience without requiring Tokio.
+`bytes` and `tokio-util` must be optional and must not occur in the
+feature-free target's normal dependency graph. `tokio-util` must be activated
+only by `codec`. If an allocation-backed dependency is retained, its feature
+must be forwarded only from this repository's `alloc` or `std` features.
 
-`mqttbytes-core-next` must follow the same tiering even if its allocation-backed
-surface is small. A protocol crate must not accidentally reactivate a default
-or allocation feature on `mqttbytes-core-next`.
+`mqttbytes-core-next` must follow the `none`/`alloc`/`std` tiering even if its
+allocation-backed surface is small. A protocol crate must not accidentally
+reactivate a default or allocation feature on `mqttbytes-core-next`.
 
 ## Normative requirements
 

@@ -5,7 +5,7 @@ use super::{
 };
 
 #[allow(clippy::missing_errors_doc)]
-#[cfg(feature = "std")]
+#[cfg(feature = "codec")]
 mod codec;
 #[expect(clippy::missing_errors_doc)]
 mod connack;
@@ -34,7 +34,7 @@ mod unsuback;
 #[expect(clippy::missing_errors_doc)]
 mod unsubscribe;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "codec")]
 pub use codec::*;
 pub use connack::*;
 pub use connect::*;

@@ -37,6 +37,9 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `mqttbytes` v4/v5 (Breaking Change): Gate the `tokio-util` framed `Codec`
+  behind a new opt-in `codec` feature. The default `std` feature no longer
+  activates `tokio-util`; `codec` implies `std`.
 - `rumqttc` v4/v5: Improve small-packet decoding by exposing selected shared codec primitives to
   cross-crate inlining.
 - `rumqttc`: Set the published client crates' MSRV to Rust `1.88`, enabling the

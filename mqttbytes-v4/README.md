@@ -7,8 +7,9 @@
 `rumqttc-v4-next`.
 
 The packet codec supports `no_std` environments with an allocator when default
-features are disabled. The default `std` feature also exposes the
-`tokio-util`-based framed `Codec` and the I/O error variant required by it.
+features are disabled. The default `std` feature enables standard-library
+integration without requiring Tokio. Enable the opt-in `codec` feature to
+expose the `tokio-util`-based framed `Codec`; `codec` implies `std`.
 
 This crate does not provide networking, an event loop, or broker session
 management.

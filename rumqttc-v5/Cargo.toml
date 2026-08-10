@@ -51,7 +51,7 @@ flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
 http = "1.0.0"
 rumqttc-core = { package = "rumqttc-core-next", path = "../rumqttc-core", version = "0.34.0-alpha", default-features = false }
-mqttbytes-v5 = { package = "mqttbytes-v5-next", path = "../mqttbytes-v5", version = "0.34.0-alpha", default-features = false, features = ["std"] }
+mqttbytes-v5 = { package = "mqttbytes-v5-next", path = "../mqttbytes-v5", version = "0.34.0-alpha", default-features = false, features = ["codec"] }
 hickory-resolver = { version = "0.26.1", optional = true, default-features = false, features = ["system-config", "tokio"] }
 rand = "0.10"
 

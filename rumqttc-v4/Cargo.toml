@@ -48,7 +48,7 @@ log = "0.4"
 flume = { version = "0.12", default-features = false, features = ["async"] }
 thiserror = "2.0.8"
 rumqttc-core = { package = "rumqttc-core-next", path = "../rumqttc-core", version = "0.34.0-alpha", default-features = false }
-mqttbytes-v4 = { package = "mqttbytes-v4-next", path = "../mqttbytes-v4", version = "0.34.0-alpha", default-features = false, features = ["std"] }
+mqttbytes-v4 = { package = "mqttbytes-v4-next", path = "../mqttbytes-v4", version = "0.34.0-alpha", default-features = false, features = ["codec"] }
 
 # Optional
 # rustls

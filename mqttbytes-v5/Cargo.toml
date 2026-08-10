@@ -12,13 +12,17 @@ license.workspace = true
 authors.workspace = true
 readme = "README.md"
 
+[package.metadata.docs.rs]
+features = ["codec"]
+
 [lib]
 name = "mqttbytes_v5"
 
 [features]
 default = ["std"]
 bench-instrumentation = []
-std = ["bytes/std", "thiserror/std", "dep:tokio-util"]
+codec = ["std", "dep:tokio-util"]
+std = ["bytes/std", "thiserror/std"]
 
 [dependencies]
 bytes = { version = "1.5", default-features = false }
