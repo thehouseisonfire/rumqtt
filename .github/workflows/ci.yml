@@ -11,6 +11,7 @@ on:
       - 'rumqttc-next/**'
       - 'rumqttc-v4/**'
       - 'rumqttc-v5/**'
+      - 'rumqttc-wrapper-core/**'
       - 'benchmarks/**'
       - '**.md'
       - 'Cargo.*'
@@ -187,6 +188,7 @@ jobs:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
             cargo clippy --fix --allow-dirty --verbose --all-targets -p mqttbytes-core-next
+            cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-wrapper-core-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
@@ -202,6 +204,7 @@ jobs:
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
             cargo doc --verbose --no-deps -p mqttbytes-core-next
+            cargo doc --verbose --no-deps -p rumqttc-wrapper-core-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
@@ -215,6 +218,7 @@ jobs:
       - name: Standalone crate doctests
         run: |
             cargo test --doc -p mqttbytes-core-next
+            cargo test --doc -p rumqttc-wrapper-core-next
             cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v4-next
             cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-core-next
@@ -228,6 +232,7 @@ jobs:
       - name: Test standalone crates
         run: |
             cargo test -p mqttbytes-core-next
+            cargo test -p rumqttc-wrapper-core-next
             cargo hack --each-feature --exclude-all-features test -p mqttbytes-v4-next
             cargo hack --each-feature --exclude-all-features test -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next

@@ -16,6 +16,7 @@ PACKAGE_NAMES=(
     "rumqttc-core-next"
     "rumqttc-v4-next"
     "rumqttc-v5-next"
+    "rumqttc-wrapper-core-next"
     "rumqttc-next"
 )
 
@@ -26,6 +27,7 @@ PUBLISH_ORDER=(
     "rumqttc-core-next"
     "rumqttc-v4-next"
     "rumqttc-v5-next"
+    "rumqttc-wrapper-core-next"
     "rumqttc-next"
 )
 
@@ -36,6 +38,7 @@ MANIFESTS=(
     "rumqttc-core/Cargo.toml"
     "rumqttc-v4/Cargo.toml"
     "rumqttc-v5/Cargo.toml"
+    "rumqttc-wrapper-core/Cargo.toml"
     "rumqttc-next/Cargo.toml"
 )
 
@@ -158,6 +161,7 @@ confirm_unmanaged_version_references() {
         ':(exclude)rumqttc-v4/Cargo.toml' \
         ':(exclude)rumqttc-v5/Cargo.toml' \
         ':(exclude)rumqttc-next/Cargo.toml' \
+        ':(exclude)rumqttc-wrapper-core/Cargo.toml' \
         ':(exclude)README.md' \
         ':(exclude)MIGRATION.md' \
         ':(exclude)docs/recipes/proxies.md' \
@@ -307,6 +311,12 @@ replace_all_versions() {
     s/(rumqttc_v5 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
   ' rumqttc-next/Cargo.toml
 
+    perl -0pi -e '
+    s/^version = "\Q'"$old"'\E"/version = "'"$new"'"/m;
+    s/(rumqttc_v4 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
+    s/(rumqttc_v5 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
+  ' rumqttc-wrapper-core/Cargo.toml
+
     if [[ "$old" != "$new" ]]; then
         OLD_VERSION="$old" NEW_VERSION="$new" perl -0pi -e '
       s/\Q$ENV{OLD_VERSION}\E/$ENV{NEW_VERSION}/g
@@ -385,6 +395,7 @@ verify_release() {
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \
+        -p rumqttc-wrapper-core-next \
         -p rumqttc-next
 
     cargo test --locked --doc \
@@ -394,6 +405,7 @@ verify_release() {
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \
+        -p rumqttc-wrapper-core-next \
         -p rumqttc-next
 
     if ! cargo audit; then

@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc-wrapper-core`: Publish the native-wrapper infrastructure crate on
+  crates.io as `rumqttc-wrapper-core-next`, alongside the coordinated
+  `rumqttc-next` release.
 - `mqttbytes` v4/v5: Publish the MQTT 3.1.1 and MQTT 5 packet codecs as
   `mqttbytes-v4-next` and `mqttbytes-v5-next`. All three codec crates now
   support `no_std` targets with an allocator when default features are disabled.

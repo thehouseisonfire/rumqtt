@@ -2263,8 +2263,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumqttc-wrapper-core"
-version = "0.1.0"
+name = "rumqttc-wrapper-core-next"
+version = "0.34.0-alpha"
 dependencies = [
  "bytes",
  "flume",

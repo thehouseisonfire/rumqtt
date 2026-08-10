@@ -7,6 +7,7 @@ This repo contains two Rust workspaces. Main client-workspace members are:
 - `mqttbytes-v5/`: standalone MQTT 5 packet codec crate.
 - `rumqttc-v4/`: MQTT 3.1.1 client crate.
 - `rumqttc-v5/`: MQTT 5 client crate.
+- `rumqttc-wrapper-core/`: protocol-neutral support for native client wrappers.
 - `benchmarks/`: maintained client, codec, and options performance harness.
 - `docs/`: design notes and contributor conduct docs.
 
