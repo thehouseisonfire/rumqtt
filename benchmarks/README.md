@@ -35,6 +35,8 @@ Supported workload groups:
 - `codec validation-cost` for a paired MQTT v4/v5 experiment that measures
   checked PUBLISH encoding against encoding of an already validated topic
 - `client throughput|latency|connections`
+- `client publish-path` for paired checked/`ValidatedTopic` measurement through
+  the public API, event loop, state machine, encoder, and an in-process sink
 - `options parse-url`
 
 MQTT-specific file-backed persistence workloads live in the independent
@@ -136,6 +138,62 @@ samples. `validation_share_percent` estimates the checked encoder time spent
 on the skipped scan, while `prevalidated_speedup_percent` reports throughput
 improvement. This is a codec microbenchmark and therefore an upper bound, not
 evidence of the same improvement in a broker-backed client workload.
+
+### ValidatedTopic Client Publish Path
+
+`client publish-path` is the primary deterministic measurement for the
+`ValidatedTopic` optimization. It alternates raw and prevalidated topic inputs,
+constructs all inputs before timing, and drives every publish through the public
+client API, event loop, state machine, encoder, and an in-process MQTT peer. It
+reports raw samples, medians, and a paired bootstrap confidence interval.
+
+```bash
+cargo run --release -p benchmarks --bin rumqtt-bench -- \
+  client publish-path \
+  --protocol v5 \
+  --warmup-rounds 1 \
+  --rounds 12 \
+  --messages 100000 \
+  --topic bench/client \
+  --payload-size 0 \
+  --qos 0
+```
+
+For acceptance, run both v4 and v5, QoS 0 and 1, payload sizes 0, 64,
+1024, and 4096 bytes, and both a roughly 12-byte and 160-byte topic. Use at
+least one warmup round followed by 12 measured rounds. Retain the JSON
+output and repeat the equivalent `codec validation-cost` matrix as the
+theoretical upper bound. CI smoke runs confirm functionality only and must not
+assert a performance ratio.
+
+Broker-backed `client throughput` TCP and TLS scenarios remain realism checks.
+Their results must be reported separately because network and broker work can
+conceal the client-side delta.
+
+#### Negative production experiment (2026-08-10)
+
+An end-to-end provenance implementation was measured with Rust 1.96.1
+(`31fca3adb 2026-06-26`) on `x86_64-unknown-linux-gnu`. The deliberately
+favorable MQTT v4 case used a 160-byte topic, empty payload, QoS 0, 100,000
+publishes, one warmup pair, and 12 measured pairs:
+
+```bash
+cargo run --release -q -p benchmarks --bin rumqtt-bench -- \
+  client publish-path --protocol v4 --warmup-rounds 1 --rounds 12 \
+  --messages 100000 --payload-size 0 --qos 0 \
+  --topic aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+```
+
+The checked-path median was 0.0838935455 seconds and the prevalidated-path
+median was 0.0910975675 seconds: a 8.169% regression, with a paired 95%
+bootstrap interval of 6.308% to 10.591% regression. This failed the first
+realistic client-path acceptance attempt decisively, so the production
+provenance plumbing was removed as required by the experiment plan. The wider
+protocol/QoS/payload matrix, broker-backed realism checks, and artifact-size
+comparison were not run because the candidate was already ineligible for
+retention. The benchmark remains available for future implementations; the
+direct `codec validation-cost` result should still be interpreted only as a
+theoretical ceiling.
 
 ## Codec Profiling
 

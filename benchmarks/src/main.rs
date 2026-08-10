@@ -50,6 +50,7 @@ enum ClientCommand {
     Throughput(ClientThroughputArgs),
     Latency(ClientLatencyArgs),
     Connections(ClientConnectionArgs),
+    PublishPath(ClientPublishPathArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -151,6 +152,30 @@ struct ClientConnectionArgs {
 
     #[arg(long)]
     ca_cert: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ClientPublishPathArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    #[arg(long, default_value = "12")]
+    rounds: usize,
+
+    #[arg(long, default_value = "1")]
+    warmup_rounds: usize,
+
+    #[arg(long, default_value = "10000")]
+    messages: usize,
+
+    #[arg(long, default_value = "64")]
+    payload_size: usize,
+
+    #[arg(long, default_value = "bench/client")]
+    topic: String,
+
+    #[arg(long, default_value = "1", value_parser = parse_qos)]
+    qos: u8,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -302,6 +327,7 @@ async fn main() -> anyhow::Result<()> {
             ClientCommand::Throughput(args) => run_client_throughput(args).await,
             ClientCommand::Latency(args) => run_client_latency(args).await,
             ClientCommand::Connections(args) => run_client_connections(args).await,
+            ClientCommand::PublishPath(args) => run_client_publish_path(args).await,
         },
         CommandGroup::Codec { command } => match command {
             CodecCommand::Encode(args) => run_codec(args, CodecMode::Encode),
@@ -330,6 +356,312 @@ impl CodecMode {
             Self::Roundtrip => "roundtrip",
         }
     }
+}
+
+async fn read_benchmark_frame(
+    stream: &mut tokio::io::DuplexStream,
+) -> anyhow::Result<(u8, Vec<u8>)> {
+    use tokio::io::AsyncReadExt;
+
+    let byte1 = stream.read_u8().await?;
+    let mut multiplier = 1_usize;
+    let mut remaining = 0_usize;
+    loop {
+        let encoded = stream.read_u8().await?;
+        remaining = remaining
+            .checked_add(usize::from(encoded & 0x7f) * multiplier)
+            .context("invalid MQTT remaining length")?;
+        if encoded & 0x80 == 0 {
+            break;
+        }
+        multiplier = multiplier
+            .checked_mul(128)
+            .context("invalid MQTT remaining length")?;
+        if multiplier > 128 * 128 * 128 {
+            bail!("malformed MQTT remaining length");
+        }
+    }
+    let mut body = vec![0; remaining];
+    stream.read_exact(&mut body).await?;
+    Ok((byte1, body))
+}
+
+async fn run_publish_path_peer(
+    mut stream: tokio::io::DuplexStream,
+    protocol: Protocol,
+    messages: usize,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let (connect_header, _) = read_benchmark_frame(&mut stream).await?;
+    if connect_header >> 4 != 1 {
+        bail!("expected CONNECT as first benchmark frame");
+    }
+    match protocol {
+        Protocol::V4 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).await?,
+        Protocol::V5 => stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).await?,
+    }
+    stream.flush().await?;
+    let _ = ready.send(());
+
+    for _ in 0..messages {
+        let (header, body) = read_benchmark_frame(&mut stream).await?;
+        if header >> 4 != 3 || body.len() < 2 {
+            bail!("expected PUBLISH benchmark frame");
+        }
+        let qos = (header >> 1) & 0x03;
+        if qos != 0 {
+            let topic_len = usize::from(u16::from_be_bytes([body[0], body[1]]));
+            let pkid_offset = 2 + topic_len;
+            if body.len() < pkid_offset + 2 {
+                bail!("truncated PUBLISH packet identifier");
+            }
+            let pkid = [body[pkid_offset], body[pkid_offset + 1]];
+            stream.write_all(&[0x40, 0x02, pkid[0], pkid[1]]).await?;
+        }
+    }
+    stream.flush().await?;
+    Ok(())
+}
+
+fn paired_bootstrap_interval(checked: &[f64], validated: &[f64]) -> (f64, f64, f64) {
+    let deltas: Vec<f64> = checked
+        .iter()
+        .zip(validated)
+        .map(|(checked, validated)| (checked / validated - 1.0) * 100.0)
+        .collect();
+    let point = median(&deltas);
+    let mut state = 0x4d59_5df4_d0f3_3173_u64;
+    let mut bootstrapped = Vec::with_capacity(10_000);
+    for _ in 0..10_000 {
+        let mut sample = Vec::with_capacity(deltas.len());
+        for _ in 0..deltas.len() {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            sample.push(deltas[(state as usize) % deltas.len()]);
+        }
+        bootstrapped.push(median(&sample));
+    }
+    bootstrapped.sort_by(f64::total_cmp);
+    let lower = bootstrapped[bootstrapped.len() * 25 / 1000];
+    let upper = bootstrapped[bootstrapped.len() * 975 / 1000];
+    (point, lower, upper)
+}
+
+async fn run_client_publish_path(args: ClientPublishPathArgs) -> anyhow::Result<()> {
+    if args.rounds == 0 || args.messages == 0 {
+        bail!("--rounds and --messages must be greater than zero");
+    }
+    if args.qos != 0 && args.messages > usize::from(u16::MAX) {
+        bail!("QoS 1 publish-path runs support at most 65,535 messages");
+    }
+    if args.topic.is_empty() {
+        bail!("--topic must be non-empty");
+    }
+
+    let started_at = unix_secs();
+    let run_id = run_id(args.common.run_id.as_deref(), "client-publish-path");
+    let payload = Bytes::from(vec![0_u8; args.payload_size]);
+    for _ in 0..args.warmup_rounds {
+        std::hint::black_box(run_publish_path_variant(&args, payload.clone(), false).await?);
+        std::hint::black_box(run_publish_path_variant(&args, payload.clone(), true).await?);
+    }
+    let mut checked = Vec::with_capacity(args.rounds);
+    let mut validated = Vec::with_capacity(args.rounds);
+    for round in 0..args.rounds {
+        if round % 2 == 0 {
+            checked.push(run_publish_path_variant(&args, payload.clone(), false).await?);
+            validated.push(run_publish_path_variant(&args, payload.clone(), true).await?);
+        } else {
+            validated.push(run_publish_path_variant(&args, payload.clone(), true).await?);
+            checked.push(run_publish_path_variant(&args, payload.clone(), false).await?);
+        }
+    }
+
+    let checked_median = median(&checked);
+    let validated_median = median(&validated);
+    let (speedup, ci_lower, ci_upper) = paired_bootstrap_interval(&checked, &validated);
+    let mut metrics = BTreeMap::new();
+    metrics.insert("messages".to_owned(), args.messages as f64);
+    metrics.insert("rounds".to_owned(), args.rounds as f64);
+    metrics.insert("checked_median_sec".to_owned(), checked_median);
+    metrics.insert("validated_median_sec".to_owned(), validated_median);
+    metrics.insert("validated_speedup_percent".to_owned(), speedup);
+    metrics.insert("validated_speedup_ci95_lower_percent".to_owned(), ci_lower);
+    metrics.insert("validated_speedup_ci95_upper_percent".to_owned(), ci_upper);
+
+    let mut samples = BTreeMap::new();
+    samples.insert("checked_elapsed_sec".to_owned(), checked);
+    samples.insert("validated_elapsed_sec".to_owned(), validated);
+    print_output(BenchOutput {
+        schema_version: 1,
+        run_id,
+        scenario: format!("client-{}-publish-path", args.common.protocol.as_str()),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "protocol": args.common.protocol,
+            "rounds": args.rounds,
+            "warmup_rounds": args.warmup_rounds,
+            "messages": args.messages,
+            "payload_size": args.payload_size,
+            "topic": args.topic,
+            "topic_len": args.topic.len(),
+            "qos": args.qos,
+            "sink": "in-process-duplex",
+        }),
+        metrics,
+        samples,
+        environment: environment(),
+    })
+}
+
+async fn run_publish_path_variant(
+    args: &ClientPublishPathArgs,
+    payload: Bytes,
+    validated: bool,
+) -> anyhow::Result<f64> {
+    match args.common.protocol {
+        Protocol::V4 => run_v4_publish_path_variant(args, payload, validated).await,
+        Protocol::V5 => run_v5_publish_path_variant(args, payload, validated).await,
+    }
+}
+
+async fn run_v4_publish_path_variant(
+    args: &ClientPublishPathArgs,
+    payload: Bytes,
+    validated: bool,
+) -> anyhow::Result<f64> {
+    let (client_stream, peer_stream) = tokio::io::duplex(BENCH_MAX_PACKET_SIZE);
+    let available = Arc::new(Mutex::new(Some(client_stream)));
+    let connector_stream = Arc::clone(&available);
+    let mut options = rumqttc_v4::MqttOptions::new("publish-path-v4", "benchmark.invalid");
+    options.set_inflight(args.messages.min(usize::from(u16::MAX)) as u16);
+    options.set_socket_connector(move |_host, _network_options| {
+        let stream = connector_stream
+            .lock()
+            .expect("connector lock poisoned")
+            .take();
+        async move { stream.ok_or_else(|| std::io::Error::other("connector already used")) }
+    });
+    let (client, mut eventloop) = rumqttc_v4::AsyncClient::builder(options)
+        .capacity(args.messages)
+        .build();
+    let eventloop_task = tokio::spawn(async move {
+        loop {
+            eventloop.poll().await?;
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), rumqttc_v4::ConnectionError>(())
+    });
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let peer_task = tokio::spawn(run_publish_path_peer(
+        peer_stream,
+        Protocol::V4,
+        args.messages,
+        ready_tx,
+    ));
+    ready_rx.await?;
+    let checked_topics = (!validated).then(|| vec![args.topic.clone(); args.messages]);
+    let validated_topics = validated
+        .then(|| {
+            (0..args.messages)
+                .map(|_| rumqttc_v4::ValidatedTopic::new(args.topic.clone()))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let started = Instant::now();
+    if let Some(topics) = checked_topics {
+        for topic in topics {
+            client
+                .publish(
+                    topic,
+                    payload.clone(),
+                    rumqttc_v4::PublishOptions::new(v4_qos(args.qos)),
+                )
+                .await?;
+        }
+    } else if let Some(topics) = validated_topics {
+        for topic in topics {
+            client
+                .publish(
+                    topic,
+                    payload.clone(),
+                    rumqttc_v4::PublishOptions::new(v4_qos(args.qos)),
+                )
+                .await?;
+        }
+    }
+    peer_task.await??;
+    let elapsed = started.elapsed().as_secs_f64();
+    eventloop_task.abort();
+    Ok(elapsed)
+}
+
+async fn run_v5_publish_path_variant(
+    args: &ClientPublishPathArgs,
+    payload: Bytes,
+    validated: bool,
+) -> anyhow::Result<f64> {
+    let (client_stream, peer_stream) = tokio::io::duplex(BENCH_MAX_PACKET_SIZE);
+    let available = Arc::new(Mutex::new(Some(client_stream)));
+    let connector_stream = Arc::clone(&available);
+    let mut options = rumqttc_v5::MqttOptions::new("publish-path-v5", "benchmark.invalid");
+    options.set_outgoing_inflight_upper_limit(args.messages.min(usize::from(u16::MAX)) as u16);
+    options.set_socket_connector(move |_host, _network_options| {
+        let stream = connector_stream
+            .lock()
+            .expect("connector lock poisoned")
+            .take();
+        async move { stream.ok_or_else(|| std::io::Error::other("connector already used")) }
+    });
+    let (client, mut eventloop) = rumqttc_v5::AsyncClient::builder(options)
+        .capacity(args.messages)
+        .build();
+    let eventloop_task = tokio::spawn(async move {
+        loop {
+            eventloop.poll().await?;
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), rumqttc_v5::ConnectionError>(())
+    });
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let peer_task = tokio::spawn(run_publish_path_peer(
+        peer_stream,
+        Protocol::V5,
+        args.messages,
+        ready_tx,
+    ));
+    ready_rx.await?;
+    let checked_topics = (!validated).then(|| vec![args.topic.clone(); args.messages]);
+    let validated_topics = validated
+        .then(|| {
+            (0..args.messages)
+                .map(|_| rumqttc_v5::ValidatedTopic::new(args.topic.clone()))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let started = Instant::now();
+    let options = rumqttc_v5::PublishOptions::new(v5_qos(args.qos));
+    if let Some(topics) = checked_topics {
+        for topic in topics {
+            client
+                .publish(topic, payload.clone(), options.clone())
+                .await?;
+        }
+    } else if let Some(topics) = validated_topics {
+        for topic in topics {
+            client
+                .publish(topic, payload.clone(), options.clone())
+                .await?;
+        }
+    }
+    peer_task.await??;
+    let elapsed = started.elapsed().as_secs_f64();
+    eventloop_task.abort();
+    Ok(elapsed)
 }
 
 async fn run_client_throughput(args: ClientThroughputArgs) -> anyhow::Result<()> {
@@ -976,7 +1308,6 @@ fn benchmark_v4_validation_cost(
         .checked_mul(args.messages)
         .context("benchmark output buffer capacity overflowed")?;
     let mut buffer = BytesMut::with_capacity(capacity);
-
     publish.write(&mut buffer)?;
     buffer.clear();
     rumqttc_v4::bench_instrumentation::write_prevalidated_publish(&publish, &mut buffer)?;
@@ -1052,7 +1383,6 @@ fn benchmark_v5_validation_cost(
         .checked_mul(args.messages)
         .context("benchmark output buffer capacity overflowed")?;
     let mut buffer = BytesMut::with_capacity(capacity);
-
     publish.write(&mut buffer)?;
     buffer.clear();
     rumqttc_v5::bench_instrumentation::write_prevalidated_publish(&publish, &mut buffer)?;

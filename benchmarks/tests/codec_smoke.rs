@@ -62,6 +62,36 @@ fn run_validation_cost(protocol: &str) -> Value {
     serde_json::from_slice(&output.stdout).expect("benchmark output must be JSON")
 }
 
+fn run_publish_path(protocol: &str) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_rumqtt-bench"))
+        .args([
+            "client",
+            "publish-path",
+            "--protocol",
+            protocol,
+            "--rounds",
+            "2",
+            "--messages",
+            "20",
+            "--payload-size",
+            "0",
+            "--qos",
+            "1",
+            "--run-id",
+            "publish-path-smoke",
+        ])
+        .output()
+        .expect("failed to run rumqtt-bench");
+
+    assert!(
+        output.status.success(),
+        "benchmark failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("benchmark output must be JSON")
+}
+
 #[test]
 fn nats_codec_roundtrip_emits_stable_json() {
     let json = run_codec("nats");
@@ -203,6 +233,47 @@ fn codec_validation_cost_emits_paired_samples_for_both_protocols() {
                 .unwrap_or(0.0)
                 > 0.0
         );
+    }
+}
+
+#[test]
+fn client_publish_path_emits_paired_samples_for_both_protocols() {
+    for protocol in ["v4", "v5"] {
+        let json = run_publish_path(protocol);
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["run_id"], "publish-path-smoke");
+        assert_eq!(json["scenario"], format!("client-{protocol}-publish-path"));
+        assert_eq!(json["config"]["sink"], "in-process-duplex");
+        assert_eq!(
+            json["samples"]["checked_elapsed_sec"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            json["samples"]["validated_elapsed_sec"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(json["metrics"]["validated_speedup_ci95_lower_percent"].is_number());
+        assert!(json["metrics"]["validated_speedup_ci95_upper_percent"].is_number());
+    }
+}
+
+#[test]
+fn client_publish_path_rejects_zero_rounds_or_messages() {
+    for args in [
+        ["--rounds", "0", "--messages", "1"],
+        ["--rounds", "1", "--messages", "0"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rumqtt-bench"))
+            .args(["client", "publish-path"])
+            .args(args)
+            .output()
+            .expect("failed to run rumqtt-bench");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("greater than zero"));
     }
 }
 
