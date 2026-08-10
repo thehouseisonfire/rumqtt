@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Added
+- `mqttbytes` v4/v5: Publish the MQTT 3.1.1 and MQTT 5 packet codecs as
+  `mqttbytes-v4-next` and `mqttbytes-v5-next`. All three codec crates now
+  support `no_std` targets with an allocator when default features are disabled.
 - Testing: Add a sustained cgroup-v2 memory-stability acceptance profile for
   both plain-TCP clients, with deterministic QoS 1 traffic, subscription churn,
   broker restarts, objective growth/trend criteria, and preserved raw results.

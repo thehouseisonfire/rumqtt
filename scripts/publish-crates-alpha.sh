@@ -11,6 +11,8 @@ CRATES_IO_USER_AGENT="${CRATES_IO_USER_AGENT:-rumqtt-release-script/1.0}"
 
 PACKAGE_NAMES=(
     "mqttbytes-core-next"
+    "mqttbytes-v4-next"
+    "mqttbytes-v5-next"
     "rumqttc-core-next"
     "rumqttc-v4-next"
     "rumqttc-v5-next"
@@ -19,6 +21,8 @@ PACKAGE_NAMES=(
 
 PUBLISH_ORDER=(
     "mqttbytes-core-next"
+    "mqttbytes-v4-next"
+    "mqttbytes-v5-next"
     "rumqttc-core-next"
     "rumqttc-v4-next"
     "rumqttc-v5-next"
@@ -27,6 +31,8 @@ PUBLISH_ORDER=(
 
 MANIFESTS=(
     "mqttbytes-core/Cargo.toml"
+    "mqttbytes-v4/Cargo.toml"
+    "mqttbytes-v5/Cargo.toml"
     "rumqttc-core/Cargo.toml"
     "rumqttc-v4/Cargo.toml"
     "rumqttc-v5/Cargo.toml"
@@ -146,6 +152,8 @@ confirm_unmanaged_version_references() {
         ':(exclude)Cargo.lock' \
         ':(exclude)CHANGELOG.md' \
         ':(exclude)mqttbytes-core/Cargo.toml' \
+        ':(exclude)mqttbytes-v4/Cargo.toml' \
+        ':(exclude)mqttbytes-v5/Cargo.toml' \
         ':(exclude)rumqttc-core/Cargo.toml' \
         ':(exclude)rumqttc-v4/Cargo.toml' \
         ':(exclude)rumqttc-v5/Cargo.toml' \
@@ -276,18 +284,22 @@ replace_all_versions() {
     local new="$2"
 
     perl -0pi -e "s/^version = \"\Q$old\E\"/version = \"$new\"/m" mqttbytes-core/Cargo.toml
+    perl -0pi -e '
+    s/^version = "\Q'"$old"'\E"/version = "'"$new"'"/m;
+    s/(mqttbytes-core = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
+  ' mqttbytes-v4/Cargo.toml mqttbytes-v5/Cargo.toml
     perl -0pi -e "s/^version = \"\Q$old\E\"/version = \"$new\"/m" rumqttc-core/Cargo.toml
 
     perl -0pi -e '
     s/^version = "\Q'"$old"'\E"/version = "'"$new"'"/m;
     s/(rumqttc-core = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
-    s/(mqttbytes-core = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
+    s/(mqttbytes-v4 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
   ' rumqttc-v4/Cargo.toml
 
     perl -0pi -e '
     s/^version = "\Q'"$old"'\E"/version = "'"$new"'"/m;
     s/(rumqttc-core = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
-    s/(mqttbytes-core = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
+    s/(mqttbytes-v5 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
   ' rumqttc-v5/Cargo.toml
 
     perl -0pi -e '
@@ -368,6 +380,8 @@ verify_release() {
 
     cargo check \
         -p mqttbytes-core-next \
+        -p mqttbytes-v4-next \
+        -p mqttbytes-v5-next \
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \
@@ -375,6 +389,8 @@ verify_release() {
 
     cargo test --locked --doc \
         -p mqttbytes-core-next \
+        -p mqttbytes-v4-next \
+        -p mqttbytes-v5-next \
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \

@@ -1577,6 +1577,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "mqttbytes-v4-next"
+version = "0.34.0-alpha"
+dependencies = [
+ "bytes",
+ "mqttbytes-core-next",
+ "pretty_assertions",
+ "thiserror 2.0.20",
+ "tokio-util",
+]
+
+[[package]]
+name = "mqttbytes-v5-next"
+version = "0.34.0-alpha"
+dependencies = [
+ "bytes",
+ "mqttbytes-core-next",
+ "pretty_assertions",
+ "thiserror 2.0.20",
+ "tokio-util",
+]
+
+[[package]]
 name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2193,7 +2215,7 @@ dependencies = [
  "http",
  "log",
  "matches",
- "mqttbytes-core-next",
+ "mqttbytes-v4-next",
  "native-tls",
  "percent-encoding",
  "pretty_assertions",
@@ -2232,7 +2254,7 @@ dependencies = [
  "http",
  "log",
  "matches",
- "mqttbytes-core-next",
+ "mqttbytes-v5-next",
  "native-tls",
  "percent-encoding",
  "pretty_assertions",

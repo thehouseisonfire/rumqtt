@@ -2,6 +2,9 @@
 
 ## Project Structure & Module Organization
 This repo contains two Rust workspaces. Main client-workspace members are:
+- `mqttbytes-core/`: protocol-neutral MQTT codec primitives.
+- `mqttbytes-v4/`: standalone MQTT 3.1.1 packet codec crate.
+- `mqttbytes-v5/`: standalone MQTT 5 packet codec crate.
 - `rumqttc-v4/`: MQTT 3.1.1 client crate.
 - `rumqttc-v5/`: MQTT 5 client crate.
 - `benchmarks/`: maintained client, codec, and options performance harness.
@@ -12,7 +15,10 @@ v4/v5 file-store adapters and MQTT persistence benchmarks. Its protocol-neutral
 `atomic-blob-store` dependency is maintained in a separate repository. Run its Cargo commands with
 `--manifest-path session-store-file/Cargo.toml`.
 
-Core library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol codecs live under each crate's `mqttbytes` module. Integration tests live in each crate's `tests/`, and runnable examples are in each crate's `examples/`.
+Client library code is under `rumqttc-v4/src/` and `rumqttc-v5/src/`. Protocol
+codecs live under `mqttbytes-v4/src/` and `mqttbytes-v5/src/`. Integration tests
+live in each client crate's `tests/`, and runnable examples are in each client
+crate's `examples/`.
 
 The explicit MQTT version crates are published as Cargo packages `rumqttc-v4-next` and `rumqttc-v5-next`
 because the un-suffixed package names are not owned in crates.io. Their library target is still named

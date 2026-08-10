@@ -58,10 +58,9 @@ const fn inbound_disconnect_reason(error: &mqttbytes::Error) -> Option<Disconnec
         | mqttbytes::Error::ProtocolError
         | mqttbytes::Error::PacketIdZero => DisconnectReasonCode::ProtocolError,
         mqttbytes::Error::PayloadSizeLimitExceeded { .. } => DisconnectReasonCode::PacketTooLarge,
-        // These cases are local transport/incremental framing conditions, not protocol responses.
-        mqttbytes::Error::InsufficientBytes(_)
-        | mqttbytes::Error::Io(_)
-        | mqttbytes::Error::OutgoingPacketTooLarge { .. } => return None,
+        // Local transport/incremental framing conditions and future codec errors
+        // are not mapped into MQTT protocol responses.
+        _ => return None,
     };
 
     Some(reason)

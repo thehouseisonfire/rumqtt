@@ -5,6 +5,8 @@ on:
       - mqtt5-client
     paths:
       - 'mqttbytes-core/**'
+      - 'mqttbytes-v4/**'
+      - 'mqttbytes-v5/**'
       - 'rumqttc-core/**'
       - 'rumqttc-next/**'
       - 'rumqttc-v4/**'
@@ -82,8 +84,31 @@ jobs:
         run: |
           cargo hack --locked --each-feature --exclude-all-features \
             check \
+            -p mqttbytes-v4-next \
+            -p mqttbytes-v5-next \
             -p rumqttc-v4-next \
             -p rumqttc-v5-next
+
+  no-std:
+    name: Bare-metal MQTT codecs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: thumbv7em-none-eabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: Linux-mqttbytes-no-std
+
+      - name: Check no_std codec dependency closure
+        run: |
+          cargo check --locked --no-default-features --target thumbv7em-none-eabi \
+            -p mqttbytes-core-next \
+            -p mqttbytes-v4-next \
+            -p mqttbytes-v5-next
 
   test:
     name: Build and test on ${{ matrix.os }}
@@ -162,6 +187,8 @@ jobs:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
             cargo clippy --fix --allow-dirty --verbose --all-targets -p mqttbytes-core-next
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
+            cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
 
@@ -175,6 +202,8 @@ jobs:
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
             cargo doc --verbose --no-deps -p mqttbytes-core-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
+            cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-next
 
@@ -186,6 +215,8 @@ jobs:
       - name: Standalone crate doctests
         run: |
             cargo test --doc -p mqttbytes-core-next
+            cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v4-next
+            cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-next
 
@@ -197,6 +228,8 @@ jobs:
       - name: Test standalone crates
         run: |
             cargo test -p mqttbytes-core-next
+            cargo hack --each-feature --exclude-all-features test -p mqttbytes-v4-next
+            cargo hack --each-feature --exclude-all-features test -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-next
 

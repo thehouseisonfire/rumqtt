@@ -1,4 +1,9 @@
+#![no_std]
+#![deny(clippy::std_instead_of_core)]
+#![deny(clippy::std_instead_of_alloc)]
 #![doc = include_str!("../README.md")]
+
+extern crate alloc;
 
 pub mod ping;
 pub mod primitives;

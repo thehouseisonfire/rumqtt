@@ -617,6 +617,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mqttbytes-v4-next"
+version = "0.34.0-alpha"
+dependencies = [
+ "bytes",
+ "mqttbytes-core-next",
+ "thiserror",
+ "tokio-util",
+]
+
+[[package]]
+name = "mqttbytes-v5-next"
+version = "0.34.0-alpha"
+dependencies = [
+ "bytes",
+ "mqttbytes-core-next",
+ "thiserror",
+ "tokio-util",
+]
+
+[[package]]
 name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -867,7 +887,7 @@ dependencies = [
  "flume",
  "futures-util",
  "log",
- "mqttbytes-core-next",
+ "mqttbytes-v4-next",
  "rumqttc-core-next",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -889,7 +909,7 @@ dependencies = [
  "futures-util",
  "http",
  "log",
- "mqttbytes-core-next",
+ "mqttbytes-v5-next",
  "rand 0.10.2",
  "rumqttc-core-next",
  "rustls-native-certs",

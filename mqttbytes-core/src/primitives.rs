@@ -1,6 +1,7 @@
+use alloc::{borrow::ToOwned, string::String};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::slice::Iter;
-use std::str::Utf8Error;
+use core::slice::Iter;
+use core::str::Utf8Error;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -163,7 +164,7 @@ pub fn read_mqtt_string(stream: &mut Bytes) -> Result<String, Error> {
 /// [`Utf8Error`], and [`Error::MalformedPacket`] when the string contains
 /// U+0000.
 pub fn validate_mqtt_string(bytes: &[u8]) -> Result<&str, Error> {
-    let string = std::str::from_utf8(bytes).map_err(|source| Error::TopicNotUtf8 { source })?;
+    let string = core::str::from_utf8(bytes).map_err(|source| Error::TopicNotUtf8 { source })?;
 
     if bytes.contains(&0) {
         return Err(Error::MalformedPacket);
@@ -302,6 +303,7 @@ pub fn read_u32(stream: &mut Bytes) -> Result<u32, Error> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     use bytes::BytesMut;
 
     use super::*;
@@ -418,7 +420,7 @@ mod tests {
     fn read_mqtt_string_accepts_valid_utf8() {
         let mut bytes = BytesMut::new();
         bytes.put_u16(5);
-        bytes.extend_from_slice("a/b/c".as_bytes());
+        bytes.extend_from_slice(b"a/b/c");
         let mut stream = bytes.freeze();
         let result = read_mqtt_string(&mut stream);
         assert_eq!(result.unwrap(), "a/b/c");

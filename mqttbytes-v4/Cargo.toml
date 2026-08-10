@@ -1,0 +1,30 @@
+[package]
+name = "mqttbytes-v4-next"
+version = "0.34.0-alpha"
+publish = true
+description = "MQTT 3.1.1 packet codec for the rumqttc-next client"
+keywords = ["mqtt", "iot", "codec", "no-std"]
+categories = ["network-programming", "no-std"]
+rust-version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lib]
+name = "mqttbytes_v4"
+
+[features]
+default = ["std"]
+bench-instrumentation = []
+std = ["bytes/std", "thiserror/std", "dep:tokio-util"]
+
+[dependencies]
+bytes = { version = "1.5", default-features = false }
+thiserror = { version = "2.0.8", default-features = false }
+mqttbytes-core = { package = "mqttbytes-core-next", path = "../mqttbytes-core", version = "0.34.0-alpha" }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+
+[dev-dependencies]
+pretty_assertions = "1"

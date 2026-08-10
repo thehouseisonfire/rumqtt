@@ -9,6 +9,8 @@ on:
       - 'rumqttc-v5/**'
       - 'rumqttc-core/**'
       - 'mqttbytes-core/**'
+      - 'mqttbytes-v4/**'
+      - 'mqttbytes-v5/**'
       - 'benchmarks/runner.py'
       - 'benchmarks/broker_fixture.py'
       - 'benchmarks/tests/**'

@@ -5,10 +5,10 @@ package. Shared client, event-loop, scheduling, keepalive, completion,
 persistence, and shutdown behavior is documented in the
 [library design](../docs/design.md).
 
-The version-specific implementation is concentrated in
-[`src/mqttbytes/v5/`](src/mqttbytes/v5/), [`src/state.rs`](src/state.rs), the
-enhanced-authentication lifecycle in [`src/auth.rs`](src/auth.rs), and session
-reconciliation in [`src/eventloop.rs`](src/eventloop.rs).
+The version-specific implementation is concentrated in the standalone
+[`mqttbytes-v5` codec](../mqttbytes-v5/src/v5/), [`src/state.rs`](src/state.rs),
+the enhanced-authentication lifecycle in [`src/auth.rs`](src/auth.rs), and
+session reconciliation in [`src/eventloop.rs`](src/eventloop.rs).
 
 ## Connection Negotiation
 

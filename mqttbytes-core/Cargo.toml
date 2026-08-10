@@ -16,5 +16,5 @@ readme = "README.md"
 name = "mqttbytes_core"
 
 [dependencies]
-bytes = "1.5"
-thiserror = "2.0.8"
+bytes = { version = "1.5", default-features = false }
+thiserror = { version = "2.0.8", default-features = false }

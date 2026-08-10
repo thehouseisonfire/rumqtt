@@ -5,9 +5,9 @@ This document contains the MQTT 3.1.1-specific design of the
 completion, persistence, and shutdown behavior is documented in the
 [library design](../docs/design.md).
 
-The version-specific implementation is concentrated in
-[`src/mqttbytes/v4/`](src/mqttbytes/v4/), [`src/state.rs`](src/state.rs), and the
-session reconciliation in [`src/eventloop.rs`](src/eventloop.rs).
+The version-specific implementation is concentrated in the standalone
+[`mqttbytes-v4` codec](../mqttbytes-v4/src/v4/), [`src/state.rs`](src/state.rs),
+and the session reconciliation in [`src/eventloop.rs`](src/eventloop.rs).
 
 ## MQTT 3.1.1 Protocol Surface
 

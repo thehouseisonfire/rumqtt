@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "mqttbytes-core",
+    "mqttbytes-v4",
+    "mqttbytes-v5",
     "rumqttc-core",
     "rumqttc-next",
     "rumqttc-v4",

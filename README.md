@@ -109,7 +109,9 @@ Without distinct dependency names, both library targets would claim the
 
 Shared transport and codec code is published as
 [`rumqttc-core-next`](./rumqttc-core/) and
-[`mqttbytes-core-next`](./mqttbytes-core/). Optional file-backed session stores
+[`mqttbytes-core-next`](./mqttbytes-core/). Standalone, `no_std`-capable packet
+codecs are published as [`mqttbytes-v4-next`](./mqttbytes-v4/) and
+[`mqttbytes-v5-next`](./mqttbytes-v5/). Optional file-backed session stores
 live in the independent
 [`session-store-file` workspace](./session-store-file/README.md) and do not add
 filesystem dependencies to the clients.

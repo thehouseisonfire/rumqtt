@@ -38,7 +38,7 @@ mod eventloop;
 mod framed;
 #[cfg(feature = "tracing")]
 mod instrumentation;
-pub mod mqttbytes;
+pub use mqttbytes_v5 as mqttbytes;
 mod notice;
 mod redirect;
 mod session;
