@@ -246,7 +246,10 @@ fn assert_immediate_shutdown_bypasses_repeated_event_backpressure(protocol: Prot
 
     let mut config = config(protocol, port);
     config.common.event_buffer_capacity = 1;
-    config.common.event_delivery_timeout = Duration::from_millis(100);
+    // Keep the overflow deadline well beyond the shutdown assertion below. A short deadline
+    // makes this test race driver-side overflow against the test thread being scheduled to
+    // submit the immediate disconnect, particularly on slower CI hosts.
+    config.common.event_delivery_timeout = Duration::from_secs(5);
     config.common.emit_outgoing_events = true;
     let native = NativeClient::start(config).unwrap();
     let handle = native.handle();
