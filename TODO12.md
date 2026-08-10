@@ -232,6 +232,48 @@ Under `std`, keep `std::io::Error` and `tokio_util::codec::{Decoder, Encoder}`
 behind `std`. Tokio framing must not contaminate the `alloc`-only dependency
 closure.
 
+### 10. Performance compatibility for `alloc` and `std` users
+
+Allocator-free support must not impose a material performance regression on
+existing `alloc` or `std` users. The owned packet API and Tokio codec are
+compatibility paths, not secondary implementations whose throughput,
+latency, allocation behavior, or memory use may be traded away to obtain the
+feature-free API.
+
+In particular, adapting the owned decoder to the borrowed foundation must not
+unnecessarily copy data that can remain range- or `Bytes`-backed, allocate per
+field where the current implementation does not, or repeatedly scan complete
+packets without evidence that the cost is negligible. Validation shared by
+the borrowed and owned paths should reuse results or combine passes where
+practical. The same expectations apply to sizing and encoding: the required
+preflight pass must be designed and measured so that it does not introduce an
+unexamined regression for ordinary clients.
+
+Before implementation begins, record benchmarks from an identified baseline
+commit. During development, compare the new implementation against that
+baseline using the same optimized build, benchmark inputs, toolchain, and
+machine class. The benchmark corpus must cover both MQTT versions, every
+packet class, small and large packets, remaining-length boundaries, repeated
+fields and MQTT 5 properties, and the end-to-end Tokio framed decode and encode
+paths used by the rumqtt clients. Measure at least:
+
+- decode and encode throughput;
+- per-operation latency for representative packet sizes;
+- allocation count and allocated bytes for owned decode and encode;
+- peak or steady-state memory use where packet ownership affects retention;
+  and
+- any additional full-packet or repeated-field passes introduced by the new
+  architecture.
+
+Benchmark methodology, raw comparison results, and the baseline commit must be
+kept with the change or linked from it. Results must use enough samples to
+distinguish a repeatable regression from measurement noise. A repeatable
+regression greater than 5% in throughput or latency, or any new allocation or
+payload copy on a previously allocation-free or zero-copy hot path, blocks
+completion unless it is specifically justified, documented, and accepted as
+an explicit compatibility trade-off. Improvements in the feature-free path do
+not offset regressions in the existing `alloc` or `std` paths.
+
 ## Recommended architecture
 
 Use one wire-level implementation with progressively richer adapters:
@@ -335,6 +377,11 @@ client behavior and keep Tokio integration under `std`. Remove obsolete parser
 paths after equivalence is demonstrated; do not leave a permanent legacy and
 allocator-free parser pair.
 
+Run the performance-compatibility benchmarks before and throughout this phase.
+Address avoidable extra scans, allocations, copies, and retained memory before
+removing the legacy path so that the recorded baseline remains directly
+comparable.
+
 ### Phase 6: documentation and stabilization
 
 Add feature documentation and runnable examples for:
@@ -404,6 +451,20 @@ For every packet type:
 On every preflight error, assert that the caller's output buffer is byte-for-byte
 unchanged.
 
+### Performance compatibility
+
+Automate the representative microbenchmarks in `benchmarks/` and add an
+end-to-end benchmark for the owned and Tokio codec paths if one does not
+already exist. CI need not make pass/fail decisions from noisy shared runners,
+but it must compile the benchmarks and make them reproducible. Release or PR
+validation must run them in a stable environment against the recorded
+pre-change commit and publish the comparison.
+
+The comparison must separately report v4 and v5 decode, encode, allocation,
+copying, and memory-retention results. It must call out statistically
+repeatable changes rather than hiding regressions in an aggregate score. The
+threshold and exception policy in requirement 10 apply to these results.
+
 ### Robustness
 
 Use fuzz targets for v4 and v5 borrowed decoders, iterators, length calculators,
@@ -447,10 +508,12 @@ This TODO is complete only when:
 4. borrowed and owned codecs pass protocol-equivalence, malformed-input,
    boundary, fuzz, and transactional-output tests;
 5. the owned rumqtt clients and `std` Tokio codecs retain their existing
-   behavior;
-6. crate documentation states the three capability tiers and contains working
+   behavior and satisfy the performance-compatibility benchmark requirements;
+6. benchmark results against the recorded baseline show no unapproved material
+   regression in throughput, latency, allocations, copying, or memory use;
+7. crate documentation states the three capability tiers and contains working
    examples; and
-7. `CHANGELOG.md` records the new allocator-free public API and any required
+8. `CHANGELOG.md` records the new allocator-free public API and any required
    migration.
 
 Passing `cargo check --no-default-features` by itself is not completion. The
