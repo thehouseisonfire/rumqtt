@@ -444,6 +444,8 @@ pub struct MqttState {
     pub(crate) outgoing_rel: FixedBitSet,
     /// Packet identifiers of active outgoing `PUBREL` flows in receipt order.
     outgoing_rel_order: VecDeque<u16>,
+    /// Active `PUBREL` flows that were replayed during recovery on this connection.
+    outgoing_rel_recovery: FixedBitSet,
     /// Packet ids of released `QoS` 2 publishes queued for replay after clean
     pub(crate) outgoing_rel_replay: FixedBitSet,
     /// Packet identifiers of replayable `PUBREL` flows in replay order.
@@ -747,6 +749,7 @@ impl MqttState {
             outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
             outgoing_rel: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_order: VecDeque::new(),
+            outgoing_rel_recovery: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_replay: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_replay_order: VecDeque::new(),
             outgoing_rel_notice: Self::new_notice_slots_with_len(tracking_len),
@@ -885,6 +888,10 @@ impl MqttState {
             self.outgoing_rel.grow(target_len);
         }
 
+        if self.outgoing_rel_recovery.len() < target_len {
+            self.outgoing_rel_recovery.grow(target_len);
+        }
+
         if self.outgoing_rel_replay.len() < target_len {
             self.outgoing_rel_replay.grow(target_len);
         }
@@ -902,6 +909,7 @@ impl MqttState {
             && self.outgoing_rel_notice.iter().all(Option::is_none)
             && self.outgoing_rel.ones().next().is_none()
             && self.outgoing_rel_order.is_empty()
+            && self.outgoing_rel_recovery.ones().next().is_none()
             && self.outgoing_rel_replay.ones().next().is_none()
             && self.outgoing_rel_replay_order.is_empty()
             && self.outbound_pkid_count == 0
@@ -940,6 +948,7 @@ impl MqttState {
         self.outgoing_rel_notice.truncate(target_len);
         self.outgoing_rel = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel_order.clear();
+        self.outgoing_rel_recovery = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel_replay = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel_replay_order.clear();
         // Ensure future packet id reuse starts from the beginning of the new range.
@@ -1096,6 +1105,7 @@ impl MqttState {
             }
         }
         self.outgoing_rel.clear();
+        self.outgoing_rel_recovery.clear();
 
         for (pkid, mut pending_subscribe) in std::mem::take(&mut self.pending_subscribe) {
             pending_subscribe.subscribe.pkid = pkid;
@@ -2068,12 +2078,19 @@ impl MqttState {
             return Err(StateError::Unsolicited(pubcomp.pkid));
         }
         self.outgoing_rel.set(usize::from(pubcomp.pkid), false);
+        let recovered = self
+            .outgoing_rel_recovery
+            .contains(usize::from(pubcomp.pkid));
+        self.outgoing_rel_recovery
+            .set(usize::from(pubcomp.pkid), false);
         remove_ordered_pkid(&mut self.outgoing_rel_order, pubcomp.pkid);
         let notice = self.outgoing_rel_notice[usize::from(pubcomp.pkid)].take();
         self.release_outbound_pkid(pubcomp.pkid);
         self.release_outgoing_publish_quota(pubcomp.pkid);
 
-        if pubcomp.reason != PubCompReason::Success {
+        if pubcomp.reason != PubCompReason::Success
+            && !(recovered && pubcomp.reason == PubCompReason::PacketIdentifierNotFound)
+        {
             warn!(
                 "PubComp Pkid = {:?}, reason: {:?}",
                 pubcomp.pkid, pubcomp.reason
@@ -2082,10 +2099,12 @@ impl MqttState {
         let mut effects =
             IncomingPacketEffects::outgoing(self.replay_collision_publish(pubcomp.pkid));
         if let Some(tx) = notice {
-            effects = effects.with_notice(DeferredNotice::Publish(
-                tx,
-                PublishResult::Qos2Completed(pubcomp.clone()),
-            ));
+            let result = if recovered && pubcomp.reason == PubCompReason::PacketIdentifierNotFound {
+                PublishResult::Qos2Recovered(pubcomp.clone())
+            } else {
+                PublishResult::Qos2Completed(pubcomp.clone())
+            };
+            effects = effects.with_notice(DeferredNotice::Publish(tx, result));
         }
 
         if effects.outgoing.is_none() {
@@ -2770,6 +2789,7 @@ impl MqttState {
             remove_ordered_pkid(&mut self.outgoing_rel_replay_order, pubrel.pkid);
             self.outgoing_rel.insert(pkid_index);
             self.outgoing_rel_order.push_back(pubrel.pkid);
+            self.outgoing_rel_recovery.insert(pkid_index);
         }
         if notice.is_some() || self.outgoing_rel_notice[pkid_index].is_none() {
             self.outgoing_rel_notice[pkid_index] = notice;
@@ -3571,6 +3591,7 @@ impl Clone for MqttState {
             outgoing_pub_notice: Self::new_notice_slots_with_len(self.outgoing_pub.len()),
             outgoing_rel: self.outgoing_rel.clone(),
             outgoing_rel_order: self.outgoing_rel_order.clone(),
+            outgoing_rel_recovery: self.outgoing_rel_recovery.clone(),
             outgoing_rel_replay: self.outgoing_rel_replay.clone(),
             outgoing_rel_replay_order: self.outgoing_rel_replay_order.clone(),
             outgoing_rel_notice: Self::new_notice_slots_with_len(self.outgoing_rel_notice.len()),
@@ -9023,6 +9044,35 @@ mod test {
         );
         assert_eq!(mqtt.inflight, 0);
         assert!(!mqtt.outgoing_rel.contains(1));
+    }
+
+    #[test]
+    fn recovery_pubcomp_packet_identifier_not_found_completes_publish() {
+        let mut mqtt = build_mqttstate();
+        let notice = queue_publish_with_notice(&mut mqtt, build_outgoing_publish(QoS::ExactlyOnce));
+        mqtt.handle_incoming_pubrec(&PubRec::new(1, None)).unwrap();
+
+        let mut replay = mqtt.clean_with_notices_for_reconnect();
+        assert_eq!(replay.len(), 1);
+        let replay = replay.remove(0);
+        assert!(replay.replay);
+        let (packet, flush_notice) = mqtt
+            .handle_replayed_outgoing_packet_with_notice(replay.request, replay.notice)
+            .unwrap();
+        assert!(matches!(packet, Some(Packet::PubRel(pubrel)) if pubrel.pkid == 1));
+        assert!(flush_notice.is_none());
+        assert!(mqtt.outgoing_rel_recovery.contains(1));
+
+        let mut pubcomp = PubComp::new(1, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+        assert!(
+            mqtt.handle_incoming_pubcomp(&pubcomp)
+                .unwrap()
+                .complete_notices_and_has_no_outgoing()
+        );
+
+        assert_eq!(notice.wait(), Ok(PublishResult::Qos2Recovered(pubcomp)));
+        assert!(!mqtt.outgoing_rel_recovery.contains(1));
     }
 
     #[test]

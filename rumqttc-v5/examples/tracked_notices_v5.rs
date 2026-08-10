@@ -48,6 +48,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 pubcomp.pkid, pubcomp.reason
             );
         }
+        PublishResult::Qos2Recovered(pubcomp) => {
+            println!(
+                "recovered PUBREL completed: pkid = {}, reason = {:?}",
+                pubcomp.pkid, pubcomp.reason
+            );
+        }
         PublishResult::Qos2PubRecRejected(pubrec) => {
             println!(
                 "PUBREC rejected pkid = {}, reason = {:?}",

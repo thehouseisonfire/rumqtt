@@ -63,7 +63,9 @@ repos:
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
 
-          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next -p rumqttc-v5-next
+          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next -p rumqttc-v5-next;
+
+          cargo clippy --fix --allow-dirty --all-targets --no-deps -p rumqtt-wrapper-core
           '
         language: system
         pass_filenames: false
@@ -257,7 +259,9 @@ repos:
           --exclude-all-features
           test
           -p rumqttc-v4-next
-          -p rumqttc-v5-next
+          -p rumqttc-v5-next;
+
+          cargo test -p rumqtt-wrapper-core
           '
         language: system
         pass_filenames: false

@@ -2068,7 +2068,7 @@ impl Client {
 
 #[must_use]
 fn valid_publish_topic(topic: &str) -> bool {
-    !topic.is_empty() && valid_topic(topic)
+    !topic.is_empty() && valid_topic(topic) && valid_mqtt_string_value(topic)
 }
 
 #[must_use]
@@ -2703,11 +2703,21 @@ mod test {
 
     #[test]
     fn creating_invalid_validated_topic_fails() {
+        let overlong = "a".repeat(usize::from(u16::MAX) + 1);
+
         assert_eq!(
             ValidatedTopic::new("a/+/b"),
             Err(InvalidTopic("a/+/b".to_string()))
         );
         assert_eq!(ValidatedTopic::new(""), Err(InvalidTopic(String::new())));
+        assert_eq!(
+            ValidatedTopic::new("a\0b"),
+            Err(InvalidTopic("a\0b".to_owned()))
+        );
+        assert_eq!(
+            ValidatedTopic::new(overlong.clone()),
+            Err(InvalidTopic(overlong))
+        );
     }
 
     #[test]
@@ -2900,21 +2910,22 @@ mod test {
 
     #[test]
     fn publishing_invalid_raw_topic_fails() {
-        let (tx, _) = flume::bounded(1);
+        let (tx, rx) = flume::bounded(1);
         let client = Client::from_sender(tx);
-        let err = client
-            .publish("a/+/b", "good bye", PublishOptions::new(QoS::ExactlyOnce))
-            .expect_err("Invalid publish topic should fail");
-        assert!(
-            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
-        );
-
-        let err = client
-            .publish("", "good bye", PublishOptions::new(QoS::ExactlyOnce))
-            .expect_err("Empty publish topic should fail");
-        assert!(
-            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
-        );
+        for topic in [
+            "a/+/b".to_owned(),
+            String::new(),
+            "a\0b".to_owned(),
+            "a".repeat(usize::from(u16::MAX) + 1),
+        ] {
+            let err = client
+                .publish(topic, "good bye", PublishOptions::new(QoS::ExactlyOnce))
+                .expect_err("invalid publish topic should fail");
+            assert!(
+                matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
+            );
+        }
+        assert!(rx.is_empty());
     }
 
     #[test]

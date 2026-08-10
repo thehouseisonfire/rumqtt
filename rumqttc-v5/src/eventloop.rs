@@ -434,6 +434,12 @@ pub struct EventLoop {
     pending: VecDeque<RequestEnvelope>,
     /// Requests admitted by the event loop and waiting for protocol scheduling.
     queued: OutboundScheduler<RequestEnvelope>,
+    /// Topic Alias mappings at the most recent connection-cleanup drain boundary.
+    ///
+    /// The wrapper can admit more publishes after cleanup drains the request channels but before
+    /// it observes the connection error. Retaining the boundary state lets the follow-up repair
+    /// interpret those publishes in admission order instead of seeding them from a later mapping.
+    reconnect_topic_aliases: std::collections::HashMap<u16, bytes::Bytes>,
     /// Network connection to the broker.
     ///
     /// This is installed only after every fallible establishment step has completed. Connected-only
@@ -619,6 +625,7 @@ impl EventLoop {
             _immediate_disconnect_tx: immediate_disconnect_tx,
             pending,
             queued: OutboundScheduler::default(),
+            reconnect_topic_aliases: std::collections::HashMap::new(),
             network: None,
             keepalive_timeout: None,
             effective_keep_alive,
@@ -671,6 +678,78 @@ impl EventLoop {
         }
     }
 
+    /// Discards manual incoming-publish acknowledgements currently waiting for event-loop
+    /// processing while preserving every other request.
+    ///
+    /// `PUBACK` and `PUBREC` acknowledge connection-scoped inbound state and must not cross a
+    /// reconnect boundary. [`Self::clean`] removes acknowledgements that are already visible when
+    /// connection loss is processed, but a concurrent producer can enqueue another before its
+    /// owner observes that loss. Connection owners that maintain their own acknowledgement-token
+    /// generation can call this while advancing that generation under the same producer gate.
+    ///
+    /// This is an instantaneous drain, not a producer lock: callers are responsible for
+    /// synchronizing acknowledgement producers across the surrounding generation transition.
+    pub fn discard_pending_manual_acknowledgements(&mut self) {
+        self.pending
+            .retain(|envelope| should_replay_after_reconnect(&envelope.request));
+
+        let queued: Vec<_> = self.queued.drain().collect();
+        for envelope in queued {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.queued.push_back(envelope);
+            }
+        }
+
+        for envelope in self.requests_rx.drain() {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.pending.push_back(envelope);
+            }
+        }
+        for envelope in self.control_requests_rx.drain() {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.pending.push_back(envelope);
+            }
+        }
+    }
+
+    /// Repairs topic-alias publishes admitted concurrently with connection cleanup.
+    ///
+    /// [`Self::clean`] rewrites every publish visible while a failed network connection is being
+    /// cleaned, because topic aliases cannot be carried into the next network connection. A
+    /// concurrent producer can nevertheless enqueue another publish after that drain has
+    /// completed. Connection owners that validate aliases outside the event loop can call this
+    /// method under their producer gate. Repair starts with the mappings captured at the cleanup
+    /// boundary and applies later rebindings in request order.
+    ///
+    /// Alias-bearing publishes with a recoverable topic are rewritten to use that concrete topic
+    /// without an alias. A tracked alias-only publish whose topic cannot be recovered is removed
+    /// and completed with [`PublishNoticeError::TopicAliasReplayUnavailable`]. All other requests
+    /// retain their relative order.
+    ///
+    /// This is an instantaneous drain, not a producer lock: callers are responsible for
+    /// synchronizing publish producers across the surrounding connection transition.
+    pub fn prepare_pending_topic_aliases_for_reconnect(&mut self) {
+        let mut topic_aliases = std::mem::take(&mut self.reconnect_topic_aliases);
+        let pending = std::mem::take(&mut self.pending);
+        for envelope in pending {
+            self.push_replay_envelope(envelope, &mut topic_aliases);
+        }
+
+        let queued: Vec<_> = self.queued.drain().collect();
+        for envelope in queued {
+            self.push_replay_envelope(envelope, &mut topic_aliases);
+        }
+
+        let drained_requests: Vec<_> = self.requests_rx.drain().collect();
+        for envelope in drained_requests {
+            self.push_replay_envelope(envelope, &mut topic_aliases);
+        }
+        let drained_control_requests: Vec<_> = self.control_requests_rx.drain().collect();
+        for envelope in drained_control_requests {
+            self.push_replay_envelope(envelope, &mut topic_aliases);
+        }
+    }
+
     fn clean_with_notice_reason(&mut self, reason: NoticeFailureReason) {
         #[cfg(feature = "tracing")]
         self.telemetry.finish_established_connection();
@@ -711,6 +790,12 @@ impl EventLoop {
                 self.push_replay_envelope(envelope, &mut replay_topic_aliases);
             }
         }
+
+        // Preserve the mapping exactly as it stood after the cleanup drain. A producer may
+        // enqueue an alias-only publish and then a rebinding before the connection owner can take
+        // its admission gate. The late repair must resolve the former against this boundary map,
+        // then apply the latter in queue order.
+        self.reconnect_topic_aliases = replay_topic_aliases;
 
         #[cfg(feature = "tracing")]
         crate::instrumentation::replay_prepared(
@@ -6219,6 +6304,58 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_boundary_discards_late_manual_acks_and_preserves_other_requests() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx, control_tx, _) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(4),
+            );
+        eventloop.clean();
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain(Request::PubAck(PubAck::new(
+                5, None,
+            ))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PubRec(PubRec::new(
+                6, None,
+            ))));
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+        control_tx
+            .send(RequestEnvelope::plain(Request::PubAck(PubAck::new(
+                7, None,
+            ))))
+            .unwrap();
+        control_tx
+            .send(RequestEnvelope::plain(Request::PubRec(PubRec::new(
+                8, None,
+            ))))
+            .unwrap();
+        control_tx
+            .send(RequestEnvelope::plain(Request::Subscribe(Subscribe::new(
+                SubscribeFilter::new("preserved/#", QoS::AtLeastOnce),
+                None,
+            ))))
+            .unwrap();
+
+        eventloop.discard_pending_manual_acknowledgements();
+
+        assert_eq!(eventloop.pending_len(), 2);
+        assert!(
+            eventloop.pending.iter().all(|envelope| !matches!(
+                envelope.request,
+                Request::PubAck(_) | Request::PubRec(_)
+            ))
+        );
+        assert!(eventloop.requests_rx.is_empty());
+        assert!(eventloop.control_requests_rx.is_empty());
+    }
+
+    #[test]
     fn clean_drops_ack_requests_drained_from_queued_scheduler() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 3);
@@ -6367,6 +6504,155 @@ mod tests {
         assert_eq!(
             notice.wait().unwrap_err(),
             PublishNoticeError::TopicAliasReplayUnavailable(5)
+        );
+    }
+
+    #[test]
+    fn reconnect_boundary_repairs_topic_aliases_admitted_after_cleanup() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("previous/topic", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        eventloop.clean();
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain(Request::PingReq));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("fresh/topic", QoS::AtLeastOnce, 2),
+            )));
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 2),
+            )))
+            .unwrap();
+        let (notice_tx, notice) = PublishNoticeTx::new();
+        request_tx
+            .send(RequestEnvelope::tracked_publish(
+                publish_with_alias("", QoS::AtLeastOnce, 3),
+                notice_tx,
+            ))
+            .unwrap();
+
+        eventloop.prepare_pending_topic_aliases_for_reconnect();
+
+        assert_eq!(eventloop.pending_len(), 5);
+        match eventloop
+            .pending
+            .pop_front()
+            .map(|envelope| envelope.request)
+        {
+            Some(Request::Publish(publish)) => {
+                assert_eq!(publish.topic, Bytes::from_static(b"previous/topic"));
+                assert_eq!(
+                    publish
+                        .properties
+                        .as_ref()
+                        .and_then(|properties| properties.topic_alias),
+                    None
+                );
+            }
+            request => panic!("expected replay-safe publish, got {request:?}"),
+        }
+        assert!(matches!(
+            eventloop
+                .pending
+                .pop_front()
+                .map(|envelope| envelope.request),
+            Some(Request::PingReq)
+        ));
+        for expected_topic in ["fresh/topic", "previous/topic", "fresh/topic"] {
+            match eventloop
+                .pending
+                .pop_front()
+                .map(|envelope| envelope.request)
+            {
+                Some(Request::Publish(publish)) => {
+                    assert_eq!(
+                        publish.topic,
+                        Bytes::copy_from_slice(expected_topic.as_bytes())
+                    );
+                    assert_eq!(
+                        publish
+                            .properties
+                            .as_ref()
+                            .and_then(|properties| properties.topic_alias),
+                        None
+                    );
+                }
+                request => panic!("expected replay-safe publish, got {request:?}"),
+            }
+        }
+        assert!(eventloop.requests_rx.is_empty());
+        assert_eq!(
+            notice.wait().unwrap_err(),
+            PublishNoticeError::TopicAliasReplayUnavailable(3)
+        );
+    }
+
+    #[test]
+    fn reconnect_alias_repair_applies_rebindings_after_earlier_alias_only_publishes() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 3);
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("topic/a", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        eventloop.clean();
+
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("topic/b", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+        request_tx
+            .send(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 1),
+            )))
+            .unwrap();
+
+        eventloop.prepare_pending_topic_aliases_for_reconnect();
+
+        let topics: Vec<_> = eventloop
+            .pending
+            .drain(..)
+            .map(|envelope| match envelope.request {
+                Request::Publish(publish) => {
+                    assert_eq!(
+                        publish
+                            .properties
+                            .as_ref()
+                            .and_then(|properties| properties.topic_alias),
+                        None
+                    );
+                    publish.topic
+                }
+                request => panic!("expected replay-safe publish, got {request:?}"),
+            })
+            .collect();
+        assert_eq!(
+            topics,
+            [
+                Bytes::from_static(b"topic/a"),
+                Bytes::from_static(b"topic/a"),
+                Bytes::from_static(b"topic/b"),
+                Bytes::from_static(b"topic/b"),
+            ]
         );
     }
 

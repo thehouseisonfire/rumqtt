@@ -50,6 +50,9 @@ pub enum PublishResult {
     Qos0Flushed,
     Qos1(PubAck),
     Qos2Completed(PubComp),
+    /// A replayed PUBREL completed with `PacketIdentifierNotFound`, which MQTT 5 defines as a
+    /// non-error during recovery.
+    Qos2Recovered(PubComp),
     Qos2PubRecRejected(PubRec),
 }
 
@@ -59,7 +62,9 @@ impl PublishResult {
         match self {
             Self::Qos0Flushed => QoS::AtMostOnce,
             Self::Qos1(_) => QoS::AtLeastOnce,
-            Self::Qos2Completed(_) | Self::Qos2PubRecRejected(_) => QoS::ExactlyOnce,
+            Self::Qos2Completed(_) | Self::Qos2Recovered(_) | Self::Qos2PubRecRejected(_) => {
+                QoS::ExactlyOnce
+            }
         }
     }
 }
@@ -552,7 +557,14 @@ fn validate_v5_publish_completion(result: &PublishResult) -> Result<(), PublishN
         }
         PublishResult::Qos1(puback) => Err(PublishNoticeError::V5PubAck(puback.reason)),
         PublishResult::Qos2Completed(pubcomp) if pubcomp.reason == PubCompReason::Success => Ok(()),
-        PublishResult::Qos2Completed(pubcomp) => Err(PublishNoticeError::V5PubComp(pubcomp.reason)),
+        PublishResult::Qos2Recovered(pubcomp)
+            if pubcomp.reason == PubCompReason::PacketIdentifierNotFound =>
+        {
+            Ok(())
+        }
+        PublishResult::Qos2Completed(pubcomp) | PublishResult::Qos2Recovered(pubcomp) => {
+            Err(PublishNoticeError::V5PubComp(pubcomp.reason))
+        }
         PublishResult::Qos2PubRecRejected(pubrec) => {
             Err(PublishNoticeError::V5PubRec(pubrec.reason))
         }
@@ -619,6 +631,31 @@ mod tests {
             notice.wait_completion(),
             Err(PublishNoticeError::V5PubAck(
                 PubAckReason::ImplementationSpecificError
+            ))
+        );
+    }
+
+    #[test]
+    fn publish_completion_accepts_packet_identifier_not_found_during_recovery() {
+        let (tx, notice) = PublishNoticeTx::new();
+        let mut pubcomp = PubComp::new(1, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+        tx.success(PublishResult::Qos2Recovered(pubcomp));
+
+        assert_eq!(notice.wait_completion(), Ok(()));
+    }
+
+    #[test]
+    fn publish_completion_rejects_packet_identifier_not_found_outside_recovery() {
+        let (tx, notice) = PublishNoticeTx::new();
+        let mut pubcomp = PubComp::new(1, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+        tx.success(PublishResult::Qos2Completed(pubcomp));
+
+        assert_eq!(
+            notice.wait_completion(),
+            Err(PublishNoticeError::V5PubComp(
+                PubCompReason::PacketIdentifierNotFound
             ))
         );
     }

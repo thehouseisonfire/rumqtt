@@ -2131,6 +2131,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumqtt-wrapper-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "flume",
+ "futures-executor",
+ "futures-util",
+ "rumqttc-v4-next",
+ "rumqttc-v5-next",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "rumqttc-core-next"
 version = "0.34.0-alpha"
 dependencies = [

@@ -49,7 +49,7 @@ impl ValidatedTopic {
     /// Returns [`InvalidTopic`] if the topic string does not conform to the MQTT specification.
     pub fn new<S: Into<String>>(topic: S) -> Result<Self, InvalidTopic> {
         let topic_string = topic.into();
-        if valid_topic(&topic_string) {
+        if !topic_string.is_empty() && valid_publish_topic(&topic_string) {
             Ok(Self(topic_string))
         } else {
             Err(InvalidTopic(topic_string))
@@ -980,7 +980,7 @@ impl AsyncClient {
     {
         let (qos, retain, properties) = options.into_parts();
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_topic(&topic))
+        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
@@ -1006,7 +1006,7 @@ impl AsyncClient {
     {
         let (qos, retain, properties) = options.into_parts();
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_topic(&topic))
+        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
@@ -1073,7 +1073,7 @@ impl AsyncClient {
     {
         let (qos, retain, properties) = options.into_parts();
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_topic(&topic))
+        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
@@ -1099,7 +1099,7 @@ impl AsyncClient {
     {
         let (qos, retain, properties) = options.into_parts();
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_topic(&topic))
+        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
@@ -2587,7 +2587,7 @@ impl Client {
     {
         let (qos, retain, properties) = options.into_parts();
         let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_topic(&topic))
+        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
@@ -3415,6 +3415,11 @@ fn valid_mqtt_string_value(value: &str) -> bool {
 }
 
 #[must_use]
+fn valid_publish_topic(topic: &str) -> bool {
+    valid_topic(topic) && valid_mqtt_string_value(topic)
+}
+
+#[must_use]
 fn valid_topic_filter(filter: &str) -> bool {
     valid_filter(filter) && valid_mqtt_string_value(filter)
 }
@@ -4133,9 +4138,20 @@ mod test {
 
     #[test]
     fn creating_invalid_validated_topic_fails() {
+        let overlong = "a".repeat(usize::from(u16::MAX) + 1);
+
         assert_eq!(
             ValidatedTopic::new("a/+/b"),
             Err(InvalidTopic("a/+/b".to_string()))
+        );
+        assert_eq!(ValidatedTopic::new(""), Err(InvalidTopic(String::new())));
+        assert_eq!(
+            ValidatedTopic::new("a\0b"),
+            Err(InvalidTopic("a\0b".to_owned()))
+        );
+        assert_eq!(
+            ValidatedTopic::new(overlong.clone()),
+            Err(InvalidTopic(overlong))
         );
     }
 
@@ -4471,14 +4487,22 @@ mod test {
 
     #[test]
     fn publishing_invalid_raw_topic_fails() {
-        let (tx, _) = flume::bounded(1);
+        let (tx, rx) = flume::bounded(1);
         let client = Client::from_sender(tx);
-        let err = client
-            .publish("a/+/b", "good bye", PublishOptions::new(QoS::ExactlyOnce))
-            .expect_err("Invalid publish topic should fail");
-        assert!(
-            matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
-        );
+        for topic in [
+            "a/+/b".to_owned(),
+            String::new(),
+            "a\0b".to_owned(),
+            "a".repeat(usize::from(u16::MAX) + 1),
+        ] {
+            let err = client
+                .publish(topic, "good bye", PublishOptions::new(QoS::ExactlyOnce))
+                .expect_err("invalid publish topic should fail");
+            assert!(
+                matches!(err, ClientError::InvalidRequest(req) if matches!(*req, Request::Publish(_)))
+            );
+        }
+        assert!(rx.is_empty());
     }
 
     #[test]

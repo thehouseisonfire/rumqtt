@@ -552,6 +552,40 @@ impl EventLoop {
         );
     }
 
+    /// Discards manual incoming-publish acknowledgements currently waiting for event-loop
+    /// processing while preserving every other request.
+    ///
+    /// `PUBACK` and `PUBREC` acknowledge connection-scoped inbound state and must not cross a
+    /// reconnect boundary. [`Self::clean`] removes acknowledgements that are already visible when
+    /// connection loss is processed, but a concurrent producer can enqueue another before its
+    /// owner observes that loss. Connection owners that maintain their own acknowledgement-token
+    /// generation can call this while advancing that generation under the same producer gate.
+    ///
+    /// This is an instantaneous drain, not a producer lock: callers are responsible for
+    /// synchronizing acknowledgement producers across the surrounding generation transition.
+    pub fn discard_pending_manual_acknowledgements(&mut self) {
+        self.pending
+            .retain(|envelope| should_replay_after_reconnect(&envelope.request));
+
+        let queued: Vec<_> = self.queued.drain().collect();
+        for envelope in queued {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.queued.push_back(envelope);
+            }
+        }
+
+        for envelope in self.requests_rx.drain() {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.pending.push_back(envelope);
+            }
+        }
+        for envelope in self.control_requests_rx.drain() {
+            if should_replay_after_reconnect(&envelope.request) {
+                self.pending.push_back(envelope);
+            }
+        }
+    }
+
     /// Number of pending requests queued for retransmission.
     pub fn pending_len(&self) -> usize {
         self.pending.len() + self.queued.len()
@@ -3232,6 +3266,50 @@ mod tests {
             pending_front_request(&eventloop),
             Some(Request::PingReq)
         ));
+    }
+
+    #[test]
+    fn reconnect_boundary_discards_late_manual_acks_and_preserves_other_requests() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx, control_tx, _) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(4),
+            );
+        eventloop.clean();
+        eventloop
+            .pending
+            .push_back(RequestEnvelope::plain(Request::PubAck(PubAck::new(5))));
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::PubRec(PubRec::new(6))));
+        request_tx
+            .send(RequestEnvelope::plain(Request::PingReq))
+            .unwrap();
+        control_tx
+            .send(RequestEnvelope::plain(Request::PubAck(PubAck::new(7))))
+            .unwrap();
+        control_tx
+            .send(RequestEnvelope::plain(Request::PubRec(PubRec::new(8))))
+            .unwrap();
+        control_tx
+            .send(RequestEnvelope::plain(Request::Subscribe(Subscribe::new(
+                "preserved/#",
+                QoS::AtLeastOnce,
+            ))))
+            .unwrap();
+
+        eventloop.discard_pending_manual_acknowledgements();
+
+        assert_eq!(eventloop.pending_len(), 2);
+        assert!(
+            eventloop.pending.iter().all(|envelope| !matches!(
+                envelope.request,
+                Request::PubAck(_) | Request::PubRec(_)
+            ))
+        );
+        assert!(eventloop.requests_rx.is_empty());
+        assert!(eventloop.control_requests_rx.is_empty());
     }
 
     #[test]
