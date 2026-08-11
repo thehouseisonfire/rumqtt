@@ -30,6 +30,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up MSVC developer command prompt
+        if: ${{ runner.os == 'Windows' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Validate release tag
         shell: bash
         run: |
