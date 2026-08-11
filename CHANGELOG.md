@@ -1,6 +1,11 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc-c`: Add the stable ABI-v1 C wrapper as `rumqttc-c-next`, producing one
+  shared/static library and checked-in C11/C++ header for MQTT 3.1.1 and MQTT 5.
+  The pull-based API uses opaque owned handles, bounded nonblocking admission,
+  tracked MQTT-aware completions, manual acknowledgements, structured errors,
+  panic containment, and idempotent bounded shutdown.
 - `rumqttc-wrapper-core`: Publish the native-wrapper infrastructure crate on
   crates.io as `rumqttc-wrapper-core-next`, alongside the coordinated
   `rumqttc-next` release.
@@ -72,6 +77,22 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc-c`: Preserve operation timeout failures as cached terminal completion results, and report
+  invalid-state and internal C errors with their matching structured error kinds.
+- `rumqttc-c`: Install the Windows DLL import library and propagate `RUMQTTC_STATIC` from CMake's
+  imported static target so packaged Windows shared and static consumers link without manual fixes.
+- `rumqttc-c`: Make installed pkg-config metadata relocatable and report the correct private
+  static-link dependencies on Linux, macOS, and Windows.
+- `rumqttc-c`: Retry driver-thread joining after a completed graceful close times out during
+  cleanup, and preserve MQTT 5 `NoSubscriptionExisted` (`0x11`) unsubscribe results in the C API.
+- `rumqttc-c`: Mark raw-pointer Rust ABI exports as unsafe, propagate static system dependencies
+  from CMake targets, and release timeout errors in the documented polling loop.
+- `rumqttc-c`: Expose explicit `rumqttc::rumqttc_shared` and `rumqttc::rumqttc_static` CMake package
+  targets while retaining `rumqttc::rumqttc` as the static-compatible default.
+- `rumqttc-c`: Make byte/string copy helpers safe for overlapping buffers and document error kind
+  `0` as `RUMQTTC_ERROR_NONE` for local status-only failures.
+- `rumqttc-c`: Bound concurrent graceful-close coordination within each caller's timeout and ignore
+  absent MQTT 5 payload-format values instead of validating inactive storage.
 - `rumqttc` v4/v5 / `rumqttc-wrapper-core`: Reject publish Topic Names containing U+0000 or
   exceeding MQTT's 65,535-byte UTF-8 string limit before request admission, preventing malformed
   publications from reaching serialization or reconnect replay.

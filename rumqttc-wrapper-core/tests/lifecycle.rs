@@ -315,3 +315,16 @@ fn bounded_request_channel_reports_backpressure() {
     handle.try_admit(Command::ImmediateDisconnect).unwrap();
     native.join(Duration::from_secs(2)).unwrap();
 }
+
+#[test]
+fn immediate_cleanup_is_idempotent() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let native =
+        NativeClient::start(ClientConfig::v311("idempotent-close", "127.0.0.1", port)).unwrap();
+    let handle = native.handle();
+
+    handle.close_now_idempotent();
+    handle.close_now_idempotent();
+    native.join(Duration::from_secs(2)).unwrap();
+}

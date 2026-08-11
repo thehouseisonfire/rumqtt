@@ -1,0 +1,19 @@
+language = "C"
+include_guard = "RUMQTTC_GENERATED_FUNCTIONS_H"
+cpp_compat = true
+usize_is_size_t = true
+documentation = false
+
+[parse]
+parse_deps = false
+
+[export]
+item_types = ["functions"]
+
+[export.rename]
+"rumqttc_config" = "rumqttc_config_t"
+"rumqttc_client" = "rumqttc_client_t"
+"rumqttc_completion" = "rumqttc_completion_t"
+"rumqttc_event" = "rumqttc_event_t"
+"rumqttc_error" = "rumqttc_error_t"
+

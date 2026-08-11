@@ -1,0 +1,24 @@
+[package]
+name = "rumqttc-c-next"
+version = "0.34.0-alpha"
+publish = true
+description = "Stable C ABI for the rumqttc MQTT 3.1.1 and MQTT 5 clients"
+keywords = ["mqtt", "ffi", "c-api"]
+categories = ["network-programming", "api-bindings"]
+rust-version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lib]
+name = "rumqttc"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+bytes = "1.5"
+rumqttc-wrapper-core-next = { path = "../rumqttc-wrapper-core", version = "0.34.0-alpha" }
+
+[build-dependencies]
+cbindgen = "0.29"

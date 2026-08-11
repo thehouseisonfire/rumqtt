@@ -1,0 +1,34 @@
+#include "rumqttc.h"
+
+#include <assert.h>
+#include <stddef.h>
+#include <string.h>
+
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(rumqttc_bytes_view_t) == 16, "rumqttc_bytes_view_t ABI changed");
+_Static_assert(sizeof(rumqttc_string_view_t) == 16, "rumqttc_string_view_t ABI changed");
+_Static_assert(sizeof(rumqttc_user_property_t) == 40, "rumqttc_user_property_t ABI changed");
+_Static_assert(sizeof(rumqttc_v5_publish_properties_t) == 96, "v5 properties ABI changed");
+_Static_assert(sizeof(rumqttc_publish_options_t) == 24, "publish options ABI changed");
+_Static_assert(sizeof(rumqttc_subscription_t) == 32, "subscription ABI changed");
+_Static_assert(sizeof(rumqttc_diagnostics_t) == 48, "diagnostics ABI changed");
+_Static_assert(offsetof(rumqttc_v5_publish_properties_t, user_properties) == 80,
+               "v5 properties field offset changed");
+#endif
+
+int main(void) {
+    rumqttc_config_t *config = NULL;
+    rumqttc_error_t *error = NULL;
+    rumqttc_string_view_t host = {"127.0.0.1", strlen("127.0.0.1")};
+    rumqttc_string_view_t client_id = {"c-smoke", strlen("c-smoke")};
+
+    assert(rumqttc_abi_version() == RUMQTTC_ABI_VERSION);
+    assert(rumqttc_library_version() != NULL);
+    assert(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, &config, &error) == RUMQTTC_OK);
+    assert(config != NULL && error == NULL);
+    assert(rumqttc_config_set_broker(config, host, 1883, NULL) == RUMQTTC_OK);
+    assert(rumqttc_config_set_client_id(config, client_id, NULL) == RUMQTTC_OK);
+    rumqttc_config_destroy(config);
+    rumqttc_config_destroy(NULL);
+    return 0;
+}

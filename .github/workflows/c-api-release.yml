@@ -1,0 +1,77 @@
+name: C API release
+
+on:
+  push:
+    tags:
+      - 'rumqttc-c-v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+          - platform: macos-arm64
+            os: macos-15
+          - platform: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build libraries
+        run: cargo build --locked --release -p rumqttc-c-next
+
+      - name: Run native ABI tests
+        run: cargo test --locked -p rumqttc-c-next
+
+      - name: Verify Unix ABI artifact
+        if: ${{ runner.os != 'Windows' }}
+        run: rumqttc-c/tests/abi/check.sh
+
+      - name: Verify Windows ABI artifact
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: rumqttc-c/tests/abi/check.ps1
+
+      - name: Stage release contents
+        shell: bash
+        run: |
+          stage="rumqttc-c-${{ matrix.platform }}"
+          cmake -S rumqttc-c -B target/rumqttc-c-package \
+            -DCMAKE_INSTALL_PREFIX="$PWD/$stage"
+          cmake --install target/rumqttc-c-package
+          cp rumqttc-c/README.md "$stage/"
+          find target/release -maxdepth 1 \( -name '*.pdb' -o -name '*.dSYM' \) \
+            -exec cp -R {} "$stage/lib/" \; || true
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            test -f "$stage/lib/rumqttc.dll.lib"
+          fi
+          cmake -S rumqttc-c/tests/cmake -B target/rumqttc-c-consumer \
+            -Drumqttc_DIR="$PWD/$stage/lib/cmake/rumqttc"
+          cmake --build target/rumqttc-c-consumer --config Release
+          tar -czf "$stage.tar.gz" "$stage"
+          shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256"
+
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: rumqttc-c-${{ matrix.platform }}.tar.gz
+
+      - name: Publish archive
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rumqttc-c-${{ matrix.platform }}.tar.gz
+            rumqttc-c-${{ matrix.platform }}.tar.gz.sha256

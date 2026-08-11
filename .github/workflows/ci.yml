@@ -12,6 +12,7 @@ on:
       - 'rumqttc-v4/**'
       - 'rumqttc-v5/**'
       - 'rumqttc-wrapper-core/**'
+      - 'rumqttc-c/**'
       - 'benchmarks/**'
       - '**.md'
       - 'Cargo.*'
@@ -189,6 +190,7 @@ jobs:
         run: |
             cargo clippy --fix --allow-dirty --verbose --all-targets -p mqttbytes-core-next
             cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-wrapper-core-next
+            cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-c-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
@@ -205,6 +207,7 @@ jobs:
         run: |
             cargo doc --verbose --no-deps -p mqttbytes-core-next
             cargo doc --verbose --no-deps -p rumqttc-wrapper-core-next
+            cargo doc --verbose --no-deps -p rumqttc-c-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
@@ -219,6 +222,7 @@ jobs:
         run: |
             cargo test --doc -p mqttbytes-core-next
             cargo test --doc -p rumqttc-wrapper-core-next
+            cargo test --doc -p rumqttc-c-next
             cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v4-next
             cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-core-next
@@ -233,10 +237,24 @@ jobs:
         run: |
             cargo test -p mqttbytes-core-next
             cargo test -p rumqttc-wrapper-core-next
+            cargo test -p rumqttc-c-next
             cargo hack --each-feature --exclude-all-features test -p mqttbytes-v4-next
             cargo hack --each-feature --exclude-all-features test -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-next
+
+      - name: Verify C ABI and native consumers
+        if: ${{ runner.os == 'Linux' }}
+        run: rumqttc-c/tests/abi/check.sh
+
+      - name: Load C ABI from C and C++ on macOS
+        if: ${{ runner.os == 'macOS' }}
+        run: rumqttc-c/tests/abi/check.sh
+
+      - name: Load C ABI from C and C++ on Windows
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: rumqttc-c/tests/abi/check.ps1
 
       - name: Test native-tls WSS integration
         run: |
@@ -338,6 +356,43 @@ jobs:
         run: |
             cargo test --locked -p benchmarks --test matched_fault_contract
             cargo test --locked -p benchmarks --test matched_connection_contract
+
+  c-abi-sanitizers:
+    name: C ABI sanitizers and leak checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri,rust-src
+
+      - name: Install native analysis tools
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y clang valgrind
+
+      - name: Run raw conversion tests under Miri
+        run: cargo miri test -p rumqttc-c-next --lib
+
+      - name: Build C library and sanitized consumer
+        run: |
+            cargo build -p rumqttc-c-next
+            clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+              -Irumqttc-c/include rumqttc-c/tests/c/header_smoke.c \
+              -Ltarget/debug -lrumqttc -Wl,-rpath,"$PWD/target/debug" \
+              -o target/rumqttc-header-sanitized
+            ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+              target/rumqttc-header-sanitized
+
+      - name: Check native ownership for leaks
+        run: |
+            cc -std=c11 -Wall -Wextra -Werror -Irumqttc-c/include \
+              rumqttc-c/tests/c/header_smoke.c -Ltarget/debug -lrumqttc \
+              -Wl,-rpath,"$PWD/target/debug" -o target/rumqttc-header-valgrind
+            valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite \
+              target/rumqttc-header-valgrind
 
   coverage:
     name: Test coverage

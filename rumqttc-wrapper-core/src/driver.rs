@@ -339,6 +339,17 @@ impl ClientHandle {
         self.shared.state()
     }
 
+    /// Idempotently requests immediate shutdown, including escalation from an
+    /// in-progress graceful shutdown.
+    ///
+    /// This control path is intended for native-wrapper cleanup and finalizers.
+    /// It makes no delivery claim for unfinished work and does not wait for the
+    /// driver thread to terminate; the owning [`NativeClient`] can subsequently
+    /// use [`NativeClient::join`] for bounded cleanup.
+    pub fn close_now_idempotent(&self) {
+        self.shared.best_effort_immediate_close();
+    }
+
     /// Nonblocking admission into the underlying bounded MQTT request channel.
     ///
     /// # Errors

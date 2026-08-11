@@ -14,8 +14,9 @@ mod shutdown;
 
 pub use command::{Command, PublishCommand, SubscribeCommand, Subscription};
 pub use completion::{
-    Admission, BrokerReason, Completion, CompletionHandle, PublishCompletion, SubscribeCompletion,
-    SubscribeResult, UnsubscribeCompletion, UnsubscribeResult,
+    Admission, BrokerReason, Completion, CompletionHandle, CompletionWaitOutcome,
+    PublishCompletion, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
+    UnsubscribeResult,
 };
 pub use config::{
     AckMode, ClientConfig, CommonConfig, ProtocolConfig, TlsConfig, TransportConfig, V5Config,

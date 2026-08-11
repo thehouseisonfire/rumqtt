@@ -8,6 +8,7 @@ members = [
     "rumqttc-v4",
     "rumqttc-v5",
     "rumqttc-wrapper-core",
+    "rumqttc-c",
     "benchmarks",
     "tests/low-memory",
 ]

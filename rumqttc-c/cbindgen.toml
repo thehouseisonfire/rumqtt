@@ -1,0 +1,32 @@
+language = "C"
+include_guard = "RUMQTTC_GENERATED_H"
+cpp_compat = true
+usize_is_size_t = true
+documentation = false
+
+[parse]
+parse_deps = false
+
+[export]
+include = [
+    "rumqttc_bytes_view_t",
+    "rumqttc_string_view_t",
+    "rumqttc_user_property_t",
+    "rumqttc_v5_publish_properties_t",
+    "rumqttc_publish_options_t",
+    "rumqttc_subscription_t",
+    "rumqttc_diagnostics_t",
+    "rumqttc_config",
+    "rumqttc_client",
+    "rumqttc_completion",
+    "rumqttc_event",
+    "rumqttc_error",
+]
+
+[export.rename]
+"rumqttc_config" = "rumqttc_config_t"
+"rumqttc_client" = "rumqttc_client_t"
+"rumqttc_completion" = "rumqttc_completion_t"
+"rumqttc_event" = "rumqttc_event_t"
+"rumqttc_error" = "rumqttc_error_t"
+
