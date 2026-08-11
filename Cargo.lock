@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "rumqttc-c-next"
-version = "0.34.0-alpha"
+version = "0.1.0-alpha"
 dependencies = [
  "bytes",
  "cbindgen",

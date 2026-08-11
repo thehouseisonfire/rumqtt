@@ -33,6 +33,10 @@ on:
 
 name: CI
 
+permissions:
+  contents: read
+  attestations: read
+
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_INCREMENTAL: 0
@@ -243,18 +247,71 @@ jobs:
             cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-next
 
-      - name: Verify C ABI and native consumers
-        if: ${{ runner.os == 'Linux' }}
-        run: rumqttc-c/tests/abi/check.sh
+      - name: C FFI/header consistency
+        if: ${{ runner.os != 'Windows' }}
+        run: rumqttc-c/tests/abi/check.sh ffi-header
 
-      - name: Load C ABI from C and C++ on macOS
-        if: ${{ runner.os == 'macOS' }}
-        run: rumqttc-c/tests/abi/check.sh
-
-      - name: Load C ABI from C and C++ on Windows
+      - name: C FFI/header consistency (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
-        run: rumqttc-c/tests/abi/check.ps1
+        run: rumqttc-c/tests/abi/check.ps1 ffi-header
+
+      - name: C current export policy
+        if: ${{ runner.os != 'Windows' }}
+        run: rumqttc-c/tests/abi/check.sh exports
+
+      - name: C current export policy (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: rumqttc-c/tests/abi/check.ps1 exports
+
+      - name: C native consumers
+        if: ${{ runner.os != 'Windows' }}
+        run: rumqttc-c/tests/abi/check.sh native
+
+      - name: C native consumers (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: rumqttc-c/tests/abi/check.ps1 native
+
+      - name: C package consumers
+        if: ${{ runner.os != 'Windows' }}
+        run: rumqttc-c/tests/abi/check.sh package
+
+      - name: C package consumers (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: rumqttc-c/tests/abi/check.ps1 package
+
+      - name: C ABI mutation corpus
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          tool="$(rumqttc-c/tests/abi/install-abi-compliance-checker.sh)"
+          python3 rumqttc-c/tests/abi/mutation_matrix.py --abicc "$tool" --output target/abi-mutations
+          python3 -m unittest discover -s rumqttc-c/tests/abi -p 'test_*.py'
+
+      - name: C historical ABI compatibility
+        if: ${{ runner.os != 'Windows' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: rumqttc-c/tests/abi/compare-release.sh
+
+      - name: C historical ABI compatibility (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: rumqttc-c/tests/abi/compare-release.ps1
+
+      - name: Preserve C ABI diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-abi-diagnostics-${{ runner.os }}
+          path: |
+            target/abi-mutations
+            target/abi-reports
+          if-no-files-found: ignore
 
       - name: Test native-tls WSS integration
         run: |

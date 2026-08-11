@@ -1,0 +1,12 @@
+# CMake's find_package version grammar cannot request a SemVer prerelease.
+# Report the real package version, but reject every numeric version request so
+# this artifact cannot satisfy a request for its future stable release.
+set(PACKAGE_VERSION "@RUMQTTC_PACKAGE_VERSION@")
+set(PACKAGE_VERSION_EXACT FALSE)
+if(PACKAGE_FIND_VERSION STREQUAL "")
+    set(PACKAGE_VERSION_COMPATIBLE TRUE)
+    set(PACKAGE_VERSION_UNSUITABLE FALSE)
+else()
+    set(PACKAGE_VERSION_COMPATIBLE FALSE)
+    set(PACKAGE_VERSION_UNSUITABLE TRUE)
+endif()

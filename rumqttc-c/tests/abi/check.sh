@@ -4,9 +4,15 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 crate_dir="${repo_dir}/rumqttc-c"
 target_dir="${repo_dir}/target/debug"
+check="${1:-all}"
+case "${check}" in
+    all|package|native|ffi-header|exports) ;;
+    *) echo "unknown C check: ${check}" >&2; exit 2 ;;
+esac
 
 cargo build --manifest-path "${crate_dir}/Cargo.toml"
 
+if [[ "${check}" == all || "${check}" == package ]]; then
 pkgconfig_build_dir="${target_dir}/pkgconfig-check"
 pkgconfig_original_prefix="${target_dir}/pkgconfig-original"
 pkgconfig_relocated_prefix="${target_dir}/pkgconfig-relocated"
@@ -49,7 +55,9 @@ cc -std=c11 -Wall -Wextra -Werror -DRUMQTTC_STATIC \
     "${crate_dir}/tests/c/header_smoke.c" "${pkgconfig_args[@]}" \
     -o "${target_dir}/rumqttc-pkgconfig-static"
 "${target_dir}/rumqttc-pkgconfig-static"
+fi
 
+if [[ "${check}" == all || "${check}" == native ]]; then
 cc -std=c11 -Wall -Wextra -Werror -I"${crate_dir}/include" \
     "${crate_dir}/tests/c/header_smoke.c" -L"${target_dir}" -lrumqttc \
     -Wl,-rpath,"${target_dir}" -o "${target_dir}/rumqttc-header-smoke-c"
@@ -58,34 +66,54 @@ c++ -std=c++17 -Wall -Wextra -Werror -I"${crate_dir}/include" \
     -Wl,-rpath,"${target_dir}" -o "${target_dir}/rumqttc-header-smoke-cpp"
 "${target_dir}/rumqttc-header-smoke-c"
 "${target_dir}/rumqttc-header-smoke-cpp"
+fi
 
+if [[ "${check}" == all || "${check}" == ffi-header ]]; then
 generated_header="$(find "${target_dir}/build" -path '*rumqttc-c-next*/out/rumqttc.generated.h' -print0 \
     | xargs -0 ls -t | head -1)"
 generated_functions="$(find "${target_dir}/build" -path '*rumqttc-c-next*/out/rumqttc.generated-functions.h' -print0 \
     | xargs -0 ls -t | head -1)"
-sed -n 's/.*\(rumqttc_[A-Za-z0-9_]*\)(.*/\1/p' "${crate_dir}/include/rumqttc.h" | sort -u \
-    > "${target_dir}/rumqttc-checked-functions"
-sed -n 's/.*\(rumqttc_[A-Za-z0-9_]*\)(.*/\1/p' "${generated_header}" | sort -u \
-    > "${target_dir}/rumqttc-generated-functions"
-diff -u "${target_dir}/rumqttc-checked-functions" "${target_dir}/rumqttc-generated-functions"
+python3 "${crate_dir}/tests/abi/contract.py" generate \
+    --header "${crate_dir}/include/rumqttc.h" --output "${target_dir}/rumqttc-checked-contract.json"
+python3 "${crate_dir}/tests/abi/contract.py" generate \
+    --header "${generated_header}" --output "${target_dir}/rumqttc-generated-contract.json"
+python3 - "${target_dir}/rumqttc-checked-contract.json" "${target_dir}/rumqttc-generated-contract.json" <<'PY'
+import json
+import sys
+
+checked_contract = json.load(open(sys.argv[1], encoding="utf-8"))
+generated_contract = json.load(open(sys.argv[2], encoding="utf-8"))
+for category in ("functions", "records"):
+    checked = set(checked_contract[category])
+    generated = set(generated_contract[category])
+    if checked != generated:
+        raise SystemExit(
+            f"checked/generated {category} differ: "
+            f"checked-only={sorted(checked-generated)}, "
+            f"generated-only={sorted(generated-checked)}"
+        )
+PY
+python3 "${crate_dir}/tests/abi/contract.py" compare \
+    --old "${target_dir}/rumqttc-checked-contract.json" \
+    --new "${target_dir}/rumqttc-generated-contract.json" \
+    --mode containment --categories functions,records \
+    > "${target_dir}/rumqttc-ffi-source-differences.txt"
 cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only "${generated_header}"
 c++ -std=c++17 -Wall -Wextra -Werror -x c++ -fsyntax-only "${generated_header}"
 printf '#include "%s"\n#include "%s"\n' "${crate_dir}/include/rumqttc.h" "${generated_functions}" \
     | cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only -
 printf '#include "%s"\n#include "%s"\n' "${crate_dir}/include/rumqttc.h" "${generated_functions}" \
     | c++ -std=c++17 -Wall -Wextra -Werror -x c++ -fsyntax-only -
+fi
 
+if [[ "${check}" == all || "${check}" == exports ]]; then
 case "$(uname -s)" in
-    Linux)
-        nm -D --defined-only "${target_dir}/librumqttc.so" | awk '{print $3}' | sort \
-            > "${target_dir}/rumqttc-exported-symbols"
-        diff -u "${crate_dir}/tests/abi/rumqttc-v1.symbols" \
-            "${target_dir}/rumqttc-exported-symbols"
-        ;;
-    Darwin)
-        nm -gU "${target_dir}/librumqttc.dylib" | awk '{print $3}' | sed 's/^_//' | sort \
-            > "${target_dir}/rumqttc-exported-symbols"
-        diff -u "${crate_dir}/tests/abi/rumqttc-v1.symbols" \
-            "${target_dir}/rumqttc-exported-symbols"
-        ;;
+    Darwin) library="${target_dir}/librumqttc.dylib" ;;
+    *) library="${target_dir}/librumqttc.so" ;;
 esac
+python3 "${crate_dir}/tests/abi/contract.py" generate \
+    --header "${crate_dir}/include/rumqttc.h" --library "${library}" \
+    --output "${target_dir}/rumqttc-abi-contract.json"
+python3 "${crate_dir}/tests/abi/contract.py" verify-exports \
+    --contract "${target_dir}/rumqttc-abi-contract.json"
+fi

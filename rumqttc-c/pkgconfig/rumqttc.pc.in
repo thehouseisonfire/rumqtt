@@ -4,8 +4,8 @@ libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 
 Name: rumqttc
-Description: Stable dual-protocol rumqttc C client
-Version: @PROJECT_VERSION@
+Description: Pre-stable dual-protocol rumqttc C client
+Version: @RUMQTTC_PACKAGE_VERSION@
 Libs: -L${libdir} -lrumqttc
 Libs.private: @RUMQTTC_PKGCONFIG_LIBS_PRIVATE@
 Cflags: -I${includedir}

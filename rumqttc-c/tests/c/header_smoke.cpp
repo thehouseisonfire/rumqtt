@@ -3,7 +3,7 @@
 #include <type_traits>
 
 static_assert(std::is_same_v<rumqttc_status_t, uint32_t>);
-static_assert(RUMQTTC_ABI_VERSION == 0x00010000u);
+static_assert(RUMQTTC_ABI_VERSION == 0x00000001u);
 
 int main() {
     rumqttc_config_t *config = nullptr;

@@ -1,11 +1,22 @@
 ## [Unreleased]
 
 ### Added
-- `rumqttc-c`: Add the stable ABI-v1 C wrapper as `rumqttc-c-next`, producing one
+- `rumqttc-c`: Add the pre-stable ABI-0.1 C wrapper as independently versioned
+  `rumqttc-c-next` 0.1.0-alpha, producing one
   shared/static library and checked-in C11/C++ header for MQTT 3.1.1 and MQTT 5.
   The pull-based API uses opaque owned handles, bounded nonblocking admission,
   tracked MQTT-aware completions, manual acknowledgements, structured errors,
   panic containment, and idempotent bounded shutdown.
+- `rumqttc-c`: Add compiler-derived, target-specific C ABI contracts, a
+  controlled compatibility mutation corpus, authenticated released-artifact
+  baselines, cumulative ABI containment checks, current header/export equality,
+  and ABI-line-specific shared-library identities. Historical comparisons fail
+  closed on unsupported or mismatched host architectures, and prerelease CMake
+  metadata cannot satisfy a request for the future stable package version.
+  Generic Unix installs retain their real unversioned shared library rather
+  than replacing it with a self-referential symlink. Reused ABI report
+  directories cannot retain a stale no-baseline result and bypass historical
+  comparison.
 - `rumqttc-wrapper-core`: Publish the native-wrapper infrastructure crate on
   crates.io as `rumqttc-wrapper-core-next`, alongside the coordinated
   `rumqttc-next` release.

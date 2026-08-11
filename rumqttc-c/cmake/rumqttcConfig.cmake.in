@@ -1,5 +1,7 @@
 @PACKAGE_INIT@
 
+set(rumqttc_VERSION "@RUMQTTC_PACKAGE_VERSION@")
+
 if(NOT TARGET rumqttc::rumqttc_static)
     add_library(rumqttc::rumqttc_static STATIC IMPORTED)
     set_target_properties(rumqttc::rumqttc_static PROPERTIES
@@ -12,7 +14,7 @@ endif()
 if(NOT TARGET rumqttc::rumqttc_shared)
     add_library(rumqttc::rumqttc_shared SHARED IMPORTED)
     set_target_properties(rumqttc::rumqttc_shared PROPERTIES
-        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/${CMAKE_SHARED_LIBRARY_PREFIX}rumqttc${CMAKE_SHARED_LIBRARY_SUFFIX}"
+        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@RUMQTTC_SHARED_INSTALL_NAME@"
         INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
     if(WIN32)
         set_target_properties(rumqttc::rumqttc_shared PROPERTIES

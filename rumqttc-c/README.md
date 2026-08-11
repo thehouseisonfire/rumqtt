@@ -2,9 +2,11 @@
 
 `rumqttc-c-next` builds one C library for MQTT 3.1.1 and MQTT 5. Each
 configuration selects exactly one protocol, which cannot change during the
-resulting client's lifetime. The stable ABI version is 1.0; the Rust crate
-version describes the implementation release and is available through
-`rumqttc_library_version()`.
+resulting client's lifetime. The wrapper is currently `0.1.0-alpha` and its
+native ABI line is 0.1. The package version is available through
+`rumqttc_library_version()`; `rumqttc_abi_version()` returns the separately
+packed native ABI line (`RUMQTTC_ABI_VERSION`). Neither value claims a mature
+ABI 1.0 promise.
 
 The public, checked-in header is [`include/rumqttc.h`](include/rumqttc.h). Build
 the shared and static libraries with:
@@ -23,9 +25,61 @@ required by Rust, networking, and the bundled rustls/AWS-LC TLS provider:
 | macOS | `pthread`, `m`, `Security`, `CoreFoundation`, `SystemConfiguration` |
 | Windows | `ws2_32`, `bcrypt`, `crypt32`, `ncrypt`, `secur32`, `userenv`, `advapi32`, `kernel32`, `ntdll` |
 
-CMake and pkg-config templates are included for release packaging. ABI-v1 is
-natively built and loaded in CI on Linux x86_64, macOS arm64, and Windows
+CMake and pkg-config templates are included for release packaging. Native
+consumers are built and loaded in CI on Linux x86_64, macOS arm64, and Windows
 x86_64; no ABI guarantee is made for an untested target.
+
+While the package version is a SemVer prerelease, CMake consumers must discover
+it without a numeric version request and may inspect `rumqttc_VERSION`
+afterwards. CMake's package-version request grammar cannot name a SemVer
+prerelease, so the generated version file deliberately rejects requests for
+the future stable `0.1.0` release.
+
+Release archives use an ABI-line-specific loader identity:
+
+| Platform | Shared-library identity |
+| --- | --- |
+| Linux x86_64 | `librumqttc.so.0.1` |
+| macOS arm64 | `@rpath/librumqttc.0.1.dylib` |
+| Windows x86_64 | `rumqttc-0_1.dll` |
+
+## Compatibility policy
+
+The first published `0.1.0` archive establishes the 0.1 baseline. Every later
+`0.1.z` release must contain the complete ABI of the latest earlier 0.1
+release. Compatible declared function additions are permitted, so an
+application using a new function must run with at least the release that added
+it. A new pre-stable minor line may deliberately break ABI and receives a new
+loader identity. After 1.0, incompatible changes require a new package major
+and native ABI line.
+
+CI derives declarations, canonical function types, typedefs, constants, public
+record layouts, exports, and loader identity from the checked header and final
+native artifact. Linux, macOS, and Windows each produce a target-specific
+contract. Linux also runs the third-party comparator evaluation corpus; it is
+not treated as cross-platform evidence. Runtime ownership, timeout, panic,
+loading, and package-relocation behavior remain covered by their dedicated
+consumer and behavior tests rather than being called structural ABI checks.
+
+Before the first published wrapper release, historical comparison reports
+`no published baseline` and only current header/export consistency is enforced.
+Afterwards, contributors can reproduce the authenticated comparison without
+repository credentials:
+
+```sh
+rumqttc-c/tests/abi/check.sh ffi-header
+rumqttc-c/tests/abi/check.sh exports
+rumqttc-c/tests/abi/compare-release.sh
+python3 rumqttc-c/tests/abi/mutation_matrix.py --output target/abi-mutations
+```
+
+Historical artifacts are downloaded from the public GitHub release, checked
+against the paired SHA-256 file, and verified with `gh attestation verify`.
+See the repository's
+[compatibility policy](https://github.com/thehouseisonfire/rumqtt/blob/main/docs/c-abi-compatibility.md)
+for the normative release rules and the
+[tool evaluation](https://github.com/thehouseisonfire/rumqtt/blob/main/docs/c-abi-tool-evaluation.md)
+for the selection evidence.
 
 Installed CMake packages expose explicit shared and static targets:
 

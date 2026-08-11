@@ -1,8 +1,8 @@
 [package]
 name = "rumqttc-c-next"
-version = "0.34.0-alpha"
+version = "0.1.0-alpha"
 publish = true
-description = "Stable C ABI for the rumqttc MQTT 3.1.1 and MQTT 5 clients"
+description = "Pre-stable C ABI for the rumqttc MQTT 3.1.1 and MQTT 5 clients"
 keywords = ["mqtt", "ffi", "c-api"]
 categories = ["network-programming", "api-bindings"]
 rust-version.workspace = true

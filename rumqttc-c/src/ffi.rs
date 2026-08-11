@@ -31,7 +31,7 @@ use crate::config::{
 use crate::error::{ErrorHandle, OK, TIMEOUT, WOULD_BLOCK};
 use crate::event::EventObject;
 
-const ABI_VERSION: u32 = 1 << 16;
+const ABI_VERSION: u32 = 1;
 const DEFAULT_DESTROY_TIMEOUT: Duration = Duration::from_secs(2);
 const MQTT5_NO_SUBSCRIPTION_EXISTED: u8 = 0x11;
 

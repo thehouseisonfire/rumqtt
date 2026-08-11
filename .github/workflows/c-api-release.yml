@@ -30,7 +30,28 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build libraries
+      - name: Validate release tag
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' rumqttc-c/Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "rumqttc-c-v${version}"
+
+      - name: Build versioned Unix libraries
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          abi_major="$(sed -n 's/^#define RUMQTTC_ABI_VERSION_MAJOR \([0-9]*\)u/\1/p' rumqttc-c/include/rumqttc.h)"
+          abi_minor="$(sed -n 's/^#define RUMQTTC_ABI_VERSION_MINOR \([0-9]*\)u/\1/p' rumqttc-c/include/rumqttc.h)"
+          if [[ "$abi_major" == 0 ]]; then abi_line="0.${abi_minor}"; else abi_line="$abi_major"; fi
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            export RUSTFLAGS="-C link-arg=-Wl,-soname,librumqttc.so.${abi_line}"
+          else
+            export RUSTFLAGS="-C link-arg=-Wl,-install_name,@rpath/librumqttc.${abi_line}.dylib -C link-arg=-Wl,-compatibility_version,${abi_major}.${abi_minor}.0 -C link-arg=-Wl,-current_version,${abi_major}.${abi_minor}.0"
+          fi
+          cargo build --locked --release -p rumqttc-c-next
+
+      - name: Build Windows libraries
+        if: ${{ runner.os == 'Windows' }}
         run: cargo build --locked --release -p rumqttc-c-next
 
       - name: Run native ABI tests
@@ -45,6 +66,37 @@ jobs:
         shell: pwsh
         run: rumqttc-c/tests/abi/check.ps1
 
+      - name: Verify historical C ABI
+        if: ${{ runner.os != 'Windows' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: rumqttc-c/tests/abi/compare-release.sh
+
+      - name: Verify historical C ABI (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: rumqttc-c/tests/abi/compare-release.ps1
+
+      - name: Generate Unix ABI contract
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          extension=so
+          if [[ "$RUNNER_OS" == macOS ]]; then extension=dylib; fi
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' rumqttc-c/Cargo.toml | head -1)"
+          python3 rumqttc-c/tests/abi/contract.py generate \
+            --header rumqttc-c/include/rumqttc.h \
+            --library "target/release/librumqttc.${extension}" \
+            --package-version "$version" \
+            --target "${{ matrix.platform }}" \
+            --output target/release/rumqttc-abi-contract.json
+          python3 rumqttc-c/tests/abi/contract.py verify-exports \
+            --contract target/release/rumqttc-abi-contract.json
+          python3 rumqttc-c/tests/abi/contract.py verify-loader \
+            --contract target/release/rumqttc-abi-contract.json
+
       - name: Stage release contents
         shell: bash
         run: |
@@ -52,17 +104,62 @@ jobs:
           cmake -S rumqttc-c -B target/rumqttc-c-package \
             -DCMAKE_INSTALL_PREFIX="$PWD/$stage"
           cmake --install target/rumqttc-c-package
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            mkdir -p "$stage/share/rumqttc"
+            version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' rumqttc-c/Cargo.toml | head -1)"
+            abi_major="$(sed -n 's/^#define RUMQTTC_ABI_VERSION_MAJOR \([0-9]*\)u/\1/p' rumqttc-c/include/rumqttc.h)"
+            abi_minor="$(sed -n 's/^#define RUMQTTC_ABI_VERSION_MINOR \([0-9]*\)u/\1/p' rumqttc-c/include/rumqttc.h)"
+            if [[ "$abi_major" == 0 ]]; then abi_file_line="0_${abi_minor}"; else abi_file_line="$abi_major"; fi
+            versioned_dll="$stage/lib/rumqttc-${abi_file_line}.dll"
+            python3 rumqttc-c/tests/abi/contract.py generate \
+              --header "$stage/include/rumqttc.h" \
+              --library "$versioned_dll" \
+              --package-version "$version" \
+              --target "${{ matrix.platform }}" \
+              --output "$stage/share/rumqttc/abi-contract.json"
+            python3 rumqttc-c/tests/abi/contract.py verify-exports \
+              --contract "$stage/share/rumqttc/abi-contract.json"
+            python3 rumqttc-c/tests/abi/contract.py verify-loader \
+              --contract "$stage/share/rumqttc/abi-contract.json"
+            python3 - "$stage/share/rumqttc/abi-contract.json" "$stage/lib/rumqttc.def" <<'PY'
+          import json
+          import sys
+          contract = json.load(open(sys.argv[1], encoding="utf-8"))
+          with open(sys.argv[2], "w", encoding="utf-8") as output:
+              output.write(f"LIBRARY {contract['loader']['identity']}\nEXPORTS\n")
+              output.writelines(f"    {symbol}\n" for symbol in contract["exports"])
+          PY
+            lib.exe /nologo "/def:$stage/lib/rumqttc.def" /machine:x64 "/out:$stage/lib/rumqttc.dll.lib"
+          fi
           cp rumqttc-c/README.md "$stage/"
           find target/release -maxdepth 1 \( -name '*.pdb' -o -name '*.dSYM' \) \
             -exec cp -R {} "$stage/lib/" \; || true
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             test -f "$stage/lib/rumqttc.dll.lib"
           fi
+          test -f "$stage/share/rumqttc/abi-contract.json"
           cmake -S rumqttc-c/tests/cmake -B target/rumqttc-c-consumer \
             -Drumqttc_DIR="$PWD/$stage/lib/cmake/rumqttc"
           cmake --build target/rumqttc-c-consumer --config Release
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            PATH="$PWD/$stage/lib:$PATH" \
+              "$PWD/target/rumqttc-c-consumer/Release/rumqttc-package-smoke-shared.exe"
+          else
+            "$PWD/target/rumqttc-c-consumer/rumqttc-package-smoke-shared"
+          fi
           tar -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256"
+
+      - name: Preserve ABI failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-api-release-diagnostics-${{ matrix.platform }}
+          path: |
+            target/abi-reports
+            target/debug/rumqttc-abi-contract.json
+            target/release/rumqttc-abi-contract.json
+          if-no-files-found: ignore
 
       - name: Attest archive provenance
         uses: actions/attest-build-provenance@v3

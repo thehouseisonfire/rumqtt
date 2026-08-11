@@ -364,7 +364,7 @@ program for:
 - every exported function with a `NULL` optional error output.
 
 Add ABI checks that compare exported symbols and public type/function
-signatures against a checked-in major-version baseline. Run AddressSanitizer,
+signatures against an authenticated published compatible-line baseline. Run AddressSanitizer,
 UndefinedBehaviorSanitizer, and a leak checker on supported CI platforms. Use a
 deterministic local broker fixture rather than a public service.
 
@@ -385,6 +385,6 @@ and shutdown. Explain queue admission versus MQTT completion and why timeout
 does not prove non-delivery. Add the wrapper to `CHANGELOG.md` when it becomes
 user-facing.
 
-This TODO is complete when the checked-in C11 header and ABI-v1 library pass
+This TODO is complete when the checked-in C11 header and pre-stable ABI library pass
 the C/C++ compile, behavioral, sanitizer, symbol, concurrency, and leak tests on
 every advertised platform, with no Rust layout or panic able to cross the ABI.
