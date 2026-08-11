@@ -30,9 +30,9 @@ sha2 = "0.11"
 tokio = { version = "1", features = ["full"] }
 url_parser = { package = "url", version = "2" }
 rand = "0.10"
-libc = "0.2"
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 pprof = { version = "0.15", features = ["prost-codec"], optional = true }
 
 [[bin]]

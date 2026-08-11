@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
@@ -16,6 +16,31 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
+
+#[cfg(feature = "alloc-metrics")]
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+#[cfg(feature = "alloc-metrics")]
+struct CountingAllocator;
+
+#[cfg(feature = "alloc-metrics")]
+static ALLOC_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "alloc-metrics")]
+static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "alloc-metrics")]
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+}
 
 mod nats_codec;
 
@@ -51,6 +76,7 @@ enum ClientCommand {
     Latency(ClientLatencyArgs),
     Connections(ClientConnectionArgs),
     PublishPath(ClientPublishPathArgs),
+    Admission(ClientAdmissionArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -176,6 +202,26 @@ struct ClientPublishPathArgs {
 
     #[arg(long, default_value = "1", value_parser = parse_qos)]
     qos: u8,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ClientAdmissionArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    #[arg(long, default_value = "100000")]
+    messages: usize,
+    #[arg(long, default_value = "1")]
+    producers: usize,
+    #[arg(long, default_value = "100")]
+    channel_capacity: usize,
+    #[arg(long, default_value = "100")]
+    inflight: u16,
+    #[arg(long, default_value = "64")]
+    payload_size: usize,
+    #[arg(long, default_value = "1", value_parser = parse_qos)]
+    qos: u8,
+    #[arg(long, default_value = "bench/admission")]
+    topic: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -328,6 +374,7 @@ async fn main() -> anyhow::Result<()> {
             ClientCommand::Latency(args) => run_client_latency(args).await,
             ClientCommand::Connections(args) => run_client_connections(args).await,
             ClientCommand::PublishPath(args) => run_client_publish_path(args).await,
+            ClientCommand::Admission(args) => run_client_admission(args).await,
         },
         CommandGroup::Codec { command } => match command {
             CodecCommand::Encode(args) => run_codec(args, CodecMode::Encode),
@@ -405,24 +452,351 @@ async fn run_publish_path_peer(
     stream.flush().await?;
     let _ = ready.send(());
 
-    for _ in 0..messages {
+    let mut completed = 0;
+    let mut qos2_pending = BTreeSet::new();
+    while completed < messages {
         let (header, body) = read_benchmark_frame(&mut stream).await?;
-        if header >> 4 != 3 || body.len() < 2 {
-            bail!("expected PUBLISH benchmark frame");
-        }
-        let qos = (header >> 1) & 0x03;
-        if qos != 0 {
-            let topic_len = usize::from(u16::from_be_bytes([body[0], body[1]]));
-            let pkid_offset = 2 + topic_len;
-            if body.len() < pkid_offset + 2 {
-                bail!("truncated PUBLISH packet identifier");
+        match header >> 4 {
+            3 => {
+                if body.len() < 2 {
+                    bail!("truncated PUBLISH benchmark frame");
+                }
+                let qos = (header >> 1) & 0x03;
+                if qos == 3 {
+                    bail!("invalid PUBLISH QoS");
+                }
+                if qos == 0 {
+                    completed += 1;
+                    continue;
+                }
+
+                let topic_len = usize::from(u16::from_be_bytes([body[0], body[1]]));
+                let pkid_offset = 2 + topic_len;
+                if body.len() < pkid_offset + 2 {
+                    bail!("truncated PUBLISH packet identifier");
+                }
+                let pkid = [body[pkid_offset], body[pkid_offset + 1]];
+                match qos {
+                    1 => {
+                        stream.write_all(&[0x40, 0x02, pkid[0], pkid[1]]).await?;
+                        completed += 1;
+                    }
+                    2 => {
+                        if !qos2_pending.insert(pkid) {
+                            bail!("duplicate QoS 2 PUBLISH packet identifier");
+                        }
+                        stream.write_all(&[0x50, 0x02, pkid[0], pkid[1]]).await?;
+                    }
+                    _ => unreachable!(),
+                }
             }
-            let pkid = [body[pkid_offset], body[pkid_offset + 1]];
-            stream.write_all(&[0x40, 0x02, pkid[0], pkid[1]]).await?;
+            6 => {
+                if header & 0x0f != 0x02 || body.len() < 2 {
+                    bail!("malformed PUBREL benchmark frame");
+                }
+                let pkid = [body[0], body[1]];
+                if !qos2_pending.remove(&pkid) {
+                    bail!("PUBREL without a matching QoS 2 PUBLISH");
+                }
+                stream.write_all(&[0x70, 0x02, pkid[0], pkid[1]]).await?;
+                completed += 1;
+            }
+            packet_type => bail!("unexpected MQTT packet type {packet_type} in benchmark peer"),
         }
     }
     stream.flush().await?;
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct ResourceSnapshot {
+    cpu_micros: Option<u64>,
+    alloc_calls: u64,
+    alloc_bytes: u64,
+}
+
+impl ResourceSnapshot {
+    fn delta(self, before: Self) -> Self {
+        Self {
+            cpu_micros: self
+                .cpu_micros
+                .zip(before.cpu_micros)
+                .map(|(after, before)| after.saturating_sub(before)),
+            alloc_calls: self.alloc_calls.saturating_sub(before.alloc_calls),
+            alloc_bytes: self.alloc_bytes.saturating_sub(before.alloc_bytes),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_cpu_micros() -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    unsafe {
+        // SAFETY: getrusage initializes the provided rusage on success.
+        if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) == 0 {
+            let usage = usage.assume_init();
+            Some(
+                (usage.ru_utime.tv_sec as u64 + usage.ru_stime.tv_sec as u64) * 1_000_000
+                    + usage.ru_utime.tv_usec as u64
+                    + usage.ru_stime.tv_usec as u64,
+            )
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+const fn process_cpu_micros() -> Option<u64> {
+    None
+}
+
+fn resource_snapshot() -> ResourceSnapshot {
+    ResourceSnapshot {
+        cpu_micros: process_cpu_micros(),
+        #[cfg(feature = "alloc-metrics")]
+        alloc_calls: ALLOC_CALLS.load(Ordering::Relaxed),
+        #[cfg(not(feature = "alloc-metrics"))]
+        alloc_calls: 0,
+        #[cfg(feature = "alloc-metrics")]
+        alloc_bytes: ALLOC_BYTES.load(Ordering::Relaxed),
+        #[cfg(not(feature = "alloc-metrics"))]
+        alloc_bytes: 0,
+    }
+}
+
+fn insert_resource_metrics(
+    metrics: &mut BTreeMap<String, f64>,
+    resources: ResourceSnapshot,
+    messages: usize,
+) {
+    if let Some(cpu_micros) = resources.cpu_micros {
+        metrics.insert("cpu_sec".into(), cpu_micros as f64 / 1_000_000.0);
+        metrics.insert(
+            "cpu_ns_per_admission".into(),
+            cpu_micros as f64 * 1_000.0 / messages as f64,
+        );
+    }
+    if cfg!(feature = "alloc-metrics") {
+        metrics.insert("allocation_calls".into(), resources.alloc_calls as f64);
+        metrics.insert("allocated_bytes".into(), resources.alloc_bytes as f64);
+        metrics.insert(
+            "allocated_bytes_per_admission".into(),
+            resources.alloc_bytes as f64 / messages as f64,
+        );
+    }
+}
+
+async fn run_client_admission(args: ClientAdmissionArgs) -> anyhow::Result<()> {
+    if args.messages == 0 || args.producers == 0 || args.channel_capacity == 0 || args.inflight == 0
+    {
+        bail!("messages, producers, channel-capacity, and inflight must be greater than zero");
+    }
+    if args.producers > args.messages {
+        bail!("producers must not exceed messages");
+    }
+    let started_at = unix_secs();
+    let run_id = run_id(args.common.run_id.as_deref(), "client-admission");
+    let (elapsed, mut latencies, resources) = match args.common.protocol {
+        Protocol::V4 => run_v4_admission(&args).await?,
+        Protocol::V5 => run_v5_admission(&args).await?,
+    };
+    latencies.sort_unstable();
+    let mut metrics = BTreeMap::new();
+    metrics.insert(
+        "admissions_per_sec".into(),
+        args.messages as f64 / elapsed.as_secs_f64(),
+    );
+    metrics.insert("elapsed_sec".into(), elapsed.as_secs_f64());
+    metrics.insert(
+        "admission_p50_us".into(),
+        percentile(&latencies, 50) as f64 / 1_000.0,
+    );
+    metrics.insert(
+        "admission_p95_us".into(),
+        percentile(&latencies, 95) as f64 / 1_000.0,
+    );
+    metrics.insert(
+        "admission_p99_us".into(),
+        percentile(&latencies, 99) as f64 / 1_000.0,
+    );
+    insert_resource_metrics(&mut metrics, resources, args.messages);
+    print_output(BenchOutput {
+        schema_version: 1,
+        run_id,
+        scenario: format!("client-{}-admission", args.common.protocol.as_str()),
+        started_at_unix: started_at,
+        finished_at_unix: unix_secs(),
+        config: json!({
+            "protocol": args.common.protocol, "messages": args.messages, "producers": args.producers,
+            "channel_capacity": args.channel_capacity, "inflight": args.inflight,
+            "payload_size": args.payload_size, "qos": args.qos, "topic": args.topic,
+            "peer": "in-process-duplex-immediate-ack"
+        }),
+        metrics,
+        samples: BTreeMap::new(),
+        environment: environment(),
+    })
+}
+
+async fn run_v4_admission(
+    args: &ClientAdmissionArgs,
+) -> anyhow::Result<(Duration, Vec<u64>, ResourceSnapshot)> {
+    let (client_stream, peer_stream) = tokio::io::duplex(BENCH_MAX_PACKET_SIZE);
+    let available = Arc::new(Mutex::new(Some(client_stream)));
+    let connector_stream = Arc::clone(&available);
+    let mut options = rumqttc_v4::MqttOptions::new("admission-v4", "benchmark.invalid");
+    options
+        .set_inflight(args.inflight)
+        .set_socket_connector(move |_host, _options| {
+            let stream = connector_stream
+                .lock()
+                .expect("connector lock poisoned")
+                .take();
+            async move { stream.ok_or_else(|| std::io::Error::other("connector already used")) }
+        });
+    let (client, mut eventloop) = rumqttc_v4::AsyncClient::builder(options)
+        .capacity(args.channel_capacity)
+        .build();
+    let eventloop_task = tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let peer_task = tokio::spawn(run_publish_path_peer(
+        peer_stream,
+        Protocol::V4,
+        args.messages,
+        ready_tx,
+    ));
+    ready_rx.await?;
+    let payload = Bytes::from(vec![0; args.payload_size]);
+    let (start_tx, start_rx) = tokio::sync::watch::channel(false);
+    let mut tasks = Vec::new();
+    for producer in 0..args.producers {
+        let client = client.clone();
+        let payload = payload.clone();
+        let mut start_rx = start_rx.clone();
+        let count =
+            args.messages / args.producers + usize::from(producer < args.messages % args.producers);
+        let topic = args.topic.clone();
+        let qos = v4_qos(args.qos);
+        let mut samples = Vec::with_capacity(count);
+        tasks.push(tokio::spawn(async move {
+            start_rx
+                .wait_for(|started| *started)
+                .await
+                .expect("benchmark start sender dropped");
+            for _ in 0..count {
+                let t = Instant::now();
+                client
+                    .publish(
+                        topic.clone(),
+                        payload.clone(),
+                        rumqttc_v4::PublishOptions::new(qos),
+                    )
+                    .await
+                    .unwrap();
+                let elapsed = t.elapsed().as_nanos() as u64;
+                samples.push(elapsed);
+            }
+            samples
+        }));
+    }
+    drop(start_rx);
+    let mut producer_samples = Vec::with_capacity(tasks.len());
+    let before = resource_snapshot();
+    let started = Instant::now();
+    start_tx
+        .send(true)
+        .expect("benchmark producers dropped before start");
+    for task in tasks {
+        producer_samples.push(task.await?);
+    }
+    let elapsed = started.elapsed();
+    let after = resource_snapshot();
+    peer_task.await??;
+    eventloop_task.abort();
+    let mut latencies = Vec::with_capacity(args.messages);
+    for mut samples in producer_samples {
+        latencies.append(&mut samples);
+    }
+    Ok((elapsed, latencies, after.delta(before)))
+}
+
+async fn run_v5_admission(
+    args: &ClientAdmissionArgs,
+) -> anyhow::Result<(Duration, Vec<u64>, ResourceSnapshot)> {
+    let (client_stream, peer_stream) = tokio::io::duplex(BENCH_MAX_PACKET_SIZE);
+    let available = Arc::new(Mutex::new(Some(client_stream)));
+    let connector_stream = Arc::clone(&available);
+    let mut options = rumqttc_v5::MqttOptions::new("admission-v5", "benchmark.invalid");
+    options
+        .set_outgoing_inflight_upper_limit(args.inflight)
+        .set_socket_connector(move |_host, _options| {
+            let stream = connector_stream
+                .lock()
+                .expect("connector lock poisoned")
+                .take();
+            async move { stream.ok_or_else(|| std::io::Error::other("connector already used")) }
+        });
+    let (client, mut eventloop) = rumqttc_v5::AsyncClient::builder(options)
+        .capacity(args.channel_capacity)
+        .build();
+    let eventloop_task = tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let peer_task = tokio::spawn(run_publish_path_peer(
+        peer_stream,
+        Protocol::V5,
+        args.messages,
+        ready_tx,
+    ));
+    ready_rx.await?;
+    let payload = Bytes::from(vec![0; args.payload_size]);
+    let (start_tx, start_rx) = tokio::sync::watch::channel(false);
+    let mut tasks = Vec::new();
+    for producer in 0..args.producers {
+        let client = client.clone();
+        let payload = payload.clone();
+        let mut start_rx = start_rx.clone();
+        let count =
+            args.messages / args.producers + usize::from(producer < args.messages % args.producers);
+        let topic = args.topic.clone();
+        let options = rumqttc_v5::PublishOptions::new(v5_qos(args.qos));
+        let mut samples = Vec::with_capacity(count);
+        tasks.push(tokio::spawn(async move {
+            start_rx
+                .wait_for(|started| *started)
+                .await
+                .expect("benchmark start sender dropped");
+            for _ in 0..count {
+                let t = Instant::now();
+                client
+                    .publish(topic.clone(), payload.clone(), options.clone())
+                    .await
+                    .unwrap();
+                let elapsed = t.elapsed().as_nanos() as u64;
+                samples.push(elapsed);
+            }
+            samples
+        }));
+    }
+    drop(start_rx);
+    let mut producer_samples = Vec::with_capacity(tasks.len());
+    let before = resource_snapshot();
+    let started = Instant::now();
+    start_tx
+        .send(true)
+        .expect("benchmark producers dropped before start");
+    for task in tasks {
+        producer_samples.push(task.await?);
+    }
+    let elapsed = started.elapsed();
+    let after = resource_snapshot();
+    peer_task.await??;
+    eventloop_task.abort();
+    let mut latencies = Vec::with_capacity(args.messages);
+    for mut samples in producer_samples {
+        latencies.append(&mut samples);
+    }
+    Ok((elapsed, latencies, after.delta(before)))
 }
 
 fn paired_bootstrap_interval(checked: &[f64], validated: &[f64]) -> (f64, f64, f64) {
@@ -2230,4 +2604,68 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 fn print_output(output: BenchOutput) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    fn qos2_args(protocol: Protocol) -> ClientAdmissionArgs {
+        ClientAdmissionArgs {
+            common: CommonArgs {
+                protocol,
+                run_id: None,
+            },
+            messages: 32,
+            producers: 4,
+            channel_capacity: 2,
+            inflight: 2,
+            payload_size: 16,
+            qos: 2,
+            topic: "bench/admission/qos2".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn qos2_admission_completes_for_both_protocols() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_, v4_samples, _) = run_v4_admission(&qos2_args(Protocol::V4)).await?;
+            let (_, v5_samples, _) = run_v5_admission(&qos2_args(Protocol::V5)).await?;
+            assert_eq!(v4_samples.len(), 32);
+            assert_eq!(v5_samples.len(), 32);
+            anyhow::Ok(())
+        })
+        .await
+        .expect("QoS 2 admission benchmark timed out")
+        .expect("QoS 2 admission benchmark failed");
+    }
+
+    #[test]
+    fn unavailable_cpu_measurement_is_omitted() {
+        let mut metrics = BTreeMap::new();
+        insert_resource_metrics(
+            &mut metrics,
+            ResourceSnapshot {
+                cpu_micros: None,
+                alloc_calls: 0,
+                alloc_bytes: 0,
+            },
+            1,
+        );
+
+        assert!(!metrics.contains_key("cpu_sec"));
+        assert!(!metrics.contains_key("cpu_ns_per_admission"));
+    }
+
+    #[tokio::test]
+    async fn rejects_more_producers_than_messages() {
+        let mut args = qos2_args(Protocol::V4);
+        args.messages = 1;
+        args.producers = 2;
+
+        let error = run_client_admission(args)
+            .await
+            .expect_err("invalid producer count should be rejected");
+        assert_eq!(error.to_string(), "producers must not exceed messages");
+    }
 }

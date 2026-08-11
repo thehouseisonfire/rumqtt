@@ -2091,11 +2091,14 @@ async fn graceful_disconnect_completes_qos2_handshakes_before_disconnect() {
     );
 }
 
-#[tokio::test]
-async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() {
+async fn assert_graceful_disconnect_overtakes_flow_controlled_publish(
+    with_properties_timeout: bool,
+) {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("queued-publish-properties-disconnect", ("127.0.0.1", port));
-    options.set_outgoing_inflight_upper_limit(1);
+    options
+        .set_outgoing_inflight_upper_limit(1)
+        .set_max_request_batch(1);
 
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build();
     let (disconnect_event_tx, disconnect_event_rx) = oneshot::channel();
@@ -2132,19 +2135,23 @@ async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() 
             )
             .await
             .unwrap();
-        client
-            .disconnect_with_properties_timeout(
-                DisconnectReasonCode::NormalDisconnection,
-                DisconnectProperties {
-                    session_expiry_interval: Some(0),
-                    reason_string: None,
-                    user_properties: Vec::new(),
-                    server_reference: None,
-                },
-                Duration::from_secs(2),
-            )
-            .await
-            .unwrap();
+        if with_properties_timeout {
+            client
+                .disconnect_with_properties_timeout(
+                    DisconnectReasonCode::NormalDisconnection,
+                    DisconnectProperties {
+                        session_expiry_interval: Some(0),
+                        reason_string: None,
+                        user_properties: Vec::new(),
+                        server_reference: None,
+                    },
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap();
+        } else {
+            client.disconnect().await.unwrap();
+        }
     });
 
     let mut broker = TestBroker::from_listener(
@@ -2183,6 +2190,67 @@ async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() 
         .expect("event loop did not emit Outgoing(Disconnect)")
         .expect("disconnect event waiter dropped");
     eventloop_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn graceful_disconnect_does_not_wait_for_unsent_flow_controlled_publish() {
+    assert_graceful_disconnect_overtakes_flow_controlled_publish(false).await;
+}
+
+#[tokio::test]
+async fn graceful_disconnect_with_properties_timeout_does_not_wait_for_unsent_flow_controlled_publish()
+ {
+    assert_graceful_disconnect_overtakes_flow_controlled_publish(true).await;
+}
+
+#[tokio::test]
+#[ignore = "pending ordered-disconnect API: current disconnect is intentionally used as a failing placeholder"]
+async fn ordered_disconnect_waits_for_flow_controlled_publish_before_disconnect() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("ordered-disconnect-pending", ("127.0.0.1", port));
+    options
+        .set_outgoing_inflight_upper_limit(1)
+        .set_max_request_batch(1);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build();
+    let eventloop_task = task::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    let client_task = task::spawn(async move {
+        client
+            .publish("ordered/a", "a", PublishOptions::new(QoS::AtLeastOnce))
+            .await
+            .unwrap();
+        client
+            .publish("ordered/b", "b", PublishOptions::new(QoS::AtLeastOnce))
+            .await
+            .unwrap();
+        // TODO: replace with the future ordered-disconnect operation. Using disconnect() here
+        // deliberately makes this ignored executable specification fail at the semantic gap.
+        client.disconnect().await.unwrap();
+    });
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+    let first = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("publish A");
+    assert_eq!(first.topic, b"ordered/a"[..]);
+    broker.ack(first.pkid).await;
+    let second = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("ordered disconnect must send B before DISCONNECT");
+    assert_eq!(second.topic, b"ordered/b"[..]);
+    broker.ack(second.pkid).await;
+    assert!(matches!(
+        broker.read_packet_with_timeout(PHASE_TIMEOUT).await,
+        Some(Packet::Disconnect(_))
+    ));
+    client_task.await.unwrap();
+    eventloop_task.await.unwrap();
 }
 
 #[tokio::test]
