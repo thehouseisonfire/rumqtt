@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Test result calculations
         run: python3 -m unittest tests/low-memory/test_memory_stability_report.py
@@ -24,7 +24,7 @@ jobs:
 
       - name: Preserve memory-stability diagnostics
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: memory-stability-results
           path: target/memory-stability/weekly-results

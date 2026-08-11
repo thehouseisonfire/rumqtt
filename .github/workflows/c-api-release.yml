@@ -26,7 +26,7 @@ jobs:
             os: windows-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -158,7 +158,7 @@ jobs:
 
       - name: Preserve ABI failure diagnostics
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: c-api-release-diagnostics-${{ matrix.platform }}
           path: |

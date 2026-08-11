@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run v4 and v5 under the cgroup memory limit
         run: scripts/test-low-memory.sh --results-dir target/low-memory/ci-results
@@ -61,7 +61,7 @@ jobs:
 
       - name: Preserve low-memory diagnostics
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: low-memory-results
           path: target/low-memory/ci-results
@@ -71,7 +71,7 @@ jobs:
     name: Rust 1.88 MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@1.88.0
 
@@ -99,7 +99,7 @@ jobs:
     name: Bare-metal MQTT codecs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -127,7 +127,7 @@ jobs:
           - macos-15
           - windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Check documentation links
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -305,7 +305,7 @@ jobs:
 
       - name: Preserve C ABI diagnostics
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: c-abi-diagnostics-${{ runner.os }}
           path: |
@@ -353,7 +353,7 @@ jobs:
     name: Benchmark broker fixture
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -419,7 +419,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -455,7 +455,7 @@ jobs:
     name: Test coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -482,7 +482,7 @@ jobs:
             cargo llvm-cov report --lcov --output-path coverage.lcov
 
       - name: Upload coverage report
-        uses: coverallsapp/github-action@v2.2.3
+        uses: coverallsapp/github-action@v2.3.8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           file: ./coverage.lcov

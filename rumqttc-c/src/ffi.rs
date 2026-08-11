@@ -2031,11 +2031,12 @@ mod tests {
     fn copy_out_allows_overlapping_ranges() {
         let mut bytes = *b"abcdef";
         let mut required = 0;
+        let bytes_ptr = bytes.as_mut_ptr();
         let result = unsafe {
             copy_out(
-                bytes.as_ptr(),
+                bytes_ptr.cast_const(),
                 4,
-                bytes.as_mut_ptr().add(1).cast(),
+                bytes_ptr.add(1).cast(),
                 4,
                 &raw mut required,
             )
@@ -2045,11 +2046,12 @@ mod tests {
         assert_eq!(&bytes, b"aabcdf");
 
         let mut same_buffer = *b"same";
+        let same_buffer_ptr = same_buffer.as_mut_ptr();
         let result = unsafe {
             copy_out(
-                same_buffer.as_ptr(),
+                same_buffer_ptr.cast_const(),
                 same_buffer.len(),
-                same_buffer.as_mut_ptr().cast(),
+                same_buffer_ptr.cast(),
                 same_buffer.len(),
                 &raw mut required,
             )

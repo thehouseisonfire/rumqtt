@@ -195,6 +195,8 @@ impl Shared {
     }
 
     fn next_operation_id(&self) -> Result<OperationId> {
+        // `fetch_update` was renamed to `try_update` after our Rust 1.88 MSRV.
+        #[allow(deprecated)]
         let value = self
             .next_operation
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
