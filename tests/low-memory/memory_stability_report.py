@@ -28,7 +28,7 @@ class ReportError(ValueError):
 def median(values: Sequence[int]) -> float:
     if not values:
         raise ReportError("cannot compute a median from empty input")
-    return float(statistics.median(values))
+    return statistics.median(values)
 
 
 def analyze_values(values: Sequence[int]) -> dict[str, float]:

@@ -21,7 +21,9 @@ TAG = re.compile(r"^rumqttc-c-v(\d+)\.(\d+)\.(\d+)$")
 
 def parse_version(version: str) -> tuple[int, int, int] | None:
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?", version)
-    return tuple(map(int, match.groups())) if match else None
+    if match is None:
+        return None
+    return int(match[1]), int(match[2]), int(match[3])
 
 
 def select_baseline(version: str, tags: list[str]) -> str | None:
@@ -34,7 +36,7 @@ def select_baseline(version: str, tags: list[str]) -> str | None:
         match = TAG.fullmatch(tag)
         if not match:
             continue
-        candidate = tuple(map(int, match.groups()))
+        candidate = (int(match[1]), int(match[2]), int(match[3]))
         same_line = candidate[:2] == current[:2] if major == 0 else candidate[0] == major
         if same_line and candidate < current:
             candidates.append((candidate, tag))

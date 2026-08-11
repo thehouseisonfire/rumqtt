@@ -245,11 +245,11 @@ def main() -> int:
                 old_xml = root / f"{name}-old.xml"
                 new_xml = root / f"{name}-new.xml"
                 old_xml.write_text(
-                    f"<version>old</version>\n<headers>{base_header}</headers>\n" f"<libs>{base_library}</libs>\n",
+                    f"<version>old</version>\n<headers>{base_header}</headers>\n<libs>{base_library}</libs>\n",
                     encoding="utf-8",
                 )
                 new_xml.write_text(
-                    f"<version>new</version>\n<headers>{new_header}</headers>\n" f"<libs>{new_library}</libs>\n",
+                    f"<version>new</version>\n<headers>{new_header}</headers>\n<libs>{new_library}</libs>\n",
                     encoding="utf-8",
                 )
                 report = output / f"{name}.html"

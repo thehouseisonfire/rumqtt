@@ -5,6 +5,7 @@ requires-python = ">=3.10"
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
@@ -28,4 +29,4 @@ docstring-code-format = true
 
 [tool.pyrefly]
 python-version = "3.11"
-search-path = ["benchmarks"]
+search-path = ["benchmarks", "rumqttc-c/tests/abi"]

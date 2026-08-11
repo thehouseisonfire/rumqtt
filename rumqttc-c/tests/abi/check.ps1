@@ -9,8 +9,28 @@ $RepoDir = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 $CrateDir = Join-Path $RepoDir "rumqttc-c"
 $TargetDir = Join-Path $RepoDir "target/debug"
 
+function Initialize-MsvcToolchain {
+    $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $VsWhere)) {
+        throw "Visual Studio Installer was not found; vswhere.exe is required to locate the MSVC toolchain"
+    }
+    $VsInstallPath = & $VsWhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath
+    if (-not $VsInstallPath) {
+        throw "Visual Studio with the MSVC C++ toolset was not found"
+    }
+    Import-Module (Join-Path $VsInstallPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll")
+    Enter-VsDevShell -VsInstallPath $VsInstallPath -SkipAutomaticLocation `
+        -DevCmdArguments "-arch=x64 -host_arch=x64"
+}
+
 cargo build --manifest-path (Join-Path $CrateDir "Cargo.toml")
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+
+if ($Check -in @("all", "native", "ffi-header")) {
+    Initialize-MsvcToolchain
+}
 
 if ($Check -in @("all", "package")) {
 $PkgConfigBuildDir = Join-Path $TargetDir "pkgconfig-check"
