@@ -75,7 +75,7 @@ matches = "0.1"
 pretty_assertions = "1"
 pretty_env_logger = "0.5"
 tokio-tungstenite = "0.30"
-rcgen = "=0.14.8"
+rcgen = "=0.14.9"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry"] }
 turmoil = "0.7.2"
 
