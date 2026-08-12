@@ -197,7 +197,7 @@ fn assert_protocol_round_trip(protocol: u32) {
 
         let mut event = ptr::null_mut();
         assert_eq!(
-            rumqttc_client_event_recv(client, 2_000, &mut event, &mut error),
+            rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, &mut error),
             0
         );
         let mut kind = 0;
@@ -229,7 +229,10 @@ fn assert_protocol_round_trip(protocol: u32) {
                 ),
                 0
             );
-            assert_eq!(rumqttc_completion_wait(completion, 2_000, &mut error), 0);
+            assert_eq!(
+                rumqttc_completion_wait_timeout_ms(completion, 2_000, &mut error),
+                0
+            );
             assert_eq!(
                 rumqttc_completion_kind(completion, &mut kind, &mut error),
                 0
@@ -255,7 +258,7 @@ fn assert_protocol_round_trip(protocol: u32) {
             0
         );
         assert_eq!(
-            rumqttc_completion_wait(completion, 2_000, ptr::null_mut()),
+            rumqttc_completion_wait_timeout_ms(completion, 2_000, ptr::null_mut()),
             0
         );
         assert_eq!(
@@ -292,7 +295,7 @@ fn assert_protocol_round_trip(protocol: u32) {
             0
         );
         assert_eq!(
-            rumqttc_completion_wait(completion, 2_000, ptr::null_mut()),
+            rumqttc_completion_wait_timeout_ms(completion, 2_000, ptr::null_mut()),
             0
         );
         assert_eq!(
@@ -323,9 +326,18 @@ fn assert_protocol_round_trip(protocol: u32) {
         }
         rumqttc_completion_destroy(completion);
 
-        assert_eq!(rumqttc_client_close_now(client, &mut error), 0);
-        assert_eq!(rumqttc_client_close_now(client, ptr::null_mut()), 0);
-        rumqttc_client_destroy(client);
+        assert_eq!(
+            rumqttc_client_close_now_timeout_ms(client, 5000, &mut error),
+            0
+        );
+        assert_eq!(
+            rumqttc_client_close_now_timeout_ms(client, 5000, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+            0
+        );
         broker.join().unwrap();
     }
 }
@@ -393,7 +405,7 @@ fn concurrent_close_honors_each_callers_timeout() {
 
         let mut event = ptr::null_mut();
         assert_eq!(
-            rumqttc_client_event_recv(client, 2_000, &mut event, ptr::null_mut()),
+            rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
             0
         );
         rumqttc_event_destroy(event);
@@ -423,7 +435,7 @@ fn concurrent_close_honors_each_callers_timeout() {
         let first = thread::spawn(move || {
             let client = client_address as *mut rumqttc_client;
             let mut error = ptr::null_mut();
-            let status = rumqttc_client_close(client, 800, &mut error);
+            let status = rumqttc_client_close_timeout_ms(client, 800, &mut error);
             rumqttc_error_destroy(error);
             status
         });
@@ -431,7 +443,7 @@ fn concurrent_close_honors_each_callers_timeout() {
 
         let started = Instant::now();
         let mut error = ptr::null_mut();
-        let status = rumqttc_client_close(client, 25, &mut error);
+        let status = rumqttc_client_close_timeout_ms(client, 25, &mut error);
         let elapsed = started.elapsed();
         assert_eq!(status, 5);
         assert!(elapsed < Duration::from_millis(300), "elapsed: {elapsed:?}");
@@ -439,7 +451,10 @@ fn concurrent_close_honors_each_callers_timeout() {
 
         assert_eq!(first.join().unwrap(), 5);
         rumqttc_completion_destroy(completion);
-        rumqttc_client_destroy(client);
+        assert_eq!(
+            rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+            0
+        );
     }
     broker.join().unwrap();
 }
@@ -472,13 +487,13 @@ fn assert_manual_ack(protocol: u32) {
 
         let mut event = ptr::null_mut();
         assert_eq!(
-            rumqttc_client_event_recv(client, 2_000, &mut event, ptr::null_mut()),
+            rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
             0
         );
         rumqttc_event_destroy(event);
         event = ptr::null_mut();
         assert_eq!(
-            rumqttc_client_event_recv(client, 2_000, &mut event, ptr::null_mut()),
+            rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
             0
         );
         let mut topic = rumqttc_string_view_t {
@@ -518,7 +533,7 @@ fn assert_manual_ack(protocol: u32) {
             0
         );
         assert_eq!(
-            rumqttc_completion_wait(completion, 2_000, ptr::null_mut()),
+            rumqttc_completion_wait_timeout_ms(completion, 2_000, ptr::null_mut()),
             0
         );
         let mut kind = 0;
@@ -541,8 +556,14 @@ fn assert_manual_ack(protocol: u32) {
         assert_eq!(error_kind, 10);
         rumqttc_error_destroy(state_error);
         rumqttc_event_destroy(event);
-        assert_eq!(rumqttc_client_close_now(client, ptr::null_mut()), 0);
-        rumqttc_client_destroy(client);
+        assert_eq!(
+            rumqttc_client_close_now_timeout_ms(client, 5000, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+            0
+        );
         broker.join().unwrap();
     }
 }

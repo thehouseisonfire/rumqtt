@@ -274,6 +274,12 @@ jobs:
         shell: pwsh
         run: rumqttc-c/tests/abi/check.ps1 native
 
+      - name: C native integration, stress, and examples
+        run: |
+            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native -DCMAKE_BUILD_TYPE=Debug
+            cmake --build target/rumqttc-c-native --config Debug
+            ctest --test-dir target/rumqttc-c-native -C Debug --output-on-failure
+
       - name: C package consumers
         if: ${{ runner.os != 'Windows' }}
         run: rumqttc-c/tests/abi/check.sh package
@@ -433,23 +439,76 @@ jobs:
       - name: Run raw conversion tests under Miri
         run: cargo miri test -p rumqttc-c-next --lib
 
-      - name: Build C library and sanitized consumer
+      - name: Build C library and sanitized native suite
         run: |
             cargo build -p rumqttc-c-next
-            clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
-              -Irumqttc-c/include rumqttc-c/tests/c/header_smoke.c \
-              -Ltarget/debug -lrumqttc -Wl,-rpath,"$PWD/target/debug" \
-              -o target/rumqttc-header-sanitized
-            ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
-              target/rumqttc-header-sanitized
+            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-sanitized \
+              -DCMAKE_C_COMPILER=clang \
+              -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build target/rumqttc-c-native-sanitized
+            ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+              ctest --test-dir target/rumqttc-c-native-sanitized --output-on-failure
 
-      - name: Check native ownership for leaks
+      - name: Check full native lifecycle for leaks
+        env:
+          RUMQTTC_C_STRESS_ITERATIONS: 100
+          RUMQTTC_NATIVE_LAUNCHER: valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite --trace-children=yes
         run: |
-            cc -std=c11 -Wall -Wextra -Werror -Irumqttc-c/include \
-              rumqttc-c/tests/c/header_smoke.c -Ltarget/debug -lrumqttc \
-              -Wl,-rpath,"$PWD/target/debug" -o target/rumqttc-header-valgrind
-            valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite \
-              target/rumqttc-header-valgrind
+            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-valgrind
+            cmake --build target/rumqttc-c-native-valgrind
+            ctest --test-dir target/rumqttc-c-native-valgrind \
+              -R 'rumqttc-native-(integration|stress)' --output-on-failure
+
+  c-abi-platform-sanitizers:
+    name: C native sanitizers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build C library
+        run: cargo build -p rumqttc-c-next
+
+      - name: Build and run sanitized native suite (macOS)
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-platform-sanitized \
+              -DCMAKE_C_COMPILER=clang \
+              -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build target/rumqttc-c-native-platform-sanitized
+            ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+              ctest --test-dir target/rumqttc-c-native-platform-sanitized --output-on-failure
+
+      - name: Check native lifecycle with macOS leaks
+        if: ${{ runner.os == 'macOS' }}
+        env:
+          RUMQTTC_C_STRESS_ITERATIONS: 50
+          RUMQTTC_NATIVE_LAUNCHER: leaks --atExit --
+        run: |
+            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-leaks
+            cmake --build target/rumqttc-c-native-leaks
+            ctest --test-dir target/rumqttc-c-native-leaks \
+              -R 'rumqttc-native-(integration|stress)' --output-on-failure
+
+      - name: Build and run sanitized native suite (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-platform-sanitized `
+              "-DCMAKE_C_FLAGS=/fsanitize=address"
+            if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
+            cmake --build target/rumqttc-c-native-platform-sanitized --config Release
+            if ($LASTEXITCODE -ne 0) { throw "sanitizer build failed" }
+            ctest --test-dir target/rumqttc-c-native-platform-sanitized -C Release --output-on-failure
+            if ($LASTEXITCODE -ne 0) { throw "sanitized native suite failed" }
 
   coverage:
     name: Test coverage

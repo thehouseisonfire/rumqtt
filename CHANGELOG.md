@@ -12,6 +12,17 @@
 - `rumqttc-wrapper-core`: Add cloneable, repeatably observable completion
   handles and a host-neutral `NativeClientCloser` for coalesced graceful close,
   immediate escalation, and bounded joining.
+- `rumqttc-c`: Refine the unpublished ABI before its first release with
+  unit-bearing timed function names, caller-bounded immediate close and
+  fallible client destruction, explicit non-waiting abandonment, logically
+  const completion inspection, independently optional accessor outputs, and
+  C11/C++17 initializer macros for every extensible public record.
+- `rumqttc-c`: Add a portable C11 broker-backed integration and stress suite
+  covering both MQTT protocols, tracked QoS completion, incoming publishes,
+  manual acknowledgements, overload, reconnect, bounded shutdown, native
+  concurrency, and repeated thread-safe teardown. Add complete C examples for
+  polling, multithreaded publishing, tracked completions, manual ACK, and
+  graceful/immediate shutdown, and compile and run them in CI.
 - `rumqttc-c`: Add the pre-stable ABI-0.1 C wrapper as independently versioned
   `rumqttc-c-next` 0.1.0-alpha, producing one
   shared/static library and checked-in C11/C++ header for MQTT 3.1.1 and MQTT 5.
@@ -122,6 +133,8 @@
   `Monotonic` and `Lru` assignments so valid later alias-only publishes are admitted.
 - `rumqttc-wrapper-core`: Preserve a completed graceful-close result when a later idempotent
   immediate-close request has no shutdown work left to escalate.
+- `rumqttc-wrapper-core`: Bound concurrent graceful and immediate close-state coordination by each
+  caller's supplied shutdown timeout.
 - `rumqttc-c`: Preserve operation timeout failures as cached terminal completion results, and report
   invalid-state and internal C errors with their matching structured error kinds.
 - `rumqttc-c`: Install the Windows DLL import library and propagate `RUMQTTC_STATIC` from CMake's

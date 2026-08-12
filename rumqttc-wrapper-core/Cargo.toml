@@ -20,6 +20,7 @@ bytes = "1.5"
 flume = { version = "0.12", default-features = false, features = ["async", "select"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-executor = "0.3"
+parking_lot = "0.12"
 thiserror = "2.0.8"
 tokio = { version = "1.40", features = ["macros", "rt", "sync", "time"] }
 rumqttc_v4 = { package = "rumqttc-v4-next", path = "../rumqttc-v4", version = "0.34.0-alpha", features = ["websocket"] }

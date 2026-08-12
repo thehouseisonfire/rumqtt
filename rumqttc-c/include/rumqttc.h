@@ -120,8 +120,15 @@ typedef struct rumqttc_error_t rumqttc_error_t;
  *
  * Every handle returned through **out is owned by the caller and must be
  * released with its matching rumqttc_*_destroy function. Destroy functions
- * accept NULL. Every optional error_out is initialized to NULL on entry and,
- * on failure, receives a newly owned error when it is non-NULL.
+ * accept NULL. Client destruction consumes the handle only on success; after
+ * a timeout the handle remains valid for retry. rumqttc_client_abandon is the
+ * explicit non-waiting escape hatch. Every optional error_out is initialized
+ * to NULL on entry and, on failure, receives a newly owned error when it is
+ * non-NULL.
+ *
+ * Multi-output accessors accept NULL for fields the caller does not need, but
+ * require at least one output. Every supplied output is initialized before
+ * validation. Single-output accessors continue to require their output.
  */
 
 typedef struct rumqttc_bytes_view_t {
@@ -186,6 +193,19 @@ typedef struct rumqttc_diagnostics_t {
     uint64_t pending_unsubscribes;
 } rumqttc_diagnostics_t;
 
+/* C11/C++17-compatible defaults for every extensible public record. */
+#define RUMQTTC_USER_PROPERTY_INIT \
+    { sizeof(rumqttc_user_property_t), { NULL, 0 }, { NULL, 0 } }
+#define RUMQTTC_V5_PUBLISH_PROPERTIES_INIT \
+    { sizeof(rumqttc_v5_publish_properties_t), { NULL, 0 }, 0, 0, 0, 0, \
+      { NULL, 0 }, { NULL, 0 }, 0, 0, 0, { 0, 0, 0 }, 0, NULL, 0 }
+#define RUMQTTC_PUBLISH_OPTIONS_INIT \
+    { sizeof(rumqttc_publish_options_t), RUMQTTC_QOS_0, 0, { 0, 0, 0 }, NULL }
+#define RUMQTTC_SUBSCRIPTION_INIT \
+    { sizeof(rumqttc_subscription_t), { NULL, 0 }, RUMQTTC_QOS_0 }
+#define RUMQTTC_DIAGNOSTICS_INIT \
+    { sizeof(rumqttc_diagnostics_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+
 RUMQTTC_API uint32_t rumqttc_abi_version(void);
 RUMQTTC_API const char *rumqttc_library_version(void);
 
@@ -201,11 +221,11 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tcp(rumqttc_config_t *
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tls(rumqttc_config_t *config, rumqttc_bytes_view_t ca, rumqttc_bytes_view_t certificate, rumqttc_bytes_view_t private_key, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_websocket(rumqttc_config_t *config, rumqttc_string_view_t url, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss(rumqttc_config_t *config, rumqttc_string_view_t url, rumqttc_bytes_view_t ca, rumqttc_bytes_view_t certificate, rumqttc_bytes_view_t private_key, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_config_set_keep_alive(rumqttc_config_t *config, uint64_t seconds, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_config_set_connection_timeout(rumqttc_config_t *config, uint64_t seconds, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_keep_alive_seconds(rumqttc_config_t *config, uint64_t seconds, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_connection_timeout_seconds(rumqttc_config_t *config, uint64_t seconds, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_request_capacity(rumqttc_config_t *config, uint32_t capacity, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_event_capacity(rumqttc_config_t *config, uint32_t capacity, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_config_set_event_delivery_timeout(rumqttc_config_t *config, uint64_t milliseconds, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_event_delivery_timeout_ms(rumqttc_config_t *config, uint64_t milliseconds, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_ack_mode(rumqttc_config_t *config, rumqttc_ack_mode_t mode, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_incoming_packet_limit(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_emit_outgoing_events(rumqttc_config_t *config, uint8_t enabled, rumqttc_error_t **error_out);
@@ -213,9 +233,10 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_v311_clean_session(rumqttc_confi
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_session(rumqttc_config_t *config, uint8_t clean_start, uint8_t expiry_present, uint32_t expiry_seconds, rumqttc_error_t **error_out);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_start(const rumqttc_config_t *config, rumqttc_client_t **out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_close(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_close_now(rumqttc_client_t *client, rumqttc_error_t **error_out);
-RUMQTTC_API void rumqttc_client_destroy(rumqttc_client_t *client);
+RUMQTTC_API rumqttc_status_t rumqttc_client_close_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_close_now_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_destroy_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_client_abandon(rumqttc_client_t *client);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_publish(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_publish_tracked(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
@@ -227,17 +248,17 @@ RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge(rumqttc_client_t *cl
 RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_tracked(rumqttc_client_t *client, rumqttc_event_t *event, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_diagnostics_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 
-RUMQTTC_API rumqttc_status_t rumqttc_completion_poll(rumqttc_completion_t *completion, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_completion_wait(rumqttc_completion_t *completion, uint64_t timeout_ms, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_poll(const rumqttc_completion_t *completion, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_wait_timeout_ms(const rumqttc_completion_t *completion, uint64_t timeout_ms, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_completion_operation_id(const rumqttc_completion_t *completion, uint64_t *out);
-RUMQTTC_API rumqttc_status_t rumqttc_completion_kind(rumqttc_completion_t *completion, rumqttc_completion_kind_t *out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_completion_result_count(rumqttc_completion_t *completion, size_t *out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_completion_result_at(rumqttc_completion_t *completion, size_t index, uint8_t *success_out, rumqttc_qos_t *qos_out, uint8_t *reason_present_out, uint8_t *reason_out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_completion_diagnostics(rumqttc_completion_t *completion, rumqttc_diagnostics_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_kind(const rumqttc_completion_t *completion, rumqttc_completion_kind_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_result_count(const rumqttc_completion_t *completion, size_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_result_at(const rumqttc_completion_t *completion, size_t index, uint8_t *success_out, rumqttc_qos_t *qos_out, uint8_t *reason_present_out, uint8_t *reason_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_diagnostics(const rumqttc_completion_t *completion, rumqttc_diagnostics_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_completion_destroy(rumqttc_completion_t *completion);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_event_try_recv(rumqttc_client_t *client, rumqttc_event_t **event_out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_event_recv(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_event_t **event_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_event_recv_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_event_t **event_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_kind(const rumqttc_event_t *event, rumqttc_event_kind_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_connected(const rumqttc_event_t *event, rumqttc_protocol_t *protocol_out, uint8_t *session_present_out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_disconnected(const rumqttc_event_t *event, uint32_t *phase_out, rumqttc_error_t **event_error_out);

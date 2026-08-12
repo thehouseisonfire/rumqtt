@@ -16,9 +16,9 @@ pub struct ClientObject {
     pub events: Mutex<EventConsumer>,
     closer: NativeClientCloser,
     _native: NativeClient,
+    abandoned: bool,
     failed: AtomicBool,
 }
-
 impl ClientObject {
     pub fn start(
         config: rumqttc_wrapper_core::ClientConfig,
@@ -34,6 +34,7 @@ impl ClientObject {
             events: Mutex::new(events),
             closer,
             _native: native,
+            abandoned: false,
             failed: AtomicBool::new(false),
         })
     }
@@ -78,10 +79,18 @@ impl ClientObject {
     pub fn close_now(&self, timeout: Duration) -> Result<(), ClientError> {
         self.closer.close_now(timeout).map_err(ClientError::Core)
     }
+
+    /// Requests immediate shutdown and relinquishes join ownership without waiting.
+    pub fn abandon(&mut self) {
+        self.handle.close_now_idempotent();
+        self.abandoned = true;
+    }
 }
 
 impl Drop for ClientObject {
     fn drop(&mut self) {
-        let _ = self.closer.close_now(Duration::from_secs(2));
+        if !self.abandoned {
+            let _ = self.closer.close_now(Duration::from_secs(2));
+        }
     }
 }

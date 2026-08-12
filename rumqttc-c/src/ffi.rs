@@ -32,7 +32,6 @@ use crate::error::{ErrorHandle, OK, TIMEOUT, WOULD_BLOCK};
 use crate::event::EventObject;
 
 const ABI_VERSION: u32 = 1;
-const DEFAULT_DESTROY_TIMEOUT: Duration = Duration::from_secs(2);
 const MQTT5_NO_SUBSCRIPTION_EXISTED: u8 = 0x11;
 
 #[repr(C)]
@@ -244,7 +243,7 @@ unsafe fn client_ref_for_shutdown<'a>(
 }
 
 unsafe fn completion_ref<'a>(
-    completion: *mut rumqttc_completion,
+    completion: *const rumqttc_completion,
 ) -> Result<&'a CompletionObject, ErrorHandle> {
     if completion.is_null() {
         return Err(ErrorHandle::argument("completion handle is NULL"));
@@ -272,6 +271,12 @@ const fn view_bytes(value: &[u8]) -> rumqttc_bytes_view_t {
     rumqttc_bytes_view_t {
         data: value.as_ptr(),
         len: value.len(),
+    }
+}
+
+unsafe fn write_optional<T>(out: *mut T, value: T) {
+    if !out.is_null() {
+        unsafe { *out = value };
     }
 }
 
@@ -353,8 +358,33 @@ pub unsafe extern "C" fn rumqttc_error_destroy(handle: *mut rumqttc_error) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_client_destroy(handle: *mut rumqttc_client) {
-    unsafe { destroy_box(handle) };
+pub unsafe extern "C" fn rumqttc_client_destroy_timeout_ms(
+    client: *mut rumqttc_client,
+    timeout_ms: u64,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if client.is_null() {
+            return Ok(());
+        }
+        let inner = unsafe { client_ref_for_shutdown(client) }?;
+        inner
+            .close_now(Duration::from_millis(timeout_ms))
+            .map_err(client_error)?;
+        drop(unsafe { Box::from_raw(client) });
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_abandon(client: *mut rumqttc_client) {
+    if !client.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut client = unsafe { Box::from_raw(client) };
+            client.inner.abandon();
+            drop(client);
+        }));
+    }
 }
 
 fn config_update(
@@ -551,7 +581,7 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_config_set_keep_alive(
+pub unsafe extern "C" fn rumqttc_config_set_keep_alive_seconds(
     config: *mut rumqttc_config,
     value: u64,
     error_out: *mut *mut rumqttc_error,
@@ -563,7 +593,7 @@ pub unsafe extern "C" fn rumqttc_config_set_keep_alive(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_config_set_connection_timeout(
+pub unsafe extern "C" fn rumqttc_config_set_connection_timeout_seconds(
     config: *mut rumqttc_config,
     value: u64,
     error_out: *mut *mut rumqttc_error,
@@ -575,7 +605,7 @@ pub unsafe extern "C" fn rumqttc_config_set_connection_timeout(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_config_set_event_delivery_timeout(
+pub unsafe extern "C" fn rumqttc_config_set_event_delivery_timeout_ms(
     config: *mut rumqttc_config,
     value: u64,
     error_out: *mut *mut rumqttc_error,
@@ -697,7 +727,7 @@ pub unsafe extern "C" fn rumqttc_client_start(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_client_close(
+pub unsafe extern "C" fn rumqttc_client_close_timeout_ms(
     client: *mut rumqttc_client,
     timeout_ms: u64,
     error_out: *mut *mut rumqttc_error,
@@ -715,14 +745,15 @@ pub unsafe extern "C" fn rumqttc_client_close(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_client_close_now(
+pub unsafe extern "C" fn rumqttc_client_close_now_timeout_ms(
     client: *mut rumqttc_client,
+    timeout_ms: u64,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
     boundary(error_out, client, || {
         let client = unsafe { client_ref_for_shutdown(client) }?;
         client
-            .close_now(DEFAULT_DESTROY_TIMEOUT)
+            .close_now(Duration::from_millis(timeout_ms))
             .map_err(client_error)
     })
 }
@@ -1197,7 +1228,7 @@ fn observe_completion(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_completion_poll(
-    completion: *mut rumqttc_completion,
+    completion: *const rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
     boundary(error_out, ptr::null_mut(), || {
@@ -1215,8 +1246,8 @@ pub unsafe extern "C" fn rumqttc_completion_poll(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_completion_wait(
-    completion: *mut rumqttc_completion,
+pub unsafe extern "C" fn rumqttc_completion_wait_timeout_ms(
+    completion: *const rumqttc_completion,
     timeout_ms: u64,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1235,7 +1266,7 @@ pub unsafe extern "C" fn rumqttc_completion_operation_id(
         if out.is_null() {
             return Err(ErrorHandle::argument("operation ID output is NULL"));
         }
-        let completion = unsafe { completion_ref(completion.cast_mut()) }?;
+        let completion = unsafe { completion_ref(completion) }?;
         unsafe { *out = completion.operation_id };
         Ok(())
     })
@@ -1257,7 +1288,7 @@ const fn completion_kind(completion: &Completion) -> u32 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_completion_kind(
-    completion: *mut rumqttc_completion,
+    completion: *const rumqttc_completion,
     out: *mut u32,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1278,7 +1309,7 @@ pub unsafe extern "C" fn rumqttc_completion_kind(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_completion_result_count(
-    completion: *mut rumqttc_completion,
+    completion: *const rumqttc_completion,
     out: *mut usize,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1304,7 +1335,7 @@ pub unsafe extern "C" fn rumqttc_completion_result_count(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_completion_result_at(
-    completion: *mut rumqttc_completion,
+    completion: *const rumqttc_completion,
     index: usize,
     success_out: *mut u8,
     qos_out: *mut u32,
@@ -1312,19 +1343,21 @@ pub unsafe extern "C" fn rumqttc_completion_result_at(
     reason_out: *mut u8,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
+    unsafe {
+        write_optional(success_out, 0);
+        write_optional(qos_out, 0);
+        write_optional(reason_present_out, 0);
+        write_optional(reason_out, 0);
+    }
     boundary(error_out, ptr::null_mut(), || {
         if success_out.is_null()
-            || qos_out.is_null()
-            || reason_present_out.is_null()
-            || reason_out.is_null()
+            && qos_out.is_null()
+            && reason_present_out.is_null()
+            && reason_out.is_null()
         {
-            return Err(ErrorHandle::argument("per-filter result output is NULL"));
-        }
-        unsafe {
-            *success_out = 0;
-            *qos_out = 0;
-            *reason_present_out = 0;
-            *reason_out = 0;
+            return Err(ErrorHandle::argument(
+                "at least one per-filter result output is required",
+            ));
         }
         let completion = unsafe { completion_ref(completion) }?;
         let terminal = observe_completion(completion, None)?
@@ -1348,12 +1381,10 @@ pub unsafe extern "C" fn rumqttc_completion_result_at(
             _ => return Err(ErrorHandle::state("completion has no per-filter results")),
         };
         unsafe {
-            *success_out = u8::from(success);
-            *qos_out = granted_qos;
-            if let Some(reason) = reason {
-                *reason_present_out = 1;
-                *reason_out = reason;
-            }
+            write_optional(success_out, u8::from(success));
+            write_optional(qos_out, granted_qos);
+            write_optional(reason_present_out, u8::from(reason.is_some()));
+            write_optional(reason_out, reason.unwrap_or(0));
         }
         Ok(())
     })
@@ -1381,7 +1412,7 @@ fn fill_diagnostics(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_completion_diagnostics(
-    completion: *mut rumqttc_completion,
+    completion: *const rumqttc_completion,
     out: *mut rumqttc_diagnostics_t,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1445,7 +1476,7 @@ pub unsafe extern "C" fn rumqttc_client_event_try_recv(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_client_event_recv(
+pub unsafe extern "C" fn rumqttc_client_event_recv_timeout_ms(
     client: *mut rumqttc_client,
     timeout_ms: u64,
     event_out: *mut *mut rumqttc_event,
@@ -1488,9 +1519,15 @@ pub unsafe extern "C" fn rumqttc_event_connected(
     protocol_out: *mut u32,
     session_present_out: *mut u8,
 ) -> u32 {
+    unsafe {
+        write_optional(protocol_out, 0);
+        write_optional(session_present_out, 0);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if protocol_out.is_null() || session_present_out.is_null() {
-            return Err(ErrorHandle::argument("connected-event output is NULL"));
+        if protocol_out.is_null() && session_present_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one connected-event output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let WrapperEvent::Connected {
@@ -1500,12 +1537,13 @@ pub unsafe extern "C" fn rumqttc_event_connected(
         else {
             return Err(ErrorHandle::state("event is not a connected event"));
         };
+        let protocol = match protocol {
+            ProtocolVersion::V311 => 1,
+            ProtocolVersion::V5 => 2,
+        };
         unsafe {
-            *protocol_out = match protocol {
-                ProtocolVersion::V311 => 1,
-                ProtocolVersion::V5 => 2,
-            };
-            *session_present_out = u8::from(session_present);
+            write_optional(protocol_out, protocol);
+            write_optional(session_present_out, u8::from(session_present));
         }
         Ok(())
     })
@@ -1524,8 +1562,10 @@ pub unsafe extern "C" fn rumqttc_event_disconnected(
         unsafe { *event_error_out = ptr::null_mut() };
     }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if phase_out.is_null() || event_error_out.is_null() {
-            return Err(ErrorHandle::argument("disconnect-event output is NULL"));
+        if phase_out.is_null() && event_error_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one disconnect-event output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let (phase, error) = match &event.event {
@@ -1534,10 +1574,12 @@ pub unsafe extern "C" fn rumqttc_event_disconnected(
             _ => return Err(ErrorHandle::state("event has no disconnect error")),
         };
         unsafe {
-            *phase_out = phase;
-            *event_error_out = Box::into_raw(Box::new(rumqttc_error {
-                inner: core_error(error, None),
-            }));
+            write_optional(phase_out, phase);
+            if !event_error_out.is_null() {
+                *event_error_out = Box::into_raw(Box::new(rumqttc_error {
+                    inner: core_error(error, None),
+                }));
+            }
         }
         Ok(())
     })
@@ -1560,15 +1602,37 @@ pub unsafe extern "C" fn rumqttc_event_publish(
     duplicate_out: *mut u8,
     ack_available_out: *mut u8,
 ) -> u32 {
+    unsafe {
+        write_optional(
+            topic_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+        write_optional(
+            payload_out,
+            rumqttc_bytes_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+        write_optional(qos_out, 0);
+        write_optional(retain_out, 0);
+        write_optional(duplicate_out, 0);
+        write_optional(ack_available_out, 0);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
         if topic_out.is_null()
-            || payload_out.is_null()
-            || qos_out.is_null()
-            || retain_out.is_null()
-            || duplicate_out.is_null()
-            || ack_available_out.is_null()
+            && payload_out.is_null()
+            && qos_out.is_null()
+            && retain_out.is_null()
+            && duplicate_out.is_null()
+            && ack_available_out.is_null()
         {
-            return Err(ErrorHandle::argument("publish-event output is NULL"));
+            return Err(ErrorHandle::argument(
+                "at least one publish-event output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let publish = incoming(event)?;
@@ -1580,12 +1644,12 @@ pub unsafe extern "C" fn rumqttc_event_publish(
             .map_err(|_| ErrorHandle::state("event acknowledgement lock is poisoned"))?
             .is_some();
         unsafe {
-            *topic_out = view_string(topic);
-            *payload_out = view_bytes(&publish.payload);
-            *qos_out = publish.qos as u32;
-            *retain_out = u8::from(publish.retain);
-            *duplicate_out = u8::from(publish.duplicate);
-            *ack_available_out = u8::from(ack_available);
+            write_optional(topic_out, view_string(topic));
+            write_optional(payload_out, view_bytes(&publish.payload));
+            write_optional(qos_out, publish.qos as u32);
+            write_optional(retain_out, u8::from(publish.retain));
+            write_optional(duplicate_out, u8::from(publish.duplicate));
+            write_optional(ack_available_out, u8::from(ack_available));
         }
         Ok(())
     })
@@ -1604,21 +1668,34 @@ pub unsafe extern "C" fn rumqttc_event_v5_response_topic(
     present_out: *mut u8,
     out: *mut rumqttc_string_view_t,
 ) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(
+            out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if present_out.is_null() || out.is_null() {
-            return Err(ErrorHandle::argument("property output is NULL"));
+        if present_out.is_null() && out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one property output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let value = &v5_properties(event)?.response_topic;
+        let view = value.as_deref().map_or_else(
+            || rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+            view_string,
+        );
         unsafe {
-            *present_out = u8::from(value.is_some());
-            *out = value.as_deref().map_or_else(
-                || rumqttc_string_view_t {
-                    data: ptr::null(),
-                    len: 0,
-                },
-                view_string,
-            );
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(out, view);
         }
         Ok(())
     })
@@ -1630,21 +1707,34 @@ pub unsafe extern "C" fn rumqttc_event_v5_correlation_data(
     present_out: *mut u8,
     out: *mut rumqttc_bytes_view_t,
 ) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(
+            out,
+            rumqttc_bytes_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if present_out.is_null() || out.is_null() {
-            return Err(ErrorHandle::argument("property output is NULL"));
+        if present_out.is_null() && out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one property output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let value = &v5_properties(event)?.correlation_data;
+        let view = value.as_deref().map_or_else(
+            || rumqttc_bytes_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+            view_bytes,
+        );
         unsafe {
-            *present_out = u8::from(value.is_some());
-            *out = value.as_deref().map_or_else(
-                || rumqttc_bytes_view_t {
-                    data: ptr::null(),
-                    len: 0,
-                },
-                view_bytes,
-            );
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(out, view);
         }
         Ok(())
     })
@@ -1656,21 +1746,34 @@ pub unsafe extern "C" fn rumqttc_event_v5_content_type(
     present_out: *mut u8,
     out: *mut rumqttc_string_view_t,
 ) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(
+            out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if present_out.is_null() || out.is_null() {
-            return Err(ErrorHandle::argument("property output is NULL"));
+        if present_out.is_null() && out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one property output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let value = &v5_properties(event)?.content_type;
+        let view = value.as_deref().map_or_else(
+            || rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+            view_string,
+        );
         unsafe {
-            *present_out = u8::from(value.is_some());
-            *out = value.as_deref().map_or_else(
-                || rumqttc_string_view_t {
-                    data: ptr::null(),
-                    len: 0,
-                },
-                view_string,
-            );
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(out, view);
         }
         Ok(())
     })
@@ -1683,9 +1786,15 @@ pub unsafe extern "C" fn rumqttc_event_v5_scalar(
     present_out: *mut u8,
     out: *mut u64,
 ) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(out, 0);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if present_out.is_null() || out.is_null() {
-            return Err(ErrorHandle::argument("scalar-property output is NULL"));
+        if present_out.is_null() && out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one scalar-property output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let properties = v5_properties(event)?;
@@ -1696,8 +1805,8 @@ pub unsafe extern "C" fn rumqttc_event_v5_scalar(
             _ => return Err(ErrorHandle::argument("unknown scalar property selector")),
         };
         unsafe {
-            *present_out = u8::from(value.is_some());
-            *out = value.unwrap_or(0);
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(out, value.unwrap_or(0));
         }
         Ok(())
     })
@@ -1766,9 +1875,19 @@ pub unsafe extern "C" fn rumqttc_event_v5_user_property_at(
     name_out: *mut rumqttc_string_view_t,
     value_out: *mut rumqttc_string_view_t,
 ) -> u32 {
+    let empty = rumqttc_string_view_t {
+        data: ptr::null(),
+        len: 0,
+    };
+    unsafe {
+        write_optional(name_out, empty);
+        write_optional(value_out, empty);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if name_out.is_null() || value_out.is_null() {
-            return Err(ErrorHandle::argument("user-property output is NULL"));
+        if name_out.is_null() && value_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one user-property output is required",
+            ));
         }
         let event = unsafe { event_ref(event) }?;
         let (name, value) = v5_properties(event)?
@@ -1776,8 +1895,8 @@ pub unsafe extern "C" fn rumqttc_event_v5_user_property_at(
             .get(index)
             .ok_or_else(|| ErrorHandle::argument("user-property index is out of bounds"))?;
         unsafe {
-            *name_out = view_string(name);
-            *value_out = view_string(value);
+            write_optional(name_out, view_string(name));
+            write_optional(value_out, view_string(value));
         }
         Ok(())
     })
@@ -1874,14 +1993,20 @@ pub unsafe extern "C" fn rumqttc_error_flags(
     retryable_out: *mut u8,
     ambiguous_out: *mut u8,
 ) -> u32 {
+    unsafe {
+        write_optional(retryable_out, 0);
+        write_optional(ambiguous_out, 0);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if retryable_out.is_null() || ambiguous_out.is_null() {
-            return Err(ErrorHandle::argument("error flag output is NULL"));
+        if retryable_out.is_null() && ambiguous_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one error flag output is required",
+            ));
         }
         let error = unsafe { error_ref(error) }?;
         unsafe {
-            *retryable_out = u8::from(error.retryable);
-            *ambiguous_out = u8::from(error.ambiguous);
+            write_optional(retryable_out, u8::from(error.retryable));
+            write_optional(ambiguous_out, u8::from(error.ambiguous));
         }
         Ok(())
     })
@@ -1893,14 +2018,20 @@ pub unsafe extern "C" fn rumqttc_error_broker_reason(
     present_out: *mut u8,
     reason_out: *mut u8,
 ) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(reason_out, 0);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if present_out.is_null() || reason_out.is_null() {
-            return Err(ErrorHandle::argument("broker-reason output is NULL"));
+        if present_out.is_null() && reason_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one broker-reason output is required",
+            ));
         }
         let error = unsafe { error_ref(error) }?;
         unsafe {
-            *present_out = u8::from(error.broker_reason.is_some());
-            *reason_out = error.broker_reason.unwrap_or(0);
+            write_optional(present_out, u8::from(error.broker_reason.is_some()));
+            write_optional(reason_out, error.broker_reason.unwrap_or(0));
         }
         Ok(())
     })
@@ -1912,14 +2043,20 @@ pub unsafe extern "C" fn rumqttc_error_operation_id(
     present_out: *mut u8,
     operation_id_out: *mut u64,
 ) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(operation_id_out, 0);
+    }
     boundary(ptr::null_mut(), ptr::null_mut(), || {
-        if present_out.is_null() || operation_id_out.is_null() {
-            return Err(ErrorHandle::argument("operation-ID output is NULL"));
+        if present_out.is_null() && operation_id_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one operation-ID output is required",
+            ));
         }
         let error = unsafe { error_ref(error) }?;
         unsafe {
-            *present_out = u8::from(error.operation_id.is_some());
-            *operation_id_out = error.operation_id.unwrap_or(0);
+            write_optional(present_out, u8::from(error.operation_id.is_some()));
+            write_optional(operation_id_out, error.operation_id.unwrap_or(0));
         }
         Ok(())
     })

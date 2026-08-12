@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use flume::{Receiver, Sender};
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 use tokio::sync::Notify;
 
 use crate::acknowledgement::{AckKey, AcknowledgementRegistry, PreparedAck};
@@ -927,7 +928,7 @@ enum NativeCloseState {
 pub struct NativeClientCloser {
     handle: ClientHandle,
     thread: Arc<ThreadOwner>,
-    state: Arc<Mutex<NativeCloseState>>,
+    state: Arc<ParkingMutex<NativeCloseState>>,
 }
 
 impl std::fmt::Debug for NativeClientCloser {
@@ -940,13 +941,26 @@ impl std::fmt::Debug for NativeClientCloser {
 }
 
 impl NativeClientCloser {
+    fn lock_state_until(
+        &self,
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<ParkingMutexGuard<'_, NativeCloseState>> {
+        self.state
+            .try_lock_for(timeout.saturating_sub(started.elapsed()))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Timeout,
+                    "native close coordination did not complete before timeout",
+                )
+                .with_delivery(DeliveryStatus::Ambiguous)
+            })
+    }
+
     pub fn close(&self, timeout: Duration) -> Result<Completion> {
         let started = Instant::now();
         let completion = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::new(ErrorKind::Internal, "native close mutex poisoned"))?;
+            let mut state = self.lock_state_until(started, timeout)?;
             match &*state {
                 NativeCloseState::Open => {
                     let admission = self.handle.try_admit(Command::GracefulDisconnect {
@@ -973,10 +987,7 @@ impl NativeClientCloser {
         self.thread
             .join(timeout.saturating_sub(started.elapsed()))?;
         if completion == Completion::GracefulShutdown {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::new(ErrorKind::Internal, "native close mutex poisoned"))?;
+            let mut state = self.lock_state_until(started, timeout)?;
             if matches!(*state, NativeCloseState::Graceful(_)) {
                 *state = NativeCloseState::GracefullyClosed;
             }
@@ -986,10 +997,7 @@ impl NativeClientCloser {
 
     pub fn close_now(&self, timeout: Duration) -> Result<()> {
         let started = Instant::now();
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "native close mutex poisoned"))?;
+        let mut state = self.lock_state_until(started, timeout)?;
         match &*state {
             NativeCloseState::GracefullyClosed => {}
             NativeCloseState::Graceful(completion)
@@ -1122,13 +1130,13 @@ impl NativeClient {
 
         let handle = ClientHandle { shared };
         let thread = Arc::new(ThreadOwner {
-            join: Mutex::new(Some(join)),
+            join: parking_lot::Mutex::new(Some(join)),
             done: done_rx,
         });
         let closer = NativeClientCloser {
             handle: handle.clone(),
             thread,
-            state: Arc::new(Mutex::new(NativeCloseState::Open)),
+            state: Arc::new(ParkingMutex::new(NativeCloseState::Open)),
         };
         Ok(Self {
             handle: Some(handle),
@@ -1168,8 +1176,8 @@ impl NativeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when the timeout expires, the join state is poisoned, or the driver thread
-    /// panics.
+    /// Returns an error when driver termination or concurrent join coordination exceeds the shared
+    /// timeout budget, or when the driver thread panics.
     pub fn join(&self, timeout: Duration) -> Result<()> {
         self.closer.thread.join(timeout)
     }
@@ -2399,11 +2407,53 @@ fn v5_pubcomp_success(reason: rumqttc_v5::PubCompReason) -> bool {
 #[cfg(test)]
 mod tests {
     use std::task::{Context, Poll};
+    use std::time::Instant;
 
     use bytes::Bytes;
     use futures_util::task::noop_waker_ref;
 
     use super::*;
+
+    #[test]
+    fn native_close_state_coordination_honors_each_callers_timeout() {
+        let native = NativeClient::start(ClientConfig::v311(
+            "immediate-close-coordination",
+            "127.0.0.1",
+            9,
+        ))
+        .unwrap();
+        let closer = native.closer();
+        let state_guard = closer.state.lock();
+        let started = Instant::now();
+        let error = closer.close_now(Duration::from_millis(25)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "elapsed: {:?}",
+            started.elapsed()
+        );
+        drop(state_guard);
+        closer.close_now(Duration::from_secs(2)).unwrap();
+
+        let native = NativeClient::start(ClientConfig::v311(
+            "graceful-close-coordination",
+            "127.0.0.1",
+            9,
+        ))
+        .unwrap();
+        let closer = native.closer();
+        let state_guard = closer.state.lock();
+        let started = Instant::now();
+        let error = closer.close(Duration::from_millis(25)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "elapsed: {:?}",
+            started.elapsed()
+        );
+        drop(state_guard);
+        closer.close_now(Duration::from_secs(2)).unwrap();
+    }
 
     fn idle_v4_shared() -> (Arc<Shared>, ProtocolDriver, Receiver<DiagnosticsRequest>) {
         let mut config = ClientConfig::v311("unit-test", "127.0.0.1", 1883);

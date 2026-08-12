@@ -97,6 +97,14 @@ Every config, client, completion, event, and error returned by the library has
 a matching destroy function. Destroy functions accept `NULL`. Memory returned
 by this library must never be passed to `free()`.
 
+`rumqttc_client_destroy_timeout_ms()` is the one fallible destructor. It
+requests immediate shutdown when necessary and consumes the client only after
+the driver thread joins. On timeout or failure the caller still owns a valid
+handle and may retry. `rumqttc_client_abandon()` is a last-resort consuming
+escape hatch: it requests immediate shutdown but relinquishes join ownership,
+so a driver thread can remain temporarily alive. Do not unload the shared
+library after abandonment while that thread may still be running.
+
 Client operation functions may be called concurrently. Configuration mutation,
 client start from that configuration, and handle destruction must not race any
 other access to the same handle. Only one event receive may be active per
@@ -104,6 +112,12 @@ client; a concurrent receive returns `RUMQTTC_INVALID_STATE`. Borrowed views
 remain valid until their owning event or error is destroyed and must not be
 used concurrently with access to that owner. Use the copy helpers for longer
 retention.
+
+Multi-output accessors allow each unneeded output to be `NULL`, require at
+least one output, and initialize every supplied output before validation.
+Single-output accessors require their output pointer. Completion observation
+functions accept `const rumqttc_completion_t *`; their internal result cache is
+synchronized and does not change the caller-visible handle identity.
 
 Admission means a request entered the bounded local MQTT queue; it does not mean
 the broker received it. Tracked completion distinguishes QoS 0 local flush,
@@ -121,55 +135,78 @@ full past its configured delivery timeout, the driver terminates visibly rather
 than silently dropping incoming publishes. Manual acknowledgement consumes an
 event-bound token; reuse and cross-client acknowledgement are rejected.
 
-`rumqttc_client_close()` performs a bounded graceful drain and is idempotent. Its timeout covers
-coordination with another close caller, operation completion, and driver-thread joining.
-`rumqttc_client_close_now()` is idempotent, can escalate graceful shutdown, and
-makes no delivery claim for unfinished operations. Client destruction requests
-immediate shutdown and waits for at most two seconds for the driver thread.
+`rumqttc_client_close_timeout_ms()` performs a bounded graceful drain and is
+idempotent. Its timeout covers coordination with another close caller,
+operation completion, and driver-thread joining.
+`rumqttc_client_close_now_timeout_ms()` is idempotent, can escalate graceful
+shutdown, uses its caller-supplied deadline, and makes no delivery claim for
+unfinished operations.
 
-## Minimal polling example
+Time units are part of every relevant symbol: keep-alive and connection setup
+use `_seconds`; event delivery, receive, completion wait, close, and destruction
+use `_ms`.
+
+Initialize extensible records with the header macros instead of manually
+maintaining `struct_size` and reserved fields:
 
 ```c
-#include <rumqttc.h>
-#include <string.h>
+rumqttc_publish_options_t publish = RUMQTTC_PUBLISH_OPTIONS_INIT;
+publish.qos = RUMQTTC_QOS_1;
 
-rumqttc_config_t *config = NULL;
-rumqttc_client_t *client = NULL;
-rumqttc_error_t *error = NULL;
-rumqttc_string_view_t host = {"localhost", strlen("localhost")};
-rumqttc_string_view_t id = {"native-client", strlen("native-client")};
-
-rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &config, &error);
-rumqttc_config_set_broker(config, host, 1883, &error);
-rumqttc_config_set_client_id(config, id, &error);
-rumqttc_client_start(config, &client, &error); /* clones config */
-rumqttc_config_destroy(config);
-
-for (;;) {
-    rumqttc_event_t *event = NULL;
-    rumqttc_status_t status = rumqttc_client_event_recv(client, 1000, &event, &error);
-    if (status == RUMQTTC_TIMEOUT) {
-        rumqttc_error_destroy(error);
-        error = NULL;
-        continue;
-    }
-    if (status != RUMQTTC_OK) {
-        break;
-    }
-    /* Inspect event kind and typed accessors here. */
-    rumqttc_event_destroy(event);
-}
-
-rumqttc_error_destroy(error);
-error = NULL;
-rumqttc_client_close(client, 5000, &error);
-rumqttc_client_destroy(client);
-rumqttc_error_destroy(error);
+rumqttc_subscription_t subscription = RUMQTTC_SUBSCRIPTION_INIT;
+subscription.filter = (rumqttc_string_view_t){"sensors/+", 9};
 ```
 
+Corresponding defaults are provided for user properties, MQTT 5 publish
+properties, and diagnostics through `RUMQTTC_USER_PROPERTY_INIT`,
+`RUMQTTC_V5_PUBLISH_PROPERTIES_INIT`, and `RUMQTTC_DIAGNOSTICS_INIT`. All five
+macros compile as aggregate initializers in C11 and C++17.
+
+## Complete C examples
+
+The [`examples`](examples) directory contains warning-clean C11 programs for:
+
+- [single-threaded event polling](examples/event_polling.c);
+- [publishing from multiple native threads](examples/multithreaded_publishing.c);
+- [polling and timed waiting for tracked completions](examples/tracked_completion.c);
+- [manual acknowledgement](examples/manual_acknowledgement.c); and
+- [graceful and immediate shutdown](examples/shutdown.c).
+
+Each program accepts `HOST PORT`, owns every returned handle explicitly, and
+uses one cleanup path for failures. The examples are compiled with warnings as
+errors and run against the deterministic broker fixture in CI. To reproduce
+that build against a debug library:
+
+```sh
+cargo build -p rumqttc-c-next
+cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native
+cmake --build target/rumqttc-c-native
+ctest --test-dir target/rumqttc-c-native -L example --output-on-failure
+```
+
+Keep these distinctions in mind when adapting the examples:
+
+- Successful admission only means that an operation entered the bounded local
+  request queue; it is not MQTT completion.
+- A completion timeout does not prove non-delivery. The operation may complete
+  after the waiter times out.
+- Destroying an incomplete completion releases the waiter but does not cancel
+  an admitted MQTT operation.
+- String and byte views returned from an event or error are borrowed. They
+  become invalid as soon as that owning event or error is destroyed.
+
 For multithreaded producers, share the client handle but keep destruction
-synchronized after every producer has stopped. Each producer may call the
-nonblocking `rumqttc_client_try_*` functions or create independent tracked
-completion handles. In manual-ACK mode, retain the incoming event until
+synchronized after every producer and the single event consumer have stopped.
+Each producer may use nonblocking `rumqttc_client_try_*` operations or its own
+tracked completion. In manual-ACK mode, retain the incoming event until
 `rumqttc_client_try_acknowledge` or `rumqttc_client_acknowledge_tracked` has
 successfully consumed its event-bound token.
+
+## Native verification
+
+`rumqttc-c/tests/native` is a dedicated broker-backed test target, separate
+from the fast header and ABI checks. It exercises the C surface from C,
+including MQTT 3.1.1 and MQTT 5 behavior, overload, reconnect, shutdown,
+native-thread concurrency, and repeated teardown. Every network wait and join
+has a deadline. Set `RUMQTTC_C_STRESS_ITERATIONS` to increase the stress run;
+CI uses a short run while leak-analysis jobs use a longer one.

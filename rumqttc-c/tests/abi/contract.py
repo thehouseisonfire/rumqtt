@@ -138,7 +138,12 @@ def parse_header(header: pathlib.Path, clang: str) -> dict[str, Any]:
     macros: dict[str, str] = {}
     for line in macro_output.splitlines():
         match = re.fullmatch(r"#define\s+(RUMQTTC_[A-Za-z0-9_]+)\s+(.+)", line)
-        if match and match.group(1) not in IGNORED_MACROS and "(" not in match.group(1):
+        if (
+            match
+            and match.group(1) not in IGNORED_MACROS
+            and not match.group(1).endswith("_INIT")
+            and "(" not in match.group(1)
+        ):
             macros[match.group(1)] = " ".join(match.group(2).split())
 
     return {

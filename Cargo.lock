@@ -2298,6 +2298,7 @@ dependencies = [
  "flume",
  "futures-executor",
  "futures-util",
+ "parking_lot",
  "rumqttc-v4-next",
  "rumqttc-v5-next",
  "thiserror 2.0.20",
