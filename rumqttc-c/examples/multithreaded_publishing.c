@@ -50,31 +50,49 @@ static int join_producers(example_thread_t **threads, unsigned started,
   return 0;
 }
 
+static unsigned start_producers(rumqttc_client_t *client,
+                                example_thread_t **threads,
+                                producer_args_t *arguments,
+                                unsigned producer_count, _Atomic int *stop,
+                                int *result) {
+  unsigned index;
+
+  for (index = 0; index < producer_count; ++index) {
+    arguments[index].client = client;
+    arguments[index].stop = stop;
+    arguments[index].producer = index;
+    threads[index] = example_thread_start(producer, &arguments[index]);
+    if (threads[index] == NULL) {
+      fputs("failed to start a producer thread\n", stderr);
+      *result = 1;
+      return index;
+    }
+  }
+
+  return producer_count;
+}
+
 int main(int argc, char **argv) {
   enum { PRODUCERS = 4 };
   rumqttc_client_t *client = NULL;
   example_thread_t *threads[PRODUCERS] = {NULL};
   producer_args_t arguments[PRODUCERS];
   _Atomic int stop = 0;
-  unsigned started = 0, index;
-  int result = 1;
-  if (argc != 3)
+  unsigned started;
+  int result = 0;
+
+  if (argc != 3) {
+    fprintf(stderr, "usage: %s HOST PORT\n", argv[0]);
     return 2;
+  }
+
   client = example_connect(argv[1], (uint16_t)strtoul(argv[2], NULL, 10),
                            "c-multithread", RUMQTTC_ACK_AUTOMATIC);
   if (client == NULL)
-    goto cleanup;
-  for (index = 0; index < PRODUCERS; ++index) {
-    arguments[index].client = client;
-    arguments[index].stop = &stop;
-    arguments[index].producer = index;
-    threads[index] = example_thread_start(producer, &arguments[index]);
-    if (threads[index] == NULL)
-      goto cleanup;
-    ++started;
-  }
-  result = 0;
-cleanup:
+    return 1;
+
+  started =
+      start_producers(client, threads, arguments, PRODUCERS, &stop, &result);
   if (join_producers(threads, started, 60000, &result) != 0) {
     result = 1;
     atomic_store_explicit(&stop, 1, memory_order_relaxed);

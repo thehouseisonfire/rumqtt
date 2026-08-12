@@ -78,6 +78,8 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc-c`: Refactor the C examples to use small, operation-focused helpers
+  and straightforward early returns, removing all `goto`-based cleanup.
 - `rumqttc-wrapper-core` (Breaking Change): Completion observation methods now
   borrow `CompletionHandle`; cloned blocking and async observers share one
   immutable terminal result. MQTT 5 capability-dependent publishes before

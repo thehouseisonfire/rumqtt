@@ -173,9 +173,9 @@ The [`examples`](examples) directory contains warning-clean C11 programs for:
 - [graceful and immediate shutdown](examples/shutdown.c).
 
 Each program accepts `HOST PORT`, owns every returned handle explicitly, and
-uses one cleanup path for failures. The examples are compiled with warnings as
-errors and run against the deterministic broker fixture in CI. To reproduce
-that build against a debug library:
+keeps resource lifetimes local to the operation that acquired them. The
+examples are compiled with warnings as errors and run against the deterministic
+broker fixture in CI. To reproduce that build against a debug library:
 
 ```sh
 cargo build -p rumqttc-c-next
