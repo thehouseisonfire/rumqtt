@@ -115,7 +115,8 @@ fn config(protocol: ProtocolVersion, port: u16) -> ClientConfig {
 fn sustained_diagnostics_do_not_starve_mqtt_progress() {
     // One producer is enough to keep the bounded diagnostics queue ready. More producers turn
     // this into a host-scheduler stress test and can starve the single-threaded client runtime on
-    // constrained CI runners before the driver's fair MQTT/diagnostics arbitration is exercised.
+    // constrained CI runners before the driver's cooperative MQTT/diagnostics scheduling is
+    // exercised.
     const PRODUCERS: usize = 1;
     let (port, broker) = spawn_broker(ProtocolVersion::V311);
     let mut config = config(ProtocolVersion::V311, port);

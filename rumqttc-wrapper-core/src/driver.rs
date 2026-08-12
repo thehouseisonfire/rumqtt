@@ -1463,18 +1463,22 @@ async fn run_v4(
             let poll = eventloop.poll();
             tokio::pin!(poll);
             loop {
-                // Fair selection prevents sustained wrapper control traffic from starving MQTT
-                // network progress while preserving this single, non-cancellable poll future.
+                // Fair selection arbitrates among ready branches. Yield after synchronously
+                // handled wrapper work as well so a continuously ready flume channel cannot keep
+                // this current-thread runtime from driving the MQTT socket I/O reactor.
                 tokio::select! {
                     _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
                         accept_registration(registration, &pending, &mut senders);
+                        tokio::task::yield_now().await;
                     },
                     request = diagnostics_rx.recv_async() => if let Ok(request) = request {
                         _ = request.sender.send(Ok(Completion::Diagnostics(diagnostics.clone())));
+                        tokio::task::yield_now().await;
                     },
                     result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
                         resolve_pending(result, &mut senders);
+                        tokio::task::yield_now().await;
                     },
                     result = &mut poll => break Some(result),
                 }
@@ -1573,17 +1577,20 @@ async fn run_v5(
             let poll = eventloop.poll();
             tokio::pin!(poll);
             loop {
-                // Keep parity with the fair v4 control/poll arbitration above.
+                // Keep parity with the fair and cooperative v4 arbitration above.
                 tokio::select! {
                     _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
                         accept_registration(registration, &pending, &mut senders);
+                        tokio::task::yield_now().await;
                     },
                     request = diagnostics_rx.recv_async() => if let Ok(request) = request {
                         _ = request.sender.send(Ok(Completion::Diagnostics(diagnostics.clone())));
+                        tokio::task::yield_now().await;
                     },
                     result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
                         resolve_pending(result, &mut senders);
+                        tokio::task::yield_now().await;
                     },
                     result = &mut poll => break Some(result),
                 }

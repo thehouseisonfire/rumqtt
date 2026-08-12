@@ -88,6 +88,8 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc-wrapper-core`: Yield the single-threaded driver runtime after synchronous wrapper-control
+  work so sustained diagnostics or completion traffic cannot starve MQTT socket progress.
 - `rumqttc-c`: Preserve operation timeout failures as cached terminal completion results, and report
   invalid-state and internal C errors with their matching structured error kinds.
 - `rumqttc-c`: Install the Windows DLL import library and propagate `RUMQTTC_STATIC` from CMake's
