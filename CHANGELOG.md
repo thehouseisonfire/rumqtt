@@ -1,6 +1,8 @@
 ## [Unreleased]
 
 ### Added
+- Documentation: Add checked-in Docker Compose usage examples that build and
+  run MQTT 3.1.1 and MQTT 5 clients against a health-checked Mosquitto broker.
 - `rumqttc-core`: Add eager, fallible rustls constructors for native roots or
   PEM roots with optional PEM client authentication. Malformed or incompatible
   TLS material is now reportable before a connection or wrapper driver starts.

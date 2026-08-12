@@ -153,6 +153,7 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: |
             python3 scripts/check-recipes.py
+            docker compose -f docs/recipes/fixtures/docker-clients/compose.yaml config --quiet
             docker compose -f docs/recipes/fixtures/mosquitto/compose.yaml config --quiet
             docker compose -f docs/recipes/fixtures/emqx/compose.yaml config --quiet
 

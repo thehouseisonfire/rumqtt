@@ -25,6 +25,7 @@ deployment.
 | Manual ACKs | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Manual ACKs](./manual-acks.md) |
 | Structured lifecycle tracing | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | `tracing` | [Tracing](./tracing.md) |
 | Runtime diagnostics snapshots | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | none | [Diagnostics](./diagnostics.md) |
+| Dockerized clients | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | Docker with Compose | [Docker clients](./docker-clients.md) |
 | Broker-specific setup notes | `rumqttc-v4-next` | `rumqttc-v5-next` / `rumqttc-next` | varies | [Broker notes](./brokers.md) |
 
 ## Compile-Checked Examples

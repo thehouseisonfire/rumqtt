@@ -1,0 +1,41 @@
+services:
+  broker:
+    image: eclipse-mosquitto:2.0.22
+    ports:
+      - "1883:1883"
+    volumes:
+      - ../mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - broker-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-p", "1883", "-t", "rumqttc/health", "-m", "ok"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+
+  client-v4:
+    build:
+      context: ../../../..
+      dockerfile: docs/recipes/fixtures/docker-clients/Dockerfile
+      target: client-v4
+    environment:
+      RUMQTTC_RECIPE_HOST: broker
+      RUMQTTC_RECIPE_PORT: 1883
+    depends_on:
+      broker:
+        condition: service_healthy
+
+  client-v5:
+    build:
+      context: ../../../..
+      dockerfile: docs/recipes/fixtures/docker-clients/Dockerfile
+      target: client-v5
+    environment:
+      RUMQTTC_RECIPE_HOST: broker
+      RUMQTTC_RECIPE_PORT: 1883
+    depends_on:
+      broker:
+        condition: service_healthy
+
+volumes:
+  broker-data:

@@ -124,6 +124,21 @@ The [production recipes](./docs/recipes/README.md) cover TLS, WebSockets,
 proxies, Notice API, persistent sessions, reconnect handling, bounded channels, manual
 ACKs, broker-specific configuration, and others.
 
+### Run clients using Docker
+
+The checked-in Docker Compose example builds and runs finite MQTT 3.1.1 and
+MQTT 5 clients against a local Mosquitto broker:
+
+```bash
+docker compose -f docs/recipes/fixtures/docker-clients/compose.yaml up -d --wait broker
+docker compose -f docs/recipes/fixtures/docker-clients/compose.yaml run --rm client-v4
+docker compose -f docs/recipes/fixtures/docker-clients/compose.yaml run --rm client-v5
+docker compose -f docs/recipes/fixtures/docker-clients/compose.yaml down -v
+```
+
+See the [Docker client guide](./docs/recipes/docker-clients.md) for the image
+layout, expected output, container networking, and production considerations.
+
 Projects integrating this fork include
 [`mqtt-typed-client`](https://github.com/holovskyi/mqtt-typed-client), a
 type-safe MQTT layer with an optional `backend-rumqttc-next` backend. See each
