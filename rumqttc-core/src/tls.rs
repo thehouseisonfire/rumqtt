@@ -252,6 +252,13 @@ pub fn websocket_tls_connector(
     feature = "use-rustls-no-provider",
     not(feature = "use-native-tls")
 ))]
+/// Builds the rustls connector used by secure WebSocket transports.
+///
+/// # Errors
+///
+/// Returns an error if the rustls configuration is invalid, its certificates
+/// or private key cannot be parsed, no crypto provider is available, or the
+/// selected TLS configuration is unsupported.
 pub fn websocket_tls_connector(
     tls_config: &TlsConfiguration,
 ) -> Result<tokio_rustls::TlsConnector, Error> {
