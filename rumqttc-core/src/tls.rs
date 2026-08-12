@@ -119,6 +119,63 @@ pub fn rustls_client_config_builder() -> Result<RustlsClientConfigBuilder, Error
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
+pub(crate) fn rustls_native_root_store() -> Result<RootCertStore, Error> {
+    let native = rustls_native_certs::load_native_certs();
+    if !native.errors.is_empty() {
+        return Err(Error::NativeCerts(native.errors));
+    }
+
+    let mut roots = RootCertStore::empty();
+    for certificate in native.certs {
+        roots.add(certificate)?;
+    }
+    Ok(roots)
+}
+
+#[cfg(feature = "use-rustls-no-provider")]
+pub(crate) fn rustls_pem_root_store(ca: &[u8]) -> Result<RootCertStore, Error> {
+    let certificates = CertificateDer::pem_slice_iter(ca).collect::<Result<Vec<_>, _>>()?;
+    if certificates.is_empty() {
+        return Err(Error::NoValidCertInChain);
+    }
+
+    let mut roots = RootCertStore::empty();
+    for certificate in certificates {
+        roots.add(certificate)?;
+    }
+    if roots.is_empty() {
+        return Err(Error::NoValidCertInChain);
+    }
+    Ok(roots)
+}
+
+#[cfg(feature = "use-rustls-no-provider")]
+pub(crate) fn rustls_client_config(
+    roots: RootCertStore,
+    client_auth: Option<(Vec<u8>, Vec<u8>)>,
+) -> Result<Arc<ClientConfig>, Error> {
+    let builder = rustls_client_config_builder()?.with_root_certificates(roots);
+    let config = if let Some((certificate, key)) = client_auth {
+        let certificates =
+            CertificateDer::pem_slice_iter(&certificate).collect::<Result<Vec<_>, _>>()?;
+        if certificates.is_empty() {
+            return Err(Error::NoValidClientCertInChain);
+        }
+        let key = match PrivateKeyDer::from_pem_slice(&key) {
+            Ok(key) => key,
+            Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+                return Err(Error::NoValidKeyInChain);
+            }
+            Err(error) => return Err(Error::Pem(error)),
+        };
+        builder.with_client_auth_cert(certificates, key)?
+    } else {
+        builder.with_no_client_auth()
+    };
+    Ok(Arc::new(config))
+}
+
+#[cfg(feature = "use-rustls-no-provider")]
 pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector, Error> {
     let config = match tls_config {
         TlsConfiguration::Simple {
@@ -126,38 +183,9 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
             alpn,
             client_auth,
         } => {
-            // Add ca to root store if the connection is TLS
-            let mut root_cert_store = RootCertStore::empty();
-            let certs = CertificateDer::pem_slice_iter(ca).collect::<Result<Vec<_>, _>>()?;
-
-            root_cert_store.add_parsable_certificates(certs);
-
-            if root_cert_store.is_empty() {
-                return Err(Error::NoValidCertInChain);
-            }
-
-            let config = rustls_client_config_builder()?.with_root_certificates(root_cert_store);
-
-            // Add der encoded client cert and key
-            let mut config = if let Some(client) = client_auth.as_ref() {
-                let certs =
-                    CertificateDer::pem_slice_iter(&client.0).collect::<Result<Vec<_>, _>>()?;
-                if certs.is_empty() {
-                    return Err(Error::NoValidClientCertInChain);
-                }
-
-                let key = match PrivateKeyDer::from_pem_slice(&client.1) {
-                    Ok(key) => key,
-                    Err(rustls::pki_types::pem::Error::NoItemsFound) => {
-                        return Err(Error::NoValidKeyInChain);
-                    }
-                    Err(err) => return Err(Error::Pem(err)),
-                };
-
-                config.with_client_auth_cert(certs, key)?
-            } else {
-                config.with_no_client_auth()
-            };
+            let roots = rustls_pem_root_store(ca)?;
+            let mut config =
+                Arc::unwrap_or_clone(rustls_client_config(roots, client_auth.clone())?);
 
             // Set ALPN
             if let Some(alpn) = alpn.as_ref() {

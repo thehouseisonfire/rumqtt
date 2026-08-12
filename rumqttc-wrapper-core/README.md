@@ -32,23 +32,21 @@ length—must fit the protocol's two-byte field before the driver starts.
 Client-originated MQTT 5 publishes also reject Subscription Identifiers. The
 field is retained on normalized incoming publishes, but MQTT-3.3.4-6 forbids
 clients from sending it to a server. Other publish properties are validated
-before admission, including payload format, negotiated Topic Alias bounds,
-Maximum QoS, Retain Available, Response Topic syntax, MQTT UTF-8 strings, and
-two-byte binary/string lengths. Publish Topic Names for both protocols reject
-U+0000 and values exceeding the MQTT UTF-8 string length before admission. A
-publish rejected by one of these negotiated capabilities cannot establish or
-rebind a Topic Alias in the wrapper's state.
-Manual Topic Alias mappings are ordered with publish admission, may be reused
-with an empty topic only after mapping, and are cleared for every new network
-connection. An empty Topic Name without a nonzero Topic Alias is rejected before
-admission. On connection loss, the wrapper repairs the narrow set of publishes
-that can be admitted after rumqttc's cleanup drain but before the wrapper observes
-the error under the same admission gate: recoverable publishes carry their full
-Topic Name without an alias into replay, while unrecoverable tracked publishes
-complete with an error rather than emitting an invalid packet. Repair starts from
-rumqttc's alias mapping at the exact cleanup boundary and applies publishes admitted
-after that boundary in order, so a later alias rebinding cannot change the topic of
-an earlier alias-only publish.
+before admission, including payload format, Response Topic syntax, MQTT UTF-8
+strings, and two-byte binary/string lengths. Publish Topic Names for both
+protocols reject U+0000 and values exceeding the MQTT UTF-8 string length before
+admission.
+
+The wrapper builds MQTT 5 clients with
+`PublishAdmissionPolicy::RequireNegotiatedCapabilities`. `rumqttc-v5`, rather
+than this wrapper, owns the coherent negotiated Maximum QoS, Retain Available,
+Topic Alias Maximum, connection generation, and outgoing manual Topic Alias
+mapping used by producer admission. Alias mapping changes are transactional with
+request-channel admission and are invalidated under the same boundary as
+event-loop reconnect cleanup. Replayed concrete-topic publishes lose their old
+connection's alias, while an unrecoverable alias-only tracked publish completes
+with `TopicAliasReplayUnavailable`; the wrapper neither mirrors this state nor
+repairs rumqttc's request queue.
 Broker publish capabilities are unknown before the first MQTT 5 CONNACK and
 again while reconnecting. During those intervals, nonblocking admission of a
 QoS 1/2, retained, or Topic-Alias publish reports transient backpressure without
@@ -69,7 +67,11 @@ diagnostics or completion traffic cannot indefinitely suppress network and
 keep-alive progress.
 
 Admission is distinct from MQTT completion. Dropping or timing out a
-`CompletionHandle` never cancels work already admitted to rumqttc. Immediate
+`CompletionHandle` never cancels work already admitted to rumqttc.
+`CompletionHandle` is cloneable, and polling, blocking waits, and async waits
+all borrow it and repeatably observe the same immutable terminal result. A
+caller's wait deadline is only an observation outcome and is never cached as the
+operation result. Immediate
 shutdown interrupts an in-progress connection attempt and reports unfinished
 admitted work as ambiguous; once connected, rumqttc observes its priority
 disconnect at an event-loop scheduling point. Immediate shutdown remains a
@@ -101,6 +103,12 @@ leave synchronous or asynchronous admission blocked on a channel that will never
 make further progress. Graceful shutdown also resolves diagnostics admitted
 before its barrier with the final cached driver snapshot; immediate shutdown can
 still leave unfinished diagnostics ambiguous.
+
+`NativeClientCloser` is the host-neutral close coordinator. Concurrent graceful
+callers share one completion, successful repeated calls return the same graceful
+outcome, immediate close can escalate an outstanding graceful close, and each
+caller's timeout is one budget spanning completion observation and driver-thread
+join. Finalizer cleanup remains a nonblocking immediate-shutdown signal.
 
 ## Admission modes and host threads
 

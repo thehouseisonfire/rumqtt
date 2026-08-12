@@ -2300,11 +2300,8 @@ dependencies = [
  "futures-util",
  "rumqttc-v4-next",
  "rumqttc-v5-next",
- "rustls-native-certs",
- "rustls-pki-types",
  "thiserror 2.0.20",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]

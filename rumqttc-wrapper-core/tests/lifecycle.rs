@@ -332,3 +332,24 @@ fn immediate_cleanup_is_idempotent() {
     handle.close_now_idempotent();
     native.join(Duration::from_secs(2)).unwrap();
 }
+
+#[test]
+fn immediate_close_after_graceful_close_preserves_graceful_result() {
+    let (port, broker) = spawn_broker(ProtocolVersion::V311);
+    let mut native = NativeClient::start(config(ProtocolVersion::V311, port)).unwrap();
+    let mut events = native.take_events().unwrap();
+    wait_connected(&mut events);
+    let closer = native.closer();
+
+    assert_eq!(
+        closer.close(Duration::from_secs(2)).unwrap(),
+        Completion::GracefulShutdown
+    );
+    closer.close_now(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        closer.close(Duration::from_secs(2)).unwrap(),
+        Completion::GracefulShutdown
+    );
+
+    broker.join().unwrap();
+}

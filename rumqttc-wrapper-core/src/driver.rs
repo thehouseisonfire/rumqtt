@@ -2,25 +2,29 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::num::NonZeroU64;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use flume::{Receiver, Sender};
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use rustls_pki_types::pem::PemObject;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::sync::Notify;
-use tokio_rustls::rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 
+use crate::acknowledgement::{AckKey, AcknowledgementRegistry, PreparedAck};
+use crate::adapter::{v4 as adapter_v4, v5 as adapter_v5};
 use crate::completion::{
-    BrokerReason, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion, UnsubscribeResult,
+    BrokerReason, CompletionCell, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
+    UnsubscribeResult,
 };
+use crate::handle::AdmissionGate;
+use crate::operations::OperationRegistry;
+use crate::runtime::ThreadOwner;
+use crate::shutdown::ShutdownRecord;
 use crate::{
     AckMode, AckToken, Admission, ClientConfig, Command, Completion, CompletionHandle,
     ConnectionPhase, DeliveryStatus, DiagnosticsSnapshot, Error, ErrorKind, IncomingPublish,
-    LifecycleState, OperationId, OutgoingActivity, ProtocolConfig, ProtocolVersion, PublishCommand,
+    LifecycleState, OperationId, ProtocolConfig, ProtocolVersion, PublishCommand,
     PublishCompletion, QoS, Result, SubscribeCommand, TlsConfig, TransportConfig,
     V5PublishProperties, WrapperEvent,
 };
@@ -35,106 +39,39 @@ enum ProtocolClient {
     V5(rumqttc_v5::AsyncClient),
 }
 
-enum PreparedAck {
-    V311(rumqttc_v4::ManualAck),
-    V5(rumqttc_v5::ManualAck),
-}
-
-impl PreparedAck {
-    const fn key(&self) -> AckKey {
-        match self {
-            Self::V311(rumqttc_v4::ManualAck::PubAck(ack)) => AckKey::V311PubAck(ack.pkid),
-            Self::V311(rumqttc_v4::ManualAck::PubRec(ack)) => AckKey::V311PubRec(ack.pkid),
-            Self::V5(rumqttc_v5::ManualAck::PubAck(ack)) => AckKey::V5PubAck(ack.pkid),
-            Self::V5(rumqttc_v5::ManualAck::PubRec(ack)) => AckKey::V5PubRec(ack.pkid),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum AckKey {
-    V311PubAck(u16),
-    V311PubRec(u16),
-    V5PubAck(u16),
-    V5PubRec(u16),
-}
-
 struct CompletionRegistration {
     operation_id: OperationId,
-    sender: Sender<Result<Completion>>,
+    registry: OperationRegistry,
     future: CompletionFuture,
-    shutdown_completion: Option<Completion>,
 }
 
 struct DiagnosticsRequest {
-    sender: Sender<Result<Completion>>,
+    operation_id: OperationId,
+    registry: OperationRegistry,
 }
 
 struct PendingSender {
-    sender: Sender<Result<Completion>>,
-    shutdown_completion: Option<Completion>,
-}
-
-#[derive(Default)]
-struct AcknowledgementRegistry {
-    by_token: HashMap<AckToken, PreparedAck>,
-    by_key: HashMap<AckKey, AckToken>,
-}
-
-impl AcknowledgementRegistry {
-    fn clear(&mut self) {
-        self.by_token.clear();
-        self.by_key.clear();
-    }
-
-    fn insert(&mut self, token: AckToken, ack: PreparedAck) {
-        let key = ack.key();
-        self.by_token.insert(token, ack);
-        self.by_key.insert(key, token);
-    }
-
-    fn remove(&mut self, token: &AckToken) -> Option<PreparedAck> {
-        let ack = self.by_token.remove(token)?;
-        self.by_key.remove(&ack.key());
-        Some(ack)
-    }
-
-    fn token(&self, key: AckKey) -> Option<AckToken> {
-        self.by_key.get(&key).copied()
-    }
+    registry: OperationRegistry,
 }
 
 struct Shared {
     client: ProtocolClient,
     client_identity: u64,
     connection_generation: AtomicU64,
-    broker_topic_alias_max: AtomicU16,
-    broker_maximum_qos: AtomicU8,
-    broker_retain_available: AtomicBool,
-    broker_capabilities_known: AtomicBool,
     next_ack_serial: AtomicU64,
     next_operation: AtomicU64,
     lifecycle: AtomicU8,
-    shutdown_kind: AtomicU8,
-    shutdown_operation: AtomicU64,
-    shutdown_registration_ready: AtomicBool,
+    shutdown_phase: AtomicU8,
+    shutdown: Mutex<ShutdownRecord>,
     handle_count: AtomicUsize,
-    admission_gate: Mutex<()>,
+    admission_gate: AdmissionGate,
     acknowledgements: Mutex<AcknowledgementRegistry>,
-    acknowledgement_completions: Mutex<HashMap<AckKey, Sender<Result<Completion>>>>,
-    outbound_topic_aliases: Mutex<HashMap<u16, String>>,
+    acknowledgement_completions: Mutex<HashMap<AckKey, OperationId>>,
+    operations: OperationRegistry,
     completion_tx: Sender<CompletionRegistration>,
     diagnostics_tx: Sender<DiagnosticsRequest>,
     immediate_shutdown_tx: Sender<()>,
     request_progress: Notify,
-}
-
-#[derive(Clone, Copy)]
-struct V5PublishCapabilities {
-    topic_alias_max: u16,
-    maximum_qos: u8,
-    retain_available: bool,
-    known: bool,
 }
 
 struct AckReservation {
@@ -166,17 +103,8 @@ impl Drop for AckReservation {
 }
 
 impl Shared {
-    fn v5_publish_capabilities(&self) -> V5PublishCapabilities {
-        V5PublishCapabilities {
-            topic_alias_max: self.broker_topic_alias_max.load(Ordering::Acquire),
-            maximum_qos: self.broker_maximum_qos.load(Ordering::Acquire),
-            retain_available: self.broker_retain_available.load(Ordering::Acquire),
-            known: self.broker_capabilities_known.load(Ordering::Acquire),
-        }
-    }
-
     fn immediate_shutdown_requested(&self) -> bool {
-        self.shutdown_kind.load(Ordering::Acquire) == 2
+        self.shutdown_phase.load(Ordering::Acquire) == 2
     }
 
     fn state(&self) -> LifecycleState {
@@ -209,42 +137,44 @@ impl Shared {
     }
 
     fn admission(&self, future: CompletionFuture) -> Result<Admission> {
-        self.register_admission(future, None)
+        self.register_admission(future)
     }
 
-    fn register_admission(
-        &self,
-        future: CompletionFuture,
-        shutdown_completion: Option<Completion>,
-    ) -> Result<Admission> {
+    fn register_admission(&self, future: CompletionFuture) -> Result<Admission> {
         let operation_id = self.next_operation_id()?;
-        let (sender, receiver) = flume::bounded(1);
+        let cell = CompletionCell::new(operation_id);
+        self.operations.insert(Arc::clone(&cell));
         self.completion_tx
             .send(CompletionRegistration {
                 operation_id,
-                sender,
+                registry: self.operations.clone(),
                 future,
-                shutdown_completion,
             })
             .map_err(|_| {
+                self.operations.complete(
+                    operation_id,
+                    Err(
+                        Error::new(ErrorKind::Shutdown, "driver stopped during admission")
+                            .with_delivery(DeliveryStatus::Ambiguous),
+                    ),
+                );
                 Error::new(ErrorKind::Shutdown, "driver stopped during admission")
                     .with_delivery(DeliveryStatus::Ambiguous)
             })?;
         Ok(Admission {
             operation_id,
-            completion: CompletionHandle::new(operation_id, receiver),
+            completion: CompletionHandle::new(cell),
         })
     }
 
-    fn shutdown_admission(&self, completion: Completion) -> Result<Admission> {
-        let admission = self.register_admission(Box::pin(std::future::pending()), Some(completion));
-        if let Ok(admission) = &admission {
-            self.shutdown_operation
-                .store(admission.operation_id.get(), Ordering::Release);
-        }
-        self.shutdown_registration_ready
-            .store(true, Ordering::Release);
-        admission
+    fn shutdown_admission(&self) -> Result<Admission> {
+        let operation_id = self.next_operation_id()?;
+        let cell = CompletionCell::new(operation_id);
+        self.operations.insert(Arc::clone(&cell));
+        Ok(Admission {
+            operation_id,
+            completion: CompletionHandle::new(cell),
+        })
     }
 
     fn transition_to_closing(&self) -> Result<()> {
@@ -256,9 +186,6 @@ impl Shared {
                 Ordering::Acquire,
             )
             .map(|_| {
-                self.shutdown_operation.store(0, Ordering::Release);
-                self.shutdown_registration_ready
-                    .store(false, Ordering::Release);
                 self.request_progress.notify_waiters();
             })
             .map_err(|_| {
@@ -281,6 +208,17 @@ impl Shared {
             .admission_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if matches!(
+            previous,
+            ShutdownRecord::Immediate { .. } | ShutdownRecord::Closed | ShutdownRecord::Failed
+        ) {
+            return;
+        }
         let newly_closing = match self.state() {
             LifecycleState::Running => {
                 self.lifecycle
@@ -295,12 +233,27 @@ impl Shared {
             ProtocolClient::V311(client) => _ = client.try_disconnect_now(),
             ProtocolClient::V5(client) => _ = client.try_disconnect_now(),
         }
-        self.shutdown_kind.store(2, Ordering::Release);
-        if newly_closing {
-            self.shutdown_operation.store(0, Ordering::Release);
-            self.shutdown_registration_ready
-                .store(true, Ordering::Release);
+        let mut shutdown = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ShutdownRecord::Graceful { operation_id, .. } = &previous {
+            self.operations.complete(
+                *operation_id,
+                Err(Error::new(
+                    ErrorKind::Shutdown,
+                    "the requested graceful shutdown was escalated to immediate shutdown",
+                )
+                .with_delivery(DeliveryStatus::Ambiguous)),
+            );
         }
+        *shutdown = ShutdownRecord::Immediate {
+            operation_id: None,
+            cell: None,
+            escalated: !newly_closing,
+        };
+        self.shutdown_phase.store(2, Ordering::Release);
+        drop(shutdown);
         _ = self.immediate_shutdown_tx.send(());
     }
 }
@@ -437,39 +390,16 @@ impl ClientHandle {
                 let options = v4_publish_options(&command);
                 let notice = client
                     .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(map_v4_client_error)?;
+                    .map_err(adapter_v4::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     map_v4_publish_notice(notice.wait_async().await)
                 }))
             }
             ProtocolClient::V5(client) => {
-                let mut topic_aliases =
-                    self.shared.outbound_topic_aliases.lock().map_err(|_| {
-                        Error::new(ErrorKind::Internal, "topic alias map mutex poisoned")
-                    })?;
-                validate_outbound_v5_publish(
-                    command.v5_properties.as_ref(),
-                    &command.payload,
-                    &command.topic,
-                    command.qos,
-                    command.retain,
-                    self.shared.v5_publish_capabilities(),
-                    &topic_aliases,
-                )?;
-                let alias_mapping = command
-                    .v5_properties
-                    .as_ref()
-                    .and_then(|properties| properties.topic_alias)
-                    .filter(|_| !command.topic.is_empty())
-                    .map(|alias| (alias, command.topic.clone()));
                 let options = v5_publish_options(&command);
                 let notice = client
                     .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(map_v5_client_error)?;
-                if let Some((alias, topic)) = alias_mapping {
-                    topic_aliases.insert(alias, topic);
-                }
-                drop(topic_aliases);
+                    .map_err(adapter_v5::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     map_v5_publish_notice(notice.wait_async().await)
                 }))
@@ -505,7 +435,7 @@ impl ClientHandle {
                     .collect::<Vec<_>>();
                 let notice = client
                     .try_subscribe_many_tracked(filters)
-                    .map_err(map_v4_client_error)?;
+                    .map_err(adapter_v4::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     map_v4_subscribe_notice(notice.wait_async().await)
                 }))
@@ -520,7 +450,7 @@ impl ClientHandle {
                     .collect::<Vec<_>>();
                 let notice = client
                     .try_subscribe_many_tracked(filters)
-                    .map_err(map_v5_client_error)?;
+                    .map_err(adapter_v5::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     map_v5_subscribe_notice(notice.wait_async().await)
                 }))
@@ -549,7 +479,7 @@ impl ClientHandle {
             ProtocolClient::V311(client) => {
                 let notice = client
                     .try_unsubscribe_many_tracked(filters)
-                    .map_err(map_v4_client_error)?;
+                    .map_err(adapter_v4::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     map_v4_unsubscribe_notice(notice.wait_async().await)
                 }))
@@ -557,7 +487,7 @@ impl ClientHandle {
             ProtocolClient::V5(client) => {
                 let notice = client
                     .try_unsubscribe_many_tracked(filters)
-                    .map_err(map_v5_client_error)?;
+                    .map_err(adapter_v5::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     map_v5_unsubscribe_notice(notice.wait_async().await)
                 }))
@@ -594,9 +524,11 @@ impl ClientHandle {
         })
     }
 
-    fn try_enqueue_ack(&self, ack: &PreparedAck) -> Result<CompletionFuture> {
+    fn try_enqueue_ack(&self, ack: &PreparedAck) -> Result<Admission> {
         let key = ack.key();
-        let (sender, receiver) = flume::bounded(1);
+        let operation_id = self.shared.next_operation_id()?;
+        let cell = CompletionCell::new(operation_id);
+        self.shared.operations.insert(Arc::clone(&cell));
         let mut completions = self
             .shared
             .acknowledgement_completions
@@ -604,9 +536,10 @@ impl ClientHandle {
             .map_err(|_| Error::new(ErrorKind::Internal, "ACK completion map mutex poisoned"))?;
         match completions.entry(key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(sender);
+                entry.insert(operation_id);
             }
             std::collections::hash_map::Entry::Occupied(_) => {
+                self.shared.operations.cancel(operation_id);
                 return Err(Error::new(
                     ErrorKind::Internal,
                     "an acknowledgement for this MQTT packet is already pending",
@@ -616,10 +549,10 @@ impl ClientHandle {
         let result = match (&self.shared.client, ack) {
             (ProtocolClient::V311(client), PreparedAck::V311(ack)) => client
                 .try_manual_ack(ack.clone())
-                .map_err(map_v4_client_error),
+                .map_err(adapter_v4::map_client_error),
             (ProtocolClient::V5(client), PreparedAck::V5(ack)) => client
                 .try_manual_ack(ack.clone())
-                .map_err(map_v5_client_error),
+                .map_err(adapter_v5::map_client_error),
             _ => Err(Error::new(
                 ErrorKind::Internal,
                 "acknowledgement protocol mismatch",
@@ -627,18 +560,14 @@ impl ClientHandle {
         };
         if result.is_err() {
             completions.remove(&key);
+            self.shared.operations.cancel(operation_id);
         }
         drop(completions);
         result?;
-        Ok(Box::pin(async move {
-            receiver.recv_async().await.unwrap_or_else(|_| {
-                Err(Error::new(
-                    ErrorKind::Shutdown,
-                    "driver stopped before acknowledgement transmission was observed",
-                )
-                .with_delivery(DeliveryStatus::Ambiguous))
-            })
-        }))
+        Ok(Admission {
+            operation_id,
+            completion: CompletionHandle::new(cell),
+        })
     }
 
     fn try_acknowledge(&self, token: AckToken) -> Result<Admission> {
@@ -648,9 +577,9 @@ impl ClientHandle {
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
         let reservation = self.reserve_ack(token)?;
-        let completion = self.try_enqueue_ack(reservation.ack())?;
+        let admission = self.try_enqueue_ack(reservation.ack())?;
         reservation.commit();
-        self.shared.admission(completion)
+        Ok(admission)
     }
 
     async fn acknowledge(&self, token: AckToken) -> Result<Admission> {
@@ -664,30 +593,55 @@ impl ClientHandle {
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
-        self.shared.transition_to_closing()?;
+        if !matches!(
+            *self
+                .shared
+                .shutdown
+                .lock()
+                .map_err(|_| Error::new(ErrorKind::Internal, "shutdown state mutex poisoned"))?,
+            ShutdownRecord::Running
+        ) {
+            return Err(
+                Error::new(ErrorKind::Shutdown, "client is already closing or closed")
+                    .with_delivery(DeliveryStatus::NotAdmitted),
+            );
+        }
+        let admission = self.shared.shutdown_admission()?;
+        if let Err(error) = self.shared.transition_to_closing() {
+            self.shared.operations.cancel(admission.operation_id);
+            return Err(error);
+        }
         let result = match &self.shared.client {
             ProtocolClient::V311(client) => timeout
                 .map_or_else(
                     || client.try_disconnect(),
                     |timeout| client.try_disconnect_with_timeout(timeout),
                 )
-                .map_err(map_v4_client_error),
+                .map_err(adapter_v4::map_client_error),
             ProtocolClient::V5(client) => timeout
                 .map_or_else(
                     || client.try_disconnect(),
                     |timeout| client.try_disconnect_with_timeout(timeout),
                 )
-                .map_err(map_v5_client_error),
+                .map_err(adapter_v5::map_client_error),
         };
         if let Err(error) = result {
             self.shared.restore_running();
-            self.shared
-                .shutdown_registration_ready
-                .store(true, Ordering::Release);
+            self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
-        self.shared.shutdown_kind.store(1, Ordering::Release);
-        self.shared.shutdown_admission(Completion::GracefulShutdown)
+        *self
+            .shared
+            .shutdown
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Internal, "shutdown state mutex poisoned"))? =
+            ShutdownRecord::Graceful {
+                operation_id: admission.operation_id,
+                cell: admission.completion.cell(),
+                timeout,
+            };
+        self.shared.shutdown_phase.store(1, Ordering::Release);
+        Ok(admission)
     }
 
     fn try_close_now(&self) -> Result<Admission> {
@@ -696,24 +650,63 @@ impl ClientHandle {
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
-        self.shared.transition_to_closing()?;
-        let result = match &self.shared.client {
-            ProtocolClient::V311(client) => {
-                client.try_disconnect_now().map_err(map_v4_client_error)
-            }
-            ProtocolClient::V5(client) => client.try_disconnect_now().map_err(map_v5_client_error),
-        };
-        if let Err(error) = result {
-            self.shared.restore_running();
-            self.shared
-                .shutdown_registration_ready
-                .store(true, Ordering::Release);
+        let previous = self
+            .shared
+            .shutdown
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Internal, "shutdown state mutex poisoned"))?
+            .clone();
+        let newly_closing = matches!(previous, ShutdownRecord::Running);
+        if !matches!(
+            previous,
+            ShutdownRecord::Running | ShutdownRecord::Graceful { .. }
+        ) {
+            return Err(
+                Error::new(ErrorKind::Shutdown, "client is already closing or closed")
+                    .with_delivery(DeliveryStatus::NotAdmitted),
+            );
+        }
+        let admission = self.shared.shutdown_admission()?;
+        if newly_closing && let Err(error) = self.shared.transition_to_closing() {
+            self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
-        self.shared.shutdown_kind.store(2, Ordering::Release);
-        let admission = self
+        let result = match &self.shared.client {
+            ProtocolClient::V311(client) => client
+                .try_disconnect_now()
+                .map_err(adapter_v4::map_client_error),
+            ProtocolClient::V5(client) => client
+                .try_disconnect_now()
+                .map_err(adapter_v5::map_client_error),
+        };
+        if let Err(error) = result {
+            if newly_closing {
+                self.shared.restore_running();
+            }
+            self.shared.operations.cancel(admission.operation_id);
+            return Err(error);
+        }
+        if let ShutdownRecord::Graceful { operation_id, .. } = &previous {
+            self.shared.operations.complete(
+                *operation_id,
+                Err(Error::new(
+                    ErrorKind::Shutdown,
+                    "the requested graceful shutdown was escalated to immediate shutdown",
+                )
+                .with_delivery(DeliveryStatus::Ambiguous)),
+            );
+        }
+        *self
             .shared
-            .shutdown_admission(Completion::ImmediateShutdown)?;
+            .shutdown
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Internal, "shutdown state mutex poisoned"))? =
+            ShutdownRecord::Immediate {
+                operation_id: Some(admission.operation_id),
+                cell: Some(admission.completion.cell()),
+                escalated: !newly_closing,
+            };
+        self.shared.shutdown_phase.store(2, Ordering::Release);
         _ = self.shared.immediate_shutdown_tx.send(());
         Ok(admission)
     }
@@ -726,10 +719,14 @@ impl ClientHandle {
             .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
         self.shared.require_running()?;
         let operation_id = self.shared.next_operation_id()?;
-        let (sender, receiver) = flume::bounded(1);
+        let cell = CompletionCell::new(operation_id);
+        self.shared.operations.insert(Arc::clone(&cell));
         self.shared
             .diagnostics_tx
-            .try_send(DiagnosticsRequest { sender })
+            .try_send(DiagnosticsRequest {
+                operation_id,
+                registry: self.shared.operations.clone(),
+            })
             .map_err(|error| match error {
                 flume::TrySendError::Full(_) => Error::new(
                     ErrorKind::Backpressure,
@@ -740,10 +737,15 @@ impl ClientHandle {
                     Error::new(ErrorKind::Shutdown, "driver is not running")
                         .with_delivery(DeliveryStatus::NotAdmitted)
                 }
+            })
+            .inspect_err(|error| {
+                self.shared
+                    .operations
+                    .complete(operation_id, Err(error.clone()));
             })?;
         Ok(Admission {
             operation_id,
-            completion: CompletionHandle::new(operation_id, receiver),
+            completion: CompletionHandle::new(cell),
         })
     }
 }
@@ -913,12 +915,107 @@ impl TerminalStatus {
     }
 }
 
+enum NativeCloseState {
+    Open,
+    Graceful(CompletionHandle),
+    GracefullyClosed,
+    Immediate,
+}
+
+/// Cloneable, host-neutral ownership for idempotent close and bounded driver joining.
+#[derive(Clone)]
+pub struct NativeClientCloser {
+    handle: ClientHandle,
+    thread: Arc<ThreadOwner>,
+    state: Arc<Mutex<NativeCloseState>>,
+}
+
+impl std::fmt::Debug for NativeClientCloser {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeClientCloser")
+            .field("state", &self.handle.state())
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeClientCloser {
+    pub fn close(&self, timeout: Duration) -> Result<Completion> {
+        let started = Instant::now();
+        let completion = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::new(ErrorKind::Internal, "native close mutex poisoned"))?;
+            match &*state {
+                NativeCloseState::Open => {
+                    let admission = self.handle.try_admit(Command::GracefulDisconnect {
+                        timeout: Some(timeout.saturating_sub(started.elapsed())),
+                    })?;
+                    let completion = admission.completion;
+                    *state = NativeCloseState::Graceful(completion.clone());
+                    completion
+                }
+                NativeCloseState::Graceful(completion) => completion.clone(),
+                NativeCloseState::GracefullyClosed => {
+                    return Ok(Completion::GracefulShutdown);
+                }
+                NativeCloseState::Immediate => {
+                    return Err(Error::new(
+                        ErrorKind::Shutdown,
+                        "client was already closed immediately",
+                    ));
+                }
+            }
+        };
+
+        let completion = completion.wait_timeout(timeout.saturating_sub(started.elapsed()))?;
+        self.thread
+            .join(timeout.saturating_sub(started.elapsed()))?;
+        if completion == Completion::GracefulShutdown {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::new(ErrorKind::Internal, "native close mutex poisoned"))?;
+            if matches!(*state, NativeCloseState::Graceful(_)) {
+                *state = NativeCloseState::GracefullyClosed;
+            }
+        }
+        Ok(completion)
+    }
+
+    pub fn close_now(&self, timeout: Duration) -> Result<()> {
+        let started = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Internal, "native close mutex poisoned"))?;
+        match &*state {
+            NativeCloseState::GracefullyClosed => {}
+            NativeCloseState::Graceful(completion)
+                if matches!(
+                    completion.try_wait(),
+                    Ok(Some(Completion::GracefulShutdown))
+                ) =>
+            {
+                *state = NativeCloseState::GracefullyClosed;
+            }
+            NativeCloseState::Immediate => {}
+            NativeCloseState::Open | NativeCloseState::Graceful(_) => {
+                self.handle.close_now_idempotent();
+                *state = NativeCloseState::Immediate;
+            }
+        }
+        drop(state);
+        self.thread.join(timeout.saturating_sub(started.elapsed()))
+    }
+}
+
 /// Dedicated native client and its joinable driver-thread ownership.
 pub struct NativeClient {
     handle: Option<ClientHandle>,
     events: Option<EventConsumer>,
-    join: Mutex<Option<JoinHandle<()>>>,
-    done: Receiver<()>,
+    closer: NativeClientCloser,
 }
 
 impl std::fmt::Debug for NativeClient {
@@ -958,21 +1055,16 @@ impl NativeClient {
             client,
             client_identity,
             connection_generation: AtomicU64::new(0),
-            broker_topic_alias_max: AtomicU16::new(0),
-            broker_maximum_qos: AtomicU8::new(QoS::ExactlyOnce as u8),
-            broker_retain_available: AtomicBool::new(true),
-            broker_capabilities_known: AtomicBool::new(false),
             next_ack_serial: AtomicU64::new(1),
             next_operation: AtomicU64::new(1),
             lifecycle: AtomicU8::new(LifecycleState::Running as u8),
-            shutdown_kind: AtomicU8::new(0),
-            shutdown_operation: AtomicU64::new(0),
-            shutdown_registration_ready: AtomicBool::new(true),
+            shutdown_phase: AtomicU8::new(0),
+            shutdown: Mutex::new(ShutdownRecord::Running),
             handle_count: AtomicUsize::new(1),
-            admission_gate: Mutex::new(()),
+            admission_gate: AdmissionGate::default(),
             acknowledgements: Mutex::new(AcknowledgementRegistry::default()),
             acknowledgement_completions: Mutex::new(HashMap::new()),
-            outbound_topic_aliases: Mutex::new(HashMap::new()),
+            operations: OperationRegistry::default(),
             completion_tx,
             diagnostics_tx,
             immediate_shutdown_tx,
@@ -1005,6 +1097,21 @@ impl NativeClient {
                         error,
                     )),
                 };
+                let unresolved = match &terminal {
+                    TerminalStatus::Closed { graceful } => Error::new(
+                        ErrorKind::Shutdown,
+                        if *graceful {
+                            "driver closed before the operation reported a terminal MQTT result"
+                        } else {
+                            "driver closed immediately before the operation completed"
+                        },
+                    )
+                    .with_delivery(DeliveryStatus::Ambiguous),
+                    TerminalStatus::Failed(error) => {
+                        error.clone().with_delivery(DeliveryStatus::Ambiguous)
+                    }
+                };
+                driver_shared.operations.fail_all(unresolved);
                 publish_terminal_lifecycle(&driver_shared, &terminal);
                 _ = terminal_tx.send(terminal);
                 _ = done_tx.send(());
@@ -1013,15 +1120,24 @@ impl NativeClient {
                 Error::sourced(ErrorKind::Internal, DeliveryStatus::NotApplicable, error)
             })?;
 
+        let handle = ClientHandle { shared };
+        let thread = Arc::new(ThreadOwner {
+            join: Mutex::new(Some(join)),
+            done: done_rx,
+        });
+        let closer = NativeClientCloser {
+            handle: handle.clone(),
+            thread,
+            state: Arc::new(Mutex::new(NativeCloseState::Open)),
+        };
         Ok(Self {
-            handle: Some(ClientHandle { shared }),
+            handle: Some(handle),
             events: Some(EventConsumer {
                 events: event_rx,
                 terminal: terminal_rx,
                 terminal_seen: false,
             }),
-            join: Mutex::new(Some(join)),
-            done: done_rx,
+            closer,
         })
     }
 
@@ -1043,6 +1159,11 @@ impl NativeClient {
         self.events.take()
     }
 
+    #[must_use]
+    pub fn closer(&self) -> NativeClientCloser {
+        self.closer.clone()
+    }
+
     /// Waits for the driver to terminate and joins its thread only after termination is observed.
     ///
     /// # Errors
@@ -1050,35 +1171,19 @@ impl NativeClient {
     /// Returns an error when the timeout expires, the join state is poisoned, or the driver thread
     /// panics.
     pub fn join(&self, timeout: Duration) -> Result<()> {
-        match self.done.recv_timeout(timeout) {
-            Ok(()) | Err(flume::RecvTimeoutError::Disconnected) => {}
-            Err(flume::RecvTimeoutError::Timeout) => {
-                return Err(Error::new(
-                    ErrorKind::Timeout,
-                    "driver did not terminate before join timeout",
-                ));
-            }
-        }
-        let join = {
-            let mut join_slot = self
-                .join
-                .lock()
-                .map_err(|_| Error::new(ErrorKind::Internal, "join mutex poisoned"))?;
-            join_slot.take()
-        };
-        if let Some(join) = join {
-            join.join()
-                .map_err(|_| Error::new(ErrorKind::Internal, "driver thread panicked"))?;
-        }
-        Ok(())
+        self.closer.thread.join(timeout)
     }
 }
 
 fn publish_terminal_lifecycle(shared: &Shared, terminal: &TerminalStatus) {
-    let lifecycle = match terminal {
-        TerminalStatus::Closed { .. } => LifecycleState::Closed,
-        TerminalStatus::Failed(_) => LifecycleState::Failed,
+    let (lifecycle, shutdown) = match terminal {
+        TerminalStatus::Closed { .. } => (LifecycleState::Closed, ShutdownRecord::Closed),
+        TerminalStatus::Failed(_) => (LifecycleState::Failed, ShutdownRecord::Failed),
     };
+    *shared
+        .shutdown
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = shutdown;
     shared.lifecycle.store(lifecycle as u8, Ordering::Release);
     // Capacity waiters arm this notification before checking the request channel. Publishing the
     // terminal state before waking them therefore cannot lose the transition: every waiter either
@@ -1088,8 +1193,12 @@ fn publish_terminal_lifecycle(shared: &Shared, terminal: &TerminalStatus) {
 
 impl Drop for NativeClient {
     fn drop(&mut self) {
+        // The native owner, rather than any cloneable command handle, owns the driver thread.
+        // Finalization must therefore remain nonblocking while still interrupting an unbounded
+        // graceful close. `NativeClientCloser` keeps the join handle available to hosts that need
+        // a bounded join after this cleanup signal.
+        self.closer.handle.close_now_idempotent();
         if let Some(handle) = self.handle.take() {
-            handle.shared.best_effort_immediate_close();
             drop(handle);
         }
     }
@@ -1184,6 +1293,9 @@ fn build_protocol(config: ClientConfig) -> Result<(ProtocolClient, ProtocolDrive
             })?;
             let (client, eventloop) = rumqttc_v5::AsyncClient::builder(options)
                 .capacity(common.request_channel_capacity)
+                .publish_admission_policy(
+                    rumqttc_v5::PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+                )
                 .try_build()
                 .map_err(|error| {
                     Error::sourced(
@@ -1304,86 +1416,17 @@ fn build_v5_options(common: &crate::CommonConfig) -> Result<rumqttc_v5::MqttOpti
 }
 
 fn build_tls(config: &TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
-    if let Some(ca) = &config.ca {
-        let certificates = CertificateDer::pem_slice_iter(ca)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| {
-                Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error)
-            })?;
-        if certificates.is_empty() {
-            return Err(Error::configuration(
-                "custom TLS CA contains no PEM certificate",
-            ));
-        }
-    }
-    if let (Some(certificate), Some(key)) = (&config.client_certificate, &config.private_key) {
-        let certificates = CertificateDer::pem_slice_iter(certificate)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| {
-                Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error)
-            })?;
-        if certificates.is_empty() {
-            return Err(Error::configuration(
-                "TLS client certificate contains no PEM certificate",
-            ));
-        }
-        PrivateKeyDer::from_pem_slice(key).map_err(|error| {
-            Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error)
-        })?;
-    }
-    if let Some(ca) = &config.ca {
-        return Ok(rumqttc_v4::TlsConfiguration::Simple {
-            ca: ca.to_vec(),
-            alpn: None,
-            client_auth: config
-                .client_certificate
-                .as_ref()
-                .zip(config.private_key.as_ref())
-                .map(|(certificate, key)| (certificate.to_vec(), key.to_vec())),
-        });
-    }
-    if config.client_certificate.is_none() {
-        return rumqttc_v4::TlsConfiguration::try_default_rustls()
-            .map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error));
-    }
-
-    let provider = Arc::new(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider());
-    let builder = RustlsClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error))?;
-    let mut roots = RootCertStore::empty();
-    let native = rustls_native_certs::load_native_certs();
-    if !native.errors.is_empty() {
-        return Err(Error::new(
-            ErrorKind::Tls,
-            format!("failed to load platform certificates: {:?}", native.errors),
-        ));
-    }
-    for certificate in native.certs {
-        roots.add(certificate).map_err(|error| {
-            Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error)
-        })?;
-    }
-    let certificates = CertificateDer::pem_slice_iter(
-        config
-            .client_certificate
-            .as_ref()
-            .expect("validated certificate"),
-    )
-    .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error))?;
-    if certificates.is_empty() {
-        return Err(Error::configuration(
-            "TLS client certificate contains no PEM certificate",
-        ));
-    }
-    let key = PrivateKeyDer::from_pem_slice(config.private_key.as_ref().expect("validated key"))
-        .map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error))?;
-    let rustls = builder
-        .with_root_certificates(roots)
-        .with_client_auth_cert(certificates, key)
-        .map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error))?;
-    Ok(rumqttc_v4::TlsConfiguration::Rustls(Arc::new(rustls)))
+    let client_auth = config
+        .client_certificate
+        .as_ref()
+        .zip(config.private_key.as_ref())
+        .map(|(certificate, key)| (certificate.to_vec(), key.to_vec()));
+    let result = if let Some(ca) = &config.ca {
+        rumqttc_v4::TlsConfiguration::try_rustls_with_pem_roots(ca.to_vec(), client_auth)
+    } else {
+        rumqttc_v4::TlsConfiguration::try_rustls_with_native_roots(client_auth)
+    };
+    result.map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error))
 }
 
 fn set_v4_auth(options: &mut rumqttc_v4::MqttOptions, common: &crate::CommonConfig) {
@@ -1473,7 +1516,10 @@ async fn run_v4(
                         tokio::task::yield_now().await;
                     },
                     request = diagnostics_rx.recv_async() => if let Ok(request) = request {
-                        _ = request.sender.send(Ok(Completion::Diagnostics(diagnostics.clone())));
+                        request.registry.complete(
+                            request.operation_id,
+                            Ok(Completion::Diagnostics(diagnostics.clone())),
+                        );
                         tokio::task::yield_now().await;
                     },
                     result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
@@ -1516,7 +1562,7 @@ async fn run_v4(
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
-                let error = map_v4_connection_error(error);
+                let error = adapter_v4::map_connection_error(error);
                 if let Some(shutdown_kind) = committed_shutdown_kind(&shared) {
                     if shutdown_kind == 2 {
                         return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders)
@@ -1585,7 +1631,10 @@ async fn run_v5(
                         tokio::task::yield_now().await;
                     },
                     request = diagnostics_rx.recv_async() => if let Ok(request) = request {
-                        _ = request.sender.send(Ok(Completion::Diagnostics(diagnostics.clone())));
+                        request.registry.complete(
+                            request.operation_id,
+                            Ok(Completion::Diagnostics(diagnostics.clone())),
+                        );
                         tokio::task::yield_now().await;
                     },
                     result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
@@ -1626,7 +1675,7 @@ async fn run_v5(
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
-                let error = map_v5_connection_error(error);
+                let error = adapter_v5::map_connection_error(error);
                 if let Some(shutdown_kind) = committed_shutdown_kind(&shared) {
                     if shutdown_kind == 2 {
                         return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders)
@@ -1642,7 +1691,7 @@ async fn run_v5(
                     ConnectionPhase::Attempt
                 };
                 connected = false;
-                invalidate_v5_connection(&mut eventloop, &shared, &error);
+                invalidate_acks(&shared, &error);
                 if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
                     let error = overflow_error();
                     fail_acknowledgements(&shared, &error);
@@ -1674,21 +1723,11 @@ fn accept_registration(
 ) {
     let CompletionRegistration {
         operation_id,
-        sender,
+        registry,
         future,
-        shutdown_completion,
     } = registration;
-    let tracks_notice = shutdown_completion.is_none();
-    senders.insert(
-        operation_id,
-        PendingSender {
-            sender,
-            shutdown_completion,
-        },
-    );
-    if tracks_notice {
-        pending.push(Box::pin(async move { (operation_id, future.await) }));
-    }
+    senders.insert(operation_id, PendingSender { registry });
+    pending.push(Box::pin(async move { (operation_id, future.await) }));
 }
 
 fn resolve_pending(
@@ -1696,36 +1735,8 @@ fn resolve_pending(
     senders: &mut HashMap<OperationId, PendingSender>,
 ) {
     if let Some(pending_sender) = senders.remove(&operation_id) {
-        _ = pending_sender.sender.send(result);
+        pending_sender.registry.complete(operation_id, result);
     }
-}
-
-async fn wait_for_shutdown_operation(shared: &Shared) -> Option<OperationId> {
-    while !shared.shutdown_registration_ready.load(Ordering::Acquire) {
-        tokio::task::yield_now().await;
-    }
-
-    NonZeroU64::new(shared.shutdown_operation.load(Ordering::Acquire)).map(OperationId)
-}
-
-async fn receive_shutdown_registrations(
-    completion_rx: &Receiver<CompletionRegistration>,
-    shutdown_operation: Option<OperationId>,
-    mut shutdown_registration_received: bool,
-) -> Vec<CompletionRegistration> {
-    let mut registrations = Vec::new();
-    while !shutdown_registration_received {
-        let Ok(registration) = completion_rx.recv_async().await else {
-            break;
-        };
-        shutdown_registration_received = shutdown_operation == Some(registration.operation_id);
-        registrations.push(registration);
-    }
-
-    while let Ok(registration) = completion_rx.try_recv() {
-        registrations.push(registration);
-    }
-    registrations
 }
 
 async fn drain_pending(
@@ -1743,20 +1754,45 @@ async fn complete_shutdown(
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
 ) -> bool {
-    let shutdown_operation = wait_for_shutdown_operation(shutdown.shared).await;
-    let shutdown_registration_received =
-        shutdown_operation.is_none_or(|operation_id| senders.contains_key(&operation_id));
-    for registration in receive_shutdown_registrations(
-        shutdown.completion_rx,
-        shutdown_operation,
-        shutdown_registration_received,
-    )
-    .await
-    {
+    let committed = {
+        let _admission_guard = shutdown
+            .shared
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shutdown
+            .shared
+            .shutdown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    while let Ok(registration) = shutdown.completion_rx.try_recv() {
         accept_registration(registration, pending, senders);
     }
 
-    let graceful = shutdown.shared.shutdown_kind.load(Ordering::Acquire) == 1;
+    let (graceful, shutdown_completion) = match committed {
+        ShutdownRecord::Graceful {
+            operation_id,
+            cell,
+            timeout,
+        } => {
+            let _ = (cell, timeout);
+            (true, Some((operation_id, Completion::GracefulShutdown)))
+        }
+        ShutdownRecord::Immediate {
+            operation_id,
+            cell,
+            escalated,
+        } => {
+            let _ = (cell, escalated);
+            (
+                false,
+                operation_id.map(|operation_id| (operation_id, Completion::ImmediateShutdown)),
+            )
+        }
+        ShutdownRecord::Running | ShutdownRecord::Closed | ShutdownRecord::Failed => (false, None),
+    };
     fail_acknowledgements(
         shutdown.shared,
         &Error::new(
@@ -1768,7 +1804,13 @@ async fn complete_shutdown(
         complete_queued_diagnostics(shutdown.diagnostics_rx, diagnostics);
         drain_pending(pending, senders).await;
     }
-    finish_shutdown(senders, graceful);
+    fail_unfinished_operations(senders);
+    if let Some((operation_id, completion)) = shutdown_completion {
+        shutdown
+            .shared
+            .operations
+            .complete(operation_id, Ok(completion));
+    }
     graceful
 }
 
@@ -1787,9 +1829,10 @@ fn complete_queued_diagnostics(
     diagnostics: &DiagnosticsSnapshot,
 ) {
     while let Ok(request) = diagnostics_rx.try_recv() {
-        _ = request
-            .sender
-            .send(Ok(Completion::Diagnostics(diagnostics.clone())));
+        request.registry.complete(
+            request.operation_id,
+            Ok(Completion::Diagnostics(diagnostics.clone())),
+        );
     }
 }
 
@@ -1801,8 +1844,15 @@ fn committed_shutdown_kind(shared: &Shared) -> Option<u8> {
         .admission_gate
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    (shared.state() == LifecycleState::Closing)
-        .then(|| shared.shutdown_kind.load(Ordering::Acquire))
+    match &*shared
+        .shutdown
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        ShutdownRecord::Graceful { .. } => Some(1),
+        ShutdownRecord::Immediate { .. } => Some(2),
+        ShutdownRecord::Running | ShutdownRecord::Closed | ShutdownRecord::Failed => None,
+    }
 }
 
 fn overflow_error() -> Error {
@@ -1820,37 +1870,8 @@ fn invalidate_acks(shared: &Shared, error: &Error) {
     invalidate_connection_state(shared, error);
 }
 
-fn invalidate_v5_connection(eventloop: &mut rumqttc_v5::EventLoop, shared: &Shared, error: &Error) {
-    let _admission_guard = shared
-        .admission_gate
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The event loop has already cleaned every request it could observe before returning the
-    // connection error. Repair the small set that producers may have admitted after that drain
-    // while the same gate prevents any further old-generation admissions. The event loop seeds
-    // repair from the mapping at its cleanup boundary and applies late rebindings in queue order;
-    // the wrapper's current map may already contain a later rebinding.
-    eventloop.prepare_pending_topic_aliases_for_reconnect();
-    invalidate_connection_state(shared, error);
-}
-
 fn invalidate_connection_state(shared: &Shared, error: &Error) {
     shared.connection_generation.fetch_add(1, Ordering::AcqRel);
-    shared
-        .broker_capabilities_known
-        .store(false, Ordering::Release);
-    shared.broker_topic_alias_max.store(0, Ordering::Release);
-    shared
-        .broker_maximum_qos
-        .store(QoS::ExactlyOnce as u8, Ordering::Release);
-    shared
-        .broker_retain_available
-        .store(true, Ordering::Release);
-    shared
-        .outbound_topic_aliases
-        .lock()
-        .expect("topic alias map poisoned")
-        .clear();
     shared
         .acknowledgements
         .lock()
@@ -1866,40 +1887,37 @@ fn fail_acknowledgements(shared: &Shared, error: &Error) {
             .lock()
             .expect("ACK completion map poisoned"),
     );
-    for sender in completions.into_values() {
-        _ = sender.send(Err(error.clone().with_delivery(DeliveryStatus::Ambiguous)));
+    for operation_id in completions.into_values() {
+        shared.operations.complete(
+            operation_id,
+            Err(error.clone().with_delivery(DeliveryStatus::Ambiguous)),
+        );
     }
 }
 
 fn fail_pending(senders: &mut HashMap<OperationId, PendingSender>, error: &Error) {
     let mut pending: Vec<_> = senders.drain().collect();
     pending.sort_unstable_by_key(|(operation_id, _)| *operation_id);
-    for (_, pending_sender) in pending {
-        _ = pending_sender
-            .sender
-            .send(Err(error.clone().with_delivery(DeliveryStatus::Ambiguous)));
+    for (operation_id, pending_sender) in pending {
+        pending_sender.registry.complete(
+            operation_id,
+            Err(error.clone().with_delivery(DeliveryStatus::Ambiguous)),
+        );
     }
 }
 
-fn finish_shutdown(senders: &mut HashMap<OperationId, PendingSender>, graceful: bool) {
+fn fail_unfinished_operations(senders: &mut HashMap<OperationId, PendingSender>) {
     let mut pending: Vec<_> = senders.drain().collect();
     pending.sort_unstable_by_key(|(operation_id, _)| *operation_id);
-    for (_, pending_sender) in pending {
-        let result = match pending_sender.shutdown_completion {
-            Some(Completion::GracefulShutdown) if graceful => Ok(Completion::GracefulShutdown),
-            Some(Completion::ImmediateShutdown) if !graceful => Ok(Completion::ImmediateShutdown),
-            Some(_) => Err(Error::new(
-                ErrorKind::Shutdown,
-                "the requested graceful shutdown was escalated to immediate shutdown",
-            )
-            .with_delivery(DeliveryStatus::Ambiguous)),
-            None => Err(Error::new(
+    for (operation_id, pending_sender) in pending {
+        pending_sender.registry.complete(
+            operation_id,
+            Err(Error::new(
                 ErrorKind::Shutdown,
                 "driver closed before the operation reported a terminal MQTT result",
             )
             .with_delivery(DeliveryStatus::Ambiguous)),
-        };
-        _ = pending_sender.sender.send(result);
+        );
     }
 }
 
@@ -1965,7 +1983,7 @@ fn map_v4_event(
                 }
                 _ => {}
             }
-            emit_outgoing.then(|| WrapperEvent::Outgoing(map_v4_outgoing(&outgoing)))
+            emit_outgoing.then(|| WrapperEvent::Outgoing(adapter_v4::map_outgoing(&outgoing)))
         }
         rumqttc_v4::Event::Incoming(_) => None,
     }
@@ -1989,44 +2007,11 @@ fn map_v5_event(
             eventloop.discard_pending_manual_acknowledgements();
             *connected = true;
             shared.connection_generation.fetch_add(1, Ordering::AcqRel);
-            shared.broker_topic_alias_max.store(
-                connack
-                    .properties
-                    .as_ref()
-                    .and_then(|properties| properties.topic_alias_max)
-                    .unwrap_or(0),
-                Ordering::Release,
-            );
-            shared.broker_maximum_qos.store(
-                connack
-                    .properties
-                    .as_ref()
-                    .and_then(|properties| properties.max_qos)
-                    .unwrap_or(QoS::ExactlyOnce as u8),
-                Ordering::Release,
-            );
-            shared.broker_retain_available.store(
-                connack
-                    .properties
-                    .as_ref()
-                    .and_then(|properties| properties.retain_available)
-                    .unwrap_or(1)
-                    != 0,
-                Ordering::Release,
-            );
-            shared
-                .outbound_topic_aliases
-                .lock()
-                .expect("topic alias map poisoned")
-                .clear();
             shared
                 .acknowledgements
                 .lock()
                 .expect("ack map poisoned")
                 .clear();
-            shared
-                .broker_capabilities_known
-                .store(true, Ordering::Release);
             shared.request_progress.notify_waiters();
             Some(WrapperEvent::Connected {
                 protocol,
@@ -2067,7 +2052,7 @@ fn map_v5_event(
                 }
                 _ => {}
             }
-            emit_outgoing.then(|| WrapperEvent::Outgoing(map_v5_outgoing(&outgoing)))
+            emit_outgoing.then(|| WrapperEvent::Outgoing(adapter_v5::map_outgoing(&outgoing)))
         }
         _ => None,
     }
@@ -2105,13 +2090,15 @@ fn insert_ack(shared: &Shared, ack: PreparedAck) -> Option<AckToken> {
 }
 
 fn complete_acknowledgement(shared: &Shared, key: AckKey) {
-    let sender = shared
+    let operation_id = shared
         .acknowledgement_completions
         .lock()
         .expect("ACK completion map poisoned")
         .remove(&key);
-    if let Some(sender) = sender {
-        _ = sender.send(Ok(Completion::Acknowledged));
+    if let Some(operation_id) = operation_id {
+        shared
+            .operations
+            .complete(operation_id, Ok(Completion::Acknowledged));
     }
 }
 
@@ -2160,137 +2147,6 @@ fn v5_publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {
     }
 }
 
-fn validate_outbound_v5_publish(
-    properties: Option<&V5PublishProperties>,
-    payload: &[u8],
-    topic: &str,
-    qos: QoS,
-    retain: bool,
-    capabilities: V5PublishCapabilities,
-    topic_aliases: &HashMap<u16, String>,
-) -> Result<()> {
-    let topic_alias = properties.and_then(|properties| properties.topic_alias);
-    if topic.is_empty() && topic_alias.is_none() {
-        return Err(protocol_option_error(
-            "an empty MQTT 5 topic requires a nonzero Topic Alias",
-        ));
-    }
-
-    let Some(properties) = properties else {
-        return validate_negotiated_v5_publish(
-            qos,
-            retain,
-            topic_alias,
-            topic.is_empty(),
-            capabilities,
-            topic_aliases,
-        );
-    };
-
-    // MQTT-3.3.4-6: Subscription Identifier is server-to-client only on PUBLISH packets.
-    if !properties.subscription_identifiers.is_empty() {
-        return Err(protocol_option_error(
-            "client-originated MQTT 5 publishes cannot contain subscription identifiers",
-        ));
-    }
-
-    match properties.payload_format_indicator {
-        None | Some(0) => {}
-        Some(1) => {
-            std::str::from_utf8(payload).map_err(|_| {
-                protocol_option_error(
-                    "payload format indicator 1 requires a well-formed UTF-8 payload",
-                )
-            })?;
-        }
-        Some(value) => {
-            return Err(protocol_option_error(format!(
-                "payload format indicator must be 0 or 1, got {value}",
-            )));
-        }
-    }
-
-    if let Some(alias) = topic_alias
-        && alias == 0
-    {
-        return Err(protocol_option_error("MQTT 5 topic alias cannot be zero"));
-    }
-
-    if let Some(response_topic) = &properties.response_topic {
-        validate_mqtt_utf8_string(response_topic, "response topic")?;
-        if response_topic.is_empty() {
-            return Err(protocol_option_error("response topic cannot be empty"));
-        }
-        if response_topic.contains(['+', '#']) {
-            return Err(protocol_option_error(
-                "response topic cannot contain wildcard characters",
-            ));
-        }
-    }
-
-    if let Some(correlation_data) = &properties.correlation_data {
-        validate_mqtt_binary_data(correlation_data, "correlation data")?;
-    }
-    for (key, value) in &properties.user_properties {
-        validate_mqtt_utf8_string(key, "user property key")?;
-        validate_mqtt_utf8_string(value, "user property value")?;
-    }
-    if let Some(content_type) = &properties.content_type {
-        validate_mqtt_utf8_string(content_type, "content type")?;
-    }
-
-    validate_negotiated_v5_publish(
-        qos,
-        retain,
-        topic_alias,
-        topic.is_empty(),
-        capabilities,
-        topic_aliases,
-    )
-}
-
-fn validate_negotiated_v5_publish(
-    qos: QoS,
-    retain: bool,
-    topic_alias: Option<u16>,
-    topic_is_empty: bool,
-    capabilities: V5PublishCapabilities,
-    topic_aliases: &HashMap<u16, String>,
-) -> Result<()> {
-    if !capabilities.known && (qos != QoS::AtMostOnce || retain || topic_alias.is_some()) {
-        return Err(Error::new(
-            ErrorKind::Backpressure,
-            "MQTT 5 broker capabilities are not known until CONNACK",
-        )
-        .with_delivery(DeliveryStatus::NotAdmitted));
-    }
-    if qos as u8 > capabilities.maximum_qos {
-        return Err(protocol_option_error(format!(
-            "publish QoS {} exceeds the broker maximum QoS {}",
-            qos as u8, capabilities.maximum_qos,
-        )));
-    }
-    if retain && !capabilities.retain_available {
-        return Err(protocol_option_error(
-            "the broker does not support retained publishes",
-        ));
-    }
-    if let Some(alias) = topic_alias {
-        if alias > capabilities.topic_alias_max {
-            return Err(protocol_option_error(format!(
-                "MQTT 5 topic alias {alias} exceeds the broker maximum {}",
-                capabilities.topic_alias_max,
-            )));
-        }
-        if topic_is_empty && !topic_aliases.contains_key(&alias) {
-            return Err(protocol_option_error(format!(
-                "MQTT 5 topic alias {alias} has no mapping on the current connection",
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_mqtt_utf8_string(value: &str, name: &str) -> Result<()> {
     if value.len() > usize::from(u16::MAX) {
         return Err(protocol_option_error(format!(
@@ -2301,16 +2157,6 @@ fn validate_mqtt_utf8_string(value: &str, name: &str) -> Result<()> {
     if value.contains('\0') {
         return Err(protocol_option_error(format!(
             "{name} cannot contain the null character",
-        )));
-    }
-    Ok(())
-}
-
-fn validate_mqtt_binary_data(value: &[u8], name: &str) -> Result<()> {
-    if value.len() > usize::from(u16::MAX) {
-        return Err(protocol_option_error(format!(
-            "{name} exceeds the MQTT binary data limit of {} bytes",
-            u16::MAX,
         )));
     }
     Ok(())
@@ -2346,7 +2192,6 @@ const fn from_v5_qos(qos: rumqttc_v5::QoS) -> QoS {
 }
 
 fn to_v5_properties(properties: V5PublishProperties) -> rumqttc_v5::PublishProperties {
-    debug_assert!(properties.subscription_identifiers.is_empty());
     rumqttc_v5::PublishProperties {
         payload_format_indicator: properties.payload_format_indicator,
         message_expiry_interval: properties.message_expiry_interval,
@@ -2354,9 +2199,7 @@ fn to_v5_properties(properties: V5PublishProperties) -> rumqttc_v5::PublishPrope
         response_topic: properties.response_topic,
         correlation_data: properties.correlation_data,
         user_properties: properties.user_properties,
-        // Validation reports this to the caller; keeping the wire conversion empty is a final
-        // protocol-safety invariant if another internal call site is added later.
-        subscription_identifiers: Vec::new(),
+        subscription_identifiers: properties.subscription_identifiers,
         content_type: properties.content_type,
     }
 }
@@ -2513,98 +2356,9 @@ fn protocol_option_error(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Admission, message).with_delivery(DeliveryStatus::NotAdmitted)
 }
 
-fn map_v4_client_error(error: rumqttc_v4::ClientError) -> Error {
-    let kind = match error {
-        rumqttc_v4::ClientError::RequestChannelFull(_) => ErrorKind::Backpressure,
-        rumqttc_v4::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
-        _ => ErrorKind::Admission,
-    };
-    Error::sourced(kind, DeliveryStatus::NotAdmitted, error)
-}
-
-fn map_v5_client_error(error: rumqttc_v5::ClientError) -> Error {
-    let kind = match error {
-        rumqttc_v5::ClientError::RequestChannelFull(_) => ErrorKind::Backpressure,
-        rumqttc_v5::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
-        _ => ErrorKind::Admission,
-    };
-    Error::sourced(kind, DeliveryStatus::NotAdmitted, error)
-}
-
-fn map_v4_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
-    let kind = match error {
-        rumqttc_v4::ConnectionError::Tls(_) => ErrorKind::Tls,
-        rumqttc_v4::ConnectionError::ConnectionRefused(
-            rumqttc_v4::ConnectReturnCode::BadUserNamePassword
-            | rumqttc_v4::ConnectReturnCode::NotAuthorized,
-        ) => ErrorKind::Authentication,
-        rumqttc_v4::ConnectionError::SessionStore(_)
-        | rumqttc_v4::ConnectionError::SessionRestore(_) => ErrorKind::Persistence,
-        rumqttc_v4::ConnectionError::NetworkTimeout
-        | rumqttc_v4::ConnectionError::FlushTimeout
-        | rumqttc_v4::ConnectionError::DisconnectTimeout => ErrorKind::Timeout,
-        rumqttc_v4::ConnectionError::Io(_)
-        | rumqttc_v4::ConnectionError::Websocket(_)
-        | rumqttc_v4::ConnectionError::WsConnect(_) => ErrorKind::Network,
-        _ => ErrorKind::Protocol,
-    };
-    Error::sourced(kind, DeliveryStatus::Ambiguous, error)
-}
-
-fn map_v5_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
-    let kind = match error {
-        rumqttc_v5::ConnectionError::Tls(_) => ErrorKind::Tls,
-        rumqttc_v5::ConnectionError::ConnectionRefused(
-            rumqttc_v5::ConnectReturnCode::BadUserNamePassword
-            | rumqttc_v5::ConnectReturnCode::NotAuthorized
-            | rumqttc_v5::ConnectReturnCode::BadAuthenticationMethod,
-        ) => ErrorKind::Authentication,
-        rumqttc_v5::ConnectionError::SessionStore(_)
-        | rumqttc_v5::ConnectionError::SessionRestore(_) => ErrorKind::Persistence,
-        rumqttc_v5::ConnectionError::Timeout(_)
-        | rumqttc_v5::ConnectionError::DisconnectTimeout => ErrorKind::Timeout,
-        rumqttc_v5::ConnectionError::Io(_)
-        | rumqttc_v5::ConnectionError::Websocket(_)
-        | rumqttc_v5::ConnectionError::WsConnect(_) => ErrorKind::Network,
-        _ => ErrorKind::Protocol,
-    };
-    Error::sourced(kind, DeliveryStatus::Ambiguous, error)
-}
-
 fn duration_to_u16(duration: Duration, name: &str) -> Result<u16> {
     u16::try_from(duration.as_secs())
         .map_err(|_| Error::configuration(format!("{name} exceeds u16 seconds")))
-}
-
-const fn map_v4_outgoing(outgoing: &rumqttc_v4::Outgoing) -> OutgoingActivity {
-    match outgoing {
-        rumqttc_v4::Outgoing::Publish(_) => OutgoingActivity::Publish,
-        rumqttc_v4::Outgoing::Subscribe(_) => OutgoingActivity::Subscribe,
-        rumqttc_v4::Outgoing::Unsubscribe(_) => OutgoingActivity::Unsubscribe,
-        rumqttc_v4::Outgoing::PubAck(_)
-        | rumqttc_v4::Outgoing::PubRec(_)
-        | rumqttc_v4::Outgoing::PubRel(_)
-        | rumqttc_v4::Outgoing::PubComp(_) => OutgoingActivity::Acknowledgement,
-        rumqttc_v4::Outgoing::PingReq | rumqttc_v4::Outgoing::PingResp => OutgoingActivity::Ping,
-        rumqttc_v4::Outgoing::Disconnect => OutgoingActivity::Disconnect,
-        rumqttc_v4::Outgoing::AwaitAck(_) => OutgoingActivity::AwaitAcknowledgement,
-    }
-}
-
-const fn map_v5_outgoing(outgoing: &rumqttc_v5::Outgoing) -> OutgoingActivity {
-    match outgoing {
-        rumqttc_v5::Outgoing::Publish(_) => OutgoingActivity::Publish,
-        rumqttc_v5::Outgoing::Subscribe(_) => OutgoingActivity::Subscribe,
-        rumqttc_v5::Outgoing::Unsubscribe(_) => OutgoingActivity::Unsubscribe,
-        rumqttc_v5::Outgoing::PubAck(_)
-        | rumqttc_v5::Outgoing::PubRec(_)
-        | rumqttc_v5::Outgoing::PubRel(_)
-        | rumqttc_v5::Outgoing::PubComp(_) => OutgoingActivity::Acknowledgement,
-        rumqttc_v5::Outgoing::PingReq | rumqttc_v5::Outgoing::PingResp => OutgoingActivity::Ping,
-        rumqttc_v5::Outgoing::Disconnect => OutgoingActivity::Disconnect,
-        rumqttc_v5::Outgoing::AwaitAck(_) => OutgoingActivity::AwaitAcknowledgement,
-        rumqttc_v5::Outgoing::Auth => OutgoingActivity::Other,
-    }
 }
 
 const fn v5_suback_code(reason: rumqttc_v5::SubscribeReasonCode) -> u8 {
@@ -2662,21 +2416,16 @@ mod tests {
             client,
             client_identity: 1,
             connection_generation: AtomicU64::new(1),
-            broker_topic_alias_max: AtomicU16::new(0),
-            broker_maximum_qos: AtomicU8::new(QoS::ExactlyOnce as u8),
-            broker_retain_available: AtomicBool::new(true),
-            broker_capabilities_known: AtomicBool::new(false),
             next_ack_serial: AtomicU64::new(2),
             next_operation: AtomicU64::new(1),
             lifecycle: AtomicU8::new(LifecycleState::Running as u8),
-            shutdown_kind: AtomicU8::new(0),
-            shutdown_operation: AtomicU64::new(0),
-            shutdown_registration_ready: AtomicBool::new(true),
+            shutdown_phase: AtomicU8::new(0),
+            shutdown: Mutex::new(ShutdownRecord::Running),
             handle_count: AtomicUsize::new(1),
-            admission_gate: Mutex::new(()),
+            admission_gate: AdmissionGate::default(),
             acknowledgements: Mutex::new(AcknowledgementRegistry::default()),
             acknowledgement_completions: Mutex::new(HashMap::new()),
-            outbound_topic_aliases: Mutex::new(HashMap::new()),
+            operations: OperationRegistry::default(),
             completion_tx,
             diagnostics_tx,
             immediate_shutdown_tx,
@@ -2700,21 +2449,16 @@ mod tests {
             client,
             client_identity: 1,
             connection_generation: AtomicU64::new(1),
-            broker_topic_alias_max: AtomicU16::new(1),
-            broker_maximum_qos: AtomicU8::new(QoS::ExactlyOnce as u8),
-            broker_retain_available: AtomicBool::new(true),
-            broker_capabilities_known: AtomicBool::new(true),
             next_ack_serial: AtomicU64::new(1),
             next_operation: AtomicU64::new(1),
             lifecycle: AtomicU8::new(LifecycleState::Running as u8),
-            shutdown_kind: AtomicU8::new(0),
-            shutdown_operation: AtomicU64::new(0),
-            shutdown_registration_ready: AtomicBool::new(true),
+            shutdown_phase: AtomicU8::new(0),
+            shutdown: Mutex::new(ShutdownRecord::Running),
             handle_count: AtomicUsize::new(1),
-            admission_gate: Mutex::new(()),
+            admission_gate: AdmissionGate::default(),
             acknowledgements: Mutex::new(AcknowledgementRegistry::default()),
             acknowledgement_completions: Mutex::new(HashMap::new()),
-            outbound_topic_aliases: Mutex::new(HashMap::from([(1, "mapped/topic".into())])),
+            operations: OperationRegistry::default(),
             completion_tx,
             diagnostics_tx,
             immediate_shutdown_tx,
@@ -2775,7 +2519,7 @@ mod tests {
         };
         let trigger = async {
             tokio::task::yield_now().await;
-            shared.shutdown_kind.store(2, Ordering::Release);
+            shared.shutdown_phase.store(2, Ordering::Release);
             shutdown_tx.send(()).unwrap();
         };
 
@@ -2797,63 +2541,6 @@ mod tests {
             .await
             .expect("persistent shutdown state must bypass event backpressure")
         );
-    }
-
-    #[test]
-    fn capability_dependent_v5_publishes_wait_for_connack() {
-        let (shared, driver, _completion_rx) = idle_v5_shared();
-        shared
-            .broker_capabilities_known
-            .store(false, Ordering::Release);
-        shared.outbound_topic_aliases.lock().unwrap().clear();
-        let handle = ClientHandle {
-            shared: Arc::clone(&shared),
-        };
-
-        for command in [
-            PublishCommand {
-                topic: "qos".into(),
-                payload: Bytes::new(),
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                v5_properties: None,
-            },
-            PublishCommand {
-                topic: "retain".into(),
-                payload: Bytes::new(),
-                qos: QoS::AtMostOnce,
-                retain: true,
-                v5_properties: None,
-            },
-            PublishCommand {
-                topic: "alias".into(),
-                payload: Bytes::new(),
-                qos: QoS::AtMostOnce,
-                retain: false,
-                v5_properties: Some(V5PublishProperties {
-                    topic_alias: Some(1),
-                    ..V5PublishProperties::default()
-                }),
-            },
-        ] {
-            let error = handle.try_publish(command).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Backpressure);
-            assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
-        }
-
-        handle
-            .try_publish(PublishCommand {
-                topic: "always/supported".into(),
-                payload: Bytes::new(),
-                qos: QoS::AtMostOnce,
-                retain: false,
-                v5_properties: None,
-            })
-            .unwrap();
-        let ProtocolDriver::V5(eventloop) = driver else {
-            unreachable!();
-        };
-        assert_eq!(eventloop.diagnostics().queues.requests_rx_len, 1);
     }
 
     #[test]
@@ -2902,51 +2589,6 @@ mod tests {
             };
             assert_eq!(eventloop.diagnostics().queues.requests_rx_len, 0);
         }
-    }
-
-    #[tokio::test]
-    async fn async_v5_publish_resumes_when_connack_capabilities_arrive() {
-        let (shared, driver, _completion_rx) = idle_v5_shared();
-        shared
-            .broker_capabilities_known
-            .store(false, Ordering::Release);
-        let handle = ClientHandle {
-            shared: Arc::clone(&shared),
-        };
-        let admission = handle.publish(PublishCommand {
-            topic: "after/connack".into(),
-            payload: Bytes::new(),
-            qos: QoS::AtLeastOnce,
-            retain: false,
-            v5_properties: None,
-        });
-        tokio::pin!(admission);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), admission.as_mut())
-                .await
-                .is_err()
-        );
-
-        {
-            let _admission_guard = shared.admission_gate.lock().unwrap();
-            shared.broker_maximum_qos.store(1, Ordering::Release);
-            shared
-                .broker_retain_available
-                .store(false, Ordering::Release);
-            shared
-                .broker_capabilities_known
-                .store(true, Ordering::Release);
-        }
-        shared.request_progress.notify_waiters();
-
-        tokio::time::timeout(Duration::from_secs(1), admission)
-            .await
-            .expect("CONNACK should wake capability-dependent admission")
-            .unwrap();
-        let ProtocolDriver::V5(eventloop) = driver else {
-            unreachable!();
-        };
-        assert_eq!(eventloop.diagnostics().queues.requests_rx_len, 1);
     }
 
     #[tokio::test]
@@ -3007,7 +2649,13 @@ mod tests {
         shared
             .lifecycle
             .store(LifecycleState::Closing as u8, Ordering::Release);
-        shared.shutdown_kind.store(1, Ordering::Release);
+        let operation_id = OperationId(NonZeroU64::new(99).unwrap());
+        *shared.shutdown.lock().unwrap() = ShutdownRecord::Graceful {
+            operation_id,
+            cell: CompletionCell::new(operation_id),
+            timeout: None,
+        };
+        shared.shutdown_phase.store(1, Ordering::Release);
         let (_completion_tx, completion_rx) = flume::unbounded();
         let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
         let mut pending = FuturesUnordered::new();
@@ -3035,7 +2683,12 @@ mod tests {
         shared
             .lifecycle
             .store(LifecycleState::Closing as u8, Ordering::Release);
-        shared.shutdown_kind.store(2, Ordering::Release);
+        *shared.shutdown.lock().unwrap() = ShutdownRecord::Immediate {
+            operation_id: None,
+            cell: None,
+            escalated: false,
+        };
+        shared.shutdown_phase.store(2, Ordering::Release);
         let (_completion_tx, completion_rx) = flume::unbounded();
         let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
         let mut pending = FuturesUnordered::new();
@@ -3048,108 +2701,6 @@ mod tests {
             .wait_timeout(Duration::ZERO)
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Timeout);
-    }
-
-    #[test]
-    fn v5_connection_invalidation_repairs_publish_admitted_after_cleanup() {
-        let (shared, driver, _completion_rx) = idle_v5_shared();
-        let ProtocolDriver::V5(mut eventloop) = driver else {
-            unreachable!();
-        };
-        let handle = ClientHandle {
-            shared: Arc::clone(&shared),
-        };
-        let _mapping_admission = handle
-            .try_publish(PublishCommand {
-                topic: "mapped/topic".into(),
-                payload: Bytes::from_static(b"mapping"),
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                v5_properties: Some(V5PublishProperties {
-                    topic_alias: Some(1),
-                    ..V5PublishProperties::default()
-                }),
-            })
-            .unwrap();
-        eventloop.clean();
-        let _admission = handle
-            .try_publish(PublishCommand {
-                topic: String::new(),
-                payload: Bytes::from_static(b"payload"),
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                v5_properties: Some(V5PublishProperties {
-                    topic_alias: Some(1),
-                    ..V5PublishProperties::default()
-                }),
-            })
-            .unwrap();
-        assert_eq!(eventloop.diagnostics().queues.requests_rx_len, 1);
-
-        invalidate_v5_connection(
-            &mut eventloop,
-            &shared,
-            &Error::new(ErrorKind::Network, "connection lost"),
-        );
-
-        assert_eq!(eventloop.diagnostics().queues.requests_rx_len, 0);
-        assert_eq!(eventloop.pending_len(), 2);
-        assert_eq!(shared.broker_topic_alias_max.load(Ordering::Acquire), 0);
-        assert!(shared.outbound_topic_aliases.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn unsupported_v5_publish_does_not_establish_topic_alias() {
-        for (maximum_qos, retain_available, qos, retain) in [
-            (QoS::AtMostOnce as u8, true, QoS::AtLeastOnce, false),
-            (QoS::ExactlyOnce as u8, false, QoS::AtMostOnce, true),
-        ] {
-            let (shared, _driver, _completion_rx) = idle_v5_shared();
-            shared.outbound_topic_aliases.lock().unwrap().clear();
-            shared
-                .broker_maximum_qos
-                .store(maximum_qos, Ordering::Release);
-            shared
-                .broker_retain_available
-                .store(retain_available, Ordering::Release);
-            let handle = ClientHandle {
-                shared: Arc::clone(&shared),
-            };
-
-            let binding_error = handle
-                .try_publish(PublishCommand {
-                    topic: "binding/topic".into(),
-                    payload: Bytes::from_static(b"binding"),
-                    qos,
-                    retain,
-                    v5_properties: Some(V5PublishProperties {
-                        topic_alias: Some(1),
-                        ..V5PublishProperties::default()
-                    }),
-                })
-                .unwrap_err();
-            assert_eq!(binding_error.kind(), ErrorKind::Admission);
-            assert_eq!(binding_error.delivery_status(), DeliveryStatus::NotAdmitted);
-            assert!(shared.outbound_topic_aliases.lock().unwrap().is_empty());
-
-            let alias_only_error = handle
-                .try_publish(PublishCommand {
-                    topic: String::new(),
-                    payload: Bytes::from_static(b"alias-only"),
-                    qos: QoS::AtMostOnce,
-                    retain: false,
-                    v5_properties: Some(V5PublishProperties {
-                        topic_alias: Some(1),
-                        ..V5PublishProperties::default()
-                    }),
-                })
-                .unwrap_err();
-            assert_eq!(alias_only_error.kind(), ErrorKind::Admission);
-            assert_eq!(
-                alias_only_error.delivery_status(),
-                DeliveryStatus::NotAdmitted
-            );
-        }
     }
 
     #[test]
@@ -3207,7 +2758,7 @@ mod tests {
         let first_token = insert_ack(&shared, first_ack).unwrap();
         let duplicate_token = insert_ack(&shared, duplicate_ack).unwrap();
         assert_eq!(duplicate_token, first_token);
-        assert_eq!(shared.acknowledgements.lock().unwrap().by_token.len(), 1);
+        assert_eq!(shared.acknowledgements.lock().unwrap().len(), 1);
 
         let handle = ClientHandle {
             shared: Arc::clone(&shared),
@@ -3226,7 +2777,7 @@ mod tests {
         );
         complete_acknowledgement(&shared, AckKey::V311PubAck(7));
         assert_eq!(
-            futures_executor::block_on(completion).unwrap(),
+            futures_executor::block_on(completion.completion.wait_async()).unwrap(),
             Completion::Acknowledged
         );
 
@@ -3261,7 +2812,7 @@ mod tests {
         assert_eq!(eventloop.diagnostics().queues.control_requests_rx_len, 1);
 
         invalidate_acks(&shared, &Error::new(ErrorKind::Network, "connection lost"));
-        assert!(futures_executor::block_on(completion).is_err());
+        assert!(futures_executor::block_on(completion.completion.wait_async()).is_err());
         let mut connected = false;
         assert!(matches!(
             map_v4_event(
@@ -3323,35 +2874,6 @@ mod tests {
     }
 
     #[test]
-    fn topic_alias_mappings_reset_on_disconnect() {
-        let (shared, _driver, _diagnostics_rx) = idle_v4_shared();
-        shared.broker_topic_alias_max.store(1, Ordering::Release);
-        shared.broker_maximum_qos.store(0, Ordering::Release);
-        shared
-            .broker_retain_available
-            .store(false, Ordering::Release);
-        shared
-            .broker_capabilities_known
-            .store(true, Ordering::Release);
-        shared
-            .outbound_topic_aliases
-            .lock()
-            .unwrap()
-            .insert(1, "mapped/topic".into());
-
-        invalidate_acks(&shared, &Error::new(ErrorKind::Network, "connection lost"));
-
-        assert_eq!(shared.broker_topic_alias_max.load(Ordering::Acquire), 0);
-        assert_eq!(
-            shared.broker_maximum_qos.load(Ordering::Acquire),
-            QoS::ExactlyOnce as u8
-        );
-        assert!(shared.broker_retain_available.load(Ordering::Acquire));
-        assert!(!shared.broker_capabilities_known.load(Ordering::Acquire));
-        assert!(shared.outbound_topic_aliases.lock().unwrap().is_empty());
-    }
-
-    #[test]
     fn outgoing_ack_progress_resolves_ack_completion() {
         let (shared, driver, _diagnostics_rx) = idle_v4_shared();
         let ProtocolDriver::V311(mut eventloop) = driver else {
@@ -3361,8 +2883,8 @@ mod tests {
             shared: Arc::clone(&shared),
         };
         let ack = PreparedAck::V311(rumqttc_v4::ManualAck::PubAck(rumqttc_v4::PubAck::new(7)));
-        let completion = handle.try_enqueue_ack(&ack).unwrap();
-        let mut completion = Box::pin(completion);
+        let admission = handle.try_enqueue_ack(&ack).unwrap();
+        let mut completion = Box::pin(admission.completion.wait_async());
         let mut context = Context::from_waker(noop_waker_ref());
         assert!(matches!(
             completion.as_mut().poll(&mut context),

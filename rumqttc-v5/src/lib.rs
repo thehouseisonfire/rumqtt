@@ -40,6 +40,7 @@ mod framed;
 mod instrumentation;
 pub use mqttbytes_v5 as mqttbytes;
 mod notice;
+mod publish_admission;
 mod redirect;
 mod session;
 mod srv;
@@ -71,6 +72,9 @@ pub use notice::{
     AuthNotice, AuthNoticeError, NoticeFailureReason, PublishNotice, PublishNoticeError,
     PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
     UnsubscribeNoticeError,
+};
+pub use publish_admission::{
+    PublishAdmissionError, PublishAdmissionPolicy, PublishAdmissionWaiter,
 };
 pub use redirect::{
     RedirectClientId, RedirectContext, RedirectDecision, RedirectError, RedirectFailure,

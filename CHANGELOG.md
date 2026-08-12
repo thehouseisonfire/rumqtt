@@ -1,6 +1,17 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc-core`: Add eager, fallible rustls constructors for native roots or
+  PEM roots with optional PEM client authentication. Malformed or incompatible
+  TLS material is now reportable before a connection or wrapper driver starts.
+- `rumqttc` v5: Add `PublishAdmissionPolicy` and managed strict publish
+  admission. Strict clients receive typed pending/rejection outcomes while v5
+  owns coherent negotiated publish capabilities, connection-scoped Topic Alias
+  mappings, and reconnect invalidation; the default policy retains offline
+  queueing behavior.
+- `rumqttc-wrapper-core`: Add cloneable, repeatably observable completion
+  handles and a host-neutral `NativeClientCloser` for coalesced graceful close,
+  immediate escalation, and bounded joining.
 - `rumqttc-c`: Add the pre-stable ABI-0.1 C wrapper as independently versioned
   `rumqttc-c-next` 0.1.0-alpha, producing one
   shared/static library and checked-in C11/C++ header for MQTT 3.1.1 and MQTT 5.
@@ -56,6 +67,17 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc-wrapper-core` (Breaking Change): Completion observation methods now
+  borrow `CompletionHandle`; cloned blocking and async observers share one
+  immutable terminal result. MQTT 5 capability-dependent publishes before
+  CONNACK now report transient backpressure through v5 strict admission.
+- `rumqttc-wrapper-core`: Consolidate operation/shutdown state, delegate MQTT 5
+  publish capability and Topic Alias admission to `rumqttc-v5`, and use the
+  shared `rumqttc-core` rustls constructors without direct rustls parsing
+  dependencies.
+- `rumqttc-c`: Completion polling/waiting is safely repeatable, and concurrent
+  close calls use the shared wrapper-core close coordinator and one timeout
+  budget without changing the C ABI.
 - `mqttbytes` v4/v5 (Breaking Change): Gate the `tokio-util` framed `Codec`
   behind a new opt-in `codec` feature. The default `std` feature no longer
   activates `tokio-util`; `codec` implies `std`.
@@ -90,6 +112,16 @@
 ### Fixed
 - `rumqttc-wrapper-core`: Yield the single-threaded driver runtime after synchronous wrapper-control
   work so sustained diagnostics or completion traffic cannot starve MQTT socket progress.
+- `rumqttc` v5: Wake strict publish admission futures when their event loop is dropped or reaches
+  terminal `RequestsDone`, returning the original request as disconnected, and prevent bounded-
+  channel progress notifications from being missed between an admission attempt and its capacity
+  wait or delayed until the event loop receives unrelated network activity.
+- `rumqttc` v5: Preserve blocking request-channel backpressure for synchronous publishes using
+  strict negotiated-capability admission.
+- `rumqttc` v5: Keep strict publish admission's Topic Alias mappings synchronized with automatic
+  `Monotonic` and `Lru` assignments so valid later alias-only publishes are admitted.
+- `rumqttc-wrapper-core`: Preserve a completed graceful-close result when a later idempotent
+  immediate-close request has no shutdown work left to escalate.
 - `rumqttc-c`: Preserve operation timeout failures as cached terminal completion results, and report
   invalid-state and internal C errors with their matching structured error kinds.
 - `rumqttc-c`: Install the Windows DLL import library and propagate `RUMQTTC_STATIC` from CMake's

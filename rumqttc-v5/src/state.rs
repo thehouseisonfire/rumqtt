@@ -3121,6 +3121,23 @@ impl MqttState {
         Ok(())
     }
 
+    pub(crate) fn outgoing_topic_alias_error(
+        &self,
+        publish: &Publish,
+    ) -> Option<PublishNoticeError> {
+        let alias = Self::publish_topic_alias(publish)?;
+        if alias == 0 || alias > self.topic_aliases.broker_max {
+            return Some(PublishNoticeError::TopicAliasInvalid {
+                alias,
+                maximum: self.topic_aliases.broker_max,
+            });
+        }
+        if publish.topic.is_empty() && !self.topic_aliases.outgoing.contains_key(&alias) {
+            return Some(PublishNoticeError::TopicAliasMappingUnavailable(alias));
+        }
+        None
+    }
+
     fn record_outgoing_topic_alias(&mut self, publish: &Publish) {
         if !publish.topic.is_empty()
             && let Some(alias) = Self::publish_topic_alias(publish)

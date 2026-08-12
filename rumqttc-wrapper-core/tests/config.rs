@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use rumqttc_wrapper_core::{ClientConfig, ErrorKind, TlsConfig, TransportConfig};
+use rumqttc_wrapper_core::{ClientConfig, ErrorKind, NativeClient, TlsConfig, TransportConfig};
 
 #[test]
 fn rejects_password_without_username() {
@@ -87,6 +87,19 @@ fn rejects_unpaired_client_tls_material() {
     assert_eq!(
         config.validate().unwrap_err().kind(),
         ErrorKind::Configuration
+    );
+}
+
+#[test]
+fn malformed_tls_material_fails_before_driver_start() {
+    let mut config = ClientConfig::v5("client", "localhost", 8883);
+    config.common.transport = TransportConfig::Tls(TlsConfig {
+        ca: Some(Bytes::from_static(b"not a PEM certificate")),
+        ..TlsConfig::default()
+    });
+    assert_eq!(
+        NativeClient::start(config).unwrap_err().kind(),
+        ErrorKind::Tls
     );
 }
 

@@ -3,13 +3,18 @@
 //! This crate is implementation infrastructure. It deliberately exposes Rust
 //! values rather than a stable foreign-function ABI.
 
+mod acknowledgement;
+mod adapter;
 mod command;
 mod completion;
 mod config;
 mod driver;
 mod error;
 mod event;
+mod handle;
+mod operations;
 mod protocol;
+mod runtime;
 mod shutdown;
 
 pub use command::{Command, PublishCommand, SubscribeCommand, Subscription};
@@ -22,7 +27,7 @@ pub use config::{
     AckMode, ClientConfig, CommonConfig, ProtocolConfig, TlsConfig, TransportConfig, V5Config,
     V311Config,
 };
-pub use driver::{ClientHandle, EventConsumer, NativeClient};
+pub use driver::{ClientHandle, EventConsumer, NativeClient, NativeClientCloser};
 pub use error::{DeliveryStatus, Error, ErrorKind, Result};
 pub use event::{
     AckToken, ConnectionPhase, DiagnosticsSnapshot, IncomingPublish, OutgoingActivity,

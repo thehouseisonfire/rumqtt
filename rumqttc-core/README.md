@@ -12,3 +12,13 @@
 - Internal support crate for `rumqttc-v4-next`, `rumqttc-v5-next`, and the `rumqttc-next` facade.
 
 This crate is not a full MQTT client and does not expose the v4 or v5 protocol APIs by itself.
+
+## Eager rustls configuration
+
+With a rustls feature enabled, `TlsConfiguration::try_rustls_with_native_roots`
+and `try_rustls_with_pem_roots` fully build the client configuration and
+optionally install a PEM client certificate chain and private key. They return
+`TlsError` for root-loading, PEM, key, provider, and certificate/key compatibility
+failures before a connection attempt. `try_default_rustls()` delegates to the
+native-root constructor; `default_rustls()` remains the panicking convenience
+adapter.

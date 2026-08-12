@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
-use flume::Receiver;
+use tokio::sync::Notify;
 
 use crate::{Error, ErrorKind, OperationId, QoS, Result};
 
@@ -61,25 +62,67 @@ pub enum CompletionWaitOutcome {
 }
 
 #[derive(Debug)]
-pub struct CompletionHandle {
+pub(crate) struct CompletionCell {
     operation_id: OperationId,
-    receiver: Receiver<Result<Completion>>,
+    result: Mutex<Option<Result<Completion>>>,
+    completed: Condvar,
+    notified: Notify,
+}
+
+impl CompletionCell {
+    pub(crate) fn new(operation_id: OperationId) -> Arc<Self> {
+        Arc::new(Self {
+            operation_id,
+            result: Mutex::new(None),
+            completed: Condvar::new(),
+            notified: Notify::new(),
+        })
+    }
+
+    pub(crate) fn complete(&self, result: Result<Completion>) -> bool {
+        let mut state = self
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.is_some() {
+            return false;
+        }
+        *state = Some(result);
+        drop(state);
+        self.completed.notify_all();
+        self.notified.notify_waiters();
+        true
+    }
+
+    pub(crate) const fn operation_id(&self) -> OperationId {
+        self.operation_id
+    }
+
+    fn observe(&self) -> Option<Result<Completion>> {
+        self.result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompletionHandle {
+    cell: Arc<CompletionCell>,
 }
 
 impl CompletionHandle {
-    pub(crate) const fn new(
-        operation_id: OperationId,
-        receiver: Receiver<Result<Completion>>,
-    ) -> Self {
-        Self {
-            operation_id,
-            receiver,
-        }
+    pub(crate) const fn new(cell: Arc<CompletionCell>) -> Self {
+        Self { cell }
     }
 
     #[must_use]
-    pub const fn operation_id(&self) -> OperationId {
-        self.operation_id
+    pub fn operation_id(&self) -> OperationId {
+        self.cell.operation_id
+    }
+
+    pub(crate) fn cell(&self) -> Arc<CompletionCell> {
+        Arc::clone(&self.cell)
     }
 
     /// Attempts to retrieve the terminal result without blocking.
@@ -93,14 +136,9 @@ impl CompletionHandle {
     /// Returns an error when the driver terminates before reporting completion
     /// or when the operation itself fails.
     pub fn try_wait(&self) -> Result<Option<Completion>> {
-        match self.receiver.try_recv() {
-            Ok(result) => result.map(Some),
-            Err(flume::TryRecvError::Empty) => Ok(None),
-            Err(flume::TryRecvError::Disconnected) => Err(Error::new(
-                ErrorKind::Shutdown,
-                "driver closed before reporting completion",
-            )
-            .with_delivery(crate::DeliveryStatus::Ambiguous)),
+        match self.cell.observe() {
+            Some(result) => result.map(Some),
+            None => Ok(None),
         }
     }
 
@@ -110,14 +148,16 @@ impl CompletionHandle {
     ///
     /// Returns an error when the driver terminates before reporting completion or the operation
     /// itself fails.
-    pub async fn wait_async(self) -> Result<Completion> {
-        self.receiver.recv_async().await.map_err(|_| {
-            Error::new(
-                ErrorKind::Shutdown,
-                "driver closed before reporting completion",
-            )
-            .with_delivery(crate::DeliveryStatus::Ambiguous)
-        })?
+    pub async fn wait_async(&self) -> Result<Completion> {
+        loop {
+            let notified = self.cell.notified.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(result) = self.cell.observe() {
+                return result;
+            }
+            notified.await;
+        }
     }
 
     /// Blocks until the MQTT operation finishes.
@@ -126,14 +166,20 @@ impl CompletionHandle {
     ///
     /// Returns an error when the driver terminates before reporting completion or the operation
     /// itself fails.
-    pub fn wait(self) -> Result<Completion> {
-        self.receiver.recv().map_err(|_| {
-            Error::new(
-                ErrorKind::Shutdown,
-                "driver closed before reporting completion",
-            )
-            .with_delivery(crate::DeliveryStatus::Ambiguous)
-        })?
+    pub fn wait(&self) -> Result<Completion> {
+        let mut state = self
+            .cell
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.is_none() {
+            state = self
+                .cell
+                .completed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.as_ref().expect("completion checked").clone()
     }
 
     /// Blocks for at most `timeout` while waiting for the MQTT operation to finish.
@@ -149,7 +195,7 @@ impl CompletionHandle {
                 ErrorKind::Timeout,
                 format!(
                     "operation {} did not complete before timeout",
-                    self.operation_id.get()
+                    self.operation_id().get()
                 ),
             )
             .with_delivery(crate::DeliveryStatus::Ambiguous)),
@@ -160,16 +206,27 @@ impl CompletionHandle {
     /// from the operation's terminal result.
     #[must_use]
     pub fn wait_timeout_outcome(&self, timeout: Duration) -> CompletionWaitOutcome {
-        match self.receiver.recv_timeout(timeout) {
-            Ok(result) => CompletionWaitOutcome::Completed(result),
-            Err(flume::RecvTimeoutError::Timeout) => CompletionWaitOutcome::DeadlineElapsed,
-            Err(flume::RecvTimeoutError::Disconnected) => {
-                CompletionWaitOutcome::Completed(Err(Error::new(
-                    ErrorKind::Shutdown,
-                    "driver closed before reporting completion",
-                )
-                .with_delivery(crate::DeliveryStatus::Ambiguous)))
+        let started = Instant::now();
+        let mut remaining = timeout;
+        let mut state = self
+            .cell
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if let Some(result) = state.as_ref() {
+                return CompletionWaitOutcome::Completed(result.clone());
             }
+            let (next, wait) = self
+                .cell
+                .completed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if wait.timed_out() && state.is_none() {
+                return CompletionWaitOutcome::DeadlineElapsed;
+            }
+            remaining = timeout.saturating_sub(started.elapsed());
         }
     }
 }
@@ -180,33 +237,109 @@ mod tests {
 
     use super::*;
 
-    fn handle(receiver: Receiver<Result<Completion>>) -> CompletionHandle {
-        CompletionHandle::new(OperationId(NonZeroU64::new(1).unwrap()), receiver)
+    fn handle() -> CompletionHandle {
+        CompletionHandle::new(CompletionCell::new(OperationId(
+            NonZeroU64::new(1).unwrap(),
+        )))
     }
 
     #[test]
     fn timeout_outcome_distinguishes_wait_deadline_from_terminal_error() {
-        let (_pending_sender, pending_receiver) = flume::unbounded();
         assert!(matches!(
-            handle(pending_receiver).wait_timeout_outcome(Duration::ZERO),
+            handle().wait_timeout_outcome(Duration::ZERO),
             CompletionWaitOutcome::DeadlineElapsed
         ));
 
-        let (terminal_sender, terminal_receiver) = flume::unbounded();
-        terminal_sender
-            .send(Err(Error::new(ErrorKind::Timeout, "disconnect timed out")))
-            .unwrap();
+        let handle = handle();
+        handle
+            .cell
+            .complete(Err(Error::new(ErrorKind::Timeout, "disconnect timed out")));
         let CompletionWaitOutcome::Completed(Err(error)) =
-            handle(terminal_receiver).wait_timeout_outcome(Duration::ZERO)
+            handle.wait_timeout_outcome(Duration::ZERO)
         else {
             panic!("terminal timeout was not preserved");
         };
         assert_eq!(error.kind(), ErrorKind::Timeout);
         assert_eq!(error.message(), "disconnect timed out");
     }
+
+    #[test]
+    fn completion_is_repeatable_for_clones_and_blocking_waiters() {
+        let handle = handle();
+        let first = handle.clone();
+        let second = handle.clone();
+        let first_waiter = std::thread::spawn(move || first.wait());
+        let second_waiter = std::thread::spawn(move || second.wait());
+        handle.cell.complete(Ok(Completion::Acknowledged));
+
+        assert_eq!(
+            first_waiter.join().unwrap().unwrap(),
+            Completion::Acknowledged
+        );
+        assert_eq!(
+            second_waiter.join().unwrap().unwrap(),
+            Completion::Acknowledged
+        );
+        assert_eq!(handle.wait().unwrap(), Completion::Acknowledged);
+        assert_eq!(handle.try_wait().unwrap(), Some(Completion::Acknowledged));
+    }
+
+    #[tokio::test]
+    async fn async_waiter_cancellation_and_deadline_do_not_change_terminal_result() {
+        let handle = handle();
+        let cancelled = handle.clone();
+        let task = tokio::spawn(async move { cancelled.wait_async().await });
+        task.abort();
+        assert!(matches!(
+            handle.wait_timeout_outcome(Duration::ZERO),
+            CompletionWaitOutcome::DeadlineElapsed
+        ));
+
+        handle
+            .cell
+            .complete(Err(Error::new(ErrorKind::Protocol, "rejected")));
+        for observer in [handle.clone(), handle] {
+            let error = observer.wait_async().await.unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Protocol);
+            assert_eq!(error.message(), "rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_waiters_and_dropped_clones_share_one_result() {
+        let handle = handle();
+        drop(handle.clone());
+
+        let blocking = handle.clone();
+        let blocking = std::thread::spawn(move || blocking.wait());
+        let async_first = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.wait_async().await })
+        };
+        let async_second = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.wait_async().await })
+        };
+
+        assert!(handle.cell.complete(Ok(Completion::Acknowledged)));
+        assert!(!handle.cell.complete(Ok(Completion::ImmediateShutdown)));
+        assert_eq!(blocking.join().unwrap().unwrap(), Completion::Acknowledged);
+        assert_eq!(
+            async_first.await.unwrap().unwrap(),
+            Completion::Acknowledged
+        );
+        assert_eq!(
+            async_second.await.unwrap().unwrap(),
+            Completion::Acknowledged
+        );
+
+        let last = handle.clone();
+        drop(handle);
+        assert_eq!(last.wait().unwrap(), Completion::Acknowledged);
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Admission {
     pub operation_id: OperationId,
     pub completion: CompletionHandle,

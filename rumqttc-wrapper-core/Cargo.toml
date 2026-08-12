@@ -22,8 +22,5 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 futures-executor = "0.3"
 thiserror = "2.0.8"
 tokio = { version = "1.40", features = ["macros", "rt", "sync", "time"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
-rustls-native-certs = "0.8.1"
-rustls-pki-types = "1.14.0"
 rumqttc_v4 = { package = "rumqttc-v4-next", path = "../rumqttc-v4", version = "0.34.0-alpha", features = ["websocket"] }
 rumqttc_v5 = { package = "rumqttc-v5-next", path = "../rumqttc-v5", version = "0.34.0-alpha", features = ["websocket"] }

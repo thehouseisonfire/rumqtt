@@ -88,6 +88,10 @@ pub enum PublishNoticeError {
     QoSNotSupported { requested: QoS, maximum: QoS },
     #[error("publish with topic alias {0} cannot be replayed after reconnect")]
     TopicAliasReplayUnavailable(u16),
+    #[error("publish topic alias {alias} is outside the active broker maximum {maximum}")]
+    TopicAliasInvalid { alias: u16, maximum: u16 },
+    #[error("publish topic alias {0} has no mapping on the active connection")]
+    TopicAliasMappingUnavailable(u16),
     #[error("qos0 publish was not flushed to the network")]
     Qos0NotFlushed,
     #[error("session state could not be persisted before publish completion: {0}")]

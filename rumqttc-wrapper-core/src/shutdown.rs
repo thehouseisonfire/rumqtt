@@ -17,3 +17,26 @@ impl LifecycleState {
         }
     }
 }
+
+/// One coherent snapshot of a committed shutdown transaction.
+#[derive(Clone)]
+pub(crate) enum ShutdownRecord {
+    Running,
+    Graceful {
+        operation_id: OperationId,
+        cell: Arc<CompletionCell>,
+        timeout: Option<Duration>,
+    },
+    Immediate {
+        operation_id: Option<OperationId>,
+        cell: Option<Arc<CompletionCell>>,
+        escalated: bool,
+    },
+    Closed,
+    Failed,
+}
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::OperationId;
+use crate::completion::CompletionCell;

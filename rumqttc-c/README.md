@@ -111,6 +111,10 @@ QoS 1 acknowledgement, and QoS 2 completion. Destroying or timing out a
 completion drops only the waiter and never cancels admitted work. A timeout can
 therefore be marked ambiguous even when its returned status is
 `RUMQTTC_TIMEOUT`.
+Completion polling and waiting are repeatable and safe from concurrent callers:
+after termination, every observer receives the same success or error. A wait
+deadline does not become the completion's terminal result, so a later observer
+can still receive the operation outcome.
 
 Applications must continuously drain events. If the bounded event queue remains
 full past its configured delivery timeout, the driver terminates visibly rather

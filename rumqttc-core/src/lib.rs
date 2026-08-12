@@ -7,13 +7,11 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
-#[cfg(feature = "use-rustls-no-provider")]
-use rustls_native_certs::load_native_certs;
 use tokio::net::{TcpSocket, TcpStream, lookup_host};
 #[cfg(feature = "use-native-tls")]
 use tokio_native_tls::native_tls::TlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::rustls::ClientConfig;
 
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
@@ -130,22 +128,46 @@ impl TlsConfiguration {
     /// Returns [`TlsError`] if loading native certificates fails or a certificate
     /// cannot be inserted into the root store.
     pub fn try_default_rustls() -> Result<Self, TlsError> {
-        let builder = tls::rustls_client_config_builder()?;
-        let mut root_cert_store = RootCertStore::empty();
-        let certs = load_native_certs();
-        if !certs.errors.is_empty() {
-            return Err(TlsError::NativeCerts(certs.errors));
-        }
+        Self::try_rustls_with_native_roots(None)
+    }
 
-        for cert in certs.certs {
-            root_cert_store.add(cert)?;
-        }
+    /// Tries to build a complete rustls client configuration backed by the platform root store.
+    ///
+    /// The optional tuple contains a PEM certificate chain and PEM private key. All certificate
+    /// and key material is parsed and validated before this function returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] when native roots cannot be loaded, client-authentication material is
+    /// malformed or empty, the certificate and key are incompatible, or no crypto provider is
+    /// available.
+    #[cfg(feature = "use-rustls-no-provider")]
+    pub fn try_rustls_with_native_roots(
+        client_auth: Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<Self, TlsError> {
+        let roots = tls::rustls_native_root_store()?;
+        let config = tls::rustls_client_config(roots, client_auth)?;
+        Ok(Self::Rustls(config))
+    }
 
-        let tls_config = builder
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
-
-        Ok(Self::Rustls(Arc::new(tls_config)))
+    /// Tries to build a complete rustls client configuration backed by PEM CA certificates.
+    ///
+    /// The optional tuple contains a PEM certificate chain and PEM private key. All supplied
+    /// material is parsed and validated before this function returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] when the CA input has no usable certificate, any PEM input is
+    /// malformed, client-authentication material is empty or incompatible, or no crypto provider
+    /// is available.
+    #[cfg(feature = "use-rustls-no-provider")]
+    pub fn try_rustls_with_pem_roots(
+        ca: Vec<u8>,
+        client_auth: Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<Self, TlsError> {
+        let roots = tls::rustls_pem_root_store(&ca)?;
+        let config = tls::rustls_client_config(roots, client_auth)?;
+        Ok(Self::Rustls(config))
     }
 
     #[cfg(feature = "use-native-tls")]
@@ -449,6 +471,42 @@ mod tests {
             TlsConfiguration::try_default_rustls(),
             Ok(TlsConfiguration::Rustls(_))
         ));
+    }
+
+    #[cfg(all(
+        feature = "use-rustls-no-provider",
+        any(feature = "use-rustls-aws-lc", feature = "use-rustls-ring")
+    ))]
+    #[test]
+    fn pem_root_constructor_validates_all_material_eagerly() {
+        let ca = include_bytes!(
+            "../../benchmark-results/mqtt5-vs-rumqttc-20260727/smoke-mosquitto/ca.crt"
+        );
+        assert!(matches!(
+            TlsConfiguration::try_rustls_with_pem_roots(ca.to_vec(), None),
+            Ok(TlsConfiguration::Rustls(_))
+        ));
+        assert!(matches!(
+            TlsConfiguration::try_rustls_with_pem_roots(Vec::new(), None),
+            Err(super::TlsError::NoValidCertInChain)
+        ));
+        assert!(TlsConfiguration::try_rustls_with_pem_roots(b"not PEM".to_vec(), None).is_err());
+        assert!(matches!(
+            TlsConfiguration::try_rustls_with_pem_roots(
+                ca.to_vec(),
+                Some((Vec::new(), Vec::new()))
+            ),
+            Err(super::TlsError::NoValidClientCertInChain)
+        ));
+        let incompatible_key =
+            include_bytes!("../../tests/fixtures/native_tls_localhost_key_pkcs8.pem");
+        assert!(
+            TlsConfiguration::try_rustls_with_pem_roots(
+                ca.to_vec(),
+                Some((ca.to_vec(), incompatible_key.to_vec()))
+            )
+            .is_err()
+        );
     }
 
     #[cfg(all(

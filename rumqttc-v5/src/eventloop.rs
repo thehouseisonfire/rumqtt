@@ -10,6 +10,7 @@ use crate::notice::{
     AuthNoticeTx, PublishNoticeTx, PublishResult, SubscribeNoticeTx, TrackedNoticeTx,
     UnsubscribeNoticeError, UnsubscribeNoticeTx,
 };
+use crate::publish_admission::ManagedPublishAdmission;
 use crate::session::{PersistedSession, SessionRestoreError, SessionStore, SessionStoreError};
 use crate::{AuthEvent, NoticeFailureReason, PublishNoticeError, SubscribeNoticeError};
 use crate::{
@@ -436,10 +437,10 @@ pub struct EventLoop {
     queued: OutboundScheduler<RequestEnvelope>,
     /// Topic Alias mappings at the most recent connection-cleanup drain boundary.
     ///
-    /// The wrapper can admit more publishes after cleanup drains the request channels but before
-    /// it observes the connection error. Retaining the boundary state lets the follow-up repair
-    /// interpret those publishes in admission order instead of seeding them from a later mapping.
+    /// Retained for the deprecated external reconnect-repair hook. Builder-created strict clients
+    /// instead serialize producer admission with cleanup through `publish_admission`.
     reconnect_topic_aliases: std::collections::HashMap<u16, bytes::Bytes>,
+    publish_admission: Option<std::sync::Arc<ManagedPublishAdmission>>,
     /// Network connection to the broker.
     ///
     /// This is installed only after every fallible establishment step has completed. Connected-only
@@ -475,6 +476,13 @@ pub struct EventLoop {
     telemetry: crate::instrumentation::ConnectionTelemetry,
 }
 
+#[derive(Default)]
+struct RetainedRequestSenders {
+    requests: Option<Sender<RequestEnvelope>>,
+    control: Option<Sender<RequestEnvelope>>,
+    immediate_disconnect: Option<Sender<RequestEnvelope>>,
+}
+
 /// Events which can be yielded by the event loop
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(clippy::large_enum_variant)]
@@ -486,6 +494,14 @@ pub enum Event {
     ///
     /// The target connection is attempted by the next [`EventLoop::poll`] call.
     Redirect(RedirectOutcome),
+}
+
+impl Drop for EventLoop {
+    fn drop(&mut self) {
+        if let Some(admission) = &self.publish_admission {
+            admission.close();
+        }
+    }
 }
 
 impl EventLoop {
@@ -529,9 +545,12 @@ impl EventLoop {
             requests_rx,
             control_requests_rx,
             immediate_disconnect_rx,
-            Some(requests_tx),
-            Some(control_requests_tx),
-            Some(immediate_disconnect_tx),
+            RetainedRequestSenders {
+                requests: Some(requests_tx),
+                control: Some(control_requests_tx),
+                immediate_disconnect: Some(immediate_disconnect_tx),
+            },
+            None,
         )
     }
 
@@ -539,6 +558,7 @@ impl EventLoop {
     ///
     /// Unlike `EventLoop::new`, this does not keep an internal sender handle, so dropping all
     /// `AsyncClient` handles can terminate polling with `ConnectionError::RequestsDone`.
+    #[cfg(test)]
     pub(crate) fn new_for_async_client_with_capacity(
         options: MqttOptions,
         capacity: RequestChannelCapacity,
@@ -562,9 +582,43 @@ impl EventLoop {
             requests_rx,
             control_requests_rx,
             immediate_disconnect_rx,
+            RetainedRequestSenders::default(),
             None,
-            None,
-            None,
+        );
+        (
+            eventloop,
+            requests_tx,
+            control_requests_tx,
+            immediate_disconnect_tx,
+        )
+    }
+
+    pub(crate) fn new_for_async_client_with_capacity_and_admission(
+        options: MqttOptions,
+        capacity: RequestChannelCapacity,
+        publish_admission: Option<std::sync::Arc<ManagedPublishAdmission>>,
+    ) -> (
+        Self,
+        Sender<RequestEnvelope>,
+        Sender<RequestEnvelope>,
+        Sender<RequestEnvelope>,
+    ) {
+        let (requests_tx, requests_rx) = match capacity {
+            RequestChannelCapacity::Bounded(cap) => bounded(cap),
+            RequestChannelCapacity::Unbounded => unbounded(),
+        };
+        let (control_requests_tx, control_requests_rx) = match capacity {
+            RequestChannelCapacity::Bounded(cap) => bounded(cap),
+            RequestChannelCapacity::Unbounded => unbounded(),
+        };
+        let (immediate_disconnect_tx, immediate_disconnect_rx) = unbounded();
+        let eventloop = Self::with_channel(
+            options,
+            requests_rx,
+            control_requests_rx,
+            immediate_disconnect_rx,
+            RetainedRequestSenders::default(),
+            publish_admission,
         );
         (
             eventloop,
@@ -590,9 +644,8 @@ impl EventLoop {
         requests_rx: Receiver<RequestEnvelope>,
         control_requests_rx: Receiver<RequestEnvelope>,
         immediate_disconnect_rx: Receiver<RequestEnvelope>,
-        requests_tx: Option<Sender<RequestEnvelope>>,
-        control_requests_tx: Option<Sender<RequestEnvelope>>,
-        immediate_disconnect_tx: Option<Sender<RequestEnvelope>>,
+        retained_senders: RetainedRequestSenders,
+        publish_admission: Option<std::sync::Arc<ManagedPublishAdmission>>,
     ) -> Self {
         let pending = VecDeque::new();
         let inflight_limit = options.outgoing_inflight_upper_limit.unwrap_or(u16::MAX);
@@ -620,12 +673,13 @@ impl EventLoop {
             requests_rx,
             control_requests_rx,
             immediate_disconnect_rx,
-            _requests_tx: requests_tx,
-            _control_requests_tx: control_requests_tx,
-            _immediate_disconnect_tx: immediate_disconnect_tx,
+            _requests_tx: retained_senders.requests,
+            _control_requests_tx: retained_senders.control,
+            _immediate_disconnect_tx: retained_senders.immediate_disconnect,
             pending,
             queued: OutboundScheduler::default(),
             reconnect_topic_aliases: std::collections::HashMap::new(),
+            publish_admission,
             network: None,
             keepalive_timeout: None,
             effective_keep_alive,
@@ -728,6 +782,10 @@ impl EventLoop {
     ///
     /// This is an instantaneous drain, not a producer lock: callers are responsible for
     /// synchronizing publish producers across the surrounding connection transition.
+    #[deprecated(
+        since = "0.34.0-alpha",
+        note = "builder-created clients now synchronize publish admission and reconnect repair internally"
+    )]
     pub fn prepare_pending_topic_aliases_for_reconnect(&mut self) {
         let mut topic_aliases = std::mem::take(&mut self.reconnect_topic_aliases);
         let pending = std::mem::take(&mut self.pending);
@@ -751,6 +809,10 @@ impl EventLoop {
     }
 
     fn clean_with_notice_reason(&mut self, reason: NoticeFailureReason) {
+        let publish_admission = self.publish_admission.clone();
+        let _admission_cleanup = publish_admission
+            .as_ref()
+            .map(|admission| admission.begin_connection_cleanup());
         #[cfg(feature = "tracing")]
         self.telemetry.finish_established_connection();
         self.network = None;
@@ -1857,6 +1919,9 @@ impl EventLoop {
             crate::instrumentation::connection_attempt_failed(attempt, "mqtt_handshake", &error);
             return Err(error);
         }
+        if let Some(admission) = &self.publish_admission {
+            admission.install_connack(&connack);
+        }
         self.reconcile_outgoing_tracking_after_connack();
         self.apply_connack_keep_alive(&connack);
 
@@ -2017,6 +2082,16 @@ impl EventLoop {
     ///
     /// Panics if a pending server redirect is expected but missing.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
+        let result = self.poll_once().await;
+        if matches!(result, Err(ConnectionError::RequestsDone))
+            && let Some(admission) = &self.publish_admission
+        {
+            admission.close();
+        }
+        result
+    }
+
+    async fn poll_once(&mut self) -> Result<Event, ConnectionError> {
         if self.disconnect_complete {
             return Err(ConnectionError::RequestsDone);
         }
@@ -2053,6 +2128,9 @@ impl EventLoop {
         }
 
         let result = self.select().await;
+        if let Some(admission) = &self.publish_admission {
+            admission.notify_progress();
+        }
         self.handle_network_result(result).await
     }
 
@@ -2145,7 +2223,8 @@ impl EventLoop {
                 o = Self::next_request(
                     &mut self.pending,
                     &self.requests_rx,
-                    self.options.pending_throttle
+                    self.options.pending_throttle,
+                    self.publish_admission.as_deref(),
                 ), if self.pending_disconnect.is_none()
                     && normal_request_admission_allowed
                     && (!self.pending.is_empty()
@@ -2302,6 +2381,7 @@ impl EventLoop {
                 &mut self.pending,
                 &self.requests_rx,
                 self.options.pending_throttle,
+                self.publish_admission.as_deref(),
             )
             .await
             else {
@@ -2328,6 +2408,7 @@ impl EventLoop {
                 &mut self.pending,
                 &self.requests_rx,
                 self.options.pending_throttle,
+                self.publish_admission.as_deref(),
             )
             .await
             else {
@@ -2365,6 +2446,17 @@ impl EventLoop {
                 self.state.discard_replayed_request(&request);
             }
             reject_unsupported_request(&request, notice, unsupported);
+            return Ok(BatchControl::Continue);
+        }
+        if let Request::Publish(publish) = &request
+            && let Some(error) = self.state.outgoing_topic_alias_error(publish)
+        {
+            if replay {
+                self.state.discard_replayed_request(&request);
+            }
+            if let Some(TrackedNoticeTx::Publish(notice)) = notice {
+                notice.error(error);
+            }
             return Ok(BatchControl::Continue);
         }
 
@@ -2414,6 +2506,14 @@ impl EventLoop {
                     self.state
                         .handle_outgoing_packet_with_notice(request, notice)?
                 };
+                if let Some(Packet::Publish(publish)) = &outgoing
+                    && let Some(admission) = &self.publish_admission
+                {
+                    // The state machine is the source of truth for automatic Topic Alias
+                    // assignment. Mirror its committed mapping before yielding so strict
+                    // producers observe the same ordered state.
+                    admission.record_outgoing_topic_alias(publish);
+                }
                 self.persist_session_or_fail_qos0_notices(qos0_notices, flush_notice)
                     .await?;
                 if let Some(outgoing) = outgoing {
@@ -2625,6 +2725,7 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
+        publish_admission: Option<&ManagedPublishAdmission>,
     ) -> Option<RequestEnvelope> {
         if !pending.is_empty() {
             if pending_throttle.is_zero() {
@@ -2638,7 +2739,12 @@ impl EventLoop {
         }
 
         match rx.try_recv() {
-            Ok(envelope) => return Some(envelope),
+            Ok(envelope) => {
+                if let Some(admission) = publish_admission {
+                    admission.notify_progress();
+                }
+                return Some(envelope);
+            }
             Err(TryRecvError::Disconnected) => return None,
             Err(TryRecvError::Empty) => {}
         }
@@ -2650,11 +2756,17 @@ impl EventLoop {
         pending: &mut VecDeque<RequestEnvelope>,
         rx: &Receiver<RequestEnvelope>,
         pending_throttle: Duration,
+        publish_admission: Option<&ManagedPublishAdmission>,
     ) -> Result<RequestEnvelope, ConnectionError> {
         if pending.is_empty() {
-            rx.recv_async()
+            let envelope = rx
+                .recv_async()
                 .await
-                .map_err(|_| ConnectionError::RequestsDone)
+                .map_err(|_| ConnectionError::RequestsDone)?;
+            if let Some(admission) = publish_admission {
+                admission.notify_progress();
+            }
+            Ok(envelope)
         } else {
             if pending_throttle.is_zero() {
                 tokio::task::yield_now().await;
@@ -3268,7 +3380,7 @@ mod tests {
     use crate::mqttbytes::{Error as MqttError, QoS};
     use crate::notice::DeferredNotice;
     use crate::session::PersistedSession;
-    use crate::{AckMode, BrokerSessionResumePolicy};
+    use crate::{AckMode, BrokerSessionResumePolicy, TopicAliasPolicy};
     use crate::{Auth, AuthProperties, AuthReasonCode};
     use crate::{
         ConnAckProperties, PubAck, PubComp, PubCompReason, PubRec, PubRel, PublishProperties,
@@ -6508,6 +6620,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn reconnect_boundary_repairs_topic_aliases_admitted_after_cleanup() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
@@ -6600,6 +6713,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn reconnect_alias_repair_applies_rebindings_after_earlier_alias_only_publishes() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 3);
@@ -6775,6 +6889,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();
@@ -6791,6 +6906,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap_err();
@@ -6807,6 +6923,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::from_millis(50),
+            None,
         );
         let timed_out = time::timeout(Duration::from_millis(5), delayed).await;
 
@@ -6828,6 +6945,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();
@@ -6844,6 +6962,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::from_millis(50),
+            None,
         );
         let timed_out = time::timeout(Duration::from_millis(5), delayed).await;
 
@@ -6869,6 +6988,7 @@ mod tests {
                 &mut eventloop.pending,
                 &eventloop.requests_rx,
                 Duration::from_secs(1),
+                None,
             ),
         )
         .await
@@ -6885,6 +7005,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_channel_dequeue_wakes_capacity_waiter_before_select_returns() {
+        let admission = ManagedPublishAdmission::new();
+        admission.install_connack(&build_connack_with_receive_max(1));
+        let options = MqttOptions::new("test-client", "localhost");
+        let (mut eventloop, request_tx, _control_tx, _immediate_tx) =
+            EventLoop::new_for_async_client_with_capacity_and_admission(
+                options,
+                RequestChannelCapacity::Bounded(1),
+                Some(Arc::clone(&admission)),
+            );
+        let (network, peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(network, Some(1024)));
+        eventloop.state.max_outgoing_inflight = 0;
+        request_tx
+            .try_send(RequestEnvelope::plain(Request::Publish(Publish::new(
+                "blocked/publish",
+                QoS::AtLeastOnce,
+                Bytes::from_static(b"payload"),
+                None,
+            ))))
+            .expect("request should fill the bounded channel");
+        let capacity = admission.waiter();
+
+        let poll = tokio::spawn(async move { eventloop.poll().await });
+        tokio::time::timeout(Duration::from_secs(1), capacity.wait_async())
+            .await
+            .expect("dequeueing should wake capacity waiters while select remains active");
+        assert!(
+            !poll.is_finished(),
+            "the idle network and blocked scheduler should keep select active"
+        );
+
+        poll.abort();
+        assert!(poll.await.unwrap_err().is_cancelled());
+        drop(peer);
+    }
+
+    #[tokio::test]
+    async fn strict_admission_observes_automatically_assigned_topic_aliases() {
+        for policy in [TopicAliasPolicy::Monotonic, TopicAliasPolicy::Lru] {
+            let mut options = MqttOptions::new("test-client", "localhost");
+            options.set_topic_alias_policy(policy);
+            let admission = ManagedPublishAdmission::new();
+            let mut connack = build_connack_with_receive_max(1);
+            connack
+                .properties
+                .as_mut()
+                .expect("test CONNACK has properties")
+                .topic_alias_max = Some(1);
+            admission.install_connack(&connack);
+
+            let (mut eventloop, _request_tx, _control_tx, _immediate_tx) =
+                EventLoop::new_for_async_client_with_capacity_and_admission(
+                    options,
+                    RequestChannelCapacity::Bounded(1),
+                    Some(Arc::clone(&admission)),
+                );
+            eventloop.state.set_broker_topic_alias_max(1);
+            let (network, _peer) = tokio::io::duplex(1024);
+            eventloop.network = Some(Network::new(network, Some(1024)));
+
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope::plain(Request::Publish(Publish::new(
+                        "automatic/topic",
+                        QoS::AtMostOnce,
+                        Bytes::new(),
+                        None,
+                    ))),
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .expect("automatic alias publish should be processed");
+
+            let alias_only = publish_with_alias("", QoS::AtMostOnce, 1);
+            let admission_result = admission
+                .try_admit(&alias_only, || Ok::<_, ()>(()))
+                .expect("the automatic alias should be known to strict admission");
+            assert!(
+                admission_result.is_ok(),
+                "{policy:?} mappings must be visible to strict admission"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn next_request_prioritizes_pending_over_channel_messages() {
         let options = MqttOptions::new("test-client", "localhost");
         let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 2);
@@ -6898,6 +7109,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();
@@ -6915,6 +7127,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();
@@ -6960,6 +7173,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();
@@ -6976,6 +7190,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();
@@ -6988,6 +7203,7 @@ mod tests {
             &mut eventloop.pending,
             &eventloop.requests_rx,
             Duration::ZERO,
+            None,
         )
         .await
         .unwrap();

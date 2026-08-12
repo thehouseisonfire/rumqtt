@@ -1,6 +1,7 @@
 //! This module offers a high level synchronous and asynchronous abstraction to
 //! async eventloop.
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::eventloop::{RequestChannelCapacity, RequestEnvelope};
@@ -15,8 +16,10 @@ use super::{
     EventLoop, MqttOptions, Request,
 };
 use crate::notice::{AuthNoticeTx, PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
+use crate::publish_admission::{AdmissionFailure, ManagedPublishAdmission};
 use crate::{
-    AuthNotice, PublishNotice, SubscribeNotice, UnsubscribeNotice, valid_filter, valid_topic,
+    AuthNotice, PublishAdmissionError, PublishAdmissionPolicy, PublishAdmissionWaiter,
+    PublishNotice, SubscribeNotice, UnsubscribeNotice, valid_filter, valid_topic,
 };
 
 use bytes::Bytes;
@@ -396,6 +399,16 @@ pub enum ClientError {
     RequestChannelDisconnected(Box<Request>),
     #[error("Invalid MQTT request")]
     InvalidRequest(Box<Request>),
+    #[error("publish admission requires negotiated broker capabilities")]
+    PublishAdmissionPending {
+        request: Box<Request>,
+        waiter: PublishAdmissionWaiter,
+    },
+    #[error("publish rejected during producer admission: {reason}")]
+    PublishAdmissionRejected {
+        request: Box<Request>,
+        reason: PublishAdmissionError,
+    },
     #[error("Tracked request API is unavailable for this client instance")]
     TrackingUnavailable,
 }
@@ -502,6 +515,7 @@ impl ManualAck {
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
     request_tx: RequestSender,
+    publish_admission: Option<Arc<ManagedPublishAdmission>>,
 }
 
 /// Builder for synchronous MQTT clients.
@@ -513,6 +527,7 @@ pub struct AsyncClient {
 pub struct ClientBuilder {
     options: MqttOptions,
     capacity: RequestChannelCapacity,
+    publish_admission_policy: PublishAdmissionPolicy,
 }
 
 /// Builder for asynchronous MQTT clients.
@@ -524,21 +539,31 @@ pub struct ClientBuilder {
 pub struct AsyncClientBuilder {
     options: MqttOptions,
     capacity: RequestChannelCapacity,
+    publish_admission_policy: PublishAdmissionPolicy,
 }
 
 #[must_use]
 fn build_async_client(
     options: MqttOptions,
     capacity: RequestChannelCapacity,
+    publish_admission_policy: PublishAdmissionPolicy,
 ) -> (AsyncClient, EventLoop) {
+    let publish_admission = (publish_admission_policy
+        == PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+        .then(ManagedPublishAdmission::new);
     let (eventloop, request_tx, control_request_tx, immediate_disconnect_tx) =
-        EventLoop::new_for_async_client_with_capacity(options, capacity);
+        EventLoop::new_for_async_client_with_capacity_and_admission(
+            options,
+            capacity,
+            publish_admission.clone(),
+        );
     let client = AsyncClient {
         request_tx: RequestSender::WithNotice {
             requests: request_tx,
             control_requests: control_request_tx,
             immediate_disconnect: immediate_disconnect_tx,
         },
+        publish_admission,
     };
 
     (client, eventloop)
@@ -549,7 +574,11 @@ impl ClientBuilder {
     #[must_use]
     pub const fn new(options: MqttOptions) -> Self {
         let capacity = RequestChannelCapacity::Bounded(options.request_channel_capacity());
-        Self { options, capacity }
+        Self {
+            options,
+            capacity,
+            publish_admission_policy: PublishAdmissionPolicy::EventLoopValidated,
+        }
     }
 
     /// Use a bounded request channel with the given capacity.
@@ -566,6 +595,16 @@ impl ClientBuilder {
     #[must_use]
     pub const fn unbounded(mut self) -> Self {
         self.capacity = RequestChannelCapacity::Unbounded;
+        self
+    }
+
+    /// Selects producer-side MQTT 5 publish admission behavior.
+    ///
+    /// The default [`PublishAdmissionPolicy::EventLoopValidated`] preserves offline queueing.
+    /// Strict admission returns typed pending or rejection errors before channel admission.
+    #[must_use]
+    pub const fn publish_admission_policy(mut self, policy: PublishAdmissionPolicy) -> Self {
+        self.publish_admission_policy = policy;
         self
     }
 
@@ -591,7 +630,8 @@ impl ClientBuilder {
     /// current-thread Tokio runtime cannot be created.
     pub fn try_build(self) -> Result<(Client, Connection), ClientBuildError> {
         self.options.validate()?;
-        let (client, eventloop) = build_async_client(self.options, self.capacity);
+        let (client, eventloop) =
+            build_async_client(self.options, self.capacity, self.publish_admission_policy);
         let client = Client { client };
 
         let runtime = runtime::Builder::new_current_thread()
@@ -609,7 +649,11 @@ impl AsyncClientBuilder {
     #[must_use]
     pub const fn new(options: MqttOptions) -> Self {
         let capacity = RequestChannelCapacity::Bounded(options.request_channel_capacity());
-        Self { options, capacity }
+        Self {
+            options,
+            capacity,
+            publish_admission_policy: PublishAdmissionPolicy::EventLoopValidated,
+        }
     }
 
     /// Use a bounded request channel with the given capacity.
@@ -626,6 +670,16 @@ impl AsyncClientBuilder {
     #[must_use]
     pub const fn unbounded(mut self) -> Self {
         self.capacity = RequestChannelCapacity::Unbounded;
+        self
+    }
+
+    /// Selects producer-side MQTT 5 publish admission behavior.
+    ///
+    /// The default [`PublishAdmissionPolicy::EventLoopValidated`] preserves offline queueing.
+    /// Strict admission can wait asynchronously for CONNACK capabilities and channel progress.
+    #[must_use]
+    pub const fn publish_admission_policy(mut self, policy: PublishAdmissionPolicy) -> Self {
+        self.publish_admission_policy = policy;
         self
     }
 
@@ -651,7 +705,11 @@ impl AsyncClientBuilder {
     /// Returns [`ClientBuildError`] if options validation fails.
     pub fn try_build(self) -> Result<(AsyncClient, EventLoop), ClientBuildError> {
         self.options.validate()?;
-        Ok(build_async_client(self.options, self.capacity))
+        Ok(build_async_client(
+            self.options,
+            self.capacity,
+            self.publish_admission_policy,
+        ))
     }
 }
 
@@ -706,6 +764,7 @@ impl AsyncClient {
     pub const fn from_senders(request_tx: Sender<Request>) -> Self {
         Self {
             request_tx: RequestSender::Plain(request_tx),
+            publish_admission: None,
         }
     }
 
@@ -725,6 +784,61 @@ impl AsyncClient {
                 tx.send_async(RequestEnvelope::plain(request))
                     .await
                     .map_err(map_send_envelope_error)
+            }
+        }
+    }
+
+    fn map_publish_admission_failure(publish: &Publish, failure: AdmissionFailure) -> ClientError {
+        let request = Box::new(Request::Publish(publish.clone()));
+        match failure {
+            AdmissionFailure::CapabilitiesUnavailable(waiter) => {
+                ClientError::PublishAdmissionPending { request, waiter }
+            }
+            AdmissionFailure::Rejected(reason) => {
+                ClientError::PublishAdmissionRejected { request, reason }
+            }
+            AdmissionFailure::Closed => ClientError::RequestChannelDisconnected(request),
+        }
+    }
+
+    fn try_send_managed_publish(&self, publish: Publish) -> Result<(), ClientError> {
+        let Some(admission) = &self.publish_admission else {
+            return self.try_send_request(Request::Publish(publish));
+        };
+        admission
+            .try_admit(&publish, || {
+                self.try_send_request(Request::Publish(publish.clone()))
+            })
+            .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
+    }
+
+    fn send_managed_publish(&self, publish: Publish) -> Result<(), ClientError> {
+        let Some(admission) = &self.publish_admission else {
+            return self.send_request(Request::Publish(publish));
+        };
+        loop {
+            let progress = admission.waiter();
+            match self.try_send_managed_publish(publish.clone()) {
+                Err(ClientError::RequestChannelFull(_)) => progress.wait_blocking(),
+                result => return result,
+            }
+        }
+    }
+
+    async fn send_publish_async(&self, publish: Publish) -> Result<(), ClientError> {
+        let Some(admission) = &self.publish_admission else {
+            return self.send_request_async(Request::Publish(publish)).await;
+        };
+        loop {
+            let progress = admission.waiter();
+            match self.try_send_managed_publish(publish.clone()) {
+                Err(ClientError::PublishAdmissionPending { waiter, .. }) => {
+                    waiter.wait_async().await;
+                }
+                Err(ClientError::RequestChannelFull(_)) => {
+                    progress.wait_async().await;
+                }
+                result => return result,
             }
         }
     }
@@ -816,12 +930,27 @@ impl AsyncClient {
             return Err(ClientError::TrackingUnavailable);
         };
 
-        let (notice_tx, notice) = PublishNoticeTx::new();
-        request_tx
-            .send_async(RequestEnvelope::tracked_publish(publish, notice_tx))
-            .await
-            .map_err(map_send_envelope_error)?;
-        Ok(notice)
+        let Some(admission) = &self.publish_admission else {
+            let (notice_tx, notice) = PublishNoticeTx::new();
+            request_tx
+                .send_async(RequestEnvelope::tracked_publish(publish, notice_tx))
+                .await
+                .map_err(map_send_envelope_error)?;
+            return Ok(notice);
+        };
+
+        loop {
+            let progress = admission.waiter();
+            match self.try_send_tracked_publish(publish.clone()) {
+                Err(ClientError::PublishAdmissionPending { waiter, .. }) => {
+                    waiter.wait_async().await;
+                }
+                Err(ClientError::RequestChannelFull(_)) => {
+                    progress.wait_async().await;
+                }
+                result => return result,
+            }
+        }
     }
 
     fn try_send_tracked_publish(&self, publish: Publish) -> Result<PublishNotice, ClientError> {
@@ -833,11 +962,23 @@ impl AsyncClient {
             return Err(ClientError::TrackingUnavailable);
         };
 
-        let (notice_tx, notice) = PublishNoticeTx::new();
-        request_tx
-            .try_send(RequestEnvelope::tracked_publish(publish, notice_tx))
-            .map_err(map_try_send_envelope_error)?;
-        Ok(notice)
+        let Some(admission) = &self.publish_admission else {
+            let (notice_tx, notice) = PublishNoticeTx::new();
+            request_tx
+                .try_send(RequestEnvelope::tracked_publish(publish, notice_tx))
+                .map_err(map_try_send_envelope_error)?;
+            return Ok(notice);
+        };
+
+        admission
+            .try_admit(&publish, || {
+                let (notice_tx, notice) = PublishNoticeTx::new();
+                request_tx
+                    .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
+                    .map_err(map_try_send_envelope_error)?;
+                Ok(notice)
+            })
+            .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
     }
 
     async fn send_tracked_subscribe_async(
@@ -984,13 +1125,14 @@ impl AsyncClient {
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
-        let publish = Request::Publish(publish);
+        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
+        let request = Request::Publish(publish.clone());
 
         if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(publish)));
+            return Err(ClientError::InvalidRequest(Box::new(request)));
         }
 
-        self.send_request_async(publish).await?;
+        self.send_publish_async(publish).await?;
         Ok(())
     }
 
@@ -1010,6 +1152,7 @@ impl AsyncClient {
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
+        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
         let request = Request::Publish(publish.clone());
 
         if invalid_topic {
@@ -1077,13 +1220,14 @@ impl AsyncClient {
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
-        let publish = Request::Publish(publish);
+        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
+        let request = Request::Publish(publish.clone());
 
         if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(publish)));
+            return Err(ClientError::InvalidRequest(Box::new(request)));
         }
 
-        self.try_send_request(publish)?;
+        self.try_send_managed_publish(publish)?;
         Ok(())
     }
 
@@ -1103,6 +1247,7 @@ impl AsyncClient {
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
+        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
         let request = Request::Publish(publish.clone());
 
         if invalid_topic {
@@ -2591,13 +2736,14 @@ impl Client {
             || empty_topic_without_valid_alias(&topic, properties.as_ref());
         let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
         publish.retain = retain;
-        let request = Request::Publish(publish);
+        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
+        let request = Request::Publish(publish.clone());
 
         if invalid_topic {
             return Err(ClientError::InvalidRequest(Box::new(request)));
         }
 
-        self.client.send_request(request)?;
+        self.client.send_managed_publish(publish)?;
         Ok(())
     }
 
@@ -3420,6 +3566,49 @@ fn valid_publish_topic(topic: &str) -> bool {
 }
 
 #[must_use]
+fn valid_client_publish(publish: &Publish) -> bool {
+    let Some(properties) = publish.properties.as_ref() else {
+        return true;
+    };
+    if !properties.subscription_identifiers.is_empty() {
+        return false;
+    }
+    match properties.payload_format_indicator {
+        None | Some(0) => {}
+        Some(1) if std::str::from_utf8(&publish.payload).is_ok() => {}
+        Some(_) => return false,
+    }
+    if properties.topic_alias == Some(0) {
+        return false;
+    }
+    if let Some(response_topic) = &properties.response_topic
+        && (response_topic.is_empty()
+            || response_topic.contains(['+', '#'])
+            || !valid_publish_topic(response_topic))
+    {
+        return false;
+    }
+    if properties
+        .correlation_data
+        .as_ref()
+        .is_some_and(|data| u16::try_from(data.len()).is_err())
+    {
+        return false;
+    }
+    if properties
+        .user_properties
+        .iter()
+        .any(|(key, value)| !valid_mqtt_string_value(key) || !valid_mqtt_string_value(value))
+    {
+        return false;
+    }
+    properties
+        .content_type
+        .as_ref()
+        .is_none_or(|content_type| valid_mqtt_string_value(content_type))
+}
+
+#[must_use]
 fn valid_topic_filter(filter: &str) -> bool {
     valid_filter(filter) && valid_mqtt_string_value(filter)
 }
@@ -3627,7 +3816,8 @@ impl Iterator for Iter<'_> {
 #[cfg(test)]
 mod test {
     use crate::mqttbytes::v5::{
-        LastWill, PubAckProperties, PubAckReason, PubRecProperties, PubRecReason,
+        ConnAck, ConnectReturnCode, LastWill, PubAckProperties, PubAckReason, PubRecProperties,
+        PubRecReason,
     };
 
     use super::*;
@@ -3757,6 +3947,121 @@ mod test {
     }
 
     #[test]
+    fn strict_blocking_publish_waits_for_request_channel_capacity() {
+        let admission = ManagedPublishAdmission::new();
+        admission.install_connack(&ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+            properties: None,
+        });
+        let (request_tx, request_rx) = flume::bounded(1);
+        let client = Client {
+            client: AsyncClient {
+                request_tx: RequestSender::Plain(request_tx),
+                publish_admission: Some(Arc::clone(&admission)),
+            },
+        };
+
+        client
+            .publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
+            .expect("first request should fill the bounded channel");
+
+        let waiting_client = client.clone();
+        let (result_tx, result_rx) = flume::bounded(1);
+        let publisher = std::thread::spawn(move || {
+            let result =
+                waiting_client.publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce));
+            result_tx.send(result).unwrap();
+        });
+
+        assert!(matches!(
+            result_rx.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(flume::RecvTimeoutError::Timeout)
+        ));
+        assert!(matches!(request_rx.recv().unwrap(), Request::Publish(_)));
+        admission.notify_progress();
+        result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("publish should resume when channel capacity becomes available")
+            .expect("strict blocking publish should enqueue successfully");
+        assert!(matches!(request_rx.recv().unwrap(), Request::Publish(_)));
+        publisher.join().unwrap();
+    }
+
+    #[test]
+    fn dropping_connection_disconnects_strict_blocking_publish() {
+        let mqttoptions = MqttOptions::new("strict", "localhost");
+        let (client, connection) = Client::builder(mqttoptions)
+            .capacity(1)
+            .publish_admission_policy(PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+        client
+            .publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
+            .expect("first request should fill the bounded channel");
+
+        let waiting_client = client.clone();
+        let (result_tx, result_rx) = flume::bounded(1);
+        let publisher = std::thread::spawn(move || {
+            let result =
+                waiting_client.publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce));
+            result_tx.send(result).unwrap();
+        });
+        assert!(matches!(
+            result_rx.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(flume::RecvTimeoutError::Timeout)
+        ));
+
+        drop(connection);
+
+        assert!(matches!(
+            result_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("dropping the event loop should wake the blocking publish"),
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+        publisher.join().unwrap();
+    }
+
+    #[test]
+    fn terminal_poll_disconnects_strict_blocking_publish_while_connection_is_retained() {
+        let mqttoptions = MqttOptions::new("strict", "localhost");
+        let (client, mut connection) = Client::builder(mqttoptions)
+            .capacity(1)
+            .publish_admission_policy(PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+        client
+            .publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
+            .expect("first request should fill the bounded channel");
+
+        let waiting_client = client.clone();
+        let (result_tx, result_rx) = flume::bounded(1);
+        let publisher = std::thread::spawn(move || {
+            let result =
+                waiting_client.publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce));
+            result_tx.send(result).unwrap();
+        });
+        assert!(matches!(
+            result_rx.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(flume::RecvTimeoutError::Timeout)
+        ));
+
+        client
+            .try_disconnect_now()
+            .expect("immediate disconnect should use its dedicated channel");
+        assert!(connection.recv().is_err());
+
+        assert!(matches!(
+            result_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("terminal polling should wake the blocking publish"),
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+        publisher.join().unwrap();
+    }
+
+    #[test]
     fn disconnect_now_is_not_prioritized_on_plain_request_channel() {
         let (tx, rx) = flume::bounded(2);
         let client = AsyncClient::from_senders(tx);
@@ -3805,6 +4110,41 @@ mod test {
         }
     }
 
+    #[test]
+    fn strict_builder_distinguishes_pre_connack_admission_from_offline_queueing() {
+        let mqttoptions = MqttOptions::new("strict", "localhost");
+        let (strict, _eventloop) = AsyncClient::builder(mqttoptions)
+            .unbounded()
+            .publish_admission_policy(PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+
+        strict
+            .try_publish(
+                "hello/world",
+                "universal",
+                PublishOptions::new(QoS::AtMostOnce),
+            )
+            .expect("alias-free QoS0 is valid before CONNACK");
+        assert!(matches!(
+            strict.try_publish(
+                "hello/world",
+                "capability-dependent",
+                PublishOptions::new(QoS::AtLeastOnce),
+            ),
+            Err(ClientError::PublishAdmissionPending { .. })
+        ));
+
+        let mqttoptions = MqttOptions::new("compatible", "localhost");
+        let (compatible, _eventloop) = AsyncClient::builder(mqttoptions).unbounded().build();
+        compatible
+            .try_publish(
+                "hello/world",
+                "offline",
+                PublishOptions::new(QoS::AtLeastOnce),
+            )
+            .expect("the default policy retains offline queueing");
+    }
+
     #[tokio::test]
     async fn bounded_publish_blocks_when_channel_is_full_without_polling() {
         let mqttoptions = MqttOptions::new("test-1", "localhost");
@@ -3821,6 +4161,161 @@ mod test {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_eventloop_disconnects_strict_publish_waiters() {
+        let mqttoptions = MqttOptions::new("strict", "localhost");
+        let (client, eventloop) = AsyncClient::builder(mqttoptions)
+            .unbounded()
+            .publish_admission_policy(PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+
+        let publish_client = client.clone();
+        let publish = tokio::spawn(async move {
+            publish_client
+                .publish(
+                    "hello/world",
+                    "ordinary",
+                    PublishOptions::new(QoS::AtLeastOnce),
+                )
+                .await
+        });
+        let tracked = tokio::spawn(async move {
+            client
+                .publish_tracked(
+                    "hello/world",
+                    "tracked",
+                    PublishOptions::new(QoS::AtLeastOnce),
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!publish.is_finished());
+        assert!(!tracked.is_finished());
+
+        drop(eventloop);
+
+        let publish_result = tokio::time::timeout(std::time::Duration::from_millis(100), publish)
+            .await
+            .expect("ordinary publish should wake when the event loop is dropped")
+            .expect("ordinary publish task should not panic");
+        assert!(matches!(
+            publish_result,
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+
+        let tracked_result = tokio::time::timeout(std::time::Duration::from_millis(100), tracked)
+            .await
+            .expect("tracked publish should wake when the event loop is dropped")
+            .expect("tracked publish task should not panic");
+        assert!(matches!(
+            tracked_result,
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_poll_disconnects_strict_capability_waiters_while_eventloop_is_retained() {
+        let mqttoptions = MqttOptions::new("strict", "localhost");
+        let (client, mut eventloop) = AsyncClient::builder(mqttoptions)
+            .unbounded()
+            .publish_admission_policy(PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+
+        let publish_client = client.clone();
+        let publish = tokio::spawn(async move {
+            publish_client
+                .publish(
+                    "hello/world",
+                    "ordinary",
+                    PublishOptions::new(QoS::AtLeastOnce),
+                )
+                .await
+        });
+        let tracked_client = client.clone();
+        let tracked = tokio::spawn(async move {
+            tracked_client
+                .publish_tracked(
+                    "hello/world",
+                    "tracked",
+                    PublishOptions::new(QoS::AtLeastOnce),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!publish.is_finished());
+        assert!(!tracked.is_finished());
+
+        client
+            .try_disconnect_now()
+            .expect("immediate disconnect should use its dedicated channel");
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::RequestsDone)
+        ));
+
+        let publish_result = tokio::time::timeout(std::time::Duration::from_secs(1), publish)
+            .await
+            .expect("terminal polling should wake the ordinary capability waiter")
+            .expect("ordinary publish task should not panic");
+        assert!(matches!(
+            publish_result,
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+        let tracked_result = tokio::time::timeout(std::time::Duration::from_secs(1), tracked)
+            .await
+            .expect("terminal polling should wake the tracked capability waiter")
+            .expect("tracked publish task should not panic");
+        assert!(matches!(
+            tracked_result,
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_poll_disconnects_strict_capacity_waiter_while_eventloop_is_retained() {
+        let mqttoptions = MqttOptions::new("strict", "localhost");
+        let (client, mut eventloop) = AsyncClient::builder(mqttoptions)
+            .capacity(1)
+            .publish_admission_policy(PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+        client
+            .publish("hello/world", "one", PublishOptions::new(QoS::AtMostOnce))
+            .await
+            .expect("first request should fill the bounded channel");
+
+        let waiting_client = client.clone();
+        let publish = tokio::spawn(async move {
+            waiting_client
+                .publish("hello/world", "two", PublishOptions::new(QoS::AtMostOnce))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!publish.is_finished());
+
+        client
+            .try_disconnect_now()
+            .expect("immediate disconnect should use its dedicated channel");
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::RequestsDone)
+        ));
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), publish)
+            .await
+            .expect("terminal polling should wake the strict capacity waiter")
+            .expect("publish task should not panic");
+        assert!(matches!(
+            result,
+            Err(ClientError::RequestChannelDisconnected(request))
+                if matches!(*request, Request::Publish(_))
+        ));
     }
 
     #[tokio::test]
@@ -4885,6 +5380,7 @@ mod test {
                 control_requests,
                 immediate_disconnect,
             },
+            publish_admission: None,
         };
         let runtime = runtime::Builder::new_current_thread()
             .enable_all()
@@ -4913,6 +5409,7 @@ mod test {
                 control_requests,
                 immediate_disconnect,
             },
+            publish_admission: None,
         };
 
         client
@@ -4938,6 +5435,7 @@ mod test {
                 control_requests,
                 immediate_disconnect,
             },
+            publish_admission: None,
         };
         let runtime = runtime::Builder::new_current_thread()
             .enable_all()
