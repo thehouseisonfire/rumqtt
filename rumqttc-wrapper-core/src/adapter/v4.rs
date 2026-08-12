@@ -51,16 +51,15 @@ use std::collections::HashMap;
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
-use crate::acknowledgement::{AckKey, PreparedAck};
-use crate::handle::{ProtocolClient, Shared};
+use crate::handle::Shared;
 use crate::operations::{
     PendingFuture, PendingSender, accept_registration, fail_pending, resolve_pending,
 };
 use crate::runtime::{
-    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, committed_shutdown_kind,
-    complete_acknowledgement, complete_shutdown, deliver, fail_acknowledgements, finish_close,
-    insert_ack, invalidate_acks, overflow_error,
+    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, complete_shutdown, deliver,
+    finish_close, overflow_error,
 };
+use crate::shutdown::PollErrorAction;
 use crate::{
     ConnectionPhase, DiagnosticsSnapshot, IncomingPublish, OperationId, ProtocolVersion,
     WrapperEvent,
@@ -208,10 +207,7 @@ pub(crate) async fn run(
                         tokio::task::yield_now().await;
                     },
                     request = diagnostics_rx.recv_async() => if let Ok(request) = request {
-                        request.registry.complete(
-                            request.operation_id,
-                            Ok(Completion::Diagnostics(diagnostics.clone())),
-                        );
+                        request.resolve(diagnostics.clone());
                         tokio::task::yield_now().await;
                     },
                     result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
@@ -228,7 +224,7 @@ pub(crate) async fn run(
             // poll, termination cannot lose a dequeued request and then continue with corrupt state.
             return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
         };
-        shared.shutdown.notify_progress();
+        shared.notify_progress();
         diagnostics = snapshot_v4(&eventloop);
         match polled {
             Ok(event) => {
@@ -243,7 +239,7 @@ pub(crate) async fn run(
                 ) && !deliver(&delivery, event).await
                 {
                     let error = overflow_error();
-                    fail_acknowledgements(&shared, &error);
+                    shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
                     return TerminalStatus::Failed(error);
                 }
@@ -255,14 +251,17 @@ pub(crate) async fn run(
             }
             Err(error) => {
                 let error = map_connection_error(error);
-                if let Some(shutdown_kind) = committed_shutdown_kind(&shared) {
-                    if shutdown_kind == 2 {
+                match shared.poll_error_action() {
+                    PollErrorAction::CompleteImmediateClose => {
                         return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders)
                             .await;
                     }
-                    fail_acknowledgements(&shared, &error);
-                    fail_pending(&mut senders, &error);
-                    return TerminalStatus::Failed(error);
+                    PollErrorAction::Fail => {
+                        shared.fail_acknowledgements(&error);
+                        fail_pending(&mut senders, &error);
+                        return TerminalStatus::Failed(error);
+                    }
+                    PollErrorAction::Reconnect => {}
                 }
                 let phase = if connected {
                     ConnectionPhase::Established
@@ -270,10 +269,10 @@ pub(crate) async fn run(
                     ConnectionPhase::Attempt
                 };
                 connected = false;
-                invalidate_acks(&shared, &error);
+                shared.invalidate_connection(&error);
                 if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
                     let error = overflow_error();
-                    fail_acknowledgements(&shared, &error);
+                    shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
                     return TerminalStatus::Failed(error);
                 }
@@ -293,13 +292,8 @@ fn map_v4_event(
 ) -> Option<WrapperEvent> {
     match event {
         rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::ConnAck(connack)) => {
-            let _admission_guard = shared
-                .admission_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            eventloop.discard_pending_manual_acknowledgements();
+            shared.begin_connection(|| eventloop.discard_pending_manual_acknowledgements());
             *connected = true;
-            shared.acknowledgements.begin_connection();
             Some(WrapperEvent::Connected {
                 protocol,
                 session_present: connack.session_present,
@@ -307,13 +301,10 @@ fn map_v4_event(
         }
         rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::Publish(publish)) => {
             let ack_token = if manual_ack {
-                match (&shared.client, publish.qos) {
-                    (
-                        ProtocolClient::V311(client),
-                        rumqttc_v4::QoS::AtLeastOnce | rumqttc_v4::QoS::ExactlyOnce,
-                    ) => client
-                        .prepare_ack(&publish)
-                        .and_then(|ack| insert_ack(shared, PreparedAck::V311(ack))),
+                match publish.qos {
+                    rumqttc_v4::QoS::AtLeastOnce | rumqttc_v4::QoS::ExactlyOnce => {
+                        shared.prepare_v4_ack(&publish)
+                    }
                     _ => None,
                 }
             } else {
@@ -332,10 +323,10 @@ fn map_v4_event(
         rumqttc_v4::Event::Outgoing(outgoing) => {
             match outgoing {
                 rumqttc_v4::Outgoing::PubAck(packet_id) => {
-                    complete_acknowledgement(shared, AckKey::V311PubAck(packet_id));
+                    shared.complete_v4_puback(packet_id);
                 }
                 rumqttc_v4::Outgoing::PubRec(packet_id) => {
-                    complete_acknowledgement(shared, AckKey::V311PubRec(packet_id));
+                    shared.complete_v4_pubrec(packet_id);
                 }
                 _ => {}
             }

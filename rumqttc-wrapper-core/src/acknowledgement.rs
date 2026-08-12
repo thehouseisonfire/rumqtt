@@ -216,18 +216,70 @@ fn option_error(message: impl Into<String>) -> Error {
 mod tests {
     use super::*;
 
+    fn v4_puback(packet_id: u16) -> PreparedAck {
+        PreparedAck::V311(rumqttc_v4::ManualAck::PubAck(rumqttc_v4::PubAck::new(
+            packet_id,
+        )))
+    }
+
     #[test]
     fn dropped_reservation_restores_single_use_token() {
         let (operations, _) = OperationRegistry::new(1);
         let coordinator = AcknowledgementCoordinator::new(7, operations);
         coordinator.begin_connection();
-        let token = coordinator
-            .insert(PreparedAck::V311(rumqttc_v4::ManualAck::PubAck(
-                rumqttc_v4::PubAck::new(3),
-            )))
-            .unwrap();
+        let token = coordinator.insert(v4_puback(3)).unwrap();
         drop(coordinator.reserve(token).unwrap());
         coordinator.reserve(token).unwrap().commit();
+        assert!(coordinator.reserve(token).is_err());
+    }
+
+    #[test]
+    fn insertion_deduplicates_retransmissions_until_reservation() {
+        let (operations, _) = OperationRegistry::new(1);
+        let coordinator = AcknowledgementCoordinator::new(7, operations);
+        coordinator.begin_connection();
+
+        let first = coordinator.insert(v4_puback(3)).unwrap();
+        let retransmission = coordinator.insert(v4_puback(3)).unwrap();
+
+        assert_eq!(first, retransmission);
+        coordinator.reserve(first).unwrap().commit();
+        assert!(coordinator.reserve(retransmission).is_err());
+    }
+
+    #[test]
+    fn tracking_completion_and_rollback_preserve_exactly_once_resolution() {
+        let (operations, _) = OperationRegistry::new(1);
+        let coordinator = AcknowledgementCoordinator::new(7, operations);
+        let key = AckKey::V311PubAck(3);
+
+        let rolled_back = coordinator.track(key).unwrap();
+        coordinator.rollback_tracking(key, rolled_back.operation_id);
+        let completed = coordinator.track(key).unwrap();
+        coordinator.complete(key);
+        coordinator.complete(key);
+
+        assert_eq!(
+            completed.completion.wait().unwrap(),
+            Completion::Acknowledged
+        );
+    }
+
+    #[test]
+    fn connection_invalidation_stales_tokens_and_fails_tracked_acks() {
+        let (operations, _) = OperationRegistry::new(1);
+        let coordinator = AcknowledgementCoordinator::new(7, operations);
+        coordinator.begin_connection();
+        let token = coordinator.insert(v4_puback(3)).unwrap();
+        coordinator.reserve(token).unwrap().commit();
+        let tracked = coordinator.track(AckKey::V311PubAck(3)).unwrap();
+        let error = Error::new(ErrorKind::Network, "connection lost");
+
+        coordinator.invalidate(&error);
+
+        let failure = tracked.completion.wait().unwrap_err();
+        assert_eq!(failure.kind(), ErrorKind::Network);
+        assert_eq!(failure.delivery_status(), DeliveryStatus::Ambiguous);
         assert!(coordinator.reserve(token).is_err());
     }
 }

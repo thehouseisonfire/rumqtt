@@ -20,23 +20,41 @@ pub(crate) type PendingFuture =
     Pin<Box<dyn Future<Output = (OperationId, Result<Completion>)> + Send>>;
 
 pub(crate) struct CompletionRegistration {
-    pub(crate) operation_id: OperationId,
-    pub(crate) registry: OperationRegistry,
-    pub(crate) future: CompletionFuture,
+    operation_id: OperationId,
+    registry: OperationRegistry,
+    future: CompletionFuture,
 }
 
 pub(crate) struct DiagnosticsRequest {
-    pub(crate) operation_id: OperationId,
-    pub(crate) registry: OperationRegistry,
+    operation_id: OperationId,
+    registry: OperationRegistry,
+}
+
+impl DiagnosticsRequest {
+    pub(crate) fn resolve(self, snapshot: DiagnosticsSnapshot) {
+        self.registry
+            .complete(self.operation_id, Ok(Completion::Diagnostics(snapshot)));
+    }
 }
 
 pub(crate) struct PendingSender {
-    pub(crate) registry: OperationRegistry,
+    registry: OperationRegistry,
 }
 
 pub(crate) struct OperationReceivers {
-    pub(crate) completions: Receiver<CompletionRegistration>,
-    pub(crate) diagnostics: Receiver<DiagnosticsRequest>,
+    completions: Receiver<CompletionRegistration>,
+    diagnostics: Receiver<DiagnosticsRequest>,
+}
+
+impl OperationReceivers {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Receiver<CompletionRegistration>,
+        Receiver<DiagnosticsRequest>,
+    ) {
+        (self.completions, self.diagnostics)
+    }
 }
 
 #[derive(Clone)]
@@ -215,10 +233,7 @@ pub(crate) fn complete_queued_diagnostics(
     snapshot: &DiagnosticsSnapshot,
 ) {
     while let Ok(request) = diagnostics.try_recv() {
-        request.registry.complete(
-            request.operation_id,
-            Ok(Completion::Diagnostics(snapshot.clone())),
-        );
+        request.resolve(snapshot.clone());
     }
 }
 

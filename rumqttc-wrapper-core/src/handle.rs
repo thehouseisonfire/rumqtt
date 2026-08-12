@@ -2,10 +2,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::acknowledgement::{AckReservation, AcknowledgementCoordinator, PreparedAck};
+use crate::acknowledgement::{AckKey, AckReservation, AcknowledgementCoordinator, PreparedAck};
 use crate::adapter::{v4 as adapter_v4, v5 as adapter_v5};
 use crate::operations::OperationRegistry;
-use crate::shutdown::{ShutdownCoordinator, ShutdownIntent};
+use crate::shutdown::{ClosedOutcome, ImmediateAdmission, PollErrorAction, ShutdownCoordinator};
 use crate::{
     AckToken, Admission, Command, DeliveryStatus, Error, ErrorKind, LifecycleState, PublishCommand,
     Result, SubscribeCommand,
@@ -13,10 +13,10 @@ use crate::{
 
 /// Serializes admission with connection invalidation and shutdown commitment.
 #[derive(Default)]
-pub(crate) struct AdmissionGate(Mutex<()>);
+struct AdmissionGate(Mutex<()>);
 
 impl AdmissionGate {
-    pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
         self.0.lock()
     }
 }
@@ -29,17 +29,150 @@ pub(crate) enum ProtocolClient {
 }
 
 pub(crate) struct Shared {
-    pub(crate) client: ProtocolClient,
-    pub(crate) handle_count: AtomicUsize,
-    pub(crate) admission_gate: AdmissionGate,
-    pub(crate) acknowledgements: Arc<AcknowledgementCoordinator>,
-    pub(crate) operations: OperationRegistry,
-    pub(crate) shutdown: Arc<ShutdownCoordinator>,
+    client: ProtocolClient,
+    handle_count: AtomicUsize,
+    admission_gate: AdmissionGate,
+    acknowledgements: Arc<AcknowledgementCoordinator>,
+    operations: OperationRegistry,
+    shutdown: Arc<ShutdownCoordinator>,
 }
 
 impl Shared {
+    pub(crate) fn new(
+        client: ProtocolClient,
+        acknowledgements: Arc<AcknowledgementCoordinator>,
+        operations: OperationRegistry,
+        shutdown: Arc<ShutdownCoordinator>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            client,
+            handle_count: AtomicUsize::new(1),
+            admission_gate: AdmissionGate::default(),
+            acknowledgements,
+            operations,
+            shutdown,
+        })
+    }
+
+    fn retain_handle(&self) {
+        self.handle_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn release_handle(&self) -> bool {
+        self.handle_count.fetch_sub(1, Ordering::AcqRel) == 1
+    }
+
     pub(crate) fn immediate_shutdown_requested(&self) -> bool {
         self.shutdown.immediate_requested()
+    }
+
+    pub(crate) fn notify_progress(&self) {
+        self.shutdown.notify_progress();
+    }
+
+    pub(crate) fn begin_connection(&self, discard_pending_acknowledgements: impl FnOnce()) {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        discard_pending_acknowledgements();
+        self.acknowledgements.begin_connection();
+        self.shutdown.notify_progress();
+    }
+
+    pub(crate) fn prepare_v4_ack(&self, publish: &rumqttc_v4::Publish) -> Option<AckToken> {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ProtocolClient::V311(client) = &self.client else {
+            return None;
+        };
+        client
+            .prepare_ack(publish)
+            .and_then(|ack| self.acknowledgements.insert(PreparedAck::V311(ack)))
+    }
+
+    pub(crate) fn prepare_v5_ack(&self, publish: &rumqttc_v5::Publish) -> Option<AckToken> {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ProtocolClient::V5(client) = &self.client else {
+            return None;
+        };
+        client
+            .prepare_ack(publish)
+            .and_then(|ack| self.acknowledgements.insert(PreparedAck::V5(ack)))
+    }
+
+    pub(crate) fn complete_v4_puback(&self, packet_id: u16) {
+        self.acknowledgements
+            .complete(AckKey::V311PubAck(packet_id));
+    }
+
+    pub(crate) fn complete_v4_pubrec(&self, packet_id: u16) {
+        self.acknowledgements
+            .complete(AckKey::V311PubRec(packet_id));
+    }
+
+    pub(crate) fn complete_v5_puback(&self, packet_id: u16) {
+        self.acknowledgements.complete(AckKey::V5PubAck(packet_id));
+    }
+
+    pub(crate) fn complete_v5_pubrec(&self, packet_id: u16) {
+        self.acknowledgements.complete(AckKey::V5PubRec(packet_id));
+    }
+
+    pub(crate) fn invalidate_connection(&self, error: &Error) {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.acknowledgements.invalidate(error);
+    }
+
+    pub(crate) fn fail_acknowledgements(&self, error: &Error) {
+        self.acknowledgements.invalidate(error);
+    }
+
+    pub(crate) fn fail_all_operations(&self, error: Error) {
+        self.operations.fail_all(error);
+    }
+
+    pub(crate) fn poll_error_action(&self) -> PollErrorAction {
+        // Shutdown admission holds this gate from the lifecycle transition through request and
+        // completion registration. Waiting here prevents the driver from observing a transient
+        // `Closing` state whose admission may still restore `Running`.
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown.poll_error_action()
+    }
+
+    pub(crate) fn should_drain_admitted_work(&self) -> bool {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown.should_drain_admitted_work()
+    }
+
+    pub(crate) fn reconcile_closed(&self) -> ClosedOutcome {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown.reconcile_closed()
+    }
+
+    pub(crate) fn reconcile_failed(&self, error: Error) {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown.reconcile_failed(error);
     }
 
     fn state(&self) -> LifecycleState {
@@ -71,18 +204,14 @@ impl Shared {
             .admission_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = self.shutdown.intent();
-        if matches!(
-            previous,
-            ShutdownIntent::Immediate | ShutdownIntent::Terminal
-        ) {
+        let Some(admission) = self.shutdown.immediate_admission() else {
+            return;
+        };
+        if admission == ImmediateAdmission::StartClosing
+            && self.shutdown.transition_to_closing().is_err()
+        {
             return;
         }
-        match self.state() {
-            LifecycleState::Running => self.shutdown.transition_to_closing().is_ok(),
-            LifecycleState::Closing => false,
-            LifecycleState::Closed | LifecycleState::Failed => return,
-        };
         match &self.client {
             ProtocolClient::V311(client) => _ = client.try_disconnect_now(),
             ProtocolClient::V5(client) => _ = client.try_disconnect_now(),
@@ -98,7 +227,7 @@ pub struct ClientHandle {
 
 impl Clone for ClientHandle {
     fn clone(&self) -> Self {
-        self.shared.handle_count.fetch_add(1, Ordering::Relaxed);
+        self.shared.retain_handle();
         Self {
             shared: Arc::clone(&self.shared),
         }
@@ -115,7 +244,7 @@ impl std::fmt::Debug for ClientHandle {
 
 impl Drop for ClientHandle {
     fn drop(&mut self) {
-        if self.shared.handle_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+        if self.shared.release_handle() {
             self.shared.best_effort_immediate_close();
         }
     }
@@ -396,7 +525,7 @@ impl ClientHandle {
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
-        if self.shared.shutdown.intent() != ShutdownIntent::Running {
+        if !self.shared.shutdown.graceful_admission_allowed() {
             return Err(
                 Error::new(ErrorKind::Shutdown, "client is already closing or closed")
                     .with_delivery(DeliveryStatus::NotAdmitted),
@@ -436,14 +565,13 @@ impl ClientHandle {
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
-        let previous = self.shared.shutdown.intent();
-        let newly_closing = previous == ShutdownIntent::Running;
-        if !matches!(previous, ShutdownIntent::Running | ShutdownIntent::Graceful) {
+        let Some(immediate_admission) = self.shared.shutdown.immediate_admission() else {
             return Err(
                 Error::new(ErrorKind::Shutdown, "client is already closing or closed")
                     .with_delivery(DeliveryStatus::NotAdmitted),
             );
-        }
+        };
+        let newly_closing = immediate_admission == ImmediateAdmission::StartClosing;
         let admission = self.shared.shutdown_admission()?;
         if newly_closing && let Err(error) = self.shared.transition_to_closing() {
             self.shared.operations.cancel(admission.operation_id);

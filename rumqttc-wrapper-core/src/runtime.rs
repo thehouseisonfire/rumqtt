@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ use flume::{Receiver, Sender};
 use futures_util::stream::FuturesUnordered;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 
-use crate::acknowledgement::{AckKey, AcknowledgementCoordinator, PreparedAck};
+use crate::acknowledgement::AcknowledgementCoordinator;
 use crate::adapter::{AdapterDriver, v4 as adapter_v4, v5 as adapter_v5};
 use crate::handle::*;
 use crate::operations::OperationRegistry;
@@ -17,9 +17,9 @@ use crate::operations::{
     complete_queued_diagnostics, drain_pending, fail_unfinished,
 };
 
-use crate::shutdown::ShutdownCoordinator;
+use crate::shutdown::{ClosedOutcome, ShutdownCoordinator};
 use crate::{
-    AckMode, AckToken, ClientConfig, Command, Completion, CompletionHandle, DeliveryStatus,
+    AckMode, ClientConfig, Command, Completion, CompletionHandle, DeliveryStatus,
     DiagnosticsSnapshot, Error, ErrorKind, OperationId, ProtocolConfig, ProtocolVersion, Result,
     WrapperEvent,
 };
@@ -359,8 +359,7 @@ impl NativeClient {
         let manual_ack = config.common.ack_mode == AckMode::Manual;
 
         let (operations, operation_receivers) = OperationRegistry::new(request_capacity);
-        let completion_rx = operation_receivers.completions;
-        let diagnostics_rx = operation_receivers.diagnostics;
+        let (completion_rx, diagnostics_rx) = operation_receivers.into_parts();
         let (event_tx, event_rx) = flume::bounded(event_capacity);
         let (terminal_tx, terminal_rx) = flume::bounded(1);
         let (done_tx, done_rx) = flume::bounded(1);
@@ -370,14 +369,7 @@ impl NativeClient {
         let (client, driver) = build_protocol(config)?;
         let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
-        let shared = Arc::new(Shared {
-            client,
-            handle_count: AtomicUsize::new(1),
-            admission_gate: AdmissionGate::default(),
-            acknowledgements,
-            operations,
-            shutdown,
-        });
+        let shared = Shared::new(client, acknowledgements, operations, shutdown);
         let driver_shared = Arc::clone(&shared);
         let context = DriverContext {
             shared: Arc::clone(&driver_shared),
@@ -419,8 +411,10 @@ impl NativeClient {
                         error.clone().with_delivery(DeliveryStatus::Ambiguous)
                     }
                 };
-                driver_shared.operations.fail_all(unresolved);
-                publish_terminal_lifecycle(&driver_shared, &terminal);
+                if matches!(terminal, TerminalStatus::Failed(_)) {
+                    driver_shared.reconcile_failed(unresolved.clone());
+                }
+                driver_shared.fail_all_operations(unresolved);
                 _ = terminal_tx.send(terminal);
                 _ = done_tx.send(());
             })
@@ -481,12 +475,6 @@ impl NativeClient {
     pub fn join(&self, timeout: Duration) -> Result<()> {
         self.closer.thread.join(timeout)
     }
-}
-
-fn publish_terminal_lifecycle(shared: &Shared, terminal: &TerminalStatus) {
-    shared
-        .shutdown
-        .publish_terminal(matches!(terminal, TerminalStatus::Failed(_)));
 }
 
 impl Drop for NativeClient {
@@ -579,39 +567,20 @@ pub(crate) async fn complete_shutdown(
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
 ) -> bool {
-    let committed = {
-        let _admission_guard = shutdown
-            .shared
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        shutdown.shared.shutdown.disposition()
-    };
     while let Ok(registration) = shutdown.completion_rx.try_recv() {
         accept_registration(registration, pending, senders);
     }
 
-    let graceful = committed.graceful;
-    let shutdown_completion = committed.completion;
-    fail_acknowledgements(
-        shutdown.shared,
-        &Error::new(
-            ErrorKind::Shutdown,
-            "driver closed before acknowledgement transmission was observed",
-        ),
-    );
-    if graceful {
+    shutdown.shared.fail_acknowledgements(&Error::new(
+        ErrorKind::Shutdown,
+        "driver closed before acknowledgement transmission was observed",
+    ));
+    if shutdown.shared.should_drain_admitted_work() {
         complete_queued_diagnostics(shutdown.diagnostics_rx, diagnostics);
         drain_pending(pending, senders).await;
     }
     fail_unfinished(senders);
-    if let Some((operation_id, completion)) = shutdown_completion {
-        shutdown
-            .shared
-            .operations
-            .complete(operation_id, Ok(completion));
-    }
-    graceful
+    shutdown.shared.reconcile_closed() == ClosedOutcome::Graceful
 }
 
 pub(crate) async fn finish_close(
@@ -624,53 +593,11 @@ pub(crate) async fn finish_close(
     TerminalStatus::Closed { graceful }
 }
 
-pub(crate) fn committed_shutdown_kind(shared: &Shared) -> Option<u8> {
-    // Shutdown admission holds this gate from the lifecycle transition through request and
-    // completion registration. Waiting for it prevents a connection error from observing the
-    // transient `Closing` state of an admission that may still fail and restore `Running`.
-    let _admission_guard = shared
-        .admission_gate
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    shared.shutdown.committed_kind()
-}
-
 pub(crate) fn overflow_error() -> Error {
     Error::new(
         ErrorKind::Backpressure,
         "event buffer remained full beyond the delivery timeout",
     )
-}
-
-pub(crate) fn invalidate_acks(shared: &Shared, error: &Error) {
-    let _admission_guard = shared
-        .admission_gate
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    invalidate_connection_state(shared, error);
-}
-
-fn invalidate_connection_state(shared: &Shared, error: &Error) {
-    shared.acknowledgements.invalidate(error);
-}
-
-pub(crate) fn fail_acknowledgements(shared: &Shared, error: &Error) {
-    shared.acknowledgements.invalidate(error);
-}
-
-pub(crate) fn insert_ack(shared: &Shared, ack: PreparedAck) -> Option<AckToken> {
-    // Serialize delivery-token creation with acknowledgement admission. Retransmissions received
-    // before admission share one token; retransmissions received while that ACK is queued need no
-    // new token because the queued packet acknowledges every copy with the same packet identifier.
-    let _admission_guard = shared
-        .admission_gate
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    shared.acknowledgements.insert(ack)
-}
-
-pub(crate) fn complete_acknowledgement(shared: &Shared, key: AckKey) {
-    shared.acknowledgements.complete(key);
 }
 
 #[cfg(test)]

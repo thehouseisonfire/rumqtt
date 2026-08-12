@@ -33,21 +33,27 @@ enum ShutdownRecord {
     Running,
     Graceful { operation_id: OperationId },
     Immediate { operation_id: Option<OperationId> },
-    Closed,
+    Closed { outcome: ClosedOutcome },
     Failed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShutdownIntent {
-    Running,
-    Graceful,
-    Immediate,
-    Terminal,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImmediateAdmission {
+    StartClosing,
+    EscalateGraceful,
 }
 
-pub(crate) struct ShutdownDisposition {
-    pub(crate) graceful: bool,
-    pub(crate) completion: Option<(OperationId, crate::Completion)>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PollErrorAction {
+    Reconnect,
+    Fail,
+    CompleteImmediateClose,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClosedOutcome {
+    Graceful,
+    Immediate,
 }
 
 pub(crate) struct ShutdownCoordinator {
@@ -110,16 +116,27 @@ impl ShutdownCoordinator {
         );
     }
 
-    pub(crate) fn intent(&self) -> ShutdownIntent {
+    pub(crate) fn graceful_admission_allowed(&self) -> bool {
+        matches!(
+            &*self
+                .record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ShutdownRecord::Running
+        )
+    }
+
+    pub(crate) fn immediate_admission(&self) -> Option<ImmediateAdmission> {
         match &*self
             .record
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
-            ShutdownRecord::Running => ShutdownIntent::Running,
-            ShutdownRecord::Graceful { .. } => ShutdownIntent::Graceful,
-            ShutdownRecord::Immediate { .. } => ShutdownIntent::Immediate,
-            ShutdownRecord::Closed | ShutdownRecord::Failed => ShutdownIntent::Terminal,
+            ShutdownRecord::Running => Some(ImmediateAdmission::StartClosing),
+            ShutdownRecord::Graceful { .. } => Some(ImmediateAdmission::EscalateGraceful),
+            ShutdownRecord::Immediate { .. }
+            | ShutdownRecord::Closed { .. }
+            | ShutdownRecord::Failed => None,
         }
     }
 
@@ -134,14 +151,20 @@ impl ShutdownCoordinator {
     }
 
     pub(crate) fn commit_immediate(&self, admission: Option<&Admission>) {
-        let previous = self
+        let mut record = self
             .record
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let ShutdownRecord::Graceful { operation_id, .. } = &previous {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::mem::replace(
+            &mut *record,
+            ShutdownRecord::Immediate {
+                operation_id: admission.map(|value| value.operation_id),
+            },
+        );
+        drop(record);
+        if let ShutdownRecord::Graceful { operation_id } = previous {
             self.operations.complete(
-                *operation_id,
+                operation_id,
                 Err(Error::new(
                     ErrorKind::Shutdown,
                     "the requested graceful shutdown was escalated to immediate shutdown",
@@ -149,67 +172,88 @@ impl ShutdownCoordinator {
                 .with_delivery(DeliveryStatus::Ambiguous)),
             );
         }
-        *self
-            .record
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ShutdownRecord::Immediate {
-            operation_id: admission.map(|value| value.operation_id),
-        };
         self.phase.store(2, Ordering::Release);
         _ = self.immediate_tx.send(());
     }
 
-    pub(crate) fn disposition(&self) -> ShutdownDisposition {
-        match self
+    pub(crate) fn poll_error_action(&self) -> PollErrorAction {
+        match &*self
             .record
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
         {
-            ShutdownRecord::Graceful { operation_id, .. } => ShutdownDisposition {
-                graceful: true,
-                completion: Some((operation_id, crate::Completion::GracefulShutdown)),
-            },
-            ShutdownRecord::Immediate { operation_id, .. } => ShutdownDisposition {
-                graceful: false,
-                completion: operation_id.map(|id| (id, crate::Completion::ImmediateShutdown)),
-            },
-            ShutdownRecord::Running | ShutdownRecord::Closed | ShutdownRecord::Failed => {
-                ShutdownDisposition {
-                    graceful: false,
-                    completion: None,
-                }
-            }
+            ShutdownRecord::Running => PollErrorAction::Reconnect,
+            ShutdownRecord::Graceful { .. } => PollErrorAction::Fail,
+            ShutdownRecord::Immediate { .. } => PollErrorAction::CompleteImmediateClose,
+            ShutdownRecord::Closed { .. } | ShutdownRecord::Failed => PollErrorAction::Fail,
         }
+    }
+
+    pub(crate) fn should_drain_admitted_work(&self) -> bool {
+        matches!(
+            &*self
+                .record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ShutdownRecord::Graceful { .. }
+        )
     }
 
     pub(crate) fn immediate_requested(&self) -> bool {
         self.phase.load(Ordering::Acquire) == 2
     }
 
-    pub(crate) fn committed_kind(&self) -> Option<u8> {
-        match &*self
-            .record
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
-            ShutdownRecord::Graceful { .. } => Some(1),
-            ShutdownRecord::Immediate { .. } => Some(2),
-            ShutdownRecord::Running | ShutdownRecord::Closed | ShutdownRecord::Failed => None,
+    pub(crate) fn reconcile_closed(&self) -> ClosedOutcome {
+        let (outcome, operation) = {
+            let mut record = self
+                .record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (outcome, operation) = match &*record {
+                ShutdownRecord::Graceful { operation_id } => (
+                    ClosedOutcome::Graceful,
+                    Some((*operation_id, crate::Completion::GracefulShutdown)),
+                ),
+                ShutdownRecord::Immediate { operation_id } => (
+                    ClosedOutcome::Immediate,
+                    operation_id.map(|id| (id, crate::Completion::ImmediateShutdown)),
+                ),
+                ShutdownRecord::Running => (ClosedOutcome::Immediate, None),
+                ShutdownRecord::Closed { outcome } => return *outcome,
+                ShutdownRecord::Failed => return ClosedOutcome::Immediate,
+            };
+            *record = ShutdownRecord::Closed { outcome };
+            (outcome, operation)
+        };
+        if let Some((operation_id, completion)) = operation {
+            self.operations.complete(operation_id, Ok(completion));
         }
+        self.lifecycle
+            .store(LifecycleState::Closed as u8, Ordering::Release);
+        self.progress.notify_waiters();
+        outcome
     }
 
-    pub(crate) fn publish_terminal(&self, failed: bool) {
-        let (lifecycle, record) = if failed {
-            (LifecycleState::Failed, ShutdownRecord::Failed)
-        } else {
-            (LifecycleState::Closed, ShutdownRecord::Closed)
+    pub(crate) fn reconcile_failed(&self, error: Error) {
+        let operation_id = {
+            let mut record = self
+                .record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let operation_id = match &*record {
+                ShutdownRecord::Graceful { operation_id } => Some(*operation_id),
+                ShutdownRecord::Immediate { operation_id } => *operation_id,
+                ShutdownRecord::Running => None,
+                ShutdownRecord::Closed { .. } | ShutdownRecord::Failed => return,
+            };
+            *record = ShutdownRecord::Failed;
+            operation_id
         };
-        *self
-            .record
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = record;
-        self.lifecycle.store(lifecycle as u8, Ordering::Release);
+        if let Some(operation_id) = operation_id {
+            self.operations.complete(operation_id, Err(error));
+        }
+        self.lifecycle
+            .store(LifecycleState::Failed as u8, Ordering::Release);
         self.progress.notify_waiters();
     }
 
@@ -226,14 +270,101 @@ impl ShutdownCoordinator {
 mod tests {
     use super::*;
 
-    #[test]
-    fn terminal_transition_wakes_and_publishes_one_state() {
+    fn coordinator() -> (Arc<ShutdownCoordinator>, OperationRegistry) {
         let (operations, _) = OperationRegistry::new(1);
         let (immediate_tx, _) = flume::unbounded();
-        let shutdown = ShutdownCoordinator::new(operations, immediate_tx);
+        (
+            ShutdownCoordinator::new(operations.clone(), immediate_tx),
+            operations,
+        )
+    }
+
+    #[tokio::test]
+    async fn graceful_reconciliation_resolves_once_and_notifies_waiters() {
+        let (shutdown, operations) = coordinator();
+        let admission = operations.allocate().unwrap();
         shutdown.transition_to_closing().unwrap();
-        shutdown.publish_terminal(false);
+        shutdown.commit_graceful(&admission);
+        assert!(shutdown.should_drain_admitted_work());
+        assert_eq!(shutdown.poll_error_action(), PollErrorAction::Fail);
+
+        let progress = shutdown.notified();
+        tokio::pin!(progress);
+        progress.as_mut().enable();
+        assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Graceful);
+        tokio::time::timeout(std::time::Duration::ZERO, progress)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            admission.completion.wait().unwrap(),
+            crate::Completion::GracefulShutdown
+        );
         assert_eq!(shutdown.state(), LifecycleState::Closed);
+        assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Graceful);
+        assert_eq!(
+            admission.completion.wait().unwrap(),
+            crate::Completion::GracefulShutdown
+        );
         assert!(shutdown.transition_to_closing().is_err());
+    }
+
+    #[test]
+    fn immediate_reconciliation_resolves_the_committed_operation() {
+        let (shutdown, operations) = coordinator();
+        let admission = operations.allocate().unwrap();
+        shutdown.transition_to_closing().unwrap();
+        shutdown.commit_immediate(Some(&admission));
+
+        assert!(shutdown.immediate_requested());
+        assert!(!shutdown.should_drain_admitted_work());
+        assert_eq!(
+            shutdown.poll_error_action(),
+            PollErrorAction::CompleteImmediateClose
+        );
+        assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Immediate);
+        assert_eq!(
+            admission.completion.wait().unwrap(),
+            crate::Completion::ImmediateShutdown
+        );
+    }
+
+    #[test]
+    fn immediate_escalation_supersedes_graceful_reconciliation() {
+        let (shutdown, operations) = coordinator();
+        let graceful = operations.allocate().unwrap();
+        shutdown.transition_to_closing().unwrap();
+        shutdown.commit_graceful(&graceful);
+        let immediate = operations.allocate().unwrap();
+
+        shutdown.commit_immediate(Some(&immediate));
+
+        let graceful_error = graceful.completion.wait().unwrap_err();
+        assert_eq!(graceful_error.kind(), ErrorKind::Shutdown);
+        assert_eq!(graceful_error.delivery_status(), DeliveryStatus::Ambiguous);
+        assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Immediate);
+        assert_eq!(
+            immediate.completion.wait().unwrap(),
+            crate::Completion::ImmediateShutdown
+        );
+    }
+
+    #[test]
+    fn failed_reconciliation_fails_the_shutdown_operation_once() {
+        let (shutdown, operations) = coordinator();
+        let admission = operations.allocate().unwrap();
+        shutdown.transition_to_closing().unwrap();
+        shutdown.commit_graceful(&admission);
+        let error = Error::new(ErrorKind::Network, "connection failed")
+            .with_delivery(DeliveryStatus::Ambiguous);
+
+        shutdown.reconcile_failed(error);
+        shutdown.reconcile_failed(Error::new(ErrorKind::Internal, "duplicate failure"));
+
+        let result = admission.completion.wait().unwrap_err();
+        assert_eq!(result.kind(), ErrorKind::Network);
+        assert_eq!(shutdown.state(), LifecycleState::Failed);
+        assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Immediate);
+        assert_eq!(shutdown.state(), LifecycleState::Failed);
     }
 }

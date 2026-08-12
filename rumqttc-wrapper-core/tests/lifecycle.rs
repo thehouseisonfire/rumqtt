@@ -29,6 +29,9 @@ fn spawn_broker(protocol: ProtocolVersion) -> (u16, thread::JoinHandle<()>) {
                     let qos = (header >> 1) & 0x03;
                     if qos != 0 {
                         let topic_len = usize::from(u16::from_be_bytes([body[0], body[1]]));
+                        if &body[2..2 + topic_len] == b"fairness/progress" {
+                            thread::sleep(Duration::from_millis(20));
+                        }
                         let offset = 2 + topic_len;
                         let packet_id = [body[offset], body[offset + 1]];
                         let response = if qos == 1 { 0x40 } else { 0x50 };
@@ -111,42 +114,21 @@ fn config(protocol: ProtocolVersion, port: u16) -> ClientConfig {
     }
 }
 
-#[test]
-fn sustained_diagnostics_do_not_starve_mqtt_progress() {
-    // One producer is enough to keep the bounded diagnostics queue ready. More producers turn
-    // this into a host-scheduler stress test and can starve the single-threaded client runtime on
-    // constrained CI runners before the driver's cooperative MQTT/diagnostics scheduling is
-    // exercised.
-    const PRODUCERS: usize = 1;
-    let (port, broker) = spawn_broker(ProtocolVersion::V311);
-    let mut config = config(ProtocolVersion::V311, port);
+fn assert_sustained_control_traffic_does_not_starve_mqtt_progress(protocol: ProtocolVersion) {
+    // One producer keeps both control queues busy without turning this into a host-scheduler
+    // stress test on constrained CI runners. QoS 0 publishes create completion registrations and
+    // immediately-ready pending notices while diagnostics keep their bounded queue ready.
+    let (port, broker) = spawn_broker(protocol);
+    let mut config = config(protocol, port);
     config.common.request_channel_capacity = 64;
     let mut native = NativeClient::start(config).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let producers = (0..PRODUCERS)
-        .map(|_| {
-            let handle = handle.clone();
-            let stop = Arc::clone(&stop);
-            thread::spawn(move || {
-                while !stop.load(Ordering::Acquire) {
-                    match handle.try_admit(Command::Diagnostics) {
-                        Ok(admission) => drop(admission.completion),
-                        Err(error) if error.kind() == ErrorKind::Backpressure => {
-                            thread::yield_now();
-                        }
-                        Err(error) if error.kind() == ErrorKind::Shutdown => break,
-                        Err(error) => panic!("unexpected diagnostics error: {error}"),
-                    }
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    thread::sleep(Duration::from_millis(20));
-
+    // Admit the target before the traffic producer so request-channel contention cannot obscure
+    // the poll-loop scheduling property under test. The broker briefly delays this ACK to ensure
+    // both control streams become active while the target completion remains pending.
     let publish = handle
         .try_admit(Command::Publish(PublishCommand {
             topic: "fairness/progress".into(),
@@ -156,12 +138,38 @@ fn sustained_diagnostics_do_not_starve_mqtt_progress() {
             v5_properties: None,
         }))
         .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let producer_handle = handle.clone();
+    let producer_stop = Arc::clone(&stop);
+    let producer = thread::spawn(move || {
+        while !producer_stop.load(Ordering::Acquire) {
+            for command in [
+                Command::Diagnostics,
+                Command::Publish(PublishCommand {
+                    topic: "fairness/completion-traffic".into(),
+                    payload: Bytes::from_static(b"traffic"),
+                    qos: QoS::AtMostOnce,
+                    retain: false,
+                    v5_properties: None,
+                }),
+            ] {
+                match producer_handle.try_admit(command) {
+                    Ok(admission) => drop(admission.completion),
+                    Err(error) if error.kind() == ErrorKind::Backpressure => thread::yield_now(),
+                    Err(error) if error.kind() == ErrorKind::Shutdown => return,
+                    Err(error) => panic!("unexpected control-traffic error: {error}"),
+                }
+            }
+            // Keep traffic sustained without making producer scheduling or request-channel
+            // saturation the subject of this poll-loop fairness test.
+            thread::sleep(Duration::from_micros(100));
+        }
+    });
     let result = publish.completion.wait_timeout(Duration::from_secs(2));
 
     stop.store(true, Ordering::Release);
-    for producer in producers {
-        producer.join().unwrap();
-    }
+    producer.join().unwrap();
     assert_eq!(
         result.unwrap(),
         Completion::Publish(PublishCompletion::Qos1Acknowledged)
@@ -169,6 +177,12 @@ fn sustained_diagnostics_do_not_starve_mqtt_progress() {
     handle.try_admit(Command::ImmediateDisconnect).unwrap();
     native.join(Duration::from_secs(2)).unwrap();
     broker.join().unwrap();
+}
+
+#[test]
+fn sustained_diagnostics_and_completions_do_not_starve_either_protocol_loop() {
+    assert_sustained_control_traffic_does_not_starve_mqtt_progress(ProtocolVersion::V311);
+    assert_sustained_control_traffic_does_not_starve_mqtt_progress(ProtocolVersion::V5);
 }
 
 #[allow(clippy::too_many_lines)]
