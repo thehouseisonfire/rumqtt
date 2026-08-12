@@ -1,19 +1,37 @@
-use std::thread::JoinHandle;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
-use flume::Receiver;
-use parking_lot::Mutex;
+use flume::{Receiver, Sender};
+use futures_util::stream::FuturesUnordered;
+use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 
-use crate::{Error, ErrorKind, Result};
+use crate::acknowledgement::{AckKey, AcknowledgementCoordinator, PreparedAck};
+use crate::adapter::{AdapterDriver, v4 as adapter_v4, v5 as adapter_v5};
+use crate::handle::*;
+use crate::operations::OperationRegistry;
+use crate::operations::{
+    CompletionRegistration, DiagnosticsRequest, PendingFuture, PendingSender, accept_registration,
+    complete_queued_diagnostics, drain_pending, fail_unfinished,
+};
 
-/// Join ownership shared by the native owner and host-neutral close coordinator.
+use crate::shutdown::ShutdownCoordinator;
+use crate::{
+    AckMode, AckToken, ClientConfig, Command, Completion, CompletionHandle, DeliveryStatus,
+    DiagnosticsSnapshot, Error, ErrorKind, OperationId, ProtocolConfig, ProtocolVersion, Result,
+    WrapperEvent,
+};
+
+/// Join ownership shared by the native owner and close coordinator.
 pub(crate) struct ThreadOwner {
-    pub(crate) join: Mutex<Option<JoinHandle<()>>>,
-    pub(crate) done: Receiver<()>,
+    join: ParkingMutex<Option<thread::JoinHandle<()>>>,
+    done: Receiver<()>,
 }
 
 impl ThreadOwner {
-    pub(crate) fn join(&self, timeout: Duration) -> Result<()> {
+    fn join(&self, timeout: Duration) -> Result<()> {
         let started = Instant::now();
         match self.done.recv_timeout(timeout) {
             Ok(()) | Err(flume::RecvTimeoutError::Disconnected) => {}
@@ -42,33 +60,632 @@ impl ThreadOwner {
     }
 }
 
+pub struct EventConsumer {
+    events: Receiver<WrapperEvent>,
+    terminal: Receiver<TerminalStatus>,
+    terminal_seen: bool,
+}
+
+impl std::fmt::Debug for EventConsumer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventConsumer").finish_non_exhaustive()
+    }
+}
+
+impl EventConsumer {
+    /// Attempts to receive an event without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Reserved for event-consumer failures exposed by future transports. The current in-process
+    /// transport does not produce an error here.
+    pub fn try_recv(&mut self) -> Result<Option<WrapperEvent>> {
+        match self.events.try_recv() {
+            Ok(event) => return Ok(Some(event)),
+            Err(flume::TryRecvError::Empty | flume::TryRecvError::Disconnected) => {}
+        }
+        Ok(self.try_terminal())
+    }
+
+    /// Waits for at most `timeout` for the next event.
+    ///
+    /// # Errors
+    ///
+    /// Reserved for event-consumer failures exposed by future transports. The current in-process
+    /// transport does not produce an error here.
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<WrapperEvent>> {
+        if let Some(event) = self.try_recv()? {
+            return Ok(Some(event));
+        }
+        if self.terminal_seen {
+            return Ok(None);
+        }
+
+        let started = Instant::now();
+        match flume::Selector::new()
+            .recv(&self.events, TimedReceive::Event)
+            .recv(&self.terminal, TimedReceive::Terminal)
+            .wait_timeout(timeout)
+        {
+            Ok(TimedReceive::Event(Ok(event))) => Ok(Some(event)),
+            Ok(TimedReceive::Event(Err(_))) => {
+                // The driver drops the ordinary event sender immediately before publishing its
+                // terminal status. Preserve the original deadline while covering that small gap.
+                let remaining = timeout.saturating_sub(started.elapsed());
+                Ok(self.recv_terminal_timeout(remaining))
+            }
+            Ok(TimedReceive::Terminal(Ok(status))) => {
+                self.terminal_seen = true;
+                Ok(Some(status.into_event()))
+            }
+            Ok(TimedReceive::Terminal(Err(_))) => {
+                self.terminal_seen = true;
+                Ok(None)
+            }
+            Err(flume::select::SelectError::Timeout) => Ok(None),
+        }
+    }
+
+    /// Waits asynchronously for the next event or terminal driver status.
+    ///
+    /// # Errors
+    ///
+    /// Reserved for event-consumer failures exposed by future transports. The current in-process
+    /// transport does not produce an error here.
+    pub async fn recv_async(&mut self) -> Result<Option<WrapperEvent>> {
+        if let Some(event) = self.try_recv()? {
+            return Ok(Some(event));
+        }
+        if self.terminal_seen {
+            return Ok(None);
+        }
+        tokio::select! {
+            biased;
+            event = self.events.recv_async() => match event {
+                Ok(event) => Ok(Some(event)),
+                Err(_) => self.recv_terminal_async().await,
+            },
+            terminal = self.terminal.recv_async() => {
+                self.terminal_seen = true;
+                Ok(terminal.ok().map(TerminalStatus::into_event))
+            }
+        }
+    }
+
+    fn try_terminal(&mut self) -> Option<WrapperEvent> {
+        if self.terminal_seen {
+            return None;
+        }
+        match self.terminal.try_recv() {
+            Ok(status) => {
+                self.terminal_seen = true;
+                Some(status.into_event())
+            }
+            Err(flume::TryRecvError::Empty) => None,
+            Err(flume::TryRecvError::Disconnected) => {
+                self.terminal_seen = true;
+                None
+            }
+        }
+    }
+
+    async fn recv_terminal_async(&mut self) -> Result<Option<WrapperEvent>> {
+        if self.terminal_seen {
+            return Ok(None);
+        }
+        self.terminal_seen = true;
+        Ok(self
+            .terminal
+            .recv_async()
+            .await
+            .ok()
+            .map(TerminalStatus::into_event))
+    }
+
+    fn recv_terminal_timeout(&mut self, timeout: Duration) -> Option<WrapperEvent> {
+        if self.terminal_seen {
+            return None;
+        }
+        match self.terminal.recv_timeout(timeout) {
+            Ok(status) => {
+                self.terminal_seen = true;
+                Some(status.into_event())
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                self.terminal_seen = true;
+                None
+            }
+            Err(flume::RecvTimeoutError::Timeout) => None,
+        }
+    }
+}
+
+enum TimedReceive {
+    Event(std::result::Result<WrapperEvent, flume::RecvError>),
+    Terminal(std::result::Result<TerminalStatus, flume::RecvError>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TerminalStatus {
+    Closed { graceful: bool },
+    Failed(Error),
+}
+
+impl TerminalStatus {
+    fn into_event(self) -> WrapperEvent {
+        match self {
+            Self::Closed { graceful: true } => WrapperEvent::GracefulShutdownCompleted,
+            Self::Closed { graceful: false } => WrapperEvent::DriverTerminated(Error::new(
+                ErrorKind::Shutdown,
+                "client was closed immediately",
+            )),
+            Self::Failed(error) => WrapperEvent::DriverTerminated(error),
+        }
+    }
+}
+
+enum NativeCloseState {
+    Open,
+    Graceful(CompletionHandle),
+    GracefullyClosed,
+    Immediate,
+}
+
+/// Cloneable, host-neutral ownership for idempotent close and bounded driver joining.
+#[derive(Clone)]
+pub struct NativeClientCloser {
+    handle: ClientHandle,
+    thread: Arc<ThreadOwner>,
+    state: Arc<ParkingMutex<NativeCloseState>>,
+}
+
+impl std::fmt::Debug for NativeClientCloser {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeClientCloser")
+            .field("state", &self.handle.state())
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeClientCloser {
+    fn lock_state_until(
+        &self,
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<ParkingMutexGuard<'_, NativeCloseState>> {
+        self.state
+            .try_lock_for(timeout.saturating_sub(started.elapsed()))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Timeout,
+                    "native close coordination did not complete before timeout",
+                )
+                .with_delivery(DeliveryStatus::Ambiguous)
+            })
+    }
+
+    pub fn close(&self, timeout: Duration) -> Result<Completion> {
+        let started = Instant::now();
+        let completion = {
+            let mut state = self.lock_state_until(started, timeout)?;
+            match &*state {
+                NativeCloseState::Open => {
+                    let admission = self.handle.try_admit(Command::GracefulDisconnect {
+                        timeout: Some(timeout.saturating_sub(started.elapsed())),
+                    })?;
+                    let completion = admission.completion;
+                    *state = NativeCloseState::Graceful(completion.clone());
+                    completion
+                }
+                NativeCloseState::Graceful(completion) => completion.clone(),
+                NativeCloseState::GracefullyClosed => {
+                    return Ok(Completion::GracefulShutdown);
+                }
+                NativeCloseState::Immediate => {
+                    return Err(Error::new(
+                        ErrorKind::Shutdown,
+                        "client was already closed immediately",
+                    ));
+                }
+            }
+        };
+
+        let completion = completion.wait_timeout(timeout.saturating_sub(started.elapsed()))?;
+        self.thread
+            .join(timeout.saturating_sub(started.elapsed()))?;
+        if completion == Completion::GracefulShutdown {
+            let mut state = self.lock_state_until(started, timeout)?;
+            if matches!(*state, NativeCloseState::Graceful(_)) {
+                *state = NativeCloseState::GracefullyClosed;
+            }
+        }
+        Ok(completion)
+    }
+
+    pub fn close_now(&self, timeout: Duration) -> Result<()> {
+        let started = Instant::now();
+        let mut state = self.lock_state_until(started, timeout)?;
+        match &*state {
+            NativeCloseState::GracefullyClosed => {}
+            NativeCloseState::Graceful(completion)
+                if matches!(
+                    completion.try_wait(),
+                    Ok(Some(Completion::GracefulShutdown))
+                ) =>
+            {
+                *state = NativeCloseState::GracefullyClosed;
+            }
+            NativeCloseState::Immediate => {}
+            NativeCloseState::Open | NativeCloseState::Graceful(_) => {
+                self.handle.close_now_idempotent();
+                *state = NativeCloseState::Immediate;
+            }
+        }
+        drop(state);
+        self.thread.join(timeout.saturating_sub(started.elapsed()))
+    }
+}
+
+/// Dedicated native client and its joinable driver-thread ownership.
+pub struct NativeClient {
+    handle: Option<ClientHandle>,
+    events: Option<EventConsumer>,
+    closer: NativeClientCloser,
+}
+
+impl std::fmt::Debug for NativeClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeClient")
+            .field("state", &self.handle.as_ref().map(ClientHandle::state))
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeClient {
+    /// Starts a dedicated MQTT driver thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when configuration validation, protocol client construction, TLS setup,
+    /// or driver-thread creation fails.
+    pub fn start(config: ClientConfig) -> Result<Self> {
+        config.validate()?;
+        let protocol = config.protocol_version();
+        let event_capacity = config.common.event_buffer_capacity;
+        let delivery_timeout = config.common.event_delivery_timeout;
+        let request_capacity = config.common.request_channel_capacity;
+        let emit_outgoing = config.common.emit_outgoing_events;
+        let manual_ack = config.common.ack_mode == AckMode::Manual;
+
+        let (operations, operation_receivers) = OperationRegistry::new(request_capacity);
+        let completion_rx = operation_receivers.completions;
+        let diagnostics_rx = operation_receivers.diagnostics;
+        let (event_tx, event_rx) = flume::bounded(event_capacity);
+        let (terminal_tx, terminal_rx) = flume::bounded(1);
+        let (done_tx, done_rx) = flume::bounded(1);
+        let (immediate_shutdown_tx, immediate_shutdown_rx) = flume::unbounded();
+
+        let client_identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
+        let (client, driver) = build_protocol(config)?;
+        let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
+        let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
+        let shared = Arc::new(Shared {
+            client,
+            handle_count: AtomicUsize::new(1),
+            admission_gate: AdmissionGate::default(),
+            acknowledgements,
+            operations,
+            shutdown,
+        });
+        let driver_shared = Arc::clone(&shared);
+        let context = DriverContext {
+            shared: Arc::clone(&driver_shared),
+            completion_rx,
+            diagnostics_rx,
+            events: event_tx,
+            delivery_timeout,
+            emit_outgoing,
+            manual_ack,
+            protocol,
+            immediate_shutdown_rx,
+        };
+        let thread_name = format!("rumqtt-wrapper-{client_identity}");
+        let join = thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let terminal = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(run_driver(driver, context)),
+                    Err(error) => TerminalStatus::Failed(Error::sourced(
+                        ErrorKind::Internal,
+                        DeliveryStatus::NotApplicable,
+                        error,
+                    )),
+                };
+                let unresolved = match &terminal {
+                    TerminalStatus::Closed { graceful } => Error::new(
+                        ErrorKind::Shutdown,
+                        if *graceful {
+                            "driver closed before the operation reported a terminal MQTT result"
+                        } else {
+                            "driver closed immediately before the operation completed"
+                        },
+                    )
+                    .with_delivery(DeliveryStatus::Ambiguous),
+                    TerminalStatus::Failed(error) => {
+                        error.clone().with_delivery(DeliveryStatus::Ambiguous)
+                    }
+                };
+                driver_shared.operations.fail_all(unresolved);
+                publish_terminal_lifecycle(&driver_shared, &terminal);
+                _ = terminal_tx.send(terminal);
+                _ = done_tx.send(());
+            })
+            .map_err(|error| {
+                Error::sourced(ErrorKind::Internal, DeliveryStatus::NotApplicable, error)
+            })?;
+
+        let handle = ClientHandle::new(shared);
+        let thread = Arc::new(ThreadOwner {
+            join: parking_lot::Mutex::new(Some(join)),
+            done: done_rx,
+        });
+        let closer = NativeClientCloser {
+            handle: handle.clone(),
+            thread,
+            state: Arc::new(ParkingMutex::new(NativeCloseState::Open)),
+        };
+        Ok(Self {
+            handle: Some(handle),
+            events: Some(EventConsumer {
+                events: event_rx,
+                terminal: terminal_rx,
+                terminal_seen: false,
+            }),
+            closer,
+        })
+    }
+
+    #[must_use]
+    /// Returns another handle to the running client.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal handle invariant is violated while `NativeClient` is being
+    /// destroyed. Safe callers cannot observe that state.
+    pub fn handle(&self) -> ClientHandle {
+        self.handle
+            .as_ref()
+            .expect("native client handle retained")
+            .clone()
+    }
+
+    pub const fn take_events(&mut self) -> Option<EventConsumer> {
+        self.events.take()
+    }
+
+    #[must_use]
+    pub fn closer(&self) -> NativeClientCloser {
+        self.closer.clone()
+    }
+
+    /// Waits for the driver to terminate and joins its thread only after termination is observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when driver termination or concurrent join coordination exceeds the shared
+    /// timeout budget, or when the driver thread panics.
+    pub fn join(&self, timeout: Duration) -> Result<()> {
+        self.closer.thread.join(timeout)
+    }
+}
+
+fn publish_terminal_lifecycle(shared: &Shared, terminal: &TerminalStatus) {
+    shared
+        .shutdown
+        .publish_terminal(matches!(terminal, TerminalStatus::Failed(_)));
+}
+
+impl Drop for NativeClient {
+    fn drop(&mut self) {
+        // The native owner, rather than any cloneable command handle, owns the driver thread.
+        // Finalization must therefore remain nonblocking while still interrupting an unbounded
+        // graceful close. `NativeClientCloser` keeps the join handle available to hosts that need
+        // a bounded join after this cleanup signal.
+        self.closer.handle.close_now_idempotent();
+        if let Some(handle) = self.handle.take() {
+            drop(handle);
+        }
+    }
+}
+
+pub(crate) struct DriverContext {
+    pub(crate) shared: Arc<Shared>,
+    pub(crate) completion_rx: Receiver<CompletionRegistration>,
+    pub(crate) diagnostics_rx: Receiver<DiagnosticsRequest>,
+    pub(crate) events: Sender<WrapperEvent>,
+    pub(crate) delivery_timeout: Duration,
+    pub(crate) emit_outgoing: bool,
+    pub(crate) manual_ack: bool,
+    pub(crate) protocol: ProtocolVersion,
+    pub(crate) immediate_shutdown_rx: Receiver<()>,
+}
+
+pub(crate) struct ShutdownInputs<'a> {
+    shared: &'a Shared,
+    completion_rx: &'a Receiver<CompletionRegistration>,
+    diagnostics_rx: &'a Receiver<DiagnosticsRequest>,
+}
+
+impl<'a> ShutdownInputs<'a> {
+    pub(crate) const fn new(
+        shared: &'a Shared,
+        completion_rx: &'a Receiver<CompletionRegistration>,
+        diagnostics_rx: &'a Receiver<DiagnosticsRequest>,
+    ) -> Self {
+        Self {
+            shared,
+            completion_rx,
+            diagnostics_rx,
+        }
+    }
+}
+
+fn build_protocol(config: ClientConfig) -> Result<(ProtocolClient, AdapterDriver)> {
+    let ClientConfig { common, protocol } = config;
+    match protocol {
+        ProtocolConfig::V311(protocol) => {
+            let (client, eventloop) = adapter_v4::build(&common, protocol)?;
+            Ok((ProtocolClient::V311(client), AdapterDriver::V311(eventloop)))
+        }
+        ProtocolConfig::V5(protocol) => {
+            let (client, eventloop) = adapter_v5::build(&common, protocol)?;
+            Ok((ProtocolClient::V5(client), AdapterDriver::V5(eventloop)))
+        }
+    }
+}
+
+async fn run_driver(driver: AdapterDriver, context: DriverContext) -> TerminalStatus {
+    driver.run(context).await
+}
+
+pub(crate) struct EventDelivery<'a> {
+    pub(crate) shared: &'a Shared,
+    pub(crate) events: &'a Sender<WrapperEvent>,
+    pub(crate) timeout: Duration,
+    pub(crate) immediate_shutdown: &'a Receiver<()>,
+}
+
+// The two explicit loops keep protocol types statically checked and make all translation local.
+pub(crate) async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool {
+    if delivery.shared.immediate_shutdown_requested() {
+        return true;
+    }
+    tokio::select! {
+        biased;
+        _ = delivery.immediate_shutdown.recv_async() => true,
+        result = tokio::time::timeout(delivery.timeout, delivery.events.send_async(event)) => {
+            matches!(result, Ok(Ok(())))
+        },
+    }
+}
+
+pub(crate) async fn complete_shutdown(
+    shutdown: &ShutdownInputs<'_>,
+    diagnostics: &DiagnosticsSnapshot,
+    pending: &mut FuturesUnordered<PendingFuture>,
+    senders: &mut HashMap<OperationId, PendingSender>,
+) -> bool {
+    let committed = {
+        let _admission_guard = shutdown
+            .shared
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shutdown.shared.shutdown.disposition()
+    };
+    while let Ok(registration) = shutdown.completion_rx.try_recv() {
+        accept_registration(registration, pending, senders);
+    }
+
+    let graceful = committed.graceful;
+    let shutdown_completion = committed.completion;
+    fail_acknowledgements(
+        shutdown.shared,
+        &Error::new(
+            ErrorKind::Shutdown,
+            "driver closed before acknowledgement transmission was observed",
+        ),
+    );
+    if graceful {
+        complete_queued_diagnostics(shutdown.diagnostics_rx, diagnostics);
+        drain_pending(pending, senders).await;
+    }
+    fail_unfinished(senders);
+    if let Some((operation_id, completion)) = shutdown_completion {
+        shutdown
+            .shared
+            .operations
+            .complete(operation_id, Ok(completion));
+    }
+    graceful
+}
+
+pub(crate) async fn finish_close(
+    shutdown: &ShutdownInputs<'_>,
+    diagnostics: &DiagnosticsSnapshot,
+    pending: &mut FuturesUnordered<PendingFuture>,
+    senders: &mut HashMap<OperationId, PendingSender>,
+) -> TerminalStatus {
+    let graceful = complete_shutdown(shutdown, diagnostics, pending, senders).await;
+    TerminalStatus::Closed { graceful }
+}
+
+pub(crate) fn committed_shutdown_kind(shared: &Shared) -> Option<u8> {
+    // Shutdown admission holds this gate from the lifecycle transition through request and
+    // completion registration. Waiting for it prevents a connection error from observing the
+    // transient `Closing` state of an admission that may still fail and restore `Running`.
+    let _admission_guard = shared
+        .admission_gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    shared.shutdown.committed_kind()
+}
+
+pub(crate) fn overflow_error() -> Error {
+    Error::new(
+        ErrorKind::Backpressure,
+        "event buffer remained full beyond the delivery timeout",
+    )
+}
+
+pub(crate) fn invalidate_acks(shared: &Shared, error: &Error) {
+    let _admission_guard = shared
+        .admission_gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    invalidate_connection_state(shared, error);
+}
+
+fn invalidate_connection_state(shared: &Shared, error: &Error) {
+    shared.acknowledgements.invalidate(error);
+}
+
+pub(crate) fn fail_acknowledgements(shared: &Shared, error: &Error) {
+    shared.acknowledgements.invalidate(error);
+}
+
+pub(crate) fn insert_ack(shared: &Shared, ack: PreparedAck) -> Option<AckToken> {
+    // Serialize delivery-token creation with acknowledgement admission. Retransmissions received
+    // before admission share one token; retransmissions received while that ACK is queued need no
+    // new token because the queued packet acknowledges every copy with the same packet identifier.
+    let _admission_guard = shared
+        .admission_gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    shared.acknowledgements.insert(ack)
+}
+
+pub(crate) fn complete_acknowledgement(shared: &Shared, key: AckKey) {
+    shared.acknowledgements.complete(key);
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::{Duration, Instant};
-
     use super::*;
 
     #[test]
-    fn join_coordination_honors_the_shared_timeout_budget() {
+    fn join_coordination_honors_the_timeout_budget() {
         let (done_tx, done) = flume::bounded(1);
-        drop(done_tx);
-        let owner = Arc::new(ThreadOwner {
-            join: Mutex::new(None),
+        let join = thread::spawn(move || drop(done_tx));
+        let owner = ThreadOwner {
+            join: ParkingMutex::new(Some(join)),
             done,
-        });
-        let join_guard = owner.join.lock();
-        let waiter = Arc::clone(&owner);
-        let started = Instant::now();
-        let result = thread::spawn(move || waiter.join(Duration::from_millis(25)))
-            .join()
-            .unwrap();
-        let elapsed = started.elapsed();
-
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::Timeout);
-        assert!(elapsed < Duration::from_millis(300), "elapsed: {elapsed:?}");
-        drop(join_guard);
+        };
         owner.join(Duration::from_secs(1)).unwrap();
+        owner.join(Duration::ZERO).unwrap();
     }
 }

@@ -1,4 +1,8 @@
-use crate::{DeliveryStatus, Error, ErrorKind, OutgoingActivity};
+use crate::{
+    BrokerReason, Completion, DeliveryStatus, Error, ErrorKind, OutgoingActivity, PublishCommand,
+    PublishCompletion, QoS, Result, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
+    UnsubscribeResult, V5PublishProperties,
+};
 
 pub(crate) fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
     let kind = match error {
@@ -44,4 +48,492 @@ pub(crate) const fn map_outgoing(outgoing: &rumqttc_v5::Outgoing) -> OutgoingAct
         rumqttc_v5::Outgoing::AwaitAck(_) => OutgoingActivity::AwaitAcknowledgement,
         rumqttc_v5::Outgoing::Auth => OutgoingActivity::Other,
     }
+}
+
+use std::collections::HashMap;
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
+
+use crate::acknowledgement::{AckKey, PreparedAck};
+use crate::handle::{ProtocolClient, Shared};
+use crate::operations::{
+    PendingFuture, PendingSender, accept_registration, fail_pending, resolve_pending,
+};
+use crate::runtime::{
+    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, committed_shutdown_kind,
+    complete_acknowledgement, complete_shutdown, deliver, fail_acknowledgements, finish_close,
+    insert_ack, invalidate_acks, overflow_error,
+};
+use crate::{
+    ConnectionPhase, DiagnosticsSnapshot, IncomingPublish, OperationId, ProtocolVersion,
+    WrapperEvent,
+};
+
+pub(crate) fn build(
+    common: &crate::CommonConfig,
+    protocol: crate::V5Config,
+) -> crate::Result<(rumqttc_v5::AsyncClient, Box<rumqttc_v5::EventLoop>)> {
+    let tls = match &common.transport {
+        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss { tls, .. } => {
+            Some(super::build_tls(tls)?)
+        }
+        _ => None,
+    };
+    let mut options = match &common.transport {
+        crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_) => {
+            rumqttc_v5::MqttOptions::new(
+                common.client_id.clone(),
+                rumqttc_v5::Broker::tcp(common.broker_host.clone(), common.broker_port),
+            )
+        }
+        crate::TransportConfig::WebSocket { url } => rumqttc_v5::MqttOptions::new(
+            common.client_id.clone(),
+            rumqttc_v5::Broker::websocket(url.clone()).map_err(|error| {
+                Error::sourced(
+                    ErrorKind::Configuration,
+                    DeliveryStatus::NotApplicable,
+                    error,
+                )
+            })?,
+        ),
+        crate::TransportConfig::Wss { url, .. } => {
+            rumqttc_v5::MqttOptions::websocket_with_tls_config(
+                common.client_id.clone(),
+                url.clone(),
+                tls.clone().expect("WSS TLS built"),
+            )
+            .map_err(|error| {
+                Error::sourced(
+                    ErrorKind::Configuration,
+                    DeliveryStatus::NotApplicable,
+                    error,
+                )
+            })?
+        }
+    };
+    if matches!(common.transport, crate::TransportConfig::Tls(_)) {
+        options.set_transport(rumqttc_v5::Transport::tls_with_config(
+            tls.expect("TLS built"),
+        ));
+    }
+    options.set_keep_alive(crate::handle::duration_to_u16(
+        common.keep_alive,
+        "keep alive",
+    )?);
+    options.set_incoming_packet_size_limit(rumqttc_v5::IncomingPacketSizeLimit::Bytes(
+        common.incoming_packet_size_limit,
+    ));
+    options.set_request_channel_capacity(common.request_channel_capacity);
+    options.set_ack_mode(match common.ack_mode {
+        crate::AckMode::Automatic => rumqttc_v5::AckMode::Automatic,
+        crate::AckMode::Manual => rumqttc_v5::AckMode::Manual,
+    });
+    let mut network = rumqttc_v5::NetworkOptions::new();
+    network.set_connection_timeout(common.connection_timeout.as_secs());
+    options.set_network_options(network);
+    match (&common.username, &common.password) {
+        (Some(username), Some(password)) => {
+            options.set_credentials(username.clone(), password.clone());
+        }
+        (Some(username), None) => {
+            options.set_username(username.clone());
+        }
+        (None, Some(password)) => {
+            options.set_password(password.clone());
+        }
+        (None, None) => {}
+    }
+    options.set_clean_start(protocol.clean_start);
+    options.set_session_expiry_interval(protocol.session_expiry_interval);
+    options.validate().map_err(|error| {
+        Error::sourced(
+            ErrorKind::Configuration,
+            DeliveryStatus::NotApplicable,
+            error,
+        )
+    })?;
+    let (client, eventloop) = rumqttc_v5::AsyncClient::builder(options)
+        .capacity(common.request_channel_capacity)
+        .publish_admission_policy(rumqttc_v5::PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+        .try_build()
+        .map_err(|error| {
+            Error::sourced(
+                ErrorKind::Configuration,
+                DeliveryStatus::NotApplicable,
+                error,
+            )
+        })?;
+    Ok((client, Box::new(eventloop)))
+}
+pub(crate) async fn run(
+    mut eventloop: Box<rumqttc_v5::EventLoop>,
+    context: DriverContext,
+) -> TerminalStatus {
+    let DriverContext {
+        shared,
+        completion_rx,
+        diagnostics_rx,
+        events,
+        delivery_timeout,
+        emit_outgoing,
+        manual_ack,
+        protocol,
+        immediate_shutdown_rx,
+    } = context;
+    let mut pending = FuturesUnordered::<PendingFuture>::new();
+    let mut senders = HashMap::<OperationId, PendingSender>::new();
+    let mut connected = false;
+    let mut diagnostics = snapshot_v5(&eventloop);
+    let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
+    let delivery = EventDelivery {
+        shared: &shared,
+        events: &events,
+        timeout: delivery_timeout,
+        immediate_shutdown: &immediate_shutdown_rx,
+    };
+    loop {
+        // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
+        // registrations, cached diagnostics, and completed notices remain responsive.
+        let polled = {
+            let poll = eventloop.poll();
+            tokio::pin!(poll);
+            loop {
+                // Keep parity with the fair and cooperative v4 arbitration above.
+                tokio::select! {
+                    _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
+                    registration = completion_rx.recv_async() => if let Ok(registration) = registration {
+                        accept_registration(registration, &pending, &mut senders);
+                        tokio::task::yield_now().await;
+                    },
+                    request = diagnostics_rx.recv_async() => if let Ok(request) = request {
+                        request.registry.complete(
+                            request.operation_id,
+                            Ok(Completion::Diagnostics(diagnostics.clone())),
+                        );
+                        tokio::task::yield_now().await;
+                    },
+                    result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
+                        resolve_pending(result, &mut senders);
+                        tokio::task::yield_now().await;
+                    },
+                    result = &mut poll => break Some(result),
+                }
+            }
+        };
+        let Some(polled) = polled else {
+            // Keep MQTT 5 connection-establishment cancellation identical to the v4 path.
+            return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
+        };
+        shared.shutdown.notify_progress();
+        diagnostics = snapshot_v5(&eventloop);
+        match polled {
+            Ok(event) => {
+                if let Some(event) = map_v5_event(
+                    &mut eventloop,
+                    event,
+                    &shared,
+                    &mut connected,
+                    emit_outgoing,
+                    manual_ack,
+                    protocol,
+                ) && !deliver(&delivery, event).await
+                {
+                    let error = overflow_error();
+                    fail_acknowledgements(&shared, &error);
+                    fail_pending(&mut senders, &error);
+                    return TerminalStatus::Failed(error);
+                }
+            }
+            Err(rumqttc_v5::ConnectionError::RequestsDone) => {
+                let graceful =
+                    complete_shutdown(&shutdown, &diagnostics, &mut pending, &mut senders).await;
+                return TerminalStatus::Closed { graceful };
+            }
+            Err(error) => {
+                let error = map_connection_error(error);
+                if let Some(shutdown_kind) = committed_shutdown_kind(&shared) {
+                    if shutdown_kind == 2 {
+                        return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders)
+                            .await;
+                    }
+                    fail_acknowledgements(&shared, &error);
+                    fail_pending(&mut senders, &error);
+                    return TerminalStatus::Failed(error);
+                }
+                let phase = if connected {
+                    ConnectionPhase::Established
+                } else {
+                    ConnectionPhase::Attempt
+                };
+                connected = false;
+                invalidate_acks(&shared, &error);
+                if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
+                    let error = overflow_error();
+                    fail_acknowledgements(&shared, &error);
+                    fail_pending(&mut senders, &error);
+                    return TerminalStatus::Failed(error);
+                }
+            }
+        }
+    }
+}
+
+fn map_v5_event(
+    eventloop: &mut rumqttc_v5::EventLoop,
+    event: rumqttc_v5::Event,
+    shared: &Shared,
+    connected: &mut bool,
+    emit_outgoing: bool,
+    manual_ack: bool,
+    protocol: ProtocolVersion,
+) -> Option<WrapperEvent> {
+    match event {
+        rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::ConnAck(connack)) => {
+            let _admission_guard = shared
+                .admission_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            eventloop.discard_pending_manual_acknowledgements();
+            *connected = true;
+            shared.acknowledgements.begin_connection();
+            shared.shutdown.notify_progress();
+            Some(WrapperEvent::Connected {
+                protocol,
+                session_present: connack.session_present,
+            })
+        }
+        rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Publish(publish)) => {
+            let ack_token = if manual_ack {
+                match (&shared.client, publish.qos) {
+                    (
+                        ProtocolClient::V5(client),
+                        rumqttc_v5::QoS::AtLeastOnce | rumqttc_v5::QoS::ExactlyOnce,
+                    ) => client
+                        .prepare_ack(&publish)
+                        .and_then(|ack| insert_ack(shared, PreparedAck::V5(ack))),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            Some(WrapperEvent::IncomingPublish(Box::new(IncomingPublish {
+                topic: publish.topic,
+                payload: publish.payload,
+                qos: from_qos(publish.qos),
+                retain: publish.retain,
+                duplicate: publish.dup,
+                ack_token,
+                v5_properties: publish.properties.map(from_properties),
+            })))
+        }
+        rumqttc_v5::Event::Outgoing(outgoing) => {
+            match outgoing {
+                rumqttc_v5::Outgoing::PubAck(packet_id) => {
+                    complete_acknowledgement(shared, AckKey::V5PubAck(packet_id));
+                }
+                rumqttc_v5::Outgoing::PubRec(packet_id) => {
+                    complete_acknowledgement(shared, AckKey::V5PubRec(packet_id));
+                }
+                _ => {}
+            }
+            emit_outgoing.then(|| WrapperEvent::Outgoing(map_outgoing(&outgoing)))
+        }
+        _ => None,
+    }
+}
+
+fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
+    let diagnostics = eventloop.diagnostics();
+    DiagnosticsSnapshot {
+        connected: diagnostics.connected,
+        disconnecting: diagnostics.disconnecting,
+        pending_requests: diagnostics.queues.pending_len,
+        queued_requests: diagnostics.queues.requests_rx_len
+            + diagnostics.queues.control_requests_rx_len,
+        inflight_publishes: diagnostics.outbound.inflight,
+        max_inflight_publishes: diagnostics.outbound.max_inflight,
+        pending_subscribes: diagnostics.outbound.pending_subscribe,
+        pending_unsubscribes: diagnostics.outbound.pending_unsubscribe,
+        outbound_drained: diagnostics.outbound.outbound_drained,
+    }
+}
+
+pub(crate) fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {
+    let options = rumqttc_v5::PublishOptions::new(to_qos(command.qos)).retain(command.retain);
+    if let Some(properties) = command.v5_properties.clone() {
+        options.properties(to_properties(properties))
+    } else {
+        options
+    }
+}
+
+pub(crate) const fn to_qos(qos: QoS) -> rumqttc_v5::QoS {
+    match qos {
+        QoS::AtMostOnce => rumqttc_v5::QoS::AtMostOnce,
+        QoS::AtLeastOnce => rumqttc_v5::QoS::AtLeastOnce,
+        QoS::ExactlyOnce => rumqttc_v5::QoS::ExactlyOnce,
+    }
+}
+
+pub(crate) const fn from_qos(qos: rumqttc_v5::QoS) -> QoS {
+    match qos {
+        rumqttc_v5::QoS::AtMostOnce => QoS::AtMostOnce,
+        rumqttc_v5::QoS::AtLeastOnce => QoS::AtLeastOnce,
+        rumqttc_v5::QoS::ExactlyOnce => QoS::ExactlyOnce,
+    }
+}
+
+pub(crate) fn to_properties(properties: V5PublishProperties) -> rumqttc_v5::PublishProperties {
+    rumqttc_v5::PublishProperties {
+        payload_format_indicator: properties.payload_format_indicator,
+        message_expiry_interval: properties.message_expiry_interval,
+        topic_alias: properties.topic_alias,
+        response_topic: properties.response_topic,
+        correlation_data: properties.correlation_data,
+        user_properties: properties.user_properties,
+        subscription_identifiers: properties.subscription_identifiers,
+        content_type: properties.content_type,
+    }
+}
+
+pub(crate) fn from_properties(properties: rumqttc_v5::PublishProperties) -> V5PublishProperties {
+    V5PublishProperties {
+        response_topic: properties.response_topic,
+        correlation_data: properties.correlation_data,
+        content_type: properties.content_type,
+        payload_format_indicator: properties.payload_format_indicator,
+        topic_alias: properties.topic_alias,
+        subscription_identifiers: properties.subscription_identifiers,
+        message_expiry_interval: properties.message_expiry_interval,
+        user_properties: properties.user_properties,
+    }
+}
+
+pub(crate) fn map_publish_notice(
+    result: std::result::Result<rumqttc_v5::PublishResult, rumqttc_v5::PublishNoticeError>,
+) -> Result<Completion> {
+    match result {
+        Ok(rumqttc_v5::PublishResult::Qos0Flushed) => {
+            Ok(Completion::Publish(PublishCompletion::Qos0Flushed))
+        }
+        Ok(rumqttc_v5::PublishResult::Qos1(ack)) if v5_puback_success(ack.reason) => {
+            Ok(Completion::Publish(PublishCompletion::Qos1Acknowledged))
+        }
+        Ok(rumqttc_v5::PublishResult::Qos2Completed(ack)) if v5_pubcomp_success(ack.reason) => {
+            Ok(Completion::Publish(PublishCompletion::Qos2Completed))
+        }
+        Ok(rumqttc_v5::PublishResult::Qos2Recovered(_)) => {
+            Ok(Completion::Publish(PublishCompletion::Qos2Completed))
+        }
+        Ok(rumqttc_v5::PublishResult::Qos1(ack)) => {
+            Err(broker_rejection(v5_puback_code(ack.reason)))
+        }
+        Ok(rumqttc_v5::PublishResult::Qos2Completed(ack)) => {
+            Err(broker_rejection(v5_pubcomp_code(ack.reason)))
+        }
+        Ok(rumqttc_v5::PublishResult::Qos2PubRecRejected(ack)) => {
+            Err(broker_rejection(v5_pubrec_code(ack.reason)))
+        }
+        Err(error) => Err(map_notice_error(error)),
+    }
+}
+
+pub(crate) fn map_subscribe_notice(
+    result: std::result::Result<rumqttc_v5::SubAck, rumqttc_v5::SubscribeNoticeError>,
+) -> Result<Completion> {
+    result
+        .map(|ack| {
+            Completion::Subscribe(SubscribeCompletion {
+                results: ack
+                    .return_codes
+                    .into_iter()
+                    .map(|reason| match reason {
+                        rumqttc_v5::SubscribeReasonCode::Success(qos) => {
+                            SubscribeResult::Granted(from_qos(qos))
+                        }
+                        reason => SubscribeResult::Rejected(BrokerReason {
+                            code: v5_suback_code(reason),
+                        }),
+                    })
+                    .collect(),
+            })
+        })
+        .map_err(map_notice_error)
+}
+
+pub(crate) fn map_unsubscribe_notice(
+    result: std::result::Result<rumqttc_v5::UnsubAck, rumqttc_v5::UnsubscribeNoticeError>,
+) -> Result<Completion> {
+    result
+        .map(|ack| {
+            Completion::Unsubscribe(UnsubscribeCompletion {
+                results: Some(
+                    ack.reasons
+                        .into_iter()
+                        .map(|reason| match reason {
+                            rumqttc_v5::UnsubAckReason::Success => UnsubscribeResult::Success,
+                            rumqttc_v5::UnsubAckReason::NoSubscriptionExisted => {
+                                UnsubscribeResult::NoSubscriptionExisted
+                            }
+                            reason => {
+                                UnsubscribeResult::Rejected(BrokerReason { code: reason as u8 })
+                            }
+                        })
+                        .collect(),
+                ),
+            })
+        })
+        .map_err(map_notice_error)
+}
+
+pub(crate) const fn v5_suback_code(reason: rumqttc_v5::SubscribeReasonCode) -> u8 {
+    use rumqttc_v5::SubscribeReasonCode as R;
+    match reason {
+        R::Success(qos) => from_qos(qos) as u8,
+        R::Failure | R::Unspecified => 0x80,
+        R::ImplementationSpecific => 0x83,
+        R::NotAuthorized => 0x87,
+        R::TopicFilterInvalid => 0x8f,
+        R::PkidInUse => 0x91,
+        R::QuotaExceeded => 0x97,
+        R::SharedSubscriptionsNotSupported => 0x9e,
+        R::SubscriptionIdNotSupported => 0xa1,
+        R::WildcardSubscriptionsNotSupported => 0xa2,
+    }
+}
+
+pub(crate) const fn v5_puback_success(reason: rumqttc_v5::PubAckReason) -> bool {
+    matches!(
+        reason,
+        rumqttc_v5::PubAckReason::Success | rumqttc_v5::PubAckReason::NoMatchingSubscribers
+    )
+}
+
+pub(crate) const fn v5_puback_code(reason: rumqttc_v5::PubAckReason) -> u8 {
+    reason as u8
+}
+
+pub(crate) const fn v5_pubrec_code(reason: rumqttc_v5::PubRecReason) -> u8 {
+    reason as u8
+}
+
+pub(crate) const fn v5_pubcomp_code(reason: rumqttc_v5::PubCompReason) -> u8 {
+    reason as u8
+}
+
+pub(crate) fn v5_pubcomp_success(reason: rumqttc_v5::PubCompReason) -> bool {
+    reason == rumqttc_v5::PubCompReason::Success
+}
+
+pub(crate) fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
+    Error::sourced(ErrorKind::Protocol, DeliveryStatus::Ambiguous, error)
+}
+
+pub(crate) fn broker_rejection(code: u8) -> Error {
+    Error::new(
+        ErrorKind::Protocol,
+        format!("broker rejected operation with reason code 0x{code:02x}"),
+    )
+    .with_delivery(DeliveryStatus::Rejected)
+    .with_broker_reason(code)
 }

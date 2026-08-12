@@ -94,10 +94,6 @@ impl CompletionCell {
         true
     }
 
-    pub(crate) const fn operation_id(&self) -> OperationId {
-        self.operation_id
-    }
-
     fn observe(&self) -> Option<Result<Completion>> {
         self.result
             .lock()
@@ -119,10 +115,6 @@ impl CompletionHandle {
     #[must_use]
     pub fn operation_id(&self) -> OperationId {
         self.cell.operation_id
-    }
-
-    pub(crate) fn cell(&self) -> Arc<CompletionCell> {
-        Arc::clone(&self.cell)
     }
 
     /// Attempts to retrieve the terminal result without blocking.
