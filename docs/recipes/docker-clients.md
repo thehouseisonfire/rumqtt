@@ -32,3 +32,6 @@ The containerized programs are the existing
 [`broker_recipe_smoke_v5.rs`](../../rumqttc-v5/examples/broker_recipe_smoke_v5.rs)
 examples. They accept the same host and port environment variables when used in
 another container runtime.
+
+CI runs the same build, broker startup, and v4/v5 client workflow through
+`scripts/smoke-docker-clients.sh` and verifies both success messages.

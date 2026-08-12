@@ -22,6 +22,7 @@ on:
       - 'pyproject.toml'
       - 'scripts/check-markdown-links.py'
       - 'scripts/check-recipes.py'
+      - 'scripts/smoke-docker-clients.sh'
       - 'scripts/smoke-production-recipes.sh'
       - 'scripts/test-low-memory.sh'
       - 'tests/low-memory/**'
@@ -160,6 +161,10 @@ jobs:
       - name: Smoke test production broker recipe
         if: ${{ runner.os == 'Linux' }}
         run: scripts/smoke-production-recipes.sh
+
+      - name: Smoke test Docker clients
+        if: ${{ runner.os == 'Linux' }}
+        run: scripts/smoke-docker-clients.sh
 
       - name: Install Mosquitto
         if: ${{ runner.os == 'Linux' }}
