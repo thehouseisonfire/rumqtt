@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
-import socket
 import shlex
+import socket
 import struct
 import subprocess
 import sys
@@ -191,14 +192,13 @@ class Broker:
                     connection.send(frame(13, 0, b""))
                 elif packet_type == 14:
                     return
-        except Exception as error:  # noqa: BLE001 - fixture failures must reach the runner
+        except Exception as error:
+            # Fixture failures must reach the runner.
             with self.failure_lock:
                 self.failures.append(repr(error))
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 stream.close()
-            except OSError:
-                pass
             if connection is not None and connection.outstanding_incoming:
                 with self.failure_lock:
                     self.failures.append(
