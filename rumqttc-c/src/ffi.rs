@@ -17,8 +17,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
     Admission, Command, Completion, DiagnosticsSnapshot, IncomingPublish, OutgoingActivity,
-    ProtocolVersion, PublishCommand, PublishCompletion, QoS, SubscribeCommand, SubscribeResult,
-    Subscription, UnsubscribeResult, V5PublishProperties, WrapperEvent,
+    ProtocolVersion, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS,
+    SubscribeCommand, SubscribeProtocolOptions, SubscribeResult, Subscription,
+    SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions, UnsubscribeResult,
+    V5PublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
+    V5UnsubscribeProperties, WrapperEvent,
 };
 
 use crate::client::{ClientError, ClientObject};
@@ -33,6 +36,8 @@ use crate::event::EventObject;
 
 const ABI_VERSION: u32 = 1;
 const MQTT5_NO_SUBSCRIPTION_EXISTED: u8 = 0x11;
+const PROTOCOL_OPTIONS_VERSION_NEUTRAL: u32 = 0;
+const PROTOCOL_OPTIONS_V5: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -81,7 +86,17 @@ pub struct rumqttc_publish_options_t {
     pub qos: u32,
     pub retain: u8,
     pub reserved: [u8; 3],
+    pub protocol_options: u32,
     pub v5_properties: *const rumqttc_v5_publish_properties_t,
+}
+
+#[repr(C)]
+pub struct rumqttc_v5_subscription_options_t {
+    pub struct_size: u32,
+    pub no_local: u8,
+    pub retain_as_published: u8,
+    pub reserved: [u8; 2],
+    pub retain_forward_rule: u32,
 }
 
 #[repr(C)]
@@ -89,6 +104,39 @@ pub struct rumqttc_subscription_t {
     pub struct_size: u32,
     pub filter: rumqttc_string_view_t,
     pub qos: u32,
+    pub protocol_options: u32,
+    pub v5_options: *const rumqttc_v5_subscription_options_t,
+}
+
+#[repr(C)]
+pub struct rumqttc_v5_subscribe_properties_t {
+    pub struct_size: u32,
+    pub subscription_identifier_present: u8,
+    pub reserved: [u8; 3],
+    pub subscription_identifier: u32,
+    pub user_properties: *const rumqttc_user_property_t,
+    pub user_property_count: usize,
+}
+
+#[repr(C)]
+pub struct rumqttc_subscribe_options_t {
+    pub struct_size: u32,
+    pub protocol_options: u32,
+    pub v5_properties: *const rumqttc_v5_subscribe_properties_t,
+}
+
+#[repr(C)]
+pub struct rumqttc_v5_unsubscribe_properties_t {
+    pub struct_size: u32,
+    pub user_properties: *const rumqttc_user_property_t,
+    pub user_property_count: usize,
+}
+
+#[repr(C)]
+pub struct rumqttc_unsubscribe_options_t {
+    pub struct_size: u32,
+    pub protocol_options: u32,
+    pub v5_properties: *const rumqttc_v5_unsubscribe_properties_t,
 }
 
 #[repr(C)]
@@ -791,26 +839,9 @@ unsafe fn parse_v5_properties(
     let message_expiry_interval =
         boolean(properties.message_expiry_present, "message_expiry_present")?
             .then_some(properties.message_expiry_interval);
-    let user_properties = if properties.user_property_count == 0 {
-        Vec::new()
-    } else {
-        if properties.user_properties.is_null() {
-            return Err(ErrorHandle::argument(
-                "NULL user-property pointer with nonzero count",
-            ));
-        }
-        unsafe { slice::from_raw_parts(properties.user_properties, properties.user_property_count) }
-            .iter()
-            .map(|property| {
-                if property.struct_size < struct_size::<rumqttc_user_property_t>() {
-                    return Err(ErrorHandle::argument("user-property struct is too small"));
-                }
-                Ok((unsafe { string_from_view(property.name) }?, unsafe {
-                    string_from_view(property.value)
-                }?))
-            })
-            .collect::<Result<Vec<_>, ErrorHandle>>()?
-    };
+    let user_properties = unsafe {
+        parse_user_properties(properties.user_properties, properties.user_property_count)
+    }?;
     let topic_alias = match properties.topic_alias {
         0 => None,
         alias => Some(
@@ -837,17 +868,41 @@ unsafe fn publish_command(
 ) -> Result<PublishCommand, ErrorHandle> {
     let topic = unsafe { string_from_view(topic) }?;
     let payload = Bytes::copy_from_slice(unsafe { bytes_from_view(payload) }?);
-    let (qos, retain, v5_properties) = if options.is_null() {
-        (QoS::AtMostOnce, false, None)
+    let (qos, retain, protocol) = if options.is_null() {
+        (
+            QoS::AtMostOnce,
+            false,
+            PublishProtocolOptions::VersionNeutral,
+        )
     } else {
         let options = unsafe { &*options };
         if options.struct_size < struct_size::<rumqttc_publish_options_t>() {
             return Err(ErrorHandle::argument("publish options struct is too small"));
         }
+        let properties = unsafe { parse_v5_properties(options.v5_properties) }?;
+        let protocol = match (options.protocol_options, properties) {
+            (PROTOCOL_OPTIONS_VERSION_NEUTRAL, None) => PublishProtocolOptions::VersionNeutral,
+            (PROTOCOL_OPTIONS_VERSION_NEUTRAL, Some(_)) => {
+                return Err(ErrorHandle::argument(
+                    "version-neutral publish options cannot contain MQTT 5 properties",
+                ));
+            }
+            (PROTOCOL_OPTIONS_V5, Some(properties)) => PublishProtocolOptions::V5(properties),
+            (PROTOCOL_OPTIONS_V5, None) => {
+                return Err(ErrorHandle::argument(
+                    "MQTT 5 publish options require a v5 properties struct",
+                ));
+            }
+            _ => {
+                return Err(ErrorHandle::argument(
+                    "unknown publish protocol-options selector",
+                ));
+            }
+        };
         (
             qos(options.qos)?,
             boolean(options.retain, "retain")?,
-            unsafe { parse_v5_properties(options.v5_properties) }?,
+            protocol,
         )
     };
     Ok(PublishCommand {
@@ -855,8 +910,33 @@ unsafe fn publish_command(
         payload,
         qos,
         retain,
-        v5_properties,
+        protocol,
     })
+}
+
+unsafe fn parse_user_properties(
+    properties: *const rumqttc_user_property_t,
+    count: usize,
+) -> Result<Vec<(String, String)>, ErrorHandle> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if properties.is_null() {
+        return Err(ErrorHandle::argument(
+            "NULL user-property pointer with nonzero count",
+        ));
+    }
+    unsafe { slice::from_raw_parts(properties, count) }
+        .iter()
+        .map(|property| {
+            if property.struct_size < struct_size::<rumqttc_user_property_t>() {
+                return Err(ErrorHandle::argument("user-property struct is too small"));
+            }
+            Ok((unsafe { string_from_view(property.name) }?, unsafe {
+                string_from_view(property.value)
+            }?))
+        })
+        .collect()
 }
 
 fn admit(client: *mut rumqttc_client, command: Command) -> Result<Admission, ErrorHandle> {
@@ -974,15 +1054,113 @@ unsafe fn subscriptions(
             Ok(Subscription {
                 filter: unsafe { string_from_view(value.filter) }?,
                 qos: qos(value.qos)?,
+                protocol: match value.protocol_options {
+                    PROTOCOL_OPTIONS_VERSION_NEUTRAL if value.v5_options.is_null() => {
+                        SubscriptionProtocolOptions::VersionNeutral
+                    }
+                    PROTOCOL_OPTIONS_VERSION_NEUTRAL => {
+                        return Err(ErrorHandle::argument(
+                            "version-neutral subscription cannot contain MQTT 5 options",
+                        ));
+                    }
+                    PROTOCOL_OPTIONS_V5 if value.v5_options.is_null() => {
+                        return Err(ErrorHandle::argument(
+                            "MQTT 5 subscription requires a v5 options struct",
+                        ));
+                    }
+                    PROTOCOL_OPTIONS_V5 => {
+                        let options = unsafe { &*value.v5_options };
+                        if options.struct_size < struct_size::<rumqttc_v5_subscription_options_t>()
+                        {
+                            return Err(ErrorHandle::argument(
+                                "v5 subscription-options struct is too small",
+                            ));
+                        }
+                        let retain_forward_rule = match options.retain_forward_rule {
+                            0 => V5RetainForwardRule::OnEverySubscribe,
+                            1 => V5RetainForwardRule::OnNewSubscribe,
+                            2 => V5RetainForwardRule::Never,
+                            _ => {
+                                return Err(ErrorHandle::argument(
+                                    "unknown retain-forward-rule value",
+                                ));
+                            }
+                        };
+                        SubscriptionProtocolOptions::V5(V5SubscriptionOptions {
+                            no_local: boolean(options.no_local, "no_local")?,
+                            retain_as_published: boolean(
+                                options.retain_as_published,
+                                "retain_as_published",
+                            )?,
+                            retain_forward_rule,
+                        })
+                    }
+                    _ => {
+                        return Err(ErrorHandle::argument(
+                            "unknown subscription protocol-options selector",
+                        ));
+                    }
+                },
             })
         })
         .collect()
+}
+
+unsafe fn subscribe_protocol_options(
+    options: *const rumqttc_subscribe_options_t,
+) -> Result<SubscribeProtocolOptions, ErrorHandle> {
+    if options.is_null() {
+        return Ok(SubscribeProtocolOptions::VersionNeutral);
+    }
+    let options = unsafe { &*options };
+    if options.struct_size < struct_size::<rumqttc_subscribe_options_t>() {
+        return Err(ErrorHandle::argument(
+            "subscribe-options struct is too small",
+        ));
+    }
+    match options.protocol_options {
+        PROTOCOL_OPTIONS_VERSION_NEUTRAL if options.v5_properties.is_null() => {
+            Ok(SubscribeProtocolOptions::VersionNeutral)
+        }
+        PROTOCOL_OPTIONS_VERSION_NEUTRAL => Err(ErrorHandle::argument(
+            "version-neutral subscribe options cannot contain MQTT 5 properties",
+        )),
+        PROTOCOL_OPTIONS_V5 if options.v5_properties.is_null() => Err(ErrorHandle::argument(
+            "MQTT 5 subscribe options require a v5 properties struct",
+        )),
+        PROTOCOL_OPTIONS_V5 => {
+            let properties = unsafe { &*options.v5_properties };
+            if properties.struct_size < struct_size::<rumqttc_v5_subscribe_properties_t>() {
+                return Err(ErrorHandle::argument(
+                    "v5 subscribe-properties struct is too small",
+                ));
+            }
+            let subscription_identifier = boolean(
+                properties.subscription_identifier_present,
+                "subscription_identifier_present",
+            )?
+            .then_some(properties.subscription_identifier as usize);
+            Ok(SubscribeProtocolOptions::V5(V5SubscribeProperties {
+                subscription_identifier,
+                user_properties: unsafe {
+                    parse_user_properties(
+                        properties.user_properties,
+                        properties.user_property_count,
+                    )
+                }?,
+            }))
+        }
+        _ => Err(ErrorHandle::argument(
+            "unknown subscribe protocol-options selector",
+        )),
+    }
 }
 
 fn subscribe_impl(
     client: *mut rumqttc_client,
     values: *const rumqttc_subscription_t,
     count: usize,
+    options: *const rumqttc_subscribe_options_t,
     operation_id_out: *mut u64,
     completion_out: *mut *mut rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
@@ -999,6 +1177,7 @@ fn subscribe_impl(
         }
         let command = SubscribeCommand {
             filters: unsafe { subscriptions(values, count) }?,
+            protocol: unsafe { subscribe_protocol_options(options) }?,
         };
         write_admission(
             admit(client, Command::Subscribe(command))?,
@@ -1014,6 +1193,7 @@ pub unsafe extern "C" fn rumqttc_client_try_subscribe(
     client: *mut rumqttc_client,
     subscriptions: *const rumqttc_subscription_t,
     count: usize,
+    options: *const rumqttc_subscribe_options_t,
     operation_id_out: *mut u64,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1021,6 +1201,7 @@ pub unsafe extern "C" fn rumqttc_client_try_subscribe(
         client,
         subscriptions,
         count,
+        options,
         operation_id_out,
         ptr::null_mut(),
         error_out,
@@ -1032,6 +1213,7 @@ pub unsafe extern "C" fn rumqttc_client_subscribe_tracked(
     client: *mut rumqttc_client,
     subscriptions: *const rumqttc_subscription_t,
     count: usize,
+    options: *const rumqttc_subscribe_options_t,
     completion_out: *mut *mut rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1039,6 +1221,7 @@ pub unsafe extern "C" fn rumqttc_client_subscribe_tracked(
         client,
         subscriptions,
         count,
+        options,
         ptr::null_mut(),
         completion_out,
         error_out,
@@ -1064,10 +1247,55 @@ unsafe fn filters(
         .collect()
 }
 
+unsafe fn unsubscribe_protocol_options(
+    options: *const rumqttc_unsubscribe_options_t,
+) -> Result<UnsubscribeProtocolOptions, ErrorHandle> {
+    if options.is_null() {
+        return Ok(UnsubscribeProtocolOptions::VersionNeutral);
+    }
+    let options = unsafe { &*options };
+    if options.struct_size < struct_size::<rumqttc_unsubscribe_options_t>() {
+        return Err(ErrorHandle::argument(
+            "unsubscribe-options struct is too small",
+        ));
+    }
+    match options.protocol_options {
+        PROTOCOL_OPTIONS_VERSION_NEUTRAL if options.v5_properties.is_null() => {
+            Ok(UnsubscribeProtocolOptions::VersionNeutral)
+        }
+        PROTOCOL_OPTIONS_VERSION_NEUTRAL => Err(ErrorHandle::argument(
+            "version-neutral unsubscribe options cannot contain MQTT 5 properties",
+        )),
+        PROTOCOL_OPTIONS_V5 if options.v5_properties.is_null() => Err(ErrorHandle::argument(
+            "MQTT 5 unsubscribe options require a v5 properties struct",
+        )),
+        PROTOCOL_OPTIONS_V5 => {
+            let properties = unsafe { &*options.v5_properties };
+            if properties.struct_size < struct_size::<rumqttc_v5_unsubscribe_properties_t>() {
+                return Err(ErrorHandle::argument(
+                    "v5 unsubscribe-properties struct is too small",
+                ));
+            }
+            Ok(UnsubscribeProtocolOptions::V5(V5UnsubscribeProperties {
+                user_properties: unsafe {
+                    parse_user_properties(
+                        properties.user_properties,
+                        properties.user_property_count,
+                    )
+                }?,
+            }))
+        }
+        _ => Err(ErrorHandle::argument(
+            "unknown unsubscribe protocol-options selector",
+        )),
+    }
+}
+
 fn unsubscribe_impl(
     client: *mut rumqttc_client,
     values: *const rumqttc_string_view_t,
     count: usize,
+    options: *const rumqttc_unsubscribe_options_t,
     operation_id_out: *mut u64,
     completion_out: *mut *mut rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
@@ -1085,7 +1313,10 @@ fn unsubscribe_impl(
         write_admission(
             admit(
                 client,
-                Command::Unsubscribe(unsafe { filters(values, count) }?),
+                Command::Unsubscribe(UnsubscribeCommand {
+                    filters: unsafe { filters(values, count) }?,
+                    protocol: unsafe { unsubscribe_protocol_options(options) }?,
+                }),
             )?,
             operation_id_out,
             completion_out,
@@ -1099,6 +1330,7 @@ pub unsafe extern "C" fn rumqttc_client_try_unsubscribe(
     client: *mut rumqttc_client,
     filters: *const rumqttc_string_view_t,
     count: usize,
+    options: *const rumqttc_unsubscribe_options_t,
     operation_id_out: *mut u64,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1106,6 +1338,7 @@ pub unsafe extern "C" fn rumqttc_client_try_unsubscribe(
         client,
         filters,
         count,
+        options,
         operation_id_out,
         ptr::null_mut(),
         error_out,
@@ -1117,6 +1350,7 @@ pub unsafe extern "C" fn rumqttc_client_unsubscribe_tracked(
     client: *mut rumqttc_client,
     filters: *const rumqttc_string_view_t,
     count: usize,
+    options: *const rumqttc_unsubscribe_options_t,
     completion_out: *mut *mut rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
@@ -1124,6 +1358,7 @@ pub unsafe extern "C" fn rumqttc_client_unsubscribe_tracked(
         client,
         filters,
         count,
+        options,
         ptr::null_mut(),
         completion_out,
         error_out,
@@ -2154,6 +2389,77 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(parsed.payload_format_indicator, None);
+    }
+
+    #[test]
+    fn parses_discriminated_subscription_extensions() {
+        let user_property = rumqttc_user_property_t {
+            struct_size: struct_size::<rumqttc_user_property_t>(),
+            name: view_string("key"),
+            value: view_string("value"),
+        };
+        let filter_options = rumqttc_v5_subscription_options_t {
+            struct_size: struct_size::<rumqttc_v5_subscription_options_t>(),
+            no_local: 1,
+            retain_as_published: 1,
+            reserved: [0; 2],
+            retain_forward_rule: 2,
+        };
+        let subscription = rumqttc_subscription_t {
+            struct_size: struct_size::<rumqttc_subscription_t>(),
+            filter: view_string("a/#"),
+            qos: 1,
+            protocol_options: PROTOCOL_OPTIONS_V5,
+            v5_options: &raw const filter_options,
+        };
+        let parsed = unsafe { subscriptions(&raw const subscription, 1) }.unwrap();
+        assert!(matches!(
+            parsed[0].protocol,
+            SubscriptionProtocolOptions::V5(V5SubscriptionOptions {
+                no_local: true,
+                retain_as_published: true,
+                retain_forward_rule: V5RetainForwardRule::Never,
+            })
+        ));
+
+        let properties = rumqttc_v5_subscribe_properties_t {
+            struct_size: struct_size::<rumqttc_v5_subscribe_properties_t>(),
+            subscription_identifier_present: 1,
+            reserved: [0; 3],
+            subscription_identifier: 7,
+            user_properties: &raw const user_property,
+            user_property_count: 1,
+        };
+        let options = rumqttc_subscribe_options_t {
+            struct_size: struct_size::<rumqttc_subscribe_options_t>(),
+            protocol_options: PROTOCOL_OPTIONS_V5,
+            v5_properties: &raw const properties,
+        };
+        assert_eq!(
+            unsafe { subscribe_protocol_options(&raw const options) }.unwrap(),
+            SubscribeProtocolOptions::V5(V5SubscribeProperties {
+                subscription_identifier: Some(7),
+                user_properties: vec![("key".into(), "value".into())],
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_or_inconsistent_protocol_option_selectors() {
+        let options = rumqttc_subscribe_options_t {
+            struct_size: struct_size::<rumqttc_subscribe_options_t>(),
+            protocol_options: 99,
+            v5_properties: ptr::null(),
+        };
+        assert!(unsafe { subscribe_protocol_options(&raw const options) }.is_err());
+
+        let properties: rumqttc_v5_unsubscribe_properties_t = unsafe { std::mem::zeroed() };
+        let options = rumqttc_unsubscribe_options_t {
+            struct_size: struct_size::<rumqttc_unsubscribe_options_t>(),
+            protocol_options: PROTOCOL_OPTIONS_VERSION_NEUTRAL,
+            v5_properties: &raw const properties,
+        };
+        assert!(unsafe { unsubscribe_protocol_options(&raw const options) }.is_err());
     }
 
     #[test]

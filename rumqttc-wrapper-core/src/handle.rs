@@ -8,7 +8,8 @@ use crate::operations::OperationRegistry;
 use crate::shutdown::{ClosedOutcome, ImmediateAdmission, PollErrorAction, ShutdownCoordinator};
 use crate::{
     AckToken, Admission, Command, DeliveryStatus, Error, ErrorKind, LifecycleState, PublishCommand,
-    Result, SubscribeCommand,
+    PublishProtocolOptions, Result, SubscribeCommand, SubscribeProtocolOptions,
+    SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
 };
 
 /// Serializes admission with connection invalidation and shutdown commitment.
@@ -348,7 +349,7 @@ impl ClientHandle {
         validate_mqtt_utf8_string(&command.topic, "publish topic")?;
         match &self.shared.client {
             ProtocolClient::V311(client) => {
-                if command.v5_properties.is_some() {
+                if matches!(command.protocol, PublishProtocolOptions::V5(_)) {
                     return Err(protocol_option_error(
                         "MQTT 5 publish properties require MQTT 5",
                     ));
@@ -390,8 +391,19 @@ impl ClientHandle {
                 "subscribe requires at least one filter",
             ));
         }
+        validate_subscribe_properties(&command.protocol)?;
         match &self.shared.client {
             ProtocolClient::V311(client) => {
+                if matches!(command.protocol, SubscribeProtocolOptions::V5(_))
+                    || command
+                        .filters
+                        .iter()
+                        .any(|filter| matches!(filter.protocol, SubscriptionProtocolOptions::V5(_)))
+                {
+                    return Err(protocol_option_error(
+                        "MQTT 5 subscribe options require MQTT 5",
+                    ));
+                }
                 let filters = command
                     .filters
                     .into_iter()
@@ -410,19 +422,37 @@ impl ClientHandle {
                 }))
             }
             ProtocolClient::V5(client) => {
+                let properties = match command.protocol {
+                    SubscribeProtocolOptions::VersionNeutral => None,
+                    SubscribeProtocolOptions::V5(properties) => {
+                        Some(adapter_v5::to_subscribe_properties(properties))
+                    }
+                };
                 let filters = command
                     .filters
                     .into_iter()
                     .map(|filter| {
-                        rumqttc_v5::SubscribeFilterInput::new(
+                        let input = rumqttc_v5::SubscribeFilterInput::new(
                             filter.filter,
                             adapter_v5::to_qos(filter.qos),
-                        )
+                        );
+                        match filter.protocol {
+                            SubscriptionProtocolOptions::VersionNeutral => input,
+                            SubscriptionProtocolOptions::V5(options) => input
+                                .no_local(options.no_local)
+                                .preserve_retain(options.retain_as_published)
+                                .retain_forward_rule(adapter_v5::to_retain_forward_rule(
+                                    options.retain_forward_rule,
+                                )),
+                        }
                     })
                     .collect::<Vec<_>>();
-                let notice = client
-                    .try_subscribe_many_tracked(filters)
-                    .map_err(adapter_v5::map_client_error)?;
+                let notice = if let Some(properties) = properties {
+                    client.try_subscribe_many_with_properties_tracked(filters, properties)
+                } else {
+                    client.try_subscribe_many_tracked(filters)
+                }
+                .map_err(adapter_v5::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     adapter_v5::map_subscribe_notice(notice.wait_async().await)
                 }))
@@ -435,31 +465,45 @@ impl ClientHandle {
             .await
     }
 
-    fn try_unsubscribe(&self, filters: Vec<String>) -> Result<Admission> {
+    fn try_unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
         let _admission_guard = self
             .shared
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
         self.shared.require_running()?;
-        if filters.is_empty() {
+        if command.filters.is_empty() {
             return Err(protocol_option_error(
                 "unsubscribe requires at least one filter",
             ));
         }
+        validate_unsubscribe_properties(&command.protocol)?;
         match &self.shared.client {
             ProtocolClient::V311(client) => {
+                if matches!(command.protocol, UnsubscribeProtocolOptions::V5(_)) {
+                    return Err(protocol_option_error(
+                        "MQTT 5 unsubscribe properties require MQTT 5",
+                    ));
+                }
                 let notice = client
-                    .try_unsubscribe_many_tracked(filters)
+                    .try_unsubscribe_many_tracked(command.filters)
                     .map_err(adapter_v4::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     adapter_v4::map_unsubscribe_notice(notice.wait_async().await)
                 }))
             }
             ProtocolClient::V5(client) => {
-                let notice = client
-                    .try_unsubscribe_many_tracked(filters)
-                    .map_err(adapter_v5::map_client_error)?;
+                let notice = match command.protocol {
+                    UnsubscribeProtocolOptions::VersionNeutral => {
+                        client.try_unsubscribe_many_tracked(command.filters)
+                    }
+                    UnsubscribeProtocolOptions::V5(properties) => client
+                        .try_unsubscribe_many_with_properties_tracked(
+                            command.filters,
+                            adapter_v5::to_unsubscribe_properties(properties),
+                        ),
+                }
+                .map_err(adapter_v5::map_client_error)?;
                 self.shared.admission(Box::pin(async move {
                     adapter_v5::map_unsubscribe_notice(notice.wait_async().await)
                 }))
@@ -467,8 +511,8 @@ impl ClientHandle {
         }
     }
 
-    async fn unsubscribe(&self, filters: Vec<String>) -> Result<Admission> {
-        self.retry_on_backpressure(|| self.try_unsubscribe(filters.clone()))
+    async fn unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
+        self.retry_on_backpressure(|| self.try_unsubscribe(command.clone()))
             .await
     }
 
@@ -620,6 +664,37 @@ pub(crate) fn validate_mqtt_utf8_string(value: &str, name: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_user_properties(properties: &[(String, String)], name: &str) -> Result<()> {
+    for (key, value) in properties {
+        validate_mqtt_utf8_string(key, &format!("{name} key"))?;
+        validate_mqtt_utf8_string(value, &format!("{name} value"))?;
+    }
+    Ok(())
+}
+
+fn validate_subscribe_properties(options: &SubscribeProtocolOptions) -> Result<()> {
+    let SubscribeProtocolOptions::V5(properties) = options else {
+        return Ok(());
+    };
+    if properties.subscription_identifier == Some(0)
+        || properties
+            .subscription_identifier
+            .is_some_and(|identifier| identifier > 268_435_455)
+    {
+        return Err(protocol_option_error(
+            "subscription identifier must be between 1 and 268435455",
+        ));
+    }
+    validate_user_properties(&properties.user_properties, "SUBSCRIBE user property")
+}
+
+fn validate_unsubscribe_properties(options: &UnsubscribeProtocolOptions) -> Result<()> {
+    let UnsubscribeProtocolOptions::V5(properties) = options else {
+        return Ok(());
+    };
+    validate_user_properties(&properties.user_properties, "UNSUBSCRIBE user property")
 }
 
 pub(crate) fn protocol_option_error(message: impl Into<String>) -> Error {

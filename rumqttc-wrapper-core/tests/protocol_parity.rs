@@ -5,8 +5,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    AckMode, AckToken, Command, DeliveryStatus, ErrorKind, NativeClient, PublishCommand, QoS,
-    V5PublishProperties, WrapperEvent,
+    AckMode, AckToken, Command, Completion, DeliveryStatus, ErrorKind, NativeClient,
+    PublishCommand, PublishProtocolOptions, QoS, SubscribeCommand, SubscribeProtocolOptions,
+    Subscription, SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
+    V5PublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
+    V5UnsubscribeProperties, WrapperEvent,
 };
 
 fn read_frame(stream: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
@@ -80,7 +83,7 @@ fn mqtt5_publish_rejection_preserves_reason_code() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     let error = admission
@@ -131,7 +134,7 @@ fn rejects_invalid_client_originated_mqtt5_publish_properties() {
                 payload,
                 qos: QoS::AtMostOnce,
                 retain: false,
-                v5_properties: Some(properties),
+                protocol: PublishProtocolOptions::V5(properties),
             }))
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Admission);
@@ -146,7 +149,10 @@ fn rejects_invalid_client_originated_mqtt5_publish_properties() {
                 payload: payload(),
                 qos: QoS::AtMostOnce,
                 retain: false,
-                v5_properties: properties,
+                protocol: properties.map_or(
+                    PublishProtocolOptions::VersionNeutral,
+                    PublishProtocolOptions::V5,
+                ),
             }))
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Admission);
@@ -262,7 +268,7 @@ fn rejects_unmapped_topic_alias_with_empty_topic() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            v5_properties: Some(V5PublishProperties {
+            protocol: PublishProtocolOptions::V5(V5PublishProperties {
                 topic_alias: Some(1),
                 ..V5PublishProperties::default()
             }),
@@ -316,7 +322,7 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            v5_properties: Some(V5PublishProperties {
+            protocol: PublishProtocolOptions::V5(V5PublishProperties {
                 topic_alias: Some(1),
                 ..V5PublishProperties::default()
             }),
@@ -334,7 +340,7 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
             payload: Bytes::from_static(b"second payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            v5_properties: Some(V5PublishProperties {
+            protocol: PublishProtocolOptions::V5(V5PublishProperties {
                 topic_alias: Some(1),
                 ..V5PublishProperties::default()
             }),
@@ -346,6 +352,189 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
             .wait_timeout(Duration::from_secs(2))
             .is_ok()
     );
+
+    handle.try_admit(Command::ImmediateDisconnect).unwrap();
+    native.join(Duration::from_secs(2)).unwrap();
+    broker.join().unwrap();
+}
+
+#[test]
+fn mqtt5_subscribe_and_unsubscribe_extensions_reach_the_wire() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = read_frame(&mut stream).unwrap();
+        stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap();
+
+        let (header, default_subscribe) = read_frame(&mut stream).unwrap();
+        assert_eq!(header >> 4, 8);
+        assert_eq!(
+            &default_subscribe[2..],
+            &[0, 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0]
+        );
+        stream
+            .write_all(&[0x90, 0x04, default_subscribe[0], default_subscribe[1], 0, 0])
+            .unwrap();
+
+        let (header, subscribe) = read_frame(&mut stream).unwrap();
+        assert_eq!(header >> 4, 8);
+        assert_eq!(
+            &subscribe[2..12],
+            &[9, 0x0b, 7, 0x26, 0, 1, b'k', 0, 1, b'v']
+        );
+        assert_eq!(&subscribe[12..], &[0, 3, b'a', b'/', b'#', 0x1d]);
+        stream
+            .write_all(&[0x90, 0x04, subscribe[0], subscribe[1], 0, 1])
+            .unwrap();
+
+        let (header, unsubscribe) = read_frame(&mut stream).unwrap();
+        assert_eq!(header >> 4, 10);
+        assert_eq!(
+            &unsubscribe[2..],
+            &[7, 0x26, 0, 1, b'u', 0, 1, b'p', 0, 3, b'a', b'/', b'#']
+        );
+        stream
+            .write_all(&[0xb0, 0x04, unsubscribe[0], unsubscribe[1], 0, 0])
+            .unwrap();
+        while let Some((header, _)) = read_frame(&mut stream) {
+            if header >> 4 == 14 {
+                break;
+            }
+        }
+    });
+
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+        "subscription-extensions",
+        "127.0.0.1",
+        port,
+    ))
+    .unwrap();
+    let handle = native.handle();
+    let mut events = native.take_events().unwrap();
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Some(WrapperEvent::Connected { .. })
+    ));
+
+    let default_subscribe = handle
+        .try_admit(Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "default".into(),
+                qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::V5(V5SubscriptionOptions::default()),
+            }],
+            protocol: SubscribeProtocolOptions::V5(V5SubscribeProperties::default()),
+        }))
+        .unwrap();
+    assert!(matches!(
+        default_subscribe
+            .completion
+            .wait_timeout(Duration::from_secs(2))
+            .unwrap(),
+        Completion::Subscribe(_)
+    ));
+
+    let subscribe = handle
+        .try_admit(Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "a/#".into(),
+                qos: QoS::AtLeastOnce,
+                protocol: SubscriptionProtocolOptions::V5(V5SubscriptionOptions {
+                    no_local: true,
+                    retain_as_published: true,
+                    retain_forward_rule: V5RetainForwardRule::OnNewSubscribe,
+                }),
+            }],
+            protocol: SubscribeProtocolOptions::V5(V5SubscribeProperties {
+                subscription_identifier: Some(7),
+                user_properties: vec![("k".into(), "v".into())],
+            }),
+        }))
+        .unwrap();
+    assert!(matches!(
+        subscribe
+            .completion
+            .wait_timeout(Duration::from_secs(2))
+            .unwrap(),
+        Completion::Subscribe(_)
+    ));
+
+    let unsubscribe = handle
+        .try_admit(Command::Unsubscribe(UnsubscribeCommand {
+            filters: vec!["a/#".into()],
+            protocol: UnsubscribeProtocolOptions::V5(V5UnsubscribeProperties {
+                user_properties: vec![("u".into(), "p".into())],
+            }),
+        }))
+        .unwrap();
+    assert!(matches!(
+        unsubscribe
+            .completion
+            .wait_timeout(Duration::from_secs(2))
+            .unwrap(),
+        Completion::Unsubscribe(_)
+    ));
+
+    handle.try_admit(Command::ImmediateDisconnect).unwrap();
+    native.join(Duration::from_secs(2)).unwrap();
+    broker.join().unwrap();
+}
+
+#[test]
+fn mqtt5_command_variants_are_not_admitted_to_v311_clients() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = read_frame(&mut stream).unwrap();
+        stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
+        while let Some((header, _)) = read_frame(&mut stream) {
+            assert!(!matches!(header >> 4, 3 | 8 | 10));
+            if header >> 4 == 14 {
+                break;
+            }
+        }
+    });
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v311(
+        "reject-v5-options",
+        "127.0.0.1",
+        port,
+    ))
+    .unwrap();
+    let handle = native.handle();
+    let mut events = native.take_events().unwrap();
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Some(WrapperEvent::Connected { .. })
+    ));
+
+    let commands = [
+        Command::Publish(PublishCommand {
+            topic: "a".into(),
+            payload: Bytes::new(),
+            qos: QoS::AtMostOnce,
+            retain: false,
+            protocol: PublishProtocolOptions::V5(V5PublishProperties::default()),
+        }),
+        Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "a/#".into(),
+                qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::V5(V5SubscriptionOptions::default()),
+            }],
+            protocol: SubscribeProtocolOptions::VersionNeutral,
+        }),
+        Command::Unsubscribe(UnsubscribeCommand {
+            filters: vec!["a/#".into()],
+            protocol: UnsubscribeProtocolOptions::V5(V5UnsubscribeProperties::default()),
+        }),
+    ];
+    for command in commands {
+        let error = handle.try_admit(command).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Admission);
+        assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+    }
 
     handle.try_admit(Command::ImmediateDisconnect).unwrap();
     native.join(Duration::from_secs(2)).unwrap();

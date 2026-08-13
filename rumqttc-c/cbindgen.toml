@@ -14,7 +14,12 @@ include = [
     "rumqttc_user_property_t",
     "rumqttc_v5_publish_properties_t",
     "rumqttc_publish_options_t",
+    "rumqttc_v5_subscription_options_t",
     "rumqttc_subscription_t",
+    "rumqttc_v5_subscribe_properties_t",
+    "rumqttc_subscribe_options_t",
+    "rumqttc_v5_unsubscribe_properties_t",
+    "rumqttc_unsubscribe_options_t",
     "rumqttc_diagnostics_t",
     "rumqttc_config",
     "rumqttc_client",
@@ -29,4 +34,3 @@ include = [
 "rumqttc_completion" = "rumqttc_completion_t"
 "rumqttc_event" = "rumqttc_event_t"
 "rumqttc_error" = "rumqttc_error_t"
-

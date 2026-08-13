@@ -8,7 +8,7 @@ static int subscribe(rumqttc_client_t *client,
   rumqttc_completion_t *completion = NULL;
   rumqttc_error_t *error = NULL;
   int failed = example_report(rumqttc_client_subscribe_tracked(
-                                  client, subscription, 1, &completion, &error),
+                                  client, subscription, 1, NULL, &completion, &error),
                               &error, "subscribe");
 
   if (!failed)

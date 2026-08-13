@@ -1,6 +1,18 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc-wrapper-core` / `rumqttc-c` (Breaking Change): Replace nullable MQTT
+  5 command fields with explicit operation-specific protocol options and add
+  MQTT 5 SUBSCRIBE properties, per-filter No Local/Retain As Published/Retain
+  Handling, and UNSUBSCRIBE User Properties. Rust callers now set
+  `PublishCommand::protocol`, both scopes of `SubscribeCommand`, and an
+  `UnsubscribeCommand`; C callers initialize the new v5 records, select
+  `RUMQTTC_PROTOCOL_OPTIONS_V5`, and pass the new subscribe/unsubscribe options
+  argument. Version-neutral commands remain valid for MQTT 3.1.1 and MQTT 5,
+  while every v5 variant is rejected before admission on MQTT 3.1.1.
+- `rumqttc` v5: Validate SUBSCRIBE/UNSUBSCRIBE properties and reject No Local on
+  shared subscriptions before request-channel admission instead of allowing an
+  invalid packet to fail during event-loop serialization.
 - Documentation: Add checked-in Docker Compose usage examples that build and
   run MQTT 3.1.1 and MQTT 5 clients against a health-checked Mosquitto broker.
 - `rumqttc-core`: Add eager, fallible rustls constructors for native roots or

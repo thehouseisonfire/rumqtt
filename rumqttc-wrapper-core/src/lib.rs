@@ -16,7 +16,11 @@ mod protocol;
 mod runtime;
 mod shutdown;
 
-pub use command::{Command, PublishCommand, SubscribeCommand, Subscription};
+pub use command::{
+    Command, PublishCommand, PublishProtocolOptions, SubscribeCommand, SubscribeProtocolOptions,
+    Subscription, SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
+    V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties,
+};
 pub use completion::{
     Admission, BrokerReason, Completion, CompletionHandle, CompletionWaitOutcome,
     PublishCompletion, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,

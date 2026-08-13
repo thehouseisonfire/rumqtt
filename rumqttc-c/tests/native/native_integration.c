@@ -38,7 +38,7 @@ static void test_protocol_round_trip(rumqttc_protocol_t protocol) {
     rumqttc_bytes_view_t payload = {NULL, 0};
     rumqttc_qos_t qos_value = 0;
     uint8_t retain = 0, duplicate = 0, ack_available = 0;
-    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1,
+    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
                                            &completion, NULL));
     native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
     rumqttc_completion_destroy(completion);
@@ -93,7 +93,7 @@ static void test_protocol_round_trip(rumqttc_protocol_t protocol) {
     completion = NULL;
     {
       rumqttc_string_view_t filter = native_string("rumqttc/native/incoming");
-      CHECK(rumqttc_client_unsubscribe_tracked(client, &filter, 1, &completion,
+      CHECK(rumqttc_client_unsubscribe_tracked(client, &filter, 1, NULL, &completion,
                                                NULL));
     }
     native_wait_completion(completion, RUMQTTC_COMPLETION_UNSUBSCRIBE);
@@ -114,7 +114,7 @@ static void test_manual_ack(rumqttc_protocol_t protocol) {
   rumqttc_qos_t qos = 0;
   rumqttc_string_view_t topic;
   rumqttc_bytes_view_t payload;
-  CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, &completion,
+  CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL, &completion,
                                          NULL));
   native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
   rumqttc_completion_destroy(completion);
@@ -249,7 +249,7 @@ static void test_backpressure_and_overflow(void) {
     rumqttc_completion_t *completion = NULL;
     rumqttc_event_t *event;
     rumqttc_event_kind_t kind = 0;
-    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1,
+    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
                                            &completion, NULL));
     native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
     rumqttc_completion_destroy(completion);
@@ -347,7 +347,7 @@ static void test_close_and_pending_handles(void) {
         native_subscription("rumqttc/native/overflow", RUMQTTC_QOS_0);
     rumqttc_completion_t *subscribe = NULL;
     rumqttc_event_t *retained_event;
-    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, &subscribe,
+    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL, &subscribe,
                                            NULL));
     native_wait_completion(subscribe, RUMQTTC_COMPLETION_SUBSCRIBE);
     rumqttc_completion_destroy(subscribe);

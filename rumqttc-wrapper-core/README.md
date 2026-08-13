@@ -17,13 +17,20 @@ genuinely overlap. Observable protocol differences remain explicit:
 
 - MQTT 3.1.1 uses `V311Config`, including `clean_session`;
 - MQTT 5 uses `V5Config`, including `clean_start` and session expiry;
-- MQTT 5 publish properties remain in `V5PublishProperties`; and
+- MQTT 5 publish, subscribe, per-filter subscription, and unsubscribe extensions use explicit
+  operation-specific protocol option enums; and
 - broker reason information is present only where the selected protocol
   exposes it.
 
 Supplying an option that is incompatible with the selected protocol is an
 error. The core must not silently discard MQTT 5 properties for an MQTT 3.1.1
 client or invent a common interpretation for settings whose behavior differs.
+`VersionNeutral` commands work with either protocol. Selecting a `V5` variant,
+including a default-valued variant, requires an MQTT 5 client and is rejected
+before request-channel admission on an MQTT 3.1.1 client. SUBSCRIBE packet
+properties remain separate from each filter's No Local, Retain As Published,
+and Retain Handling options; UNSUBSCRIBE User Properties remain scoped to the
+UNSUBSCRIBE command.
 This includes CONNECT authentication: MQTT 3.1.1 requires a username whenever
 a password is present, while MQTT 5 permits username-only, password-only, and
 combined credentials. Client identifiers and usernames are validated as MQTT

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
     ClientConfig, Command, Completion, DeliveryStatus, NativeClient, ProtocolVersion,
-    PublishCommand, PublishCompletion, QoS, WrapperEvent,
+    PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, WrapperEvent,
 };
 
 fn read_frame(stream: &mut TcpStream) -> Option<u8> {
@@ -70,7 +70,7 @@ fn assert_graceful_shutdown_drains_ready_publish(protocol: ProtocolVersion) {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     publish_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -147,7 +147,7 @@ fn assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(protocol: Protoc
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     let close = handle.try_admit(Command::ImmediateDisconnect).unwrap();
@@ -313,7 +313,7 @@ fn dropping_owner_escalates_an_unbounded_graceful_shutdown() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     publish_rx.recv_timeout(Duration::from_secs(2)).unwrap();

@@ -12,7 +12,7 @@ static int subscribe(rumqttc_client_t *client) {
   subscription.filter = example_string("rumqttc/native/incoming");
   subscription.qos = RUMQTTC_QOS_1;
   failed = example_report(rumqttc_client_subscribe_tracked(
-                              client, &subscription, 1, &completion, &error),
+                              client, &subscription, 1, NULL, &completion, &error),
                           &error, "subscribe");
   if (!failed)
     failed = example_wait(completion, RUMQTTC_COMPLETION_SUBSCRIBE);

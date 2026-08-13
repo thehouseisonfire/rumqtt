@@ -147,7 +147,7 @@ use `_seconds`; event delivery, receive, completion wait, close, and destruction
 use `_ms`.
 
 Initialize extensible records with the header macros instead of manually
-maintaining `struct_size` and reserved fields:
+maintaining `struct_size`, selectors, and reserved fields:
 
 ```c
 rumqttc_publish_options_t publish = RUMQTTC_PUBLISH_OPTIONS_INIT;
@@ -157,10 +157,32 @@ rumqttc_subscription_t subscription = RUMQTTC_SUBSCRIPTION_INIT;
 subscription.filter = (rumqttc_string_view_t){"sensors/+", 9};
 ```
 
-Corresponding defaults are provided for user properties, MQTT 5 publish
-properties, and diagnostics through `RUMQTTC_USER_PROPERTY_INIT`,
-`RUMQTTC_V5_PUBLISH_PROPERTIES_INIT`, and `RUMQTTC_DIAGNOSTICS_INIT`. All five
-macros compile as aggregate initializers in C11 and C++17.
+For MQTT 5 subscription extensions, select MQTT 5 explicitly at both scopes:
+
+```c
+rumqttc_v5_subscription_options_t filter_v5 =
+    RUMQTTC_V5_SUBSCRIPTION_OPTIONS_INIT;
+filter_v5.no_local = 1;
+subscription.protocol_options = RUMQTTC_PROTOCOL_OPTIONS_V5;
+subscription.v5_options = &filter_v5;
+
+rumqttc_v5_subscribe_properties_t properties =
+    RUMQTTC_V5_SUBSCRIBE_PROPERTIES_INIT;
+properties.subscription_identifier_present = 1;
+properties.subscription_identifier = 7;
+rumqttc_subscribe_options_t options = RUMQTTC_SUBSCRIBE_OPTIONS_INIT;
+options.protocol_options = RUMQTTC_PROTOCOL_OPTIONS_V5;
+options.v5_properties = &properties;
+
+rumqttc_client_subscribe_tracked(client, &subscription, 1, &options,
+                                 &completion, &error);
+```
+
+Passing `NULL` for the subscribe or unsubscribe options pointer selects the
+version-neutral behavior. Unknown selectors, inconsistent selector/pointer
+pairs, and MQTT 5 options submitted to an MQTT 3.1.1 client are rejected
+without admission. Initializer macros are provided for every size-versioned
+record and compile as aggregate initializers in C11 and C++17.
 
 ## Complete C examples
 

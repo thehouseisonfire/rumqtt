@@ -1,7 +1,8 @@
 use crate::{
     BrokerReason, Completion, DeliveryStatus, Error, ErrorKind, OutgoingActivity, PublishCommand,
-    PublishCompletion, QoS, Result, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
-    UnsubscribeResult, V5PublishProperties,
+    PublishCompletion, PublishProtocolOptions, QoS, Result, SubscribeCompletion, SubscribeResult,
+    UnsubscribeCompletion, UnsubscribeResult, V5PublishProperties, V5RetainForwardRule,
+    V5SubscribeProperties, V5UnsubscribeProperties,
 };
 
 pub(crate) fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
@@ -350,10 +351,36 @@ fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
 
 pub(crate) fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {
     let options = rumqttc_v5::PublishOptions::new(to_qos(command.qos)).retain(command.retain);
-    if let Some(properties) = command.v5_properties.clone() {
-        options.properties(to_properties(properties))
-    } else {
-        options
+    match command.protocol.clone() {
+        PublishProtocolOptions::VersionNeutral => options,
+        PublishProtocolOptions::V5(properties) => options.properties(to_properties(properties)),
+    }
+}
+
+pub(crate) const fn to_retain_forward_rule(
+    rule: V5RetainForwardRule,
+) -> rumqttc_v5::RetainForwardRule {
+    match rule {
+        V5RetainForwardRule::OnEverySubscribe => rumqttc_v5::RetainForwardRule::OnEverySubscribe,
+        V5RetainForwardRule::OnNewSubscribe => rumqttc_v5::RetainForwardRule::OnNewSubscribe,
+        V5RetainForwardRule::Never => rumqttc_v5::RetainForwardRule::Never,
+    }
+}
+
+pub(crate) fn to_subscribe_properties(
+    properties: V5SubscribeProperties,
+) -> rumqttc_v5::SubscribeProperties {
+    rumqttc_v5::SubscribeProperties {
+        id: properties.subscription_identifier,
+        user_properties: properties.user_properties,
+    }
+}
+
+pub(crate) fn to_unsubscribe_properties(
+    properties: V5UnsubscribeProperties,
+) -> rumqttc_v5::UnsubscribeProperties {
+    rumqttc_v5::UnsubscribeProperties {
+        user_properties: properties.user_properties,
     }
 }
 

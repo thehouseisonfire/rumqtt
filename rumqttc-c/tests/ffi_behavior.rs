@@ -215,6 +215,7 @@ fn assert_protocol_round_trip(protocol: u32) {
                 qos,
                 retain: 0,
                 reserved: [0; 3],
+                protocol_options: 0,
                 v5_properties: ptr::null(),
             };
             let mut completion = ptr::null_mut();
@@ -241,10 +242,45 @@ fn assert_protocol_round_trip(protocol: u32) {
             rumqttc_completion_destroy(completion);
         }
 
+        let user_property = rumqttc_user_property_t {
+            struct_size: u32::try_from(size_of::<rumqttc_user_property_t>()).unwrap(),
+            name: string_view("source"),
+            value: string_view("ffi"),
+        };
+        let v5_filter_options = rumqttc_v5_subscription_options_t {
+            struct_size: u32::try_from(size_of::<rumqttc_v5_subscription_options_t>()).unwrap(),
+            no_local: 1,
+            retain_as_published: 1,
+            reserved: [0; 2],
+            retain_forward_rule: 1,
+        };
+        let v5_subscribe_properties = rumqttc_v5_subscribe_properties_t {
+            struct_size: u32::try_from(size_of::<rumqttc_v5_subscribe_properties_t>()).unwrap(),
+            subscription_identifier_present: 1,
+            reserved: [0; 3],
+            subscription_identifier: 7,
+            user_properties: &user_property,
+            user_property_count: 1,
+        };
+        let subscribe_options = rumqttc_subscribe_options_t {
+            struct_size: u32::try_from(size_of::<rumqttc_subscribe_options_t>()).unwrap(),
+            protocol_options: if protocol == 2 { 5 } else { 0 },
+            v5_properties: if protocol == 2 {
+                &v5_subscribe_properties
+            } else {
+                ptr::null()
+            },
+        };
         let subscription = rumqttc_subscription_t {
             struct_size: u32::try_from(size_of::<rumqttc_subscription_t>()).unwrap(),
             filter: string_view("ffi/events"),
             qos: 1,
+            protocol_options: if protocol == 2 { 5 } else { 0 },
+            v5_options: if protocol == 2 {
+                &v5_filter_options
+            } else {
+                ptr::null()
+            },
         };
         let mut completion = ptr::null_mut();
         assert_eq!(
@@ -252,6 +288,7 @@ fn assert_protocol_round_trip(protocol: u32) {
                 client,
                 &subscription,
                 1,
+                &subscribe_options,
                 &mut completion,
                 ptr::null_mut(),
             ),
@@ -283,12 +320,27 @@ fn assert_protocol_round_trip(protocol: u32) {
         rumqttc_completion_destroy(completion);
 
         let filter = string_view("ffi/events");
+        let v5_unsubscribe_properties = rumqttc_v5_unsubscribe_properties_t {
+            struct_size: u32::try_from(size_of::<rumqttc_v5_unsubscribe_properties_t>()).unwrap(),
+            user_properties: &user_property,
+            user_property_count: 1,
+        };
+        let unsubscribe_options = rumqttc_unsubscribe_options_t {
+            struct_size: u32::try_from(size_of::<rumqttc_unsubscribe_options_t>()).unwrap(),
+            protocol_options: if protocol == 2 { 5 } else { 0 },
+            v5_properties: if protocol == 2 {
+                &v5_unsubscribe_properties
+            } else {
+                ptr::null()
+            },
+        };
         completion = ptr::null_mut();
         assert_eq!(
             rumqttc_client_unsubscribe_tracked(
                 client,
                 &filter,
                 1,
+                &unsubscribe_options,
                 &mut completion,
                 ptr::null_mut(),
             ),
@@ -415,6 +467,7 @@ fn concurrent_close_honors_each_callers_timeout() {
             qos: 1,
             retain: 0,
             reserved: [0; 3],
+            protocol_options: 0,
             v5_properties: ptr::null(),
         };
         let mut completion = ptr::null_mut();

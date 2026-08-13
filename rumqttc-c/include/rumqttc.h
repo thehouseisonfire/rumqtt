@@ -44,6 +44,15 @@ typedef uint32_t rumqttc_protocol_t;
 #define RUMQTTC_PROTOCOL_V311 1u
 #define RUMQTTC_PROTOCOL_V5 2u
 
+typedef uint32_t rumqttc_protocol_options_t;
+#define RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL 0u
+#define RUMQTTC_PROTOCOL_OPTIONS_V5 5u
+
+typedef uint32_t rumqttc_retain_forward_rule_t;
+#define RUMQTTC_RETAIN_ON_EVERY_SUBSCRIBE 0u
+#define RUMQTTC_RETAIN_ON_NEW_SUBSCRIBE 1u
+#define RUMQTTC_RETAIN_NEVER 2u
+
 typedef uint32_t rumqttc_qos_t;
 #define RUMQTTC_QOS_0 0u
 #define RUMQTTC_QOS_1 1u
@@ -170,14 +179,52 @@ typedef struct rumqttc_publish_options_t {
     rumqttc_qos_t qos;
     uint8_t retain;
     uint8_t reserved[3];
+    rumqttc_protocol_options_t protocol_options;
     const rumqttc_v5_publish_properties_t *v5_properties;
 } rumqttc_publish_options_t;
+
+typedef struct rumqttc_v5_subscription_options_t {
+    uint32_t struct_size;
+    uint8_t no_local;
+    uint8_t retain_as_published;
+    uint8_t reserved[2];
+    rumqttc_retain_forward_rule_t retain_forward_rule;
+} rumqttc_v5_subscription_options_t;
 
 typedef struct rumqttc_subscription_t {
     uint32_t struct_size;
     rumqttc_string_view_t filter;
     rumqttc_qos_t qos;
+    rumqttc_protocol_options_t protocol_options;
+    const rumqttc_v5_subscription_options_t *v5_options;
 } rumqttc_subscription_t;
+
+typedef struct rumqttc_v5_subscribe_properties_t {
+    uint32_t struct_size;
+    uint8_t subscription_identifier_present;
+    uint8_t reserved[3];
+    uint32_t subscription_identifier;
+    const rumqttc_user_property_t *user_properties;
+    size_t user_property_count;
+} rumqttc_v5_subscribe_properties_t;
+
+typedef struct rumqttc_subscribe_options_t {
+    uint32_t struct_size;
+    rumqttc_protocol_options_t protocol_options;
+    const rumqttc_v5_subscribe_properties_t *v5_properties;
+} rumqttc_subscribe_options_t;
+
+typedef struct rumqttc_v5_unsubscribe_properties_t {
+    uint32_t struct_size;
+    const rumqttc_user_property_t *user_properties;
+    size_t user_property_count;
+} rumqttc_v5_unsubscribe_properties_t;
+
+typedef struct rumqttc_unsubscribe_options_t {
+    uint32_t struct_size;
+    rumqttc_protocol_options_t protocol_options;
+    const rumqttc_v5_unsubscribe_properties_t *v5_properties;
+} rumqttc_unsubscribe_options_t;
 
 typedef struct rumqttc_diagnostics_t {
     uint32_t struct_size;
@@ -200,9 +247,24 @@ typedef struct rumqttc_diagnostics_t {
     { sizeof(rumqttc_v5_publish_properties_t), { NULL, 0 }, 0, 0, 0, 0, \
       { NULL, 0 }, { NULL, 0 }, 0, 0, 0, { 0, 0, 0 }, 0, NULL, 0 }
 #define RUMQTTC_PUBLISH_OPTIONS_INIT \
-    { sizeof(rumqttc_publish_options_t), RUMQTTC_QOS_0, 0, { 0, 0, 0 }, NULL }
+    { sizeof(rumqttc_publish_options_t), RUMQTTC_QOS_0, 0, { 0, 0, 0 }, \
+      RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, NULL }
+#define RUMQTTC_V5_SUBSCRIPTION_OPTIONS_INIT \
+    { sizeof(rumqttc_v5_subscription_options_t), 0, 0, { 0, 0 }, \
+      RUMQTTC_RETAIN_ON_EVERY_SUBSCRIBE }
 #define RUMQTTC_SUBSCRIPTION_INIT \
-    { sizeof(rumqttc_subscription_t), { NULL, 0 }, RUMQTTC_QOS_0 }
+    { sizeof(rumqttc_subscription_t), { NULL, 0 }, RUMQTTC_QOS_0, \
+      RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, NULL }
+#define RUMQTTC_V5_SUBSCRIBE_PROPERTIES_INIT \
+    { sizeof(rumqttc_v5_subscribe_properties_t), 0, { 0, 0, 0 }, 0, NULL, 0 }
+#define RUMQTTC_SUBSCRIBE_OPTIONS_INIT \
+    { sizeof(rumqttc_subscribe_options_t), \
+      RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, NULL }
+#define RUMQTTC_V5_UNSUBSCRIBE_PROPERTIES_INIT \
+    { sizeof(rumqttc_v5_unsubscribe_properties_t), NULL, 0 }
+#define RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT \
+    { sizeof(rumqttc_unsubscribe_options_t), \
+      RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, NULL }
 #define RUMQTTC_DIAGNOSTICS_INIT \
     { sizeof(rumqttc_diagnostics_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 
@@ -240,10 +302,10 @@ RUMQTTC_API void rumqttc_client_abandon(rumqttc_client_t *client);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_publish(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_publish_tracked(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_try_subscribe(rumqttc_client_t *client, const rumqttc_subscription_t *subscriptions, size_t count, uint64_t *operation_id_out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_subscribe_tracked(rumqttc_client_t *client, const rumqttc_subscription_t *subscriptions, size_t count, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_try_unsubscribe(rumqttc_client_t *client, const rumqttc_string_view_t *filters, size_t count, uint64_t *operation_id_out, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_client_unsubscribe_tracked(rumqttc_client_t *client, const rumqttc_string_view_t *filters, size_t count, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_subscribe(rumqttc_client_t *client, const rumqttc_subscription_t *subscriptions, size_t count, const rumqttc_subscribe_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_subscribe_tracked(rumqttc_client_t *client, const rumqttc_subscription_t *subscriptions, size_t count, const rumqttc_subscribe_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_unsubscribe(rumqttc_client_t *client, const rumqttc_string_view_t *filters, size_t count, const rumqttc_unsubscribe_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_unsubscribe_tracked(rumqttc_client_t *client, const rumqttc_string_view_t *filters, size_t count, const rumqttc_unsubscribe_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge(rumqttc_client_t *client, rumqttc_event_t *event, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_tracked(rumqttc_client_t *client, rumqttc_event_t *event, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_diagnostics_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);

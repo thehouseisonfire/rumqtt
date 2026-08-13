@@ -15,8 +15,18 @@ _Static_assert(sizeof(rumqttc_v5_publish_properties_t) == 96,
                "v5 properties ABI changed");
 _Static_assert(sizeof(rumqttc_publish_options_t) == 24,
                "publish options ABI changed");
-_Static_assert(sizeof(rumqttc_subscription_t) == 32,
+_Static_assert(sizeof(rumqttc_v5_subscription_options_t) == 12,
+               "v5 subscription options ABI changed");
+_Static_assert(sizeof(rumqttc_subscription_t) == 40,
                "subscription ABI changed");
+_Static_assert(sizeof(rumqttc_v5_subscribe_properties_t) == 32,
+               "v5 subscribe properties ABI changed");
+_Static_assert(sizeof(rumqttc_subscribe_options_t) == 16,
+               "subscribe options ABI changed");
+_Static_assert(sizeof(rumqttc_v5_unsubscribe_properties_t) == 24,
+               "v5 unsubscribe properties ABI changed");
+_Static_assert(sizeof(rumqttc_unsubscribe_options_t) == 16,
+               "unsubscribe options ABI changed");
 _Static_assert(sizeof(rumqttc_diagnostics_t) == 48, "diagnostics ABI changed");
 _Static_assert(offsetof(rumqttc_v5_publish_properties_t, user_properties) == 80,
                "v5 properties field offset changed");
@@ -27,7 +37,17 @@ int main(void) {
   rumqttc_v5_publish_properties_t properties =
       RUMQTTC_V5_PUBLISH_PROPERTIES_INIT;
   rumqttc_publish_options_t publish_options = RUMQTTC_PUBLISH_OPTIONS_INIT;
+  rumqttc_v5_subscription_options_t v5_subscription_options =
+      RUMQTTC_V5_SUBSCRIPTION_OPTIONS_INIT;
   rumqttc_subscription_t subscription = RUMQTTC_SUBSCRIPTION_INIT;
+  rumqttc_v5_subscribe_properties_t v5_subscribe_properties =
+      RUMQTTC_V5_SUBSCRIBE_PROPERTIES_INIT;
+  rumqttc_subscribe_options_t subscribe_options =
+      RUMQTTC_SUBSCRIBE_OPTIONS_INIT;
+  rumqttc_v5_unsubscribe_properties_t v5_unsubscribe_properties =
+      RUMQTTC_V5_UNSUBSCRIBE_PROPERTIES_INIT;
+  rumqttc_unsubscribe_options_t unsubscribe_options =
+      RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT;
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
   rumqttc_config_t *config = NULL;
   rumqttc_error_t *error = NULL;
@@ -42,9 +62,22 @@ int main(void) {
          properties.user_property_count == 0);
   assert(publish_options.struct_size == sizeof(publish_options));
   assert(publish_options.qos == RUMQTTC_QOS_0 &&
+         publish_options.protocol_options ==
+             RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL &&
          publish_options.v5_properties == NULL);
+  assert(v5_subscription_options.struct_size ==
+         sizeof(v5_subscription_options));
   assert(subscription.struct_size == sizeof(subscription));
-  assert(subscription.filter.data == NULL && subscription.filter.len == 0);
+  assert(subscription.filter.data == NULL && subscription.filter.len == 0 &&
+         subscription.protocol_options ==
+             RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL &&
+         subscription.v5_options == NULL);
+  assert(v5_subscribe_properties.struct_size ==
+         sizeof(v5_subscribe_properties));
+  assert(subscribe_options.struct_size == sizeof(subscribe_options));
+  assert(v5_unsubscribe_properties.struct_size ==
+         sizeof(v5_unsubscribe_properties));
+  assert(unsubscribe_options.struct_size == sizeof(unsubscribe_options));
   assert(diagnostics.struct_size == sizeof(diagnostics));
   assert(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, &config, &error) ==
          RUMQTTC_OK);

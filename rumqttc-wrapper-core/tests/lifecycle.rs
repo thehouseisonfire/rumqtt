@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
     ClientConfig, Command, Completion, DiagnosticsSnapshot, ErrorKind, NativeClient,
-    ProtocolVersion, PublishCommand, PublishCompletion, QoS, SubscribeCommand, Subscription,
-    WrapperEvent,
+    ProtocolVersion, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS,
+    SubscribeCommand, SubscribeProtocolOptions, Subscription, SubscriptionProtocolOptions,
+    UnsubscribeCommand, UnsubscribeProtocolOptions, WrapperEvent,
 };
 
 fn spawn_broker(protocol: ProtocolVersion) -> (u16, thread::JoinHandle<()>) {
@@ -135,7 +136,7 @@ fn assert_sustained_control_traffic_does_not_starve_mqtt_progress(protocol: Prot
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
 
@@ -151,7 +152,7 @@ fn assert_sustained_control_traffic_does_not_starve_mqtt_progress(protocol: Prot
                     payload: Bytes::from_static(b"traffic"),
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    v5_properties: None,
+                    protocol: PublishProtocolOptions::VersionNeutral,
                 }),
             ] {
                 match producer_handle.try_admit(command) {
@@ -199,7 +200,7 @@ fn run_lifecycle(protocol: ProtocolVersion) {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     assert!(matches!(
@@ -220,7 +221,7 @@ fn run_lifecycle(protocol: ProtocolVersion) {
                 payload: Bytes::from_static(b"payload"),
                 qos,
                 retain: false,
-                v5_properties: None,
+                protocol: PublishProtocolOptions::VersionNeutral,
             }))
             .unwrap();
         assert_eq!(
@@ -238,7 +239,7 @@ fn run_lifecycle(protocol: ProtocolVersion) {
             payload: Bytes::from_static(b"still-delivered"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     drop(dropped_waiter.completion);
@@ -248,7 +249,9 @@ fn run_lifecycle(protocol: ProtocolVersion) {
             filters: vec![Subscription {
                 filter: "wrapper/#".into(),
                 qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::VersionNeutral,
             }],
+            protocol: SubscribeProtocolOptions::VersionNeutral,
         }))
         .unwrap();
     assert!(matches!(
@@ -260,7 +263,10 @@ fn run_lifecycle(protocol: ProtocolVersion) {
     ));
 
     let unsubscribe = handle
-        .try_admit(Command::Unsubscribe(vec!["wrapper/#".into()]))
+        .try_admit(Command::Unsubscribe(UnsubscribeCommand {
+            filters: vec!["wrapper/#".into()],
+            protocol: UnsubscribeProtocolOptions::VersionNeutral,
+        }))
         .unwrap();
     assert!(matches!(
         unsubscribe
@@ -324,7 +330,7 @@ fn bounded_request_channel_reports_backpressure() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtLeastOnce,
             retain: false,
-            v5_properties: None,
+            protocol: PublishProtocolOptions::VersionNeutral,
         })
     };
     handle.try_admit(command()).unwrap();

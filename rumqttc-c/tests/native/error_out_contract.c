@@ -175,16 +175,16 @@ void native_test_error_out_contract(void) {
     rumqttc_completion_destroy(publish_completion);
 
     /* ERROR_OUT_SUCCESS: rumqttc_client_try_subscribe */
-    CHECK(rumqttc_client_try_subscribe(client, &subscription, 1, &operation,
+    CHECK(rumqttc_client_try_subscribe(client, &subscription, 1, NULL, &operation,
                                        NULL));
     /* ERROR_OUT_FAILURE: rumqttc_client_try_subscribe */
     EXPECT_FAILURE(
-        rumqttc_client_try_subscribe(NULL, &subscription, 1, &operation, NULL));
+        rumqttc_client_try_subscribe(NULL, &subscription, 1, NULL, &operation, NULL));
     /* ERROR_OUT_SUCCESS: rumqttc_client_subscribe_tracked */
-    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1,
+    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
                                            &subscribe_completion, NULL));
     /* ERROR_OUT_FAILURE: rumqttc_client_subscribe_tracked */
-    EXPECT_FAILURE(rumqttc_client_subscribe_tracked(NULL, &subscription, 1,
+    EXPECT_FAILURE(rumqttc_client_subscribe_tracked(NULL, &subscription, 1, NULL,
                                                     &failed_completion, NULL));
     native_wait_completion(subscribe_completion, RUMQTTC_COMPLETION_SUBSCRIBE);
     /* ERROR_OUT_SUCCESS: rumqttc_completion_result_count */
@@ -215,16 +215,16 @@ void native_test_error_out_contract(void) {
       rumqttc_string_view_t filter = subscription.filter;
       /* ERROR_OUT_SUCCESS: rumqttc_client_try_unsubscribe */
       CHECK(
-          rumqttc_client_try_unsubscribe(client, &filter, 1, &operation, NULL));
+          rumqttc_client_try_unsubscribe(client, &filter, 1, NULL, &operation, NULL));
       /* ERROR_OUT_FAILURE: rumqttc_client_try_unsubscribe */
       EXPECT_FAILURE(
-          rumqttc_client_try_unsubscribe(NULL, &filter, 1, &operation, NULL));
+          rumqttc_client_try_unsubscribe(NULL, &filter, 1, NULL, &operation, NULL));
       /* ERROR_OUT_SUCCESS: rumqttc_client_unsubscribe_tracked */
-      CHECK(rumqttc_client_unsubscribe_tracked(client, &filter, 1,
+      CHECK(rumqttc_client_unsubscribe_tracked(client, &filter, 1, NULL,
                                                &subscribe_completion, NULL));
       /* ERROR_OUT_FAILURE: rumqttc_client_unsubscribe_tracked */
       EXPECT_FAILURE(rumqttc_client_unsubscribe_tracked(
-          NULL, &filter, 1, &failed_completion, NULL));
+          NULL, &filter, 1, NULL, &failed_completion, NULL));
       native_wait_completion(subscribe_completion,
                              RUMQTTC_COMPLETION_UNSUBSCRIBE);
       rumqttc_completion_destroy(subscribe_completion);
@@ -250,7 +250,7 @@ void native_test_error_out_contract(void) {
     /* ERROR_OUT_FAILURE: rumqttc_client_event_try_recv */
     EXPECT_FAILURE(rumqttc_client_event_try_recv(NULL, &event, NULL));
     subscribe_completion = NULL;
-    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1,
+    CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
                                            &subscribe_completion, NULL));
     native_wait_completion(subscribe_completion, RUMQTTC_COMPLETION_SUBSCRIBE);
     rumqttc_completion_destroy(subscribe_completion);
@@ -304,7 +304,7 @@ void native_test_error_out_contract(void) {
           native_start_client(RUMQTTC_PROTOCOL_V311,
                               tracked ? "error-ack-tracked" : "error-ack-try",
                               RUMQTTC_ACK_MANUAL, 8, 8, 1000);
-      CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1,
+      CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
                                              &completion, NULL));
       native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
       rumqttc_completion_destroy(completion);

@@ -10,13 +10,29 @@ int main() {
   rumqttc_v5_publish_properties_t properties =
       RUMQTTC_V5_PUBLISH_PROPERTIES_INIT;
   rumqttc_publish_options_t publish_options = RUMQTTC_PUBLISH_OPTIONS_INIT;
+  rumqttc_v5_subscription_options_t v5_subscription_options =
+      RUMQTTC_V5_SUBSCRIPTION_OPTIONS_INIT;
   rumqttc_subscription_t subscription = RUMQTTC_SUBSCRIPTION_INIT;
+  rumqttc_v5_subscribe_properties_t v5_subscribe_properties =
+      RUMQTTC_V5_SUBSCRIBE_PROPERTIES_INIT;
+  rumqttc_subscribe_options_t subscribe_options =
+      RUMQTTC_SUBSCRIBE_OPTIONS_INIT;
+  rumqttc_v5_unsubscribe_properties_t v5_unsubscribe_properties =
+      RUMQTTC_V5_UNSUBSCRIBE_PROPERTIES_INIT;
+  rumqttc_unsubscribe_options_t unsubscribe_options =
+      RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT;
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
   rumqttc_config_t *config = nullptr;
   if (user_property.struct_size != sizeof(user_property) ||
       properties.struct_size != sizeof(properties) ||
       publish_options.struct_size != sizeof(publish_options) ||
+      v5_subscription_options.struct_size != sizeof(v5_subscription_options) ||
       subscription.struct_size != sizeof(subscription) ||
+      v5_subscribe_properties.struct_size != sizeof(v5_subscribe_properties) ||
+      subscribe_options.struct_size != sizeof(subscribe_options) ||
+      v5_unsubscribe_properties.struct_size !=
+          sizeof(v5_unsubscribe_properties) ||
+      unsubscribe_options.struct_size != sizeof(unsubscribe_options) ||
       diagnostics.struct_size != sizeof(diagnostics)) {
     return 1;
   }

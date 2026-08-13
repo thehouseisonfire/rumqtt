@@ -3613,6 +3613,29 @@ fn valid_topic_filter(filter: &str) -> bool {
     valid_filter(filter) && valid_mqtt_string_value(filter)
 }
 
+#[must_use]
+fn valid_subscribe_properties(properties: Option<&SubscribeProperties>) -> bool {
+    properties.is_none_or(|properties| {
+        properties
+            .id
+            .is_none_or(|identifier| (1..=268_435_455).contains(&identifier))
+            && properties
+                .user_properties
+                .iter()
+                .all(|(key, value)| valid_mqtt_string_value(key) && valid_mqtt_string_value(value))
+    })
+}
+
+#[must_use]
+fn valid_unsubscribe_properties(properties: Option<&UnsubscribeProperties>) -> bool {
+    properties.is_none_or(|properties| {
+        properties
+            .user_properties
+            .iter()
+            .all(|(key, value)| valid_mqtt_string_value(key) && valid_mqtt_string_value(value))
+    })
+}
+
 fn subscribe_from_topic_filter<F: Into<TopicFilter>>(
     topic: F,
     qos: QoS,
@@ -3620,7 +3643,8 @@ fn subscribe_from_topic_filter<F: Into<TopicFilter>>(
 ) -> (Subscribe, bool) {
     let (topic, validate) = topic.into().into_string_and_validation();
     let filter = SubscribeFilter::new(topic, qos);
-    let valid = !validate || valid_topic_filter(&filter.path);
+    let valid = (!validate || valid_topic_filter(&filter.path))
+        && valid_subscribe_properties(properties.as_ref());
 
     (Subscribe::new(filter, properties), valid)
 }
@@ -3634,11 +3658,12 @@ where
     I: Into<SubscribeFilterInput>,
 {
     let mut filters = Vec::new();
-    let mut valid = true;
+    let mut valid = valid_subscribe_properties(properties.as_ref());
 
     for input in topics {
         let (filter, validate) = input.into().into_filter_and_validation();
-        valid &= !validate || valid_topic_filter(&filter.path);
+        valid &= (!validate || valid_topic_filter(&filter.path))
+            && !(filter.nolocal && filter.path.starts_with("$share/"));
         filters.push(filter);
     }
 
@@ -3652,7 +3677,8 @@ fn unsubscribe_from_topic_filter<F: Into<TopicFilter>>(
     properties: Option<UnsubscribeProperties>,
 ) -> (Unsubscribe, bool) {
     let (topic, validate) = topic.into().into_string_and_validation();
-    let valid = !validate || valid_topic_filter(&topic);
+    let valid = (!validate || valid_topic_filter(&topic))
+        && valid_unsubscribe_properties(properties.as_ref());
 
     (Unsubscribe::new(topic, properties), valid)
 }
@@ -3669,7 +3695,8 @@ where
         .into_iter()
         .map(|topic| topic.into().into_string_and_validation())
         .collect::<Vec<_>>();
-    let valid = !topic_filters.is_empty()
+    let valid = valid_unsubscribe_properties(properties.as_ref())
+        && !topic_filters.is_empty()
         && topic_filters
             .iter()
             .all(|(topic, validate)| !*validate || valid_topic_filter(topic));
@@ -5396,6 +5423,55 @@ mod test {
             .try_recv()
             .expect("tracked unsubscribe should use control channel");
         assert!(matches!(&envelope.request, Request::Unsubscribe(_)));
+    }
+
+    #[test]
+    fn subscribe_and_unsubscribe_properties_are_validated_before_admission() {
+        let (tx, rx) = flume::bounded(10);
+        let client = Client::from_sender(tx);
+
+        for properties in [
+            SubscribeProperties {
+                id: Some(0),
+                user_properties: vec![],
+            },
+            SubscribeProperties {
+                id: Some(268_435_456),
+                user_properties: vec![],
+            },
+            SubscribeProperties {
+                id: None,
+                user_properties: vec![("bad\0key".into(), "value".into())],
+            },
+        ] {
+            let error = client
+                .try_subscribe_many_with_properties(
+                    [SubscribeFilterInput::new("valid/#", QoS::AtMostOnce)],
+                    properties,
+                )
+                .expect_err("invalid SUBSCRIBE properties must not be admitted");
+            assert!(matches!(error, ClientError::InvalidRequest(_)));
+        }
+
+        let error = client
+            .try_subscribe_many([SubscribeFilterInput::new(
+                "$share/group/valid/#",
+                QoS::AtMostOnce,
+            )
+            .no_local(true)])
+            .expect_err("No Local is invalid for a shared subscription");
+        assert!(matches!(error, ClientError::InvalidRequest(_)));
+
+        let error = client
+            .try_unsubscribe_many_with_properties(
+                ["valid/#"],
+                UnsubscribeProperties {
+                    user_properties: vec![("key".into(), "bad\0value".into())],
+                },
+            )
+            .expect_err("invalid UNSUBSCRIBE properties must not be admitted");
+        assert!(matches!(error, ClientError::InvalidRequest(_)));
+        assert!(rx.is_empty());
     }
 
     #[test]
