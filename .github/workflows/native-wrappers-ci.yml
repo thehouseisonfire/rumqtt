@@ -84,6 +84,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # Clippy below applies machine suggestions, so package the pristine checkout first.
+      - name: Check published package contents
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cargo package --locked --list -p rumqttc-wrapper-core-next
+          cargo package --locked --list -p rumqttc-c-next
+
       - name: Lint wrapper crates
         env:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
@@ -99,12 +106,6 @@ jobs:
         run: |
           cargo test --locked --workspace
           cargo test --locked --workspace --doc
-
-      - name: Check published package contents
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          cargo package --locked --list -p rumqttc-wrapper-core-next
-          cargo package --locked --list -p rumqttc-c-next
 
       - name: C FFI/header consistency
         if: ${{ runner.os != 'Windows' }}
