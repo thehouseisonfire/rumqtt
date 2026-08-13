@@ -13,6 +13,23 @@ portable client is expressed through traits, callbacks, polling interfaces, or
 another design. Implement this wrapper against the architecture that has
 actually landed.
 
+## Current foundation and separation from native wrappers
+
+`native-wrappers/wrapper-core` and `native-wrappers/c` are production
+foundations for native hosts, not browser dependencies. The current wrapper
+core creates a native thread and a Tokio runtime, owns native transports, and
+provides blocking and joining operations that are unavailable on the baseline
+browser WASM target. The C ABI likewise is not a portable WebAssembly boundary.
+Do not compile either wrapper into the browser package or reproduce its native
+thread model in JavaScript.
+
+Reuse behavior and host-neutral vocabulary where they remain valid: explicit
+per-client protocol selection, owned commands and events, admission versus MQTT
+completion, bounded delivery, opaque acknowledgement tokens, structured error
+classification, and deterministic lifecycle state. The browser implementation
+must consume a portable client/driver boundary below the native wrapper core
+that has actually landed and passed the readiness criteria below.
+
 ## Scope and non-goals
 
 The supported environment is an ordinary browser page or Dedicated Worker that
@@ -65,6 +82,12 @@ following without target-specific patches in the wrapper repository:
 - core v4/v5 protocol tests pass under the chosen WASM test environment where
   they do not require native sockets.
 
+The portable boundary must also provide connection observation independently
+of the ordered application event stream. Resolving `connect()` must not consume,
+hide, or reorder the public `Connected` event, and it must not require draining
+events into an additional unbounded JavaScript queue. Connection observation
+must wake on accepted CONNACK, terminal failure, and shutdown.
+
 These are capability requirements, not a prescribed decoupling architecture.
 If the landed API names or ownership model differ from examples in this TODO,
 use the actual APIs while preserving the behavior and boundaries below.
@@ -99,6 +122,11 @@ rumqtt-browser/
     ├── fixtures/
     └── types/
 ```
+
+Keep this as an independent browser/WASM workspace at the repository root unless
+the final portable-client organization establishes a more appropriate home. Do
+not add it to `native-wrappers/Cargo.toml`; its target, runtime, binding, and test
+requirements are materially different from the native wrappers.
 
 Publish a dedicated package such as `@rumqtt/browser`. Do not hide the browser
 implementation behind runtime detection in the native Node-API package. A
@@ -187,8 +215,18 @@ The driver must:
 - avoid polling after terminal close;
 - release WebSocket callbacks, timers, futures, and JavaScript references on
   shutdown; and
-- turn an unexpected Rust panic into a terminal JavaScript `MqttError` rather
-  than leaving promises pending forever.
+- use fallible boundaries for every host input and expected runtime failure so
+  ordinary error handling does not depend on a Rust panic.
+
+Select and document the WASM panic strategy explicitly. The ordinary
+`wasm32-unknown-unknown` standard library uses aborting panics, which cannot be
+converted by `catch_unwind`. Under `panic=abort`, install diagnostic panic-hook
+reporting, test panic-free public and driver paths, and document that an
+unexpected panic terminates the affected WASM instance. Claim conversion to an
+`INTERNAL_PANIC` terminal `MqttError` only if the shipped toolchain rebuilds the
+standard library for unwinding, every advertised browser supports the required
+WebAssembly exception-handling instructions, and an injected-panic lifecycle
+test proves that all pending promises settle and resources are released.
 
 Support construction inside a Dedicated Worker and on the window main thread.
 Recommend a worker for high message rates, but do not require cross-origin
@@ -209,7 +247,9 @@ export type ProtocolVersion = "3.1.1" | "5.0";
 export type QoS = 0 | 1 | 2;
 
 export class MqttClient {
-  static connect(options: BrowserMqttClientOptions): Promise<MqttClient>;
+  constructor(options: BrowserMqttClientOptions);
+
+  connect(): Promise<ConnectResult>;
 
   enqueuePublish(
     topic: string,
@@ -232,10 +272,20 @@ export class MqttClient {
 }
 ```
 
-`connect()` resolves only after an accepted CONNACK. Coalesce concurrent
-connection attempts for the same object if the implementation exposes a public
-constructor; reject calls after closing begins. Initial failure and later
-recoverable disconnection must have unambiguous promise/event ordering.
+Keep asynchronous WASM module initialization separate from client connection.
+The package loader may cache module initialization, but constructing a client
+must not start network activity or share mutable protocol state with another
+client.
+
+`connect()` resolves only after an accepted CONNACK. Coalesce concurrent calls
+for the same object and reject calls after closing begins. Module initialization
+failures reject the separate initialization entry point; local configuration and
+driver-construction failures reject `connect()` immediately. A recoverable
+connection-attempt failure emits
+`Disconnected(phase="attempt")` while the coalesced connect promise remains
+pending for a later CONNACK. Use the portable connection observation required
+above; do not consume or hide the public `Connected` event to settle the
+promise.
 
 `enqueuePublish` resolves at bounded request admission. `publish`, `subscribe`,
 and `unsubscribe` use tracked completion notices. Preserve the underlying
@@ -261,8 +311,12 @@ that may exceed the safe integer range.
 ### 3.2 Events and acknowledgement
 
 Use the discriminated `MqttEvent` union defined for the native wrapper, with
-browser-relevant transport details. Make `events()` single-consumer initially
-and reject a second active iterator.
+browser-relevant transport details. Preserve `Disconnected.phase` as
+`"attempt" | "established"`, map graceful completion to
+`{ type: "closed", graceful: true }`, and map a requested immediate close to
+`{ type: "closed", graceful: false }`. Do not report ordinary `closeNow()` as a
+driver failure. Make `events()` single-consumer initially and reject a second
+active iterator.
 
 In manual-ack mode, attach a one-shot acknowledgement operation backed by an
 opaque token. Reject token reuse, use with another client, and use after a
@@ -272,9 +326,11 @@ acknowledgement API.
 Do not silently drop incoming publishes. Use a configurable bounded event
 buffer and an independent terminal-status path. If the consumer fails to drain
 the buffer within the configured delivery timeout, close the connection,
-reject pending wrapper operations appropriately, and surface
-`EVENT_BUFFER_OVERFLOW`. Revisit this behavior if the landed core can continue
-protocol-critical progress independently of application notification delivery.
+fail pending wrapper operations, and surface the stable
+`EVENT_BUFFER_OVERFLOW` code through the iterator and terminal client status.
+Do not promise a post-failure diagnostics snapshot. Revisit this behavior if the
+landed core can continue protocol-critical progress independently of application
+notification delivery.
 
 ### 3.3 Errors
 
@@ -291,9 +347,19 @@ where applicable. Add browser-specific stable codes for at least:
 - unsupported browser configuration; and
 - persistence unavailable or denied.
 
+Use the common delivery-status vocabulary for admission and completion errors,
+including explicit not-admitted, rejected, and ambiguous outcomes. Preserve
+broker reason codes and attach an operation identifier only when the error comes
+from a known tracked operation. Keep browser-specific codes in a documented
+namespace so they cannot collide with shared client codes. A shared TypeScript
+types package may own this vocabulary, but the browser package must not depend
+on or attempt to load the native addon package.
+
 Keep browser-provided messages and close reasons diagnostic. Do not infer a
 retryable authentication, TLS, or network category from an opaque WebSocket
-error when the browser does not reveal that information.
+error when the browser does not reveal that information. Represent unknown
+retryability explicitly rather than reporting `false` as if non-retryability
+were known.
 
 ## 4. Package and initialize WebAssembly
 
@@ -319,6 +385,13 @@ tarball contains the exact `.wasm`, JavaScript, declarations, license, and
 README files referenced by package exports. Add release checksums and
 provenance.
 
+Pin the Rust toolchain and record the exact WASM target and target features used
+for release builds. The default features emitted for
+`wasm32-unknown-unknown` evolve with Rust and LLVM; the target triple alone is
+not a browser compatibility baseline. Validate the final artifact against the
+selected minimum engine feature set and fail CI when a dependency introduces an
+unapproved instruction proposal, thread/atomic requirement, or host import.
+
 Track release-build size and initialization time. Strip debug/name sections
 from production artifacts unless deliberately shipped separately, enable
 appropriate size optimization, and record material regressions. Do not trade
@@ -339,6 +412,12 @@ store that:
 - handles quota, denied access, private-browsing restrictions, and database
   closure without panicking; and
 - never stores URL credentials or unrelated JavaScript configuration.
+
+`session-store-file` contains native file-store adapters and is not a browser
+dependency. Implement IndexedDB against the portable session-store contract and
+compatible checkpoint validation that actually land. Reuse a protocol-neutral
+checkpoint crate only after it compiles and passes tests for the selected browser
+target; do not copy the file adapter or fork the session format into JavaScript.
 
 Do not advertise durable recovery until real-browser crash/reload tests prove
 the ordering contract. IndexedDB completion and network transmission cannot be
@@ -410,6 +489,8 @@ Run the same behavioral suite in Chromium, Firefox, and WebKit for:
 
 - module initialization through npm/bundler and direct ESM loading;
 - v4 and v5 connect with verified `mqtt` subprotocol;
+- connection observation resolving `connect()` without consuming, duplicating,
+  or reordering the public `Connected` event;
 - binary payloads containing zero bytes;
 - multiple MQTT packets in one WebSocket message, back-to-back WebSocket
   messages, and a large message fragmented into WebSocket frames by the test
@@ -433,6 +514,10 @@ Run the same behavioral suite in Chromium, Firefox, and WebKit for:
 
 Add targeted Rust/WASM tests for callback-generation isolation, cancellation,
 timer cleanup, byte conversion, error mapping, and parser/state-machine parity.
+Under an aborting panic strategy, use invariant and fallibility tests rather
+than claiming recoverable panic containment. If an unwinding build is selected,
+add an injected-panic test that verifies terminal error delivery, settlement of
+every pending promise, and cleanup in every advertised browser engine.
 Test a production-built npm tarball rather than only a workspace import.
 
 The release workflow should run formatting, native core tests affected by the

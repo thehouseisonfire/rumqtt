@@ -15,17 +15,26 @@ Alternative interpreters, limited-API wheels, subinterpreters, and free-threaded
 CPython are not supported merely because the extension imports. Advertise each
 only after its complete lifecycle and concurrency suite passes.
 
-## Prerequisite
+## Current foundation and role in the wrapper plan
 
-Implement the useful portions of `TODO5.md` first, especially the owned event
-model, tracked completions, dedicated driver, bounded event delivery, and
-deterministic shutdown. Do not duplicate MQTT lifecycle or v4/v5 translation
-inside Python callbacks.
+`native-wrappers/wrapper-core` and `native-wrappers/c` now implement the first
+production native boundary. This wrapper must consume
+`rumqttc-wrapper-core-next` for protocol selection, command admission, tracked
+completion, event delivery, error classification, manual acknowledgements, and
+client shutdown. Keep Python objects, `asyncio` integration, exceptions,
+package metadata, and interpreter lifecycle handling in this wrapper.
+
+This is the second native wrapper required by `TODO5.md`; `TODO5.md` is not an
+implementation prerequisite for this document. Record genuine shared-boundary
+gaps found here as tests or concrete `TODO11.md` work. Change the core only for
+a correctness invariant or behavior now required by both the C and Python
+wrappers. Do not duplicate MQTT lifecycle or v4/v5 translation in Python
+callbacks.
 
 ## Proposed layout
 
 ```text
-rumqtt-python/
+native-wrappers/python/
 ├── Cargo.toml
 ├── pyproject.toml
 ├── README.md
@@ -51,6 +60,10 @@ rumqtt-python/
     └── wheels/
 ```
 
+Add the Rust crate to the independent `native-wrappers/Cargo.toml` workspace,
+tentatively as package `rumqttc-python-next`. Do not add it to the repository's
+main Cargo workspace.
+
 Use PyO3 and `maturin` unless a compatibility spike demonstrates a concrete
 blocker. Keep the compiled module private, for example `rumqttc._native`, and
 export the supported surface from Python modules. This permits small ergonomic
@@ -58,9 +71,11 @@ and typing adapters without making generated PyO3 details public API.
 
 Choose the minimum CPython version from maintained Python releases when
 implementation begins. Initially build version-specific CPython wheels. Adopt
-PyO3's `abi3` limited API only after tests prove that it supports every API used
-for futures, loop scheduling, exceptions, buffers, and finalization; do not use
-`abi3` solely to reduce the wheel count.
+PyO3's GIL-enabled `abi3` limited API only after tests prove that it supports
+every API used for futures, loop scheduling, exceptions, buffers, and
+finalization; do not use it solely to reduce the wheel count. Treat the
+free-threaded `abi3t` line separately and advertise it only after the
+free-threaded lifecycle and concurrency matrix passes.
 
 ## 1. Define and freeze the initial Python API
 
@@ -124,15 +139,28 @@ shutdown failure according to a documented rule.
 
 ### 1.1 Options and Python values
 
-Support the common first-release options from `TODO5.md`, with contained v4
-and v5 option types for protocol-specific behavior. Validate:
+Project the implemented `rumqttc-wrapper-core-next` configuration rather than
+reconstructing options from an older TODO. The first release includes broker
+host and port, client identifier, TCP/TLS/WebSocket/WSS transport, keep-alive,
+connection timeout, username and byte-valued password, request and event
+capacities, event-delivery timeout, acknowledgement mode, incoming-packet size
+limit, outgoing-event control, and the distinct v4/v5 session settings.
+
+Expose typed MQTT 5 outgoing PUBLISH properties, SUBSCRIBE packet properties,
+per-filter subscription options, and UNSUBSCRIBE properties. Keep these scopes
+distinct, as they are in the core. Validate:
 
 - integers without accepting `bool` accidentally, and all Rust numeric ranges;
 - finite, nonnegative timeout values before conversion to durations;
 - protocol-specific fields instead of silently ignoring them;
 - topic and topic-filter validity through the client library;
-- mutually exclusive TLS credential sources; and
-- explicit opt-in for an unbounded request channel, if exposed at all.
+- TLS client-certificate/private-key pairing and transport-specific inputs; and
+- nonzero finite channel capacities and timeouts.
+
+Preserve the core's credential distinction: MQTT 3.1.1 requires a username when
+a password is supplied, while MQTT 5 permits username-only, password-only, and
+combined credentials. Do not expose an unbounded request or event channel; the
+shared core intentionally requires finite nonzero capacities.
 
 Accept `str` payloads as UTF-8 and bytes-like payloads as arbitrary bytes.
 Acquire a `Py_buffer` only long enough to copy its contents during call
@@ -172,6 +200,14 @@ class IncomingPublish:
     acknowledgement: Acknowledgement | None
 ```
 
+Give `Disconnected` a `phase: ConnectionPhase` field with `ATTEMPT` and
+`ESTABLISHED` values. While the client remains running, both represent
+recoverable failures and the core continues reconnecting. Map
+`GracefulShutdownCompleted` to `Closed(graceful=True)`. Map terminal status from
+a requested immediate close to `Closed(graceful=False)`; ordinary
+`close_now()` must not appear as `DriverError`. Reserve `DriverError` for a
+terminal failed driver.
+
 Make `events()` a single-consumer asynchronous iterator in the first release.
 Raise a stable state error when a second iterator is active. This avoids
 undefined fan-out and prevents duplication of manual-ack responsibility.
@@ -195,8 +231,10 @@ class MqttError(Exception):
     code: str
     kind: ErrorKind
     operation_id: int | None
+    broker_reason: int | None
     retryable: bool | None
-    ambiguous: bool | None
+    delivery: DeliveryStatus
+    ambiguous: bool
 
 class ConfigurationError(MqttError): ...
 class BackpressureError(MqttError): ...
@@ -207,21 +245,34 @@ class ClientClosedError(MqttError): ...
 
 Keep exception text diagnostic and non-stable. Applications match `code`,
 `kind`, and documented subclasses, not formatted Rust messages. Preserve MQTT
-5 reason codes and relevant completion details as typed attributes. Use built-in
+5 reason codes and relevant completion details as typed attributes. Attach
+`operation_id` from the relevant `CompletionHandle`; a general driver error has
+no operation identifier. Use built-in
 `TypeError` for incorrect Python call shapes and `ValueError` for locally
 invalid scalar values only when the distinction is clear; configuration and
 runtime failures use the wrapper hierarchy consistently.
 
-Catch panics inside every native task boundary. Convert them to an
-`INTERNAL_PANIC` terminal driver error, fail outstanding futures, and shut down
-the affected client. Never unwind through Python or abort the interpreter as
-ordinary error handling.
+The current core exposes `ErrorKind`, `DeliveryStatus`, and broker reason but
+does not yet expose a stable fine-grained error code or retryability. Before
+freezing this API, add host-neutral machine-readable classification to the core
+and use it from both C and Python. Refactor the C wrapper's current local
+retryability mapping to consume the shared classification. At minimum,
+event-buffer overflow and an internally caught panic must be distinguishable
+without matching error text. Adding a C accessor for the fine-grained code is a
+compatible pre-1.0 API addition.
+
+Catch panics inside every PyO3 entry/task boundary. The core driver-thread
+boundary must likewise convert a caught panic to an `INTERNAL_PANIC` terminal
+driver error, fail outstanding futures, and shut down the affected client.
+Never unwind through Python, leave the driver without terminal status, or abort
+the interpreter as ordinary error handling.
 
 ## 2. Integrate with asyncio safely
 
 ### 2.1 Driver and event-loop ownership
 
-Start the shared dedicated driver when `connect()` is first awaited. Never run
+Start `NativeClient` and its shared dedicated driver when `connect()` is first
+awaited. Never run
 `EventLoop::poll`, blocking channel receive, thread join, DNS, TLS, or broker
 I/O on the Python event-loop thread. Do not install or reuse the application's
 Tokio runtime.
@@ -234,24 +285,42 @@ documented loop mechanisms themselves.
 
 Make `connect()` idempotent while connected and coalesce concurrent initial
 calls onto one pending connection result. Reject calls after closing begins.
-Distinguish initial connection failure from a recoverable disconnection after
-a successful connection so the connect future and event stream do not report
-contradictory states.
+Configuration, TLS construction, and driver-start failures raise immediately.
+A recoverable connection-attempt failure emits `Disconnected(phase=ATTEMPT)`
+while the coalesced connect future remains pending for a later CONNACK. If the
+connect waiter is cancelled or has a caller deadline, document that this drops
+only that wait and does not stop reconnection or the client; closing the client
+is a separate operation.
+
+Do not consume or hide the public `Connected` event merely to resolve
+`connect()`. The current core has no independent connection waiter, and draining
+the sole `EventConsumer` into an extra host queue changes the overload bound and
+can deadlock initial connection behind unconsumed attempt events. Add a
+host-neutral, repeatable connection observation in the core, with terminal
+failure and shutdown wakeups, and use it for the connect future while leaving
+the ordered event stream untouched. This is a correctness requirement, not a
+Python convenience.
 
 ### 2.2 Future completion and cancellation
 
-Create and complete `asyncio.Future` objects only while holding the GIL on a
-valid interpreter thread. The Rust driver sends owned Rust results through a
-native channel; a small bridge schedules result delivery with the bound loop's
-thread-safe callback facility. Never call arbitrary Python code directly from
-the MQTT driver thread.
+Create and complete `asyncio.Future` objects only while attached to the correct
+interpreter and, on GIL-enabled builds, while holding the GIL. The Rust driver
+sends owned Rust results through a native channel; a small bridge schedules
+result delivery with the bound loop's thread-safe callback facility. Never call
+arbitrary Python code directly from the MQTT driver thread.
 
-Maintain a registry from shared `OperationId` to Python completion state.
-Remove entries exactly once on completion, cancellation of the waiter,
-interpreter shutdown, or terminal driver failure. If the Python waiter is
-cancelled after admission, discard only its eventual result. Keep enough native
-state to process the MQTT acknowledgement correctly without retaining the
-cancelled future indefinitely.
+Use the core's `CompletionHandle` as the authoritative, repeatable MQTT
+operation state. Maintain only the host-delivery registry needed to associate
+an `OperationId`, retained completion handle, and Python future. Remove the
+Python future exactly once on result delivery, waiter cancellation, interpreter
+shutdown, or terminal driver failure. If the Python waiter is cancelled after
+admission, discard only its eventual Python result; retain only the native state
+needed for the core to process the MQTT acknowledgement.
+
+Manual acknowledgement has a narrower cancellation rule: if asynchronous
+acknowledgement is cancelled while still waiting for request-channel capacity,
+the core restores the token for retry. Once admission succeeds, cancellation
+drops only the Python waiter and cannot recall the ACK.
 
 Handle races among completion, `Future.cancel()`, loop closure, and client
 shutdown without `InvalidStateError` leaking from a scheduling callback.
@@ -265,11 +334,17 @@ unbounded Python-side queue. Keep at most the documented bounded native events
 plus one pending iterator future. Do not repeatedly schedule callbacks merely
 to discover that no consumer is waiting.
 
-Apply the `TODO5.md` terminal overflow policy and surface
-`EVENT_BUFFER_OVERFLOW` through the iterator, diagnostics, and all pending
-operations. After overflow, require a new client. An iterator cancelled while
-waiting must release its pending receive slot without consuming or silently
-dropping the next event.
+Preserve the core's independent terminal-status path. On overflow, surface the
+stable `EVENT_BUFFER_OVERFLOW` exception through the iterator and fail all
+pending operations. Do not promise a post-failure diagnostics snapshot: the
+core rejects new diagnostics after entering `Failed`. After overflow, require a
+new client. An iterator cancelled while waiting must release its pending receive
+slot without consuming or silently dropping the next event.
+
+For MQTT 5, preserve capability-aware admission. Before the first CONNACK and
+while reconnecting, asynchronous admission of QoS 1/2, retained, or Topic Alias
+publishes waits for negotiated capabilities; a nonblocking admission API reports
+transient backpressure. Alias-free, non-retained QoS 0 remains admissible.
 
 Preserve event order. Once terminal closure is delivered, later `__anext__()`
 calls raise `StopAsyncIteration`; terminal driver failure raises its documented
@@ -280,7 +355,9 @@ contract documents persistent failure instead.
 
 Keep all Python references out of `rumqttc-wrapper-core` and out of long-lived
 driver state wherever possible. Native threads may manipulate only owned Rust
-data until explicitly entering a short Python delivery callback.
+data until explicitly attaching to the correct interpreter for a short Python
+delivery callback. On GIL-enabled builds that attachment includes holding the
+GIL; do not encode GIL serialization as a general thread-safety invariant.
 
 `close()` is idempotent and performs the graceful barrier using a finite
 default timeout. `close_now()` is idempotent and requests immediate shutdown.
@@ -308,12 +385,13 @@ normal process exit, `sys.exit()`, loop closure with a live client, garbage
 collection cycles, module teardown, and abrupt child-process termination.
 
 Treat each interpreter as owning independent module state. Do not claim
-subinterpreter support until clients can be created, used, destroyed, and the
-subinterpreter finalized repeatedly without global PyObject references or
-callbacks crossing interpreter boundaries. Similarly, do not claim support for
-free-threaded CPython until PyO3 supports the chosen mode and the suite passes
-with concurrent calls and object destruction; retaining a GIL-era safety
-assumption is not acceptable.
+subinterpreter support until PyO3 supports the required module model and clients
+can be created, used, destroyed, and the subinterpreter finalized repeatedly
+without global Python references or callbacks crossing interpreter boundaries.
+PyO3 supports free-threaded CPython, but that does not make this wrapper safe
+automatically. Do not claim free-threaded support until the module declares the
+correct GIL policy, all unsafe and synchronization assumptions are audited, and
+the complete suite passes with concurrent calls and object destruction.
 
 ## 4. Package wheels and typing metadata
 
@@ -382,9 +460,9 @@ Recommended repository checks should include the actually selected Python
 versions and tools, for example:
 
 ```text
-cargo fmt --all
-cargo test -p rumqttc-wrapper-core
-cargo test -p rumqtt-python
+cargo fmt --manifest-path native-wrappers/Cargo.toml --all
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-python-next
 uv run maturin develop
 uv run pytest
 uv run ruff check

@@ -35,17 +35,25 @@ Browser JavaScript, Web Workers, Deno Deploy, and other sandboxes that cannot
 load native addons are out of scope. Track browser/WASM transport support as a
 separate project.
 
-## Prerequisite
+## Current foundation and role in the wrapper plan
 
-Implement the useful portions of `TODO5.md` first, especially the owned event
-model, tracked completions, dedicated driver, bounded event delivery, and
-deterministic shutdown. Do not block this wrapper on speculative shared
-abstractions that it does not consume.
+`native-wrappers/wrapper-core` and `native-wrappers/c` now implement the first
+production native boundary. This wrapper must consume
+`rumqttc-wrapper-core-next` for protocol selection, command admission, tracked
+completion, event delivery, error classification, manual acknowledgements, and
+client shutdown. Keep Node-API values, promises, environment state, package
+loading, and JavaScript ergonomics in this wrapper.
+
+This is the second native wrapper required by `TODO5.md`; `TODO5.md` is not an
+implementation prerequisite for this document. Record genuine shared-boundary
+gaps found here as tests or concrete `TODO11.md` work. Change the core only for
+a correctness invariant or behavior now required by both the C and JavaScript
+wrappers.
 
 ## Proposed layout
 
 ```text
-rumqtt-js/
+native-wrappers/js/
 ├── Cargo.toml
 ├── package.json
 ├── README.md
@@ -74,6 +82,10 @@ rumqtt-js/
     ├── deno/
     └── bun/
 ```
+
+Add the Rust crate to the independent `native-wrappers/Cargo.toml` workspace,
+tentatively as package `rumqttc-js-next`. Do not add it to the repository's
+main Cargo workspace.
 
 Use `napi-rs` and `napi-build` unless a compatibility spike demonstrates a
 specific unsupported Node-API operation. Pin an explicit stable Node-API level
@@ -144,17 +156,30 @@ network work.
 
 ### 1.1 Options
 
-Support the first-release common options defined in `TODO5.md`, plus typed MQTT
-5 option/property objects where implemented. Make the protocol portion a
-discriminated union so TypeScript rejects incompatible session options before
-runtime where possible. Native validation remains authoritative for plain
-JavaScript callers and values crossing the Node-API boundary. Validate:
+Project the implemented `rumqttc-wrapper-core-next` configuration rather than
+reconstructing options from an older TODO. The first release includes broker
+host and port, client identifier, TCP/TLS/WebSocket/WSS transport, keep-alive,
+connection timeout, username and byte-valued password, request and event
+capacities, event-delivery timeout, acknowledgement mode, incoming-packet size
+limit, outgoing-event control, and the distinct v4/v5 session settings.
+
+Expose typed MQTT 5 outgoing PUBLISH properties, SUBSCRIBE packet properties,
+per-filter subscription options, and UNSUBSCRIBE properties. Keep these scopes
+distinct, as they are in the core. Make the protocol portion a discriminated
+union so TypeScript rejects incompatible options before runtime where possible.
+Native validation remains authoritative for plain JavaScript callers and values
+crossing the Node-API boundary. Validate:
 
 - finite integers and numeric ranges before converting to Rust integers;
 - protocol-specific options instead of silently ignoring them;
 - topic and topic-filter validity through the client library;
-- mutually exclusive TLS credential sources; and
-- explicit opt-in for an unbounded request channel, if exposed at all.
+- TLS client-certificate/private-key pairing and transport-specific inputs; and
+- nonzero finite channel capacities and timeouts.
+
+Preserve the core's credential distinction: MQTT 3.1.1 requires a username when
+a password is supplied, while MQTT 5 permits username-only, password-only, and
+combined credentials. Do not expose an unbounded request or event channel; the
+shared core intentionally requires finite nonzero capacities.
 
 Copy mutable JavaScript inputs at call admission. Do not retain a borrowed view
 of an `ArrayBuffer` across an await or native-thread handoff.
@@ -166,12 +191,26 @@ Expose a discriminated union:
 ```ts
 export type MqttEvent =
   | { type: "connected"; protocol: ProtocolVersion; sessionPresent: boolean }
-  | { type: "disconnected"; error: MqttError; reconnecting: boolean }
+  | {
+      type: "disconnected";
+      phase: "attempt" | "established";
+      error: MqttError;
+      reconnecting: true;
+    }
   | { type: "publish"; message: IncomingMessage }
   | { type: "outgoing"; packet: OutgoingSummary }
-  | { type: "closed" }
+  | { type: "closed"; graceful: boolean }
   | { type: "driverError"; error: MqttError };
 ```
+
+Map the core event model explicitly. `ConnectionPhase::Attempt` means a
+connection attempt failed before any successful CONNACK; `Established` means a
+previously established connection was lost. While the client remains running,
+both are recoverable and the core continues reconnecting. Map
+`GracefulShutdownCompleted` to `{ type: "closed", graceful: true }`. Map the
+terminal status caused by a requested immediate close to
+`{ type: "closed", graceful: false }`; do not report ordinary `closeNow()` as a
+driver error. Reserve `driverError` for a terminal failed driver.
 
 Make `events()` a single-consumer async iterator in the first release. Reject a
 second active iterator explicitly. This avoids undefined fan-out semantics and
@@ -190,46 +229,82 @@ class MqttError extends Error {
   readonly code: string;
   readonly kind: MqttErrorKind;
   readonly operationId?: bigint;
+  readonly brokerReason?: number;
   readonly retryable?: boolean;
-  readonly ambiguous?: boolean;
+  readonly delivery: MqttDeliveryStatus;
+  readonly ambiguous: boolean;
 }
 ```
 
 Keep `message` diagnostic and non-stable. Map behavior using `code` and `kind`,
 not formatted Rust error text. Preserve broker reason codes in typed completion
-errors. Convert Rust panics caught inside native task boundaries into an
-`INTERNAL_PANIC` driver error and shut the client down; never unwind through
-Node-API.
+errors. Attach `operationId` from the relevant `CompletionHandle`; a general
+driver error has no operation identifier.
+
+The current core exposes `ErrorKind`, `DeliveryStatus`, and broker reason but
+does not yet expose a stable fine-grained error code or retryability. Before
+freezing this API, add host-neutral machine-readable classification to the core
+and use it from both C and JavaScript. Refactor the C wrapper's current local
+retryability mapping to consume the shared classification. At minimum,
+event-buffer overflow and an internally caught panic must be distinguishable
+without matching error text. Adding a C accessor for the fine-grained code is a
+compatible pre-1.0 API addition.
+
+Catch panics at every Node-API entry/task boundary. The core driver-thread
+boundary must likewise convert a caught panic into an `INTERNAL_PANIC` terminal
+error, fail outstanding completions, and shut down. Never unwind through
+Node-API or leave the core driver thread without publishing terminal status.
 
 ## 2. Implement Node-API integration safely
 
 ### 2.1 Runtime and promise delivery
 
-Start the shared dedicated driver when `connect()` is first called. Never run
+Start `NativeClient` and its shared dedicated driver when `connect()` is first
+called. Never run
 `EventLoop::poll`, blocking channel receive, thread join, DNS, or TLS work on
 the JavaScript event-loop thread.
 
 Make `connect()` idempotent while connected and coalesce concurrent initial
 calls onto one pending connection result. Reject calls made after closing has
-started. Define initial connection failure separately from later recoverable
-disconnect events so callers do not receive contradictory promise and stream
-state.
+started. Configuration, TLS construction, and driver-start failures reject the
+promise immediately. A recoverable connection-attempt failure produces a
+`disconnected` event with `phase: "attempt"` while the coalesced connect promise
+remains pending for a later CONNACK.
+
+Do not consume or hide the public `Connected` event merely to resolve
+`connect()`. The current core has no independent connection waiter, and draining
+the sole `EventConsumer` into an extra host queue changes the overload bound and
+can deadlock initial connection behind unconsumed attempt events. Add a
+host-neutral, repeatable connection observation in the core, with terminal
+failure and shutdown wakeups, and use it for the connect promise while leaving
+the ordered event stream untouched. This is a correctness requirement, not a
+JavaScript convenience.
 
 Use Node-API async work, deferred promises, or thread-safe functions only in
 their documented modes. All creation and resolution of JavaScript values must
 occur on an allowed JavaScript thread with a valid environment. The Rust driver
 may pass only owned Rust data across threads.
 
-Keep a registry from shared `OperationId` to native promise completion state.
-Remove entries exactly once on completion, environment shutdown, or terminal
-driver failure. JavaScript garbage collection of a promise must not cancel the
-corresponding MQTT operation.
+Use the core's `CompletionHandle` as the authoritative, repeatable MQTT
+operation state. Keep only the host-delivery registry needed to associate an
+`OperationId`, retained completion handle, and JavaScript deferred promise.
+Remove host entries exactly once on delivery, environment shutdown, or terminal
+driver failure. JavaScript garbage collection of a promise drops only its host
+waiter; it must not cancel or remove the core's admitted MQTT operation.
 
 ### 2.2 Event delivery and overload
 
 Bridge the shared bounded event receiver into the async iterator without an
-unbounded JavaScript-side queue. Apply the `TODO5.md` terminal overflow policy
-and surface `EVENT_BUFFER_OVERFLOW` through both the iterator and client status.
+unbounded JavaScript-side queue. Preserve the core's independent terminal-status
+path. On event-buffer overflow, fail pending operations and surface the stable
+`EVENT_BUFFER_OVERFLOW` error through the iterator and terminal client status.
+Do not promise a post-failure diagnostics snapshot: the core rejects new
+diagnostics after it enters `Failed`.
+
+For MQTT 5, preserve capability-aware admission. Before the first CONNACK and
+while reconnecting, asynchronous admission of QoS 1/2, retained, or Topic Alias
+publishes waits for negotiated capabilities; a nonblocking admission API reports
+transient backpressure. Alias-free, non-retained QoS 0 remains admissible.
 
 Do not implement an `EventEmitter` facade until its behavior for absent/slow
 listeners, listener exceptions, and manual acknowledgements is specified. It
@@ -247,7 +322,9 @@ native activity safely.
 - A finalizer requests nonblocking immediate shutdown but does not synchronously
   join the driver on the JavaScript thread.
 - Environment cleanup prevents any later thread-safe callback into an invalid
-  Node-API environment and performs a bounded native join.
+  Node-API environment and performs a bounded native join. Prefer Node-API's
+  asynchronous cleanup hook when the selected Node-API level and `napi-rs`
+  expose it; do not perform the join in an ordinary synchronous finalizer.
 - Worker threads get independent client instances and cleanup state; no global
   mutable Node-API environment is shared between them.
 
@@ -302,8 +379,8 @@ must be resolvable without compiling locally.
 Do not claim support for Deno Deploy or other sandboxes that prohibit native
 addons. A separate Deno FFI backend is allowed only after a recorded Node-API
 compatibility or distribution failure justifies duplicating the boundary. If
-needed, build that backend on the stable C API from `TODO7.md`, not Deno runtime
-internals.
+needed, build that backend on the checked-in C API in `native-wrappers/c`,
+following `docs/c-abi-compatibility.md`, not Deno runtime internals.
 
 ### 4.3 Bun
 
@@ -343,12 +420,15 @@ compile, every host architecture available in CI.
 Recommended commands should include the actual selected toolchain, for example:
 
 ```text
-cargo test -p rumqtt-js
-deno test --allow-net --allow-ffi --node-modules-dir=auto
-bun test
+cargo fmt --manifest-path native-wrappers/Cargo.toml --all
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-js-next
+node --test native-wrappers/js/tests/node
+deno test --allow-net --allow-ffi --node-modules-dir=auto native-wrappers/js/tests/deno
+bun test native-wrappers/js/tests/bun
 ```
 
-Do not run the suite with `npm`, `pnpm`, or `yarn`; use Bun and Deno only.
+Invoke each runtime directly. Do not use `npm`, `pnpm`, or `yarn` as a substitute
+for executing the Node.js, Deno, and Bun suites independently.
 
 Use a local deterministic broker fixture; do not make release tests depend on
 a public MQTT broker.
