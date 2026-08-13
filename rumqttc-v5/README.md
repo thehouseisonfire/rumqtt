@@ -20,13 +20,13 @@ common brokers, see the workspace [recipe guide](https://github.com/thehouseison
 Use the facade package when you want the default MQTT 5 client:
 
 ```bash
-cargo add rumqttc-next@0.34.0-alpha
+cargo add rumqttc-next@0.34.0
 ```
 
 Use this package directly when you want the protocol-scoped crate name:
 
 ```bash
-cargo add rumqttc-v5-next@0.34.0-alpha
+cargo add rumqttc-v5-next@0.34.0
 ```
 
 ## Examples
@@ -191,7 +191,7 @@ subscriber; applications remain responsible for choosing and configuring one.
 
 ```toml
 [dependencies]
-rumqttc-v5-next = { version = "0.34.0-alpha", features = ["tracing"] }
+rumqttc-v5-next = { version = "0.34.0", features = ["tracing"] }
 ```
 
 Enable `tracing-log-compat` instead when tracing events should fall back to

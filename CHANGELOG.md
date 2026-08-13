@@ -2,6 +2,8 @@
 
 ### Added
 ### Changed
+- `rumqttc` v4/v5: Reorganize the README sections (move TLS support before the
+  important notes) and drop the mqtt-typed-client-next integration guidance.
 ### Deprecated
 ### Removed
 ### Fixed

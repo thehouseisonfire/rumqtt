@@ -1,8 +1,9 @@
-# rumqttc-next 0.34.0-alpha
+# rumqttc-next 0.34.0
 
-This alpha is a substantial update to bothclients, focusing on durable session
-recovery, observability, safer configuration, and stricter protocol behavior.
-It contains intentional breaking API changes, so make sure to read the [migration guide](https://github.com/thehouseisonfire/rumqtt/blob/rumqttc-next-0.34.0-alpha/MIGRATION.md)
+This release is a substantial update to both clients, focusing on durable
+session recovery, observability, safer configuration, and stricter protocol
+behavior.
+It contains intentional breaking API changes, so make sure to read the [migration guide](https://github.com/thehouseisonfire/rumqtt/blob/rumqttc-next-0.34.0/MIGRATION.md)
 before upgrading.
 
 ## Highlights
@@ -69,6 +70,6 @@ DISCONNECT encoding behavior.
   remain re-exported from `mqttbytes::v5`.
 - Handle the new `Result` from MQTT string/binary write helpers.
 
-Given the large amount of changes, this version is published as an alpha
-release. Make sure to test this well before committing it to production and
-report any issues you may run into.
+This release was previously available as 0.34.0-alpha and has been promoted
+to stable after a three-week soak period. Only documentation and release
+tooling changed between the alpha and this release.

@@ -18,7 +18,7 @@ common brokers, see the workspace [recipe guide](https://github.com/thehouseison
 ## Installation
 
 ```bash
-cargo add rumqttc-v4-next@0.34.0-alpha
+cargo add rumqttc-v4-next@0.34.0
 ```
 
 ## Examples
@@ -180,7 +180,7 @@ subscriber; applications remain responsible for choosing and configuring one.
 
 ```toml
 [dependencies]
-rumqttc-v4-next = { version = "0.34.0-alpha", features = ["tracing"] }
+rumqttc-v4-next = { version = "0.34.0", features = ["tracing"] }
 ```
 
 Enable `tracing-log-compat` instead when tracing events should fall back to

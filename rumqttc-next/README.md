@@ -18,7 +18,7 @@ API changes, and porting recipes.
 ## Installation
 
 ```bash
-cargo add rumqttc-next@0.34.0-alpha
+cargo add rumqttc-next@0.34.0
 ```
 
 ## Features

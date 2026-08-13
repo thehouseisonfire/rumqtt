@@ -14,7 +14,7 @@ event loop:
 
 ```toml
 [dependencies]
-rumqttc-v5-next = { version = "0.34.0-alpha", features = ["tracing"] }
+rumqttc-v5-next = { version = "0.34.0", features = ["tracing"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
