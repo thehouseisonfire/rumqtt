@@ -459,7 +459,7 @@ jobs:
       - name: Check full native lifecycle for leaks
         env:
           RUMQTTC_C_STRESS_ITERATIONS: 100
-          RUMQTTC_NATIVE_LAUNCHER: valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite --trace-children=yes
+          RUMQTTC_NATIVE_LAUNCHER: valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=all --trace-children=yes --suppressions=${{ github.workspace }}/rumqttc-c/tests/native/valgrind.supp
         run: |
             cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-valgrind
             cmake --build target/rumqttc-c-native-valgrind
@@ -509,7 +509,7 @@ jobs:
         shell: pwsh
         run: |
             cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-platform-sanitized `
-              "-DCMAKE_C_FLAGS=/fsanitize=address"
+              "-DCMAKE_C_FLAGS=/fsanitize=address /Zi"
             if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
             cmake --build target/rumqttc-c-native-platform-sanitized --config Release
             if ($LASTEXITCODE -ne 0) { throw "sanitizer build failed" }
