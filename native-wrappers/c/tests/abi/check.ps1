@@ -79,7 +79,7 @@ $CheckedHeader = (Join-Path $CrateDir "include/rumqttc.h").Replace('\', '/')
 $GeneratedHeader = $GeneratedFunctions.FullName.Replace('\', '/')
 $CompatibilitySource = Join-Path $TargetDir "rumqttc-signature-compatibility.c"
 Set-Content $CompatibilitySource "#include `"$CheckedHeader`"`n#include `"$GeneratedHeader`"`n"
-cl /nologo /W4 /WX /std:c11 /c $CompatibilitySource `
+cl /nologo /W4 /WX /std:c11 /DRUMQTTC_STATIC /c $CompatibilitySource `
     "/Fo$TargetDir/rumqttc-signature-compatibility.obj"
 if ($LASTEXITCODE -ne 0) { throw "generated function signatures differ from the checked header" }
 

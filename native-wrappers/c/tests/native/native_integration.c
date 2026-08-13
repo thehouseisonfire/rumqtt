@@ -168,8 +168,9 @@ static void test_invalid_inputs(void) {
   REQUIRE(rumqttc_config_set_client_id(config, null_string, NULL) ==
           RUMQTTC_INVALID_ARGUMENT);
   {
-    const char invalid_utf8[] = {(char)0xff};
-    rumqttc_string_view_t invalid = {invalid_utf8, sizeof(invalid_utf8)};
+    const unsigned char invalid_utf8[] = {0xff};
+    rumqttc_string_view_t invalid = {(const char *)invalid_utf8,
+                                     sizeof(invalid_utf8)};
     REQUIRE(rumqttc_config_set_client_id(config, invalid, NULL) ==
             RUMQTTC_INVALID_ARGUMENT);
   }
