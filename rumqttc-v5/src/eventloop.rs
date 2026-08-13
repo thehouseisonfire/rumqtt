@@ -2422,6 +2422,9 @@ impl EventLoop {
         }
     }
 
+    // Keeping request validation and dispatch together makes the ordering of state updates,
+    // persistence, network writes, and completion notices explicit.
+    #[allow(clippy::too_many_lines)]
     async fn handle_request_internal(
         &mut self,
         envelope: RequestEnvelope,

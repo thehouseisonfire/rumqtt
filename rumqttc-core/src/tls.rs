@@ -119,7 +119,7 @@ pub fn rustls_client_config_builder() -> Result<RustlsClientConfigBuilder, Error
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
-pub(crate) fn rustls_native_root_store() -> Result<RootCertStore, Error> {
+pub fn rustls_native_root_store() -> Result<RootCertStore, Error> {
     let native = rustls_native_certs::load_native_certs();
     if !native.errors.is_empty() {
         return Err(Error::NativeCerts(native.errors));
@@ -133,7 +133,7 @@ pub(crate) fn rustls_native_root_store() -> Result<RootCertStore, Error> {
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
-pub(crate) fn rustls_pem_root_store(ca: &[u8]) -> Result<RootCertStore, Error> {
+pub fn rustls_pem_root_store(ca: &[u8]) -> Result<RootCertStore, Error> {
     let certificates = CertificateDer::pem_slice_iter(ca).collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() {
         return Err(Error::NoValidCertInChain);
@@ -150,7 +150,7 @@ pub(crate) fn rustls_pem_root_store(ca: &[u8]) -> Result<RootCertStore, Error> {
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
-pub(crate) fn rustls_client_config(
+pub fn rustls_client_config(
     roots: RootCertStore,
     client_auth: Option<(Vec<u8>, Vec<u8>)>,
 ) -> Result<Arc<ClientConfig>, Error> {

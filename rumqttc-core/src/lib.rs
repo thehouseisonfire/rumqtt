@@ -162,10 +162,10 @@ impl TlsConfiguration {
     /// is available.
     #[cfg(feature = "use-rustls-no-provider")]
     pub fn try_rustls_with_pem_roots(
-        ca: Vec<u8>,
+        ca: &[u8],
         client_auth: Option<(Vec<u8>, Vec<u8>)>,
     ) -> Result<Self, TlsError> {
-        let roots = tls::rustls_pem_root_store(&ca)?;
+        let roots = tls::rustls_pem_root_store(ca)?;
         let config = tls::rustls_client_config(roots, client_auth)?;
         Ok(Self::Rustls(config))
     }
@@ -483,26 +483,23 @@ mod tests {
             "../../benchmark-results/mqtt5-vs-rumqttc-20260727/smoke-mosquitto/ca.crt"
         );
         assert!(matches!(
-            TlsConfiguration::try_rustls_with_pem_roots(ca.to_vec(), None),
+            TlsConfiguration::try_rustls_with_pem_roots(ca, None),
             Ok(TlsConfiguration::Rustls(_))
         ));
         assert!(matches!(
-            TlsConfiguration::try_rustls_with_pem_roots(Vec::new(), None),
+            TlsConfiguration::try_rustls_with_pem_roots(&[], None),
             Err(super::TlsError::NoValidCertInChain)
         ));
-        assert!(TlsConfiguration::try_rustls_with_pem_roots(b"not PEM".to_vec(), None).is_err());
+        assert!(TlsConfiguration::try_rustls_with_pem_roots(b"not PEM", None).is_err());
         assert!(matches!(
-            TlsConfiguration::try_rustls_with_pem_roots(
-                ca.to_vec(),
-                Some((Vec::new(), Vec::new()))
-            ),
+            TlsConfiguration::try_rustls_with_pem_roots(ca, Some((Vec::new(), Vec::new()))),
             Err(super::TlsError::NoValidClientCertInChain)
         ));
         let incompatible_key =
             include_bytes!("../../tests/fixtures/native_tls_localhost_key_pkcs8.pem");
         assert!(
             TlsConfiguration::try_rustls_with_pem_roots(
-                ca.to_vec(),
+                ca,
                 Some((ca.to_vec(), incompatible_key.to_vec()))
             )
             .is_err()

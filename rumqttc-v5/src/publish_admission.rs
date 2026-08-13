@@ -17,7 +17,7 @@ pub enum PublishAdmissionPolicy {
     EventLoopValidated,
     /// Require producer-side validation against one coherent active-connection snapshot.
     ///
-    /// Before CONNACK, only alias-free, non-retained QoS 0 publishes can be admitted. Other
+    /// Before CONNACK, only alias-free, non-retained `QoS` 0 publishes can be admitted. Other
     /// publishes return [`crate::ClientError::PublishAdmissionPending`].
     RequireNegotiatedCapabilities,
 }
@@ -108,20 +108,20 @@ struct AdmissionState {
 }
 
 #[derive(Debug)]
-pub(crate) struct ManagedPublishAdmission {
+pub struct ManagedPublishAdmission {
     state: Mutex<AdmissionState>,
     changed: Notify,
     changed_blocking: Condvar,
 }
 
 #[derive(Debug)]
-pub(crate) enum AdmissionFailure {
+pub enum AdmissionFailure {
     CapabilitiesUnavailable(PublishAdmissionWaiter),
     Rejected(PublishAdmissionError),
     Closed,
 }
 
-pub(crate) struct ConnectionCleanupGuard<'a> {
+pub struct ConnectionCleanupGuard<'a> {
     admission: &'a ManagedPublishAdmission,
     state: Option<MutexGuard<'a, AdmissionState>>,
 }
@@ -226,6 +226,7 @@ impl ManagedPublishAdmission {
         {
             state.aliases.insert(alias, publish.topic.clone());
         }
+        drop(state);
         Ok(result)
     }
 

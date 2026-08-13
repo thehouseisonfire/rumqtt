@@ -5,8 +5,8 @@
 #include <string.h>
 
 #if defined(_WIN32)
-#include <tlhelp32.h>
 #include <windows.h>
+#include <tlhelp32.h>
 #else
 #include <pthread.h>
 #include <time.h>

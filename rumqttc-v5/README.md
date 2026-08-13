@@ -120,8 +120,8 @@ Negotiated publish admission
 Builders default to `PublishAdmissionPolicy::EventLoopValidated`, which keeps
 the usual ability to queue work while disconnected. Native wrappers and other
 producers that need pre-queue capability checks can select
-`RequireNegotiatedCapabilities`. In that mode, alias-free, non-retained QoS 0
-is admissible before CONNACK; QoS 1/2, retained, and Topic Alias publishes
+`RequireNegotiatedCapabilities`. In that mode, alias-free, non-retained `QoS` 0
+is admissible before CONNACK; `QoS` 1/2, retained, and Topic Alias publishes
 return `ClientError::PublishAdmissionPending` with a waiter until capabilities
 are known. Negotiated rejections use `PublishAdmissionRejected`, and Topic Alias
 mapping changes occur only after successful request-channel admission.

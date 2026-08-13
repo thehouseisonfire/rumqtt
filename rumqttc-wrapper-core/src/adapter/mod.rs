@@ -27,7 +27,7 @@ pub(crate) fn build_tls(config: &TlsConfig) -> Result<rumqttc_v4::TlsConfigurati
         .zip(config.private_key.as_ref())
         .map(|(certificate, key)| (certificate.to_vec(), key.to_vec()));
     let result = if let Some(ca) = &config.ca {
-        rumqttc_v4::TlsConfiguration::try_rustls_with_pem_roots(ca.to_vec(), client_auth)
+        rumqttc_v4::TlsConfiguration::try_rustls_with_pem_roots(ca, client_auth)
     } else {
         rumqttc_v4::TlsConfiguration::try_rustls_with_native_roots(client_auth)
     };
