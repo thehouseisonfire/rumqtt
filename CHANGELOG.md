@@ -92,6 +92,15 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc-wrapper-core` (Breaking Change): Replace the bidirectional
+  `V5PublishProperties` model with `V5OutgoingPublishProperties` and
+  `V5IncomingPublishProperties`. Client-originated publishes can no longer
+  represent Subscription Identifiers, while incoming publishes retain every
+  received identifier. Native protocol types and operations are now confined
+  to a private enum-dispatched backend without changing protocol selection,
+  runtime ownership, admission semantics, or the one-package support contract.
+  The `rumqttc-c` source API and ABI remain unchanged; its generated header was
+  compared against the checked-in header.
 - `rumqttc-core`: Make the fallible PEM-root rustls constructor borrow CA bytes
   instead of requiring an owned allocation.
 - `rumqttc-c`: Refactor the C examples to use small, operation-focused helpers

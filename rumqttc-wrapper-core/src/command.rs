@@ -2,7 +2,31 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::{AckToken, QoS, V5PublishProperties};
+use crate::{AckToken, QoS};
+
+/// MQTT 5 properties legal on a client-originated PUBLISH packet.
+///
+/// Subscription Identifiers are intentionally absent because MQTT clients cannot send them in a
+/// PUBLISH packet.
+///
+/// ```compile_fail
+/// use rumqttc_wrapper_core::V5OutgoingPublishProperties;
+///
+/// let _ = V5OutgoingPublishProperties {
+///     subscription_identifiers: vec![7],
+///     ..V5OutgoingPublishProperties::default()
+/// };
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct V5OutgoingPublishProperties {
+    pub response_topic: Option<String>,
+    pub correlation_data: Option<Bytes>,
+    pub content_type: Option<String>,
+    pub payload_format_indicator: Option<u8>,
+    pub topic_alias: Option<u16>,
+    pub message_expiry_interval: Option<u32>,
+    pub user_properties: Vec<(String, String)>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishCommand {
@@ -17,7 +41,7 @@ pub struct PublishCommand {
 pub enum PublishProtocolOptions {
     #[default]
     VersionNeutral,
-    V5(V5PublishProperties),
+    V5(V5OutgoingPublishProperties),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

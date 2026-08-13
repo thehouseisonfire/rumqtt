@@ -9,7 +9,7 @@ use futures_util::stream::FuturesUnordered;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 
 use crate::acknowledgement::AcknowledgementCoordinator;
-use crate::adapter::{AdapterDriver, v4 as adapter_v4, v5 as adapter_v5};
+use crate::backend::{self, BackendDriver};
 use crate::handle::*;
 use crate::operations::OperationRegistry;
 use crate::operations::{
@@ -20,8 +20,7 @@ use crate::operations::{
 use crate::shutdown::{ClosedOutcome, ShutdownCoordinator};
 use crate::{
     AckMode, ClientConfig, Command, Completion, CompletionHandle, DeliveryStatus,
-    DiagnosticsSnapshot, Error, ErrorKind, OperationId, ProtocolConfig, ProtocolVersion, Result,
-    WrapperEvent,
+    DiagnosticsSnapshot, Error, ErrorKind, OperationId, ProtocolVersion, Result, WrapperEvent,
 };
 
 /// Join ownership shared by the native owner and close coordinator.
@@ -366,7 +365,7 @@ impl NativeClient {
         let (immediate_shutdown_tx, immediate_shutdown_rx) = flume::unbounded();
 
         let client_identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
-        let (client, driver) = build_protocol(config)?;
+        let (client, driver) = backend::build(config)?;
         let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
         let shared = Shared::new(client, acknowledgements, operations, shutdown);
@@ -522,21 +521,7 @@ impl<'a> ShutdownInputs<'a> {
     }
 }
 
-fn build_protocol(config: ClientConfig) -> Result<(ProtocolClient, AdapterDriver)> {
-    let ClientConfig { common, protocol } = config;
-    match protocol {
-        ProtocolConfig::V311(protocol) => {
-            let (client, eventloop) = adapter_v4::build(&common, protocol)?;
-            Ok((ProtocolClient::V311(client), AdapterDriver::V311(eventloop)))
-        }
-        ProtocolConfig::V5(protocol) => {
-            let (client, eventloop) = adapter_v5::build(&common, protocol)?;
-            Ok((ProtocolClient::V5(client), AdapterDriver::V5(eventloop)))
-        }
-    }
-}
-
-async fn run_driver(driver: AdapterDriver, context: DriverContext) -> TerminalStatus {
+async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalStatus {
     driver.run(context).await
 }
 

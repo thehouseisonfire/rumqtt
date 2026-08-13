@@ -128,7 +128,7 @@ fn spawn_incoming_broker(protocol: u32) -> (u16, thread::JoinHandle<()>) {
         body.extend_from_slice(topic);
         body.extend_from_slice(&[0, 7]);
         if protocol == 2 {
-            body.push(0);
+            body.extend_from_slice(&[4, 0x0b, 7, 0x0b, 9]);
         }
         body.extend_from_slice(&[0, 9, 0]);
         stream
@@ -579,6 +579,22 @@ fn assert_manual_ack(protocol: u32) {
             &[0, 9, 0]
         );
         assert_eq!((qos, ack), (1, 1));
+        if protocol == 2 {
+            let mut count = 0;
+            assert_eq!(
+                rumqttc_event_v5_subscription_identifier_count(event, &mut count),
+                0
+            );
+            assert_eq!(count, 2);
+            for (index, expected) in [7, 9].into_iter().enumerate() {
+                let mut identifier = 0;
+                assert_eq!(
+                    rumqttc_event_v5_subscription_identifier_at(event, index, &mut identifier),
+                    0
+                );
+                assert_eq!(identifier, expected);
+            }
+        }
 
         let mut completion = ptr::null_mut();
         assert_eq!(

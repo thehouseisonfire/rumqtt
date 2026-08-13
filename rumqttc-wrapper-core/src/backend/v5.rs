@@ -1,9 +1,86 @@
 use crate::{
     BrokerReason, Completion, DeliveryStatus, Error, ErrorKind, OutgoingActivity, PublishCommand,
-    PublishCompletion, PublishProtocolOptions, QoS, Result, SubscribeCompletion, SubscribeResult,
-    UnsubscribeCompletion, UnsubscribeResult, V5PublishProperties, V5RetainForwardRule,
-    V5SubscribeProperties, V5UnsubscribeProperties,
+    PublishCompletion, PublishProtocolOptions, QoS, Result, SubscribeCommand, SubscribeCompletion,
+    SubscribeProtocolOptions, SubscribeResult, UnsubscribeCommand, UnsubscribeCompletion,
+    UnsubscribeProtocolOptions, UnsubscribeResult, V5IncomingPublishProperties,
+    V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties,
+    V5UnsubscribeProperties,
 };
+
+use crate::validation::{protocol_option_error, validate_mqtt_utf8_string};
+
+pub(crate) fn validate_publish(command: &PublishCommand) -> Result<()> {
+    let PublishProtocolOptions::V5(properties) = &command.protocol else {
+        return Ok(());
+    };
+    match properties.payload_format_indicator {
+        None | Some(0) => {}
+        Some(1) if std::str::from_utf8(&command.payload).is_ok() => {}
+        Some(_) => {
+            return Err(protocol_option_error(
+                "invalid payload format indicator or payload",
+            ));
+        }
+    }
+    if properties.topic_alias == Some(0) {
+        return Err(protocol_option_error(
+            "topic alias must be greater than zero",
+        ));
+    }
+    if let Some(response_topic) = &properties.response_topic {
+        validate_mqtt_utf8_string(response_topic, "response topic")?;
+        if response_topic.is_empty() || response_topic.contains(['+', '#']) {
+            return Err(protocol_option_error(
+                "response topic must be a nonempty publish topic without wildcards",
+            ));
+        }
+    }
+    if properties
+        .correlation_data
+        .as_ref()
+        .is_some_and(|data| data.len() > usize::from(u16::MAX))
+    {
+        return Err(protocol_option_error(
+            "correlation data exceeds the MQTT binary-data limit",
+        ));
+    }
+    validate_user_properties(&properties.user_properties, "PUBLISH user property")?;
+    if let Some(content_type) = &properties.content_type {
+        validate_mqtt_utf8_string(content_type, "content type")?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_subscribe(command: &SubscribeCommand) -> Result<()> {
+    let SubscribeProtocolOptions::V5(properties) = &command.protocol else {
+        return Ok(());
+    };
+    if properties.subscription_identifier == Some(0)
+        || properties
+            .subscription_identifier
+            .is_some_and(|identifier| identifier > 268_435_455)
+    {
+        return Err(protocol_option_error(
+            "subscription identifier must be between 1 and 268435455",
+        ));
+    }
+    validate_user_properties(&properties.user_properties, "SUBSCRIBE user property")
+}
+
+pub(crate) fn validate_unsubscribe(command: &UnsubscribeCommand) -> Result<()> {
+    let UnsubscribeProtocolOptions::V5(properties) = &command.protocol else {
+        return Ok(());
+    };
+    validate_user_properties(&properties.user_properties, "UNSUBSCRIBE user property")
+}
+
+fn validate_user_properties(properties: &[(String, String)], name: &str) -> Result<()> {
+    for (key, value) in properties {
+        validate_mqtt_utf8_string(key, &format!("{name} key"))?;
+        validate_mqtt_utf8_string(value, &format!("{name} value"))?;
+    }
+    Ok(())
+}
 
 pub(crate) fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
     let kind = match error {
@@ -299,9 +376,10 @@ fn map_v5_event(
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Publish(publish)) => {
             let ack_token = if manual_ack {
                 match publish.qos {
-                    rumqttc_v5::QoS::AtLeastOnce | rumqttc_v5::QoS::ExactlyOnce => {
-                        shared.prepare_v5_ack(&publish)
-                    }
+                    rumqttc_v5::QoS::AtLeastOnce | rumqttc_v5::QoS::ExactlyOnce => shared
+                        .backend()
+                        .prepare_v5_ack(&publish)
+                        .and_then(|ack| shared.prepare_ack(ack)),
                     _ => None,
                 }
             } else {
@@ -314,7 +392,7 @@ fn map_v5_event(
                 retain: publish.retain,
                 duplicate: publish.dup,
                 ack_token,
-                v5_properties: publish.properties.map(from_properties),
+                v5_properties: publish.properties.map(from_incoming_publish_properties),
             })))
         }
         rumqttc_v5::Event::Outgoing(outgoing) => {
@@ -353,7 +431,9 @@ pub(crate) fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOp
     let options = rumqttc_v5::PublishOptions::new(to_qos(command.qos)).retain(command.retain);
     match command.protocol.clone() {
         PublishProtocolOptions::VersionNeutral => options,
-        PublishProtocolOptions::V5(properties) => options.properties(to_properties(properties)),
+        PublishProtocolOptions::V5(properties) => {
+            options.properties(to_outgoing_publish_properties(properties))
+        }
     }
 }
 
@@ -400,7 +480,9 @@ pub(crate) const fn from_qos(qos: rumqttc_v5::QoS) -> QoS {
     }
 }
 
-pub(crate) fn to_properties(properties: V5PublishProperties) -> rumqttc_v5::PublishProperties {
+pub(crate) fn to_outgoing_publish_properties(
+    properties: V5OutgoingPublishProperties,
+) -> rumqttc_v5::PublishProperties {
     rumqttc_v5::PublishProperties {
         payload_format_indicator: properties.payload_format_indicator,
         message_expiry_interval: properties.message_expiry_interval,
@@ -408,13 +490,15 @@ pub(crate) fn to_properties(properties: V5PublishProperties) -> rumqttc_v5::Publ
         response_topic: properties.response_topic,
         correlation_data: properties.correlation_data,
         user_properties: properties.user_properties,
-        subscription_identifiers: properties.subscription_identifiers,
+        subscription_identifiers: Vec::new(),
         content_type: properties.content_type,
     }
 }
 
-pub(crate) fn from_properties(properties: rumqttc_v5::PublishProperties) -> V5PublishProperties {
-    V5PublishProperties {
+pub(crate) fn from_incoming_publish_properties(
+    properties: rumqttc_v5::PublishProperties,
+) -> V5IncomingPublishProperties {
+    V5IncomingPublishProperties {
         response_topic: properties.response_topic,
         correlation_data: properties.correlation_data,
         content_type: properties.content_type,

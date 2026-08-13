@@ -22,6 +22,12 @@ genuinely overlap. Observable protocol differences remain explicit:
 - broker reason information is present only where the selected protocol
   exposes it.
 
+Native MQTT clients, event loops, acknowledgement values, packet translation,
+and protocol-specific validation are confined to the private `backend` module.
+The shared handle, lifecycle, admission, completion, diagnostics, event-delivery,
+and shutdown machinery delegates through one enum-dispatched backend; it does
+not use dynamic dispatch or duplicate the wrapper architecture per protocol.
+
 Supplying an option that is incompatible with the selected protocol is an
 error. The core must not silently discard MQTT 5 properties for an MQTT 3.1.1
 client or invent a common interpretation for settings whose behavior differs.
@@ -36,13 +42,15 @@ a password is present, while MQTT 5 permits username-only, password-only, and
 combined credentials. Client identifiers and usernames are validated as MQTT
 UTF-8 strings, and their encoded lengths—as well as the binary password
 length—must fit the protocol's two-byte field before the driver starts.
-Client-originated MQTT 5 publishes also reject Subscription Identifiers. The
-field is retained on normalized incoming publishes, but MQTT-3.3.4-6 forbids
-clients from sending it to a server. Other publish properties are validated
-before admission, including payload format, Response Topic syntax, MQTT UTF-8
-strings, and two-byte binary/string lengths. Publish Topic Names for both
-protocols reject U+0000 and values exceeding the MQTT UTF-8 string length before
-admission.
+MQTT 5 publish properties are directional in the Rust API.
+`V5OutgoingPublishProperties` contains only properties legal on a
+client-originated PUBLISH and therefore cannot represent a Subscription
+Identifier. `V5IncomingPublishProperties` retains every observable property on
+a broker-originated PUBLISH, including all received Subscription Identifiers.
+Outgoing properties are validated before admission for payload format,
+Response Topic syntax, MQTT UTF-8 strings, and two-byte binary/string lengths.
+Publish Topic Names for both protocols reject U+0000 and values exceeding the
+MQTT UTF-8 string length before admission.
 
 The wrapper builds MQTT 5 clients with
 `PublishAdmissionPolicy::RequireNegotiatedCapabilities`. `rumqttc-v5`, rather

@@ -134,6 +134,15 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: python3 scripts/check-markdown-links.py
 
+      - name: Enforce wrapper backend source boundary
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          if rg -n 'rumqttc_v[45]::' rumqttc-wrapper-core/src \
+              --glob '!**/backend/**'; then
+            echo 'native protocol paths must remain inside rumqttc-wrapper-core/src/backend' >&2
+            exit 1
+          fi
+
       # use mold linker instead of the default linker only on linux
       - uses: rui314/setup-mold@v1
         if: ${{ runner.os == 'Linux' }}

@@ -2,35 +2,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::backend::{AckKey, PreparedAck};
 use crate::operations::OperationRegistry;
 use crate::{
     AckToken, Admission, Completion, DeliveryStatus, Error, ErrorKind, OperationId, Result,
 };
-
-#[derive(Clone)]
-pub(crate) enum PreparedAck {
-    V311(rumqttc_v4::ManualAck),
-    V5(rumqttc_v5::ManualAck),
-}
-
-impl PreparedAck {
-    pub(crate) const fn key(&self) -> AckKey {
-        match self {
-            Self::V311(rumqttc_v4::ManualAck::PubAck(ack)) => AckKey::V311PubAck(ack.pkid),
-            Self::V311(rumqttc_v4::ManualAck::PubRec(ack)) => AckKey::V311PubRec(ack.pkid),
-            Self::V5(rumqttc_v5::ManualAck::PubAck(ack)) => AckKey::V5PubAck(ack.pkid),
-            Self::V5(rumqttc_v5::ManualAck::PubRec(ack)) => AckKey::V5PubRec(ack.pkid),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum AckKey {
-    V311PubAck(u16),
-    V311PubRec(u16),
-    V5PubAck(u16),
-    V5PubRec(u16),
-}
 
 #[derive(Default)]
 struct AckState {
@@ -217,9 +193,7 @@ mod tests {
     use super::*;
 
     fn v4_puback(packet_id: u16) -> PreparedAck {
-        PreparedAck::V311(rumqttc_v4::ManualAck::PubAck(rumqttc_v4::PubAck::new(
-            packet_id,
-        )))
+        crate::backend::test_v311_puback(packet_id)
     }
 
     #[test]

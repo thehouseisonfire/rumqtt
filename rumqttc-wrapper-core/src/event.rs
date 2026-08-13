@@ -10,7 +10,8 @@ pub struct AckToken {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct V5PublishProperties {
+/// MQTT 5 properties observed on a broker-originated PUBLISH packet.
+pub struct V5IncomingPublishProperties {
     pub response_topic: Option<String>,
     pub correlation_data: Option<Bytes>,
     pub content_type: Option<String>,
@@ -29,7 +30,7 @@ pub struct IncomingPublish {
     pub retain: bool,
     pub duplicate: bool,
     pub ack_token: Option<AckToken>,
-    pub v5_properties: Option<V5PublishProperties>,
+    pub v5_properties: Option<V5IncomingPublishProperties>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

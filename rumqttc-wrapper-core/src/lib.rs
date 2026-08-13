@@ -4,7 +4,7 @@
 //! values rather than a stable foreign-function ABI.
 
 mod acknowledgement;
-mod adapter;
+mod backend;
 mod command;
 mod completion;
 mod config;
@@ -15,11 +15,13 @@ mod operations;
 mod protocol;
 mod runtime;
 mod shutdown;
+mod validation;
 
 pub use command::{
     Command, PublishCommand, PublishProtocolOptions, SubscribeCommand, SubscribeProtocolOptions,
     Subscription, SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
-    V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties,
+    V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
+    V5UnsubscribeProperties,
 };
 pub use completion::{
     Admission, BrokerReason, Completion, CompletionHandle, CompletionWaitOutcome,
@@ -33,7 +35,7 @@ pub use config::{
 pub use error::{DeliveryStatus, Error, ErrorKind, Result};
 pub use event::{
     AckToken, ConnectionPhase, DiagnosticsSnapshot, IncomingPublish, OutgoingActivity,
-    V5PublishProperties, WrapperEvent,
+    V5IncomingPublishProperties, WrapperEvent,
 };
 pub use handle::ClientHandle;
 pub use protocol::{OperationId, ProtocolVersion, QoS};

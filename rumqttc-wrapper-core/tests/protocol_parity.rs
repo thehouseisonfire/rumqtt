@@ -8,7 +8,7 @@ use rumqttc_wrapper_core::{
     AckMode, AckToken, Command, Completion, DeliveryStatus, ErrorKind, NativeClient,
     PublishCommand, PublishProtocolOptions, QoS, SubscribeCommand, SubscribeProtocolOptions,
     Subscription, SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
-    V5PublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
+    V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
     V5UnsubscribeProperties, WrapperEvent,
 };
 
@@ -148,6 +148,66 @@ fn mqtt5_publish_rejection_preserves_reason_code() {
 }
 
 #[test]
+fn incoming_mqtt5_subscription_identifiers_are_preserved() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert_eq!(read_frame(&mut stream).unwrap().0 >> 4, 1);
+        stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap();
+
+        let topic = b"incoming/identifiers";
+        let mut body = Vec::new();
+        body.extend_from_slice(&u16::try_from(topic.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(topic);
+        body.extend_from_slice(&[4, 0x0b, 7, 0x0b, 9]);
+        body.extend_from_slice(b"payload");
+        stream
+            .write_all(&[0x30, u8::try_from(body.len()).unwrap()])
+            .unwrap();
+        stream.write_all(&body).unwrap();
+
+        while let Some((header, _)) = read_frame(&mut stream) {
+            if header >> 4 == 14 {
+                break;
+            }
+        }
+    });
+
+    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+        "incoming-subscription-identifiers",
+        "127.0.0.1",
+        port,
+    ))
+    .unwrap();
+    let handle = native.handle();
+    let mut events = native.take_events().unwrap();
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Some(WrapperEvent::Connected { .. })
+    ));
+    let publish = loop {
+        match events.recv_timeout(Duration::from_secs(2)).unwrap() {
+            Some(WrapperEvent::IncomingPublish(publish)) => break publish,
+            Some(_) => {}
+            None => panic!("driver stopped before incoming publish"),
+        }
+    };
+    assert_eq!(
+        publish
+            .v5_properties
+            .as_ref()
+            .unwrap()
+            .subscription_identifiers,
+        [7, 9]
+    );
+
+    handle.try_admit(Command::ImmediateDisconnect).unwrap();
+    native.join(Duration::from_secs(2)).unwrap();
+    broker.join().unwrap();
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn rejects_invalid_client_originated_mqtt5_publish_properties() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -191,7 +251,7 @@ fn rejects_invalid_client_originated_mqtt5_publish_properties() {
     };
     let payload = || Bytes::from_static(b"payload");
 
-    for properties in [None, Some(V5PublishProperties::default())] {
+    for properties in [None, Some(V5OutgoingPublishProperties::default())] {
         let error = handle
             .try_admit(Command::Publish(PublishCommand {
                 topic: String::new(),
@@ -209,69 +269,62 @@ fn rejects_invalid_client_originated_mqtt5_publish_properties() {
     }
 
     assert_rejected(
-        V5PublishProperties {
-            subscription_identifiers: vec![7],
-            ..V5PublishProperties::default()
-        },
-        payload(),
-    );
-    assert_rejected(
-        V5PublishProperties {
+        V5OutgoingPublishProperties {
             payload_format_indicator: Some(2),
-            ..V5PublishProperties::default()
+            ..V5OutgoingPublishProperties::default()
         },
         payload(),
     );
     assert_rejected(
-        V5PublishProperties {
+        V5OutgoingPublishProperties {
             payload_format_indicator: Some(1),
-            ..V5PublishProperties::default()
+            ..V5OutgoingPublishProperties::default()
         },
         Bytes::from_static(&[0xff]),
     );
     for alias in [0, 1] {
         assert_rejected(
-            V5PublishProperties {
+            V5OutgoingPublishProperties {
                 topic_alias: Some(alias),
-                ..V5PublishProperties::default()
+                ..V5OutgoingPublishProperties::default()
             },
             payload(),
         );
     }
     for response_topic in ["", "response/+", "response/#", "response\0topic"] {
         assert_rejected(
-            V5PublishProperties {
+            V5OutgoingPublishProperties {
                 response_topic: Some(response_topic.into()),
-                ..V5PublishProperties::default()
+                ..V5OutgoingPublishProperties::default()
             },
             payload(),
         );
     }
     assert_rejected(
-        V5PublishProperties {
+        V5OutgoingPublishProperties {
             response_topic: Some("x".repeat(usize::from(u16::MAX) + 1)),
-            ..V5PublishProperties::default()
+            ..V5OutgoingPublishProperties::default()
         },
         payload(),
     );
     assert_rejected(
-        V5PublishProperties {
+        V5OutgoingPublishProperties {
             correlation_data: Some(Bytes::from(vec![0; usize::from(u16::MAX) + 1])),
-            ..V5PublishProperties::default()
+            ..V5OutgoingPublishProperties::default()
         },
         payload(),
     );
     assert_rejected(
-        V5PublishProperties {
+        V5OutgoingPublishProperties {
             user_properties: vec![("invalid\0key".into(), "value".into())],
-            ..V5PublishProperties::default()
+            ..V5OutgoingPublishProperties::default()
         },
         payload(),
     );
     assert_rejected(
-        V5PublishProperties {
+        V5OutgoingPublishProperties {
             content_type: Some("invalid\0type".into()),
-            ..V5PublishProperties::default()
+            ..V5OutgoingPublishProperties::default()
         },
         payload(),
     );
@@ -317,9 +370,9 @@ fn rejects_unmapped_topic_alias_with_empty_topic() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            protocol: PublishProtocolOptions::V5(V5PublishProperties {
+            protocol: PublishProtocolOptions::V5(V5OutgoingPublishProperties {
                 topic_alias: Some(1),
-                ..V5PublishProperties::default()
+                ..V5OutgoingPublishProperties::default()
             }),
         }))
         .unwrap_err();
@@ -371,9 +424,9 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
             payload: Bytes::from_static(b"payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            protocol: PublishProtocolOptions::V5(V5PublishProperties {
+            protocol: PublishProtocolOptions::V5(V5OutgoingPublishProperties {
                 topic_alias: Some(1),
-                ..V5PublishProperties::default()
+                ..V5OutgoingPublishProperties::default()
             }),
         }))
         .unwrap();
@@ -389,9 +442,9 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
             payload: Bytes::from_static(b"second payload"),
             qos: QoS::AtMostOnce,
             retain: false,
-            protocol: PublishProtocolOptions::V5(V5PublishProperties {
+            protocol: PublishProtocolOptions::V5(V5OutgoingPublishProperties {
                 topic_alias: Some(1),
-                ..V5PublishProperties::default()
+                ..V5OutgoingPublishProperties::default()
             }),
         }))
         .unwrap();
@@ -540,7 +593,7 @@ fn mqtt5_publish_options_are_not_admitted_to_v311_clients() {
             payload: Bytes::new(),
             qos: QoS::AtMostOnce,
             retain: false,
-            protocol: PublishProtocolOptions::V5(V5PublishProperties::default()),
+            protocol: PublishProtocolOptions::V5(V5OutgoingPublishProperties::default()),
         })],
     );
 }

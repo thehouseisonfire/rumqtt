@@ -2,14 +2,14 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::acknowledgement::{AckKey, AckReservation, AcknowledgementCoordinator, PreparedAck};
-use crate::adapter::{v4 as adapter_v4, v5 as adapter_v5};
+use crate::acknowledgement::{AckReservation, AcknowledgementCoordinator};
+use crate::backend::{AckKey, BackendClient, PreparedAck};
 use crate::operations::OperationRegistry;
 use crate::shutdown::{ClosedOutcome, ImmediateAdmission, PollErrorAction, ShutdownCoordinator};
+use crate::validation::{protocol_option_error, validate_mqtt_utf8_string};
 use crate::{
     AckToken, Admission, Command, DeliveryStatus, Error, ErrorKind, LifecycleState, PublishCommand,
-    PublishProtocolOptions, Result, SubscribeCommand, SubscribeProtocolOptions,
-    SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
+    Result, SubscribeCommand, UnsubscribeCommand,
 };
 
 /// Serializes admission with connection invalidation and shutdown commitment.
@@ -24,13 +24,8 @@ impl AdmissionGate {
 
 pub(crate) static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) enum ProtocolClient {
-    V311(rumqttc_v4::AsyncClient),
-    V5(rumqttc_v5::AsyncClient),
-}
-
 pub(crate) struct Shared {
-    client: ProtocolClient,
+    backend: BackendClient,
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
     acknowledgements: Arc<AcknowledgementCoordinator>,
@@ -40,13 +35,13 @@ pub(crate) struct Shared {
 
 impl Shared {
     pub(crate) fn new(
-        client: ProtocolClient,
+        backend: BackendClient,
         acknowledgements: Arc<AcknowledgementCoordinator>,
         operations: OperationRegistry,
         shutdown: Arc<ShutdownCoordinator>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            client,
+            backend,
             handle_count: AtomicUsize::new(1),
             admission_gate: AdmissionGate::default(),
             acknowledgements,
@@ -81,30 +76,16 @@ impl Shared {
         self.shutdown.notify_progress();
     }
 
-    pub(crate) fn prepare_v4_ack(&self, publish: &rumqttc_v4::Publish) -> Option<AckToken> {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ProtocolClient::V311(client) = &self.client else {
-            return None;
-        };
-        client
-            .prepare_ack(publish)
-            .and_then(|ack| self.acknowledgements.insert(PreparedAck::V311(ack)))
+    pub(crate) fn backend(&self) -> &BackendClient {
+        &self.backend
     }
 
-    pub(crate) fn prepare_v5_ack(&self, publish: &rumqttc_v5::Publish) -> Option<AckToken> {
+    pub(crate) fn prepare_ack(&self, ack: PreparedAck) -> Option<AckToken> {
         let _admission_guard = self
             .admission_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ProtocolClient::V5(client) = &self.client else {
-            return None;
-        };
-        client
-            .prepare_ack(publish)
-            .and_then(|ack| self.acknowledgements.insert(PreparedAck::V5(ack)))
+        self.acknowledgements.insert(ack)
     }
 
     pub(crate) fn complete_v4_puback(&self, packet_id: u16) {
@@ -213,10 +194,7 @@ impl Shared {
         {
             return;
         }
-        match &self.client {
-            ProtocolClient::V311(client) => _ = client.try_disconnect_now(),
-            ProtocolClient::V5(client) => _ = client.try_disconnect_now(),
-        }
+        self.backend.best_effort_disconnect_now();
         self.shutdown.commit_immediate(None);
     }
 }
@@ -347,31 +325,8 @@ impl ClientHandle {
             .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
         self.shared.require_running()?;
         validate_mqtt_utf8_string(&command.topic, "publish topic")?;
-        match &self.shared.client {
-            ProtocolClient::V311(client) => {
-                if matches!(command.protocol, PublishProtocolOptions::V5(_)) {
-                    return Err(protocol_option_error(
-                        "MQTT 5 publish properties require MQTT 5",
-                    ));
-                }
-                let options = adapter_v4::publish_options(&command);
-                let notice = client
-                    .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(adapter_v4::map_client_error)?;
-                self.shared.admission(Box::pin(async move {
-                    adapter_v4::map_publish_notice(notice.wait_async().await)
-                }))
-            }
-            ProtocolClient::V5(client) => {
-                let options = adapter_v5::publish_options(&command);
-                let notice = client
-                    .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(adapter_v5::map_client_error)?;
-                self.shared.admission(Box::pin(async move {
-                    adapter_v5::map_publish_notice(notice.wait_async().await)
-                }))
-            }
-        }
+        let completion = self.shared.backend.try_publish(command)?;
+        self.shared.admission(completion)
     }
 
     async fn publish(&self, command: PublishCommand) -> Result<Admission> {
@@ -391,73 +346,8 @@ impl ClientHandle {
                 "subscribe requires at least one filter",
             ));
         }
-        validate_subscribe_properties(&command.protocol)?;
-        match &self.shared.client {
-            ProtocolClient::V311(client) => {
-                if matches!(command.protocol, SubscribeProtocolOptions::V5(_))
-                    || command
-                        .filters
-                        .iter()
-                        .any(|filter| matches!(filter.protocol, SubscriptionProtocolOptions::V5(_)))
-                {
-                    return Err(protocol_option_error(
-                        "MQTT 5 subscribe options require MQTT 5",
-                    ));
-                }
-                let filters = command
-                    .filters
-                    .into_iter()
-                    .map(|filter| {
-                        rumqttc_v4::SubscribeFilterInput::new(
-                            filter.filter,
-                            adapter_v4::to_qos(filter.qos),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let notice = client
-                    .try_subscribe_many_tracked(filters)
-                    .map_err(adapter_v4::map_client_error)?;
-                self.shared.admission(Box::pin(async move {
-                    adapter_v4::map_subscribe_notice(notice.wait_async().await)
-                }))
-            }
-            ProtocolClient::V5(client) => {
-                let properties = match command.protocol {
-                    SubscribeProtocolOptions::VersionNeutral => None,
-                    SubscribeProtocolOptions::V5(properties) => {
-                        Some(adapter_v5::to_subscribe_properties(properties))
-                    }
-                };
-                let filters = command
-                    .filters
-                    .into_iter()
-                    .map(|filter| {
-                        let input = rumqttc_v5::SubscribeFilterInput::new(
-                            filter.filter,
-                            adapter_v5::to_qos(filter.qos),
-                        );
-                        match filter.protocol {
-                            SubscriptionProtocolOptions::VersionNeutral => input,
-                            SubscriptionProtocolOptions::V5(options) => input
-                                .no_local(options.no_local)
-                                .preserve_retain(options.retain_as_published)
-                                .retain_forward_rule(adapter_v5::to_retain_forward_rule(
-                                    options.retain_forward_rule,
-                                )),
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let notice = if let Some(properties) = properties {
-                    client.try_subscribe_many_with_properties_tracked(filters, properties)
-                } else {
-                    client.try_subscribe_many_tracked(filters)
-                }
-                .map_err(adapter_v5::map_client_error)?;
-                self.shared.admission(Box::pin(async move {
-                    adapter_v5::map_subscribe_notice(notice.wait_async().await)
-                }))
-            }
-        }
+        let completion = self.shared.backend.try_subscribe(command)?;
+        self.shared.admission(completion)
     }
 
     async fn subscribe(&self, command: SubscribeCommand) -> Result<Admission> {
@@ -477,38 +367,8 @@ impl ClientHandle {
                 "unsubscribe requires at least one filter",
             ));
         }
-        validate_unsubscribe_properties(&command.protocol)?;
-        match &self.shared.client {
-            ProtocolClient::V311(client) => {
-                if matches!(command.protocol, UnsubscribeProtocolOptions::V5(_)) {
-                    return Err(protocol_option_error(
-                        "MQTT 5 unsubscribe properties require MQTT 5",
-                    ));
-                }
-                let notice = client
-                    .try_unsubscribe_many_tracked(command.filters)
-                    .map_err(adapter_v4::map_client_error)?;
-                self.shared.admission(Box::pin(async move {
-                    adapter_v4::map_unsubscribe_notice(notice.wait_async().await)
-                }))
-            }
-            ProtocolClient::V5(client) => {
-                let notice = match command.protocol {
-                    UnsubscribeProtocolOptions::VersionNeutral => {
-                        client.try_unsubscribe_many_tracked(command.filters)
-                    }
-                    UnsubscribeProtocolOptions::V5(properties) => client
-                        .try_unsubscribe_many_with_properties_tracked(
-                            command.filters,
-                            adapter_v5::to_unsubscribe_properties(properties),
-                        ),
-                }
-                .map_err(adapter_v5::map_client_error)?;
-                self.shared.admission(Box::pin(async move {
-                    adapter_v5::map_unsubscribe_notice(notice.wait_async().await)
-                }))
-            }
-        }
+        let completion = self.shared.backend.try_unsubscribe(command)?;
+        self.shared.admission(completion)
     }
 
     async fn unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
@@ -525,18 +385,7 @@ impl ClientHandle {
         let key = ack.key();
         let admission = self.shared.acknowledgements.track(key)?;
         let operation_id = admission.operation_id;
-        let result = match (&self.shared.client, ack) {
-            (ProtocolClient::V311(client), PreparedAck::V311(ack)) => client
-                .try_manual_ack(ack.clone())
-                .map_err(adapter_v4::map_client_error),
-            (ProtocolClient::V5(client), PreparedAck::V5(ack)) => client
-                .try_manual_ack(ack.clone())
-                .map_err(adapter_v5::map_client_error),
-            _ => Err(Error::new(
-                ErrorKind::Internal,
-                "acknowledgement protocol mismatch",
-            )),
-        };
+        let result = self.shared.backend.try_manual_ack(ack);
         if result.is_err() {
             self.shared
                 .acknowledgements
@@ -580,20 +429,7 @@ impl ClientHandle {
             self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
-        let result = match &self.shared.client {
-            ProtocolClient::V311(client) => timeout
-                .map_or_else(
-                    || client.try_disconnect(),
-                    |timeout| client.try_disconnect_with_timeout(timeout),
-                )
-                .map_err(adapter_v4::map_client_error),
-            ProtocolClient::V5(client) => timeout
-                .map_or_else(
-                    || client.try_disconnect(),
-                    |timeout| client.try_disconnect_with_timeout(timeout),
-                )
-                .map_err(adapter_v5::map_client_error),
-        };
+        let result = self.shared.backend.try_disconnect(timeout);
         if let Err(error) = result {
             self.shared.restore_running();
             self.shared.operations.cancel(admission.operation_id);
@@ -621,14 +457,7 @@ impl ClientHandle {
             self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
-        let result = match &self.shared.client {
-            ProtocolClient::V311(client) => client
-                .try_disconnect_now()
-                .map_err(adapter_v4::map_client_error),
-            ProtocolClient::V5(client) => client
-                .try_disconnect_now()
-                .map_err(adapter_v5::map_client_error),
-        };
+        let result = self.shared.backend.try_disconnect_now();
         if let Err(error) = result {
             if newly_closing {
                 self.shared.restore_running();
@@ -649,56 +478,6 @@ impl ClientHandle {
         self.shared.require_running()?;
         self.shared.operations.register_diagnostics()
     }
-}
-
-pub(crate) fn validate_mqtt_utf8_string(value: &str, name: &str) -> Result<()> {
-    if value.len() > usize::from(u16::MAX) {
-        return Err(protocol_option_error(format!(
-            "{name} exceeds the MQTT UTF-8 string limit of {} bytes",
-            u16::MAX,
-        )));
-    }
-    if value.contains('\0') {
-        return Err(protocol_option_error(format!(
-            "{name} cannot contain the null character",
-        )));
-    }
-    Ok(())
-}
-
-fn validate_user_properties(properties: &[(String, String)], name: &str) -> Result<()> {
-    for (key, value) in properties {
-        validate_mqtt_utf8_string(key, &format!("{name} key"))?;
-        validate_mqtt_utf8_string(value, &format!("{name} value"))?;
-    }
-    Ok(())
-}
-
-fn validate_subscribe_properties(options: &SubscribeProtocolOptions) -> Result<()> {
-    let SubscribeProtocolOptions::V5(properties) = options else {
-        return Ok(());
-    };
-    if properties.subscription_identifier == Some(0)
-        || properties
-            .subscription_identifier
-            .is_some_and(|identifier| identifier > 268_435_455)
-    {
-        return Err(protocol_option_error(
-            "subscription identifier must be between 1 and 268435455",
-        ));
-    }
-    validate_user_properties(&properties.user_properties, "SUBSCRIBE user property")
-}
-
-fn validate_unsubscribe_properties(options: &UnsubscribeProtocolOptions) -> Result<()> {
-    let UnsubscribeProtocolOptions::V5(properties) = options else {
-        return Ok(());
-    };
-    validate_user_properties(&properties.user_properties, "UNSUBSCRIBE user property")
-}
-
-pub(crate) fn protocol_option_error(message: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Admission, message).with_delivery(DeliveryStatus::NotAdmitted)
 }
 
 pub(crate) fn duration_to_u16(duration: Duration, name: &str) -> Result<u16> {

@@ -20,8 +20,8 @@ use rumqttc_wrapper_core::{
     ProtocolVersion, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS,
     SubscribeCommand, SubscribeProtocolOptions, SubscribeResult, Subscription,
     SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions, UnsubscribeResult,
-    V5PublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
-    V5UnsubscribeProperties, WrapperEvent,
+    V5IncomingPublishProperties, V5OutgoingPublishProperties, V5RetainForwardRule,
+    V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties, WrapperEvent,
 };
 
 use crate::client::{ClientError, ClientObject};
@@ -808,7 +808,7 @@ pub unsafe extern "C" fn rumqttc_client_close_now_timeout_ms(
 
 unsafe fn parse_v5_properties(
     properties: *const rumqttc_v5_publish_properties_t,
-) -> Result<Option<V5PublishProperties>, ErrorHandle> {
+) -> Result<Option<V5OutgoingPublishProperties>, ErrorHandle> {
     if properties.is_null() {
         return Ok(None);
     }
@@ -849,13 +849,12 @@ unsafe fn parse_v5_properties(
                 .map_err(|_| ErrorHandle::argument("topic alias exceeds uint16_t"))?,
         ),
     };
-    Ok(Some(V5PublishProperties {
+    Ok(Some(V5OutgoingPublishProperties {
         response_topic,
         correlation_data,
         content_type,
         payload_format_indicator,
         topic_alias,
-        subscription_identifiers: Vec::new(),
         message_expiry_interval,
         user_properties,
     }))
@@ -1890,7 +1889,7 @@ pub unsafe extern "C" fn rumqttc_event_publish(
     })
 }
 
-fn v5_properties(event: &EventObject) -> Result<&V5PublishProperties, ErrorHandle> {
+fn v5_properties(event: &EventObject) -> Result<&V5IncomingPublishProperties, ErrorHandle> {
     incoming(event)?
         .v5_properties
         .as_ref()

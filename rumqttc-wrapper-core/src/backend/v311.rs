@@ -302,9 +302,10 @@ fn map_v4_event(
         rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::Publish(publish)) => {
             let ack_token = if manual_ack {
                 match publish.qos {
-                    rumqttc_v4::QoS::AtLeastOnce | rumqttc_v4::QoS::ExactlyOnce => {
-                        shared.prepare_v4_ack(&publish)
-                    }
+                    rumqttc_v4::QoS::AtLeastOnce | rumqttc_v4::QoS::ExactlyOnce => shared
+                        .backend()
+                        .prepare_v311_ack(&publish)
+                        .and_then(|ack| shared.prepare_ack(ack)),
                     _ => None,
                 }
             } else {
