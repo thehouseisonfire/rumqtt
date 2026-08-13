@@ -193,9 +193,7 @@ class Broker:
                     b"native-invalid-protocol-options",
                     b"native-v311-protocol-options",
                 } and packet_type in {3, 8, 10}:
-                    raise AssertionError(
-                        f"rejected native command emitted packet type {packet_type}"
-                    )
+                    raise AssertionError(f"rejected native command emitted packet type {packet_type}")
                 if packet_type == 3:
                     if not self.handle_publish(connection, flags, body):
                         return
@@ -229,13 +227,11 @@ class Broker:
             if (
                 connection is not None
                 and connection.client_id == b"native-v5-protocol-options"
-                and connection.wire_acceptance
-                != {"default-subscribe", "extended-subscribe", "unsubscribe"}
+                and connection.wire_acceptance != {"default-subscribe", "extended-subscribe", "unsubscribe"}
             ):
                 with self.failure_lock:
                     self.failures.append(
-                        "native MQTT 5 option coverage was incomplete: "
-                        f"{sorted(connection.wire_acceptance)}"
+                        f"native MQTT 5 option coverage was incomplete: {sorted(connection.wire_acceptance)}"
                     )
 
     def handle_publish(self, connection: Connection, flags: int, body: bytes) -> bool:
@@ -280,9 +276,7 @@ class Broker:
         if connection.client_id == b"native-v5-protocol-options":
             if subscriptions == [(b"rumqttc/native/v5/default", 0)]:
                 if properties:
-                    raise AssertionError(
-                        f"default MQTT 5 SUBSCRIBE properties changed: {properties!r}"
-                    )
+                    raise AssertionError(f"default MQTT 5 SUBSCRIBE properties changed: {properties!r}")
                 connection.wire_acceptance.add("default-subscribe")
             elif subscriptions == [
                 (b"rumqttc/native/v5/options/0", 0x04),
@@ -291,14 +285,10 @@ class Broker:
             ]:
                 expected = b"\x0b\x07\x26\x00\x01k\x00\x01v"
                 if properties != expected:
-                    raise AssertionError(
-                        f"extended MQTT 5 SUBSCRIBE properties changed: {properties!r}"
-                    )
+                    raise AssertionError(f"extended MQTT 5 SUBSCRIBE properties changed: {properties!r}")
                 connection.wire_acceptance.add("extended-subscribe")
             else:
-                raise AssertionError(
-                    f"unexpected MQTT 5 option acceptance SUBSCRIBE: {subscriptions!r}"
-                )
+                raise AssertionError(f"unexpected MQTT 5 option acceptance SUBSCRIBE: {subscriptions!r}")
 
         suffix = bytes([1] * len(subscriptions))
         if connection.protocol == 5:
@@ -324,14 +314,10 @@ class Broker:
 
         if connection.client_id == b"native-v5-protocol-options":
             if filters != [b"rumqttc/native/v5/options/2"]:
-                raise AssertionError(
-                    f"unexpected MQTT 5 option acceptance UNSUBSCRIBE: {filters!r}"
-                )
+                raise AssertionError(f"unexpected MQTT 5 option acceptance UNSUBSCRIBE: {filters!r}")
             expected = b"\x26\x00\x01u\x00\x01p"
             if properties != expected:
-                raise AssertionError(
-                    f"MQTT 5 UNSUBSCRIBE properties changed: {properties!r}"
-                )
+                raise AssertionError(f"MQTT 5 UNSUBSCRIBE properties changed: {properties!r}")
             connection.wire_acceptance.add("unsubscribe")
 
         suffix = b"" if connection.protocol == 4 else b"\x00\x11"
