@@ -43,6 +43,55 @@ fn recv_ack_token(events: &mut rumqttc_wrapper_core::EventConsumer, duplicate: b
     }
 }
 
+fn assert_commands_not_admitted(
+    client_id: &str,
+    mqtt5: bool,
+    commands: impl IntoIterator<Item = Command>,
+) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = read_frame(&mut stream).unwrap();
+        if mqtt5 {
+            stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap();
+        } else {
+            stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
+        }
+        while let Some((header, _)) = read_frame(&mut stream) {
+            assert!(
+                !matches!(header >> 4, 3 | 8 | 10),
+                "wrapper emitted an application packet after rejecting the command"
+            );
+            if header >> 4 == 14 {
+                break;
+            }
+        }
+    });
+    let config = if mqtt5 {
+        rumqttc_wrapper_core::ClientConfig::v5(client_id, "127.0.0.1", port)
+    } else {
+        rumqttc_wrapper_core::ClientConfig::v311(client_id, "127.0.0.1", port)
+    };
+    let mut native = NativeClient::start(config).unwrap();
+    let handle = native.handle();
+    let mut events = native.take_events().unwrap();
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Some(WrapperEvent::Connected { .. })
+    ));
+
+    for command in commands {
+        let error = handle.try_admit(command).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Admission);
+        assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+    }
+
+    handle.try_admit(Command::ImmediateDisconnect).unwrap();
+    native.join(Duration::from_secs(2)).unwrap();
+    broker.join().unwrap();
+}
+
 #[test]
 fn mqtt5_publish_rejection_preserves_reason_code() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -482,63 +531,144 @@ fn mqtt5_subscribe_and_unsubscribe_extensions_reach_the_wire() {
 }
 
 #[test]
-fn mqtt5_command_variants_are_not_admitted_to_v311_clients() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let broker = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let _ = read_frame(&mut stream).unwrap();
-        stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
-        while let Some((header, _)) = read_frame(&mut stream) {
-            assert!(!matches!(header >> 4, 3 | 8 | 10));
-            if header >> 4 == 14 {
-                break;
-            }
-        }
-    });
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v311(
-        "reject-v5-options",
-        "127.0.0.1",
-        port,
-    ))
-    .unwrap();
-    let handle = native.handle();
-    let mut events = native.take_events().unwrap();
-    assert!(matches!(
-        events.recv_timeout(Duration::from_secs(2)).unwrap(),
-        Some(WrapperEvent::Connected { .. })
-    ));
-
-    let commands = [
-        Command::Publish(PublishCommand {
+fn mqtt5_publish_options_are_not_admitted_to_v311_clients() {
+    assert_commands_not_admitted(
+        "reject-v5-publish-options",
+        false,
+        [Command::Publish(PublishCommand {
             topic: "a".into(),
             payload: Bytes::new(),
             qos: QoS::AtMostOnce,
             retain: false,
             protocol: PublishProtocolOptions::V5(V5PublishProperties::default()),
-        }),
-        Command::Subscribe(SubscribeCommand {
+        })],
+    );
+}
+
+#[test]
+fn mqtt5_subscribe_properties_are_not_admitted_to_v311_clients() {
+    assert_commands_not_admitted(
+        "reject-v5-subscribe-properties",
+        false,
+        [Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "a/#".into(),
+                qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::VersionNeutral,
+            }],
+            protocol: SubscribeProtocolOptions::V5(V5SubscribeProperties::default()),
+        })],
+    );
+}
+
+#[test]
+fn mqtt5_subscription_options_are_not_admitted_to_v311_clients() {
+    assert_commands_not_admitted(
+        "reject-v5-subscription-options",
+        false,
+        [Command::Subscribe(SubscribeCommand {
             filters: vec![Subscription {
                 filter: "a/#".into(),
                 qos: QoS::AtMostOnce,
                 protocol: SubscriptionProtocolOptions::V5(V5SubscriptionOptions::default()),
             }],
             protocol: SubscribeProtocolOptions::VersionNeutral,
-        }),
-        Command::Unsubscribe(UnsubscribeCommand {
+        })],
+    );
+}
+
+#[test]
+fn mqtt5_unsubscribe_properties_are_not_admitted_to_v311_clients() {
+    assert_commands_not_admitted(
+        "reject-v5-unsubscribe-properties",
+        false,
+        [Command::Unsubscribe(UnsubscribeCommand {
             filters: vec!["a/#".into()],
             protocol: UnsubscribeProtocolOptions::V5(V5UnsubscribeProperties::default()),
-        }),
-    ];
-    for command in commands {
-        let error = handle.try_admit(command).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Admission);
-        assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
-    }
+        })],
+    );
+}
 
-    handle.try_admit(Command::ImmediateDisconnect).unwrap();
-    native.join(Duration::from_secs(2)).unwrap();
-    broker.join().unwrap();
+#[test]
+fn mqtt5_invalid_subscription_identifiers_are_not_admitted() {
+    let commands = [0, 268_435_456].map(|subscription_identifier| {
+        Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "a/#".into(),
+                qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::VersionNeutral,
+            }],
+            protocol: SubscribeProtocolOptions::V5(V5SubscribeProperties {
+                subscription_identifier: Some(subscription_identifier),
+                user_properties: Vec::new(),
+            }),
+        })
+    });
+    assert_commands_not_admitted("reject-invalid-subscription-identifiers", true, commands);
+}
+
+#[test]
+fn mqtt5_invalid_subscribe_user_properties_are_not_admitted() {
+    let oversized = "x".repeat(usize::from(u16::MAX) + 1);
+    let commands = [
+        ("invalid\0key".into(), "value".into()),
+        ("key".into(), "invalid\0value".into()),
+        (oversized.clone(), "value".into()),
+        ("key".into(), oversized.clone()),
+    ]
+    .map(|user_property| {
+        Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "a/#".into(),
+                qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::VersionNeutral,
+            }],
+            protocol: SubscribeProtocolOptions::V5(V5SubscribeProperties {
+                subscription_identifier: None,
+                user_properties: vec![user_property],
+            }),
+        })
+    });
+    assert_commands_not_admitted("reject-invalid-subscribe-properties", true, commands);
+}
+
+#[test]
+fn mqtt5_invalid_unsubscribe_user_properties_are_not_admitted() {
+    let oversized = "x".repeat(usize::from(u16::MAX) + 1);
+    let commands = [
+        ("invalid\0key".into(), "value".into()),
+        ("key".into(), "invalid\0value".into()),
+        (oversized.clone(), "value".into()),
+        ("key".into(), oversized.clone()),
+    ]
+    .map(|user_property| {
+        Command::Unsubscribe(UnsubscribeCommand {
+            filters: vec!["a/#".into()],
+            protocol: UnsubscribeProtocolOptions::V5(V5UnsubscribeProperties {
+                user_properties: vec![user_property],
+            }),
+        })
+    });
+    assert_commands_not_admitted("reject-invalid-unsubscribe-properties", true, commands);
+}
+
+#[test]
+fn mqtt5_no_local_on_shared_subscription_is_not_admitted() {
+    assert_commands_not_admitted(
+        "reject-shared-no-local",
+        true,
+        [Command::Subscribe(SubscribeCommand {
+            filters: vec![Subscription {
+                filter: "$share/group/a/#".into(),
+                qos: QoS::AtMostOnce,
+                protocol: SubscriptionProtocolOptions::V5(V5SubscriptionOptions {
+                    no_local: true,
+                    ..V5SubscriptionOptions::default()
+                }),
+            }],
+            protocol: SubscribeProtocolOptions::VersionNeutral,
+        })],
+    );
 }
 
 #[test]

@@ -6,6 +6,7 @@
 
 static const uint8_t BINARY_PAYLOAD[] = {0, 1, 0, 2, 255, 0};
 void native_test_error_out_contract(void);
+void native_test_protocol_options(void);
 
 static void test_protocol_round_trip(rumqttc_protocol_t protocol) {
   const rumqttc_completion_kind_t expected[] = {
@@ -363,6 +364,7 @@ static void test_close_and_pending_handles(void) {
 int main(void) {
   test_invalid_inputs();
   native_test_error_out_contract();
+  native_test_protocol_options();
   test_protocol_round_trip(RUMQTTC_PROTOCOL_V311);
   test_protocol_round_trip(RUMQTTC_PROTOCOL_V5);
   test_manual_ack(RUMQTTC_PROTOCOL_V311);

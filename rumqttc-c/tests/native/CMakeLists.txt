@@ -54,7 +54,10 @@ function(rumqttc_native_target target source)
     endif()
 endfunction()
 
-add_executable(rumqttc-native-integration native_integration.c error_out_contract.c)
+add_executable(rumqttc-native-integration
+    native_integration.c
+    error_out_contract.c
+    protocol_options.c)
 target_compile_features(rumqttc-native-integration PRIVATE c_std_11)
 target_link_libraries(rumqttc-native-integration PRIVATE native_common)
 if(MSVC)

@@ -72,7 +72,7 @@ def string_at(body: bytes, offset: int) -> tuple[bytes, int]:
     return body[offset : offset + length], offset + length
 
 
-def skip_properties(body: bytes, offset: int) -> int:
+def variable_byte_integer_at(body: bytes, offset: int) -> tuple[int, int]:
     length = 0
     multiplier = 1
     while True:
@@ -80,15 +80,26 @@ def skip_properties(body: bytes, offset: int) -> int:
         offset += 1
         length += (digit & 0x7F) * multiplier
         if not digit & 0x80:
-            return offset + length
+            return length, offset
         multiplier *= 128
+
+
+def properties_at(body: bytes, offset: int) -> tuple[bytes, int]:
+    length, offset = variable_byte_integer_at(body, offset)
+    return body[offset : offset + length], offset + length
+
+
+def skip_properties(body: bytes, offset: int) -> int:
+    return properties_at(body, offset)[1]
 
 
 @dataclass
 class Connection:
     stream: socket.socket
     protocol: int
+    client_id: bytes
     subscriptions: set[bytes] = field(default_factory=set)
+    wire_acceptance: set[str] = field(default_factory=set)
     next_packet_id: int = 100
     outstanding_incoming: set[int] = field(default_factory=set)
 
@@ -161,18 +172,30 @@ class Broker:
             if protocol_name != b"MQTT":
                 return
             protocol = body[offset]
+            offset += 1
+            offset += 1  # CONNECT flags
+            offset += 2  # Keep Alive
             if protocol == 4:
                 stream.sendall(b"\x20\x02\x00\x00")
             elif protocol == 5:
                 stream.sendall(b"\x20\x03\x00\x00\x00")
+                offset = skip_properties(body, offset)
             else:
                 return
-            connection = Connection(stream, protocol)
+            client_id, _ = string_at(body, offset)
+            connection = Connection(stream, protocol, client_id)
             while not self.stopping.is_set():
                 packet = read_frame(stream)
                 if packet is None:
                     return
                 packet_type, flags, body = packet
+                if connection.client_id in {
+                    b"native-invalid-protocol-options",
+                    b"native-v311-protocol-options",
+                } and packet_type in {3, 8, 10}:
+                    raise AssertionError(
+                        f"rejected native command emitted packet type {packet_type}"
+                    )
                 if packet_type == 3:
                     if not self.handle_publish(connection, flags, body):
                         return
@@ -185,9 +208,7 @@ class Broker:
                 elif packet_type == 8:
                     self.handle_subscribe(connection, body)
                 elif packet_type == 10:
-                    packet_id = body[:2]
-                    suffix = b"" if protocol == 4 else b"\x00\x11"
-                    connection.send(frame(11, 0, packet_id + suffix))
+                    self.handle_unsubscribe(connection, body)
                 elif packet_type == 12:
                     connection.send(frame(13, 0, b""))
                 elif packet_type == 14:
@@ -204,6 +225,17 @@ class Broker:
                     self.failures.append(
                         f"connection closed without acknowledging incoming packet ids "
                         f"{sorted(connection.outstanding_incoming)}"
+                    )
+            if (
+                connection is not None
+                and connection.client_id == b"native-v5-protocol-options"
+                and connection.wire_acceptance
+                != {"default-subscribe", "extended-subscribe", "unsubscribe"}
+            ):
+                with self.failure_lock:
+                    self.failures.append(
+                        "native MQTT 5 option coverage was incomplete: "
+                        f"{sorted(connection.wire_acceptance)}"
                     )
 
     def handle_publish(self, connection: Connection, flags: int, body: bytes) -> bool:
@@ -234,24 +266,76 @@ class Broker:
     def handle_subscribe(self, connection: Connection, body: bytes) -> None:
         packet_id = body[:2]
         offset = 2
+        properties = b""
         if connection.protocol == 5:
-            offset = skip_properties(body, offset)
-        filters: list[bytes] = []
+            properties, offset = properties_at(body, offset)
+        subscriptions: list[tuple[bytes, int]] = []
         while offset < len(body):
             topic, offset = string_at(body, offset)
-            filters.append(topic)
+            options = body[offset]
+            subscriptions.append((topic, options))
             connection.subscriptions.add(topic)
             offset += 1
-        suffix = bytes([1] * len(filters))
+
+        if connection.client_id == b"native-v5-protocol-options":
+            if subscriptions == [(b"rumqttc/native/v5/default", 0)]:
+                if properties:
+                    raise AssertionError(
+                        f"default MQTT 5 SUBSCRIBE properties changed: {properties!r}"
+                    )
+                connection.wire_acceptance.add("default-subscribe")
+            elif subscriptions == [
+                (b"rumqttc/native/v5/options/0", 0x04),
+                (b"rumqttc/native/v5/options/1", 0x19),
+                (b"rumqttc/native/v5/options/2", 0x22),
+            ]:
+                expected = b"\x0b\x07\x26\x00\x01k\x00\x01v"
+                if properties != expected:
+                    raise AssertionError(
+                        f"extended MQTT 5 SUBSCRIBE properties changed: {properties!r}"
+                    )
+                connection.wire_acceptance.add("extended-subscribe")
+            else:
+                raise AssertionError(
+                    f"unexpected MQTT 5 option acceptance SUBSCRIBE: {subscriptions!r}"
+                )
+
+        suffix = bytes([1] * len(subscriptions))
         if connection.protocol == 5:
             suffix = b"\x00" + suffix
         connection.send(frame(9, 0, packet_id + suffix))
-        for topic in filters:
+        for topic, _ in subscriptions:
             if topic == b"rumqttc/native/incoming":
                 connection.publish(topic, b"\x00native\x00", qos=1)
             elif topic == b"rumqttc/native/overflow":
                 for index in range(8):
                     connection.publish(topic, bytes([index, 0]), qos=0)
+
+    def handle_unsubscribe(self, connection: Connection, body: bytes) -> None:
+        packet_id = body[:2]
+        offset = 2
+        properties = b""
+        if connection.protocol == 5:
+            properties, offset = properties_at(body, offset)
+        filters: list[bytes] = []
+        while offset < len(body):
+            topic, offset = string_at(body, offset)
+            filters.append(topic)
+
+        if connection.client_id == b"native-v5-protocol-options":
+            if filters != [b"rumqttc/native/v5/options/2"]:
+                raise AssertionError(
+                    f"unexpected MQTT 5 option acceptance UNSUBSCRIBE: {filters!r}"
+                )
+            expected = b"\x26\x00\x01u\x00\x01p"
+            if properties != expected:
+                raise AssertionError(
+                    f"MQTT 5 UNSUBSCRIBE properties changed: {properties!r}"
+                )
+            connection.wire_acceptance.add("unsubscribe")
+
+        suffix = b"" if connection.protocol == 4 else b"\x00\x11"
+        connection.send(frame(11, 0, packet_id + suffix))
 
 
 def main() -> int:
