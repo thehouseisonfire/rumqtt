@@ -344,10 +344,11 @@ Recommended commands should include the actual selected toolchain, for example:
 
 ```text
 cargo test -p rumqtt-js
-npm test
 deno test --allow-net --allow-ffi --node-modules-dir=auto
 bun test
 ```
+
+Do not run the suite with `npm`, `pnpm`, or `yarn`; use Bun and Deno only.
 
 Use a local deterministic broker fixture; do not make release tests depend on
 a public MQTT broker.

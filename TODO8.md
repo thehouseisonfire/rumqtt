@@ -367,8 +367,8 @@ Run the same behavior suite for MQTT 3.1.1 and MQTT 5:
 - panic containment through a test-only injected native failure; and
 - exception attributes and reason-code preservation.
 
-Run type-checking tests with the selected supported versions of mypy and pyright
-and runtime API tests confirming that annotations match exported names. Test
+Run type-checking tests with pyrefly and lint/format checks with ruff, plus
+runtime API tests confirming that annotations match exported names. Test
 both `asyncio.run()` and manually created loops. If another event-loop policy
 such as uvloop is advertised, execute the complete lifecycle suite under it
 rather than assuming asyncio compatibility.
@@ -385,17 +385,18 @@ versions and tools, for example:
 cargo fmt --all
 cargo test -p rumqttc-wrapper-core
 cargo test -p rumqtt-python
-maturin develop
-python -m pytest
-python -m mypy python/rumqttc tests/typing
-python -m pyright python/rumqttc tests/typing
-maturin build --release
+uv run maturin develop
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+uv run pyrefly check
+uv run maturin build --release
 ```
 
-Run Rust clippy for the extension and use Python linters/formatters selected by
-the repository. Add sanitizer or leak-check runs for the Rust boundary where
-the Python build and platform support them, plus child-process tests that can
-detect hung native threads at interpreter exit.
+Run Rust clippy for the extension and use ruff for Python lint and formatting
+selected by the repository. Add sanitizer or leak-check runs for the Rust
+boundary where the Python build and platform support them, plus child-process
+tests that can detect hung native threads at interpreter exit.
 
 ## Documentation and completion criteria
 
