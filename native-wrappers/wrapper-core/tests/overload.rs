@@ -40,7 +40,11 @@ fn assert_full_event_buffer_terminates(mqtt5: bool) {
     config.common.event_delivery_timeout = Duration::from_millis(50);
     let mut native = NativeClient::start(config).unwrap();
     let mut events = native.take_events().unwrap();
-    thread::sleep(Duration::from_millis(200));
+
+    // Do not drain the ordinary event buffer until the driver has terminated. A fixed sleep is
+    // racy under load: if the driver has not yet reached the delivery timeout, receiving
+    // `Connected` frees the slot and allows the pending publish to be delivered successfully.
+    native.join(Duration::from_secs(1)).unwrap();
 
     assert!(matches!(
         events.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -52,7 +56,6 @@ fn assert_full_event_buffer_terminates(mqtt5: bool) {
         }
         other => panic!("unexpected terminal event: {other:?}"),
     }
-    native.join(Duration::from_secs(1)).unwrap();
     broker.join().unwrap();
 }
 
