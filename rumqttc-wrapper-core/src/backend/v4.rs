@@ -67,7 +67,7 @@ use crate::{
 
 pub(crate) fn build(
     common: &crate::CommonConfig,
-    protocol: crate::V311Config,
+    protocol: crate::V4Config,
 ) -> crate::Result<(rumqttc_v4::AsyncClient, Box<rumqttc_v4::EventLoop>)> {
     let tls = match &common.transport {
         crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss { tls, .. } => {
@@ -304,7 +304,7 @@ fn map_v4_event(
                 match publish.qos {
                     rumqttc_v4::QoS::AtLeastOnce | rumqttc_v4::QoS::ExactlyOnce => shared
                         .backend()
-                        .prepare_v311_ack(&publish)
+                        .prepare_v4_ack(&publish)
                         .and_then(|ack| shared.prepare_ack(ack)),
                     _ => None,
                 }

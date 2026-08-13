@@ -10,7 +10,7 @@
  * added. Each marked function below is called with NULL on both paths.
  */
 void native_test_error_out_contract(void) {
-  rumqttc_config_t *v311 = NULL;
+  rumqttc_config_t *v4 = NULL;
   rumqttc_config_t *v5 = NULL;
   rumqttc_config_t *start_config = NULL;
   rumqttc_client_t *client = NULL;
@@ -22,100 +22,100 @@ void native_test_error_out_contract(void) {
   rumqttc_bytes_view_t invalid_bytes = {NULL, 1};
 
   /* ERROR_OUT_SUCCESS: rumqttc_config_new */
-  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, &v311, NULL));
+  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &v4, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_new */
   EXPECT_FAILURE(rumqttc_config_new(99, &v5, NULL));
   CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &v5, NULL));
 
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_broker */
-  CHECK(rumqttc_config_set_broker(v311, native_string("127.0.0.1"),
+  CHECK(rumqttc_config_set_broker(v4, native_string("127.0.0.1"),
                                   native_test_port(), NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_broker */
   EXPECT_FAILURE(rumqttc_config_set_broker(NULL, valid, 1, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_client_id */
-  CHECK(rumqttc_config_set_client_id(v311, valid, NULL));
+  CHECK(rumqttc_config_set_client_id(v4, valid, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_client_id */
-  EXPECT_FAILURE(rumqttc_config_set_client_id(v311, invalid_string, NULL));
+  EXPECT_FAILURE(rumqttc_config_set_client_id(v4, invalid_string, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_username */
-  CHECK(rumqttc_config_set_username(v311, valid, NULL));
+  CHECK(rumqttc_config_set_username(v4, valid, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_username */
   EXPECT_FAILURE(rumqttc_config_set_username(NULL, valid, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_clear_username */
-  CHECK(rumqttc_config_clear_username(v311, NULL));
+  CHECK(rumqttc_config_clear_username(v4, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_clear_username */
   EXPECT_FAILURE(rumqttc_config_clear_username(NULL, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_password */
-  CHECK(rumqttc_config_set_password(v311, empty, NULL));
+  CHECK(rumqttc_config_set_password(v4, empty, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_password */
-  EXPECT_FAILURE(rumqttc_config_set_password(v311, invalid_bytes, NULL));
+  EXPECT_FAILURE(rumqttc_config_set_password(v4, invalid_bytes, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_clear_password */
-  CHECK(rumqttc_config_clear_password(v311, NULL));
+  CHECK(rumqttc_config_clear_password(v4, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_clear_password */
   EXPECT_FAILURE(rumqttc_config_clear_password(NULL, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_tcp */
-  CHECK(rumqttc_config_set_transport_tcp(v311, NULL));
+  CHECK(rumqttc_config_set_transport_tcp(v4, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_tcp */
   EXPECT_FAILURE(rumqttc_config_set_transport_tcp(NULL, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_tls */
-  CHECK(rumqttc_config_set_transport_tls(v311, empty, empty, empty, NULL));
+  CHECK(rumqttc_config_set_transport_tls(v4, empty, empty, empty, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_tls */
   EXPECT_FAILURE(
       rumqttc_config_set_transport_tls(NULL, empty, empty, empty, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_websocket */
   CHECK(rumqttc_config_set_transport_websocket(
-      v311, native_string("ws://localhost"), NULL));
+      v4, native_string("ws://localhost"), NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_websocket */
   EXPECT_FAILURE(rumqttc_config_set_transport_websocket(NULL, valid, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_wss */
-  CHECK(rumqttc_config_set_transport_wss(v311, native_string("wss://localhost"),
+  CHECK(rumqttc_config_set_transport_wss(v4, native_string("wss://localhost"),
                                          empty, empty, empty, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_wss */
   EXPECT_FAILURE(
       rumqttc_config_set_transport_wss(NULL, valid, empty, empty, empty, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_keep_alive_seconds */
-  CHECK(rumqttc_config_set_keep_alive_seconds(v311, 5, NULL));
+  CHECK(rumqttc_config_set_keep_alive_seconds(v4, 5, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_keep_alive_seconds */
   EXPECT_FAILURE(rumqttc_config_set_keep_alive_seconds(NULL, 5, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_connection_timeout_seconds */
-  CHECK(rumqttc_config_set_connection_timeout_seconds(v311, 1, NULL));
+  CHECK(rumqttc_config_set_connection_timeout_seconds(v4, 1, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_connection_timeout_seconds */
   EXPECT_FAILURE(rumqttc_config_set_connection_timeout_seconds(NULL, 1, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_request_capacity */
-  CHECK(rumqttc_config_set_request_capacity(v311, 4, NULL));
+  CHECK(rumqttc_config_set_request_capacity(v4, 4, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_request_capacity */
   EXPECT_FAILURE(rumqttc_config_set_request_capacity(NULL, 4, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_event_capacity */
-  CHECK(rumqttc_config_set_event_capacity(v311, 4, NULL));
+  CHECK(rumqttc_config_set_event_capacity(v4, 4, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_event_capacity */
   EXPECT_FAILURE(rumqttc_config_set_event_capacity(NULL, 4, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_event_delivery_timeout_ms */
-  CHECK(rumqttc_config_set_event_delivery_timeout_ms(v311, 100, NULL));
+  CHECK(rumqttc_config_set_event_delivery_timeout_ms(v4, 100, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_event_delivery_timeout_ms */
   EXPECT_FAILURE(rumqttc_config_set_event_delivery_timeout_ms(NULL, 100, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_ack_mode */
-  CHECK(rumqttc_config_set_ack_mode(v311, RUMQTTC_ACK_AUTOMATIC, NULL));
+  CHECK(rumqttc_config_set_ack_mode(v4, RUMQTTC_ACK_AUTOMATIC, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_ack_mode */
-  EXPECT_FAILURE(rumqttc_config_set_ack_mode(v311, 99, NULL));
+  EXPECT_FAILURE(rumqttc_config_set_ack_mode(v4, 99, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_incoming_packet_limit */
-  CHECK(rumqttc_config_set_incoming_packet_limit(v311, 1024, NULL));
+  CHECK(rumqttc_config_set_incoming_packet_limit(v4, 1024, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_incoming_packet_limit */
   EXPECT_FAILURE(rumqttc_config_set_incoming_packet_limit(NULL, 1024, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_emit_outgoing_events */
-  CHECK(rumqttc_config_set_emit_outgoing_events(v311, 0, NULL));
+  CHECK(rumqttc_config_set_emit_outgoing_events(v4, 0, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_emit_outgoing_events */
-  EXPECT_FAILURE(rumqttc_config_set_emit_outgoing_events(v311, 2, NULL));
-  /* ERROR_OUT_SUCCESS: rumqttc_config_set_v311_clean_session */
-  CHECK(rumqttc_config_set_v311_clean_session(v311, 1, NULL));
-  /* ERROR_OUT_FAILURE: rumqttc_config_set_v311_clean_session */
-  EXPECT_FAILURE(rumqttc_config_set_v311_clean_session(NULL, 1, NULL));
+  EXPECT_FAILURE(rumqttc_config_set_emit_outgoing_events(v4, 2, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_config_set_v4_clean_session */
+  CHECK(rumqttc_config_set_v4_clean_session(v4, 1, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_set_v4_clean_session */
+  EXPECT_FAILURE(rumqttc_config_set_v4_clean_session(NULL, 1, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_session */
   CHECK(rumqttc_config_set_v5_session(v5, 1, 0, 0, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_session */
   EXPECT_FAILURE(rumqttc_config_set_v5_session(NULL, 1, 0, 0, NULL));
-  rumqttc_config_destroy(v311);
+  rumqttc_config_destroy(v4);
   rumqttc_config_destroy(v5);
 
-  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, &start_config, NULL));
+  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &start_config, NULL));
   CHECK(rumqttc_config_set_broker(start_config, native_string("127.0.0.1"),
                                   native_test_port(), NULL));
   CHECK(rumqttc_config_set_client_id(start_config, native_string("error-out"),
@@ -274,7 +274,7 @@ void native_test_error_out_contract(void) {
   EXPECT_FAILURE(rumqttc_client_close_now_timeout_ms(NULL, 5000, NULL));
   CHECK(rumqttc_client_destroy_timeout_ms(client, 5000, NULL));
 
-  client = native_start_client(RUMQTTC_PROTOCOL_V311, "error-disconnect",
+  client = native_start_client(RUMQTTC_PROTOCOL_V4, "error-disconnect",
                                RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
   {
     rumqttc_publish_options_t interrupt = native_publish_options(RUMQTTC_QOS_0);
@@ -301,7 +301,7 @@ void native_test_error_out_contract(void) {
       rumqttc_event_t *incoming;
       uint64_t operation = 0;
       client =
-          native_start_client(RUMQTTC_PROTOCOL_V311,
+          native_start_client(RUMQTTC_PROTOCOL_V4,
                               tracked ? "error-ack-tracked" : "error-ack-try",
                               RUMQTTC_ACK_MANUAL, 8, 8, 1000);
       CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
@@ -338,7 +338,7 @@ void native_test_error_out_contract(void) {
     }
   }
 
-  client = native_start_client(RUMQTTC_PROTOCOL_V311, "error-close",
+  client = native_start_client(RUMQTTC_PROTOCOL_V4, "error-close",
                                RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
   /* ERROR_OUT_SUCCESS: rumqttc_client_close_timeout_ms */
   CHECK(rumqttc_client_close_timeout_ms(client, 5000, NULL));
@@ -346,14 +346,14 @@ void native_test_error_out_contract(void) {
   EXPECT_FAILURE(rumqttc_client_close_timeout_ms(NULL, 0, NULL));
   CHECK(rumqttc_client_destroy_timeout_ms(client, 5000, NULL));
 
-  client = native_start_client(RUMQTTC_PROTOCOL_V311, "error-destroy",
+  client = native_start_client(RUMQTTC_PROTOCOL_V4, "error-destroy",
                                RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
   /* ERROR_OUT_FAILURE: rumqttc_client_destroy_timeout_ms */
   EXPECT_FAILURE(rumqttc_client_destroy_timeout_ms(client, 0, NULL));
   /* A failed destroy retained ownership, so the same handle can be retried. */
   CHECK(rumqttc_client_destroy_timeout_ms(client, 5000, NULL));
 
-  client = native_start_client(RUMQTTC_PROTOCOL_V311, "error-abandon",
+  client = native_start_client(RUMQTTC_PROTOCOL_V4, "error-abandon",
                                RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
   rumqttc_client_abandon(client);
   rumqttc_client_abandon(NULL);

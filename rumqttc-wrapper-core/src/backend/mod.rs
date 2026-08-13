@@ -1,4 +1,4 @@
-pub(crate) mod v311;
+pub(crate) mod v4;
 pub(crate) mod v5;
 
 use std::time::Duration;
@@ -12,26 +12,26 @@ use crate::{
 };
 
 pub(crate) enum BackendClient {
-    V311(rumqttc_v4::AsyncClient),
+    V4(rumqttc_v4::AsyncClient),
     V5(rumqttc_v5::AsyncClient),
 }
 
 pub(crate) enum BackendDriver {
-    V311(Box<rumqttc_v4::EventLoop>),
+    V4(Box<rumqttc_v4::EventLoop>),
     V5(Box<rumqttc_v5::EventLoop>),
 }
 
 #[derive(Clone)]
 pub(crate) enum PreparedAck {
-    V311(rumqttc_v4::ManualAck),
+    V4(rumqttc_v4::ManualAck),
     V5(rumqttc_v5::ManualAck),
 }
 
 impl PreparedAck {
     pub(crate) const fn key(&self) -> AckKey {
         match self {
-            Self::V311(rumqttc_v4::ManualAck::PubAck(ack)) => AckKey::V311PubAck(ack.pkid),
-            Self::V311(rumqttc_v4::ManualAck::PubRec(ack)) => AckKey::V311PubRec(ack.pkid),
+            Self::V4(rumqttc_v4::ManualAck::PubAck(ack)) => AckKey::V4PubAck(ack.pkid),
+            Self::V4(rumqttc_v4::ManualAck::PubRec(ack)) => AckKey::V4PubRec(ack.pkid),
             Self::V5(rumqttc_v5::ManualAck::PubAck(ack)) => AckKey::V5PubAck(ack.pkid),
             Self::V5(rumqttc_v5::ManualAck::PubRec(ack)) => AckKey::V5PubRec(ack.pkid),
         }
@@ -40,8 +40,8 @@ impl PreparedAck {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AckKey {
-    V311PubAck(u16),
-    V311PubRec(u16),
+    V4PubAck(u16),
+    V4PubRec(u16),
     V5PubAck(u16),
     V5PubRec(u16),
 }
@@ -49,18 +49,18 @@ pub(crate) enum AckKey {
 impl BackendClient {
     pub(crate) fn try_publish(&self, command: PublishCommand) -> Result<CompletionFuture> {
         match self {
-            Self::V311(client) => {
+            Self::V4(client) => {
                 if matches!(command.protocol, PublishProtocolOptions::V5(_)) {
                     return Err(protocol_option_error(
                         "MQTT 5 publish properties require MQTT 5",
                     ));
                 }
-                let options = v311::publish_options(&command);
+                let options = v4::publish_options(&command);
                 let notice = client
                     .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(v311::map_client_error)?;
+                    .map_err(v4::map_client_error)?;
                 Ok(Box::pin(async move {
-                    v311::map_publish_notice(notice.wait_async().await)
+                    v4::map_publish_notice(notice.wait_async().await)
                 }))
             }
             Self::V5(client) => {
@@ -78,7 +78,7 @@ impl BackendClient {
 
     pub(crate) fn try_subscribe(&self, command: SubscribeCommand) -> Result<CompletionFuture> {
         match self {
-            Self::V311(client) => {
+            Self::V4(client) => {
                 if matches!(command.protocol, SubscribeProtocolOptions::V5(_))
                     || command
                         .filters
@@ -93,17 +93,14 @@ impl BackendClient {
                     .filters
                     .into_iter()
                     .map(|filter| {
-                        rumqttc_v4::SubscribeFilterInput::new(
-                            filter.filter,
-                            v311::to_qos(filter.qos),
-                        )
+                        rumqttc_v4::SubscribeFilterInput::new(filter.filter, v4::to_qos(filter.qos))
                     })
                     .collect::<Vec<_>>();
                 let notice = client
                     .try_subscribe_many_tracked(filters)
-                    .map_err(v311::map_client_error)?;
+                    .map_err(v4::map_client_error)?;
                 Ok(Box::pin(async move {
-                    v311::map_subscribe_notice(notice.wait_async().await)
+                    v4::map_subscribe_notice(notice.wait_async().await)
                 }))
             }
             Self::V5(client) => {
@@ -148,7 +145,7 @@ impl BackendClient {
 
     pub(crate) fn try_unsubscribe(&self, command: UnsubscribeCommand) -> Result<CompletionFuture> {
         match self {
-            Self::V311(client) => {
+            Self::V4(client) => {
                 if matches!(command.protocol, UnsubscribeProtocolOptions::V5(_)) {
                     return Err(protocol_option_error(
                         "MQTT 5 unsubscribe properties require MQTT 5",
@@ -156,9 +153,9 @@ impl BackendClient {
                 }
                 let notice = client
                     .try_unsubscribe_many_tracked(command.filters)
-                    .map_err(v311::map_client_error)?;
+                    .map_err(v4::map_client_error)?;
                 Ok(Box::pin(async move {
-                    v311::map_unsubscribe_notice(notice.wait_async().await)
+                    v4::map_unsubscribe_notice(notice.wait_async().await)
                 }))
             }
             Self::V5(client) => {
@@ -181,11 +178,11 @@ impl BackendClient {
         }
     }
 
-    pub(crate) fn prepare_v311_ack(&self, publish: &rumqttc_v4::Publish) -> Option<PreparedAck> {
-        let Self::V311(client) = self else {
+    pub(crate) fn prepare_v4_ack(&self, publish: &rumqttc_v4::Publish) -> Option<PreparedAck> {
+        let Self::V4(client) = self else {
             return None;
         };
-        client.prepare_ack(publish).map(PreparedAck::V311)
+        client.prepare_ack(publish).map(PreparedAck::V4)
     }
 
     pub(crate) fn prepare_v5_ack(&self, publish: &rumqttc_v5::Publish) -> Option<PreparedAck> {
@@ -197,9 +194,9 @@ impl BackendClient {
 
     pub(crate) fn try_manual_ack(&self, ack: &PreparedAck) -> Result<()> {
         match (self, ack) {
-            (Self::V311(client), PreparedAck::V311(ack)) => client
+            (Self::V4(client), PreparedAck::V4(ack)) => client
                 .try_manual_ack(ack.clone())
-                .map_err(v311::map_client_error),
+                .map_err(v4::map_client_error),
             (Self::V5(client), PreparedAck::V5(ack)) => client
                 .try_manual_ack(ack.clone())
                 .map_err(v5::map_client_error),
@@ -212,12 +209,12 @@ impl BackendClient {
 
     pub(crate) fn try_disconnect(&self, timeout: Option<Duration>) -> Result<()> {
         match self {
-            Self::V311(client) => timeout
+            Self::V4(client) => timeout
                 .map_or_else(
                     || client.try_disconnect(),
                     |timeout| client.try_disconnect_with_timeout(timeout),
                 )
-                .map_err(v311::map_client_error),
+                .map_err(v4::map_client_error),
             Self::V5(client) => timeout
                 .map_or_else(
                     || client.try_disconnect(),
@@ -229,7 +226,7 @@ impl BackendClient {
 
     pub(crate) fn try_disconnect_now(&self) -> Result<()> {
         match self {
-            Self::V311(client) => client.try_disconnect_now().map_err(v311::map_client_error),
+            Self::V4(client) => client.try_disconnect_now().map_err(v4::map_client_error),
             Self::V5(client) => client.try_disconnect_now().map_err(v5::map_client_error),
         }
     }
@@ -245,7 +242,7 @@ impl BackendDriver {
         context: crate::runtime::DriverContext,
     ) -> crate::runtime::TerminalStatus {
         match self {
-            Self::V311(eventloop) => v311::run(eventloop, context).await,
+            Self::V4(eventloop) => v4::run(eventloop, context).await,
             Self::V5(eventloop) => v5::run(eventloop, context).await,
         }
     }
@@ -254,9 +251,9 @@ impl BackendDriver {
 pub(crate) fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
     let ClientConfig { common, protocol } = config;
     match protocol {
-        ProtocolConfig::V311(protocol) => {
-            let (client, eventloop) = v311::build(&common, protocol)?;
-            Ok((BackendClient::V311(client), BackendDriver::V311(eventloop)))
+        ProtocolConfig::V4(protocol) => {
+            let (client, eventloop) = v4::build(&common, protocol)?;
+            Ok((BackendClient::V4(client), BackendDriver::V4(eventloop)))
         }
         ProtocolConfig::V5(protocol) => {
             let (client, eventloop) = v5::build(&common, protocol)?;
@@ -280,8 +277,8 @@ fn build_tls(config: &TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_v311_puback(packet_id: u16) -> PreparedAck {
-    PreparedAck::V311(rumqttc_v4::ManualAck::PubAck(rumqttc_v4::PubAck::new(
+pub(crate) fn test_v4_puback(packet_id: u16) -> PreparedAck {
+    PreparedAck::V4(rumqttc_v4::ManualAck::PubAck(rumqttc_v4::PubAck::new(
         packet_id,
     )))
 }

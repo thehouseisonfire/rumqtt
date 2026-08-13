@@ -128,11 +128,11 @@ impl CommonConfig {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct V311Config {
+pub struct V4Config {
     pub clean_session: bool,
 }
 
-impl Default for V311Config {
+impl Default for V4Config {
     fn default() -> Self {
         Self {
             clean_session: true,
@@ -163,7 +163,7 @@ impl Default for V5Config {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProtocolConfig {
     /// MQTT 3.1.1 configuration.
-    V311(V311Config),
+    V4(V4Config),
     /// MQTT 5 configuration.
     V5(V5Config),
 }
@@ -181,10 +181,10 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     #[must_use]
-    pub fn v311(client_id: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
+    pub fn v4(client_id: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         Self {
             common: CommonConfig::new(client_id, host, port),
-            protocol: ProtocolConfig::V311(V311Config {
+            protocol: ProtocolConfig::V4(V4Config {
                 clean_session: true,
             }),
         }
@@ -201,7 +201,7 @@ impl ClientConfig {
     #[must_use]
     pub const fn protocol_version(&self) -> ProtocolVersion {
         match self.protocol {
-            ProtocolConfig::V311(_) => ProtocolVersion::V311,
+            ProtocolConfig::V4(_) => ProtocolVersion::V4,
             ProtocolConfig::V5(_) => ProtocolVersion::V5,
         }
     }
@@ -214,7 +214,7 @@ impl ClientConfig {
     /// option.
     pub fn validate(&self) -> Result<()> {
         self.common.validate()?;
-        if matches!(self.protocol, ProtocolConfig::V311(_))
+        if matches!(self.protocol, ProtocolConfig::V4(_))
             && self.common.password.is_some()
             && self.common.username.is_none()
         {
@@ -224,7 +224,7 @@ impl ClientConfig {
         }
         if matches!(
             self.protocol,
-            ProtocolConfig::V311(V311Config {
+            ProtocolConfig::V4(V4Config {
                 clean_session: false
             })
         ) && self.common.client_id.is_empty()

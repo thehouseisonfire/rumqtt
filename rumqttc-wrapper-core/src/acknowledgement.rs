@@ -193,7 +193,7 @@ mod tests {
     use super::*;
 
     fn v4_puback(packet_id: u16) -> PreparedAck {
-        crate::backend::test_v311_puback(packet_id)
+        crate::backend::test_v4_puback(packet_id)
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
     fn tracking_completion_and_rollback_preserve_exactly_once_resolution() {
         let (operations, _) = OperationRegistry::new(1);
         let coordinator = AcknowledgementCoordinator::new(7, operations);
-        let key = AckKey::V311PubAck(3);
+        let key = AckKey::V4PubAck(3);
 
         let rolled_back = coordinator.track(key).unwrap();
         coordinator.rollback_tracking(key, rolled_back.operation_id);
@@ -246,7 +246,7 @@ mod tests {
         coordinator.begin_connection();
         let token = coordinator.insert(v4_puback(3)).unwrap();
         coordinator.reserve(token).unwrap().commit();
-        let tracked = coordinator.track(AckKey::V311PubAck(3)).unwrap();
+        let tracked = coordinator.track(AckKey::V4PubAck(3)).unwrap();
         let error = Error::new(ErrorKind::Network, "connection lost");
 
         coordinator.invalidate(&error);

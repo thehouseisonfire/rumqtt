@@ -26,7 +26,7 @@ fn wait_connected(events: &mut rumqttc_wrapper_core::EventConsumer) {
 
 fn config(protocol: ProtocolVersion, port: u16) -> ClientConfig {
     match protocol {
-        ProtocolVersion::V311 => ClientConfig::v311("graceful", "127.0.0.1", port),
+        ProtocolVersion::V4 => ClientConfig::v4("graceful", "127.0.0.1", port),
         ProtocolVersion::V5 => ClientConfig::v5("graceful", "127.0.0.1", port),
     }
 }
@@ -40,7 +40,7 @@ fn assert_graceful_shutdown_drains_ready_publish(protocol: ProtocolVersion) {
         let (mut stream, _) = listener.accept().unwrap();
         assert_eq!(read_frame(&mut stream).unwrap() >> 4, 1);
         match protocol {
-            ProtocolVersion::V311 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
+            ProtocolVersion::V4 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
             ProtocolVersion::V5 => stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap(),
         }
 
@@ -120,7 +120,7 @@ fn read_frame_with_body(stream: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
 
 #[test]
 fn graceful_shutdown_resolves_protocol_admitted_work_for_both_protocols() {
-    assert_graceful_shutdown_drains_ready_publish(ProtocolVersion::V311);
+    assert_graceful_shutdown_drains_ready_publish(ProtocolVersion::V4);
     assert_graceful_shutdown_drains_ready_publish(ProtocolVersion::V5);
 }
 
@@ -131,7 +131,7 @@ fn assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(protocol: Protoc
         let (mut stream, _) = listener.accept().unwrap();
         assert_eq!(read_frame(&mut stream).unwrap() >> 4, 1);
         match protocol {
-            ProtocolVersion::V311 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
+            ProtocolVersion::V4 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
             ProtocolVersion::V5 => stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap(),
         }
         while read_frame(&mut stream).is_some() {}
@@ -169,7 +169,7 @@ fn assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(protocol: Protoc
 
 #[test]
 fn immediate_shutdown_keeps_unfinished_publish_ambiguous_for_both_protocols() {
-    assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(ProtocolVersion::V311);
+    assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(ProtocolVersion::V4);
     assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(ProtocolVersion::V5);
 }
 
@@ -215,7 +215,7 @@ fn assert_immediate_shutdown_interrupts_connection_establishment(protocol: Proto
 
 #[test]
 fn immediate_shutdown_interrupts_connection_establishment_for_both_protocols() {
-    assert_immediate_shutdown_interrupts_connection_establishment(ProtocolVersion::V311);
+    assert_immediate_shutdown_interrupts_connection_establishment(ProtocolVersion::V4);
     assert_immediate_shutdown_interrupts_connection_establishment(ProtocolVersion::V5);
 }
 
@@ -227,7 +227,7 @@ fn assert_immediate_shutdown_bypasses_repeated_event_backpressure(protocol: Prot
         let (mut stream, _) = listener.accept().unwrap();
         assert_eq!(read_frame(&mut stream).unwrap() >> 4, 1);
         match protocol {
-            ProtocolVersion::V311 => {
+            ProtocolVersion::V4 => {
                 stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
                 stream
                     .write_all(&[0x30, 0x04, 0x00, 0x01, b'a', b'x'])
@@ -270,7 +270,7 @@ fn assert_immediate_shutdown_bypasses_repeated_event_backpressure(protocol: Prot
 
 #[test]
 fn immediate_shutdown_bypasses_repeated_event_backpressure_for_both_protocols() {
-    assert_immediate_shutdown_bypasses_repeated_event_backpressure(ProtocolVersion::V311);
+    assert_immediate_shutdown_bypasses_repeated_event_backpressure(ProtocolVersion::V4);
     assert_immediate_shutdown_bypasses_repeated_event_backpressure(ProtocolVersion::V5);
 }
 
@@ -303,7 +303,7 @@ fn dropping_owner_escalates_an_unbounded_graceful_shutdown() {
     });
 
     let mut native =
-        NativeClient::start(ClientConfig::v311("drop-escalation", "127.0.0.1", port)).unwrap();
+        NativeClient::start(ClientConfig::v4("drop-escalation", "127.0.0.1", port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -350,7 +350,7 @@ fn repeated_start_and_close_cycles_join_every_driver_thread() {
     });
 
     for cycle in 0..CYCLES {
-        let mut native = NativeClient::start(ClientConfig::v311(
+        let mut native = NativeClient::start(ClientConfig::v4(
             format!("cycle-{cycle}"),
             "127.0.0.1",
             port,

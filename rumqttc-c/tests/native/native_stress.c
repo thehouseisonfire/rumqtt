@@ -32,7 +32,7 @@ int main(void) {
   unsigned iteration;
   for (iteration = 0; iteration < iterations; ++iteration) {
     rumqttc_protocol_t protocol =
-        iteration % 2 == 0 ? RUMQTTC_PROTOCOL_V311 : RUMQTTC_PROTOCOL_V5;
+        iteration % 2 == 0 ? RUMQTTC_PROTOCOL_V4 : RUMQTTC_PROTOCOL_V5;
     rumqttc_client_t *client = native_start_client(
         protocol, "native-stress", RUMQTTC_ACK_AUTOMATIC, 8, 8, 250);
     rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_0);

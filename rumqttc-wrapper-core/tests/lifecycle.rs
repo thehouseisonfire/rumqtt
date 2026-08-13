@@ -21,7 +21,7 @@ fn spawn_broker(protocol: ProtocolVersion) -> (u16, thread::JoinHandle<()>) {
         while let Some((header, body)) = read_frame(&mut stream) {
             match header >> 4 {
                 1 => match protocol {
-                    ProtocolVersion::V311 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
+                    ProtocolVersion::V4 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
                     ProtocolVersion::V5 => {
                         stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap();
                     }
@@ -47,7 +47,7 @@ fn spawn_broker(protocol: ProtocolVersion) -> (u16, thread::JoinHandle<()>) {
                 8 => {
                     let packet_id = [body[0], body[1]];
                     match protocol {
-                        ProtocolVersion::V311 => stream
+                        ProtocolVersion::V4 => stream
                             .write_all(&[0x90, 0x03, packet_id[0], packet_id[1], 0x00])
                             .unwrap(),
                         ProtocolVersion::V5 => stream
@@ -58,7 +58,7 @@ fn spawn_broker(protocol: ProtocolVersion) -> (u16, thread::JoinHandle<()>) {
                 10 => {
                     let packet_id = [body[0], body[1]];
                     match protocol {
-                        ProtocolVersion::V311 => stream
+                        ProtocolVersion::V4 => stream
                             .write_all(&[0xb0, 0x02, packet_id[0], packet_id[1]])
                             .unwrap(),
                         ProtocolVersion::V5 => stream
@@ -110,7 +110,7 @@ fn wait_connected(events: &mut rumqttc_wrapper_core::EventConsumer) {
 
 fn config(protocol: ProtocolVersion, port: u16) -> ClientConfig {
     match protocol {
-        ProtocolVersion::V311 => ClientConfig::v311("wrapper-test", "127.0.0.1", port),
+        ProtocolVersion::V4 => ClientConfig::v4("wrapper-test", "127.0.0.1", port),
         ProtocolVersion::V5 => ClientConfig::v5("wrapper-test", "127.0.0.1", port),
     }
 }
@@ -182,7 +182,7 @@ fn assert_sustained_control_traffic_does_not_starve_mqtt_progress(protocol: Prot
 
 #[test]
 fn sustained_diagnostics_and_completions_do_not_starve_either_protocol_loop() {
-    assert_sustained_control_traffic_does_not_starve_mqtt_progress(ProtocolVersion::V311);
+    assert_sustained_control_traffic_does_not_starve_mqtt_progress(ProtocolVersion::V4);
     assert_sustained_control_traffic_does_not_starve_mqtt_progress(ProtocolVersion::V5);
 }
 
@@ -305,8 +305,8 @@ fn run_lifecycle(protocol: ProtocolVersion) {
 }
 
 #[test]
-fn v311_lifecycle_uses_owned_boundary() {
-    run_lifecycle(ProtocolVersion::V311);
+fn v4_lifecycle_uses_owned_boundary() {
+    run_lifecycle(ProtocolVersion::V4);
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn bounded_request_channel_reports_backpressure() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let mut config = ClientConfig::v311("backpressure", "127.0.0.1", port);
+    let mut config = ClientConfig::v4("backpressure", "127.0.0.1", port);
     config.common.request_channel_capacity = 1;
     config.common.event_buffer_capacity = 32;
     let native = NativeClient::start(config).unwrap();
@@ -345,7 +345,7 @@ fn immediate_cleanup_is_idempotent() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let native =
-        NativeClient::start(ClientConfig::v311("idempotent-close", "127.0.0.1", port)).unwrap();
+        NativeClient::start(ClientConfig::v4("idempotent-close", "127.0.0.1", port)).unwrap();
     let handle = native.handle();
 
     handle.close_now_idempotent();
@@ -355,8 +355,8 @@ fn immediate_cleanup_is_idempotent() {
 
 #[test]
 fn immediate_close_after_graceful_close_preserves_graceful_result() {
-    let (port, broker) = spawn_broker(ProtocolVersion::V311);
-    let mut native = NativeClient::start(config(ProtocolVersion::V311, port)).unwrap();
+    let (port, broker) = spawn_broker(ProtocolVersion::V4);
+    let mut native = NativeClient::start(config(ProtocolVersion::V4, port)).unwrap();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
     let closer = native.closer();

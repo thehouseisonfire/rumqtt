@@ -79,7 +79,7 @@ int main(void) {
          sizeof(v5_unsubscribe_properties));
   assert(unsubscribe_options.struct_size == sizeof(unsubscribe_options));
   assert(diagnostics.struct_size == sizeof(diagnostics));
-  assert(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, &config, &error) ==
+  assert(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &config, &error) ==
          RUMQTTC_OK);
   assert(config != NULL && error == NULL);
   assert(rumqttc_config_set_broker(config, host, 1883, NULL) == RUMQTTC_OK);

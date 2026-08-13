@@ -244,9 +244,9 @@ static void test_invalid_boolean_and_retain_values(rumqttc_client_t *client) {
                              RUMQTTC_ERROR_NONE);
 }
 
-static void test_v5_options_rejected_by_v311(void) {
+static void test_v5_options_rejected_by_v4(void) {
   rumqttc_client_t *client =
-      native_start_client(RUMQTTC_PROTOCOL_V311, "native-v311-protocol-options",
+      native_start_client(RUMQTTC_PROTOCOL_V4, "native-v4-protocol-options",
                           RUMQTTC_ACK_AUTOMATIC, 16, 16, 1000);
   rumqttc_v5_publish_properties_t publish_properties =
       RUMQTTC_V5_PUBLISH_PROPERTIES_INIT;
@@ -385,6 +385,6 @@ void native_test_protocol_options(void) {
   test_undersized_records(client);
   test_invalid_boolean_and_retain_values(client);
   native_close_destroy(client);
-  test_v5_options_rejected_by_v311();
+  test_v5_options_rejected_by_v4();
   test_v5_options_reach_the_wire();
 }

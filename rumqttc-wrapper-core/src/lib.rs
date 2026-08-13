@@ -29,8 +29,8 @@ pub use completion::{
     UnsubscribeResult,
 };
 pub use config::{
-    AckMode, ClientConfig, CommonConfig, ProtocolConfig, TlsConfig, TransportConfig, V5Config,
-    V311Config,
+    AckMode, ClientConfig, CommonConfig, ProtocolConfig, TlsConfig, TransportConfig, V4Config,
+    V5Config,
 };
 pub use error::{DeliveryStatus, Error, ErrorKind, Result};
 pub use event::{

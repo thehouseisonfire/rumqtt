@@ -41,7 +41,7 @@ typedef uint32_t rumqttc_status_t;
 #define RUMQTTC_WOULD_BLOCK 11u
 
 typedef uint32_t rumqttc_protocol_t;
-#define RUMQTTC_PROTOCOL_V311 1u
+#define RUMQTTC_PROTOCOL_V4 1u
 #define RUMQTTC_PROTOCOL_V5 2u
 
 typedef uint32_t rumqttc_protocol_options_t;
@@ -291,7 +291,7 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_event_delivery_timeout_ms(rumqtt
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_ack_mode(rumqttc_config_t *config, rumqttc_ack_mode_t mode, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_incoming_packet_limit(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_emit_outgoing_events(rumqttc_config_t *config, uint8_t enabled, rumqttc_error_t **error_out);
-RUMQTTC_API rumqttc_status_t rumqttc_config_set_v311_clean_session(rumqttc_config_t *config, uint8_t clean_session, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v4_clean_session(rumqttc_config_t *config, uint8_t clean_session, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_session(rumqttc_config_t *config, uint8_t clean_start, uint8_t expiry_present, uint32_t expiry_seconds, rumqttc_error_t **error_out);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_start(const rumqttc_config_t *config, rumqttc_client_t **out, rumqttc_error_t **error_out);

@@ -11,7 +11,7 @@ pub struct ConfigHandle {
 impl ConfigHandle {
     pub fn new(protocol: u32) -> Option<Self> {
         let config = match protocol {
-            1 => ClientConfig::v311("", "", 1883),
+            1 => ClientConfig::v4("", "", 1883),
             2 => ClientConfig::v5("", "", 1883),
             _ => return None,
         };
@@ -84,12 +84,12 @@ pub const fn set_ack_mode(config: &mut ClientConfig, mode: u32) -> Result<(), &'
     Ok(())
 }
 
-pub const fn set_v311_clean_session(
+pub const fn set_v4_clean_session(
     config: &mut ClientConfig,
     clean: bool,
 ) -> Result<(), &'static str> {
     match &mut config.protocol {
-        ProtocolConfig::V311(protocol) => {
+        ProtocolConfig::V4(protocol) => {
             protocol.clean_session = clean;
             Ok(())
         }
@@ -109,6 +109,6 @@ pub fn set_v5_session(
             protocol.session_expiry_interval = expiry_present.then_some(expiry);
             Ok(())
         }
-        ProtocolConfig::V311(_) => Err("clean start and session expiry require MQTT 5"),
+        ProtocolConfig::V4(_) => Err("clean start and session expiry require MQTT 5"),
     }
 }

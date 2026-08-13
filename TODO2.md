@@ -180,7 +180,7 @@ Support global options before or after the subcommand where `clap` permits it.
 --url <URL>
 --host <HOST>
 --port <PORT>
---protocol <v311|v5>
+--protocol <v4|v5>
 -4
 -5
 --client-id <ID>
@@ -226,7 +226,7 @@ Examples:
 Use:
 
 ```text
---protocol v311
+--protocol v4
 --protocol v5
 ```
 

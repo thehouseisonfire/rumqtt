@@ -44,8 +44,7 @@ fn recoverable_poll_error_is_reported_and_reconnects() {
         }
     });
 
-    let mut native =
-        NativeClient::start(ClientConfig::v311("reconnect", "127.0.0.1", port)).unwrap();
+    let mut native = NativeClient::start(ClientConfig::v4("reconnect", "127.0.0.1", port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     let deadline = Instant::now() + Duration::from_secs(6);

@@ -395,7 +395,7 @@ fn assert_protocol_round_trip(protocol: u32) {
 }
 
 #[test]
-fn v311_c_boundary_round_trip() {
+fn v4_c_boundary_round_trip() {
     assert_protocol_round_trip(1);
 }
 

@@ -15,7 +15,7 @@ construct a new client to use another version.
 Protocol-neutral commands and events share types only where their semantics
 genuinely overlap. Observable protocol differences remain explicit:
 
-- MQTT 3.1.1 uses `V311Config`, including `clean_session`;
+- MQTT 3.1.1 uses `V4Config`, including `clean_session`;
 - MQTT 5 uses `V5Config`, including `clean_start` and session expiry;
 - MQTT 5 publish, subscribe, per-filter subscription, and unsubscribe extensions use explicit
   operation-specific protocol option enums; and

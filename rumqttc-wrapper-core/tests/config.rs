@@ -5,7 +5,7 @@ use rumqttc_wrapper_core::{ClientConfig, ErrorKind, NativeClient, TlsConfig, Tra
 
 #[test]
 fn rejects_password_without_username() {
-    let mut config = ClientConfig::v311("client", "localhost", 1883);
+    let mut config = ClientConfig::v4("client", "localhost", 1883);
     config.common.password = Some(Bytes::from_static(b"secret"));
     assert_eq!(
         config.validate().unwrap_err().kind(),
@@ -105,7 +105,7 @@ fn malformed_tls_material_fails_before_driver_start() {
 
 #[test]
 fn rejects_protocol_inappropriate_websocket_scheme() {
-    let mut config = ClientConfig::v311("client", "localhost", 8080);
+    let mut config = ClientConfig::v4("client", "localhost", 8080);
     config.common.transport = TransportConfig::WebSocket {
         url: "wss://localhost:8080/mqtt".into(),
     };

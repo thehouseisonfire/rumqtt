@@ -89,13 +89,11 @@ impl Shared {
     }
 
     pub(crate) fn complete_v4_puback(&self, packet_id: u16) {
-        self.acknowledgements
-            .complete(AckKey::V311PubAck(packet_id));
+        self.acknowledgements.complete(AckKey::V4PubAck(packet_id));
     }
 
     pub(crate) fn complete_v4_pubrec(&self, packet_id: u16) {
-        self.acknowledgements
-            .complete(AckKey::V311PubRec(packet_id));
+        self.acknowledgements.complete(AckKey::V4PubRec(packet_id));
     }
 
     pub(crate) fn complete_v5_puback(&self, packet_id: u16) {

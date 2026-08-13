@@ -71,7 +71,7 @@ fn assert_commands_not_admitted(
     let config = if mqtt5 {
         rumqttc_wrapper_core::ClientConfig::v5(client_id, "127.0.0.1", port)
     } else {
-        rumqttc_wrapper_core::ClientConfig::v311(client_id, "127.0.0.1", port)
+        rumqttc_wrapper_core::ClientConfig::v4(client_id, "127.0.0.1", port)
     };
     let mut native = NativeClient::start(config).unwrap();
     let handle = native.handle();
@@ -584,7 +584,7 @@ fn mqtt5_subscribe_and_unsubscribe_extensions_reach_the_wire() {
 }
 
 #[test]
-fn mqtt5_publish_options_are_not_admitted_to_v311_clients() {
+fn mqtt5_publish_options_are_not_admitted_to_v4_clients() {
     assert_commands_not_admitted(
         "reject-v5-publish-options",
         false,
@@ -599,7 +599,7 @@ fn mqtt5_publish_options_are_not_admitted_to_v311_clients() {
 }
 
 #[test]
-fn mqtt5_subscribe_properties_are_not_admitted_to_v311_clients() {
+fn mqtt5_subscribe_properties_are_not_admitted_to_v4_clients() {
     assert_commands_not_admitted(
         "reject-v5-subscribe-properties",
         false,
@@ -615,7 +615,7 @@ fn mqtt5_subscribe_properties_are_not_admitted_to_v311_clients() {
 }
 
 #[test]
-fn mqtt5_subscription_options_are_not_admitted_to_v311_clients() {
+fn mqtt5_subscription_options_are_not_admitted_to_v4_clients() {
     assert_commands_not_admitted(
         "reject-v5-subscription-options",
         false,
@@ -631,7 +631,7 @@ fn mqtt5_subscription_options_are_not_admitted_to_v311_clients() {
 }
 
 #[test]
-fn mqtt5_unsubscribe_properties_are_not_admitted_to_v311_clients() {
+fn mqtt5_unsubscribe_properties_are_not_admitted_to_v4_clients() {
     assert_commands_not_admitted(
         "reject-v5-unsubscribe-properties",
         false,
@@ -755,7 +755,7 @@ fn manual_ack_token_is_single_use() {
         }
     });
 
-    let mut config = rumqttc_wrapper_core::ClientConfig::v311("manual-ack", "127.0.0.1", port);
+    let mut config = rumqttc_wrapper_core::ClientConfig::v4("manual-ack", "127.0.0.1", port);
     config.common.ack_mode = AckMode::Manual;
     config.common.event_buffer_capacity = 1;
     config.common.event_delivery_timeout = Duration::from_secs(5);
@@ -774,7 +774,7 @@ fn manual_ack_token_is_single_use() {
         stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
         while read_frame(&mut stream).is_some() {}
     });
-    let mut other = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v311(
+    let mut other = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v4(
         "other-client",
         "127.0.0.1",
         other_port,

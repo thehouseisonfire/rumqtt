@@ -99,8 +99,12 @@
   received identifier. Native protocol types and operations are now confined
   to a private enum-dispatched backend without changing protocol selection,
   runtime ownership, admission semantics, or the one-package support contract.
-  The `rumqttc-c` source API and ABI remain unchanged; its generated header was
-  compared against the checked-in header.
+  MQTT 3.1.1 wrapper notation is consistently `v4`/`V4`: wrapper-core now uses
+  `V4Config`, `ProtocolConfig::V4`, `ProtocolVersion::V4`, and
+  `ClientConfig::v4`; the pre-stable C API now uses `RUMQTTC_PROTOCOL_V4` and
+  `rumqttc_config_set_v4_clean_session`. The C rename is an intentional source
+  and ABI change, and the regenerated header was compared against the checked-in
+  header.
 - `rumqttc-core`: Make the fallible PEM-root rustls constructor borrow CA bytes
   instead of requiring an owned allocation.
 - `rumqttc-c`: Refactor the C examples to use small, operation-focused helpers

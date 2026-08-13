@@ -15,7 +15,7 @@ static void test_protocol_round_trip(rumqttc_protocol_t protocol) {
       RUMQTTC_COMPLETION_QOS2_COMPLETED,
   };
   rumqttc_client_t *client = native_start_client(
-      protocol, protocol == RUMQTTC_PROTOCOL_V311 ? "native-v311" : "native-v5",
+      protocol, protocol == RUMQTTC_PROTOCOL_V4 ? "native-v4" : "native-v5",
       RUMQTTC_ACK_AUTOMATIC, 16, 16, 1000);
   size_t qos;
   for (qos = 0; qos <= 2; ++qos) {
@@ -162,9 +162,9 @@ static void test_invalid_inputs(void) {
   }
   rumqttc_error_destroy(error);
   REQUIRE(rumqttc_config_new(99, &config, NULL) == RUMQTTC_INVALID_ARGUMENT);
-  REQUIRE(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, NULL, NULL) ==
+  REQUIRE(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, NULL, NULL) ==
           RUMQTTC_INVALID_ARGUMENT);
-  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V311, &config, NULL));
+  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &config, NULL));
   REQUIRE(rumqttc_config_set_client_id(config, null_string, NULL) ==
           RUMQTTC_INVALID_ARGUMENT);
   {
@@ -223,7 +223,7 @@ static void test_reconnect(rumqttc_protocol_t protocol) {
 
 static void test_backpressure_and_overflow(void) {
   rumqttc_client_t *client =
-      native_start_client(RUMQTTC_PROTOCOL_V311, "native-pressure",
+      native_start_client(RUMQTTC_PROTOCOL_V4, "native-pressure",
                           RUMQTTC_ACK_AUTOMATIC, 1, 8, 1000);
   rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_1);
   uint64_t operation = 0;
@@ -242,7 +242,7 @@ static void test_backpressure_and_overflow(void) {
   REQUIRE(saw_backpressure);
   native_close_destroy(client);
 
-  client = native_start_client(RUMQTTC_PROTOCOL_V311, "native-overflow",
+  client = native_start_client(RUMQTTC_PROTOCOL_V4, "native-overflow",
                                RUMQTTC_ACK_AUTOMATIC, 8, 1, 50);
   {
     rumqttc_subscription_t subscription =
@@ -325,7 +325,7 @@ static void test_native_concurrency(void) {
 
 static void test_close_and_pending_handles(void) {
   rumqttc_client_t *client = native_start_client(
-      RUMQTTC_PROTOCOL_V311, "native-close", RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
+      RUMQTTC_PROTOCOL_V4, "native-close", RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
   rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_1);
   rumqttc_completion_t *completion = NULL;
   rumqttc_error_t *error = NULL;
@@ -365,11 +365,11 @@ int main(void) {
   test_invalid_inputs();
   native_test_error_out_contract();
   native_test_protocol_options();
-  test_protocol_round_trip(RUMQTTC_PROTOCOL_V311);
+  test_protocol_round_trip(RUMQTTC_PROTOCOL_V4);
   test_protocol_round_trip(RUMQTTC_PROTOCOL_V5);
-  test_manual_ack(RUMQTTC_PROTOCOL_V311);
+  test_manual_ack(RUMQTTC_PROTOCOL_V4);
   test_manual_ack(RUMQTTC_PROTOCOL_V5);
-  test_reconnect(RUMQTTC_PROTOCOL_V311);
+  test_reconnect(RUMQTTC_PROTOCOL_V4);
   test_reconnect(RUMQTTC_PROTOCOL_V5);
   test_backpressure_and_overflow();
   test_native_concurrency();

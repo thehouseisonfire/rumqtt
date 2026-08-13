@@ -33,7 +33,6 @@ The completed structure should have:
 
 - [ ] Rename `rumqttc-wrapper-core/src/adapter/` to `rumqttc-wrapper-core/src/backend/` to reflect that
       it owns native clients and drivers, not only value conversion.
-- [ ] Rename the MQTT 3.1.1 implementation from `v4.rs` to `v311.rs`; retain `v5.rs` for MQTT 5.
 - [ ] Move `ProtocolClient` from `handle.rs` into `backend/mod.rs` and rename it `BackendClient`.
 - [ ] Rename `AdapterDriver` to `BackendDriver` and keep construction and driver dispatch in
       `backend/mod.rs`.
@@ -120,7 +119,7 @@ The completed structure should have:
   - [ ] wrapper-level channel, timeout, transport, and TLS configuration invariants.
 - [ ] Move MQTT 5-only publish, subscribe, per-filter subscription, and unsubscribe validation into
       `backend/v5.rs` or a private child module of that backend.
-- [ ] Keep MQTT 3.1.1-only configuration and authentication validation either in `backend/v311.rs` or
+- [ ] Keep MQTT 3.1.1-only configuration and authentication validation either in `backend/v4.rs` or
       in clearly identified protocol-specific branches of `ClientConfig::validate`.
 - [ ] Ensure backend-specific errors are normalized to wrapper `ErrorKind`, `DeliveryStatus`, and
       `BrokerReason` values before leaving the backend.

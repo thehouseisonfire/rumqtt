@@ -34,7 +34,7 @@ fn assert_full_event_buffer_terminates(mqtt5: bool) {
     let mut config = if mqtt5 {
         ClientConfig::v5("overflow-v5", "127.0.0.1", port)
     } else {
-        ClientConfig::v311("overflow-v311", "127.0.0.1", port)
+        ClientConfig::v4("overflow-v4", "127.0.0.1", port)
     };
     config.common.event_buffer_capacity = 1;
     config.common.event_delivery_timeout = Duration::from_millis(50);

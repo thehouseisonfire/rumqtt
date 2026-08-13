@@ -29,7 +29,7 @@ use crate::completion::CompletionObject;
 use crate::config::{
     ConfigHandle, set_ack_mode, set_connection_timeout, set_event_delivery_timeout, set_keep_alive,
     set_transport_tcp, set_transport_tls, set_transport_websocket, set_transport_wss,
-    set_v5_session, set_v311_clean_session, tls_config,
+    set_v4_clean_session, set_v5_session, tls_config,
 };
 use crate::error::{ErrorHandle, OK, TIMEOUT, WOULD_BLOCK};
 use crate::event::EventObject;
@@ -725,14 +725,14 @@ pub unsafe extern "C" fn rumqttc_config_set_emit_outgoing_events(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumqttc_config_set_v311_clean_session(
+pub unsafe extern "C" fn rumqttc_config_set_v4_clean_session(
     config: *mut rumqttc_config,
     clean_session: u8,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
     let clean_session = boolean(clean_session, "clean_session");
     config_update(config, error_out, |config| {
-        set_v311_clean_session(config, clean_session?).map_err(ErrorHandle::argument)
+        set_v4_clean_session(config, clean_session?).map_err(ErrorHandle::argument)
     })
 }
 
@@ -1772,7 +1772,7 @@ pub unsafe extern "C" fn rumqttc_event_connected(
             return Err(ErrorHandle::state("event is not a connected event"));
         };
         let protocol = match protocol {
-            ProtocolVersion::V311 => 1,
+            ProtocolVersion::V4 => 1,
             ProtocolVersion::V5 => 2,
         };
         unsafe {

@@ -191,7 +191,7 @@ class Broker:
                 packet_type, flags, body = packet
                 if connection.client_id in {
                     b"native-invalid-protocol-options",
-                    b"native-v311-protocol-options",
+                    b"native-v4-protocol-options",
                 } and packet_type in {3, 8, 10}:
                     raise AssertionError(f"rejected native command emitted packet type {packet_type}")
                 if packet_type == 3:
