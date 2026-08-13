@@ -7,12 +7,10 @@ members = [
     "rumqttc-next",
     "rumqttc-v4",
     "rumqttc-v5",
-    "rumqttc-wrapper-core",
-    "rumqttc-c",
     "benchmarks",
     "tests/low-memory",
 ]
-exclude = ["session-store-file"]
+exclude = ["native-wrappers", "session-store-file"]
 resolver = "3"
 
 [workspace.package]

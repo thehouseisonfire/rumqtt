@@ -49,7 +49,7 @@ requires Clang plus each platform's native symbol/loader utilities.
 
 ## Controlled mutations
 
-The durable generator is `rumqttc-c/tests/abi/mutation_matrix.py`. The following
+The durable generator is `native-wrappers/c/tests/abi/mutation_matrix.py`. The following
 results were observed on Linux x86_64 (LP64):
 
 | Mutation | Contract | ABI Compliance Checker |

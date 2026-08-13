@@ -11,8 +11,6 @@ on:
       - 'rumqttc-next/**'
       - 'rumqttc-v4/**'
       - 'rumqttc-v5/**'
-      - 'rumqttc-wrapper-core/**'
-      - 'rumqttc-c/**'
       - 'benchmarks/**'
       - '**.md'
       - 'Cargo.*'
@@ -134,15 +132,6 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: python3 scripts/check-markdown-links.py
 
-      - name: Enforce wrapper backend source boundary
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        run: |
-          if rg -n 'rumqttc_v[45]::' rumqttc-wrapper-core/src \
-              --glob '!**/backend/**'; then
-            echo 'native protocol paths must remain inside rumqttc-wrapper-core/src/backend' >&2
-            exit 1
-          fi
-
       # use mold linker instead of the default linker only on linux
       - uses: rui314/setup-mold@v1
         if: ${{ runner.os == 'Linux' }}
@@ -208,8 +197,6 @@ jobs:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
             cargo clippy --fix --allow-dirty --verbose --all-targets -p mqttbytes-core-next
-            cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-wrapper-core-next
-            cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-c-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack clippy --fix --allow-dirty --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
@@ -225,8 +212,6 @@ jobs:
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
             cargo doc --verbose --no-deps -p mqttbytes-core-next
-            cargo doc --verbose --no-deps -p rumqttc-wrapper-core-next
-            cargo doc --verbose --no-deps -p rumqttc-c-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v5-next
             cargo hack doc --verbose --no-deps --each-feature --exclude-all-features --no-dev-deps -p rumqttc-core-next
@@ -240,8 +225,6 @@ jobs:
       - name: Standalone crate doctests
         run: |
             cargo test --doc -p mqttbytes-core-next
-            cargo test --doc -p rumqttc-wrapper-core-next
-            cargo test --doc -p rumqttc-c-next
             cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v4-next
             cargo hack --each-feature --exclude-all-features test --doc -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test --doc -p rumqttc-core-next
@@ -255,84 +238,10 @@ jobs:
       - name: Test standalone crates
         run: |
             cargo test -p mqttbytes-core-next
-            cargo test -p rumqttc-wrapper-core-next
-            cargo test -p rumqttc-c-next
             cargo hack --each-feature --exclude-all-features test -p mqttbytes-v4-next
             cargo hack --each-feature --exclude-all-features test -p mqttbytes-v5-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-core-next
             cargo hack --each-feature --exclude-all-features test -p rumqttc-next
-
-      - name: C FFI/header consistency
-        if: ${{ runner.os != 'Windows' }}
-        run: rumqttc-c/tests/abi/check.sh ffi-header
-
-      - name: C FFI/header consistency (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: rumqttc-c/tests/abi/check.ps1 ffi-header
-
-      - name: C current export policy
-        if: ${{ runner.os != 'Windows' }}
-        run: rumqttc-c/tests/abi/check.sh exports
-
-      - name: C current export policy (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: rumqttc-c/tests/abi/check.ps1 exports
-
-      - name: C native consumers
-        if: ${{ runner.os != 'Windows' }}
-        run: rumqttc-c/tests/abi/check.sh native
-
-      - name: C native consumers (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: rumqttc-c/tests/abi/check.ps1 native
-
-      - name: C native integration, stress, and examples
-        run: |
-            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native -DCMAKE_BUILD_TYPE=Debug
-            cmake --build target/rumqttc-c-native --config Debug
-            ctest --test-dir target/rumqttc-c-native -C Debug --output-on-failure
-
-      - name: C package consumers
-        if: ${{ runner.os != 'Windows' }}
-        run: rumqttc-c/tests/abi/check.sh package
-
-      - name: C package consumers (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: rumqttc-c/tests/abi/check.ps1 package
-
-      - name: C ABI mutation corpus
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          tool="$(rumqttc-c/tests/abi/install-abi-compliance-checker.sh)"
-          python3 rumqttc-c/tests/abi/mutation_matrix.py --abicc "$tool" --output target/abi-mutations
-          python3 -m unittest discover -s rumqttc-c/tests/abi -p 'test_*.py'
-
-      - name: C historical ABI compatibility
-        if: ${{ runner.os != 'Windows' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: rumqttc-c/tests/abi/compare-release.sh
-
-      - name: C historical ABI compatibility (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: rumqttc-c/tests/abi/compare-release.ps1
-
-      - name: Preserve C ABI diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: c-abi-diagnostics-${{ runner.os }}
-          path: |
-            target/abi-mutations
-            target/abi-reports
-          if-no-files-found: ignore
 
       - name: Test native-tls WSS integration
         run: |
@@ -434,96 +343,6 @@ jobs:
         run: |
             cargo test --locked -p benchmarks --test matched_fault_contract
             cargo test --locked -p benchmarks --test matched_connection_contract
-
-  c-abi-sanitizers:
-    name: C ABI sanitizers and leak checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri,rust-src
-
-      - name: Install native analysis tools
-        run: |
-            sudo apt-get update
-            sudo apt-get install -y clang valgrind
-
-      - name: Run raw conversion tests under Miri
-        run: cargo miri test -p rumqttc-c-next --lib
-
-      - name: Build C library and sanitized native suite
-        run: |
-            cargo build -p rumqttc-c-next
-            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-sanitized \
-              -DCMAKE_C_COMPILER=clang \
-              -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-            cmake --build target/rumqttc-c-native-sanitized
-            ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
-              ctest --test-dir target/rumqttc-c-native-sanitized --output-on-failure
-
-      - name: Check full native lifecycle for leaks
-        env:
-          RUMQTTC_C_STRESS_ITERATIONS: 100
-          RUMQTTC_NATIVE_LAUNCHER: valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=all --trace-children=yes --suppressions=${{ github.workspace }}/rumqttc-c/tests/native/valgrind.supp
-        run: |
-            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-valgrind
-            cmake --build target/rumqttc-c-native-valgrind
-            ctest --test-dir target/rumqttc-c-native-valgrind \
-              -R 'rumqttc-native-(integration|stress)' --output-on-failure
-
-  c-abi-platform-sanitizers:
-    name: C native sanitizers (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build C library
-        run: cargo build -p rumqttc-c-next
-
-      - name: Build and run sanitized native suite (macOS)
-        if: ${{ runner.os == 'macOS' }}
-        run: |
-            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-platform-sanitized \
-              -DCMAKE_C_COMPILER=clang \
-              -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-            cmake --build target/rumqttc-c-native-platform-sanitized
-            ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
-              ctest --test-dir target/rumqttc-c-native-platform-sanitized --output-on-failure
-
-      - name: Check native lifecycle with macOS leaks
-        if: ${{ runner.os == 'macOS' }}
-        env:
-          RUMQTTC_C_STRESS_ITERATIONS: 50
-          RUMQTTC_NATIVE_LAUNCHER: leaks --atExit --
-        run: |
-            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-leaks
-            cmake --build target/rumqttc-c-native-leaks
-            ctest --test-dir target/rumqttc-c-native-leaks \
-              -R 'rumqttc-native-(integration|stress)' --output-on-failure
-
-      - name: Build and run sanitized native suite (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-            cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native-platform-sanitized `
-              "-DCMAKE_C_FLAGS=/fsanitize=address /Zi"
-            if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
-            cmake --build target/rumqttc-c-native-platform-sanitized --config Release
-            if ($LASTEXITCODE -ne 0) { throw "sanitizer build failed" }
-            ctest --test-dir target/rumqttc-c-native-platform-sanitized -C Release --output-on-failure
-            if ($LASTEXITCODE -ne 0) { throw "sanitized native suite failed" }
 
   coverage:
     name: Test coverage

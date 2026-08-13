@@ -6,8 +6,8 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
-CRATE = ROOT / "rumqttc-c"
+WORKSPACE = pathlib.Path(__file__).resolve().parents[3]
+CRATE = WORKSPACE / "c"
 
 
 def match(path: pathlib.Path, pattern: str) -> str:

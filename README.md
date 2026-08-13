@@ -111,8 +111,10 @@ Shared transport and codec code is published as
 [`rumqttc-core-next`](./rumqttc-core/) and
 [`mqttbytes-core-next`](./mqttbytes-core/). Standalone, `no_std`-capable packet
 codecs are published as [`mqttbytes-v4-next`](./mqttbytes-v4/) and
-[`mqttbytes-v5-next`](./mqttbytes-v5/). Optional file-backed session stores
-live in the independent
+[`mqttbytes-v5-next`](./mqttbytes-v5/). Native wrapper infrastructure and the C
+API live in the independent
+[`native-wrappers` workspace](./native-wrappers/README.md). Optional file-backed
+session stores live in the independent
 [`session-store-file` workspace](./session-store-file/README.md) and do not add
 filesystem dependencies to the clients.
 Its protocol-neutral storage engine is maintained separately as

@@ -1,6 +1,7 @@
 # C ABI compatibility and release policy
 
-This policy applies only to the C boundary in `rumqttc-c/include/rumqttc.h` and
+This policy applies only to the C boundary in
+`native-wrappers/c/include/rumqttc.h` and
 the packaged shared libraries. It does not promise Rust API compatibility.
 
 ## Invariants

@@ -7,9 +7,9 @@ if ($OsArchitecture -ne [System.Runtime.InteropServices.Architecture]::X64 -or
     throw "unsupported Windows ABI comparison host: OS $OsArchitecture, process $ProcessArchitecture; expected X64"
 }
 
-$RepoDir = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
-$CrateDir = Join-Path $RepoDir "rumqttc-c"
-$ReportDir = if ($env:ABI_REPORT_DIR) { $env:ABI_REPORT_DIR } else { Join-Path $RepoDir "target/abi-reports" }
+$WorkspaceDir = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$CrateDir = Join-Path $WorkspaceDir "c"
+$ReportDir = if ($env:ABI_REPORT_DIR) { $env:ABI_REPORT_DIR } else { Join-Path $WorkspaceDir "target/abi-reports" }
 $VersionMatch = Select-String -Path (Join-Path $CrateDir "Cargo.toml") `
     -Pattern '^version = "([^"]+)"'
 $Version = $VersionMatch.Matches[0].Groups[1].Value
@@ -24,10 +24,10 @@ python (Join-Path $CrateDir "tests/abi/baseline.py") `
 if ($LASTEXITCODE -ne 0) { throw "baseline resolution failed" }
 if (Test-Path (Join-Path $ReportDir "baseline/no-baseline")) { exit 0 }
 
-cargo build --locked --release -p rumqttc-c-next
+cargo build --locked --release --manifest-path (Join-Path $WorkspaceDir "Cargo.toml") -p rumqttc-c-next
 if ($LASTEXITCODE -ne 0) { throw "release C library build failed" }
-$VersionedDll = Join-Path $RepoDir "target/release/rumqttc-$AbiLine.dll"
-Copy-Item (Join-Path $RepoDir "target/release/rumqttc.dll") $VersionedDll -Force
+$VersionedDll = Join-Path $WorkspaceDir "target/release/rumqttc-$AbiLine.dll"
+Copy-Item (Join-Path $WorkspaceDir "target/release/rumqttc.dll") $VersionedDll -Force
 $CurrentContract = Join-Path $ReportDir "current-contract.json"
 python (Join-Path $CrateDir "tests/abi/contract.py") generate `
     --header $Header --library $VersionedDll --package-version $Version `

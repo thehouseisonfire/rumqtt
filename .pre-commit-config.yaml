@@ -33,6 +33,14 @@ repos:
         always_run: false
         require_serial: true
 
+      - id: native-wrappers-fmt
+        name: native wrappers fmt
+        entry: cargo fmt --manifest-path native-wrappers/Cargo.toml --all
+        language: system
+        pass_filenames: false
+        always_run: false
+        require_serial: true
+
       - id: session-store-file-fmt
         name: session-store-file fmt
         entry: cargo fmt --manifest-path session-store-file/Cargo.toml --all
@@ -63,9 +71,22 @@ repos:
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
 
-          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next -p mqttbytes-v5-next -p rumqttc-v4-next -p rumqttc-v5-next;
+          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next -p mqttbytes-v5-next -p rumqttc-v4-next -p rumqttc-v5-next
+          '
+        language: system
+        pass_filenames: false
+        always_run: false
+        require_serial: true
 
-          cargo clippy --fix --allow-dirty --all-targets --no-deps -p rumqttc-wrapper-core-next
+      - id: native-wrappers-clippy
+        name: native wrappers clippy
+        entry: >
+          bash -c '
+          set -euo pipefail;
+          export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
+          export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
+
+          cargo clippy --manifest-path native-wrappers/Cargo.toml --fix --allow-dirty --workspace --all-targets --no-deps
           '
         language: system
         pass_filenames: false
@@ -261,10 +282,16 @@ repos:
           -p mqttbytes-v4-next
           -p mqttbytes-v5-next
           -p rumqttc-v4-next
-          -p rumqttc-v5-next;
-
-          cargo test -p rumqttc-wrapper-core-next
+          -p rumqttc-v5-next
           '
+        language: system
+        pass_filenames: false
+        always_run: false
+        require_serial: true
+
+      - id: native-wrappers-tests
+        name: native wrappers tests
+        entry: cargo test --manifest-path native-wrappers/Cargo.toml --workspace
         language: system
         pass_filenames: false
         always_run: false

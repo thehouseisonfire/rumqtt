@@ -92,6 +92,9 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- Repository: Move `rumqttc-wrapper-core` and `rumqttc-c` into the independent
+  `native-wrappers` Cargo workspace with its own lockfile and CI, while keeping
+  both crates in this repository for coordinated client and wrapper changes.
 - `rumqttc-wrapper-core` (Breaking Change): Replace the bidirectional
   `V5PublishProperties` model with `V5OutgoingPublishProperties` and
   `V5IncomingPublishProperties`. Client-originated publishes can no longer

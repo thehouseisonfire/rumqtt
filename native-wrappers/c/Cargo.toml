@@ -18,7 +18,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 bytes = "1.5"
-rumqttc-wrapper-core-next = { path = "../rumqttc-wrapper-core", version = "0.34.0-alpha" }
+rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha" }
 
 [build-dependencies]
 cbindgen = "0.29"

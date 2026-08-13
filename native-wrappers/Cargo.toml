@@ -1,0 +1,18 @@
+[workspace]
+members = ["wrapper-core", "c"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+repository = "https://github.com/thehouseisonfire/rumqtt"
+license = "Apache-2.0"
+authors = ["thehouseisonfire <lefttolive@proton.me>", "tekjar <raviteja@bytebeam.io>"]
+
+[profile.dev]
+debug = false
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

@@ -55,7 +55,7 @@ Run the wrapper's native, host-language, packaging, and lifecycle test suites
 on every supported target. Continue running:
 
 ```text
-cargo test -p rumqttc-wrapper-core-next
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next
 cargo test -p rumqttc-v4-next
 cargo test -p rumqttc-v5-next
 ```

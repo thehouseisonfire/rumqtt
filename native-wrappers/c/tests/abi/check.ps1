@@ -5,9 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RepoDir = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
-$CrateDir = Join-Path $RepoDir "rumqttc-c"
-$TargetDir = Join-Path $RepoDir "target/debug"
+$WorkspaceDir = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$CrateDir = Join-Path $WorkspaceDir "c"
+$TargetDir = Join-Path $WorkspaceDir "target/debug"
 
 function Initialize-MsvcToolchain {
     $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"

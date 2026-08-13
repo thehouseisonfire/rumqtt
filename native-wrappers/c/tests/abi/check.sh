@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-crate_dir="${repo_dir}/rumqttc-c"
-target_dir="${repo_dir}/target/debug"
+workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+crate_dir="${workspace_dir}/c"
+target_dir="${workspace_dir}/target/debug"
 check="${1:-all}"
 case "${check}" in
     all|package|native|ffi-header|exports) ;;

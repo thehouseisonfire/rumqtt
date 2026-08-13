@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-crate_dir="${repo_dir}/rumqttc-c"
-report_dir="${ABI_REPORT_DIR:-${repo_dir}/target/abi-reports}"
+workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+crate_dir="${workspace_dir}/c"
+report_dir="${ABI_REPORT_DIR:-${workspace_dir}/target/abi-reports}"
 host_os="$(uname -s)"
 host_arch="$(uname -m)"
 case "${host_os}:${host_arch}" in
@@ -34,17 +34,18 @@ fi
 
 case "${host_os}" in
     Linux)
-        library="${repo_dir}/target/release/librumqttc.so"
+        library="${workspace_dir}/target/release/librumqttc.so"
         abi_rustflags="-C link-arg=-Wl,-soname,librumqttc.so.${abi_line}"
         ;;
     Darwin)
-        library="${repo_dir}/target/release/librumqttc.dylib"
+        library="${workspace_dir}/target/release/librumqttc.dylib"
         abi_rustflags="-C link-arg=-Wl,-install_name,@rpath/librumqttc.${abi_line}.dylib"
         abi_rustflags+=" -C link-arg=-Wl,-compatibility_version,${abi_major}.${abi_minor}.0"
         abi_rustflags+=" -C link-arg=-Wl,-current_version,${abi_major}.${abi_minor}.0"
         ;;
 esac
-RUSTFLAGS="${RUSTFLAGS:-} ${abi_rustflags}" cargo build --locked --release -p rumqttc-c-next
+RUSTFLAGS="${RUSTFLAGS:-} ${abi_rustflags}" cargo build --locked --release \
+    --manifest-path "${workspace_dir}/Cargo.toml" -p rumqttc-c-next
 python3 "${crate_dir}/tests/abi/contract.py" generate \
     --header "${crate_dir}/include/rumqttc.h" \
     --library "${library}" \

@@ -12,7 +12,7 @@ The public, checked-in header is [`include/rumqttc.h`](include/rumqttc.h). Build
 the shared and static libraries with:
 
 ```sh
-cargo build --release -p rumqttc-c-next
+cargo build --release --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-next
 ```
 
 Define `RUMQTTC_STATIC` before including the header when linking the static
@@ -67,10 +67,10 @@ Afterwards, contributors can reproduce the authenticated comparison without
 repository credentials:
 
 ```sh
-rumqttc-c/tests/abi/check.sh ffi-header
-rumqttc-c/tests/abi/check.sh exports
-rumqttc-c/tests/abi/compare-release.sh
-python3 rumqttc-c/tests/abi/mutation_matrix.py --output target/abi-mutations
+native-wrappers/c/tests/abi/check.sh ffi-header
+native-wrappers/c/tests/abi/check.sh exports
+native-wrappers/c/tests/abi/compare-release.sh
+python3 native-wrappers/c/tests/abi/mutation_matrix.py --output native-wrappers/target/abi-mutations
 ```
 
 Historical artifacts are downloaded from the public GitHub release, checked
@@ -200,10 +200,10 @@ examples are compiled with warnings as errors and run against the deterministic
 broker fixture in CI. To reproduce that build against a debug library:
 
 ```sh
-cargo build -p rumqttc-c-next
-cmake -S rumqttc-c/tests/native -B target/rumqttc-c-native
-cmake --build target/rumqttc-c-native
-ctest --test-dir target/rumqttc-c-native -L example --output-on-failure
+cargo build --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-next
+cmake -S native-wrappers/c/tests/native -B native-wrappers/target/rumqttc-c-native
+cmake --build native-wrappers/target/rumqttc-c-native
+ctest --test-dir native-wrappers/target/rumqttc-c-native -L example --output-on-failure
 ```
 
 Keep these distinctions in mind when adapting the examples:
@@ -226,7 +226,7 @@ successfully consumed its event-bound token.
 
 ## Native verification
 
-`rumqttc-c/tests/native` is a dedicated broker-backed test target, separate
+`native-wrappers/c/tests/native` is a dedicated broker-backed test target, separate
 from the fast header and ABI checks. It exercises the C surface from C,
 including MQTT 3.1.1 and MQTT 5 behavior, overload, reconnect, shutdown,
 native-thread concurrency, and repeated teardown. Every network wait and join

@@ -38,7 +38,7 @@ MANIFESTS=(
     "rumqttc-core/Cargo.toml"
     "rumqttc-v4/Cargo.toml"
     "rumqttc-v5/Cargo.toml"
-    "rumqttc-wrapper-core/Cargo.toml"
+    "native-wrappers/wrapper-core/Cargo.toml"
     "rumqttc-next/Cargo.toml"
 )
 
@@ -161,7 +161,8 @@ confirm_unmanaged_version_references() {
         ':(exclude)rumqttc-v4/Cargo.toml' \
         ':(exclude)rumqttc-v5/Cargo.toml' \
         ':(exclude)rumqttc-next/Cargo.toml' \
-        ':(exclude)rumqttc-wrapper-core/Cargo.toml' \
+        ':(exclude)native-wrappers/wrapper-core/Cargo.toml' \
+        ':(exclude)native-wrappers/c/Cargo.toml' \
         ':(exclude)README.md' \
         ':(exclude)MIGRATION.md' \
         ':(exclude)docs/recipes/proxies.md' \
@@ -315,7 +316,11 @@ replace_all_versions() {
     s/^version = "\Q'"$old"'\E"/version = "'"$new"'"/m;
     s/(rumqttc_v4 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
     s/(rumqttc_v5 = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
-  ' rumqttc-wrapper-core/Cargo.toml
+  ' native-wrappers/wrapper-core/Cargo.toml
+
+    perl -0pi -e '
+    s/(rumqttc-wrapper-core-next = \{[^}]*version = )"\Q'"$old"'\E"/$1"'"$new"'"/m;
+  ' native-wrappers/c/Cargo.toml
 
     if [[ "$old" != "$new" ]]; then
         OLD_VERSION="$old" NEW_VERSION="$new" perl -0pi -e '
@@ -385,7 +390,10 @@ assert_release_not_present() {
 }
 
 verify_release() {
+    local audit_failed=0
+
     cargo fmt --all --check
+    cargo fmt --manifest-path native-wrappers/Cargo.toml --all --check
     python3 scripts/check-markdown-links.py
 
     cargo check \
@@ -395,8 +403,9 @@ verify_release() {
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \
-        -p rumqttc-wrapper-core-next \
         -p rumqttc-next
+
+    cargo check --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next
 
     cargo test --locked --doc \
         -p mqttbytes-core-next \
@@ -405,10 +414,14 @@ verify_release() {
         -p rumqttc-core-next \
         -p rumqttc-v4-next \
         -p rumqttc-v5-next \
-        -p rumqttc-wrapper-core-next \
         -p rumqttc-next
 
-    if ! cargo audit; then
+    cargo test --locked --manifest-path native-wrappers/Cargo.toml --doc \
+        -p rumqttc-wrapper-core-next
+
+    cargo audit || audit_failed=1
+    cargo audit --file native-wrappers/Cargo.lock || audit_failed=1
+    if ((audit_failed)); then
         echo >&2
         printf 'cargo audit reported findings. Continue anyway? [y/N]: ' >&2
         read -r reply
@@ -421,7 +434,8 @@ verify_release() {
 
 commit_release() {
     local version="$1"
-    git add CHANGELOG.md Cargo.lock "${MANIFESTS[@]}" "${VERSIONED_DOCUMENTS[@]}"
+    git add CHANGELOG.md Cargo.lock native-wrappers/Cargo.lock native-wrappers/c/Cargo.toml \
+        "${MANIFESTS[@]}" "${VERSIONED_DOCUMENTS[@]}"
     git commit -m "release(packages): cut ${version}" \
         -m "Prepare the coordinated rumqttc-next crates for release ${version}, cut the changelog, and verify the publishable packages."
 }
@@ -453,7 +467,11 @@ publish_release() {
     for package in "${PUBLISH_ORDER[@]}"; do
         echo
         echo "Publishing ${package} ${version}"
-        cargo publish --locked -p "$package"
+        if [[ "$package" == "rumqttc-wrapper-core-next" ]]; then
+            cargo publish --locked --manifest-path native-wrappers/Cargo.toml -p "$package"
+        else
+            cargo publish --locked -p "$package"
+        fi
         wait_for_crate_version "$package" "$version"
     done
 }
