@@ -103,6 +103,9 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `rumqttc-wrapper-core` / `rumqttc-c` / `rumqttc-js`: Re-license as MIT OR
+  Apache-2.0 with separate `native-wrappers/LICENSE-MIT` and
+  `native-wrappers/LICENSE-APACHE` files.
 - Repository: Move `rumqttc-wrapper-core` and `rumqttc-c` into the independent
   `native-wrappers` Cargo workspace with its own lockfile and CI, while keeping
   both crates in this repository for coordinated client and wrapper changes.

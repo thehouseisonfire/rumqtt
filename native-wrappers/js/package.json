@@ -2,7 +2,7 @@
   "name": "@rumqtt-next/rumqttc",
   "version": "0.1.0-alpha.0",
   "description": "Native MQTT 3.1.1 and MQTT 5 client backed by rumqttc",
-  "license": "Apache-2.0",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./index.cjs",
   "module": "./index.js",

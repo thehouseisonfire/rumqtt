@@ -6,7 +6,7 @@ resolver = "3"
 edition = "2024"
 rust-version = "1.88"
 repository = "https://github.com/thehouseisonfire/rumqtt"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 authors = ["thehouseisonfire <lefttolive@proton.me>", "tekjar <raviteja@bytebeam.io>"]
 
 [profile.dev]
