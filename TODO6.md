@@ -2,7 +2,7 @@
 
 ## Completion target
 
-Publish `@rumqtt/rumqttc` with installable native artifacts and demonstrate the
+Publish `@rumqtt-next/rumqttc` with installable native artifacts and demonstrate the
 same public contract under Node.js 24, Deno 2.9.5, and Bun 1.3.14. Completion
 requires tests against installed packages, not only source-tree execution.
 
@@ -104,7 +104,7 @@ Publish the packed main and platform packages to an ephemeral local npm
 registry, install them into a fresh test project, and import the client as:
 
 ```ts,ignore
-import { MqttClient } from "npm:@rumqtt/rumqttc";
+import { MqttClient } from "npm:@rumqtt-next/rumqttc";
 ```
 
 Run with `--node-modules-dir=auto`, `--allow-ffi`, and only the additional

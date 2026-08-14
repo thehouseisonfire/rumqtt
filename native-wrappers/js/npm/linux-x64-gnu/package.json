@@ -1,1 +1,1 @@
-{"name":"@rumqtt/rumqttc-linux-x64-gnu","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["linux"],"cpu":["x64"],"libc":["glibc"],"main":"rumqttc.linux-x64-gnu.node","files":["rumqttc.linux-x64-gnu.node","README.md"]}
+{"name":"@rumqtt-next/rumqttc-linux-x64-gnu","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["linux"],"cpu":["x64"],"libc":["glibc"],"main":"rumqttc.linux-x64-gnu.node","files":["rumqttc.linux-x64-gnu.node","README.md"]}

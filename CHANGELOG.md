@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 ### Added
-- `@rumqtt/rumqttc`: Add the pre-stable Node-API JavaScript/TypeScript client for
+- `@rumqtt-next/rumqttc`: Add the pre-stable Node-API JavaScript/TypeScript client for
   MQTT 3.1.1 and MQTT 5 with bounded async admission, tracked completions,
   single-consumer events, manual acknowledgements, structured errors, and
   deterministic shutdown across Node.js, local Deno, and Bun. Release packaging
@@ -166,7 +166,7 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
-- `@rumqtt/rumqttc`: Keep a returned event iterator reserved until all of its
+- `@rumqtt-next/rumqttc`: Keep a returned event iterator reserved until all of its
   pending reads settle, and discard manual-acknowledgement handles whenever the
   native connection generation changes or the driver terminates. Give every
   graceful-close caller an independent timeout observation, and omit absent

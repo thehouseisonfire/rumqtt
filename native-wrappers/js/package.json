@@ -1,5 +1,5 @@
 {
-  "name": "@rumqtt/rumqttc",
+  "name": "@rumqtt-next/rumqttc",
   "version": "0.1.0-alpha.0",
   "description": "Native MQTT 3.1.1 and MQTT 5 client backed by rumqttc",
   "license": "Apache-2.0",
@@ -25,12 +25,12 @@
     "node": ">=24"
   },
   "optionalDependencies": {
-    "@rumqtt/rumqttc-linux-x64-gnu": "0.1.0-alpha.0",
-    "@rumqtt/rumqttc-linux-x64-musl": "0.1.0-alpha.0",
-    "@rumqtt/rumqttc-linux-arm64-gnu": "0.1.0-alpha.0",
-    "@rumqtt/rumqttc-darwin-x64": "0.1.0-alpha.0",
-    "@rumqtt/rumqttc-darwin-arm64": "0.1.0-alpha.0",
-    "@rumqtt/rumqttc-win32-x64-msvc": "0.1.0-alpha.0"
+    "@rumqtt-next/rumqttc-linux-x64-gnu": "0.1.0-alpha.0",
+    "@rumqtt-next/rumqttc-linux-x64-musl": "0.1.0-alpha.0",
+    "@rumqtt-next/rumqttc-linux-arm64-gnu": "0.1.0-alpha.0",
+    "@rumqtt-next/rumqttc-darwin-x64": "0.1.0-alpha.0",
+    "@rumqtt-next/rumqttc-darwin-arm64": "0.1.0-alpha.0",
+    "@rumqtt-next/rumqttc-win32-x64-msvc": "0.1.0-alpha.0"
   },
   "scripts": {
     "build:native": "napi build --platform --release --output-dir .",

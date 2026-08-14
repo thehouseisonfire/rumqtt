@@ -1,3 +1,3 @@
-# `@rumqtt/rumqttc-linux-arm64-gnu`
+# `@rumqtt-next/rumqttc-linux-arm64-gnu`
 
-Linux arm64 glibc native artifact for `@rumqtt/rumqttc`. Install the main package instead of depending on this package directly.
+Linux arm64 glibc native artifact for `@rumqtt-next/rumqttc`. Install the main package instead of depending on this package directly.

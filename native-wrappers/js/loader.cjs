@@ -20,13 +20,13 @@ if (override) {
   const arch = process.arch
   const suffix = platform === 'linux' ? `${platform}-${arch}-${libc()}` :
     platform === 'win32' ? `${platform}-${arch}-msvc` : `${platform}-${arch}`
-  const packageName = `@rumqtt/rumqttc-${suffix}`
+  const packageName = `@rumqtt-next/rumqttc-${suffix}`
   const local = path.join(__dirname, `rumqttc.${suffix}.node`)
   try {
     module.exports = fs.existsSync(local) ? require(local) : require(packageName)
   } catch (cause) {
     const error = new Error(
-      `@rumqtt/rumqttc has no loadable native addon for ${platform}/${arch}` +
+      `@rumqtt-next/rumqttc has no loadable native addon for ${platform}/${arch}` +
       (platform === 'linux' ? `/${libc()}` : '') + `. Expected ${packageName}.`,
     )
     error.cause = cause

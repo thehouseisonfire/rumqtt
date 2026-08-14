@@ -1,1 +1,1 @@
-{"name":"@rumqtt/rumqttc-darwin-x64","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["darwin"],"cpu":["x64"],"main":"rumqttc.darwin-x64.node","files":["rumqttc.darwin-x64.node","README.md"]}
+{"name":"@rumqtt-next/rumqttc-darwin-x64","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["darwin"],"cpu":["x64"],"main":"rumqttc.darwin-x64.node","files":["rumqttc.darwin-x64.node","README.md"]}

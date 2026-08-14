@@ -1,9 +1,9 @@
-# `@rumqtt/rumqttc`
+# `@rumqtt-next/rumqttc`
 
-`@rumqtt/rumqttc` is one native MQTT client for MQTT 3.1.1 and MQTT 5. Each `MqttClient` selects a protocol permanently at construction. It uses stable Node-API and the same prebuilt addon under Node.js, local Deno, and Bun.
+`@rumqtt-next/rumqttc` is one native MQTT client for MQTT 3.1.1 and MQTT 5. Each `MqttClient` selects a protocol permanently at construction. It uses stable Node-API and the same prebuilt addon under Node.js, local Deno, and Bun.
 
 ```ts
-import { MqttClient } from '@rumqtt/rumqttc'
+import { MqttClient } from '@rumqtt-next/rumqttc'
 
 const client = new MqttClient({
   protocol: '5.0',
