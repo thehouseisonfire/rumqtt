@@ -1,0 +1,1 @@
+{"name":"@rumqtt/rumqttc-win32-x64-msvc","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["win32"],"cpu":["x64"],"main":"rumqttc.win32-x64-msvc.node","files":["rumqttc.win32-x64-msvc.node","README.md"]}

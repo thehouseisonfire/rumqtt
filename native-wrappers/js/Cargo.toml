@@ -1,0 +1,27 @@
+[package]
+name = "rumqttc-js-next"
+version = "0.1.0-alpha"
+publish = false
+description = "Node-API JavaScript and TypeScript bindings for rumqttc"
+rust-version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64 = "0.22"
+bytes = "1.5"
+napi = { version = "3.12.1", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "3.5.2"
+rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.40", features = ["sync"] }
+
+[build-dependencies]
+napi-build = "2.4.1"

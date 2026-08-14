@@ -1,0 +1,1 @@
+{"name":"@rumqtt/rumqttc-darwin-arm64","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["darwin"],"cpu":["arm64"],"main":"rumqttc.darwin-arm64.node","files":["rumqttc.darwin-arm64.node","README.md"]}

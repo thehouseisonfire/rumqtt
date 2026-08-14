@@ -200,7 +200,7 @@ fn boundary(
             }
             publish_error(
                 error_out,
-                ErrorHandle::internal(format!(
+                ErrorHandle::panic(format!(
                     "panic contained at C ABI boundary: {}",
                     crate::panic::message(payload.as_ref())
                 )),
@@ -277,7 +277,7 @@ unsafe fn client_ref<'a>(client: *mut rumqttc_client) -> Result<&'a ClientObject
     }
     // SAFETY: See `config_ref`; ordinary client calls borrow the handle.
     let client = unsafe { &(*client).inner };
-    client.ensure_usable().map_err(ErrorHandle::state)?;
+    client.ensure_usable().map_err(ErrorHandle::panic)?;
     Ok(client)
 }
 
@@ -340,6 +340,7 @@ fn client_error(error: ClientError) -> ErrorHandle {
     match error {
         ClientError::Core(error) => core_error(&error, None),
         ClientError::State(message) => ErrorHandle::state(message),
+        ClientError::Internal(message) => ErrorHandle::internal(message),
     }
 }
 
@@ -446,7 +447,7 @@ fn config_update(
         let mut inner = config
             .inner
             .lock()
-            .map_err(|_| ErrorHandle::state("configuration lock is poisoned"))?;
+            .map_err(|_| ErrorHandle::internal("configuration lock is poisoned"))?;
         update(&mut inner)
     })
 }
@@ -472,7 +473,7 @@ pub unsafe extern "C" fn rumqttc_config_set_broker(
                 config.common.broker_port = port;
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -490,7 +491,7 @@ pub unsafe extern "C" fn rumqttc_config_set_client_id(
                 config.common.client_id = client_id;
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -508,7 +509,7 @@ pub unsafe extern "C" fn rumqttc_config_set_username(
                 config.common.username = Some(username);
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -537,7 +538,7 @@ pub unsafe extern "C" fn rumqttc_config_set_password(
                 config.common.password = Some(Bytes::from(password));
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -581,7 +582,7 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_tls(
                 set_transport_tls(config, tls);
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -599,7 +600,7 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_websocket(
                 set_transport_websocket(config, url);
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -624,7 +625,7 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss(
                 set_transport_wss(config, url, tls);
                 Ok(())
             })
-            .map_err(ErrorHandle::state)
+            .map_err(ErrorHandle::internal)
     })
 }
 
@@ -767,7 +768,7 @@ pub unsafe extern "C" fn rumqttc_client_start(
         }
         let config = unsafe { config_ref(config) }?
             .clone_config()
-            .map_err(ErrorHandle::state)?;
+            .map_err(ErrorHandle::internal)?;
         let inner = ClientObject::start(config).map_err(|error| core_error(&error, None))?;
         unsafe { *out = Box::into_raw(Box::new(rumqttc_client { inner })) };
         Ok(())
@@ -1386,7 +1387,7 @@ fn acknowledge_impl(
         let mut token = event
             .ack
             .lock()
-            .map_err(|_| ErrorHandle::state("event acknowledgement lock is poisoned"))?;
+            .map_err(|_| ErrorHandle::internal("event acknowledgement lock is poisoned"))?;
         let ack = token
             .take()
             .ok_or_else(|| ErrorHandle::state("event has no available acknowledgement"))?;
@@ -1468,12 +1469,8 @@ pub unsafe extern "C" fn rumqttc_completion_poll(
     boundary(error_out, ptr::null_mut(), || {
         let completion = unsafe { completion_ref(completion) }?;
         if observe_completion(completion, None)?.is_none() {
-            return Err(ErrorHandle::plain(
-                WOULD_BLOCK,
-                crate::error::ERROR_NONE,
-                "operation is still pending",
-            )
-            .with_operation(completion.operation_id));
+            return Err(ErrorHandle::would_block("operation is still pending")
+                .with_operation(completion.operation_id));
         }
         Ok(())
     })
@@ -1535,7 +1532,7 @@ pub unsafe extern "C" fn rumqttc_completion_kind(
         }
         let completion = unsafe { completion_ref(completion) }?;
         let terminal = observe_completion(completion, None)?
-            .ok_or_else(|| ErrorHandle::state("completion is not ready"))?;
+            .ok_or_else(|| ErrorHandle::would_block("completion is not ready"))?;
         unsafe { *out = completion_kind(&terminal) };
         Ok(())
     })
@@ -1556,7 +1553,7 @@ pub unsafe extern "C" fn rumqttc_completion_result_count(
         }
         let completion = unsafe { completion_ref(completion) }?;
         let terminal = observe_completion(completion, None)?
-            .ok_or_else(|| ErrorHandle::state("completion is not ready"))?;
+            .ok_or_else(|| ErrorHandle::would_block("completion is not ready"))?;
         let count = match terminal {
             Completion::Subscribe(result) => result.results.len(),
             Completion::Unsubscribe(result) => result.results.as_ref().map_or(0, Vec::len),
@@ -1595,7 +1592,7 @@ pub unsafe extern "C" fn rumqttc_completion_result_at(
         }
         let completion = unsafe { completion_ref(completion) }?;
         let terminal = observe_completion(completion, None)?
-            .ok_or_else(|| ErrorHandle::state("completion is not ready"))?;
+            .ok_or_else(|| ErrorHandle::would_block("completion is not ready"))?;
         let (success, granted_qos, reason) = match terminal {
             Completion::Subscribe(result) => match result.results.get(index) {
                 Some(SubscribeResult::Granted(qos)) => (true, *qos as u32, None),
@@ -1656,7 +1653,7 @@ pub unsafe extern "C" fn rumqttc_completion_diagnostics(
         }
         let completion = unsafe { completion_ref(completion) }?;
         let terminal = observe_completion(completion, None)?
-            .ok_or_else(|| ErrorHandle::state("completion is not ready"))?;
+            .ok_or_else(|| ErrorHandle::would_block("completion is not ready"))?;
         let Completion::Diagnostics(value) = terminal else {
             return Err(ErrorHandle::state("completion is not a diagnostics result"));
         };
@@ -1732,6 +1729,7 @@ const fn event_kind(event: &WrapperEvent) -> u32 {
         WrapperEvent::Outgoing(_) => 4,
         WrapperEvent::GracefulShutdownCompleted => 5,
         WrapperEvent::DriverTerminated(_) => 6,
+        WrapperEvent::ImmediateShutdownCompleted => 7,
     }
 }
 
@@ -1875,7 +1873,7 @@ pub unsafe extern "C" fn rumqttc_event_publish(
         let ack_available = event
             .ack
             .lock()
-            .map_err(|_| ErrorHandle::state("event acknowledgement lock is poisoned"))?
+            .map_err(|_| ErrorHandle::internal("event acknowledgement lock is poisoned"))?
             .is_some();
         unsafe {
             write_optional(topic_out, view_string(topic));
@@ -2189,6 +2187,20 @@ pub unsafe extern "C" fn rumqttc_error_kind(error: *const rumqttc_error, out: *m
             return Err(ErrorHandle::argument("error accessor output is NULL"));
         }
         unsafe { *out = error_ref(error)?.kind };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_code(
+    error: *const rumqttc_error,
+    out: *mut rumqttc_string_view_t,
+) -> u32 {
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if out.is_null() {
+            return Err(ErrorHandle::argument("error code output is NULL"));
+        }
+        unsafe { *out = view_string(&error_ref(error)?.code) };
         Ok(())
     })
 }

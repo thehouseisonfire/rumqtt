@@ -77,5 +77,6 @@ pub enum WrapperEvent {
     IncomingPublish(Box<IncomingPublish>),
     Outgoing(OutgoingActivity),
     GracefulShutdownCompleted,
+    ImmediateShutdownCompleted,
     DriverTerminated(Error),
 }

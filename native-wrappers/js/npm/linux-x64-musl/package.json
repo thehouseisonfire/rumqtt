@@ -1,0 +1,1 @@
+{"name":"@rumqtt/rumqttc-linux-x64-musl","version":"0.1.0-alpha.0","license":"Apache-2.0","os":["linux"],"cpu":["x64"],"libc":["musl"],"main":"rumqttc.linux-x64-musl.node","files":["rumqttc.linux-x64-musl.node","README.md"]}

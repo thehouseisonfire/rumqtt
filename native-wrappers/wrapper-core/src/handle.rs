@@ -8,8 +8,9 @@ use crate::operations::OperationRegistry;
 use crate::shutdown::{ClosedOutcome, ImmediateAdmission, PollErrorAction, ShutdownCoordinator};
 use crate::validation::{protocol_option_error, validate_mqtt_utf8_string};
 use crate::{
-    AckToken, Admission, Command, DeliveryStatus, Error, ErrorKind, LifecycleState, PublishCommand,
-    Result, SubscribeCommand, UnsubscribeCommand,
+    AckToken, Admission, Command, ConnectionHandle, ConnectionResult, DeliveryStatus, Error,
+    ErrorKind, LifecycleState, ProtocolVersion, PublishCommand, Result, SubscribeCommand,
+    UnsubscribeCommand,
 };
 
 /// Serializes admission with connection invalidation and shutdown commitment.
@@ -29,6 +30,7 @@ pub(crate) struct Shared {
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
     acknowledgements: Arc<AcknowledgementCoordinator>,
+    connection: ConnectionHandle,
     operations: OperationRegistry,
     shutdown: Arc<ShutdownCoordinator>,
 }
@@ -37,6 +39,7 @@ impl Shared {
     pub(crate) fn new(
         backend: BackendClient,
         acknowledgements: Arc<AcknowledgementCoordinator>,
+        connection: ConnectionHandle,
         operations: OperationRegistry,
         shutdown: Arc<ShutdownCoordinator>,
     ) -> Arc<Self> {
@@ -45,6 +48,7 @@ impl Shared {
             handle_count: AtomicUsize::new(1),
             admission_gate: AdmissionGate::default(),
             acknowledgements,
+            connection,
             operations,
             shutdown,
         })
@@ -66,14 +70,27 @@ impl Shared {
         self.shutdown.notify_progress();
     }
 
-    pub(crate) fn begin_connection(&self, discard_pending_acknowledgements: impl FnOnce()) {
+    pub(crate) fn begin_connection(
+        &self,
+        protocol: ProtocolVersion,
+        session_present: bool,
+        discard_pending_acknowledgements: impl FnOnce(),
+    ) {
         let _admission_guard = self
             .admission_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         discard_pending_acknowledgements();
         self.acknowledgements.begin_connection();
+        self.connection.connected(ConnectionResult {
+            protocol,
+            session_present,
+        });
         self.shutdown.notify_progress();
+    }
+
+    pub(crate) fn terminate_connection_observation(&self, error: Error) {
+        self.connection.terminate(error);
     }
 
     pub(crate) fn backend(&self) -> &BackendClient {
@@ -237,13 +254,18 @@ impl ClientHandle {
         self.shared.state()
     }
 
+    #[must_use]
+    pub fn connection(&self) -> ConnectionHandle {
+        self.shared.connection.clone()
+    }
+
     /// Idempotently requests immediate shutdown, including escalation from an
     /// in-progress graceful shutdown.
     ///
     /// This control path is intended for native-wrapper cleanup and finalizers.
     /// It makes no delivery claim for unfinished work and does not wait for the
-    /// driver thread to terminate; the owning [`NativeClient`] can subsequently
-    /// use [`NativeClient::join`] for bounded cleanup.
+    /// driver thread to terminate; the owning [`crate::NativeClient`] can subsequently
+    /// use [`crate::NativeClient::join`] for bounded cleanup.
     pub fn close_now_idempotent(&self) {
         self.shared.best_effort_immediate_close();
     }

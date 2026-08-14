@@ -130,6 +130,11 @@ after termination, every observer receives the same success or error. A wait
 deadline does not become the completion's terminal result, so a later observer
 can still receive the operation outcome.
 
+Use `rumqttc_error_code()` for fine-grained machine-readable handling. Local
+API misuse reports `INVALID_STATE`, premature completion access reports
+`WOULD_BLOCK`, and `SHUTDOWN` is reserved for failures caused by the client
+lifecycle. Synchronization failures report `INTERNAL`.
+
 Applications must continuously drain events. If the bounded event queue remains
 full past its configured delivery timeout, the driver terminates visibly rather
 than silently dropping incoming publishes. Manual acknowledgement consumes an

@@ -32,6 +32,7 @@ const ERROR_INTERNAL: u32 = 11;
 pub struct ErrorHandle {
     pub status: u32,
     pub kind: u32,
+    pub code: String,
     pub message: String,
     pub source_chain: String,
     pub retryable: bool,
@@ -46,11 +47,21 @@ impl ErrorHandle {
     }
 
     pub fn state(message: impl Into<String>) -> Self {
-        Self::plain(INVALID_STATE, ERROR_SHUTDOWN, message)
+        Self::plain(INVALID_STATE, ERROR_ADMISSION, message)
+    }
+
+    pub fn would_block(message: impl Into<String>) -> Self {
+        Self::plain(WOULD_BLOCK, ERROR_NONE, message)
     }
 
     pub fn internal(message: impl Into<String>) -> Self {
         Self::plain(INTERNAL_ERROR, ERROR_INTERNAL, message)
+    }
+
+    pub fn panic(message: impl Into<String>) -> Self {
+        let mut error = Self::internal(message);
+        error.code = "INTERNAL_PANIC".to_owned();
+        error
     }
 
     pub fn plain(status: u32, kind: u32, message: impl Into<String>) -> Self {
@@ -58,6 +69,22 @@ impl ErrorHandle {
         Self {
             status,
             kind,
+            code: match status {
+                OK => "NONE",
+                INVALID_ARGUMENT => "INVALID_ARGUMENT",
+                INVALID_STATE => "INVALID_STATE",
+                CONFIG_ERROR => "CONFIGURATION_INVALID",
+                BACKPRESSURE => "REQUEST_BACKPRESSURE",
+                TIMEOUT => "TIMEOUT",
+                DISCONNECTED => "NETWORK",
+                PROTOCOL_ERROR => "PROTOCOL",
+                BROKER_REJECTED => "BROKER_REJECTED",
+                AMBIGUOUS => "AMBIGUOUS",
+                INTERNAL_ERROR => "INTERNAL",
+                WOULD_BLOCK => "WOULD_BLOCK",
+                _ => "UNKNOWN",
+            }
+            .to_owned(),
             source_chain: message.clone(),
             message,
             retryable: false,
@@ -115,12 +142,10 @@ impl ErrorHandle {
         Self {
             status,
             kind,
+            code: error.code().as_str().to_owned(),
             message: error.message().to_owned(),
             source_chain,
-            retryable: matches!(
-                error.kind(),
-                ErrorKind::Backpressure | ErrorKind::Network | ErrorKind::Tls | ErrorKind::Timeout
-            ),
+            retryable: error.retryable(),
             ambiguous,
             broker_reason: error.broker_reason(),
             operation_id,
@@ -140,10 +165,21 @@ mod tests {
     #[test]
     fn local_failures_use_matching_public_error_kinds() {
         assert_eq!(ErrorHandle::argument("invalid argument").kind, ERROR_NONE);
-        assert_eq!(ErrorHandle::state("invalid state").kind, ERROR_SHUTDOWN);
+        let state = ErrorHandle::state("invalid state");
+        assert_eq!(state.kind, ERROR_ADMISSION);
+        assert_eq!(state.code, "INVALID_STATE");
+        let pending = ErrorHandle::would_block("not ready");
+        assert_eq!(pending.status, WOULD_BLOCK);
+        assert_eq!(pending.kind, ERROR_NONE);
+        assert_eq!(pending.code, "WOULD_BLOCK");
+        let shutdown =
+            ErrorHandle::from_core(&Error::new(ErrorKind::Shutdown, "client is closed"), None);
+        assert_eq!(shutdown.kind, ERROR_SHUTDOWN);
+        assert_eq!(shutdown.code, "SHUTDOWN");
         assert_eq!(
             ErrorHandle::internal("internal failure").kind,
             ERROR_INTERNAL
         );
+        assert_eq!(ErrorHandle::panic("panic").code, "INTERNAL_PANIC");
     }
 }

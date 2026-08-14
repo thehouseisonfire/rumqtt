@@ -9,6 +9,7 @@ use rumqttc_wrapper_core::{
 pub enum ClientError {
     Core(rumqttc_wrapper_core::Error),
     State(&'static str),
+    Internal(&'static str),
 }
 
 pub struct ClientObject {
@@ -59,7 +60,7 @@ impl ClientObject {
                 return Err(ClientError::State("another event receive is active"));
             }
             Err(TryLockError::Poisoned(_)) => {
-                return Err(ClientError::State("event-consumer lock is poisoned"));
+                return Err(ClientError::Internal("event-consumer lock is poisoned"));
             }
         };
         match timeout {

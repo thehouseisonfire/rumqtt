@@ -69,6 +69,7 @@ typedef uint32_t rumqttc_event_kind_t;
 #define RUMQTTC_EVENT_OUTGOING 4u
 #define RUMQTTC_EVENT_GRACEFUL_SHUTDOWN 5u
 #define RUMQTTC_EVENT_DRIVER_TERMINATED 6u
+#define RUMQTTC_EVENT_IMMEDIATE_SHUTDOWN 7u
 
 /* Disconnect phases returned by rumqttc_event_disconnected. */
 #define RUMQTTC_CONNECTION_PHASE_NONE 0u
@@ -338,6 +339,7 @@ RUMQTTC_API void rumqttc_event_destroy(rumqttc_event_t *event);
 
 RUMQTTC_API rumqttc_status_t rumqttc_error_status(const rumqttc_error_t *error, rumqttc_status_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_kind(const rumqttc_error_t *error, rumqttc_error_kind_t *out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_code(const rumqttc_error_t *error, rumqttc_string_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_message(const rumqttc_error_t *error, rumqttc_string_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_source_chain(const rumqttc_error_t *error, rumqttc_string_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_flags(const rumqttc_error_t *error, uint8_t *retryable_out, uint8_t *ambiguous_out);

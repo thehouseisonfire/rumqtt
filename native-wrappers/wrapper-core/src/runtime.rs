@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -19,8 +20,9 @@ use crate::operations::{
 
 use crate::shutdown::{ClosedOutcome, ShutdownCoordinator};
 use crate::{
-    AckMode, ClientConfig, Command, Completion, CompletionHandle, DeliveryStatus,
-    DiagnosticsSnapshot, Error, ErrorKind, OperationId, ProtocolVersion, Result, WrapperEvent,
+    AckMode, ClientConfig, Command, Completion, CompletionHandle, ConnectionHandle, DeliveryStatus,
+    DiagnosticsSnapshot, Error, ErrorCode, ErrorKind, OperationId, ProtocolVersion, Result,
+    WrapperEvent,
 };
 
 /// Join ownership shared by the native owner and close coordinator.
@@ -214,10 +216,7 @@ impl TerminalStatus {
     fn into_event(self) -> WrapperEvent {
         match self {
             Self::Closed { graceful: true } => WrapperEvent::GracefulShutdownCompleted,
-            Self::Closed { graceful: false } => WrapperEvent::DriverTerminated(Error::new(
-                ErrorKind::Shutdown,
-                "client was closed immediately",
-            )),
+            Self::Closed { graceful: false } => WrapperEvent::ImmediateShutdownCompleted,
             Self::Failed(error) => WrapperEvent::DriverTerminated(error),
         }
     }
@@ -368,7 +367,8 @@ impl NativeClient {
         let (client, driver) = backend::build(config)?;
         let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
-        let shared = Shared::new(client, acknowledgements, operations, shutdown);
+        let connection = ConnectionHandle::new();
+        let shared = Shared::new(client, acknowledgements, connection, operations, shutdown);
         let driver_shared = Arc::clone(&shared);
         let context = DriverContext {
             shared: Arc::clone(&driver_shared),
@@ -385,16 +385,24 @@ impl NativeClient {
         let join = thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
-                let terminal = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime.block_on(run_driver(driver, context)),
-                    Err(error) => TerminalStatus::Failed(Error::sourced(
-                        ErrorKind::Internal,
-                        DeliveryStatus::NotApplicable,
-                        error,
-                    )),
+                let terminal = match catch_unwind(AssertUnwindSafe(|| {
+                    match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(runtime) => runtime.block_on(run_driver(driver, context)),
+                        Err(error) => TerminalStatus::Failed(Error::sourced(
+                            ErrorKind::Internal,
+                            DeliveryStatus::NotApplicable,
+                            error,
+                        )),
+                    }
+                })) {
+                    Ok(terminal) => terminal,
+                    Err(_) => TerminalStatus::Failed(
+                        Error::new(ErrorKind::Internal, "driver thread panicked")
+                            .with_code(ErrorCode::InternalPanic),
+                    ),
                 };
                 let unresolved = match &terminal {
                     TerminalStatus::Closed { graceful } => Error::new(
@@ -413,6 +421,13 @@ impl NativeClient {
                 if matches!(terminal, TerminalStatus::Failed(_)) {
                     driver_shared.reconcile_failed(unresolved.clone());
                 }
+                driver_shared.terminate_connection_observation(match &terminal {
+                    TerminalStatus::Closed { .. } => Error::new(
+                        ErrorKind::Shutdown,
+                        "client closed before the first successful connection",
+                    ),
+                    TerminalStatus::Failed(error) => error.clone(),
+                });
                 driver_shared.fail_all_operations(unresolved);
                 _ = terminal_tx.send(terminal);
                 _ = done_tx.send(());
@@ -463,6 +478,11 @@ impl NativeClient {
     #[must_use]
     pub fn closer(&self) -> NativeClientCloser {
         self.closer.clone()
+    }
+
+    #[must_use]
+    pub fn connection(&self) -> ConnectionHandle {
+        self.handle().connection()
     }
 
     /// Waits for the driver to terminate and joins its thread only after termination is observed.
@@ -583,6 +603,8 @@ pub(crate) fn overflow_error() -> Error {
         ErrorKind::Backpressure,
         "event buffer remained full beyond the delivery timeout",
     )
+    .with_code(ErrorCode::EventBufferOverflow)
+    .with_retryable(false)
 }
 
 #[cfg(test)]
@@ -599,5 +621,12 @@ mod tests {
         };
         owner.join(Duration::from_secs(1)).unwrap();
         owner.join(Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn overflow_has_stable_non_retryable_classification() {
+        let error = overflow_error();
+        assert_eq!(error.code(), ErrorCode::EventBufferOverflow);
+        assert!(!error.retryable());
     }
 }

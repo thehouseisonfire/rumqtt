@@ -1,0 +1,97 @@
+name: JavaScript wrapper release
+
+on:
+  push:
+    tags: ['rumqttc-js-v*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.package }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, package: linux-x64-gnu, file: rumqttc.linux-x64-gnu.node }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, package: linux-x64-musl, file: rumqttc.linux-x64-musl.node }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, package: linux-arm64-gnu, file: rumqttc.linux-arm64-gnu.node }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, package: darwin-x64, file: rumqttc.darwin-x64.node }
+          - { os: macos-15, target: aarch64-apple-darwin, package: darwin-arm64, file: rumqttc.darwin-arm64.node }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, package: win32-x64-msvc, file: rumqttc.win32-x64-msvc.node }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Install musl toolchain
+        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install build tooling
+        working-directory: native-wrappers/js
+        run: npm install --ignore-scripts
+      - name: Build addon
+        working-directory: native-wrappers/js
+        run: npx napi build --platform --release --target ${{ matrix.target }} --output-dir .
+      - name: Stage platform package
+        shell: bash
+        run: |
+          test -f "native-wrappers/js/${{ matrix.file }}"
+          cp "native-wrappers/js/${{ matrix.file }}" "native-wrappers/js/npm/${{ matrix.package }}/${{ matrix.file }}"
+          (cd "native-wrappers/js/npm/${{ matrix.package }}" && npm pack)
+          if command -v sha256sum >/dev/null; then checksum="sha256sum"; else checksum="shasum -a 256"; fi
+          $checksum "native-wrappers/js/npm/${{ matrix.package }}/"*.tgz "native-wrappers/js/npm/${{ matrix.package }}/${{ matrix.file }}" > "native-wrappers/js/npm/${{ matrix.package }}/${{ matrix.package }}.sha256"
+      - name: Execute host artifact smoke test
+        if: ${{ (runner.arch == 'X64' && (matrix.package == 'linux-x64-gnu' || matrix.package == 'darwin-x64' || matrix.package == 'win32-x64-msvc')) || (runner.arch == 'ARM64' && (matrix.package == 'linux-arm64-gnu' || matrix.package == 'darwin-arm64')) }}
+        shell: bash
+        run: node -e "const addon=require('./native-wrappers/js/npm/${{ matrix.package }}'); if(typeof addon.NativeMqttClient !== 'function') process.exit(1)"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: native-wrappers/js/npm/${{ matrix.package }}/*.tgz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rumqttc-js-${{ matrix.package }}
+          path: |
+            native-wrappers/js/npm/${{ matrix.package }}/*.tgz
+            native-wrappers/js/npm/${{ matrix.package }}/*.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v8
+        with:
+          path: native-wrappers/js/release-artifacts
+          pattern: rumqttc-js-*
+          merge-multiple: true
+      - name: Validate tag and package versions
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#rumqttc-js-v}"
+          actual="$(node -p "require('./native-wrappers/js/package.json').version")"
+          test "$expected" = "$actual"
+          find native-wrappers/js/npm -name package.json -print0 | xargs -0 -n1 node -e "const p=require('./'+process.argv[1]); if(p.version !== '$actual') process.exit(1)"
+      - name: Publish platform packages first
+        working-directory: native-wrappers/js/release-artifacts
+        run: for package in *.tgz; do npm publish "$package" --provenance --access public; done
+      - name: Publish main package
+        working-directory: native-wrappers/js
+        run: npm publish --provenance --access public
+      - name: Publish checksums on GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: native-wrappers/js/release-artifacts/*.sha256

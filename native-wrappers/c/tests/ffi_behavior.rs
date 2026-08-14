@@ -422,6 +422,13 @@ fn invalid_inputs_initialize_outputs_and_return_owned_errors() {
         let mut kind = u32::MAX;
         assert_eq!(rumqttc_error_kind(error, &mut kind), 0);
         assert_eq!(kind, 0);
+        let mut code = rumqttc_string_view_t {
+            data: ptr::null(),
+            len: 0,
+        };
+        assert_eq!(rumqttc_error_code(error, &mut code), 0);
+        let code = std::slice::from_raw_parts(code.data.cast::<u8>(), code.len);
+        assert_eq!(code, b"INVALID_ARGUMENT");
         rumqttc_error_destroy(error);
 
         let invalid = rumqttc_string_view_t {
@@ -622,7 +629,14 @@ fn assert_manual_ack(protocol: u32) {
         assert!(!state_error.is_null());
         let mut error_kind = 0;
         assert_eq!(rumqttc_error_kind(state_error, &mut error_kind), 0);
-        assert_eq!(error_kind, 10);
+        assert_eq!(error_kind, 2);
+        let mut error_code = rumqttc_string_view_t {
+            data: ptr::null(),
+            len: 0,
+        };
+        assert_eq!(rumqttc_error_code(state_error, &mut error_code), 0);
+        let error_code = std::slice::from_raw_parts(error_code.data.cast::<u8>(), error_code.len);
+        assert_eq!(error_code, b"INVALID_STATE");
         rumqttc_error_destroy(state_error);
         rumqttc_event_destroy(event);
         assert_eq!(

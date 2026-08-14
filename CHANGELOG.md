@@ -1,6 +1,17 @@
 ## [Unreleased]
 
 ### Added
+- `@rumqtt/rumqttc`: Add the pre-stable Node-API JavaScript/TypeScript client for
+  MQTT 3.1.1 and MQTT 5 with bounded async admission, tracked completions,
+  single-consumer events, manual acknowledgements, structured errors, and
+  deterministic shutdown across Node.js, local Deno, and Bun. Release packaging
+  supplies platform-specific native artifacts for supported Linux, macOS, and
+  Windows targets.
+- `rumqttc-wrapper-core`: Add repeatable first-CONNACK observation, stable
+  machine-readable error codes and retryability, distinct immediate-shutdown
+  terminal reporting, and driver-thread panic containment for asynchronous
+  native wrappers. The C wrapper now consumes the shared classification and
+  exposes the fine-grained error code.
 - `rumqttc-wrapper-core` / `rumqttc-c` (Breaking Change): Replace nullable MQTT
   5 command fields with explicit operation-specific protocol options and add
   MQTT 5 SUBSCRIBE properties, per-filter No Local/Retain As Published/Retain
@@ -155,6 +166,12 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `@rumqtt/rumqttc`: Keep a returned event iterator reserved until all of its
+  pending reads settle, and discard manual-acknowledgement handles whenever the
+  native connection generation changes or the driver terminates. Give every
+  graceful-close caller an independent timeout observation, and omit absent
+  event properties and MQTT 3.1.1 unsubscribe results to match the TypeScript
+  optional-field contract.
 - `rumqttc-wrapper-core`: Yield the single-threaded driver runtime after synchronous wrapper-control
   work so sustained diagnostics or completion traffic cannot starve MQTT socket progress.
 - `rumqttc` v5: Wake strict publish admission futures when their event loop is dropped or reaches
@@ -169,8 +186,9 @@
   immediate-close request has no shutdown work left to escalate.
 - `rumqttc-wrapper-core`: Bound concurrent graceful and immediate close-state coordination by each
   caller's supplied shutdown timeout.
-- `rumqttc-c`: Preserve operation timeout failures as cached terminal completion results, and report
-  invalid-state and internal C errors with their matching structured error kinds.
+- `rumqttc-c`: Preserve operation timeout failures as cached terminal completion results; report
+  pending completion access as `WOULD_BLOCK`; and distinguish local `INVALID_STATE`, internal,
+  and genuine `SHUTDOWN` failures in structured error classifications.
 - `rumqttc-c`: Install the Windows DLL import library and propagate `RUMQTTC_STATIC` from CMake's
   imported static target so packaged Windows shared and static consumers link without manual fixes.
 - `rumqttc-c`: Make installed pkg-config metadata relocatable and report the correct private

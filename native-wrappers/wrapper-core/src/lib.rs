@@ -8,6 +8,7 @@ mod backend;
 mod command;
 mod completion;
 mod config;
+mod connection;
 mod error;
 mod event;
 mod handle;
@@ -32,7 +33,8 @@ pub use config::{
     AckMode, ClientConfig, CommonConfig, ProtocolConfig, TlsConfig, TransportConfig, V4Config,
     V5Config,
 };
-pub use error::{DeliveryStatus, Error, ErrorKind, Result};
+pub use connection::{ConnectionHandle, ConnectionResult};
+pub use error::{DeliveryStatus, Error, ErrorCode, ErrorKind, Result};
 pub use event::{
     AckToken, ConnectionPhase, DiagnosticsSnapshot, IncomingPublish, OutgoingActivity,
     V5IncomingPublishProperties, WrapperEvent,

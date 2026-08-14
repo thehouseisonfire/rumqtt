@@ -327,7 +327,7 @@ class Broker:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
-    parser.add_argument("argument", nargs="*")
+    parser.add_argument("argument", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     broker = Broker()
     broker.start()
