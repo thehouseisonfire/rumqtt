@@ -28,7 +28,7 @@ function Initialize-MsvcToolchain {
 cargo build --manifest-path (Join-Path $CrateDir "Cargo.toml")
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
-if ($Check -in @("all", "native", "ffi-header")) {
+if ($Check -in @("all", "native", "ffi-header", "exports")) {
     Initialize-MsvcToolchain
 }
 

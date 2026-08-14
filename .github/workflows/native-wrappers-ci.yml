@@ -225,7 +225,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-latest]
+        # MSVC 19.51 (Visual Studio 2026) hangs at process startup when these
+        # ASan-instrumented C executables load the Rust cdylib. Keep this lane
+        # on the stable Visual Studio 2022 ASan runtime until that toolchain
+        # interoperability regression is resolved.
+        os: [macos-15, windows-2022]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
