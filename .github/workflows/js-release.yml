@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -69,7 +69,7 @@ jobs:
     environment: npm
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -92,6 +92,6 @@ jobs:
         working-directory: native-wrappers/js
         run: npm publish --provenance --access public
       - name: Publish checksums on GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: native-wrappers/js/release-artifacts/*.sha256
