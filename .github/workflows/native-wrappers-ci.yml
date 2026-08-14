@@ -268,6 +268,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
           cmake --build target/rumqttc-c-native-platform-sanitized --config Release
           if ($LASTEXITCODE -ne 0) { throw "sanitizer build failed" }
+          $asanRuntime = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022" `
+            -Filter clang_rt.asan_dynamic-x86_64.dll -Recurse -ErrorAction Stop | `
+            Select-Object -First 1
+          if ($null -eq $asanRuntime) { throw "MSVC ASan runtime was not found" }
+          $env:PATH = "$(Split-Path $asanRuntime.FullName);$env:PATH"
           ctest --test-dir target/rumqttc-c-native-platform-sanitized -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "sanitized native suite failed" }
 

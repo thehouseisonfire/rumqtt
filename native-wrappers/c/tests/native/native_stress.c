@@ -26,28 +26,38 @@ static void wait_for_thread_baseline(size_t baseline) {
   REQUIRE(native_process_thread_count() == baseline);
 }
 
+static void run_lifecycle(unsigned iteration) {
+  rumqttc_protocol_t protocol =
+      iteration % 2 == 0 ? RUMQTTC_PROTOCOL_V4 : RUMQTTC_PROTOCOL_V5;
+  rumqttc_client_t *client = native_start_client(
+      protocol, "native-stress", RUMQTTC_ACK_AUTOMATIC, 8, 8, 250);
+  rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_0);
+  rumqttc_completion_t *completion = NULL;
+  rumqttc_event_t *event;
+  CHECK(rumqttc_client_publish_tracked(
+      client, native_string("rumqttc/native/interrupt"),
+      native_bytes(NULL, 0), &options, &completion, NULL));
+  native_wait_completion(completion, RUMQTTC_COMPLETION_QOS0_FLUSHED);
+  rumqttc_completion_destroy(completion);
+  event = native_wait_event(client, RUMQTTC_EVENT_DISCONNECTED);
+  rumqttc_event_destroy(event);
+  event = native_wait_event(client, RUMQTTC_EVENT_CONNECTED);
+  rumqttc_event_destroy(event);
+  native_close_destroy(client);
+}
+
 int main(void) {
-  const size_t baseline = native_process_thread_count();
   const unsigned iterations = stress_iterations();
+  size_t baseline;
   unsigned iteration;
+
+  /* First use may initialize process-wide runtime state, including threads
+   * owned by platform runtimes rather than a client. Exclude that one-time
+   * initialization from the per-client leak baseline. */
+  run_lifecycle(0);
+  baseline = native_process_thread_count();
   for (iteration = 0; iteration < iterations; ++iteration) {
-    rumqttc_protocol_t protocol =
-        iteration % 2 == 0 ? RUMQTTC_PROTOCOL_V4 : RUMQTTC_PROTOCOL_V5;
-    rumqttc_client_t *client = native_start_client(
-        protocol, "native-stress", RUMQTTC_ACK_AUTOMATIC, 8, 8, 250);
-    rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_0);
-    rumqttc_completion_t *completion = NULL;
-    rumqttc_event_t *event;
-    CHECK(rumqttc_client_publish_tracked(
-        client, native_string("rumqttc/native/interrupt"),
-        native_bytes(NULL, 0), &options, &completion, NULL));
-    native_wait_completion(completion, RUMQTTC_COMPLETION_QOS0_FLUSHED);
-    rumqttc_completion_destroy(completion);
-    event = native_wait_event(client, RUMQTTC_EVENT_DISCONNECTED);
-    rumqttc_event_destroy(event);
-    event = native_wait_event(client, RUMQTTC_EVENT_CONNECTED);
-    rumqttc_event_destroy(event);
-    native_close_destroy(client);
+    run_lifecycle(iteration);
     wait_for_thread_baseline(baseline);
   }
   printf("native C stress suite passed (%u iterations)\n", iterations);
