@@ -139,7 +139,7 @@ runtime exports fail CI.
 ## 4. Verify packaged native artifacts
 
 For every supported target, build the `.node` artifact, stage its optional
-platform package, run `npm pack`, and inspect the archive to ensure it contains
+platform package, run `bun pm pack`, and inspect the archive to ensure it contains
 the exact expected binary and package metadata.
 
 For every host architecture available in CI:
@@ -161,6 +161,16 @@ Fail the release if an advertised package, binary, checksum, or attestation is
 missing.
 
 ## 5. Publish and verify the release
+
+Publish under the `@rumqtt-next` npm scope from a personal npm account that
+administers the `rumqtt-next` npm organization (public-only orgs are free; the
+account username need not match the org). Use Bun for the publishing flow
+instead of the npm CLI: `bun pm whoami` or `bunx npm whoami` to verify identity,
+`bun pm pack` to inspect the tarball, and `bun publish --access public` to publish,
+including on first publication of a scoped package. Account and organization
+administration still happen on npm itself; Bun only needs to be installed for
+the package management and release steps. Prefer GitHub Actions with npm Trusted
+Publishing (OIDC) over a long-lived npm token for releases.
 
 Before publishing:
 
