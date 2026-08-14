@@ -44,7 +44,7 @@ jobs:
         run: mv ${{ env.TARGET_DIR }}/release/rumqttd ${{ github.ref_name }}-${{ matrix.build }}
 
       - name: Upload release archive
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: rumqttd*
