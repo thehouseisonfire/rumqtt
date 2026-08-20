@@ -695,9 +695,7 @@ async fn run_recovery(args: RecoveryArgs) -> anyhow::Result<()> {
     let temporary = tempfile::tempdir()?;
     let mut load_samples = Vec::with_capacity(args.samples);
     let mut apply_samples = Vec::with_capacity(args.samples);
-    let checkpoint_size;
-    let replay_count;
-    match args.common.protocol {
+    let (checkpoint_size, replay_count) = match args.common.protocol {
         Protocol::V4 => {
             use rumqttc_store::v4::SessionFileStore;
             use rumqttc_v4::{SessionStore, SessionStoreKey};
@@ -709,7 +707,7 @@ async fn run_recovery(args: RecoveryArgs) -> anyhow::Result<()> {
                 .save(&key, &fixture)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
-            checkpoint_size = std::fs::metadata(store.checkpoint_path(&key)?)?.len();
+            let checkpoint_size = std::fs::metadata(store.checkpoint_path(&key)?)?.len();
             let mut options = rumqttc_v4::MqttOptions::new("benchmark-client-v4", "localhost");
             options.set_clean_session(false).set_inflight(args.inflight);
             let mut observed_replay = 0;
@@ -726,7 +724,7 @@ async fn run_recovery(args: RecoveryArgs) -> anyhow::Result<()> {
                     rumqttc_v4::bench_instrumentation::apply_persisted_session(&options, &loaded)?;
                 apply_samples.push(nanos_u64(started.elapsed().as_nanos()));
             }
-            replay_count = observed_replay;
+            (checkpoint_size, observed_replay)
         }
         Protocol::V5 => {
             use rumqttc_store::v5::SessionFileStore;
@@ -739,7 +737,7 @@ async fn run_recovery(args: RecoveryArgs) -> anyhow::Result<()> {
                 .save(&key, &fixture)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
-            checkpoint_size = std::fs::metadata(store.checkpoint_path(&key)?)?.len();
+            let checkpoint_size = std::fs::metadata(store.checkpoint_path(&key)?)?.len();
             let mut options = rumqttc_v5::MqttOptions::new("benchmark-client-v5", "localhost");
             options
                 .set_clean_start(false)
@@ -759,9 +757,9 @@ async fn run_recovery(args: RecoveryArgs) -> anyhow::Result<()> {
                     rumqttc_v5::bench_instrumentation::apply_persisted_session(&options, &loaded)?;
                 apply_samples.push(nanos_u64(started.elapsed().as_nanos()));
             }
-            replay_count = observed_replay;
+            (checkpoint_size, observed_replay)
         }
-    }
+    };
     if replay_count != usize::from(args.inflight) {
         bail!(
             "restored replay count {replay_count} did not match configured inflight {}",
