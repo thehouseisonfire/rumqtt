@@ -178,8 +178,9 @@
   pending reads settle, and discard manual-acknowledgement handles whenever the
   native connection generation changes or the driver terminates. Give every
   graceful-close caller an independent timeout observation, keep the event stream
-  drainable during graceful shutdown, and omit absent event properties and MQTT
-  3.1.1 unsubscribe results to match the TypeScript optional-field contract.
+  drainable during and after graceful shutdown until its terminal event is consumed,
+  and omit absent event properties and MQTT 3.1.1 unsubscribe results to match the
+  TypeScript optional-field contract.
 - `rumqttc-wrapper-core`: Yield the single-threaded driver runtime after synchronous wrapper-control
   work so sustained diagnostics or completion traffic cannot starve MQTT socket progress.
 - `rumqttc` v5: Wake strict publish admission futures when their event loop is dropped or reaches

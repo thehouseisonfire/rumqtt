@@ -269,9 +269,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
           cmake --build target/rumqttc-c-native-platform-sanitized --config Release
           if ($LASTEXITCODE -ne 0) { throw "sanitizer build failed" }
+          $compilerConfig = Get-ChildItem `
+            -Path target/rumqttc-c-native-platform-sanitized/CMakeFiles `
+            -Recurse -Filter CMakeCCompiler.cmake |
+            Select-Object -First 1
+          if ($null -eq $compilerConfig) { throw "CMake C compiler configuration was not found" }
           $compiler = Select-String `
-            -Path target/rumqttc-c-native-platform-sanitized/CMakeCache.txt `
-            -Pattern '^CMAKE_C_COMPILER:FILEPATH=(.+)$'
+            -Path $compilerConfig.FullName `
+            -Pattern '^set\(CMAKE_C_COMPILER "(.+)"\)$'
           if ($null -eq $compiler) { throw "CMake C compiler path was not found" }
           $compilerDirectory = Split-Path $compiler.Matches[0].Groups[1].Value
           $asanRuntime = Join-Path $compilerDirectory clang_rt.asan_dynamic-x86_64.dll

@@ -313,7 +313,9 @@ class MqttClient {
   }
 
   #whenEventReadable(operation) {
-    if (this.#state !== 'connected' && this.#state !== 'closing') {
+    const startedAndReadable = this.#startPromise &&
+      (this.#state === 'connected' || this.#state === 'closing' || this.#state === 'closed')
+    if (!startedAndReadable) {
       return Promise.reject(mqttError('NOT_CONNECTED', 'admission', 'connect() must resolve before this operation'))
     }
     return this.#startPromise.then(operation)
