@@ -264,15 +264,21 @@ jobs:
         shell: pwsh
         run: |
           cmake -S c/tests/native -B target/rumqttc-c-native-platform-sanitized `
-            "-DCMAKE_C_FLAGS=/fsanitize=address /Zi"
+            "-DCMAKE_C_FLAGS=/fsanitize=address /Zi" `
+            "-DCMAKE_EXE_LINKER_FLAGS=/DEBUG"
           if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
           cmake --build target/rumqttc-c-native-platform-sanitized --config Release
           if ($LASTEXITCODE -ne 0) { throw "sanitizer build failed" }
-          $asanRuntime = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022" `
-            -Filter clang_rt.asan_dynamic-x86_64.dll -Recurse -ErrorAction Stop | `
-            Select-Object -First 1
-          if ($null -eq $asanRuntime) { throw "MSVC ASan runtime was not found" }
-          $env:PATH = "$(Split-Path $asanRuntime.FullName);$env:PATH"
+          $compiler = Select-String `
+            -Path target/rumqttc-c-native-platform-sanitized/CMakeCache.txt `
+            -Pattern '^CMAKE_C_COMPILER:FILEPATH=(.+)$'
+          if ($null -eq $compiler) { throw "CMake C compiler path was not found" }
+          $compilerDirectory = Split-Path $compiler.Matches[0].Groups[1].Value
+          $asanRuntime = Join-Path $compilerDirectory clang_rt.asan_dynamic-x86_64.dll
+          if (-not (Test-Path $asanRuntime -PathType Leaf)) {
+            throw "MSVC ASan runtime matching the selected compiler was not found at $asanRuntime"
+          }
+          $env:PATH = "$compilerDirectory;$env:PATH"
           ctest --test-dir target/rumqttc-c-native-platform-sanitized -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "sanitized native suite failed" }
 
