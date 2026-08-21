@@ -165,9 +165,12 @@ class Broker:
                 self.failures.append(
                     f"JavaScript wire observations were incomplete for {client_id!r}: {sorted(observed)}"
                 )
-        if self.tls_context is not None and b"js-tls-valid" in self.client_ids:
-            if self.tls_disconnects_before_connect < 2:
-                self.failures.append("wrong-CA and wrong-host TLS connections were not both rejected")
+        if (
+            self.tls_context is not None
+            and b"js-tls-valid" in self.client_ids
+            and self.tls_disconnects_before_connect < 2
+        ):
+            self.failures.append("wrong-CA and wrong-host TLS connections were not both rejected")
         if self.failures:
             raise RuntimeError("; ".join(self.failures))
 
@@ -276,6 +279,7 @@ class Broker:
                     self.failures.append(
                         f"native MQTT 5 option coverage was incomplete: {sorted(connection.wire_acceptance)}"
                     )
+
     def handle_publish(self, connection: Connection, flags: int, body: bytes) -> bool:
         topic, offset = string_at(body, 0)
         qos = (flags >> 1) & 3
@@ -417,14 +421,69 @@ def make_tls_fixture(directory: str) -> tuple[ssl.SSLContext, str, str]:
     with open(extensions, "w", encoding="utf-8") as output:
         output.write("subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n")
     commands = [
-        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-         "-subj", "/CN=rumqttc test CA", "-keyout", ca_key, "-out", ca_cert],
-        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-         "-subj", "/CN=rumqttc wrong CA", "-keyout", wrong_key, "-out", wrong_cert],
-        ["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost",
-         "-keyout", server_key, "-out", server_csr],
-        ["openssl", "x509", "-req", "-days", "1", "-in", server_csr, "-CA", ca_cert,
-         "-CAkey", ca_key, "-CAcreateserial", "-extfile", extensions, "-out", server_cert],
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=rumqttc test CA",
+            "-keyout",
+            ca_key,
+            "-out",
+            ca_cert,
+        ],
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=rumqttc wrong CA",
+            "-keyout",
+            wrong_key,
+            "-out",
+            wrong_cert,
+        ],
+        [
+            "openssl",
+            "req",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+            "-keyout",
+            server_key,
+            "-out",
+            server_csr,
+        ],
+        [
+            "openssl",
+            "x509",
+            "-req",
+            "-days",
+            "1",
+            "-in",
+            server_csr,
+            "-CA",
+            ca_cert,
+            "-CAkey",
+            ca_key,
+            "-CAcreateserial",
+            "-extfile",
+            extensions,
+            "-out",
+            server_cert,
+        ],
     ]
     for command in commands:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

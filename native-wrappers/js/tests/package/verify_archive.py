@@ -17,7 +17,10 @@ def main() -> int:
 
     with tarfile.open(args.archive, "r:gz") as package:
         files = sorted(member.name for member in package.getmembers() if member.isfile())
-        manifest = json.load(package.extractfile("package/package.json"))
+        manifest_file = package.extractfile("package/package.json")
+        if manifest_file is None:
+            raise SystemExit("archive package.json is not a regular file")
+        manifest = json.load(manifest_file)
 
     expected = ["package/README.md", "package/package.json"]
     if args.binary:
@@ -27,12 +30,14 @@ def main() -> int:
         if not manifest.get("os") or not manifest.get("cpu"):
             raise SystemExit("platform package is missing os/cpu constraints")
     else:
-        expected.extend([
-            "package/index.cjs",
-            "package/index.d.ts",
-            "package/index.js",
-            "package/loader.cjs",
-        ])
+        expected.extend(
+            [
+                "package/index.cjs",
+                "package/index.d.ts",
+                "package/index.js",
+                "package/loader.cjs",
+            ]
+        )
         if manifest.get("name") != "@rumqtt-next/rumqttc":
             raise SystemExit("unexpected main package name")
         if set(manifest.get("optionalDependencies", {})) != {
