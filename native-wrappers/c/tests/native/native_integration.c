@@ -76,8 +76,10 @@ static void test_protocol_round_trip(rumqttc_protocol_t protocol) {
       REQUIRE(rumqttc_event_v5_response_topic(event, NULL, NULL) ==
               RUMQTTC_INVALID_ARGUMENT);
       CHECK(rumqttc_event_v5_correlation_data(event, &present, NULL));
+      REQUIRE(present == 1);
       CHECK(rumqttc_event_v5_correlation_data(event, NULL, &bytes_value));
-      REQUIRE(bytes_value.data == NULL && bytes_value.len == 0);
+      REQUIRE(bytes_value.len == 3 &&
+              memcmp(bytes_value.data, "\0\5\0", 3) == 0);
       CHECK(rumqttc_event_v5_content_type(event, &present, NULL));
       CHECK(rumqttc_event_v5_content_type(event, NULL, &string_value));
       string_value.data = (const char *)(uintptr_t)1;
