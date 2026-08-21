@@ -38,7 +38,22 @@ pub(crate) fn response_error(error: &Error, operation_id: Option<u64>) -> String
             ambiguous: error.delivery_status() == DeliveryStatus::Ambiguous,
         },
     })
-    .expect("error response serialization is infallible")
+    .unwrap_or_else(|_| internal_panic("error response serialization failed"))
+}
+
+pub(crate) fn internal_panic(message: &str) -> String {
+    serde_json::json!({
+        "ok": false,
+        "error": {
+            "code": "INTERNAL_PANIC",
+            "kind": "internal",
+            "message": message,
+            "retryable": false,
+            "delivery": "notApplicable",
+            "ambiguous": false,
+        }
+    })
+    .to_string()
 }
 
 pub(crate) fn napi_error(error: impl ToString) -> NapiError {

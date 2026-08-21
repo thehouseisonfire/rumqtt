@@ -32,27 +32,57 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
       - name: Install musl toolchain
         if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Install build tooling
         working-directory: native-wrappers/js
-        run: npm install --ignore-scripts
+        run: bun install --ignore-scripts
       - name: Build addon
         working-directory: native-wrappers/js
-        run: npx napi build --platform --release --target ${{ matrix.target }} --output-dir .
+        run: >-
+          bunx @napi-rs/cli build --platform --release --target ${{ matrix.target }}
+          --output-dir . --js-package-name rumqttc --no-js
+          --dts ../../target/rumqttc-js-native.d.ts
       - name: Stage platform package
         shell: bash
         run: |
           test -f "native-wrappers/js/${{ matrix.file }}"
           cp "native-wrappers/js/${{ matrix.file }}" "native-wrappers/js/npm/${{ matrix.package }}/${{ matrix.file }}"
-          (cd "native-wrappers/js/npm/${{ matrix.package }}" && npm pack)
+          archive="$(cd "native-wrappers/js/npm/${{ matrix.package }}" && bun pm pack --quiet | tail -n 1)"
+          python3 native-wrappers/js/tests/package/verify_archive.py \
+            "native-wrappers/js/npm/${{ matrix.package }}/${archive}" --binary "${{ matrix.file }}"
           if command -v sha256sum >/dev/null; then checksum="sha256sum"; else checksum="shasum -a 256"; fi
-          $checksum "native-wrappers/js/npm/${{ matrix.package }}/"*.tgz "native-wrappers/js/npm/${{ matrix.package }}/${{ matrix.file }}" > "native-wrappers/js/npm/${{ matrix.package }}/${{ matrix.package }}.sha256"
+          (cd "native-wrappers/js/npm/${{ matrix.package }}" && \
+            $checksum *.tgz "${{ matrix.file }}" > "${{ matrix.package }}.sha256")
       - name: Execute host artifact smoke test
         if: ${{ (runner.arch == 'X64' && (matrix.package == 'linux-x64-gnu' || matrix.package == 'darwin-x64' || matrix.package == 'win32-x64-msvc')) || (runner.arch == 'ARM64' && (matrix.package == 'linux-arm64-gnu' || matrix.package == 'darwin-arm64')) }}
         shell: bash
         run: node -e "const addon=require('./native-wrappers/js/npm/${{ matrix.package }}'); if(typeof addon.NativeMqttClient !== 'function') process.exit(1)"
+      - name: Smoke test through an installed main-package loader
+        if: ${{ (runner.arch == 'X64' && (matrix.package == 'linux-x64-gnu' || matrix.package == 'darwin-x64' || matrix.package == 'win32-x64-msvc')) || (runner.arch == 'ARM64' && (matrix.package == 'linux-arm64-gnu' || matrix.package == 'darwin-arm64')) }}
+        shell: bash
+        run: |
+          main_archive="$(cd native-wrappers/js && bun pm pack --quiet | tail -n 1)"
+          platform_archive="$(find "native-wrappers/js/npm/${{ matrix.package }}" -name '*.tgz' -print -quit)"
+          project="$(mktemp -d)"
+          (cd "$project" && bun add "$GITHUB_WORKSPACE/native-wrappers/js/$main_archive" "$GITHUB_WORKSPACE/$platform_archive")
+          cp native-wrappers/js/tests/installed/smoke.mjs native-wrappers/js/tests/installed/smoke.cjs "$project/"
+          (cd native-wrappers && python3 c/tests/native/broker_fixture.py --binary node "$project/smoke.mjs")
+          (cd native-wrappers && python3 c/tests/native/broker_fixture.py --binary node "$project/smoke.cjs")
+      - name: Execute musl artifact in Alpine
+        if: ${{ matrix.package == 'linux-x64-musl' }}
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work/native-wrappers node:24-alpine sh -c '
+            apk add --no-cache openssl python3 >/dev/null
+            export RUMQTTC_JS_NATIVE_PATH=/work/native-wrappers/js/npm/linux-x64-musl/rumqttc.linux-x64-musl.node
+            python3 c/tests/native/broker_fixture.py --binary node js/tests/shared/behavior.mjs
+          '
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: native-wrappers/js/npm/${{ matrix.package }}/*.tgz
@@ -61,6 +91,7 @@ jobs:
           name: rumqttc-js-${{ matrix.package }}
           path: |
             native-wrappers/js/npm/${{ matrix.package }}/*.tgz
+            native-wrappers/js/npm/${{ matrix.package }}/*.node
             native-wrappers/js/npm/${{ matrix.package }}/*.sha256
 
   publish:
@@ -73,6 +104,10 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
       - uses: actions/download-artifact@v8
         with:
           path: native-wrappers/js/release-artifacts
@@ -81,17 +116,87 @@ jobs:
       - name: Validate tag and package versions
         shell: bash
         run: |
+          test "$(find native-wrappers/js/release-artifacts -name '*.tgz' | wc -l)" -eq 6
+          test "$(find native-wrappers/js/release-artifacts -name '*.node' | wc -l)" -eq 6
+          test "$(find native-wrappers/js/release-artifacts -name '*.sha256' | wc -l)" -eq 6
+          (cd native-wrappers/js/release-artifacts && sha256sum -c -- *.sha256)
           expected="${GITHUB_REF_NAME#rumqttc-js-v}"
           actual="$(node -p "require('./native-wrappers/js/package.json').version")"
           test "$expected" = "$actual"
           find native-wrappers/js/npm -name package.json -print0 | xargs -0 -n1 node -e "const p=require('./'+process.argv[1]); if(p.version !== '$actual') process.exit(1)"
       - name: Publish platform packages first
         working-directory: native-wrappers/js/release-artifacts
-        run: for package in *.tgz; do npm publish "$package" --provenance --access public; done
+        run: for package in *.tgz; do npm publish "$package" --access public --tag next; done
       - name: Publish main package
         working-directory: native-wrappers/js
-        run: npm publish --provenance --access public
+        shell: bash
+        run: |
+          archive="$(bun pm pack --quiet | tail -n 1)"
+          python3 tests/package/verify_archive.py "$archive"
+          sha256sum "$archive" > "${archive%.tgz}.sha256"
+          npm publish "$archive" --access public --tag next
+      - name: Attest main package
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: native-wrappers/js/rumqtt-next-rumqttc-*.tgz
       - name: Publish checksums on GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          files: native-wrappers/js/release-artifacts/*.sha256
+          files: |
+            native-wrappers/js/release-artifacts/*.sha256
+            native-wrappers/js/rumqtt-next-rumqttc-*.sha256
+
+  verify-published:
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, runtime: node }
+          - { os: macos-15, runtime: node }
+          - { os: windows-latest, runtime: node }
+          - { os: ubuntu-latest, runtime: deno }
+          - { os: ubuntu-latest, runtime: bun }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: denoland/setup-deno@v2
+        if: ${{ matrix.runtime == 'deno' }}
+        with:
+          deno-version: 2.9.5
+      - name: Install published package
+        shell: bash
+        run: |
+          mkdir installed-smoke
+          cd installed-smoke
+          printf '{"private":true,"type":"module"}' > package.json
+          version="${GITHUB_REF_NAME#rumqttc-js-v}"
+          bun add "@rumqtt-next/rumqttc@${version}"
+          cp ../native-wrappers/js/tests/installed/smoke.mjs \
+            ../native-wrappers/js/tests/installed/smoke.cjs \
+            ../native-wrappers/js/tests/installed/deno-smoke.ts .
+      - name: Published Node ESM and CommonJS smoke
+        if: ${{ matrix.runtime == 'node' }}
+        working-directory: native-wrappers
+        shell: bash
+        run: |
+          python3 c/tests/native/broker_fixture.py --binary node ../installed-smoke/smoke.mjs
+          python3 c/tests/native/broker_fixture.py --binary node ../installed-smoke/smoke.cjs
+      - name: Published Deno smoke
+        if: ${{ matrix.runtime == 'deno' }}
+        working-directory: native-wrappers
+        run: >-
+          python3 c/tests/native/broker_fixture.py --binary deno run --node-modules-dir=auto
+          --minimum-dependency-age=0
+          --allow-ffi --allow-net --allow-env --allow-read ../installed-smoke/deno-smoke.ts
+      - name: Published Bun smoke
+        if: ${{ matrix.runtime == 'bun' }}
+        working-directory: native-wrappers
+        run: python3 c/tests/native/broker_fixture.py --binary bun ../installed-smoke/smoke.mjs

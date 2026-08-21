@@ -13,9 +13,13 @@ readme = "README.md"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+panic-testing = []
+
 [dependencies]
 base64 = "0.23"
 bytes = "1.5"
+futures-util = "0.3"
 napi = { version = "3.12.1", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = "3.5.2"
 rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha" }

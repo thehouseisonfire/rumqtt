@@ -289,6 +289,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}-rumqttc-js
@@ -296,17 +299,21 @@ jobs:
 
       - name: Install JavaScript build tools
         working-directory: native-wrappers/js
-        run: npm install --ignore-scripts
+        run: bun install --ignore-scripts
 
       - name: Build native addon
         working-directory: native-wrappers/js
-        run: npx napi build --platform --release --output-dir .
+        run: >-
+          bunx @napi-rs/cli build --platform --release --features panic-testing
+          --output-dir . --js-package-name rumqttc --no-js
+          --dts ../../target/rumqttc-js-native.d.ts
 
       - name: Check TypeScript declarations and Node API
         working-directory: native-wrappers/js
         run: |
-          npm run test:types
-          npm run test:node
+          bun run test:types
+          bun run test:node
+          bun run test:exports
 
       - name: Run Node MQTT behavior suite
         run: python3 c/tests/native/broker_fixture.py --binary node js/tests/shared/behavior.mjs
@@ -317,22 +324,59 @@ jobs:
         with:
           deno-version: 2.9.5
 
-      - name: Install Bun
-        if: ${{ runner.os == 'Linux' }}
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-
       - name: Run Deno MQTT behavior suite
         if: ${{ runner.os == 'Linux' }}
         run: >-
           python3 c/tests/native/broker_fixture.py --binary deno run --allow-net
           --allow-ffi --allow-env --allow-read js/tests/shared/behavior.mjs
 
+      - name: Verify Deno exits with a live native client
+        if: ${{ runner.os == 'Linux' }}
+        run: >-
+          timeout 10s deno run --allow-net --allow-ffi --allow-read
+          js/tests/node/live-client-child.mjs
+
       - name: Run Bun MQTT behavior suite
         if: ${{ runner.os == 'Linux' }}
         run: python3 c/tests/native/broker_fixture.py --binary bun js/tests/shared/behavior.mjs
 
+      - name: Verify Bun exits with a live native client
+        if: ${{ runner.os == 'Linux' }}
+        run: timeout 10s bun js/tests/node/live-client-child.mjs
+
+      - name: Test installed packages through an ephemeral npm registry
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        working-directory: native-wrappers
+        run: |
+          cp js/rumqttc.linux-x64-gnu.node js/npm/linux-x64-gnu/
+          platform_archive="$(cd js/npm/linux-x64-gnu && bun pm pack --quiet | tail -n 1)"
+          main_archive="$(cd js && bun pm pack --quiet | tail -n 1)"
+          bunx verdaccio@6.2.4 --config js/tests/package/verdaccio.yaml --listen 127.0.0.1:4873 &
+          registry_pid=$!
+          trap 'kill "$registry_pid"' EXIT
+          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4873/-/ping && break; sleep 1; done
+          bun publish "js/npm/linux-x64-gnu/${platform_archive}" --registry http://127.0.0.1:4873 --access public
+          for directory in js/npm/*; do
+            if [[ "$(basename "$directory")" != linux-x64-gnu ]]; then
+              (cd "$directory" && bun publish --registry http://127.0.0.1:4873 --access public)
+            fi
+          done
+          bun publish "js/${main_archive}" --registry http://127.0.0.1:4873 --access public
+          project="$(mktemp -d)"
+          cp js/tests/installed/smoke.mjs js/tests/installed/smoke.cjs js/tests/installed/deno-smoke.ts "$project/"
+          (cd "$project" && bun add --registry http://127.0.0.1:4873 @rumqtt-next/rumqttc@0.1.0-alpha.0)
+          python3 c/tests/native/broker_fixture.py --binary node "$project/smoke.mjs"
+          python3 c/tests/native/broker_fixture.py --binary node "$project/smoke.cjs"
+          python3 c/tests/native/broker_fixture.py --binary bun "$project/smoke.mjs"
+          NPM_CONFIG_REGISTRY=http://127.0.0.1:4873 python3 c/tests/native/broker_fixture.py \
+            --binary deno run --node-modules-dir=auto --minimum-dependency-age=0 --allow-ffi --allow-net \
+            --allow-env=RUMQTTC_TEST_HOST,RUMQTTC_TEST_PORT,NPM_CONFIG_REGISTRY,RUMQTTC_JS_NATIVE_PATH \
+            --allow-read="$project" "$project/deno-smoke.ts"
+
       - name: Verify package contents
         working-directory: native-wrappers/js
-        run: npm pack --dry-run
+        shell: bash
+        run: |
+          archive="$(bun pm pack --quiet | tail -n 1)"
+          python3 tests/package/verify_archive.py "$archive"

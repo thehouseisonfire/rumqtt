@@ -31,6 +31,10 @@ function bytes(value, name) {
   return new Uint8Array(value)
 }
 
+function mqttError(code, kind, message, delivery = 'notAdmitted') {
+  return new MqttError({ code, kind, message, retryable: false, delivery, ambiguous: false })
+}
+
 function base64(value, name) {
   if (value === undefined) return undefined
   const copy = bytes(value, name)
@@ -41,7 +45,7 @@ function base64(value, name) {
 }
 
 function fromBase64(value) {
-  if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(value, 'base64'))
+  if (typeof Deno === 'undefined' && typeof Buffer !== 'undefined') return Buffer.from(value, 'base64')
   const binary = atob(value)
   return Uint8Array.from(binary, character => character.charCodeAt(0))
 }
@@ -112,6 +116,20 @@ function jsonValue(value) {
   return value
 }
 
+function serializedOptions(value) {
+  return value === undefined ? undefined : JSON.stringify(jsonValue(value))
+}
+
+function protocolOptions(protocol, operation, filters, options) {
+  if (protocol !== '3.1.1') return
+  const incompatible = operation === 'publish' ? options != null && 'properties' in options :
+    operation === 'subscribe' ? options !== undefined || filters.some(filter => filter != null && 'options' in filter) :
+      options !== undefined
+  if (incompatible) {
+    throw mqttError('COMMAND_INVALID', 'admission', `MQTT 5 ${operation} options require protocol 5.0`)
+  }
+}
+
 function unwrap(serialized) {
   const response = JSON.parse(serialized)
   if (!response.ok) throw new MqttError(response.error)
@@ -122,9 +140,11 @@ function unwrap(serialized) {
 class MqttClient {
   #config
   #native
+  #state = 'idle'
+  #startPromise
   #connectPromise
   #eventsActive = false
-  #closeStarted = false
+  #closePromise
   #closeNowPromise
 
   constructor(options) {
@@ -136,35 +156,76 @@ class MqttClient {
       try {
         this.#native = new NativeMqttClient(JSON.stringify(this.#config))
       } catch (cause) {
-        throw new MqttError({
-          code: 'CONFIGURATION_INVALID', kind: 'configuration', message: cause.message,
-          retryable: false, delivery: 'notApplicable', ambiguous: false,
-        })
+        let value
+        try { value = JSON.parse(cause.message) } catch {}
+        throw value?.error ? new MqttError(value.error) : mqttError(
+          'CONFIGURATION_INVALID', 'configuration', cause.message, 'notApplicable',
+        )
       }
     }
     return this.#native
   }
 
   connect() {
-    if (this.#closeStarted) return Promise.reject(new MqttError({ code: 'SHUTDOWN', kind: 'shutdown', message: 'client is closing', retryable: false, delivery: 'notAdmitted', ambiguous: false }))
-    this.#connectPromise ??= Promise.resolve().then(() => this.#getNative().connect()).then(unwrap).then(({ protocol, sessionPresent }) => ({ protocol, sessionPresent }))
+    if (this.#state === 'closing' || this.#state === 'closed') {
+      return Promise.reject(mqttError('SHUTDOWN', 'shutdown', 'client is closing'))
+    }
+    if (this.#state === 'failed') return this.#connectPromise
+    if (!this.#connectPromise) {
+      this.#state = 'connecting'
+      this.#startPromise = Promise.resolve().then(() => this.#getNative())
+      this.#connectPromise = this.#startPromise
+        .then(native => native.connect())
+        .then(unwrap)
+        .then(({ protocol, sessionPresent }) => {
+          if (this.#state === 'connecting') this.#state = 'connected'
+          return { protocol, sessionPresent }
+        }, error => {
+          if (this.#state === 'connecting') this.#state = 'failed'
+          throw error
+        })
+    }
     return this.#connectPromise
   }
 
   enqueuePublish(topic, payload, options) {
-    return Promise.resolve().then(() => this.#getNative().enqueuePublish(topic, this.#payload(payload), options === undefined ? undefined : JSON.stringify(jsonValue(options)))).then(unwrap).then(({ operationId }) => ({ operationId }))
+    try {
+      protocolOptions(this.#config.protocol, 'publish', [], options)
+      const input = this.#payload(payload)
+      const serialized = serializedOptions(options)
+      return this.#whenConnected(native => native.enqueuePublish(topic, input, serialized))
+        .then(unwrap).then(({ operationId }) => ({ operationId }))
+    } catch (error) { return Promise.reject(error) }
   }
 
   publish(topic, payload, options) {
-    return Promise.resolve().then(() => this.#getNative().publish(topic, this.#payload(payload), options === undefined ? undefined : JSON.stringify(jsonValue(options)))).then(unwrap).then(({ operationId, result }) => ({ operationId, ...result }))
+    try {
+      protocolOptions(this.#config.protocol, 'publish', [], options)
+      const input = this.#payload(payload)
+      const serialized = serializedOptions(options)
+      return this.#whenConnected(native => native.publish(topic, input, serialized))
+        .then(unwrap).then(({ operationId, result }) => ({ operationId, ...result }))
+    } catch (error) { return Promise.reject(error) }
   }
 
   subscribe(filters, options) {
-    return Promise.resolve().then(() => this.#getNative().subscribe(JSON.stringify(jsonValue(filters)), options === undefined ? undefined : JSON.stringify(jsonValue(options)))).then(unwrap).then(({ operationId, result }) => ({ operationId, ...result }))
+    try {
+      protocolOptions(this.#config.protocol, 'subscribe', filters, options)
+      const serializedFilters = JSON.stringify(jsonValue(filters))
+      const serialized = serializedOptions(options)
+      return this.#whenConnected(native => native.subscribe(serializedFilters, serialized))
+        .then(unwrap).then(({ operationId, result }) => ({ operationId, ...result }))
+    } catch (error) { return Promise.reject(error) }
   }
 
   unsubscribe(filters, options) {
-    return Promise.resolve().then(() => this.#getNative().unsubscribe(JSON.stringify(filters), options === undefined ? undefined : JSON.stringify(jsonValue(options)))).then(unwrap).then(({ operationId, result }) => ({ operationId, ...result }))
+    try {
+      protocolOptions(this.#config.protocol, 'unsubscribe', [], options)
+      const serializedFilters = JSON.stringify(filters)
+      const serialized = serializedOptions(options)
+      return this.#whenConnected(native => native.unsubscribe(serializedFilters, serialized))
+        .then(unwrap).then(({ operationId, result }) => ({ operationId, ...result }))
+    } catch (error) { return Promise.reject(error) }
   }
 
   events() {
@@ -182,7 +243,7 @@ class MqttClient {
         if (finished) return { done: true, value: undefined }
         pendingReads += 1
         try {
-          const response = unwrap(await client.#getNative().nextEvent())
+          const response = unwrap(await client.#whenEventReadable(native => native.nextEvent()))
           if (response.done) {
             finished = true
             return { done: true, value: undefined }
@@ -205,7 +266,7 @@ class MqttClient {
   }
 
   diagnostics() {
-    return Promise.resolve().then(() => this.#getNative().diagnostics()).then(unwrap).then(({ result }) => {
+    return this.#whenConnected(native => native.diagnostics()).then(unwrap).then(({ result }) => {
       const { type: _, ...diagnostics } = result
       return diagnostics
     })
@@ -213,15 +274,49 @@ class MqttClient {
 
   close(options = {}) {
     if (this.#closeNowPromise) return this.#closeNowPromise
-    const timeoutMs = finiteInteger(options.timeoutMs ?? 5000, 'timeoutMs', 1, 0xffffffff)
-    this.#closeStarted = true
-    return Promise.resolve().then(() => this.#getNative().close(timeoutMs)).then(unwrap).then(() => undefined)
+    if (this.#closePromise) return this.#closePromise
+    let timeoutMs
+    try { timeoutMs = finiteInteger(options.timeoutMs ?? 5000, 'timeoutMs', 1, 0xffffffff) } catch (error) {
+      return Promise.reject(error)
+    }
+    if (this.#state === 'idle' || (this.#state === 'failed' && !this.#native)) {
+      this.#state = 'closed'
+      return (this.#closePromise = Promise.resolve())
+    }
+    this.#state = 'closing'
+    this.#closePromise = this.#startPromise.then(native => native.close(timeoutMs)).then(unwrap).then(() => {
+      this.#state = 'closed'
+    })
+    return this.#closePromise
   }
 
   closeNow() {
-    this.#closeStarted = true
-    this.#closeNowPromise ??= Promise.resolve().then(() => this.#getNative().closeNow(5000)).then(unwrap).then(() => undefined)
+    if (this.#closeNowPromise) return this.#closeNowPromise
+    if (this.#state === 'closed') return this.#closePromise
+    if (this.#state === 'idle' || (this.#state === 'failed' && !this.#native)) {
+      this.#state = 'closed'
+      this.#closeNowPromise = Promise.resolve()
+      return (this.#closePromise = this.#closeNowPromise)
+    }
+    this.#state = 'closing'
+    this.#closeNowPromise = this.#startPromise.then(native => native.closeNow(5000)).then(unwrap).then(() => {
+      this.#state = 'closed'
+    })
     return this.#closeNowPromise
+  }
+
+  #whenConnected(operation) {
+    if (this.#state !== 'connected') {
+      return Promise.reject(mqttError('NOT_CONNECTED', 'admission', 'connect() must resolve before this operation'))
+    }
+    return Promise.resolve().then(() => operation(this.#native))
+  }
+
+  #whenEventReadable(operation) {
+    if (this.#state !== 'connected' && this.#state !== 'closing') {
+      return Promise.reject(mqttError('NOT_CONNECTED', 'admission', 'connect() must resolve before this operation'))
+    }
+    return this.#startPromise.then(operation)
   }
 
   #payload(payload) {
@@ -241,7 +336,12 @@ class MqttClient {
       }
       if (event.message.ackId !== undefined && event.message.ackId !== null) {
         const ackId = BigInt(event.message.ackId)
-        event.message.ack = () => this.#getNative().acknowledge(ackId).then(unwrap).then(({ operationId }) => ({ operationId }))
+        let started = false
+        event.message.ack = () => {
+          if (started) return Promise.reject(mqttError('COMMAND_INVALID', 'admission', 'acknowledgement was already consumed or is invalid'))
+          started = true
+          return this.#whenConnected(native => native.acknowledge(ackId)).then(unwrap).then(() => undefined)
+        }
       }
       delete event.message.ackId
     }

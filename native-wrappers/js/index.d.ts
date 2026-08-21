@@ -31,10 +31,10 @@ export interface CommonMqttClientOptions {
   incomingPacketSizeLimit?: number
   emitOutgoingEvents?: boolean
 }
-export type ProtocolOptions =
-  | { protocol: '3.1.1'; cleanSession?: boolean; cleanStart?: never; sessionExpiryInterval?: never }
-  | { protocol: '5.0'; cleanStart?: boolean; sessionExpiryInterval?: number; cleanSession?: never }
-export type MqttClientOptions = CommonMqttClientOptions & ProtocolOptions
+export type ProtocolOptions<P extends ProtocolVersion = ProtocolVersion> = P extends '3.1.1'
+  ? { protocol: P; cleanSession?: boolean; cleanStart?: never; sessionExpiryInterval?: never }
+  : { protocol: P; cleanStart?: boolean; sessionExpiryInterval?: number; cleanSession?: never }
+export type MqttClientOptions<P extends ProtocolVersion = ProtocolVersion> = CommonMqttClientOptions & ProtocolOptions<P>
 
 export interface UserProperty { 0: string; 1: string }
 export interface V5PublishProperties {
@@ -46,11 +46,22 @@ export interface V5PublishProperties {
   messageExpiryInterval?: number
   userProperties?: Array<[string, string]>
 }
-export interface PublishOptions { qos?: QoS; retain?: boolean; properties?: V5PublishProperties }
+export type PublishOptions<P extends ProtocolVersion = ProtocolVersion> = {
+  qos?: QoS
+  retain?: boolean
+} & (P extends '3.1.1' ? { properties?: never } : { properties?: V5PublishProperties })
 export interface V5SubscriptionOptions { noLocal?: boolean; retainAsPublished?: boolean; retainForwardRule?: 0 | 1 | 2 }
-export interface Subscription { filter: string; qos?: QoS; options?: V5SubscriptionOptions }
-export interface SubscribeOptions { subscriptionIdentifier?: number; userProperties?: Array<[string, string]> }
-export interface UnsubscribeOptions { userProperties?: Array<[string, string]> }
+export type Subscription<P extends ProtocolVersion = ProtocolVersion> = {
+  filter: string
+  qos?: QoS
+} & (P extends '3.1.1' ? { options?: never } : { options?: V5SubscriptionOptions })
+export type SubscribeOptions<P extends ProtocolVersion = ProtocolVersion> = P extends '3.1.1' ? never : {
+  subscriptionIdentifier?: number
+  userProperties?: Array<[string, string]>
+}
+export type UnsubscribeOptions<P extends ProtocolVersion = ProtocolVersion> = P extends '3.1.1' ? never : {
+  userProperties?: Array<[string, string]>
+}
 
 export interface ConnectResult { protocol: ProtocolVersion; sessionPresent: boolean }
 export interface AdmissionResult { operationId: bigint }
@@ -79,7 +90,7 @@ export interface IncomingMessage {
   retain: boolean
   duplicate: boolean
   properties?: V5IncomingPublishProperties
-  ack?: () => Promise<AdmissionResult>
+  ack?: () => Promise<void>
 }
 export type OutgoingSummary = 'publish' | 'subscribe' | 'unsubscribe' | 'acknowledgement' | 'ping' | 'disconnect' | 'awaitAcknowledgement' | 'other'
 export type MqttEvent =
@@ -112,13 +123,13 @@ export class MqttError extends Error {
   readonly ambiguous: boolean
 }
 
-export class MqttClient {
-  constructor(options: MqttClientOptions)
+export class MqttClient<P extends ProtocolVersion = ProtocolVersion> {
+  constructor(options: MqttClientOptions<P>)
   connect(): Promise<ConnectResult>
-  enqueuePublish(topic: string, payload: Uint8Array | string, options?: PublishOptions): Promise<AdmissionResult>
-  publish(topic: string, payload: Uint8Array | string, options?: PublishOptions): Promise<PublishCompletion>
-  subscribe(filters: Subscription[], options?: SubscribeOptions): Promise<SubscribeCompletion>
-  unsubscribe(filters: string[], options?: UnsubscribeOptions): Promise<UnsubscribeCompletion>
+  enqueuePublish(topic: string, payload: Uint8Array | string, options?: PublishOptions<P>): Promise<AdmissionResult>
+  publish(topic: string, payload: Uint8Array | string, options?: PublishOptions<P>): Promise<PublishCompletion>
+  subscribe(filters: Subscription<P>[], options?: SubscribeOptions<P>): Promise<SubscribeCompletion>
+  unsubscribe(filters: string[], options?: UnsubscribeOptions<P>): Promise<UnsubscribeCompletion>
   events(): AsyncIterableIterator<MqttEvent>
   diagnostics(): Promise<ClientDiagnostics>
   close(options?: CloseOptions): Promise<void>

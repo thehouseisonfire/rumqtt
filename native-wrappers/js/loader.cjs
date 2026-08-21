@@ -5,13 +5,17 @@ const path = require('node:path')
 
 function libc() {
   if (process.platform !== 'linux') return undefined
+  // Deno's supported npm/Node-API host is glibc and process.report requires unrelated --allow-sys.
+  if (typeof Deno !== 'undefined') return 'gnu'
   if (process.report?.getReport) {
     return process.report.getReport().header.glibcVersionRuntime ? 'gnu' : 'musl'
   }
   return fs.existsSync('/etc/alpine-release') ? 'musl' : 'gnu'
 }
 
-const override = process.env.RUMQTTC_JS_NATIVE_PATH
+// The source-tree override is a development aid. Avoid requiring environment permission merely
+// to load an installed package under Deno.
+const override = typeof Deno === 'undefined' ? process.env.RUMQTTC_JS_NATIVE_PATH : undefined
 
 if (override) {
   module.exports = require(path.resolve(override))

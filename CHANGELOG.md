@@ -103,6 +103,11 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- `@rumqtt-next/rumqttc`: Make `connect()` the only native startup boundary,
+  add stable pre-connect rejection, protocol-aware TypeScript operation options,
+  Node/Bun `Buffer` results, `Promise<void>` manual acknowledgements, and
+  Node-API panic containment. Expand direct and installed-package coverage for
+  Node.js, Deno, Bun, TLS, backpressure, lifecycle cleanup, and release artifacts.
 - `rumqttc-wrapper-core` / `rumqttc-c` / `rumqttc-js`: Re-license as MIT OR
   Apache-2.0 with separate `native-wrappers/LICENSE-MIT` and
   `native-wrappers/LICENSE-APACHE` files.
@@ -172,9 +177,9 @@
 - `@rumqtt-next/rumqttc`: Keep a returned event iterator reserved until all of its
   pending reads settle, and discard manual-acknowledgement handles whenever the
   native connection generation changes or the driver terminates. Give every
-  graceful-close caller an independent timeout observation, and omit absent
-  event properties and MQTT 3.1.1 unsubscribe results to match the TypeScript
-  optional-field contract.
+  graceful-close caller an independent timeout observation, keep the event stream
+  drainable during graceful shutdown, and omit absent event properties and MQTT
+  3.1.1 unsubscribe results to match the TypeScript optional-field contract.
 - `rumqttc-wrapper-core`: Yield the single-threaded driver runtime after synchronous wrapper-control
   work so sustained diagnostics or completion traffic cannot starve MQTT socket progress.
 - `rumqttc` v5: Wake strict publish admission futures when their event loop is dropped or reaches

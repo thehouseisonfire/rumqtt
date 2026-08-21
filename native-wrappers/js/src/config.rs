@@ -33,8 +33,11 @@ pub(crate) struct ConfigInput {
 enum TransportInput {
     Tcp,
     Tls {
+        #[serde(rename = "caBase64")]
         ca_base64: Option<String>,
+        #[serde(rename = "clientCertificateBase64")]
         client_certificate_base64: Option<String>,
+        #[serde(rename = "privateKeyBase64")]
         private_key_base64: Option<String>,
     },
     Websocket {
@@ -42,8 +45,11 @@ enum TransportInput {
     },
     Wss {
         url: String,
+        #[serde(rename = "caBase64")]
         ca_base64: Option<String>,
+        #[serde(rename = "clientCertificateBase64")]
         client_certificate_base64: Option<String>,
+        #[serde(rename = "privateKeyBase64")]
         private_key_base64: Option<String>,
     },
 }

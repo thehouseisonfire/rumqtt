@@ -3,6 +3,26 @@
   "version": "0.1.0-alpha.0",
   "description": "Native MQTT 3.1.1 and MQTT 5 client backed by rumqttc",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thehouseisonfire/rumqtt.git",
+    "directory": "native-wrappers/js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "napi": {
+    "binaryName": "rumqttc",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
   "type": "module",
   "main": "./index.cjs",
   "module": "./index.js",
@@ -33,9 +53,10 @@
     "@rumqtt-next/rumqttc-win32-x64-msvc": "0.1.0-alpha.0"
   },
   "scripts": {
-    "build:native": "napi build --platform --release --output-dir .",
+    "build:native": "napi build --platform --release --output-dir . --js-package-name rumqttc --no-js --dts ../../target/rumqttc-js-native.d.ts",
     "test:node": "node --test tests/node/*.test.mjs",
     "test:types": "tsc --noEmit -p tests/types/tsconfig.json",
+    "test:exports": "node --test tests/node/exports.test.mjs",
     "artifacts": "napi artifacts"
   },
   "devDependencies": {

@@ -157,10 +157,18 @@ fn insert_optional(object: &mut Map<String, Value>, name: &str, value: Option<Va
 
 fn error_value(error: &rumqttc_wrapper_core::Error) -> Value {
     serde_json::from_str::<Value>(&response_error(error, None))
-        .expect("error JSON")
-        .get("error")
-        .cloned()
-        .expect("error property")
+        .ok()
+        .and_then(|value| value.get("error").cloned())
+        .unwrap_or_else(|| {
+            json!({
+                "code": "INTERNAL_PANIC",
+                "kind": "internal",
+                "message": "event error conversion failed",
+                "retryable": false,
+                "delivery": "notApplicable",
+                "ambiguous": false,
+            })
+        })
 }
 
 const fn protocol_name(protocol: ProtocolVersion) -> &'static str {
