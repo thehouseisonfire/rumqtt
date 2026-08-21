@@ -468,7 +468,7 @@ fn parse_uri_port(
     Ok(parsed)
 }
 
-fn validate_percent_triplets(value: &str) -> Result<(), RedirectReferenceError> {
+const fn validate_percent_triplets(value: &str) -> Result<(), RedirectReferenceError> {
     let bytes = value.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
