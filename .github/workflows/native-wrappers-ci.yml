@@ -97,6 +97,7 @@ jobs:
         run: |
           cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-wrapper-core-next
           cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-c-next
+          cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-python-next
 
       - name: Check documentation
         if: ${{ matrix.os != 'windows-latest' }}
@@ -391,3 +392,71 @@ jobs:
         run: |
           archive="$(bun pm pack --quiet | tail -n 1)"
           python3 tests/package/verify_archive.py "$archive"
+
+  python:
+    name: Python wrapper (${{ matrix.os }}, CPython ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+        python: ['3.10', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-rumqttc-python-${{ matrix.python }}
+          workspaces: native-wrappers -> target
+
+      - name: Build and install the extension
+        working-directory: native-wrappers/python
+        run: |
+          uv sync --group dev
+          uv run maturin develop
+
+      - name: Check Python API and typing
+        working-directory: native-wrappers/python
+        run: |
+          uv run ruff check python tests
+          uv run ruff format --check python tests
+          uv run pyrefly check python tests
+          uv run pytest -q
+
+      - name: Run MQTT behavior suite
+        working-directory: native-wrappers
+        run: >-
+          python c/tests/native/broker_fixture.py --binary
+          python/.venv/Scripts/python.exe python/tests/integration/test_broker.py
+        if: ${{ runner.os == 'Windows' }}
+
+      - name: Verify Windows exits with a live Python client
+        working-directory: native-wrappers
+        run: >-
+          python c/tests/native/broker_fixture.py --binary
+          python/.venv/Scripts/python.exe python/tests/lifecycle/live_client.py
+        if: ${{ runner.os == 'Windows' }}
+
+      - name: Run MQTT behavior suite
+        working-directory: native-wrappers
+        run: >-
+          python3 c/tests/native/broker_fixture.py --binary
+          python/.venv/bin/python python/tests/integration/test_broker.py
+        if: ${{ runner.os != 'Windows' }}
+
+      - name: Verify Unix exits with a live Python client
+        working-directory: native-wrappers
+        run: >-
+          python3 c/tests/native/broker_fixture.py --binary
+          python/.venv/bin/python python/tests/lifecycle/live_client.py
+        if: ${{ runner.os != 'Windows' }}
+
+      - name: Build and inspect a wheel
+        working-directory: native-wrappers/python
+        run: |
+          uv run maturin build --release --out ../../target/python-wheels
+          uv run python -c "import rumqttc; assert rumqttc.MqttClient.__module__ == 'rumqttc._client'"

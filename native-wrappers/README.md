@@ -9,6 +9,8 @@ native APIs for the MQTT 3.1.1 and MQTT 5 clients:
   and static native libraries.
 - [`js`](js/README.md) exposes one Node-API JavaScript/TypeScript package for
   Node.js, local Deno, and Bun.
+- [`python`](python/README.md) exposes one typed `asyncio` package for CPython
+  through a private PyO3 extension.
 
 The two crates share one workspace because the C API directly adapts wrapper
 core and changes to their command, event, completion, and lifecycle contracts

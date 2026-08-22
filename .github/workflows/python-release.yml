@@ -1,0 +1,140 @@
+name: Python release
+
+on:
+  push:
+    tags: ['rumqttc-python-v*']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  wheels:
+    name: Wheel (${{ matrix.target }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, manylinux: '2_17', python: '3.14', interpreters: '3.10 3.11 3.12 3.13 3.14' }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: '2_17', python: '3.14', interpreters: '3.10 3.11 3.12 3.13 3.14' }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, manylinux: musllinux_1_2, python: '3.14', interpreters: '3.10 3.11 3.12 3.13 3.14' }
+          - { os: macos-15-intel, target: x86_64, manylinux: 'off', python: '3.10', interpreters: 'python' }
+          - { os: macos-15-intel, target: x86_64, manylinux: 'off', python: '3.11', interpreters: 'python' }
+          - { os: macos-15-intel, target: x86_64, manylinux: 'off', python: '3.12', interpreters: 'python' }
+          - { os: macos-15-intel, target: x86_64, manylinux: 'off', python: '3.13', interpreters: 'python' }
+          - { os: macos-15-intel, target: x86_64, manylinux: 'off', python: '3.14', interpreters: 'python' }
+          - { os: macos-15, target: aarch64, manylinux: 'off', python: '3.10', interpreters: 'python' }
+          - { os: macos-15, target: aarch64, manylinux: 'off', python: '3.11', interpreters: 'python' }
+          - { os: macos-15, target: aarch64, manylinux: 'off', python: '3.12', interpreters: 'python' }
+          - { os: macos-15, target: aarch64, manylinux: 'off', python: '3.13', interpreters: 'python' }
+          - { os: macos-15, target: aarch64, manylinux: 'off', python: '3.14', interpreters: 'python' }
+          - { os: windows-latest, target: x64, manylinux: 'off', python: '3.10', interpreters: 'python' }
+          - { os: windows-latest, target: x64, manylinux: 'off', python: '3.11', interpreters: 'python' }
+          - { os: windows-latest, target: x64, manylinux: 'off', python: '3.12', interpreters: 'python' }
+          - { os: windows-latest, target: x64, manylinux: 'off', python: '3.13', interpreters: 'python' }
+          - { os: windows-latest, target: x64, manylinux: 'off', python: '3.14', interpreters: 'python' }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          working-directory: native-wrappers/python
+          args: >-
+            --release --locked --out dist
+            --interpreter ${{ matrix.interpreters }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.python }}
+          path: native-wrappers/python/dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          working-directory: native-wrappers/python
+          args: --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: native-wrappers/python/dist/*.tar.gz
+
+  smoke:
+    needs: wheels
+    name: Installed wheel smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - run: 'python -m pip install --no-index --only-binary=:all: --find-links=dist rumqttc'
+      - run: >-
+          python native-wrappers/c/tests/native/broker_fixture.py --binary
+          python native-wrappers/python/tests/installed/smoke.py
+
+  musl-smoke:
+    needs: wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - run: >-
+          docker run --rm -v "$PWD:/work:ro" -w /work python:3.14-alpine sh -c '
+          apk add --no-cache openssl >/dev/null &&
+          pip install --no-index --only-binary=:all: --find-links=/work/dist rumqttc &&
+          python native-wrappers/c/tests/native/broker_fixture.py --binary
+          python native-wrappers/python/tests/installed/smoke.py'
+
+  publish:
+    needs: [wheels, sdist, smoke, musl-smoke]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Validate release tag
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' native-wrappers/python/Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "rumqttc-python-v${version}"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*'
+      - run: sha256sum dist/* > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-release-checksums
+          path: SHA256SUMS
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

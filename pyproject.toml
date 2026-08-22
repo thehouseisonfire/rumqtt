@@ -1,5 +1,6 @@
 [project]
 name = "rumqtt-python-tooling"
+version = "0.0.0"
 requires-python = ">=3.10"
 
 [tool.ruff]
@@ -29,4 +30,4 @@ docstring-code-format = true
 
 [tool.pyrefly]
 python-version = "3.11"
-search-path = ["benchmarks", "native-wrappers/c/tests/abi"]
+search-path = ["benchmarks", "native-wrappers/c/tests/abi", "native-wrappers/python/python"]

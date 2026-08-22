@@ -55,6 +55,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 __pycache__/
 *.py[cod]
 *$py.class
+native-wrappers/python/python/rumqttc/_native.*.so
+native-wrappers/python/python/rumqttc/_native.pyd
+native-wrappers/python/python/rumqttc/_native.*.dylib
 
 # ================
 # BENCHMARKS

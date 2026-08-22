@@ -1,6 +1,11 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` for Python: Add a typed CPython 3.10–3.14 `asyncio` package for
+  MQTT 3.1.1 and MQTT 5. The PyO3 wrapper provides bounded admission,
+  MQTT-aware completions, single-consumer events, manual acknowledgements,
+  structured errors, loop affinity, and deterministic graceful, immediate,
+  garbage-collection, and interpreter-exit cleanup.
 - `@rumqtt-next/rumqttc`: Add the pre-stable Node-API JavaScript/TypeScript client for
   MQTT 3.1.1 and MQTT 5 with bounded async admission, tracked completions,
   single-consumer events, manual acknowledgements, structured errors, and

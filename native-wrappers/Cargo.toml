@@ -1,5 +1,5 @@
 [workspace]
-members = ["wrapper-core", "c", "js"]
+members = ["wrapper-core", "c", "js", "python"]
 resolver = "3"
 
 [workspace.package]

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["maturin>=1.10,<2"]
+build-backend = "maturin"
+
+[project]
+name = "rumqttc"
+dynamic = ["version"]
+description = "Typed asyncio MQTT 3.1.1 and MQTT 5 client backed by rumqttc"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+authors = [
+    { name = "thehouseisonfire", email = "lefttolive@proton.me" },
+    { name = "tekjar", email = "raviteja@bytebeam.io" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+manifest-path = "Cargo.toml"
+module-name = "rumqttc._native"
+python-source = "python"
+features = ["pyo3/extension-module"]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.10,<2",
+    "pyrefly>=0.42",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.12",
+]
