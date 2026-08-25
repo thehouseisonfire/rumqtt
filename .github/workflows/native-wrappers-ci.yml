@@ -352,7 +352,7 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: python3 c/tests/native/broker_fixture.py --binary bun js/tests/shared/behavior.mjs
 
-      - name: Verify Bun exits with a live native client
+      - name: Verify Bun exits after native client shutdown
         if: ${{ runner.os == 'Linux' }}
         run: timeout 10s bun js/tests/node/live-client-child.mjs
 

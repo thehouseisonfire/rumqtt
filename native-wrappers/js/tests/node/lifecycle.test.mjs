@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 const require = createRequire(import.meta.url)
 const { NativeMqttClient } = require('../../loader.cjs')
 
 test('process exits with a live connecting client', () => {
-  const result = spawnSync(process.execPath, [new URL('./live-client-child.mjs', import.meta.url).pathname], {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./live-client-child.mjs', import.meta.url))], {
     env: process.env,
     timeout: 10_000,
   })
@@ -23,7 +24,7 @@ test('worker environment unloads an independent addon instance', async () => {
 })
 
 test('repeated startup and immediate shutdown do not retain threads or unbounded memory', () => {
-  const result = spawnSync(process.execPath, [new URL('./repetition-child.mjs', import.meta.url).pathname], {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./repetition-child.mjs', import.meta.url))], {
     env: process.env,
     timeout: 20_000,
   })
@@ -34,7 +35,7 @@ test('repeated startup and immediate shutdown do not retain threads or unbounded
 test('loader rejects an unsupported architecture without fallback', () => {
   const script = `
     Object.defineProperty(process, 'arch', { value: 'riscv64' });
-    try { require(${JSON.stringify(new URL('../../loader.cjs', import.meta.url).pathname)}) }
+    try { require(${JSON.stringify(fileURLToPath(new URL('../../loader.cjs', import.meta.url)))}) }
     catch (error) {
       if (!error.message.includes('linux/riscv64') && !error.message.includes(process.platform + '/riscv64')) process.exit(2)
       if (!error.message.includes('@rumqtt-next/rumqttc-')) process.exit(3)
@@ -50,7 +51,7 @@ test('loader rejects an unsupported architecture without fallback', () => {
 
 test('loader distinguishes glibc and musl package names', () => {
   if (process.platform !== 'linux') return
-  const loader = new URL('../../loader.cjs', import.meta.url).pathname
+  const loader = fileURLToPath(new URL('../../loader.cjs', import.meta.url))
   const script = `
     process.report.getReport = () => ({ header: {} });
     try { require(${JSON.stringify(loader)}) }
@@ -73,7 +74,7 @@ for (const [boundary, method] of [
 
   test(`${boundary} native panic is contained in a child process`, { skip }, () => {
     const result = spawnSync(process.execPath, [
-      new URL('./panic-child.cjs', import.meta.url).pathname,
+      fileURLToPath(new URL('./panic-child.cjs', import.meta.url)),
       boundary,
     ], { env: process.env, timeout: 10_000 })
     assert.notEqual(result.error?.code, 'ETIMEDOUT')

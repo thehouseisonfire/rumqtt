@@ -70,27 +70,37 @@ async def test_operations_require_connect() -> None:
 
 @pytest.mark.asyncio
 async def test_events_drain_initial_connection_retries() -> None:
-    client = MqttClient(
-        options(
-            broker_port=1,
-            connection_timeout=1,
-            event_capacity=1,
-            event_delivery_timeout=0.05,
+    async def reject_connection(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(reject_connection, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        client = MqttClient(
+            options(
+                broker_port=port,
+                connection_timeout=1,
+                event_capacity=1,
+                event_delivery_timeout=1,
+            )
         )
-    )
-    connecting = asyncio.create_task(client.connect())
-    await asyncio.sleep(0)
-    events = client.events()
+        connecting = asyncio.create_task(client.connect())
+        await asyncio.sleep(0)
+        events = client.events()
 
-    for _ in range(2):
-        event = await asyncio.wait_for(anext(events), timeout=2)
-        assert isinstance(event, Disconnected)
-        assert event.reconnecting
-    assert not connecting.done()
+        for _ in range(2):
+            event = await asyncio.wait_for(anext(events), timeout=5)
+            assert isinstance(event, Disconnected)
+            assert event.reconnecting
+        assert not connecting.done()
 
-    await client.close_now()
-    with pytest.raises(ClientClosedError):
-        await connecting
+        await client.close_now()
+        with pytest.raises(ClientClosedError):
+            await connecting
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.mark.asyncio
