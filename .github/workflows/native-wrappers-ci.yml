@@ -362,19 +362,22 @@ jobs:
         working-directory: native-wrappers
         run: |
           cp js/rumqttc.linux-x64-gnu.node js/npm/linux-x64-gnu/
-          platform_archive="$(cd js/npm/linux-x64-gnu && bun pm pack --quiet | tail -n 1)"
-          main_archive="$(cd js && bun pm pack --quiet | tail -n 1)"
           bunx verdaccio@6.2.4 --config js/tests/package/verdaccio.yaml --listen 127.0.0.1:4873 &
           registry_pid=$!
           trap 'kill "$registry_pid"' EXIT
-          for attempt in {1..30}; do curl -fsS http://127.0.0.1:4873/-/ping && break; sleep 1; done
-          bun publish "js/npm/linux-x64-gnu/${platform_archive}" --registry http://127.0.0.1:4873 --access public
+          registry_ready=false
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4873/-/ping; then registry_ready=true; break; fi
+            sleep 1
+          done
+          test "$registry_ready" = true
+          (cd js/npm/linux-x64-gnu && bun publish --registry http://127.0.0.1:4873 --access public)
           for directory in js/npm/*; do
             if [[ "$(basename "$directory")" != linux-x64-gnu ]]; then
               (cd "$directory" && bun publish --registry http://127.0.0.1:4873 --access public)
             fi
           done
-          bun publish "js/${main_archive}" --registry http://127.0.0.1:4873 --access public
+          (cd js && bun publish --registry http://127.0.0.1:4873 --access public)
           project="$(mktemp -d)"
           cp js/tests/installed/smoke.mjs js/tests/installed/smoke.cjs js/tests/installed/deno-smoke.ts "$project/"
           (cd "$project" && bun add --registry http://127.0.0.1:4873 @rumqtt-next/rumqttc@0.1.0-alpha.0)
