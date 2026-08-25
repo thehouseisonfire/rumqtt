@@ -1020,6 +1020,11 @@ def command_validate(args: argparse.Namespace) -> int:
     }
     write_summary(summary_path, summary)
     if failed:
+        for result in scenario_results:
+            if result["status"] != "failed":
+                continue
+            detail = result.get("stderr") or result.get("stdout") or result.get("error") or "no runner output"
+            print(f"failed scenario {result['name']}:\n{detail}", file=sys.stderr)
         raise FixtureError(f"{len(failed)} scenario(s) failed; summary written to {summary_path}")
     print(f"Broker validation complete: {summary_path}")
     return 0

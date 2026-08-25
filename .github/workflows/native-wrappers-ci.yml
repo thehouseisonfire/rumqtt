@@ -360,6 +360,10 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         shell: bash
         working-directory: native-wrappers
+        env:
+          # Bun requires a configured token before it will send a publish request, even when the
+          # ephemeral Verdaccio registry permits anonymous publication.
+          NPM_CONFIG_TOKEN: rumqttc-ci-local-registry
         run: |
           cp js/rumqttc.linux-x64-gnu.node js/npm/linux-x64-gnu/
           bunx verdaccio@6.2.4 --config js/tests/package/verdaccio.yaml --listen 127.0.0.1:4873 &

@@ -2608,7 +2608,7 @@ impl Debug for MqttOptions {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::net::{TcpListener, TcpSocket};
@@ -2759,9 +2759,10 @@ mod test {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let good_addr = listener.local_addr().unwrap();
 
-            let unused_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-            let bad_addr = unused_listener.local_addr().unwrap();
-            drop(unused_listener);
+            // Fail before binding the configured IPv4 source port. A refused IPv4 connection can
+            // retain that source port briefly on Windows and make the later candidate fail with
+            // WSAEADDRINUSE, which tests TCP teardown timing rather than candidate fallback.
+            let bad_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 9, 0, 0));
 
             let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let bind_port = reserved.local_addr().unwrap().port();
