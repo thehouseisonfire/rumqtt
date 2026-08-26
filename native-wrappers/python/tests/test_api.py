@@ -160,6 +160,21 @@ async def test_cancelled_connect_does_not_retain_abandoned_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_connect_waiters_cancel_independently() -> None:
+    client = MqttClient(options(broker_port=1))
+    waiters = [asyncio.create_task(client.connect()) for _ in range(10)]
+    await asyncio.sleep(0)
+    for waiter in waiters[::2]:
+        waiter.cancel()
+    cancelled = await asyncio.gather(*waiters[::2], return_exceptions=True)
+    assert all(isinstance(result, asyncio.CancelledError) for result in cancelled)
+
+    await client.close_now()
+    active = await asyncio.gather(*waiters[1::2], return_exceptions=True)
+    assert all(isinstance(result, ClientClosedError) for result in active)
+
+
+@pytest.mark.asyncio
 async def test_abandoned_event_iterator_releases_single_consumer(monkeypatch: pytest.MonkeyPatch) -> None:
     client = MqttClient(options())
     client._connected = True

@@ -462,6 +462,10 @@ jobs:
           python/.venv/bin/python python/tests/lifecycle/live_client.py
         if: ${{ runner.os != 'Windows' }}
 
+      - name: Verify loop closure with pending native observations
+        working-directory: native-wrappers/python
+        run: uv run python tests/lifecycle/pending_client.py
+
       - name: Build and inspect a wheel
         working-directory: native-wrappers/python
         run: |

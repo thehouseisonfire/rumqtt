@@ -15,6 +15,7 @@ name = "rumqttc_python"
 crate-type = ["cdylib", "rlib"]
 
 [features]
+benchmark-testing = []
 panic-testing = []
 
 [dependencies]

@@ -89,8 +89,43 @@ async def test_protocol_behavior(protocol: ProtocolVersion) -> None:
     await client.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", [ProtocolVersion.MQTT_3_1_1, ProtocolVersion.MQTT_5_0])
+async def test_cancelled_event_wait_does_not_consume_the_next_event(protocol: ProtocolVersion) -> None:
+    topic = f"rumqttc/python/cancelled-event/{protocol.value}"
+    client = MqttClient(
+        MqttClientOptions(
+            protocol=protocol,
+            broker_host=os.environ["RUMQTTC_TEST_HOST"],
+            broker_port=int(os.environ["RUMQTTC_TEST_PORT"]),
+            client_id=f"python-cancel-event-{protocol.value}",
+        )
+    )
+    await client.connect()
+    events = client.events()
+    assert isinstance(await anext(events), Connected)
+    await client.subscribe([Subscription(topic, QoS.AT_LEAST_ONCE)])
+
+    for sequence in range(20):
+        pending = asyncio.ensure_future(anext(events))
+        await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+        payload = sequence.to_bytes(4, "big")
+        await client.publish(topic, payload, PublishOptions(qos=QoS.AT_LEAST_ONCE))
+        incoming = await asyncio.wait_for(anext(events), timeout=2)
+        assert isinstance(incoming, IncomingPublish)
+        assert incoming.payload == payload
+
+    await client.close()
+
+
 if __name__ == "__main__":
     asyncio.run(test_retained_iterator_drains_events_after_shutdown(immediate=False))
     asyncio.run(test_retained_iterator_drains_events_after_shutdown(immediate=True))
     asyncio.run(test_protocol_behavior(ProtocolVersion.MQTT_3_1_1))
     asyncio.run(test_protocol_behavior(ProtocolVersion.MQTT_5_0))
+    asyncio.run(test_cancelled_event_wait_does_not_consume_the_next_event(ProtocolVersion.MQTT_3_1_1))
+    asyncio.run(test_cancelled_event_wait_does_not_consume_the_next_event(ProtocolVersion.MQTT_5_0))

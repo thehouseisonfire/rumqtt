@@ -8,14 +8,121 @@ use pyo3::types::PyAny;
 use rumqttc_wrapper_core::{ClientConfig, Command, DeliveryStatus, ErrorKind, NativeClient};
 use serde_json::json;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, OnceCell, Semaphore};
 
 const RUNNING: u8 = 0;
 const GRACEFUL_SHUTDOWN: u8 = 1;
 const IMMEDIATE_SHUTDOWN: u8 = 2;
+
+static NATIVE_BLOCKING_SLOTS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(crate::native_blocking_capacity())));
+
+#[derive(Debug)]
+enum NativeBlockingError {
+    Timeout,
+    Runtime(String),
+}
+
+struct ImmediateShutdownGuard {
+    handle: rumqttc_wrapper_core::ClientHandle,
+    armed: bool,
+}
+
+impl ImmediateShutdownGuard {
+    fn new(handle: rumqttc_wrapper_core::ClientHandle) -> Self {
+        Self {
+            handle,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn escalate(&mut self) {
+        if std::mem::replace(&mut self.armed, false) {
+            self.handle.close_now_idempotent();
+        }
+    }
+}
+
+impl Drop for ImmediateShutdownGuard {
+    fn drop(&mut self) {
+        self.escalate();
+    }
+}
+
+impl std::fmt::Display for NativeBlockingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => {
+                formatter.write_str("native blocking operation exceeded its timeout budget")
+            }
+            Self::Runtime(error) => formatter.write_str(error),
+        }
+    }
+}
+
+async fn run_native_blocking<T, F>(
+    budget: Option<Duration>,
+    operation: F,
+) -> Result<T, NativeBlockingError>
+where
+    T: Send + 'static,
+    F: FnOnce(Option<Duration>) -> T + Send + 'static,
+{
+    run_native_blocking_on(Arc::clone(&NATIVE_BLOCKING_SLOTS), budget, operation).await
+}
+
+async fn run_native_blocking_on<T, F>(
+    semaphore: Arc<Semaphore>,
+    budget: Option<Duration>,
+    operation: F,
+) -> Result<T, NativeBlockingError>
+where
+    T: Send + 'static,
+    F: FnOnce(Option<Duration>) -> T + Send + 'static,
+{
+    let deadline = budget.map(|timeout| tokio::time::Instant::now() + timeout);
+    let acquire = semaphore.acquire_owned();
+    let permit = match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, acquire)
+            .await
+            .map_err(|_| NativeBlockingError::Timeout)?,
+        None => acquire.await,
+    }
+    .map_err(|error| NativeBlockingError::Runtime(error.to_string()))?;
+
+    let remaining =
+        deadline.map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()));
+    if matches!(remaining, Some(timeout) if timeout.is_zero()) {
+        return Err(NativeBlockingError::Timeout);
+    }
+
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation(
+            deadline
+                .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+    });
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, task)
+            .await
+            .map_err(|_| NativeBlockingError::Timeout)?,
+        None => task.await,
+    }
+    .map_err(|error| NativeBlockingError::Runtime(error.to_string()))
+}
+
+fn native_blocking_timeout(message: &'static str) -> rumqttc_wrapper_core::Error {
+    rumqttc_wrapper_core::Error::new(ErrorKind::Timeout, message)
+        .with_delivery(DeliveryStatus::Ambiguous)
+}
 
 struct Started {
     handle: rumqttc_wrapper_core::ClientHandle,
@@ -36,12 +143,12 @@ impl State {
         self.started
             .get_or_try_init(|| async {
                 let cfg = self.config.clone();
-                let mut native = tokio::task::spawn_blocking(move || NativeClient::start(cfg))
+                let mut native = run_native_blocking(None, move |_| NativeClient::start(cfg))
                     .await
-                    .map_err(|e| {
+                    .map_err(|error| {
                         rumqttc_wrapper_core::Error::new(
                             rumqttc_wrapper_core::ErrorKind::Internal,
-                            format!("client start task failed: {e}"),
+                            format!("client start task failed: {error}"),
                         )
                     })??;
                 let events = native.take_events().ok_or_else(|| {
@@ -341,11 +448,31 @@ impl NativeMqttClient {
                 Ok(None) => return json!({"ok":true}).to_string(),
                 Err(e) => return response_error(&e, None),
             };
+            // Cancellation drops this guard at any suspension point below. Since Python has
+            // committed the client to closing, cancellation must terminate rather than strand it.
+            let mut shutdown_guard = ImmediateShutdownGuard::new(v.handle.clone());
             let c = v.closer.clone();
-            match tokio::task::spawn_blocking(move || c.close(remaining)).await {
+            let result = run_native_blocking(Some(remaining), move |remaining| {
+                c.close(remaining.unwrap_or_default())
+            })
+            .await;
+            if matches!(&result, Ok(Ok(_))) {
+                shutdown_guard.disarm();
+            } else {
+                // Python has committed this client to closing and cannot safely resume it. Ensure
+                // any failure to confirm graceful completion cannot leave the native driver live.
+                shutdown_guard.escalate();
+            }
+            match result {
                 Ok(Ok(_)) => json!({"ok":true}).to_string(),
                 Ok(Err(e)) => response_error(&e, None),
-                Err(e) => local_error("INTERNAL", e.to_string()),
+                Err(NativeBlockingError::Timeout) => response_error(
+                    &native_blocking_timeout(
+                        "native graceful close exceeded its timeout budget; immediate shutdown was requested",
+                    ),
+                    None,
+                ),
+                Err(NativeBlockingError::Runtime(error)) => local_error("INTERNAL", error),
             }
         })
     }
@@ -358,11 +485,22 @@ impl NativeMqttClient {
                 Ok(None) => return json!({"ok":true}).to_string(),
                 Err(e) => return response_error(&e, None),
             };
+            // Dispatch is nonblocking and must not wait behind an unrelated native join. The
+            // blocking operation below only reconciles close state and waits for driver exit.
+            v.handle.close_now_idempotent();
             let c = v.closer.clone();
-            match tokio::task::spawn_blocking(move || c.close_now(remaining)).await {
+            match run_native_blocking(Some(remaining), move |remaining| {
+                c.close_now(remaining.unwrap_or_default())
+            })
+            .await
+            {
                 Ok(Ok(())) => json!({"ok":true}).to_string(),
                 Ok(Err(e)) => response_error(&e, None),
-                Err(e) => local_error("INTERNAL", e.to_string()),
+                Err(NativeBlockingError::Timeout) => response_error(
+                    &native_blocking_timeout("native immediate close exceeded its timeout budget"),
+                    None,
+                ),
+                Err(NativeBlockingError::Runtime(error)) => local_error("INTERNAL", error),
             }
         })
     }
@@ -385,5 +523,96 @@ impl NativeMqttClient {
                 let _ = py.detach(|| closer.close_now(Duration::from_millis(timeout_ms)));
             }
         }));
+    }
+
+    #[cfg(feature = "benchmark-testing")]
+    fn _completion_probe<'py>(
+        &self,
+        py: Python<'py>,
+        value: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        future(py, async move { value })
+    }
+
+    #[cfg(feature = "benchmark-testing")]
+    fn _blocking_probe<'py>(
+        &self,
+        py: Python<'py>,
+        duration_ms: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        future(py, async move {
+            match run_native_blocking(None, move |_| {
+                std::thread::sleep(Duration::from_millis(duration_ms));
+            })
+            .await
+            {
+                Ok(()) => json!({"ok":true}).to_string(),
+                Err(error) => local_error("INTERNAL", error.to_string()),
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn timeout_budget_bounds_waiting_for_a_native_blocking_slot() {
+        runtime().block_on(async {
+            let semaphore = Arc::new(Semaphore::new(1));
+            let occupied = Arc::clone(&semaphore).acquire_owned().await.unwrap();
+            let called = Arc::new(AtomicBool::new(false));
+            let called_by_operation = Arc::clone(&called);
+            let started = Instant::now();
+
+            let result =
+                run_native_blocking_on(semaphore, Some(Duration::from_millis(25)), move |_| {
+                    called_by_operation.store(true, Ordering::Release);
+                })
+                .await;
+
+            assert!(matches!(result, Err(NativeBlockingError::Timeout)));
+            assert!(started.elapsed() < Duration::from_millis(150));
+            assert!(!called.load(Ordering::Acquire));
+            drop(occupied);
+        });
+    }
+
+    #[test]
+    fn timeout_budget_bounds_a_running_task_without_releasing_its_slot_early() {
+        runtime().block_on(async {
+            let semaphore = Arc::new(Semaphore::new(1));
+            let barrier = Arc::new(Barrier::new(2));
+            let operation_barrier = Arc::clone(&barrier);
+            let task_semaphore = Arc::clone(&semaphore);
+            let task = tokio::spawn(async move {
+                run_native_blocking_on(task_semaphore, Some(Duration::from_millis(25)), move |_| {
+                    operation_barrier.wait();
+                    std::thread::sleep(Duration::from_millis(100));
+                })
+                .await
+            });
+
+            tokio::task::yield_now().await;
+            barrier.wait();
+            let started = Instant::now();
+            let result = task.await.unwrap();
+
+            assert!(matches!(result, Err(NativeBlockingError::Timeout)));
+            assert!(started.elapsed() < Duration::from_millis(150));
+            assert_eq!(semaphore.available_permits(), 0);
+            tokio::time::sleep(Duration::from_millis(125)).await;
+            assert_eq!(semaphore.available_permits(), 1);
+        });
     }
 }

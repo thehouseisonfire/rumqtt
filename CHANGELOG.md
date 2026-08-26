@@ -179,6 +179,18 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc` for Python: Bound the production Tokio adapter to two measured
+  blocking workers, preventing completion bursts and concurrent client churn
+  from retaining Tokio's default allowance of hundreds of threads. Reserve one
+  worker for Python result delivery and apply each shutdown timeout to both
+  admission and execution, so a short close cannot wait behind an unrelated
+  long-running native operation beyond its own deadline. Dispatch immediate
+  shutdown before waiting for a blocking join slot, ensuring a timed-out
+  `close_now()` still terminates the native driver and connection. Escalate a
+  graceful-close failure to that same nonblocking signal so a client committed
+  to closing cannot retain a live driver when blocking-slot admission expires.
+  Arm the same escalation as a cancellation guard before waiting for admission,
+  preventing a canceled graceful-close future from stranding its connection.
 - `@rumqtt-next/rumqttc`: Keep a returned event iterator reserved until all of its
   pending reads settle, and discard manual-acknowledgement handles whenever the
   native connection generation changes or the driver terminates. Give every
