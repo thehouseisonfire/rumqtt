@@ -256,6 +256,7 @@ pub(crate) async fn run(
         manual_ack,
         protocol,
         immediate_shutdown_rx,
+        panic_rx,
     } = context;
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
@@ -267,6 +268,7 @@ pub(crate) async fn run(
         events: &events,
         timeout: delivery_timeout,
         immediate_shutdown: &immediate_shutdown_rx,
+        panic: &panic_rx,
     };
     loop {
         // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
@@ -277,6 +279,7 @@ pub(crate) async fn run(
             loop {
                 // Keep parity with the fair and cooperative v4 arbitration above.
                 tokio::select! {
+                    _ = panic_rx.recv_async() => crate::runtime::terminate_driver_for_boundary_panic(),
                     _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
                         accept_registration(registration, &pending, &mut senders);

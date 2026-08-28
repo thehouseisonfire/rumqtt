@@ -8,6 +8,22 @@ mod event;
 use pyo3::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "panic-testing")]
+pub(crate) struct InjectedAsyncPanic;
+
+#[cfg(feature = "panic-testing")]
+fn install_test_panic_hook() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !info.payload().is::<InjectedAsyncPanic>() {
+                previous(info);
+            }
+        }));
+    });
+}
+
 const MAX_BLOCKING_THREADS: usize = 2;
 static CONFIGURED_BLOCKING_THREADS: AtomicUsize = AtomicUsize::new(MAX_BLOCKING_THREADS);
 #[cfg(feature = "benchmark-testing")]
@@ -56,6 +72,8 @@ pub(crate) fn native_blocking_capacity() -> usize {
 #[pymodule]
 #[pyo3(name = "_native")]
 fn rumqttc_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(feature = "panic-testing")]
+    install_test_panic_hook();
     let _blocking_threads = configure_tokio_runtime()?;
 
     module.add_class::<client::NativeMqttClient>()?;

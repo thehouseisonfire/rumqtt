@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
 from rumqttc import MqttClient, MqttClientOptions, ProtocolVersion
 
@@ -21,3 +22,4 @@ async def main() -> None:
 
 
 asyncio.run(main())
+sys.exit(0)

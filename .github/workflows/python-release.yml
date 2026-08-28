@@ -9,6 +9,10 @@ permissions:
   id-token: write
   attestations: write
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   wheels:
     name: Wheel (${{ matrix.target }}, ${{ matrix.python }})
@@ -72,14 +76,107 @@ jobs:
           name: sdist
           path: native-wrappers/python/dist/*.tar.gz
 
-  smoke:
+  wheel-test:
     needs: wheels
-    name: Installed wheel smoke (${{ matrix.os }})
+    name: Installed wheel (${{ matrix.os }}, CPython ${{ matrix.python }}, pip ${{ matrix.pip }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        pip: [minimum, newest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - name: Select and verify the exact wheel
+        shell: bash
+        run: |
+          tag="cp${PYTHON_VERSION/./}"
+          case "${{ matrix.os }}" in
+            ubuntu-latest) glob="*-${tag}-${tag}-manylinux*x86_64.whl"; pattern='manylinux_2_17_.*x86_64' ;;
+            ubuntu-24.04-arm) glob="*-${tag}-${tag}-manylinux*aarch64.whl"; pattern='manylinux_2_17_.*aarch64' ;;
+            macos-15-intel) glob="*-${tag}-${tag}-macosx*x86_64.whl"; pattern='macosx_11_0_x86_64' ;;
+            macos-15) glob="*-${tag}-${tag}-macosx*arm64.whl"; pattern='macosx_11_0_arm64' ;;
+            windows-latest) glob="*-${tag}-${tag}-win_amd64.whl"; pattern='win_amd64' ;;
+          esac
+          wheel="$(find dist -name "$glob" -print -quit)"
+          test -n "$wheel"
+          python native-wrappers/python/tests/installed/verify_wheel.py \
+            "$wheel" --python-tag "$tag" --platform-pattern "$pattern"
+          echo "RUMQTTC_WHEEL=$wheel" >> "$GITHUB_ENV"
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+      - name: Select pip installer
+        shell: bash
+        run: |
+          if test '${{ matrix.pip }}' = minimum; then
+            python -m pip install 'pip==25.3'
+          else
+            python -m pip install --upgrade pip
+          fi
+      - run: |
+          python -m pip install --no-index --only-binary=:all: "$RUMQTTC_WHEEL"
+          python -m pip install pytest pytest-asyncio
+      - name: Verify installed contents outside the source tree
+        run: python -I "${{ github.workspace }}/native-wrappers/python/tests/installed/verify_install.py"
+      - name: Run installed broker smoke suite
+        env:
+          PYTHONSAFEPATH: '1'
+        run: >-
+          python native-wrappers/c/tests/native/broker_fixture.py --binary
+          python native-wrappers/python/tests/installed/smoke.py
+      - name: Run installed behavior and lifecycle suites
+        env:
+          PYTHONSAFEPATH: '1'
+        run: >-
+          python native-wrappers/c/tests/native/broker_fixture.py --omit-address-arguments --binary
+          python -- -m pytest -q
+          native-wrappers/python/tests/integration/test_broker.py
+          native-wrappers/python/tests/test_lifecycle.py
+
+  musl-smoke:
+    needs: wheels
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        pip: [minimum, newest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - run: >-
+          docker run --rm -v "$PWD:/work:ro" -w /tmp python:${{ matrix.python }}-alpine sh -c '
+          apk add --no-cache openssl >/dev/null &&
+          if test "${{ matrix.pip }}" = minimum; then python -m pip install pip==25.3; else python -m pip install --upgrade pip; fi &&
+          tag=cp$(echo "${{ matrix.python }}" | tr -d .) &&
+          wheel=$(find /work/dist -name "*-${tag}-${tag}-musllinux*x86_64.whl" -print -quit) &&
+          python /work/native-wrappers/python/tests/installed/verify_wheel.py "$wheel" --python-tag "$tag" --platform-pattern musllinux_1_2_x86_64 &&
+          python -m pip install --no-index --only-binary=:all: "$wheel" &&
+          python -m pip install pytest pytest-asyncio &&
+          python -I /work/native-wrappers/python/tests/installed/verify_install.py &&
+          python /work/native-wrappers/c/tests/native/broker_fixture.py --binary
+          python /work/native-wrappers/python/tests/installed/smoke.py &&
+          python /work/native-wrappers/c/tests/native/broker_fixture.py --omit-address-arguments --binary
+          python -- -m pytest -q
+          /work/native-wrappers/python/tests/integration/test_broker.py
+          /work/native-wrappers/python/tests/test_lifecycle.py'
+
+  linux-wheel-audit:
+    needs: wheels
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -88,32 +185,50 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
-          pattern: wheels-*
+          pattern: wheels-ubuntu-*
           merge-multiple: true
-      - run: 'python -m pip install --no-index --only-binary=:all: --find-links=dist rumqttc'
-      - run: >-
-          python native-wrappers/c/tests/native/broker_fixture.py --binary
-          python native-wrappers/python/tests/installed/smoke.py
+      - run: python -m pip install auditwheel
+      - name: Audit manylinux and musllinux policy and native dependencies
+        run: |
+          for wheel in dist/*linux*.whl; do
+            auditwheel show "$wheel"
+          done
 
-  musl-smoke:
-    needs: wheels
+  sdist-test:
+    needs: sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v8
         with:
           path: dist
-          pattern: wheels-*
-          merge-multiple: true
-      - run: >-
-          docker run --rm -v "$PWD:/work:ro" -w /work python:3.14-alpine sh -c '
-          apk add --no-cache openssl >/dev/null &&
-          pip install --no-index --only-binary=:all: --find-links=/work/dist rumqttc &&
-          python native-wrappers/c/tests/native/broker_fixture.py --binary
-          python native-wrappers/python/tests/installed/smoke.py'
+          name: sdist
+      - name: Install from source with documented prerequisites
+        run: |
+          python -m venv "$RUNNER_TEMP/sdist-ok"
+          "$RUNNER_TEMP/sdist-ok/bin/python" -m pip install pip==25.3 'maturin>=1.10,<2'
+          "$RUNNER_TEMP/sdist-ok/bin/python" -m pip install --no-build-isolation --no-binary=:all: dist/*.tar.gz
+          "$RUNNER_TEMP/sdist-ok/bin/python" -I native-wrappers/python/tests/installed/verify_install.py
+          python native-wrappers/c/tests/native/broker_fixture.py --binary \
+            "$RUNNER_TEMP/sdist-ok/bin/python" native-wrappers/python/tests/installed/smoke.py
+      - name: Missing Rust is an ordinary packaging failure
+        run: |
+          python -m venv "$RUNNER_TEMP/sdist-missing-rust"
+          "$RUNNER_TEMP/sdist-missing-rust/bin/python" -m pip install pip==25.3 'maturin>=1.10,<2'
+          if CARGO=/missing/cargo RUSTC=/missing/rustc \
+            "$RUNNER_TEMP/sdist-missing-rust/bin/python" -m pip install \
+            --no-build-isolation --no-binary=:all: dist/*.tar.gz >"$RUNNER_TEMP/missing-rust.log" 2>&1; then
+            echo 'sdist unexpectedly installed without Rust' >&2
+            exit 1
+          fi
+          ! grep -Ei 'download(ing|ed).*(rust|cargo|executable)' "$RUNNER_TEMP/missing-rust.log"
 
   publish:
-    needs: [wheels, sdist, smoke, musl-smoke]
+    needs: [wheels, sdist, wheel-test, musl-smoke, linux-wheel-audit, sdist-test]
     runs-on: ubuntu-latest
     environment: pypi
     steps:

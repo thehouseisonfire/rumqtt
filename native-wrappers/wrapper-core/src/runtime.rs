@@ -25,6 +25,24 @@ use crate::{
     WrapperEvent,
 };
 
+struct BoundaryTerminationPanic;
+
+fn install_boundary_panic_hook() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !info.payload().is::<BoundaryTerminationPanic>() {
+                previous(info);
+            }
+        }));
+    });
+}
+
+pub(crate) fn terminate_driver_for_boundary_panic() -> ! {
+    std::panic::panic_any(BoundaryTerminationPanic)
+}
+
 /// Join ownership shared by the native owner and close coordinator.
 pub(crate) struct ThreadOwner {
     join: ParkingMutex<Option<thread::JoinHandle<()>>>,
@@ -348,6 +366,7 @@ impl NativeClient {
     /// Returns an error when configuration validation, protocol client construction, TLS setup,
     /// or driver-thread creation fails.
     pub fn start(config: ClientConfig) -> Result<Self> {
+        install_boundary_panic_hook();
         config.validate()?;
         let protocol = config.protocol_version();
         let event_capacity = config.common.event_buffer_capacity;
@@ -362,13 +381,21 @@ impl NativeClient {
         let (terminal_tx, terminal_rx) = flume::bounded(1);
         let (done_tx, done_rx) = flume::bounded(1);
         let (immediate_shutdown_tx, immediate_shutdown_rx) = flume::unbounded();
+        let (panic_tx, panic_rx) = flume::unbounded();
 
         let client_identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
         let (client, driver) = backend::build(config)?;
         let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
         let connection = ConnectionHandle::new();
-        let shared = Shared::new(client, acknowledgements, connection, operations, shutdown);
+        let shared = Shared::new(
+            client,
+            acknowledgements,
+            connection,
+            operations,
+            shutdown,
+            panic_tx,
+        );
         let driver_shared = Arc::clone(&shared);
         let context = DriverContext {
             shared: Arc::clone(&driver_shared),
@@ -380,6 +407,7 @@ impl NativeClient {
             manual_ack,
             protocol,
             immediate_shutdown_rx,
+            panic_rx,
         };
         let thread_name = format!("rumqtt-wrapper-{client_identity}");
         let join = thread::Builder::new()
@@ -519,6 +547,7 @@ pub(crate) struct DriverContext {
     pub(crate) manual_ack: bool,
     pub(crate) protocol: ProtocolVersion,
     pub(crate) immediate_shutdown_rx: Receiver<()>,
+    pub(crate) panic_rx: Receiver<()>,
 }
 
 pub(crate) struct ShutdownInputs<'a> {
@@ -550,6 +579,7 @@ pub(crate) struct EventDelivery<'a> {
     pub(crate) events: &'a Sender<WrapperEvent>,
     pub(crate) timeout: Duration,
     pub(crate) immediate_shutdown: &'a Receiver<()>,
+    pub(crate) panic: &'a Receiver<()>,
 }
 
 // The two explicit loops keep protocol types statically checked and make all translation local.
@@ -559,6 +589,7 @@ pub(crate) async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -
     }
     tokio::select! {
         biased;
+        _ = delivery.panic.recv_async() => terminate_driver_for_boundary_panic(),
         _ = delivery.immediate_shutdown.recv_async() => true,
         result = tokio::time::timeout(delivery.timeout, delivery.events.send_async(event)) => {
             matches!(result, Ok(Ok(())))

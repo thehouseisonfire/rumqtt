@@ -1,20 +1,23 @@
+use crate::client::State;
 use crate::error::response_error;
 use pyo3::prelude::*;
 use rumqttc_wrapper_core::{
     Admission, Completion, CompletionHandle, PublishCompletion, SubscribeResult, UnsubscribeResult,
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub fn admission(value: &Admission) -> String {
     json!({"ok":true,"operationId":value.operation_id.get().to_string()}).to_string()
 }
 
-pub fn tracked(value: Admission) -> (String, Option<NativeCompletion>) {
+pub fn tracked(value: Admission, state: Arc<State>) -> (String, Option<NativeCompletion>) {
     let response = admission(&value);
     (
         response,
         Some(NativeCompletion {
             handle: value.completion,
+            state,
         }),
     )
 }
@@ -38,6 +41,7 @@ pub async fn wait_admission(value: Admission) -> String {
 #[pyclass(module = "rumqttc._native")]
 pub struct NativeCompletion {
     handle: CompletionHandle,
+    state: Arc<State>,
 }
 
 #[pymethods]
@@ -49,7 +53,8 @@ impl NativeCompletion {
 
     fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.handle.clone();
-        crate::client::future(py, async move { wait_handle(handle).await })
+        let state = Arc::clone(&self.state);
+        crate::client::future(py, state, async move { wait_handle(handle).await })
     }
 }
 fn success(value: Completion) -> Value {

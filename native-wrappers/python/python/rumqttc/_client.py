@@ -11,7 +11,9 @@ import time
 import warnings
 import weakref
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import _native
 from ._errors import ClientClosedError, ClientStateError, ConfigurationError, DeliveryStatus, ErrorKind, error_from_data
@@ -38,6 +40,7 @@ from ._types import (
     PublishMilestone,
     PublishOptions,
     QoS,
+    RetainForwardRule,
     SubscribeCompletion,
     SubscribeOptions,
     SubscribeResult,
@@ -57,6 +60,13 @@ from ._types import (
 
 _live_clients: weakref.WeakSet[MqttClient] = weakref.WeakSet()
 _finalizing = False
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckedPublishOptions:
+    encoded: str | None
+    has_topic_alias: bool
+    payload_format_indicator: int | None
 
 
 def _abandon(native: _native.NativeMqttClient) -> None:
@@ -120,6 +130,67 @@ def _string(value: object, name: str) -> str:
     return value
 
 
+def _mqtt_string(value: object, name: str, *, allow_empty: bool = True) -> str:
+    result = _string(value, name)
+    encoded = result.encode("utf-8")
+    if not allow_empty and not result:
+        raise ValueError(f"{name} must not be empty")
+    if len(encoded) > 2**16 - 1:
+        raise ValueError(f"{name} exceeds the MQTT UTF-8 string limit")
+    if "\x00" in result:
+        raise ValueError(f"{name} must not contain U+0000")
+    return result
+
+
+def _topic(value: object, name: str = "topic", *, allow_empty: bool = False) -> str:
+    result = _mqtt_string(value, name, allow_empty=allow_empty)
+    if "+" in result or "#" in result:
+        raise ValueError(f"{name} must not contain topic-filter wildcards")
+    return result
+
+
+def _topic_filter(value: object, name: str = "topic filter") -> str:
+    result = _mqtt_string(value, name, allow_empty=False)
+    for index, level in enumerate(result.split("/")):
+        if "#" in level and (level != "#" or index != len(result.split("/")) - 1):
+            raise ValueError(f"{name} uses '#' outside the final complete level")
+        if "+" in level and level != "+":
+            raise ValueError(f"{name} uses '+' outside a complete level")
+    if result.startswith("$share/"):
+        parts = result.split("/", 2)
+        if len(parts) != 3 or not parts[1] or "+" in parts[1] or "#" in parts[1] or not parts[2]:
+            raise ValueError(f"{name} contains an invalid shared-subscription prefix")
+    return result
+
+
+def _user_properties(value: object, name: str) -> tuple[tuple[str, str], ...]:
+    if isinstance(value, (str, bytes, bytearray, memoryview)) or not isinstance(value, Sequence):
+        raise TypeError(f"{name} must be a sequence of string pairs")
+    checked: list[tuple[str, str]] = []
+    for item in value:
+        if isinstance(item, (str, bytes, bytearray, memoryview)) or not isinstance(item, Sequence) or len(item) != 2:
+            raise TypeError(f"{name} must contain two-item string pairs")
+        checked.append(
+            (
+                _mqtt_string(item[0], f"{name} name"),
+                _mqtt_string(item[1], f"{name} value"),
+            )
+        )
+    return tuple(checked)
+
+
+def _websocket_url(value: object, name: str, scheme: str) -> str:
+    result = _string(value, name)
+    try:
+        parsed = urlsplit(result)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{name} is malformed") from error
+    if parsed.scheme != scheme or parsed.hostname is None or port == 0:
+        raise ValueError(f"{name} must be an absolute {scheme}:// URL with a valid host")
+    return result
+
+
 def _qos(value: object) -> QoS:
     if isinstance(value, bool):
         raise TypeError("qos must be QoS")
@@ -147,6 +218,13 @@ def _bytes(value: bytes | bytearray | memoryview, name: str) -> bytes:
         return bytes(memoryview(value))
     except (TypeError, ValueError) as error:
         raise TypeError(f"{name} must be bytes-like") from error
+
+
+def _limited_binary(value: bytes | bytearray | memoryview, name: str) -> bytes:
+    result = _bytes(value, name)
+    if len(result) > 2**16 - 1:
+        raise ValueError(f"{name} exceeds the MQTT binary-data limit")
+    return result
 
 
 def _b64(value: bytes | bytearray | memoryview | None, name: str) -> str | None:
@@ -178,11 +256,17 @@ def _config(options: MqttClientOptions) -> str:
         nonzero=True,
     )
     keep_alive = _seconds(options.keep_alive, "keep_alive", integral=True)
+    if keep_alive > 2**16 - 1:
+        raise ValueError("keep_alive exceeds the MQTT two-byte seconds limit")
     connection_timeout = _seconds(options.connection_timeout, "connection_timeout", nonzero=True, integral=True)
     event_timeout = _seconds(options.event_delivery_timeout, "event_delivery_timeout", nonzero=True)
     if event_timeout < 0.001:
         raise ValueError("event_delivery_timeout must be at least one millisecond")
     host = _string(options.broker_host, "broker_host")
+    if not host or "\x00" in host:
+        raise ValueError("broker_host must be nonempty and must not contain U+0000")
+    # Configuration strings are also checked by wrapper-core so semantic configuration failures
+    # retain the public ConfigurationError hierarchy rather than becoming scalar ValueError.
     client_id = _string(options.client_id, "client_id")
     username = None if options.username is None else _string(options.username, "username")
     if not isinstance(options.ack_mode, AckMode):
@@ -194,9 +278,11 @@ def _config(options: MqttClientOptions) -> str:
     elif isinstance(options.transport, TlsTransport):
         transport = {"kind": "tls", **_tls(options.transport.tls)}
     elif isinstance(options.transport, WebSocketTransport):
-        transport = {"kind": "websocket", "url": _string(options.transport.url, "WebSocket URL")}
+        url = _websocket_url(options.transport.url, "WebSocket URL", "ws")
+        transport = {"kind": "websocket", "url": url}
     elif isinstance(options.transport, WssTransport):
-        transport = {"kind": "wss", "url": _string(options.transport.url, "WSS URL"), **_tls(options.transport.tls)}
+        url = _websocket_url(options.transport.url, "WSS URL", "wss")
+        transport = {"kind": "wss", "url": url, **_tls(options.transport.tls)}
     else:
         raise TypeError("transport has an unsupported type")
     if options.protocol is ProtocolVersion.MQTT_3_1_1:
@@ -344,6 +430,7 @@ class MqttClient:
                 retryable=False,
             ) from error
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._protocol = options.protocol
         self._connect_task: asyncio.Task[ConnectResult] | None = None
         self._connected = False
         self._closing = False
@@ -386,9 +473,16 @@ class MqttClient:
         options: PublishOptions | None = None,
     ) -> AdmissionResult:
         self._require_connected()
+        checked_options = _publish_options(options, self._protocol)
+        checked_topic = _topic(
+            topic,
+            "publish topic",
+            allow_empty=self._protocol is ProtocolVersion.MQTT_5_0 and checked_options.has_topic_alias,
+        )
+        checked_payload = _publish_payload(payload, checked_options.payload_format_indicator)
         async with self._admission:
             response = _response(
-                await self._native.enqueue_publish(topic, _payload(payload), _publish_options(options))
+                await self._native.enqueue_publish(checked_topic, checked_payload, checked_options.encoded)
             )
         return AdmissionResult(int(response["operationId"]))
 
@@ -399,9 +493,16 @@ class MqttClient:
         options: PublishOptions | None = None,
     ) -> PublishCompletion:
         self._require_connected()
+        checked_options = _publish_options(options, self._protocol)
+        checked_topic = _topic(
+            topic,
+            "publish topic",
+            allow_empty=self._protocol is ProtocolVersion.MQTT_5_0 and checked_options.has_topic_alias,
+        )
+        checked_payload = _publish_payload(payload, checked_options.payload_format_indicator)
         async with self._admission:
             completion = _tracked_completion(
-                await self._native.publish(topic, _payload(payload), _publish_options(options))
+                await self._native.publish(checked_topic, checked_payload, checked_options.encoded)
             )
         response = _response(await completion.wait())
         result = response["result"]
@@ -414,9 +515,15 @@ class MqttClient:
         options: SubscribeOptions | None = None,
     ) -> SubscribeCompletion:
         self._require_connected()
-        filters = [_subscription(value) for value in subscriptions]
+        if isinstance(subscriptions, (str, bytes, bytearray, memoryview)) or not isinstance(subscriptions, Sequence):
+            raise TypeError("subscriptions must be a sequence of Subscription values")
+        filters = [_subscription(value, self._protocol) for value in subscriptions]
+        if not filters:
+            raise ValueError("subscriptions must not be empty")
         if options is not None and not isinstance(options, SubscribeOptions):
             raise TypeError("options must be SubscribeOptions")
+        if options is not None and self._protocol is ProtocolVersion.MQTT_3_1_1:
+            raise ValueError("SUBSCRIBE properties require protocol MQTT_5_0")
         identifier = None
         if options is not None and options.subscription_identifier is not None:
             identifier = _integer(
@@ -430,7 +537,7 @@ class MqttClient:
             if options is None
             else {
                 "subscriptionIdentifier": identifier,
-                "userProperties": options.user_properties,
+                "userProperties": _user_properties(options.user_properties, "SUBSCRIBE user_properties"),
             }
         )
         async with self._admission:
@@ -453,10 +560,20 @@ class MqttClient:
         self._require_connected()
         if options is not None and not isinstance(options, UnsubscribeOptions):
             raise TypeError("options must be UnsubscribeOptions")
+        if options is not None and self._protocol is ProtocolVersion.MQTT_3_1_1:
+            raise ValueError("UNSUBSCRIBE properties require protocol MQTT_5_0")
         if isinstance(filters, str):
             raise TypeError("filters must be a sequence of strings, not str")
-        checked_filters = [_string(value, "unsubscribe filter") for value in filters]
-        packet = None if options is None else {"userProperties": options.user_properties}
+        if not isinstance(filters, Sequence):
+            raise TypeError("filters must be a sequence of strings")
+        checked_filters = [_topic_filter(value, "unsubscribe filter") for value in filters]
+        if not checked_filters:
+            raise ValueError("filters must not be empty")
+        packet = (
+            None
+            if options is None
+            else {"userProperties": _user_properties(options.user_properties, "UNSUBSCRIBE user_properties")}
+        )
         async with self._admission:
             completion = _tracked_completion(
                 await self._native.unsubscribe(json.dumps(checked_filters), _json_optional(packet))
@@ -554,57 +671,99 @@ def _payload(payload: bytes | bytearray | memoryview | str) -> bytes:
     return _bytes(payload, "payload")
 
 
+def _publish_payload(payload: bytes | bytearray | memoryview | str, payload_format_indicator: int | None) -> bytes:
+    result = _payload(payload)
+    if payload_format_indicator == 1:
+        try:
+            result.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("payload must be well-formed UTF-8 when payload_format_indicator is 1") from error
+    return result
+
+
 def _json_optional(value: object | None) -> str | None:
     return None if value is None else json.dumps(value)
 
 
-def _publish_options(options: PublishOptions | None) -> str | None:
+def _publish_options(options: PublishOptions | None, protocol: ProtocolVersion) -> _CheckedPublishOptions:
     if options is None:
-        return None
+        return _CheckedPublishOptions(None, False, None)
+    if not isinstance(options, PublishOptions):
+        raise TypeError("options must be PublishOptions")
     properties = options.properties
     qos = _qos(options.qos)
     retain = _boolean(options.retain, "retain")
     if properties is not None and not isinstance(properties, V5PublishProperties):
         raise TypeError("properties must be V5PublishProperties")
+    if properties is not None and protocol is ProtocolVersion.MQTT_3_1_1:
+        raise ValueError("PUBLISH properties require protocol MQTT_5_0")
+    topic_alias = (
+        None
+        if properties is None or properties.topic_alias is None
+        else _integer(properties.topic_alias, "topic_alias", 2**16 - 1, nonzero=True)
+    )
+    payload_format_indicator = (
+        None
+        if properties is None or properties.payload_format_indicator is None
+        else _integer(properties.payload_format_indicator, "payload_format_indicator", 1)
+    )
     encoded = (
         None
         if properties is None
         else {
-            "responseTopic": properties.response_topic,
+            "responseTopic": None
+            if properties.response_topic is None
+            else _topic(properties.response_topic, "response_topic"),
             "correlationData": None
             if properties.correlation_data is None
-            else list(_bytes(properties.correlation_data, "correlation_data")),
-            "contentType": properties.content_type,
-            "payloadFormatIndicator": None
-            if properties.payload_format_indicator is None
-            else _integer(properties.payload_format_indicator, "payload_format_indicator", 1),
-            "topicAlias": None
-            if properties.topic_alias is None
-            else _integer(properties.topic_alias, "topic_alias", 2**16 - 1, nonzero=True),
+            else list(_limited_binary(properties.correlation_data, "correlation_data")),
+            "contentType": None
+            if properties.content_type is None
+            else _mqtt_string(properties.content_type, "content_type"),
+            "payloadFormatIndicator": payload_format_indicator,
+            "topicAlias": topic_alias,
             "messageExpiryInterval": None
             if properties.message_expiry_interval is None
             else _integer(properties.message_expiry_interval, "message_expiry_interval", 2**32 - 1),
-            "userProperties": properties.user_properties,
+            "userProperties": _user_properties(properties.user_properties, "PUBLISH user_properties"),
         }
     )
-    return json.dumps({"qos": int(qos), "retain": retain, "properties": encoded})
+    return _CheckedPublishOptions(
+        json.dumps({"qos": int(qos), "retain": retain, "properties": encoded}),
+        topic_alias is not None,
+        payload_format_indicator,
+    )
 
 
-def _subscription(value: Subscription) -> dict[str, Any]:
+def _subscription(value: Subscription, protocol: ProtocolVersion) -> dict[str, Any]:
     if not isinstance(value, Subscription):
         raise TypeError("subscriptions must contain Subscription values")
+    checked_filter = _topic_filter(value.filter, "subscription filter")
     options = value.options
     qos = _qos(value.qos)
     if options is not None and not isinstance(options, V5SubscriptionOptions):
         raise TypeError("subscription options must be V5SubscriptionOptions")
+    if options is not None and protocol is ProtocolVersion.MQTT_3_1_1:
+        raise ValueError("per-filter subscription options require protocol MQTT_5_0")
+    no_local = False
+    retain_as_published = False
+    if options is not None:
+        no_local = _boolean(options.no_local, "no_local")
+        retain_as_published = _boolean(options.retain_as_published, "retain_as_published")
+        if no_local and checked_filter.startswith("$share/"):
+            raise ValueError("no_local must be false for a shared subscription")
+        if isinstance(options.retain_forward_rule, bool) or not isinstance(
+            options.retain_forward_rule, RetainForwardRule
+        ):
+            raise TypeError("retain_forward_rule must be RetainForwardRule")
     return {
-        "filter": value.filter,
+        "filter": checked_filter,
         "qos": int(qos),
         "options": None
         if options is None
         else {
-            "noLocal": options.no_local,
-            "retainAsPublished": options.retain_as_published,
+            "noLocal": no_local,
+            "retainAsPublished": retain_as_published,
             "retainForwardRule": int(options.retain_forward_rule),
         },
     }

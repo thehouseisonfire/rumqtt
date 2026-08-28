@@ -176,6 +176,7 @@ pub(crate) async fn run(
         manual_ack,
         protocol,
         immediate_shutdown_rx,
+        panic_rx,
     } = context;
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
@@ -187,6 +188,7 @@ pub(crate) async fn run(
         events: &events,
         timeout: delivery_timeout,
         immediate_shutdown: &immediate_shutdown_rx,
+        panic: &panic_rx,
     };
     loop {
         // `EventLoop::poll` can dequeue requests and mutate protocol state before awaiting I/O.
@@ -201,6 +203,7 @@ pub(crate) async fn run(
                 // handled wrapper work as well so a continuously ready flume channel cannot keep
                 // this current-thread runtime from driving the MQTT socket I/O reactor.
                 tokio::select! {
+                    _ = panic_rx.recv_async() => crate::runtime::terminate_driver_for_boundary_panic(),
                     _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
                         accept_registration(registration, &pending, &mut senders);

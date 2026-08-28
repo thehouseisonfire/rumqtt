@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
+import hashlib
 import os
 import shlex
 import socket
@@ -16,6 +18,93 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+
+
+class WebSocketStream:
+    def __init__(self, stream: socket.socket) -> None:
+        self.stream = stream
+        self.buffer = bytearray()
+
+    def settimeout(self, timeout: float) -> None:
+        self.stream.settimeout(timeout)
+
+    def close(self) -> None:
+        self.stream.close()
+
+    def sendall(self, data: bytes) -> None:
+        length = len(data)
+        header = bytearray((0x82,))
+        if length < 126:
+            header.append(length)
+        elif length <= 0xFFFF:
+            header.append(126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(127)
+            header.extend(struct.pack("!Q", length))
+        self.stream.sendall(header + data)
+
+    def recv(self, length: int) -> bytes:
+        while len(self.buffer) < length:
+            header = read_exact(self.stream, 2)
+            if header is None:
+                break
+            opcode = header[0] & 0x0F
+            masked = bool(header[1] & 0x80)
+            payload_length = header[1] & 0x7F
+            if payload_length == 126:
+                encoded = read_exact(self.stream, 2)
+                if encoded is None:
+                    break
+                payload_length = struct.unpack("!H", encoded)[0]
+            elif payload_length == 127:
+                encoded = read_exact(self.stream, 8)
+                if encoded is None:
+                    break
+                payload_length = struct.unpack("!Q", encoded)[0]
+            mask = read_exact(self.stream, 4) if masked else None
+            payload = read_exact(self.stream, payload_length)
+            if payload is None:
+                break
+            if mask is not None:
+                payload = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+            if opcode in {0, 2}:
+                self.buffer.extend(payload)
+            elif opcode == 8:
+                break
+            elif opcode == 9:
+                self.stream.sendall(bytes((0x8A, len(payload))) + payload)
+        result = bytes(self.buffer[:length])
+        del self.buffer[:length]
+        return result
+
+
+def accept_websocket(stream: socket.socket) -> WebSocketStream:
+    request = bytearray()
+    while b"\r\n\r\n" not in request:
+        chunk = stream.recv(4096)
+        if not chunk:
+            raise ConnectionError("WebSocket handshake ended early")
+        request.extend(chunk)
+        if len(request) > 64 * 1024:
+            raise ValueError("WebSocket handshake exceeded its bound")
+    headers: dict[str, str] = {}
+    for line in request.decode("ascii").split("\r\n")[1:]:
+        if ":" in line:
+            name, value = line.split(":", 1)
+            headers[name.strip().lower()] = value.strip()
+    key = headers.get("sec-websocket-key")
+    if key is None or "mqtt" not in headers.get("sec-websocket-protocol", "").lower():
+        raise ValueError("client did not request the MQTT WebSocket subprotocol")
+    accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
+    stream.sendall(
+        b"HTTP/1.1 101 Switching Protocols\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Sec-WebSocket-Protocol: mqtt\r\n"
+        b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n"
+    )
+    return WebSocketStream(stream)
 
 
 def encode_remaining(value: int) -> bytes:
@@ -128,7 +217,7 @@ class Connection:
 
 
 class Broker:
-    def __init__(self, tls_context: ssl.SSLContext | None = None) -> None:
+    def __init__(self, tls_context: ssl.SSLContext | None = None, *, websocket: bool = False) -> None:
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -136,11 +225,13 @@ class Broker:
         self.listener.settimeout(0.2)
         self.port = self.listener.getsockname()[1]
         self.tls_context = tls_context
+        self.websocket = websocket
         self.stopping = threading.Event()
         self.threads: list[threading.Thread] = []
         self.failures: list[str] = []
         self.client_ids: set[bytes] = set()
         self.observations: dict[bytes, set[str]] = {}
+        self.connection_attempts: dict[bytes, int] = {}
         self.tls_disconnects_before_connect = 0
         self.failure_lock = threading.Lock()
         self.accept_thread = threading.Thread(target=self.accept, name="mqtt-fixture", daemon=True)
@@ -191,6 +282,12 @@ class Broker:
                 except (ConnectionError, OSError):
                     stream.close()
                     continue
+            if self.websocket:
+                try:
+                    stream = accept_websocket(stream)
+                except (ConnectionError, OSError, TimeoutError, ValueError):
+                    stream.close()
+                    continue
             thread = threading.Thread(target=self.serve, args=(stream,), daemon=True)
             self.threads.append(thread)
             thread.start()
@@ -212,13 +309,25 @@ class Broker:
             offset += 1  # CONNECT flags
             offset += 2  # Keep Alive
             if protocol == 4:
-                stream.sendall(b"\x20\x02\x00\x00")
+                pass
             elif protocol == 5:
-                stream.sendall(b"\x20\x03\x00\x00\x00")
                 offset = skip_properties(body, offset)
             else:
                 return
             client_id, _ = string_at(body, offset)
+            with self.failure_lock:
+                attempt = self.connection_attempts.get(client_id, 0) + 1
+                self.connection_attempts[client_id] = attempt
+            if client_id.startswith(b"python-attempt-recovery-") and attempt == 1:
+                return
+            if client_id.startswith(b"python-capability-") and attempt > 1:
+                time.sleep(0.3)
+            if protocol == 4:
+                stream.sendall(b"\x20\x02\x00\x00")
+            elif client_id.startswith(b"python-capability-"):
+                stream.sendall(b"\x20\x06\x00\x00\x03\x22\x00\x0a")
+            else:
+                stream.sendall(b"\x20\x03\x00\x00\x00")
             connection = Connection(stream, protocol, client_id)
             self.client_ids.add(client_id)
             while not self.stopping.is_set():
@@ -263,7 +372,7 @@ class Broker:
             if (
                 connection is not None
                 and connection.outstanding_incoming
-                and not connection.client_id.startswith(b"js-stale-")
+                and not connection.client_id.startswith((b"js-stale-", b"python-ack-rejection-"))
             ):
                 with self.failure_lock:
                     self.failures.append(
@@ -298,6 +407,9 @@ class Broker:
         if topic == b"rumqttc/native/shutdown-delivery":
             self.observations.setdefault(connection.client_id, set()).add("shutdown-delivery")
         if topic == b"rumqttc/native/stall":
+            return True
+        if topic == b"rumqttc/native/reject" and connection.protocol == 5 and qos == 1:
+            connection.send(frame(4, 0, packet_id + b"\x87\x00"))
             return True
         if topic == b"rumqttc/native/pressure" and qos == 1:
             start_release = False
@@ -409,7 +521,7 @@ class Broker:
         connection.send(frame(11, 0, packet_id + suffix))
 
 
-def make_tls_fixture(directory: str) -> tuple[ssl.SSLContext, str, str]:
+def make_tls_fixture(directory: str) -> tuple[ssl.SSLContext, ssl.SSLContext, str, str, str, str]:
     ca_key = os.path.join(directory, "ca.key")
     ca_cert = os.path.join(directory, "ca.pem")
     wrong_key = os.path.join(directory, "wrong-ca.key")
@@ -418,8 +530,14 @@ def make_tls_fixture(directory: str) -> tuple[ssl.SSLContext, str, str]:
     server_csr = os.path.join(directory, "server.csr")
     server_cert = os.path.join(directory, "server.pem")
     extensions = os.path.join(directory, "server.ext")
+    client_key = os.path.join(directory, "client.key")
+    client_csr = os.path.join(directory, "client.csr")
+    client_cert = os.path.join(directory, "client.pem")
+    client_extensions = os.path.join(directory, "client.ext")
     with open(extensions, "w", encoding="utf-8") as output:
         output.write("subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n")
+    with open(client_extensions, "w", encoding="utf-8") as output:
+        output.write("extendedKeyUsage=clientAuth\n")
     commands = [
         [
             "openssl",
@@ -484,37 +602,92 @@ def make_tls_fixture(directory: str) -> tuple[ssl.SSLContext, str, str]:
             "-out",
             server_cert,
         ],
+        [
+            "openssl",
+            "req",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-subj",
+            "/CN=rumqttc test client",
+            "-keyout",
+            client_key,
+            "-out",
+            client_csr,
+        ],
+        [
+            "openssl",
+            "x509",
+            "-req",
+            "-days",
+            "1",
+            "-in",
+            client_csr,
+            "-CA",
+            ca_cert,
+            "-CAkey",
+            ca_key,
+            "-CAcreateserial",
+            "-extfile",
+            client_extensions,
+            "-out",
+            client_cert,
+        ],
     ]
     for command in commands:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(server_cert, server_key)
-    return context, ca_cert, wrong_cert
+    mtls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    mtls_context.load_cert_chain(server_cert, server_key)
+    mtls_context.load_verify_locations(ca_cert)
+    mtls_context.verify_mode = ssl.CERT_REQUIRED
+    return context, mtls_context, ca_cert, wrong_cert, client_cert, client_key
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--omit-address-arguments",
+        action="store_true",
+        help="do not append the fixture host and port to the child command",
+    )
     parser.add_argument("--binary", required=True)
     parser.add_argument("argument", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="rumqttc-native-tls-") as directory:
-        tls_context, ca_cert, wrong_cert = make_tls_fixture(directory)
+        tls_context, mtls_context, ca_cert, wrong_cert, client_cert, client_key = make_tls_fixture(directory)
         broker = Broker()
         tls_broker = Broker(tls_context)
+        websocket_broker = Broker(websocket=True)
+        wss_broker = Broker(tls_context, websocket=True)
+        mtls_broker = Broker(mtls_context)
         broker.start()
         tls_broker.start()
+        websocket_broker.start()
+        wss_broker.start()
+        mtls_broker.start()
         environment = os.environ.copy()
         environment["RUMQTTC_TEST_HOST"] = "127.0.0.1"
         environment["RUMQTTC_TEST_PORT"] = str(broker.port)
         environment["RUMQTTC_TEST_TLS_PORT"] = str(tls_broker.port)
+        environment["RUMQTTC_TEST_WS_PORT"] = str(websocket_broker.port)
+        environment["RUMQTTC_TEST_WSS_PORT"] = str(wss_broker.port)
+        environment["RUMQTTC_TEST_MTLS_PORT"] = str(mtls_broker.port)
         with open(ca_cert, encoding="utf-8") as source:
             environment["RUMQTTC_TEST_CA_PEM"] = source.read()
         with open(wrong_cert, encoding="utf-8") as source:
             environment["RUMQTTC_TEST_WRONG_CA_PEM"] = source.read()
+        with open(client_cert, encoding="utf-8") as source:
+            environment["RUMQTTC_TEST_CLIENT_CERT_PEM"] = source.read()
+        with open(client_key, encoding="utf-8") as source:
+            environment["RUMQTTC_TEST_CLIENT_KEY_PEM"] = source.read()
         try:
             launcher = shlex.split(environment.get("RUMQTTC_NATIVE_LAUNCHER", ""))
+            address_arguments = [] if args.omit_address_arguments else ["127.0.0.1", str(broker.port)]
+            child_arguments = args.argument[1:] if args.argument[:1] == ["--"] else args.argument
             result = subprocess.run(
-                [*launcher, args.binary, *args.argument, "127.0.0.1", str(broker.port)],
+                [*launcher, args.binary, *child_arguments, *address_arguments],
                 env=environment,
                 check=False,
             )
@@ -522,6 +695,9 @@ def main() -> int:
         finally:
             broker.stop()
             tls_broker.stop()
+            websocket_broker.stop()
+            wss_broker.stop()
+            mtls_broker.stop()
 
 
 if __name__ == "__main__":

@@ -132,15 +132,27 @@ struct Started {
     acks: AckRegistry,
     _native: NativeClient,
 }
-struct State {
+pub(crate) struct State {
     config: ClientConfig,
     started: OnceCell<Arc<Started>>,
     start_requested: AtomicBool,
     shutdown: AtomicU8,
+    boundary_panicked: AtomicBool,
 }
 impl State {
+    fn internal_panic(&self) {
+        self.boundary_panicked.store(true, Ordering::SeqCst);
+        if let Some(started) = self.started.get() {
+            started.handle.terminate_for_internal_panic();
+        }
+    }
+
     async fn initialize(&self) -> Result<Arc<Started>, rumqttc_wrapper_core::Error> {
-        self.started
+        if self.boundary_panicked.load(Ordering::SeqCst) {
+            return Err(internal_panic_error());
+        }
+        let started = self
+            .started
             .get_or_try_init(|| async {
                 let cfg = self.config.clone();
                 let mut native = run_native_blocking(None, move |_| NativeClient::start(cfg))
@@ -167,11 +179,22 @@ impl State {
                 }))
             })
             .await
-            .cloned()
+            .cloned()?;
+        // A boundary panic can race native startup: the panic path may observe an empty cell
+        // while `NativeClient::start` is still running. Once the initialized value is published,
+        // either this check observes the panic or the panic path observes the populated cell.
+        if self.boundary_panicked.load(Ordering::SeqCst) {
+            started.handle.terminate_for_internal_panic();
+            return Err(internal_panic_error());
+        }
+        Ok(started)
     }
 
     async fn start(&self) -> Result<Arc<Started>, rumqttc_wrapper_core::Error> {
         self.start_requested.store(true, Ordering::SeqCst);
+        if self.boundary_panicked.load(Ordering::SeqCst) {
+            return Err(internal_panic_error());
+        }
         if self.shutdown.load(Ordering::SeqCst) != RUNNING {
             return Err(shutdown_error());
         }
@@ -214,8 +237,13 @@ impl State {
                     )
                     .with_delivery(DeliveryStatus::Ambiguous))
                 },
-                |result| {
-                    result.map(|started| Some((started, timeout.saturating_sub(began.elapsed()))))
+                |result| match result {
+                    Ok(started) => Ok(Some((started, timeout.saturating_sub(began.elapsed())))),
+                    // NativeClient::start transfers no ownership when construction fails. Closing
+                    // such a client is therefore an idempotent no-op rather than a replay of the
+                    // original TLS/configuration error.
+                    Err(_) if self.started.get().is_none() => Ok(None),
+                    Err(error) => Err(error),
                 },
             )
     }
@@ -226,12 +254,18 @@ fn shutdown_error() -> rumqttc_wrapper_core::Error {
         .with_delivery(DeliveryStatus::NotAdmitted)
 }
 
+fn internal_panic_error() -> rumqttc_wrapper_core::Error {
+    rumqttc_wrapper_core::Error::new(ErrorKind::Internal, "native asynchronous boundary panicked")
+        .with_code(rumqttc_wrapper_core::ErrorCode::InternalPanic)
+        .with_retryable(false)
+}
+
 #[pyclass(module = "rumqttc._native")]
 pub struct NativeMqttClient {
     state: Arc<State>,
 }
 
-pub fn future<F>(py: Python<'_>, value: F) -> PyResult<Bound<'_, PyAny>>
+pub fn future<F>(py: Python<'_>, state: Arc<State>, value: F) -> PyResult<Bound<'_, PyAny>>
 where
     F: std::future::Future<Output = String> + Send + 'static,
 {
@@ -239,11 +273,14 @@ where
         Ok(AssertUnwindSafe(value)
             .catch_unwind()
             .await
-            .unwrap_or_else(|_| internal_panic("native asynchronous boundary panicked")))
+            .unwrap_or_else(|_| {
+                state.internal_panic();
+                internal_panic("native asynchronous boundary panicked")
+            }))
     })
 }
 
-fn tracked_future<F>(py: Python<'_>, value: F) -> PyResult<Bound<'_, PyAny>>
+fn tracked_future<F>(py: Python<'_>, state: Arc<State>, value: F) -> PyResult<Bound<'_, PyAny>>
 where
     F: std::future::Future<Output = (String, Option<completion::NativeCompletion>)>
         + Send
@@ -254,6 +291,7 @@ where
             .catch_unwind()
             .await
             .unwrap_or_else(|_| {
+                state.internal_panic();
                 completion::failed(internal_panic("native asynchronous boundary panicked"))
             }))
     })
@@ -272,12 +310,13 @@ impl NativeMqttClient {
                 started: OnceCell::new(),
                 start_requested: AtomicBool::new(false),
                 shutdown: AtomicU8::new(RUNNING),
+                boundary_panicked: AtomicBool::new(false),
             }),
         })
     }
     fn connect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        future(py, async move {
+        future(py, Arc::clone(&s), async move {
             match s.start().await{Ok(v)=>match v.connection.wait_async().await{Ok(r)=>json!({"ok":true,"protocol":match r.protocol{rumqttc_wrapper_core::ProtocolVersion::V4=>"3.1.1",rumqttc_wrapper_core::ProtocolVersion::V5=>"5.0"},"sessionPresent":r.session_present}).to_string(),Err(e)=>response_error(&e,None)},Err(e)=>response_error(&e,None)}
         })
     }
@@ -289,7 +328,7 @@ impl NativeMqttClient {
         options: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        future(py, async move {
+        future(py, Arc::clone(&s), async move {
             let Some(v) = s.started.get().cloned() else {
                 return local_error(
                     "CLIENT_NOT_CONNECTED",
@@ -314,7 +353,7 @@ impl NativeMqttClient {
         options: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        tracked_future(py, async move {
+        tracked_future(py, Arc::clone(&s), async move {
             let Some(v) = s.started.get().cloned() else {
                 return completion::failed(local_error(
                     "CLIENT_NOT_CONNECTED",
@@ -326,7 +365,7 @@ impl NativeMqttClient {
                 Err(e) => return completion::failed(local_error("COMMAND_INVALID", e)),
             };
             match v.handle.admit_async(Command::Publish(cmd)).await {
-                Ok(a) => completion::tracked(a),
+                Ok(a) => completion::tracked(a, Arc::clone(&s)),
                 Err(e) => completion::failed(response_error(&e, None)),
             }
         })
@@ -338,7 +377,7 @@ impl NativeMqttClient {
         options: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        tracked_future(py, async move {
+        tracked_future(py, Arc::clone(&s), async move {
             let Some(v) = s.started.get().cloned() else {
                 return completion::failed(local_error(
                     "CLIENT_NOT_CONNECTED",
@@ -350,7 +389,7 @@ impl NativeMqttClient {
                 Err(e) => return completion::failed(local_error("COMMAND_INVALID", e)),
             };
             match v.handle.admit_async(Command::Subscribe(cmd)).await {
-                Ok(a) => completion::tracked(a),
+                Ok(a) => completion::tracked(a, Arc::clone(&s)),
                 Err(e) => completion::failed(response_error(&e, None)),
             }
         })
@@ -362,7 +401,7 @@ impl NativeMqttClient {
         options: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        tracked_future(py, async move {
+        tracked_future(py, Arc::clone(&s), async move {
             let Some(v) = s.started.get().cloned() else {
                 return completion::failed(local_error(
                     "CLIENT_NOT_CONNECTED",
@@ -374,14 +413,14 @@ impl NativeMqttClient {
                 Err(e) => return completion::failed(local_error("COMMAND_INVALID", e)),
             };
             match v.handle.admit_async(Command::Unsubscribe(cmd)).await {
-                Ok(a) => completion::tracked(a),
+                Ok(a) => completion::tracked(a, Arc::clone(&s)),
                 Err(e) => completion::failed(response_error(&e, None)),
             }
         })
     }
     fn acknowledge<'py>(&self, py: Python<'py>, id: u64) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        tracked_future(py, async move {
+        tracked_future(py, Arc::clone(&s), async move {
             let Some(v) = s.started.get().cloned() else {
                 return completion::failed(local_error(
                     "CLIENT_NOT_CONNECTED",
@@ -401,7 +440,7 @@ impl NativeMqttClient {
             {
                 Ok(a) => {
                     claim.commit();
-                    completion::tracked(a)
+                    completion::tracked(a, Arc::clone(&s))
                 }
                 Err(e) => completion::failed(response_error(&e, None)),
             }
@@ -409,7 +448,7 @@ impl NativeMqttClient {
     }
     fn next_event<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        future(py, async move {
+        future(py, Arc::clone(&s), async move {
             // Once initialized, the event receiver remains readable through shutdown so callers
             // can drain buffered events, including the terminal Closed event. Only synchronize
             // with startup when initialization has not completed yet.
@@ -426,7 +465,7 @@ impl NativeMqttClient {
     }
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        future(py, async move {
+        future(py, Arc::clone(&s), async move {
             let Some(v) = s.started.get().cloned() else {
                 return local_error(
                     "CLIENT_NOT_CONNECTED",
@@ -441,7 +480,7 @@ impl NativeMqttClient {
     }
     fn close<'py>(&self, py: Python<'py>, timeout_ms: u64) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        future(py, async move {
+        future(py, Arc::clone(&s), async move {
             let timeout = Duration::from_millis(timeout_ms);
             let (v, remaining) = match s.begin_shutdown(GRACEFUL_SHUTDOWN, timeout).await {
                 Ok(Some(value)) => value,
@@ -478,7 +517,7 @@ impl NativeMqttClient {
     }
     fn close_now<'py>(&self, py: Python<'py>, timeout_ms: u64) -> PyResult<Bound<'py, PyAny>> {
         let s = self.state.clone();
-        future(py, async move {
+        future(py, Arc::clone(&s), async move {
             let timeout = Duration::from_millis(timeout_ms);
             let (v, remaining) = match s.begin_shutdown(IMMEDIATE_SHUTDOWN, timeout).await {
                 Ok(Some(value)) => value,
@@ -531,7 +570,8 @@ impl NativeMqttClient {
         py: Python<'py>,
         value: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        future(py, async move { value })
+        let state = Arc::clone(&self.state);
+        future(py, state, async move { value })
     }
 
     #[cfg(feature = "benchmark-testing")]
@@ -540,7 +580,8 @@ impl NativeMqttClient {
         py: Python<'py>,
         duration_ms: u64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        future(py, async move {
+        let state = Arc::clone(&self.state);
+        future(py, state, async move {
             match run_native_blocking(None, move |_| {
                 std::thread::sleep(Duration::from_millis(duration_ms));
             })
@@ -548,6 +589,28 @@ impl NativeMqttClient {
             {
                 Ok(()) => json!({"ok":true}).to_string(),
                 Err(error) => local_error("INTERNAL", error.to_string()),
+            }
+        })
+    }
+
+    #[cfg(feature = "panic-testing")]
+    fn _inject_async_panic<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future(py, Arc::clone(&state), async move {
+            std::panic::panic_any(crate::InjectedAsyncPanic);
+        })
+    }
+
+    #[cfg(feature = "panic-testing")]
+    fn _inject_driver_panic<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future(py, Arc::clone(&state), async move {
+            match state.start().await {
+                Ok(started) => {
+                    started.handle.terminate_for_internal_panic();
+                    internal_panic("injected driver-thread panic")
+                }
+                Err(error) => response_error(&error, None),
             }
         })
     }

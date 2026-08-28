@@ -1,6 +1,10 @@
 ## [Unreleased]
 
 ### Added
+- `rumqttc` for Python: Complete public-boundary validation, reconnect and
+  acknowledgement coverage, panic containment, bounded child-process lifecycle
+  checks, installed wheel/sdist verification across CPython 3.10–3.14, and
+  transport, timeout, threading, cleanup, and MQTT 5 property documentation.
 - `rumqttc` for Python: Add a typed CPython 3.10–3.14 `asyncio` package for
   MQTT 3.1.1 and MQTT 5. The PyO3 wrapper provides bounded admission,
   MQTT-aware completions, single-consumer events, manual acknowledgements,
@@ -179,6 +183,12 @@
   diagnostic field and the v5 `MqttState::mark_outgoing_publishes_flush_attempted()` method;
   reconnect cleanup now always prepares admitted QoS 1/2 publishes as retransmissions.
 ### Fixed
+- `rumqttc` for Python: Reject MQTT 5 text-marked publishes whose payload is
+  not well-formed UTF-8 and reject No Local on shared subscriptions at the
+  Python boundary, before native command admission.
+- `rumqttc` for Python: Allow MQTT 5 publishes with a zero-length Topic Name to
+  reach native admission when they include a Topic Alias, so an existing
+  connection-scoped alias mapping can be reused as permitted by the protocol.
 - `rumqttc` for Python: Bound the production Tokio adapter to two measured
   blocking workers, preventing completion bursts and concurrent client churn
   from retaining Tokio's default allowance of hundreds of threads. Reserve one

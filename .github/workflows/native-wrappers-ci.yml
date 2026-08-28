@@ -407,7 +407,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
-        python: ['3.10', '3.14']
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -424,7 +424,7 @@ jobs:
         working-directory: native-wrappers/python
         run: |
           uv sync --group dev
-          uv run maturin develop
+          uv run maturin develop --features panic-testing
 
       - name: Check Python API and typing
         working-directory: native-wrappers/python
@@ -434,11 +434,13 @@ jobs:
           uv run pyrefly check python tests
           uv run pytest -q
 
-      - name: Run MQTT behavior suite
+      - name: Run MQTT behavior and lifecycle suites
         working-directory: native-wrappers
         run: >-
-          python c/tests/native/broker_fixture.py --binary
-          python/.venv/Scripts/python.exe python/tests/integration/test_broker.py
+          python c/tests/native/broker_fixture.py --omit-address-arguments --binary
+          python/.venv/Scripts/python.exe -- -m pytest -q
+          python/tests/integration/test_broker.py
+          python/tests/test_lifecycle.py
         if: ${{ runner.os == 'Windows' }}
 
       - name: Verify Windows exits with a live Python client
@@ -448,11 +450,13 @@ jobs:
           python/.venv/Scripts/python.exe python/tests/lifecycle/live_client.py
         if: ${{ runner.os == 'Windows' }}
 
-      - name: Run MQTT behavior suite
+      - name: Run MQTT behavior and lifecycle suites
         working-directory: native-wrappers
         run: >-
-          python3 c/tests/native/broker_fixture.py --binary
-          python/.venv/bin/python python/tests/integration/test_broker.py
+          python3 c/tests/native/broker_fixture.py --omit-address-arguments --binary
+          python/.venv/bin/python -- -m pytest -q
+          python/tests/integration/test_broker.py
+          python/tests/test_lifecycle.py
         if: ${{ runner.os != 'Windows' }}
 
       - name: Verify Unix exits with a live Python client
@@ -466,8 +470,66 @@ jobs:
         working-directory: native-wrappers/python
         run: uv run python tests/lifecycle/pending_client.py
 
+      - name: Verify Python panic containment
+        working-directory: native-wrappers
+        run: |
+          python c/tests/native/broker_fixture.py --binary python/.venv/Scripts/python.exe python/tests/lifecycle/panic_client.py async
+          python c/tests/native/broker_fixture.py --binary python/.venv/Scripts/python.exe python/tests/lifecycle/panic_client.py driver
+        if: ${{ runner.os == 'Windows' }}
+
+      - name: Verify Python panic containment
+        working-directory: native-wrappers
+        run: |
+          python3 c/tests/native/broker_fixture.py --binary python/.venv/bin/python python/tests/lifecycle/panic_client.py async
+          python3 c/tests/native/broker_fixture.py --binary python/.venv/bin/python python/tests/lifecycle/panic_client.py driver
+        if: ${{ runner.os != 'Windows' }}
+
       - name: Build and inspect a wheel
         working-directory: native-wrappers/python
         run: |
           uv run maturin build --release --out ../../target/python-wheels
           uv run python -c "import rumqttc; assert rumqttc.MqttClient.__module__ == 'rumqttc._client'"
+
+  python-sanitizers:
+    name: Python ASan and leak lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install sanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+      - name: Build the PyO3 extension with AddressSanitizer
+        working-directory: native-wrappers/python
+        env:
+          CC: clang
+          CXX: clang++
+          RUSTFLAGS: -Zsanitizer=address -C linker=clang -C link-arg=-fuse-ld=lld
+        run: |
+          uv sync --group dev
+          uv run maturin develop --features panic-testing -Z build-std
+      - name: Run Python behavior and teardown under ASan/LSan
+        working-directory: native-wrappers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1:strict_init_order=1
+          LSAN_OPTIONS: exitcode=1
+          PYTHONMALLOC: malloc
+        run: |
+          asan_runtime="$(clang -print-file-name=libclang_rt.asan-x86_64.so)"
+          test -f "$asan_runtime"
+          export RUMQTTC_NATIVE_LAUNCHER="env LD_PRELOAD=$asan_runtime"
+          python3 c/tests/native/broker_fixture.py --omit-address-arguments --binary \
+            python/.venv/bin/python -- -m pytest -q \
+            python/tests/integration/test_broker.py python/tests/test_lifecycle.py
+          python3 c/tests/native/broker_fixture.py --binary \
+            python/.venv/bin/python python/tests/lifecycle/panic_client.py async
+          python3 c/tests/native/broker_fixture.py --binary \
+            python/.venv/bin/python python/tests/lifecycle/panic_client.py driver

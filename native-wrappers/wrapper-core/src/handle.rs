@@ -2,6 +2,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use flume::Sender;
+
 use crate::acknowledgement::{AckReservation, AcknowledgementCoordinator};
 use crate::backend::{AckKey, BackendClient, PreparedAck};
 use crate::operations::OperationRegistry;
@@ -33,6 +35,7 @@ pub(crate) struct Shared {
     connection: ConnectionHandle,
     operations: OperationRegistry,
     shutdown: Arc<ShutdownCoordinator>,
+    panic_tx: Sender<()>,
 }
 
 impl Shared {
@@ -42,6 +45,7 @@ impl Shared {
         connection: ConnectionHandle,
         operations: OperationRegistry,
         shutdown: Arc<ShutdownCoordinator>,
+        panic_tx: Sender<()>,
     ) -> Arc<Self> {
         Arc::new(Self {
             backend,
@@ -51,6 +55,7 @@ impl Shared {
             connection,
             operations,
             shutdown,
+            panic_tx,
         })
     }
 
@@ -268,6 +273,11 @@ impl ClientHandle {
     /// use [`crate::NativeClient::join`] for bounded cleanup.
     pub fn close_now_idempotent(&self) {
         self.shared.best_effort_immediate_close();
+    }
+
+    /// Terminates the driver through its panic-containment boundary after a host-boundary panic.
+    pub fn terminate_for_internal_panic(&self) {
+        _ = self.shared.panic_tx.send(());
     }
 
     /// Nonblocking admission into the underlying bounded MQTT request channel.

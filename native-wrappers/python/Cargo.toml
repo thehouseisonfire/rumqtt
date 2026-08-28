@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 benchmark-testing = []
-panic-testing = []
+panic-testing = ["rumqttc-wrapper-core-next/panic-testing"]
 
 [dependencies]
 base64 = "0.23"

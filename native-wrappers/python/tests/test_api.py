@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import inspect
+import json
 import math
+import threading
+import typing
 import weakref
 
 import pytest
 from rumqttc import (
+    Acknowledgement,
     ClientClosedError,
     ClientStateError,
     ConfigurationError,
@@ -15,7 +20,17 @@ from rumqttc import (
     MqttClient,
     MqttClientOptions,
     ProtocolVersion,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
     TcpTransport,
+    TlsOptions,
+    TlsTransport,
+    UnsubscribeOptions,
+    V5PublishProperties,
+    V5SubscriptionOptions,
+    WebSocketTransport,
+    WssTransport,
 )
 
 
@@ -46,6 +61,61 @@ def test_keep_alive_validation(value: float) -> None:
 def test_v4_password_requires_username() -> None:
     with pytest.raises(ValueError, match="requires a username"):
         MqttClient(options(protocol=ProtocolVersion.MQTT_3_1_1, password=b"secret"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("broker_host", ""),
+        ("request_capacity", True),
+        ("request_capacity", 0),
+        ("event_capacity", True),
+        ("event_capacity", 0),
+        ("incoming_packet_size_limit", True),
+        ("incoming_packet_size_limit", 0),
+        ("keep_alive", True),
+        ("keep_alive", 65_536),
+        ("connection_timeout", 0),
+        ("connection_timeout", math.inf),
+        ("event_delivery_timeout", 0),
+        ("event_delivery_timeout", 0.0009),
+        ("emit_outgoing_events", 1),
+        ("ack_mode", "manual"),
+        ("protocol", "5.0"),
+        ("transport", object()),
+        ("password", b"x" * 65_536),
+        ("clean_session", False),
+        ("clean_start", 1),
+        ("session_expiry_interval", True),
+        ("session_expiry_interval", 2**32),
+    ],
+)
+def test_every_bounded_client_option_is_validated(field: str, value: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        MqttClient(options(**{field: value}))
+
+
+def test_each_protocol_rejects_the_other_versions_session_fields() -> None:
+    with pytest.raises(ValueError, match="MQTT 5 session"):
+        MqttClient(options(protocol=ProtocolVersion.MQTT_3_1_1, clean_start=False))
+    with pytest.raises(ValueError, match="MQTT 5 session"):
+        MqttClient(options(protocol=ProtocolVersion.MQTT_3_1_1, session_expiry_interval=0))
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        WebSocketTransport("http://localhost/mqtt"),
+        WebSocketTransport("ws://"),
+        WebSocketTransport("ws://localhost:65536/mqtt"),
+        WssTransport("ws://localhost/mqtt"),
+        TlsTransport(TlsOptions(client_certificate=b"certificate")),
+        TlsTransport(TlsOptions(private_key=b"key")),
+    ],
+)
+def test_transport_combinations_are_validated(transport: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        MqttClient(options(transport=transport))
 
 
 def test_native_configuration_failure_uses_wrapper_hierarchy() -> None:
@@ -283,6 +353,297 @@ async def test_unsubscribe_rejects_bare_string() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("topic", ["", "bad/+", "bad/#", "bad\x00topic", "x" * 65_536])
+async def test_publish_topics_fail_before_native_admission(topic: str) -> None:
+    client = MqttClient(options())
+    client._connected = True
+    with pytest.raises(ValueError):
+        await client.publish(topic, b"payload")
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["publish", "enqueue_publish"])
+async def test_mqtt5_empty_aliased_topic_reaches_native_admission(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, bytes, str | None]] = []
+
+    class Completion:
+        async def wait(self) -> str:
+            return '{"ok":true,"operationId":"1","result":{"milestone":"qos0Flushed"}}'
+
+    class NativeStub:
+        async def publish(self, topic: str, payload: bytes, value: str | None) -> tuple[str, Completion]:
+            calls.append((topic, payload, value))
+            return '{"ok":true,"operationId":"1"}', Completion()
+
+        async def enqueue_publish(self, topic: str, payload: bytes, value: str | None) -> str:
+            calls.append((topic, payload, value))
+            return '{"ok":true,"operationId":"1"}'
+
+    client = MqttClient(options())
+    client._connected = True
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "_native", NativeStub())
+        publish = getattr(client, operation)
+        await publish("", b"payload", PublishOptions(properties=V5PublishProperties(topic_alias=1)))
+
+    assert len(calls) == 1
+    topic, payload, encoded_options = calls[0]
+    assert topic == ""
+    assert payload == b"payload"
+    assert encoded_options is not None
+    assert json.loads(encoded_options)["properties"]["topicAlias"] == 1
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["publish", "enqueue_publish"])
+async def test_text_payload_with_invalid_utf8_fails_before_native_admission(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called = False
+
+    class NativeStub:
+        async def publish(self, topic: str, payload: bytes, value: str | None) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError
+
+        enqueue_publish = publish
+
+    client = MqttClient(options())
+    client._connected = True
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "_native", NativeStub())
+        publish = getattr(client, operation)
+        with pytest.raises(ValueError, match="well-formed UTF-8"):
+            await publish(
+                "topic",
+                b"\xff",
+                PublishOptions(properties=V5PublishProperties(payload_format_indicator=1)),
+            )
+
+    assert not called
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("topic_filter", ["", "a/#/b", "a+", "a/+b", "$share//topic", "bad\x00filter"])
+async def test_topic_filters_fail_before_native_admission(topic_filter: str) -> None:
+    client = MqttClient(options())
+    client._connected = True
+    with pytest.raises(ValueError):
+        await client.subscribe([Subscription(topic_filter)])
+    with pytest.raises(ValueError):
+        await client.unsubscribe([topic_filter])
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+async def test_no_local_shared_subscription_fails_before_native_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    class NativeStub:
+        async def subscribe(self, filters: str, value: str | None) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError
+
+    client = MqttClient(options())
+    client._connected = True
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "_native", NativeStub())
+        with pytest.raises(ValueError, match="no_local must be false"):
+            await client.subscribe([Subscription("$share/group/topic", options=V5SubscriptionOptions(no_local=True))])
+
+    assert not called
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+async def test_publish_and_subscription_fields_reject_bool_and_bad_property_shapes() -> None:
+    client = MqttClient(options())
+    client._connected = True
+    with pytest.raises(TypeError):
+        await client.publish("topic", b"payload", PublishOptions(qos=True))  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        await client.publish(
+            "topic",
+            b"payload",
+            PublishOptions(properties=V5PublishProperties(topic_alias=True)),  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError):
+        await client.publish(
+            "topic",
+            b"payload",
+            PublishOptions(properties=V5PublishProperties(user_properties=(("key", 1),))),  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError):
+        await client.subscribe(
+            [
+                Subscription(
+                    "topic",
+                    options=V5SubscriptionOptions(retain_forward_rule=True),  # type: ignore[arg-type]
+                )
+            ]
+        )
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "properties",
+    [
+        V5PublishProperties(response_topic="bad/+"),
+        V5PublishProperties(correlation_data=b"x" * 65_536),
+        V5PublishProperties(content_type="bad\x00type"),
+        V5PublishProperties(payload_format_indicator=2),
+        V5PublishProperties(topic_alias=0),
+        V5PublishProperties(message_expiry_interval=True),  # type: ignore[arg-type]
+        V5PublishProperties(message_expiry_interval=2**32),
+        V5PublishProperties(user_properties=(("bad\x00key", "value"),)),
+    ],
+)
+async def test_every_publish_property_is_validated_before_admission(properties: V5PublishProperties) -> None:
+    client = MqttClient(options())
+    client._connected = True
+    with pytest.raises((TypeError, ValueError)):
+        await client.publish("topic", b"payload", PublishOptions(properties=properties))
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_and_unsubscribe_property_scopes_validate_all_fields() -> None:
+    client = MqttClient(options())
+    client._connected = True
+    with pytest.raises(TypeError):
+        await client.subscribe(
+            [Subscription("topic", options=V5SubscriptionOptions(no_local=1))]  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError):
+        await client.subscribe(
+            [Subscription("topic", options=V5SubscriptionOptions(retain_as_published=1))]  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError):
+        await client.subscribe([Subscription("topic")], options=SubscribeOptions(subscription_identifier=0))
+    with pytest.raises(TypeError):
+        await client.subscribe(
+            [Subscription("topic")],
+            options=SubscribeOptions(user_properties=(("key", 1),)),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError):
+        await client.unsubscribe(["topic"], options=UnsubscribeOptions(user_properties=(("bad\x00key", "value"),)))
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+async def test_mqtt5_command_scopes_are_rejected_for_mqtt311() -> None:
+    client = MqttClient(options(protocol=ProtocolVersion.MQTT_3_1_1))
+    client._connected = True
+    with pytest.raises(ValueError, match="PUBLISH properties"):
+        await client.publish("topic", b"payload", PublishOptions(properties=V5PublishProperties()))
+    with pytest.raises(ValueError, match="per-filter"):
+        await client.subscribe([Subscription("topic", options=V5SubscriptionOptions())])
+    with pytest.raises(ValueError, match="SUBSCRIBE properties"):
+        await client.subscribe([Subscription("topic")], options=SubscribeOptions())
+    with pytest.raises(ValueError, match="UNSUBSCRIBE properties"):
+        await client.unsubscribe(["topic"], options=UnsubscribeOptions())
+    await client.close_now()
+
+
+async def cancellable_operation(client: MqttClient, operation: str) -> object:
+    if operation == "publish":
+        return await client.publish("topic", b"payload")
+    if operation == "subscribe":
+        return await client.subscribe([Subscription("topic")])
+    if operation == "unsubscribe":
+        return await client.unsubscribe(["topic"])
+    return await Acknowledgement(client, 7).ack()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["publish", "subscribe", "unsubscribe"])
+async def test_cancellation_while_waiting_for_python_admission_does_not_call_native(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called = False
+
+    class NativeStub:
+        async def publish(self, topic: str, payload: bytes, value: str | None) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError
+
+        subscribe = publish
+        unsubscribe = publish
+
+    client = MqttClient(options(request_capacity=1))
+    client._connected = True
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "_native", NativeStub())
+        await client._admission.acquire()
+        pending = asyncio.create_task(cancellable_operation(client, operation))
+        await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert not called
+        client._admission.release()
+    await client.close_now()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["publish", "subscribe", "unsubscribe", "acknowledge"])
+async def test_cancellation_after_native_admission_drops_only_the_python_waiter(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waiting = asyncio.Event()
+    finish = asyncio.Event()
+
+    class Completion:
+        async def wait(self) -> str:
+            waiting.set()
+            await finish.wait()
+            result = {
+                "publish": {"milestone": "qos0Flushed"},
+                "subscribe": {"results": [{"granted": True, "qos": 0}]},
+                "unsubscribe": {"results": None},
+                "acknowledge": {"type": "acknowledged"},
+            }[operation]
+            return '{"ok":true,"operationId":"1","result":' + json.dumps(result) + "}"
+
+    class NativeStub:
+        async def publish(self, topic: str, payload: bytes, value: str | None) -> tuple[str, Completion]:
+            return '{"ok":true,"operationId":"1"}', Completion()
+
+        async def subscribe(self, filters: str, value: str | None) -> tuple[str, Completion]:
+            return '{"ok":true,"operationId":"1"}', Completion()
+
+        async def unsubscribe(self, filters: str, value: str | None) -> tuple[str, Completion]:
+            return '{"ok":true,"operationId":"1"}', Completion()
+
+        async def acknowledge(self, acknowledgement_id: int) -> tuple[str, Completion]:
+            return '{"ok":true,"operationId":"1"}', Completion()
+
+    client = MqttClient(options())
+    client._connected = True
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "_native", NativeStub())
+        pending = asyncio.create_task(cancellable_operation(client, operation))
+        await asyncio.wait_for(waiting.wait(), timeout=1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        finish.set()
+        await asyncio.sleep(0)
+    await client.close_now()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("previously_connected", [False, True])
 async def test_closed_client_uses_closed_error_consistently(*, previously_connected: bool) -> None:
     client = MqttClient(options())
@@ -315,3 +676,60 @@ def test_client_rejects_use_from_another_loop() -> None:
 
     asyncio.run(bind())
     asyncio.run(use_elsewhere())
+
+
+def test_public_exports_and_callable_annotations_form_a_runtime_contract() -> None:
+    import rumqttc
+
+    assert rumqttc.__all__ == sorted(rumqttc.__all__)
+    assert len(rumqttc.__all__) == len(set(rumqttc.__all__))
+    assert all(not name.startswith("_") and hasattr(rumqttc, name) for name in rumqttc.__all__)
+
+    for method_name in (
+        "__init__",
+        "connect",
+        "enqueue_publish",
+        "publish",
+        "subscribe",
+        "unsubscribe",
+        "events",
+        "diagnostics",
+        "close",
+        "close_now",
+        "__aenter__",
+        "__aexit__",
+    ):
+        method = getattr(MqttClient, method_name)
+        hints = typing.get_type_hints(method)
+        signature = inspect.signature(method)
+        assert "return" in hints
+        assert all(parameter == "self" or parameter in hints for parameter in signature.parameters)
+
+
+def test_manually_created_loop_and_threadsafe_scheduling_use_the_owner_loop() -> None:
+    loop = asyncio.new_event_loop()
+    client = MqttClient(options())
+
+    async def bind() -> None:
+        with pytest.raises(ClientStateError, match=r"connect\(\)"):
+            client.events()
+
+    loop.run_until_complete(bind())
+    result: list[BaseException | None] = []
+
+    def schedule() -> None:
+        future = asyncio.run_coroutine_threadsafe(client.close_now(), loop)
+        try:
+            future.result(timeout=2)
+        except BaseException as error:
+            result.append(error)
+        else:
+            result.append(None)
+
+    thread = threading.Thread(target=schedule)
+    thread.start()
+    while thread.is_alive():
+        loop.run_until_complete(asyncio.sleep(0))
+    thread.join(timeout=1)
+    loop.close()
+    assert result == [None]
