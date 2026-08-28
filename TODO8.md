@@ -1,141 +1,105 @@
-# Python wrapper: remaining work
+# Python wrapper: remaining verification work
 
-Complete the Python wrapper by closing the verification, lifecycle, packaging,
-and documentation gaps below. Treat a behavior as complete only when it has a
-deterministic test at the public Python boundary. Run protocol behavior
-tests against both MQTT 3.1.1 and MQTT 5 unless the behavior is explicitly
-version-specific.
+Complete the Python wrapper verification gaps below. A behavior is complete
+only when it has a deterministic test at the public Python boundary. Run MQTT
+behavior tests against both MQTT 3.1.1 and MQTT 5 unless the behavior is
+explicitly version-specific.
 
 ## 1. Complete the behavior suite
 
 Add broker-backed coverage for:
 
-- concurrent successful `connect()` calls, repeated `connect()` calls after
-  success, and cancellation of one waiter without affecting the others;
-- recovery after an initial connection-attempt failure and reconnection after
-  an established broker connection is interrupted, including ordered
-  `Disconnected` and `Connected` events;
-- automatic acknowledgement and all manual-acknowledgement rejection paths:
-  double acknowledgement, use after reconnect, use after terminal shutdown,
-  and use with a different client;
-- TLS and WSS with a trusted certificate, an untrusted certificate, a hostname
-  mismatch, malformed trust or identity material, and paired client
-  certificate authentication;
-- bounded request admission under saturation and event-buffer overflow,
-  including stable error classification, failure of pending operations, and
-  iterator termination without an additional unbounded Python queue;
-- MQTT 5 capability-aware publish admission while reconnecting, covering QoS
-  1/2, retained publishes, Topic Alias use, and an alias-free, non-retained QoS
-  0 publish;
-- graceful-close timeout, zero-timeout behavior, cancellation of graceful
-  close, concurrent and repeated graceful or immediate close calls, and the
-  resulting terminal event classification;
-- operation cancellation while waiting for admission, after admission, and
-  while racing MQTT completion for publish, subscribe, unsubscribe, and manual
-  acknowledgement;
-- scheduling client work from another thread through the owning event loop,
-  plus completion and cancellation races while that loop is closing; and
-- broker rejection details and every public exception attribute, including
-  `code`, `kind`, `operation_id`, `broker_reason`, `retryable`, `delivery`, and
-  `ambiguous`.
+- rejecting an attempt to acknowledge a delivery through a client other than
+  the client that received it;
+- bounded request admission under saturation, including stable error
+  classification and bounded memory use, for both protocols;
+- event-buffer overflow through the MQTT 3.1.1 public boundary;
+- MQTT 3.1.1 TLS trust, hostname-verification, mutual-authentication, and WSS
+  rejection cases;
+- malformed client-certificate and private-key material over TLS and WSS for
+  both protocols;
+- a positive graceful-close timeout that expires while MQTT work remains
+  pending, including the resulting operation failures and terminal event;
+- cancellation while waiting for acknowledgement admission; and
+- cancellation races against MQTT completion for publish, subscribe,
+  unsubscribe, and manual acknowledgement.
 
-Expand boundary-validation tests to cover every public option and command
-field. Include integer limits without accepting `bool`, duration overflow,
-non-finite and zero timeout rules, malformed topics and filters, invalid
-transport combinations, MQTT-version-specific fields, MQTT 5 publish
-properties, both SUBSCRIBE property scopes, and UNSUBSCRIBE properties. Verify
-that locally invalid values fail before admission and that MQTT 5 fields are
-rejected for MQTT 3.1.1 rather than ignored.
+Add deterministic cross-thread and event-loop shutdown tests that:
 
-Add runtime API-contract tests that compare exported names and callable
-signatures with their annotations. Exercise both `asyncio.run()` and manually
-created event loops.
+- schedule client work from another thread through the owning event loop;
+- race successful completion and cancellation with closure of that loop;
+- reject new scheduling once loop shutdown has begun; and
+- fail on hangs, callbacks delivered after loop closure, unhandled task
+  exceptions, or work completed on the wrong loop.
 
-## 2. Finish panic, shutdown, and leak hardening
+Keep each race bounded and repeat it enough times to exercise both possible
+outcomes. Assert the permitted outcome set and ensure admitted MQTT work is not
+mistaken for work canceled before admission.
 
-Add deterministic test-only panic injection for the Python asynchronous
-boundary and the driver thread. Verify that each injected panic becomes an
-`INTERNAL_PANIC` error, terminates the affected client, fails outstanding
-operations, and never unwinds through Python or aborts the interpreter.
+Add direct public-boundary invalid-value tests for:
 
-Use child-process tests with strict timeouts to cover:
+- client identifiers and usernames at their type, encoding, and length
+  boundaries;
+- the PUBLISH retain flag and property-container type;
+- the per-filter SUBSCRIBE QoS and option-container types; and
+- TLS client-certificate and private-key parsing independently and as a pair.
 
-- explicit `sys.exit()` with a live client;
-- event-loop closure with command-admission, tracked-completion, and
-  acknowledgement waits in flight;
-- clients retained in garbage-collection cycles;
-- module and interpreter teardown with live clients;
-- repeated create/connect/close and create/abandon cycles; and
-- abrupt child-process termination.
+Assert that each locally invalid command fails before native admission. Reject
+`bool` wherever an integer or enum is required.
 
-The child-process suite must fail on hangs, unexpected stderr diagnostics,
-unretrieved task exceptions, or native threads that survive bounded cleanup.
-Track native threads and Python objects across repeated cycles so the tests can
-detect cumulative leaks rather than only successful process exit.
+## 2. Finish lifecycle and leak verification
+
+Track native driver threads independently of Python-managed threads on every
+supported test platform. Repeated create/connect/close and
+create/connect/abandon cycles must fail if native thread counts or live Python
+client objects grow cumulatively after bounded cleanup.
+
+Run the complete panic, shutdown, lifecycle, and leak suites in CI for every
+supported CPython version on Linux, macOS, and Windows. In particular, closed
+event-loop cases must pass on Windows without timing out or emitting unexpected
+stderr diagnostics.
 
 Run the Python boundary under AddressSanitizer and a supported leak checker on
-the platforms where PyO3 and the Python build permit it. Cover normal close,
-immediate close, cancellation, event-buffer overflow, and interpreter teardown
-in those jobs.
+platforms where the Python and PyO3 builds permit it. The sanitizer job must
+cover normal close, immediate close, cancellation, event-buffer overflow,
+panic containment, and interpreter teardown, and must fail on sanitizer or
+leak-checker diagnostics.
 
-## 3. Complete wheel and source-distribution verification
+## 3. Complete distribution verification
 
-Run the installed-package behavior and lifecycle suites for every advertised
-CPython version on every advertised platform:
+Run the installed-wheel behavior and lifecycle suites for CPython 3.10 through
+3.14 on every advertised wheel platform:
 
-- manylinux x86_64 and aarch64;
-- musllinux x86_64;
-- macOS x86_64 and arm64; and
+- manylinux 2.17 x86_64 and aarch64;
+- musllinux 1.2 x86_64;
+- macOS 11+ x86_64 and arm64; and
 - Windows x86_64.
 
-Do not limit installed-wheel execution to the newest Python version. Each
-wheel must be installed into a clean environment before testing; tests must
-not import from the source tree or reuse a development extension.
+Test every wheel with both pip 25.3, the minimum supported installer, and the
+newest supported pip. Install each wheel into a clean environment, run outside
+the source tree, and ensure the tests cannot reuse a development extension.
 
-For every wheel:
+Make Linux wheel auditing enforce, rather than merely report, compatibility
+with the selected manylinux or musllinux policy and its permitted native
+dependencies. Fail the job when a wheel requires a newer libc or an
+out-of-policy shared library.
 
-- verify its Python, ABI, platform, libc, and macOS deployment-target tags;
-- audit Linux native dependencies against the selected manylinux or
-  musllinux policy;
-- verify that the private extension, Python facade, annotations, `py.typed`,
-  license files, and no development artifacts are present;
-- run import, connect, binary publish at QoS 0/1/2, receive, manual
-  acknowledgement, unsubscribe, and graceful-close smoke tests for both
-  protocols; and
-- install with both the minimum supported `pip` and the newest supported
-  `pip`.
+Build the source distribution in a clean environment and verify ordinary,
+bounded packaging failures for each missing source-build prerequisite:
 
-Build the source distribution in a clean environment, install it using only
-the documented source-build prerequisites, run the installed-package smoke
-suite, and verify that a missing Rust or native build prerequisite produces an
-ordinary packaging failure without downloading executables.
+- Rust/Cargo; and
+- the native compiler or linker toolchain.
 
-## 4. Complete user documentation
-
-Document:
-
-- installation from wheels and from source, including supported wheel
-  platforms and source-build prerequisites;
-- TCP, TLS, WebSocket, and WSS configuration, including custom roots and
-  client-certificate authentication;
-- reconnect behavior after both connection-attempt and established-session
-  failures;
-- the exact meaning of zero and omitted timeouts for every operation that
-  accepts a timeout;
-- how another thread safely schedules work through the client-owned event
-  loop; and
-- the absence of synchronous and callback facades and the prohibition on
-  direct cross-loop use.
-
-Add complete examples for a dedicated event-consumer task, cancellation-safe
-application cleanup, manual acknowledgements, and MQTT 5 PUBLISH, SUBSCRIBE,
-per-filter subscription, and UNSUBSCRIBE properties.
+The failure path must not download Rust, a compiler, a linker, or another
+executable.
 
 ## Completion criteria
 
-This TODO is complete only when all items above pass in CI for every advertised
-CPython version and platform. The required evidence includes broker behavior,
-cancellation and closed-loop races, bounded-memory failure, panic containment,
-interpreter shutdown, installed wheels, source installation, and leak checks.
-No panic, borrowed Python memory, native thread, or scheduled callback may
-cross an invalid interpreter boundary.
+This TODO is complete only after all checks above pass in CI. Required evidence
+includes broker-backed saturation and acknowledgement ownership, real MQTT
+completion races, cross-thread closed-loop races, cross-platform native-thread
+leak detection, sanitizer and leak-checker execution, installed wheels for the
+full platform and CPython matrix, and clean source-distribution failure tests.
+
+No panic, borrowed Python memory, native thread, task, or scheduled callback
+may cross an invalid interpreter or event-loop boundary.
