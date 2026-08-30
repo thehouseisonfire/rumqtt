@@ -14,18 +14,18 @@ use crate::{
     OperationId, Result,
 };
 
-pub(crate) type CompletionFuture =
+pub type CompletionFuture =
     Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'static>>;
-pub(crate) type PendingFuture =
+pub type PendingFuture =
     Pin<Box<dyn Future<Output = (OperationId, Result<Completion>)> + Send>>;
 
-pub(crate) struct CompletionRegistration {
+pub struct CompletionRegistration {
     operation_id: OperationId,
     registry: OperationRegistry,
     future: CompletionFuture,
 }
 
-pub(crate) struct DiagnosticsRequest {
+pub struct DiagnosticsRequest {
     operation_id: OperationId,
     registry: OperationRegistry,
 }
@@ -37,11 +37,11 @@ impl DiagnosticsRequest {
     }
 }
 
-pub(crate) struct PendingSender {
+pub struct PendingSender {
     registry: OperationRegistry,
 }
 
-pub(crate) struct OperationReceivers {
+pub struct OperationReceivers {
     completions: Receiver<CompletionRegistration>,
     diagnostics: Receiver<DiagnosticsRequest>,
 }
@@ -58,7 +58,7 @@ impl OperationReceivers {
 }
 
 #[derive(Clone)]
-pub(crate) struct OperationRegistry {
+pub struct OperationRegistry {
     inner: Arc<Inner>,
 }
 
@@ -196,7 +196,7 @@ impl OperationRegistry {
     }
 }
 
-pub(crate) fn accept_registration(
+pub fn accept_registration(
     registration: CompletionRegistration,
     pending: &FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
@@ -210,7 +210,7 @@ pub(crate) fn accept_registration(
     pending.push(Box::pin(async move { (operation_id, future.await) }));
 }
 
-pub(crate) fn resolve_pending(
+pub fn resolve_pending(
     (operation_id, result): (OperationId, Result<Completion>),
     senders: &mut HashMap<OperationId, PendingSender>,
 ) {
@@ -219,7 +219,7 @@ pub(crate) fn resolve_pending(
     }
 }
 
-pub(crate) async fn drain_pending(
+pub async fn drain_pending(
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
 ) {
@@ -228,7 +228,7 @@ pub(crate) async fn drain_pending(
     }
 }
 
-pub(crate) fn complete_queued_diagnostics(
+pub fn complete_queued_diagnostics(
     diagnostics: &Receiver<DiagnosticsRequest>,
     snapshot: &DiagnosticsSnapshot,
 ) {
@@ -237,7 +237,7 @@ pub(crate) fn complete_queued_diagnostics(
     }
 }
 
-pub(crate) fn fail_pending(senders: &mut HashMap<OperationId, PendingSender>, error: &Error) {
+pub fn fail_pending(senders: &mut HashMap<OperationId, PendingSender>, error: &Error) {
     let mut pending: Vec<_> = senders.drain().collect();
     pending.sort_unstable_by_key(|(operation_id, _)| *operation_id);
     for (operation_id, sender) in pending {
@@ -248,7 +248,7 @@ pub(crate) fn fail_pending(senders: &mut HashMap<OperationId, PendingSender>, er
     }
 }
 
-pub(crate) fn fail_unfinished(senders: &mut HashMap<OperationId, PendingSender>) {
+pub fn fail_unfinished(senders: &mut HashMap<OperationId, PendingSender>) {
     let error = Error::new(
         ErrorKind::Shutdown,
         "driver closed before the operation reported a terminal MQTT result",

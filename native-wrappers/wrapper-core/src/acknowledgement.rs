@@ -15,7 +15,7 @@ struct AckState {
     completions: HashMap<AckKey, OperationId>,
 }
 
-pub(crate) struct AcknowledgementCoordinator {
+pub struct AcknowledgementCoordinator {
     client_identity: u64,
     generation: AtomicU64,
     next_serial: AtomicU64,
@@ -153,14 +153,14 @@ impl AcknowledgementCoordinator {
     }
 }
 
-pub(crate) struct AckReservation {
+pub struct AckReservation {
     coordinator: Arc<AcknowledgementCoordinator>,
     token: AckToken,
     ack: Option<PreparedAck>,
 }
 
 impl AckReservation {
-    pub(crate) fn ack(&self) -> &PreparedAck {
+    pub(crate) const fn ack(&self) -> &PreparedAck {
         self.ack.as_ref().expect("active ACK reservation")
     }
 

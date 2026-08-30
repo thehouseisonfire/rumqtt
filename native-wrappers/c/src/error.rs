@@ -15,7 +15,7 @@ pub const AMBIGUOUS: u32 = 9;
 pub const INTERNAL_ERROR: u32 = 10;
 pub const WOULD_BLOCK: u32 = 11;
 
-pub(crate) const ERROR_NONE: u32 = 0;
+pub const ERROR_NONE: u32 = 0;
 const ERROR_CONFIGURATION: u32 = 1;
 const ERROR_ADMISSION: u32 = 2;
 const ERROR_BACKPRESSURE: u32 = 3;

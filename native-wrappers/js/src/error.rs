@@ -24,7 +24,7 @@ struct ErrorBody<'a> {
     ambiguous: bool,
 }
 
-pub(crate) fn response_error(error: &Error, operation_id: Option<u64>) -> String {
+pub fn response_error(error: &Error, operation_id: Option<u64>) -> String {
     serde_json::to_string(&ErrorResponse {
         ok: false,
         error: ErrorBody {
@@ -41,7 +41,7 @@ pub(crate) fn response_error(error: &Error, operation_id: Option<u64>) -> String
     .unwrap_or_else(|_| internal_panic("error response serialization failed"))
 }
 
-pub(crate) fn internal_panic(message: &str) -> String {
+pub fn internal_panic(message: &str) -> String {
     serde_json::json!({
         "ok": false,
         "error": {
@@ -56,7 +56,7 @@ pub(crate) fn internal_panic(message: &str) -> String {
     .to_string()
 }
 
-pub(crate) fn napi_error(error: impl ToString) -> NapiError {
+pub fn napi_error(error: impl ToString) -> NapiError {
     NapiError::from_reason(error.to_string())
 }
 

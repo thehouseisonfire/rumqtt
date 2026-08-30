@@ -25,9 +25,9 @@ impl AdmissionGate {
     }
 }
 
-pub(crate) static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
+pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) struct Shared {
+pub struct Shared {
     backend: BackendClient,
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
@@ -98,7 +98,7 @@ impl Shared {
         self.connection.terminate(error);
     }
 
-    pub(crate) fn backend(&self) -> &BackendClient {
+    pub(crate) const fn backend(&self) -> &BackendClient {
         &self.backend
     }
 
@@ -250,7 +250,7 @@ impl Drop for ClientHandle {
 }
 
 impl ClientHandle {
-    pub(crate) fn new(shared: Arc<Shared>) -> Self {
+    pub(crate) const fn new(shared: Arc<Shared>) -> Self {
         Self { shared }
     }
 
@@ -510,7 +510,7 @@ impl ClientHandle {
     }
 }
 
-pub(crate) fn duration_to_u16(duration: Duration, name: &str) -> Result<u16> {
+pub fn duration_to_u16(duration: Duration, name: &str) -> Result<u16> {
     u16::try_from(duration.as_secs())
         .map_err(|_| Error::configuration(format!("{name} exceeds u16 seconds")))
 }

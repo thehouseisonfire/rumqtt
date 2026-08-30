@@ -39,7 +39,7 @@ pub(crate) fn active_native_clients() -> usize {
 }
 
 #[allow(dead_code)] // Used from the Node-API module environment hook in cdylib builds.
-pub(crate) struct ClientCleanup {
+pub struct ClientCleanup {
     handle: rumqttc_wrapper_core::ClientHandle,
     closer: rumqttc_wrapper_core::NativeClientCloser,
 }
@@ -56,7 +56,7 @@ impl ClientCleanup {
 }
 
 #[derive(Default)]
-pub(crate) struct EnvironmentClients {
+pub struct EnvironmentClients {
     clients: StdMutex<Vec<Weak<ClientCleanup>>>,
 }
 
@@ -134,13 +134,10 @@ impl NativeMqttClient {
     where
         F: Future<Output = String>,
     {
-        match AssertUnwindSafe(future).catch_unwind().await {
-            Ok(response) => response,
-            Err(_) => {
-                self.boundary_panicked.store(true, Ordering::Release);
-                self.cleanup.signal();
-                internal_panic("native asynchronous boundary panicked")
-            }
+        if let Ok(response) = AssertUnwindSafe(future).catch_unwind().await { response } else {
+            self.boundary_panicked.store(true, Ordering::Release);
+            self.cleanup.signal();
+            internal_panic("native asynchronous boundary panicked")
         }
     }
 

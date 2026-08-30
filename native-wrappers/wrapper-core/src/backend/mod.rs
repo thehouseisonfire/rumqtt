@@ -1,5 +1,5 @@
-pub(crate) mod v4;
-pub(crate) mod v5;
+pub mod v4;
+pub mod v5;
 
 use std::time::Duration;
 
@@ -11,18 +11,18 @@ use crate::{
     SubscriptionProtocolOptions, TlsConfig, UnsubscribeCommand, UnsubscribeProtocolOptions,
 };
 
-pub(crate) enum BackendClient {
+pub enum BackendClient {
     V4(rumqttc_v4::AsyncClient),
     V5(rumqttc_v5::AsyncClient),
 }
 
-pub(crate) enum BackendDriver {
+pub enum BackendDriver {
     V4(Box<rumqttc_v4::EventLoop>),
     V5(Box<rumqttc_v5::EventLoop>),
 }
 
 #[derive(Clone)]
-pub(crate) enum PreparedAck {
+pub enum PreparedAck {
     V4(rumqttc_v4::ManualAck),
     V5(rumqttc_v5::ManualAck),
 }
@@ -39,7 +39,7 @@ impl PreparedAck {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum AckKey {
+pub enum AckKey {
     V4PubAck(u16),
     V4PubRec(u16),
     V5PubAck(u16),
@@ -248,7 +248,7 @@ impl BackendDriver {
     }
 }
 
-pub(crate) fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
+pub fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
     let ClientConfig { common, protocol } = config;
     match protocol {
         ProtocolConfig::V4(protocol) => {
@@ -277,7 +277,7 @@ fn build_tls(config: &TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_v4_puback(packet_id: u16) -> PreparedAck {
+pub const fn test_v4_puback(packet_id: u16) -> PreparedAck {
     PreparedAck::V4(rumqttc_v4::ManualAck::PubAck(rumqttc_v4::PubAck::new(
         packet_id,
     )))

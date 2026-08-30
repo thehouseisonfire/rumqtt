@@ -65,7 +65,7 @@ struct UnsubscribeOptions {
     user_properties: Vec<(String, String)>,
 }
 
-pub(crate) fn publish(
+pub fn publish(
     topic: String,
     payload: Vec<u8>,
     options: Option<&str>,
@@ -92,7 +92,7 @@ pub(crate) fn publish(
     })
 }
 
-pub(crate) fn subscribe(filters: &str, options: Option<&str>) -> Result<SubscribeCommand, String> {
+pub fn subscribe(filters: &str, options: Option<&str>) -> Result<SubscribeCommand, String> {
     let filters: Vec<SubscriptionInput> =
         serde_json::from_str(filters).map_err(|error| format!("invalid subscriptions: {error}"))?;
     let options: Option<SubscribeOptions> = parse_optional(options, "subscribe options")?;
@@ -129,7 +129,7 @@ pub(crate) fn subscribe(filters: &str, options: Option<&str>) -> Result<Subscrib
     })
 }
 
-pub(crate) fn unsubscribe(
+pub fn unsubscribe(
     filters: &str,
     options: Option<&str>,
 ) -> Result<UnsubscribeCommand, String> {

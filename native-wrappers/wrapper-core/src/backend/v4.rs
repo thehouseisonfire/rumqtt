@@ -3,7 +3,7 @@ use crate::{
     PublishCompletion, QoS, Result, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
 };
 
-pub(crate) fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
+pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
     let kind = match error {
         rumqttc_v4::ClientError::RequestChannelFull(_) => ErrorKind::Backpressure,
         rumqttc_v4::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
@@ -12,7 +12,7 @@ pub(crate) fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
     Error::sourced(kind, DeliveryStatus::NotAdmitted, error)
 }
 
-pub(crate) fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
+pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
     let kind = match error {
         rumqttc_v4::ConnectionError::Tls(_) => ErrorKind::Tls,
         rumqttc_v4::ConnectionError::ConnectionRefused(
@@ -32,7 +32,7 @@ pub(crate) fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error 
     Error::sourced(kind, DeliveryStatus::Ambiguous, error)
 }
 
-pub(crate) const fn map_outgoing(outgoing: &rumqttc_v4::Outgoing) -> OutgoingActivity {
+pub const fn map_outgoing(outgoing: &rumqttc_v4::Outgoing) -> OutgoingActivity {
     match outgoing {
         rumqttc_v4::Outgoing::Publish(_) => OutgoingActivity::Publish,
         rumqttc_v4::Outgoing::Subscribe(_) => OutgoingActivity::Subscribe,
@@ -65,7 +65,7 @@ use crate::{
     WrapperEvent,
 };
 
-pub(crate) fn build(
+pub fn build(
     common: &crate::CommonConfig,
     protocol: crate::V4Config,
 ) -> crate::Result<(rumqttc_v4::AsyncClient, Box<rumqttc_v4::EventLoop>)> {
@@ -162,7 +162,7 @@ pub(crate) fn build(
     eventloop.network_options = network;
     Ok((client, Box::new(eventloop)))
 }
-pub(crate) async fn run(
+pub async fn run(
     mut eventloop: Box<rumqttc_v4::EventLoop>,
     context: DriverContext,
 ) -> TerminalStatus {
@@ -358,11 +358,11 @@ fn snapshot_v4(eventloop: &rumqttc_v4::EventLoop) -> DiagnosticsSnapshot {
     }
 }
 
-pub(crate) const fn publish_options(command: &PublishCommand) -> rumqttc_v4::PublishOptions {
+pub const fn publish_options(command: &PublishCommand) -> rumqttc_v4::PublishOptions {
     rumqttc_v4::PublishOptions::new(to_qos(command.qos)).retain(command.retain)
 }
 
-pub(crate) const fn to_qos(qos: QoS) -> rumqttc_v4::QoS {
+pub const fn to_qos(qos: QoS) -> rumqttc_v4::QoS {
     match qos {
         QoS::AtMostOnce => rumqttc_v4::QoS::AtMostOnce,
         QoS::AtLeastOnce => rumqttc_v4::QoS::AtLeastOnce,
@@ -370,7 +370,7 @@ pub(crate) const fn to_qos(qos: QoS) -> rumqttc_v4::QoS {
     }
 }
 
-pub(crate) const fn from_qos(qos: rumqttc_v4::QoS) -> QoS {
+pub const fn from_qos(qos: rumqttc_v4::QoS) -> QoS {
     match qos {
         rumqttc_v4::QoS::AtMostOnce => QoS::AtMostOnce,
         rumqttc_v4::QoS::AtLeastOnce => QoS::AtLeastOnce,
@@ -378,7 +378,7 @@ pub(crate) const fn from_qos(qos: rumqttc_v4::QoS) -> QoS {
     }
 }
 
-pub(crate) fn map_publish_notice(
+pub fn map_publish_notice(
     result: std::result::Result<rumqttc_v4::PublishResult, rumqttc_v4::PublishNoticeError>,
 ) -> Result<Completion> {
     result
@@ -392,7 +392,7 @@ pub(crate) fn map_publish_notice(
         .map_err(map_notice_error)
 }
 
-pub(crate) fn map_subscribe_notice(
+pub fn map_subscribe_notice(
     result: std::result::Result<rumqttc_v4::SubAck, rumqttc_v4::SubscribeNoticeError>,
 ) -> Result<Completion> {
     result
@@ -415,7 +415,7 @@ pub(crate) fn map_subscribe_notice(
         .map_err(map_notice_error)
 }
 
-pub(crate) fn map_unsubscribe_notice(
+pub fn map_unsubscribe_notice(
     result: std::result::Result<rumqttc_v4::UnsubAck, rumqttc_v4::UnsubscribeNoticeError>,
 ) -> Result<Completion> {
     result
@@ -423,6 +423,6 @@ pub(crate) fn map_unsubscribe_notice(
         .map_err(map_notice_error)
 }
 
-pub(crate) fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
+pub fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
     Error::sourced(ErrorKind::Protocol, DeliveryStatus::Ambiguous, error)
 }

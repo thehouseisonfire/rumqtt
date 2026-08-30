@@ -667,7 +667,7 @@ fn mqtt5_invalid_subscribe_user_properties_are_not_admitted() {
         ("invalid\0key".into(), "value".into()),
         ("key".into(), "invalid\0value".into()),
         (oversized.clone(), "value".into()),
-        ("key".into(), oversized.clone()),
+        ("key".into(), oversized),
     ]
     .map(|user_property| {
         Command::Subscribe(SubscribeCommand {
@@ -692,7 +692,7 @@ fn mqtt5_invalid_unsubscribe_user_properties_are_not_admitted() {
         ("invalid\0key".into(), "value".into()),
         ("key".into(), "invalid\0value".into()),
         (oversized.clone(), "value".into()),
-        ("key".into(), oversized.clone()),
+        ("key".into(), oversized),
     ]
     .map(|user_property| {
         Command::Unsubscribe(UnsubscribeCommand {

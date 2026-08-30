@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConfigInput {
+pub struct ConfigInput {
     protocol: String,
     broker_host: String,
     broker_port: u16,
@@ -54,7 +54,7 @@ enum TransportInput {
     },
 }
 
-pub(crate) fn parse(input: &str) -> Result<ClientConfig, String> {
+pub fn parse(input: &str) -> Result<ClientConfig, String> {
     let input: ConfigInput = serde_json::from_str(input)
         .map_err(|error| format!("invalid native client configuration: {error}"))?;
     let mut config = match input.protocol.as_str() {

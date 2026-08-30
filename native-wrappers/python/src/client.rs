@@ -32,14 +32,14 @@ struct ImmediateShutdownGuard {
 }
 
 impl ImmediateShutdownGuard {
-    fn new(handle: rumqttc_wrapper_core::ClientHandle) -> Self {
+    const fn new(handle: rumqttc_wrapper_core::ClientHandle) -> Self {
         Self {
             handle,
             armed: true,
         }
     }
 
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.armed = false;
     }
 
@@ -132,7 +132,7 @@ struct Started {
     acks: AckRegistry,
     _native: NativeClient,
 }
-pub(crate) struct State {
+pub struct State {
     config: ClientConfig,
     started: OnceCell<Arc<Started>>,
     start_requested: AtomicBool,

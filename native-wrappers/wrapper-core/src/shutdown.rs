@@ -38,25 +38,25 @@ enum ShutdownRecord {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ImmediateAdmission {
+pub enum ImmediateAdmission {
     StartClosing,
     EscalateGraceful,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PollErrorAction {
+pub enum PollErrorAction {
     Reconnect,
     Fail,
     CompleteImmediateClose,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ClosedOutcome {
+pub enum ClosedOutcome {
     Graceful,
     Immediate,
 }
 
-pub(crate) struct ShutdownCoordinator {
+pub struct ShutdownCoordinator {
     lifecycle: AtomicU8,
     phase: AtomicU8,
     record: Mutex<ShutdownRecord>,

@@ -11,7 +11,7 @@ use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 
 use crate::acknowledgement::AcknowledgementCoordinator;
 use crate::backend::{self, BackendDriver};
-use crate::handle::*;
+use crate::handle::{ClientHandle, NEXT_CLIENT_ID, Shared};
 use crate::operations::OperationRegistry;
 use crate::operations::{
     CompletionRegistration, DiagnosticsRequest, PendingFuture, PendingSender, accept_registration,
@@ -39,12 +39,12 @@ fn install_boundary_panic_hook() {
     });
 }
 
-pub(crate) fn terminate_driver_for_boundary_panic() -> ! {
+pub fn terminate_driver_for_boundary_panic() -> ! {
     std::panic::panic_any(BoundaryTerminationPanic)
 }
 
 /// Join ownership shared by the native owner and close coordinator.
-pub(crate) struct ThreadOwner {
+pub struct ThreadOwner {
     join: ParkingMutex<Option<thread::JoinHandle<()>>>,
     done: Receiver<()>,
 }
@@ -225,7 +225,7 @@ enum TimedReceive {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum TerminalStatus {
+pub enum TerminalStatus {
     Closed { graceful: bool },
     Failed(Error),
 }
@@ -537,7 +537,7 @@ impl Drop for NativeClient {
     }
 }
 
-pub(crate) struct DriverContext {
+pub struct DriverContext {
     pub(crate) shared: Arc<Shared>,
     pub(crate) completion_rx: Receiver<CompletionRegistration>,
     pub(crate) diagnostics_rx: Receiver<DiagnosticsRequest>,
@@ -550,7 +550,7 @@ pub(crate) struct DriverContext {
     pub(crate) panic_rx: Receiver<()>,
 }
 
-pub(crate) struct ShutdownInputs<'a> {
+pub struct ShutdownInputs<'a> {
     shared: &'a Shared,
     completion_rx: &'a Receiver<CompletionRegistration>,
     diagnostics_rx: &'a Receiver<DiagnosticsRequest>,
@@ -574,7 +574,7 @@ async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalSt
     driver.run(context).await
 }
 
-pub(crate) struct EventDelivery<'a> {
+pub struct EventDelivery<'a> {
     pub(crate) shared: &'a Shared,
     pub(crate) events: &'a Sender<WrapperEvent>,
     pub(crate) timeout: Duration,
@@ -583,7 +583,7 @@ pub(crate) struct EventDelivery<'a> {
 }
 
 // The two explicit loops keep protocol types statically checked and make all translation local.
-pub(crate) async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool {
+pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool {
     if delivery.shared.immediate_shutdown_requested() {
         return true;
     }
@@ -597,7 +597,7 @@ pub(crate) async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -
     }
 }
 
-pub(crate) async fn complete_shutdown(
+pub async fn complete_shutdown(
     shutdown: &ShutdownInputs<'_>,
     diagnostics: &DiagnosticsSnapshot,
     pending: &mut FuturesUnordered<PendingFuture>,
@@ -619,7 +619,7 @@ pub(crate) async fn complete_shutdown(
     shutdown.shared.reconcile_closed() == ClosedOutcome::Graceful
 }
 
-pub(crate) async fn finish_close(
+pub async fn finish_close(
     shutdown: &ShutdownInputs<'_>,
     diagnostics: &DiagnosticsSnapshot,
     pending: &mut FuturesUnordered<PendingFuture>,
@@ -629,7 +629,7 @@ pub(crate) async fn finish_close(
     TerminalStatus::Closed { graceful }
 }
 
-pub(crate) fn overflow_error() -> Error {
+pub fn overflow_error() -> Error {
     Error::new(
         ErrorKind::Backpressure,
         "event buffer remained full beyond the delivery timeout",

@@ -5,11 +5,11 @@ use serde_json::{Value, json};
 
 use crate::error::response_error;
 
-pub(crate) fn admission(admission: &Admission) -> String {
+pub fn admission(admission: &Admission) -> String {
     json!({ "ok": true, "operationId": admission.operation_id.get().to_string() }).to_string()
 }
 
-pub(crate) async fn wait(admission: Admission) -> String {
+pub async fn wait(admission: Admission) -> String {
     let operation_id = admission.operation_id.get();
     match admission.completion.wait_async().await {
         Ok(completion) => success(operation_id, completion).to_string(),

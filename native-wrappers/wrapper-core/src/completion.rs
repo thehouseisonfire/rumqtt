@@ -62,7 +62,7 @@ pub enum CompletionWaitOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) struct CompletionCell {
+pub struct CompletionCell {
     operation_id: OperationId,
     result: Mutex<Option<Result<Completion>>>,
     completed: Condvar,

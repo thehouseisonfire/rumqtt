@@ -9,7 +9,7 @@ use crate::{
 
 use crate::validation::{protocol_option_error, validate_mqtt_utf8_string};
 
-pub(crate) fn validate_publish(command: &PublishCommand) -> Result<()> {
+pub fn validate_publish(command: &PublishCommand) -> Result<()> {
     let PublishProtocolOptions::V5(properties) = &command.protocol else {
         return Ok(());
     };
@@ -51,7 +51,7 @@ pub(crate) fn validate_publish(command: &PublishCommand) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_subscribe(command: &SubscribeCommand) -> Result<()> {
+pub fn validate_subscribe(command: &SubscribeCommand) -> Result<()> {
     let SubscribeProtocolOptions::V5(properties) = &command.protocol else {
         return Ok(());
     };
@@ -67,7 +67,7 @@ pub(crate) fn validate_subscribe(command: &SubscribeCommand) -> Result<()> {
     validate_user_properties(&properties.user_properties, "SUBSCRIBE user property")
 }
 
-pub(crate) fn validate_unsubscribe(command: &UnsubscribeCommand) -> Result<()> {
+pub fn validate_unsubscribe(command: &UnsubscribeCommand) -> Result<()> {
     let UnsubscribeProtocolOptions::V5(properties) = &command.protocol else {
         return Ok(());
     };
@@ -82,7 +82,7 @@ fn validate_user_properties(properties: &[(String, String)], name: &str) -> Resu
     Ok(())
 }
 
-pub(crate) fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
+pub fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
     let kind = match error {
         rumqttc_v5::ClientError::RequestChannelFull(_)
         | rumqttc_v5::ClientError::PublishAdmissionPending { .. } => ErrorKind::Backpressure,
@@ -92,7 +92,7 @@ pub(crate) fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
     Error::sourced(kind, DeliveryStatus::NotAdmitted, error)
 }
 
-pub(crate) fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
+pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
     let kind = match error {
         rumqttc_v5::ConnectionError::Tls(_) => ErrorKind::Tls,
         rumqttc_v5::ConnectionError::ConnectionRefused(
@@ -112,7 +112,7 @@ pub(crate) fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error 
     Error::sourced(kind, DeliveryStatus::Ambiguous, error)
 }
 
-pub(crate) const fn map_outgoing(outgoing: &rumqttc_v5::Outgoing) -> OutgoingActivity {
+pub const fn map_outgoing(outgoing: &rumqttc_v5::Outgoing) -> OutgoingActivity {
     match outgoing {
         rumqttc_v5::Outgoing::Publish(_) => OutgoingActivity::Publish,
         rumqttc_v5::Outgoing::Subscribe(_) => OutgoingActivity::Subscribe,
@@ -146,7 +146,7 @@ use crate::{
     WrapperEvent,
 };
 
-pub(crate) fn build(
+pub fn build(
     common: &crate::CommonConfig,
     protocol: crate::V5Config,
 ) -> crate::Result<(rumqttc_v5::AsyncClient, Box<rumqttc_v5::EventLoop>)> {
@@ -242,7 +242,7 @@ pub(crate) fn build(
         })?;
     Ok((client, Box::new(eventloop)))
 }
-pub(crate) async fn run(
+pub async fn run(
     mut eventloop: Box<rumqttc_v5::EventLoop>,
     context: DriverContext,
 ) -> TerminalStatus {
@@ -432,7 +432,7 @@ fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
     }
 }
 
-pub(crate) fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {
+pub fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {
     let options = rumqttc_v5::PublishOptions::new(to_qos(command.qos)).retain(command.retain);
     match command.protocol.clone() {
         PublishProtocolOptions::VersionNeutral => options,
@@ -442,7 +442,7 @@ pub(crate) fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOp
     }
 }
 
-pub(crate) const fn to_retain_forward_rule(
+pub const fn to_retain_forward_rule(
     rule: V5RetainForwardRule,
 ) -> rumqttc_v5::RetainForwardRule {
     match rule {
@@ -452,7 +452,7 @@ pub(crate) const fn to_retain_forward_rule(
     }
 }
 
-pub(crate) fn to_subscribe_properties(
+pub fn to_subscribe_properties(
     properties: V5SubscribeProperties,
 ) -> rumqttc_v5::SubscribeProperties {
     rumqttc_v5::SubscribeProperties {
@@ -461,7 +461,7 @@ pub(crate) fn to_subscribe_properties(
     }
 }
 
-pub(crate) fn to_unsubscribe_properties(
+pub fn to_unsubscribe_properties(
     properties: V5UnsubscribeProperties,
 ) -> rumqttc_v5::UnsubscribeProperties {
     rumqttc_v5::UnsubscribeProperties {
@@ -469,7 +469,7 @@ pub(crate) fn to_unsubscribe_properties(
     }
 }
 
-pub(crate) const fn to_qos(qos: QoS) -> rumqttc_v5::QoS {
+pub const fn to_qos(qos: QoS) -> rumqttc_v5::QoS {
     match qos {
         QoS::AtMostOnce => rumqttc_v5::QoS::AtMostOnce,
         QoS::AtLeastOnce => rumqttc_v5::QoS::AtLeastOnce,
@@ -477,7 +477,7 @@ pub(crate) const fn to_qos(qos: QoS) -> rumqttc_v5::QoS {
     }
 }
 
-pub(crate) const fn from_qos(qos: rumqttc_v5::QoS) -> QoS {
+pub const fn from_qos(qos: rumqttc_v5::QoS) -> QoS {
     match qos {
         rumqttc_v5::QoS::AtMostOnce => QoS::AtMostOnce,
         rumqttc_v5::QoS::AtLeastOnce => QoS::AtLeastOnce,
@@ -485,7 +485,7 @@ pub(crate) const fn from_qos(qos: rumqttc_v5::QoS) -> QoS {
     }
 }
 
-pub(crate) fn to_outgoing_publish_properties(
+pub fn to_outgoing_publish_properties(
     properties: V5OutgoingPublishProperties,
 ) -> rumqttc_v5::PublishProperties {
     rumqttc_v5::PublishProperties {
@@ -500,7 +500,7 @@ pub(crate) fn to_outgoing_publish_properties(
     }
 }
 
-pub(crate) fn from_incoming_publish_properties(
+pub fn from_incoming_publish_properties(
     properties: rumqttc_v5::PublishProperties,
 ) -> V5IncomingPublishProperties {
     V5IncomingPublishProperties {
@@ -515,7 +515,7 @@ pub(crate) fn from_incoming_publish_properties(
     }
 }
 
-pub(crate) fn map_publish_notice(
+pub fn map_publish_notice(
     result: std::result::Result<rumqttc_v5::PublishResult, rumqttc_v5::PublishNoticeError>,
 ) -> Result<Completion> {
     match result {
@@ -544,7 +544,7 @@ pub(crate) fn map_publish_notice(
     }
 }
 
-pub(crate) fn map_subscribe_notice(
+pub fn map_subscribe_notice(
     result: std::result::Result<rumqttc_v5::SubAck, rumqttc_v5::SubscribeNoticeError>,
 ) -> Result<Completion> {
     result
@@ -567,7 +567,7 @@ pub(crate) fn map_subscribe_notice(
         .map_err(map_notice_error)
 }
 
-pub(crate) fn map_unsubscribe_notice(
+pub fn map_unsubscribe_notice(
     result: std::result::Result<rumqttc_v5::UnsubAck, rumqttc_v5::UnsubscribeNoticeError>,
 ) -> Result<Completion> {
     result
@@ -592,7 +592,7 @@ pub(crate) fn map_unsubscribe_notice(
         .map_err(map_notice_error)
 }
 
-pub(crate) const fn v5_suback_code(reason: rumqttc_v5::SubscribeReasonCode) -> u8 {
+pub const fn v5_suback_code(reason: rumqttc_v5::SubscribeReasonCode) -> u8 {
     use rumqttc_v5::SubscribeReasonCode as R;
     match reason {
         R::Success(qos) => from_qos(qos) as u8,
@@ -608,34 +608,34 @@ pub(crate) const fn v5_suback_code(reason: rumqttc_v5::SubscribeReasonCode) -> u
     }
 }
 
-pub(crate) const fn v5_puback_success(reason: rumqttc_v5::PubAckReason) -> bool {
+pub const fn v5_puback_success(reason: rumqttc_v5::PubAckReason) -> bool {
     matches!(
         reason,
         rumqttc_v5::PubAckReason::Success | rumqttc_v5::PubAckReason::NoMatchingSubscribers
     )
 }
 
-pub(crate) const fn v5_puback_code(reason: rumqttc_v5::PubAckReason) -> u8 {
+pub const fn v5_puback_code(reason: rumqttc_v5::PubAckReason) -> u8 {
     reason as u8
 }
 
-pub(crate) const fn v5_pubrec_code(reason: rumqttc_v5::PubRecReason) -> u8 {
+pub const fn v5_pubrec_code(reason: rumqttc_v5::PubRecReason) -> u8 {
     reason as u8
 }
 
-pub(crate) const fn v5_pubcomp_code(reason: rumqttc_v5::PubCompReason) -> u8 {
+pub const fn v5_pubcomp_code(reason: rumqttc_v5::PubCompReason) -> u8 {
     reason as u8
 }
 
-pub(crate) fn v5_pubcomp_success(reason: rumqttc_v5::PubCompReason) -> bool {
+pub fn v5_pubcomp_success(reason: rumqttc_v5::PubCompReason) -> bool {
     reason == rumqttc_v5::PubCompReason::Success
 }
 
-pub(crate) fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
+pub fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
     Error::sourced(ErrorKind::Protocol, DeliveryStatus::Ambiguous, error)
 }
 
-pub(crate) fn broker_rejection(code: u8) -> Error {
+pub fn broker_rejection(code: u8) -> Error {
     Error::new(
         ErrorKind::Protocol,
         format!("broker rejected operation with reason code 0x{code:02x}"),

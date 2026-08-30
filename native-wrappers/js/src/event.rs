@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use crate::error::response_error;
 
 #[derive(Default)]
-pub(crate) struct AckRegistry {
+pub struct AckRegistry {
     next: AtomicU64,
     tokens: Mutex<HashMap<u64, AckToken>>,
 }
@@ -41,7 +41,7 @@ impl AckRegistry {
     }
 }
 
-pub(crate) fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
+pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
     let event = match event {
         WrapperEvent::Connected {
             protocol,
