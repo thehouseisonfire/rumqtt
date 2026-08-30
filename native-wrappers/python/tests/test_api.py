@@ -124,6 +124,20 @@ def test_native_configuration_failure_uses_wrapper_hierarchy() -> None:
     assert failure.value.code == "CONFIGURATION_INVALID"
 
 
+@pytest.mark.parametrize("field", ["client_id", "username"])
+@pytest.mark.parametrize("value", [b"bytes", "bad\x00value", "\ud800", "é" * 32_768])
+def test_connect_strings_validate_type_encoding_and_encoded_length(field: str, value: object) -> None:
+    with pytest.raises((ConfigurationError, TypeError, ValueError)):
+        MqttClient(options(**{field: value}))
+
+
+@pytest.mark.parametrize("field", ["client_id", "username"])
+def test_connect_strings_accept_the_mqtt_encoded_length_boundary(field: str) -> None:
+    client = MqttClient(options(**{field: "x" * 65_535}))
+    client._native.abandon()
+    client._finalizer.detach()
+
+
 def test_events_require_a_running_loop() -> None:
     client = MqttClient(options())
     with pytest.raises(ClientStateError, match="running asyncio"):
@@ -344,6 +358,54 @@ async def test_acknowledgement_bypasses_saturated_request_admission(monkeypatch:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_acknowledgement_retains_admission_until_native_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_waiting = asyncio.Event()
+    finish_first = asyncio.Event()
+    second_admitted = asyncio.Event()
+    admitted: list[int] = []
+
+    class Completion:
+        def __init__(self, acknowledgement_id: int) -> None:
+            self.acknowledgement_id = acknowledgement_id
+
+        async def wait(self) -> str:
+            if self.acknowledgement_id == 1:
+                first_waiting.set()
+                await finish_first.wait()
+            return '{"ok":true,"operationId":"1","result":{"type":"acknowledged"}}'
+
+    class NativeStub:
+        async def acknowledge(self, acknowledgement_id: int) -> tuple[str, Completion]:
+            admitted.append(acknowledgement_id)
+            if acknowledgement_id == 2:
+                second_admitted.set()
+            return '{"ok":true,"operationId":"1"}', Completion(acknowledgement_id)
+
+    client = MqttClient(options(request_capacity=1))
+    client._connected = True
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "_native", NativeStub())
+        first = asyncio.create_task(client._acknowledge(1))
+        await asyncio.wait_for(first_waiting.wait(), timeout=1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(client._acknowledge(2))
+        await asyncio.sleep(0)
+        assert admitted == [1]
+        assert not second_admitted.is_set()
+
+        finish_first.set()
+        await asyncio.wait_for(second_admitted.wait(), timeout=1)
+        await asyncio.wait_for(second, timeout=1)
+        assert admitted == [1, 2]
+    await client.close_now()
+
+
+@pytest.mark.asyncio
 async def test_unsubscribe_rejects_bare_string() -> None:
     client = MqttClient(options())
     client._connected = True
@@ -471,6 +533,10 @@ async def test_publish_and_subscription_fields_reject_bool_and_bad_property_shap
     with pytest.raises(TypeError):
         await client.publish("topic", b"payload", PublishOptions(qos=True))  # type: ignore[arg-type]
     with pytest.raises(TypeError):
+        await client.publish("topic", b"payload", PublishOptions(retain=1))  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        await client.publish("topic", b"payload", PublishOptions(properties={}))  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
         await client.publish(
             "topic",
             b"payload",
@@ -491,6 +557,10 @@ async def test_publish_and_subscription_fields_reject_bool_and_bad_property_shap
                 )
             ]
         )
+    with pytest.raises((TypeError, ValueError)):
+        await client.subscribe([Subscription("topic", qos=True)])  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        await client.subscribe([Subscription("topic", options={})])  # type: ignore[arg-type]
     await client.close_now()
 
 

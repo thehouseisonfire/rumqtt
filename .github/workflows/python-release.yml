@@ -124,23 +124,25 @@ jobs:
           fi
       - run: |
           python -m pip install --no-index --only-binary=:all: "$RUMQTTC_WHEEL"
-          python -m pip install pytest pytest-asyncio
+          python -m pip install pytest pytest-asyncio psutil
       - name: Verify installed contents outside the source tree
         run: python -I "${{ github.workspace }}/native-wrappers/python/tests/installed/verify_install.py"
       - name: Run installed broker smoke suite
         env:
           PYTHONSAFEPATH: '1'
-        run: >-
-          python native-wrappers/c/tests/native/broker_fixture.py --binary
-          python native-wrappers/python/tests/installed/smoke.py
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/native-wrappers/c/tests/native/broker_fixture.py" --binary \
+            python "$GITHUB_WORKSPACE/native-wrappers/python/tests/installed/smoke.py"
       - name: Run installed behavior and lifecycle suites
         env:
           PYTHONSAFEPATH: '1'
-        run: >-
-          python native-wrappers/c/tests/native/broker_fixture.py --omit-address-arguments --binary
-          python -- -m pytest -q
-          native-wrappers/python/tests/integration/test_broker.py
-          native-wrappers/python/tests/test_lifecycle.py
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/native-wrappers/c/tests/native/broker_fixture.py" \
+            --omit-address-arguments --binary python -- -m pytest -q \
+            "$GITHUB_WORKSPACE/native-wrappers/python/tests/integration/test_broker.py" \
+            "$GITHUB_WORKSPACE/native-wrappers/python/tests/test_lifecycle.py"
 
   musl-smoke:
     needs: wheels
@@ -165,7 +167,7 @@ jobs:
           wheel=$(find /work/dist -name "*-${tag}-${tag}-musllinux*x86_64.whl" -print -quit) &&
           python /work/native-wrappers/python/tests/installed/verify_wheel.py "$wheel" --python-tag "$tag" --platform-pattern musllinux_1_2_x86_64 &&
           python -m pip install --no-index --only-binary=:all: "$wheel" &&
-          python -m pip install pytest pytest-asyncio &&
+          python -m pip install pytest pytest-asyncio psutil &&
           python -I /work/native-wrappers/python/tests/installed/verify_install.py &&
           python /work/native-wrappers/c/tests/native/broker_fixture.py --binary
           python /work/native-wrappers/python/tests/installed/smoke.py &&
@@ -191,7 +193,13 @@ jobs:
       - name: Audit manylinux and musllinux policy and native dependencies
         run: |
           for wheel in dist/*linux*.whl; do
-            auditwheel show "$wheel"
+            case "$wheel" in
+              *manylinux*x86_64.whl) policy=manylinux_2_17_x86_64 ;;
+              *manylinux*aarch64.whl) policy=manylinux_2_17_aarch64 ;;
+              *musllinux*x86_64.whl) policy=musllinux_1_2_x86_64 ;;
+              *) echo "unsupported Linux wheel policy: $wheel" >&2; exit 1 ;;
+            esac
+            python native-wrappers/python/tests/installed/audit_linux_wheel.py "$wheel" --policy "$policy"
           done
 
   sdist-test:
@@ -219,13 +227,31 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/sdist-missing-rust"
           "$RUNNER_TEMP/sdist-missing-rust/bin/python" -m pip install pip==25.3 'maturin>=1.10,<2'
-          if CARGO=/missing/cargo RUSTC=/missing/rustc \
+          set +e
+          env CARGO=/missing/cargo RUSTC=/missing/rustc timeout 120 \
             "$RUNNER_TEMP/sdist-missing-rust/bin/python" -m pip install \
-            --no-build-isolation --no-binary=:all: dist/*.tar.gz >"$RUNNER_TEMP/missing-rust.log" 2>&1; then
-            echo 'sdist unexpectedly installed without Rust' >&2
-            exit 1
-          fi
-          ! grep -Ei 'download(ing|ed).*(rust|cargo|executable)' "$RUNNER_TEMP/missing-rust.log"
+            --no-build-isolation --no-binary=:all: dist/*.tar.gz >"$RUNNER_TEMP/missing-rust.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          test "$status" -ne 124
+          ! grep -Ei 'download(ing|ed).*(rust|cargo|compiler|linker|executable)' "$RUNNER_TEMP/missing-rust.log"
+      - name: Missing native linker is an ordinary packaging failure
+        run: |
+          python -m venv "$RUNNER_TEMP/sdist-missing-linker"
+          "$RUNNER_TEMP/sdist-missing-linker/bin/python" -m pip install pip==25.3 'maturin>=1.10,<2'
+          set +e
+          env CC=/missing/cc CXX=/missing/cxx CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=/missing/linker \
+            timeout 120 "$RUNNER_TEMP/sdist-missing-linker/bin/python" -m pip install \
+            --no-build-isolation --no-binary=:all: dist/*.tar.gz >"$RUNNER_TEMP/missing-linker.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          test "$status" -ne 124
+          grep -Ei '(linker|/missing/(cc|cxx|linker)).*(not found|No such file)|No such file.*(linker|/missing/)' \
+            "$RUNNER_TEMP/missing-linker.log"
+          ! grep -Ei 'download(ing|ed).*(rust|cargo|compiler|linker|executable)' \
+            "$RUNNER_TEMP/missing-linker.log"
 
   publish:
     needs: [wheels, sdist, wheel-test, musl-smoke, linux-wheel-audit, sdist-test]

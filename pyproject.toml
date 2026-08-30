@@ -30,4 +30,4 @@ docstring-code-format = true
 
 [tool.pyrefly]
 python-version = "3.11"
-search-path = ["benchmarks", "native-wrappers/c/tests/abi", "native-wrappers/python/python"]
+search-path = ["benchmarks", "native-wrappers/c/tests/abi", "native-wrappers/python", "native-wrappers/python/python"]

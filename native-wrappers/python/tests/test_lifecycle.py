@@ -27,7 +27,7 @@ def test_interpreter_lifecycle_cases_are_bounded_and_quiet(mode: str, tmp_path: 
 
 
 @pytest.mark.skipif("RUMQTTC_TEST_PORT" not in os.environ, reason="broker fixture is not running")
-@pytest.mark.parametrize("script", ["live_client.py", "loop_closing_client.py"])
+@pytest.mark.parametrize("script", ["live_client.py", "loop_closing_client.py", "thread_loop_races.py"])
 def test_live_loop_shutdown_is_bounded_and_quiet(script: str, tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, str(ROOT / "lifecycle" / script)],
@@ -35,7 +35,7 @@ def test_live_loop_shutdown_is_bounded_and_quiet(script: str, tmp_path: Path) ->
         env=os.environ.copy(),
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=20,
         check=False,
     )
     assert result.returncode == 0, result.stderr

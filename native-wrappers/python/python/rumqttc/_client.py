@@ -132,7 +132,10 @@ def _string(value: object, name: str) -> str:
 
 def _mqtt_string(value: object, name: str, *, allow_empty: bool = True) -> str:
     result = _string(value, name)
-    encoded = result.encode("utf-8")
+    try:
+        encoded = result.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{name} must be well-formed UTF-8") from error
     if not allow_empty and not result:
         raise ValueError(f"{name} must not be empty")
     if len(encoded) > 2**16 - 1:
@@ -265,8 +268,8 @@ def _config(options: MqttClientOptions) -> str:
     host = _string(options.broker_host, "broker_host")
     if not host or "\x00" in host:
         raise ValueError("broker_host must be nonempty and must not contain U+0000")
-    # Configuration strings are also checked by wrapper-core so semantic configuration failures
-    # retain the public ConfigurationError hierarchy rather than becoming scalar ValueError.
+    # wrapper-core performs MQTT UTF-8 semantic checks for CONNECT strings so failures retain the
+    # public ConfigurationError hierarchy. Type checking remains at the Python boundary.
     client_id = _string(options.client_id, "client_id")
     username = None if options.username is None else _string(options.username, "username")
     if not isinstance(options.ack_mode, AckMode):
@@ -364,6 +367,14 @@ def _observe_connect_result(task: asyncio.Future[ConnectResult]) -> None:
         task.exception()
 
 
+def _observe_acknowledgement_result(task: asyncio.Future[None]) -> None:
+    # A caller may stop awaiting an admitted acknowledgement, but its worker must continue to
+    # hold admission capacity until native completion. Observe any eventual exception because
+    # there may no longer be a Python waiter to retrieve it.
+    if not task.cancelled():
+        task.exception()
+
+
 async def _wait_for_connect(task: asyncio.Task[ConnectResult]) -> ConnectResult:
     if task.done():
         return task.result()
@@ -436,6 +447,10 @@ class MqttClient:
         self._closing = False
         self._event_iterator: weakref.ReferenceType[_EventIterator] | None = None
         self._admission = asyncio.Semaphore(options.request_capacity)
+        # ACKs retain an independent bounded lane so publish saturation cannot deadlock protocol
+        # progress, while an incoming burst still cannot create unbounded native ACK observations.
+        self._ack_admission = asyncio.Semaphore(options.request_capacity)
+        self._acknowledgement_workers: set[asyncio.Task[None]] = set()
         self._finalizer = weakref.finalize(self, _abandon, self._native)
         _live_clients.add(self)
 
@@ -609,8 +624,27 @@ class MqttClient:
         self._require_connected()
         # Manual acknowledgements use the native control lane. Keeping them out of the Python
         # request semaphore prevents saturated publish admission from blocking protocol progress.
-        completion = _tracked_completion(await self._native.acknowledge(ack_id))
-        _response(await completion.wait())
+        await self._ack_admission.acquire()
+        try:
+            worker = asyncio.create_task(self._complete_acknowledgement(ack_id))
+        except BaseException:
+            self._ack_admission.release()
+            raise
+        # asyncio keeps only weak references to tasks. Retain cancellation-independent workers
+        # until their native completions settle.
+        self._acknowledgement_workers.add(worker)
+        worker.add_done_callback(self._acknowledgement_workers.discard)
+        worker.add_done_callback(_observe_acknowledgement_result)
+        # Caller cancellation must not cancel the worker: admitted native work cannot be
+        # cancelled, and its permit remains owned by the worker until completion settles.
+        await asyncio.shield(worker)
+
+    async def _complete_acknowledgement(self, ack_id: int) -> None:
+        try:
+            completion = _tracked_completion(await self._native.acknowledge(ack_id))
+            _response(await completion.wait())
+        finally:
+            self._ack_admission.release()
 
     async def diagnostics(self) -> ClientDiagnostics:
         self._require_connected()

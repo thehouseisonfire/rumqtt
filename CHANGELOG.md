@@ -5,6 +5,13 @@
   acknowledgement coverage, panic containment, bounded child-process lifecycle
   checks, installed wheel/sdist verification across CPython 3.10–3.14, and
   transport, timeout, threading, cleanup, and MQTT 5 property documentation.
+- `rumqttc` for Python: Complete cross-protocol saturation, event-overflow,
+  TLS/WSS identity, graceful-timeout, acknowledgement-ownership, real MQTT
+  cancellation-race, cross-thread loop-shutdown, and native-thread leak
+  verification. Installed-wheel tests now run outside the checkout, Linux
+  policy auditing and missing-linker source-build failures are enforced, and
+  manual acknowledgements use an independent bounded admission lane whose
+  capacity remains held through native completion after caller cancellation.
 - `rumqttc` for Python: Add a typed CPython 3.10–3.14 `asyncio` package for
   MQTT 3.1.1 and MQTT 5. The PyO3 wrapper provides bounded admission,
   MQTT-aware completions, single-consumer events, manual acknowledgements,

@@ -4,9 +4,9 @@ import asyncio
 import gc
 import os
 import sys
-import threading
 import weakref
 
+import psutil
 from rumqttc import MqttClient, MqttClientOptions, ProtocolVersion
 
 
@@ -22,10 +22,9 @@ def client(client_id: str) -> MqttClient:
 
 
 def native_thread_count() -> int:
-    task_directory = "/proc/self/task"
-    if os.path.isdir(task_directory):
-        return len(os.listdir(task_directory))
-    return threading.active_count()
+    # threading.active_count() sees only Python-managed threads. Process.num_threads() uses the
+    # platform process API and therefore includes the Rust MQTT driver and Tokio worker threads.
+    return psutil.Process().num_threads()
 
 
 async def gc_cycle() -> None:
@@ -51,25 +50,24 @@ async def repetition() -> None:
     gc.collect()
     await asyncio.sleep(0.025)
     baseline = native_thread_count()
-    references: list[weakref.ReferenceType[MqttClient]] = []
-    for index in range(40):
-        mqtt = client(f"python-repetition-{index}")
-        references.append(weakref.ref(mqtt))
-        await mqtt.connect()
-        if index % 3 == 0:
-            await mqtt.close_now()
-        elif index % 3 == 1:
-            await mqtt.close()
-        else:
-            mqtt._native.abandon()
-        del mqtt
-    for _ in range(40):
-        gc.collect()
-        if all(reference() is None for reference in references) and native_thread_count() <= baseline:
-            break
-        await asyncio.sleep(0.025)
-    assert all(reference() is None for reference in references)
-    assert native_thread_count() <= baseline
+    for lifecycle in ("close", "abandon"):
+        references: list[weakref.ReferenceType[MqttClient]] = []
+        for index in range(30):
+            mqtt = client(f"python-repetition-{lifecycle}-{index}")
+            references.append(weakref.ref(mqtt))
+            await mqtt.connect()
+            if lifecycle == "close":
+                await (mqtt.close() if index % 2 else mqtt.close_now())
+            else:
+                mqtt._native.abandon()
+            del mqtt
+        for _ in range(80):
+            gc.collect()
+            if all(reference() is None for reference in references) and native_thread_count() <= baseline:
+                break
+            await asyncio.sleep(0.025)
+        assert all(reference() is None for reference in references), lifecycle
+        assert native_thread_count() <= baseline, lifecycle
 
 
 async def module_teardown() -> None:

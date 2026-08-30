@@ -8,8 +8,8 @@ selection, command admission, tracked completion, event delivery, error
 classification, and client shutdown.
 
 Choose either the JavaScript/TypeScript wrapper described in `TODO6.md` or the
-Python wrapper described in `TODO8.md`. Do not create a disposable validation
-wrapper solely to satisfy this requirement.
+Python wrapper maintained in `native-wrappers/python/`. Do not create a
+disposable validation wrapper solely to satisfy this requirement.
 
 ## Integration requirements
 

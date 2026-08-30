@@ -408,6 +408,8 @@ class Broker:
             self.observations.setdefault(connection.client_id, set()).add("shutdown-delivery")
         if topic == b"rumqttc/native/stall":
             return True
+        if topic.startswith(b"rumqttc/native/race/publish/slow/"):
+            time.sleep(0.03)
         if topic == b"rumqttc/native/reject" and connection.protocol == 5 and qos == 1:
             connection.send(frame(4, 0, packet_id + b"\x87\x00"))
             return True
@@ -456,6 +458,9 @@ class Broker:
             connection.subscriptions.add(topic)
             offset += 1
 
+        if any(topic.startswith(b"rumqttc/native/race/subscribe/slow/") for topic, _ in subscriptions):
+            time.sleep(0.03)
+
         if connection.client_id == b"native-v5-protocol-options":
             if subscriptions == [(b"rumqttc/native/v5/default", 0)]:
                 if properties:
@@ -480,6 +485,9 @@ class Broker:
         for topic, _ in subscriptions:
             if topic == b"rumqttc/native/incoming":
                 connection.publish(topic, b"\x00native\x00", qos=1)
+            elif topic == b"rumqttc/native/ack-burst":
+                for index in range(128):
+                    connection.publish(topic, index.to_bytes(2, "big"), qos=1)
             elif topic == b"rumqttc/native/overflow":
                 for index in range(8):
                     connection.publish(topic, bytes([index, 0]), qos=0)
@@ -487,6 +495,8 @@ class Broker:
                 connection.publish(topic, b"automatic-qos1", qos=1)
             elif topic == b"rumqttc/native/automatic/qos2":
                 connection.publish(topic, b"automatic-qos2", qos=2)
+            elif topic.startswith(b"rumqttc/native/race/acknowledge/"):
+                connection.publish(topic, b"ack-race", qos=1)
 
     def release_pressure(self, connection: Connection) -> None:
         time.sleep(0.2)
@@ -508,6 +518,9 @@ class Broker:
         while offset < len(body):
             topic, offset = string_at(body, offset)
             filters.append(topic)
+
+        if any(topic.startswith(b"rumqttc/native/race/unsubscribe/slow/") for topic in filters):
+            time.sleep(0.03)
 
         if connection.client_id == b"native-v5-protocol-options":
             if filters != [b"rumqttc/native/v5/options/2"]:
