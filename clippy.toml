@@ -1,2 +1,2 @@
 msrv = "1.88"
-allowed-duplicate-crates = ["syn", "windows-sys"]
+allowed-duplicate-crates = ["syn", "untrusted", "windows-sys"]
