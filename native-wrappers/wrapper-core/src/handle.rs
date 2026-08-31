@@ -71,6 +71,10 @@ impl Shared {
         self.shutdown.immediate_requested()
     }
 
+    pub(crate) fn timeout_graceful_shutdown(&self, error: Error) -> bool {
+        self.shutdown.timeout_graceful(error)
+    }
+
     pub(crate) fn notify_progress(&self) {
         self.shutdown.notify_progress();
     }

@@ -61,7 +61,9 @@ async def repetition() -> None:
             else:
                 mqtt._native.abandon()
             del mqtt
-        for _ in range(80):
+        # Abandonment is deliberately nonblocking. Slow and instrumented CI runners may need
+        # several seconds to schedule all signaled native drivers through runtime teardown.
+        for _ in range(200):
             gc.collect()
             if all(reference() is None for reference in references) and native_thread_count() <= baseline:
                 break

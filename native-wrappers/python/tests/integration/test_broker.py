@@ -594,7 +594,10 @@ async def test_saturated_admission_is_bounded_and_classified(protocol: ProtocolV
     assert {failure.kind.value for failure in failures} == {"shutdown"}
     assert {failure.delivery.value for failure in failures}.issubset({"ambiguous", "notAdmitted"})
     assert all((failure.operation_id is not None) == failure.ambiguous for failure in failures)
-    assert psutil.Process().memory_info().rss - baseline_rss < 32 * 1024 * 1024
+    # ASan's shadow metadata and quarantine amplify transient allocation growth. Keep the
+    # acceptance check bounded without applying the production allocator's ceiling to ASan.
+    rss_limit_mib = 128 if "ASAN_OPTIONS" in os.environ else 32
+    assert psutil.Process().memory_info().rss - baseline_rss < rss_limit_mib * 1024 * 1024
 
 
 @pytest.mark.asyncio

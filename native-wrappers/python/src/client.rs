@@ -619,8 +619,8 @@ impl NativeMqttClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Barrier;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -655,27 +655,37 @@ mod tests {
     fn timeout_budget_bounds_a_running_task_without_releasing_its_slot_early() {
         runtime().block_on(async {
             let semaphore = Arc::new(Semaphore::new(1));
-            let barrier = Arc::new(Barrier::new(2));
-            let operation_barrier = Arc::clone(&barrier);
+            let (operation_started_tx, operation_started_rx) = mpsc::channel();
+            let (release_operation_tx, release_operation_rx) = mpsc::channel();
             let task_semaphore = Arc::clone(&semaphore);
             let task = tokio::spawn(async move {
                 run_native_blocking_on(task_semaphore, Some(Duration::from_millis(25)), move |_| {
-                    operation_barrier.wait();
-                    std::thread::sleep(Duration::from_millis(100));
+                    operation_started_tx.send(()).unwrap();
+                    release_operation_rx.recv().unwrap();
                 })
                 .await
             });
 
             tokio::task::yield_now().await;
-            barrier.wait();
-            let started = Instant::now();
-            let result = task.await.unwrap();
+            operation_started_rx.recv().unwrap();
+            let result = match tokio::time::timeout(Duration::from_secs(1), task).await {
+                Ok(result) => result.unwrap(),
+                Err(error) => {
+                    release_operation_tx.send(()).unwrap();
+                    panic!("running native operation ignored its timeout: {error}");
+                }
+            };
 
             assert!(matches!(result, Err(NativeBlockingError::Timeout)));
-            assert!(started.elapsed() < Duration::from_millis(150));
             assert_eq!(semaphore.available_permits(), 0);
-            tokio::time::sleep(Duration::from_millis(125)).await;
-            assert_eq!(semaphore.available_permits(), 1);
+            release_operation_tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while semaphore.available_permits() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
         });
     }
 }

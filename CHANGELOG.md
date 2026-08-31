@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Fixed
+- Native wrappers: Reconcile an MQTT graceful-disconnect deadline as a timed-out
+  operation followed by immediate closure, so terminal events no longer race
+  between `Closed` and `DriverError`. Harden cross-platform lifecycle checks and
+  sanitizer setup against scheduler latency and host process limits.
+
 ### Added
 - `rumqttc` for Python: Complete public-boundary validation, reconnect and
   acknowledgement coverage, panic containment, bounded child-process lifecycle

@@ -514,8 +514,9 @@ jobs:
           CXX: clang++
           RUSTFLAGS: -Zsanitizer=address -C linker=clang -C link-arg=-fuse-ld=lld
         run: |
-          uv sync --group dev
-          uv run maturin develop --features panic-testing -Z build-std
+          uv sync --group dev --no-install-project
+          uv run --no-sync maturin develop --features panic-testing \
+            --target x86_64-unknown-linux-gnu -Z build-std
       - name: Run Python behavior and teardown under ASan/LSan
         working-directory: native-wrappers
         env:

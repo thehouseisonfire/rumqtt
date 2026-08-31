@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    ClientConfig, Command, Completion, DeliveryStatus, NativeClient, ProtocolVersion,
+    ClientConfig, Command, Completion, DeliveryStatus, ErrorKind, NativeClient, ProtocolVersion,
     PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, WrapperEvent,
 };
 
@@ -122,6 +122,78 @@ fn read_frame_with_body(stream: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
 fn graceful_shutdown_resolves_protocol_admitted_work_for_both_protocols() {
     assert_graceful_shutdown_drains_ready_publish(ProtocolVersion::V4);
     assert_graceful_shutdown_drains_ready_publish(ProtocolVersion::V5);
+}
+
+fn assert_graceful_timeout_closes_immediately(protocol: ProtocolVersion) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (publish_tx, publish_rx) = mpsc::sync_channel(0);
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert_eq!(read_frame(&mut stream).unwrap() >> 4, 1);
+        match protocol {
+            ProtocolVersion::V4 => stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(),
+            ProtocolVersion::V5 => stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap(),
+        }
+        while let Some(header) = read_frame(&mut stream) {
+            if header >> 4 == 3 {
+                publish_tx.send(()).unwrap();
+            }
+        }
+    });
+
+    let mut native = NativeClient::start(config(protocol, port)).unwrap();
+    let handle = native.handle();
+    let mut events = native.take_events().unwrap();
+    wait_connected(&mut events);
+    let publish = handle
+        .try_admit(Command::Publish(PublishCommand {
+            topic: "graceful/timeout".into(),
+            payload: Bytes::from_static(b"payload"),
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            protocol: PublishProtocolOptions::VersionNeutral,
+        }))
+        .unwrap();
+    publish_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let close = handle
+        .try_admit(Command::GracefulDisconnect {
+            timeout: Some(Duration::from_millis(50)),
+        })
+        .unwrap();
+
+    let close_error = close
+        .completion
+        .wait_timeout(Duration::from_secs(2))
+        .unwrap_err();
+    assert_eq!(close_error.kind(), ErrorKind::Timeout);
+    assert_eq!(close_error.delivery_status(), DeliveryStatus::Ambiguous);
+    assert_eq!(
+        publish
+            .completion
+            .wait_timeout(Duration::from_secs(2))
+            .unwrap_err()
+            .delivery_status(),
+        DeliveryStatus::Ambiguous
+    );
+    loop {
+        match events.recv_timeout(Duration::from_secs(2)).unwrap() {
+            Some(WrapperEvent::ImmediateShutdownCompleted) => break,
+            Some(WrapperEvent::DriverTerminated(error)) => {
+                panic!("graceful timeout terminated the driver: {error}")
+            }
+            Some(_) => {}
+            None => panic!("driver stopped without an immediate-close terminal event"),
+        }
+    }
+    native.join(Duration::from_secs(2)).unwrap();
+    broker.join().unwrap();
+}
+
+#[test]
+fn graceful_timeout_closes_immediately_for_both_protocols() {
+    assert_graceful_timeout_closes_immediately(ProtocolVersion::V4);
+    assert_graceful_timeout_closes_immediately(ProtocolVersion::V5);
 }
 
 fn assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(protocol: ProtocolVersion) {

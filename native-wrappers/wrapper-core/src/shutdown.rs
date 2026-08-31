@@ -176,6 +176,25 @@ impl ShutdownCoordinator {
         _ = self.immediate_tx.send(());
     }
 
+    pub(crate) fn timeout_graceful(&self, error: Error) -> bool {
+        let operation_id = {
+            let mut record = self
+                .record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ShutdownRecord::Graceful { operation_id } = *record else {
+                return false;
+            };
+            *record = ShutdownRecord::Immediate { operation_id: None };
+            operation_id
+        };
+        self.operations.complete(operation_id, Err(error));
+        self.phase.store(2, Ordering::Release);
+        self.progress.notify_waiters();
+        _ = self.immediate_tx.send(());
+        true
+    }
+
     pub(crate) fn poll_error_action(&self) -> PollErrorAction {
         match &*self
             .record
@@ -327,6 +346,26 @@ mod tests {
             admission.completion.wait().unwrap(),
             crate::Completion::ImmediateShutdown
         );
+    }
+
+    #[test]
+    fn graceful_timeout_fails_the_operation_and_reconciles_as_immediate() {
+        let (shutdown, operations) = coordinator();
+        let admission = operations.allocate().unwrap();
+        shutdown.transition_to_closing().unwrap();
+        shutdown.commit_graceful(&admission);
+        let error = Error::new(ErrorKind::Timeout, "graceful shutdown timed out")
+            .with_delivery(DeliveryStatus::Ambiguous);
+
+        assert!(shutdown.timeout_graceful(error));
+        assert!(shutdown.immediate_requested());
+        assert!(!shutdown.should_drain_admitted_work());
+        assert_eq!(
+            admission.completion.wait().unwrap_err().kind(),
+            ErrorKind::Timeout
+        );
+        assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Immediate);
+        assert_eq!(shutdown.state(), LifecycleState::Closed);
     }
 
     #[test]

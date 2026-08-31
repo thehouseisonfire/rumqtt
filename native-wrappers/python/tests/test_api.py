@@ -89,6 +89,7 @@ def test_v4_password_requires_username() -> None:
         ("session_expiry_interval", True),
         ("session_expiry_interval", 2**32),
     ],
+    ids=lambda value: value if isinstance(value, str) else type(value).__name__,
 )
 def test_every_bounded_client_option_is_validated(field: str, value: object) -> None:
     with pytest.raises((TypeError, ValueError)):

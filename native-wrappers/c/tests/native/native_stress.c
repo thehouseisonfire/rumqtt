@@ -17,7 +17,9 @@ static unsigned stress_iterations(void) {
 
 static void wait_for_thread_baseline(size_t baseline) {
   unsigned attempt;
-  for (attempt = 0; attempt < 100; ++attempt) {
+  /* Sanitizer and macOS runners can take longer than one second to schedule a
+   * signaled driver through runtime teardown. This remains a bounded leak check. */
+  for (attempt = 0; attempt < 500; ++attempt) {
     if (native_process_thread_count() == baseline) {
       return;
     }

@@ -253,7 +253,13 @@ pub async fn run(
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
+                let graceful_disconnect_timed_out =
+                    matches!(&error, rumqttc_v4::ConnectionError::DisconnectTimeout);
                 let error = map_connection_error(error);
+                if graceful_disconnect_timed_out && shared.timeout_graceful_shutdown(error.clone())
+                {
+                    return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
+                }
                 match shared.poll_error_action() {
                     PollErrorAction::CompleteImmediateClose => {
                         return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders)
