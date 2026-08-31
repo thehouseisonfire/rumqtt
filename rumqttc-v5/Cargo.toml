@@ -80,7 +80,7 @@ matches = "0.1"
 pretty_assertions = "1"
 pretty_env_logger = "0.5"
 tokio-tungstenite = "0.30"
-rcgen = { version = "=0.14.9", default-features = false, features = ["aws_lc_rs", "pem"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry"] }
 turmoil = "0.7.2"
 wincode = { version = "0.4.9", features = ["derive"] }
