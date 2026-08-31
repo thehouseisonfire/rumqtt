@@ -134,7 +134,9 @@ impl NativeMqttClient {
     where
         F: Future<Output = String>,
     {
-        if let Ok(response) = AssertUnwindSafe(future).catch_unwind().await { response } else {
+        if let Ok(response) = AssertUnwindSafe(future).catch_unwind().await {
+            response
+        } else {
             self.boundary_panicked.store(true, Ordering::Release);
             self.cleanup.signal();
             internal_panic("native asynchronous boundary panicked")

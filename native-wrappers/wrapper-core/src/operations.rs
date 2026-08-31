@@ -14,10 +14,8 @@ use crate::{
     OperationId, Result,
 };
 
-pub type CompletionFuture =
-    Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'static>>;
-pub type PendingFuture =
-    Pin<Box<dyn Future<Output = (OperationId, Result<Completion>)> + Send>>;
+pub type CompletionFuture = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'static>>;
+pub type PendingFuture = Pin<Box<dyn Future<Output = (OperationId, Result<Completion>)> + Send>>;
 
 pub struct CompletionRegistration {
     operation_id: OperationId,

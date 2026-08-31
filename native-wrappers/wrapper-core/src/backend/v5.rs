@@ -442,9 +442,7 @@ pub fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {
     }
 }
 
-pub const fn to_retain_forward_rule(
-    rule: V5RetainForwardRule,
-) -> rumqttc_v5::RetainForwardRule {
+pub const fn to_retain_forward_rule(rule: V5RetainForwardRule) -> rumqttc_v5::RetainForwardRule {
     match rule {
         V5RetainForwardRule::OnEverySubscribe => rumqttc_v5::RetainForwardRule::OnEverySubscribe,
         V5RetainForwardRule::OnNewSubscribe => rumqttc_v5::RetainForwardRule::OnNewSubscribe,

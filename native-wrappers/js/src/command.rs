@@ -129,10 +129,7 @@ pub fn subscribe(filters: &str, options: Option<&str>) -> Result<SubscribeComman
     })
 }
 
-pub fn unsubscribe(
-    filters: &str,
-    options: Option<&str>,
-) -> Result<UnsubscribeCommand, String> {
+pub fn unsubscribe(filters: &str, options: Option<&str>) -> Result<UnsubscribeCommand, String> {
     let filters: Vec<String> = serde_json::from_str(filters)
         .map_err(|error| format!("invalid unsubscribe filters: {error}"))?;
     let options: Option<UnsubscribeOptions> = parse_optional(options, "unsubscribe options")?;
