@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Fixed
+- `rumqttc` for Python: Allow bounded shutdown to join an already-started native
+  driver after panic containment, releasing its channels and pending operations
+  before interpreter teardown.
 - Native wrappers: Reconcile an MQTT graceful-disconnect deadline as a timed-out
   operation followed by immediate closure, so terminal events no longer race
   between `Closed` and `DriverError`. Harden cross-platform lifecycle checks and

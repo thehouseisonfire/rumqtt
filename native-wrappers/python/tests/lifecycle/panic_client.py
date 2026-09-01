@@ -53,6 +53,11 @@ async def exercise(boundary: str, protocol: ProtocolVersion) -> None:
     else:
         raise AssertionError("event iterator did not terminate after the panic")
 
+    # Panic containment terminates the driver, but the Python client still owns its join handle.
+    # Reconcile that ownership before interpreter teardown so LSan observes the terminated
+    # driver's channels and pending operations being released.
+    await client.close_now()
+
 
 async def main() -> None:
     boundary = sys.argv[1]

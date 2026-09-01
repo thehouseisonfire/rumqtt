@@ -223,6 +223,13 @@ impl State {
             return Ok(None);
         }
 
+        // A contained boundary panic prevents new initialization, but an already-started client
+        // must remain available to shutdown so its driver thread can be joined and its native
+        // ownership released.
+        if let Some(started) = self.started.get().cloned() {
+            return Ok(Some((started, timeout)));
+        }
+
         let began = Instant::now();
         tokio::time::timeout(timeout, self.initialize())
             .await

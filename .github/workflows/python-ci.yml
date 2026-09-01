@@ -50,4 +50,4 @@ jobs:
         run: uv python install 3.12
 
       - name: Run pyrefly
-        run: uvx --with pytest pyrefly check .
+        run: uvx --with pytest --with psutil pyrefly check .

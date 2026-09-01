@@ -126,7 +126,10 @@ def test_native_configuration_failure_uses_wrapper_hierarchy() -> None:
 
 
 @pytest.mark.parametrize("field", ["client_id", "username"])
-@pytest.mark.parametrize("value", [b"bytes", "bad\x00value", "\ud800", "é" * 32_768])
+@pytest.mark.parametrize(
+    "value",
+    [b"bytes", "bad\x00value", "\ud800", pytest.param("é" * 32_768, id="oversized-utf8")],
+)
 def test_connect_strings_validate_type_encoding_and_encoded_length(field: str, value: object) -> None:
     with pytest.raises((ConfigurationError, TypeError, ValueError)):
         MqttClient(options(**{field: value}))
@@ -416,7 +419,10 @@ async def test_unsubscribe_rejects_bare_string() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("topic", ["", "bad/+", "bad/#", "bad\x00topic", "x" * 65_536])
+@pytest.mark.parametrize(
+    "topic",
+    ["", "bad/+", "bad/#", "bad\x00topic", pytest.param("x" * 65_536, id="oversized")],
+)
 async def test_publish_topics_fail_before_native_admission(topic: str) -> None:
     client = MqttClient(options())
     client._connected = True

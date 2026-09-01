@@ -43,11 +43,23 @@ async def gc_cycle() -> None:
 
 
 async def repetition() -> None:
-    warmup = client("python-repetition-warmup")
-    await warmup.connect()
-    await warmup.close_now()
-    del warmup
-    gc.collect()
+    # Exercise every shutdown path before measuring. Tokio's blocking pool and platform network
+    # support may create a persistent helper thread the first time a particular path is used.
+    for lifecycle in ("close", "abandon"):
+        warmup = client(f"python-repetition-warmup-{lifecycle}")
+        await warmup.connect()
+        if lifecycle == "close":
+            await warmup.close()
+        else:
+            warmup._native.abandon()
+        reference = weakref.ref(warmup)
+        del warmup
+        for _ in range(200):
+            gc.collect()
+            if reference() is None:
+                break
+            await asyncio.sleep(0.025)
+        assert reference() is None, f"{lifecycle} warmup"
     await asyncio.sleep(0.025)
     baseline = native_thread_count()
     for lifecycle in ("close", "abandon"):
