@@ -255,13 +255,18 @@ impl NetworkOptions {
         self.tcp_recv_buffer_size = Some(size);
     }
 
-    /// set connection timeout in secs
+    /// Set connection timeout in whole seconds.
+    ///
+    /// The effect depends on the protocol crate: the v4 event loop uses it
+    /// as the connect and network flush deadline, while the v5 event loop
+    /// uses `MqttOptions::set_connect_timeout` for the connect deadline and
+    /// only forwards these options to the socket connector.
     pub const fn set_connection_timeout(&mut self, timeout: u64) -> &mut Self {
         self.conn_timeout = timeout;
         self
     }
 
-    /// get timeout in secs
+    /// Get timeout in whole seconds.
     #[must_use]
     pub const fn connection_timeout(&self) -> u64 {
         self.conn_timeout

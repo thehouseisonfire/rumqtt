@@ -1553,13 +1553,17 @@ impl MqttOptions {
         self.pending_throttle
     }
 
-    /// set connect timeout
+    /// Set connect timeout.
+    ///
+    /// Covers the full connection establishment deadline (broker lookup,
+    /// transport, and MQTT handshake). It does not bound network flushes.
+    /// Socket-level tuning stays in `NetworkOptions`.
     pub const fn set_connect_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.connect_timeout = timeout;
         self
     }
 
-    /// get connect timeout
+    /// Get connect timeout.
     pub const fn connect_timeout(&self) -> Duration {
         self.connect_timeout
     }
@@ -1845,6 +1849,11 @@ impl MqttOptions {
         self.ack_mode
     }
 
+    /// Returns the socket-level network options.
+    ///
+    /// The v5 event loop does not use the connection timeout inside these
+    /// options as a deadline; it only forwards them to the socket connector.
+    /// Use `set_connect_timeout` for the connection establishment deadline.
     pub fn network_options(&self) -> NetworkOptions {
         self.network_options.clone()
     }

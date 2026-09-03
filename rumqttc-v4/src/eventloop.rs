@@ -1527,6 +1527,10 @@ impl EventLoop {
             .expect("disconnect transition must queue an event"))
     }
 
+    /// Returns the socket-level network options.
+    ///
+    /// The connection timeout inside these options bounds both connection
+    /// establishment and network flushes.
     pub fn network_options(&self) -> NetworkOptions {
         self.network_options.clone()
     }
