@@ -3,7 +3,7 @@ requires = ["maturin>=1.10,<2"]
 build-backend = "maturin"
 
 [project]
-name = "rumqttc"
+name = "rumqttc-next"
 dynamic = ["version"]
 description = "Typed asyncio MQTT 3.1.1 and MQTT 5 client backed by rumqttc"
 readme = "README.md"

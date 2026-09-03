@@ -6,9 +6,10 @@ CPython, subinterpreters, and the CPython limited API are not supported.
 
 ## Installation
 
-`python -m pip install rumqttc` installs a version-specific wheel. Wheels are
+`python -m pip install rumqttc-next` installs a version-specific wheel. Wheels are
 published for manylinux 2.17 x86_64/aarch64, musllinux 1.2 x86_64, macOS 11+
 x86_64/arm64, and Windows x86_64. Pip 25.3 is the minimum supported installer.
+The distribution is `rumqttc-next` but the import remains `rumqttc`.
 
 Source installation requires CPython development files, Rust 1.88 or newer
 with Cargo, a native linker/C toolchain, and maturin 1.10 or newer. The build
@@ -16,7 +17,7 @@ never downloads a Rust toolchain or another executable:
 
 ```console
 python -m pip install 'maturin>=1.10,<2'
-python -m pip install --no-binary rumqttc rumqttc
+python -m pip install --no-binary rumqttc-next rumqttc-next
 ```
 
 ```python

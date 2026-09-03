@@ -6,7 +6,7 @@ from pathlib import Path
 
 import rumqttc
 
-distribution = importlib.metadata.distribution("rumqttc")
+distribution = importlib.metadata.distribution("rumqttc-next")
 root = Path(str(distribution.locate_file("")))
 package = root / "rumqttc"
 assert package.is_dir()
