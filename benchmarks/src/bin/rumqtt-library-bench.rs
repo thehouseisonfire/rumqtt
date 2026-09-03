@@ -103,7 +103,7 @@ struct CommonArgs {
     #[arg(long, default_value_t = 100)]
     receive_maximum: u16,
     #[arg(long, default_value_t = 30)]
-    keepalive_sec: u16,
+    keep_alive_seconds: u16,
     #[arg(long, default_value_t = 10)]
     operation_timeout_sec: u64,
 }
@@ -137,7 +137,7 @@ struct ConnectionArgs {
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
     #[arg(long, default_value_t = 30)]
-    keepalive_sec: u16,
+    keep_alive_seconds: u16,
     #[arg(long, default_value_t = 10)]
     connect_timeout_sec: u64,
     #[arg(long, default_value_t = 5)]
@@ -217,7 +217,7 @@ impl RumqttAdapter {
             .set_session_expiry_interval(Some(0))
             .set_receive_maximum(Some(args.receive_maximum))
             .set_outgoing_inflight_upper_limit(args.window.min(u16::MAX as usize) as u16)
-            .set_keep_alive(args.keepalive_sec);
+            .set_keep_alive(args.keep_alive_seconds);
         if tls {
             options.set_transport(
                 ca_certificate.map_or_else(rumqttc_v5::Transport::tls_with_default_config, |ca| {
@@ -337,7 +337,7 @@ impl Mqtt5Adapter {
             .with_clean_start(true)
             .with_session_expiry_interval(0)
             .with_receive_maximum(args.receive_maximum)
-            .with_keep_alive(Duration::from_secs(u64::from(args.keepalive_sec)))
+            .with_keep_alive(Duration::from_secs(u64::from(args.keep_alive_seconds)))
             .with_automatic_reconnect(false);
         if let Some(ca) = ca_certificate {
             let (host, port, tls) = parse_broker(&args.broker_url)?;
@@ -867,7 +867,7 @@ async fn run_messages(
             "qos": args.common.qos, "retain": false, "payload_size": args.common.payload_size,
             "warmup_sec": args.common.warmup_sec, "duration_sec": args.common.duration_sec,
             "drain_sec": args.common.drain_sec, "window": args.common.window,
-            "receive_maximum": args.common.receive_maximum, "keepalive_sec": args.common.keepalive_sec,
+            "receive_maximum": args.common.receive_maximum, "keep_alive_seconds": args.common.keep_alive_seconds,
             "operation_timeout_sec": args.common.operation_timeout_sec,
             "clean_start": true, "session_expiry_interval": 0,
             "publishers": args.publishers, "subscribers": args.subscribers, "rate": rate,
@@ -1088,7 +1088,7 @@ async fn run_connections(
         drain_sec: 5,
         window: 1,
         receive_maximum: 100,
-        keepalive_sec: args.keepalive_sec,
+        keep_alive_seconds: args.keep_alive_seconds,
         operation_timeout_sec: args.connect_timeout_sec,
     };
     let start = Instant::now();
@@ -1205,7 +1205,7 @@ async fn run_connections(
         client: backend,
         config: json!({"protocol":"v5", "broker_url":args.broker_url, "duration_sec":args.duration_sec,
         "concurrency":args.concurrency, "clean_start":true, "session_expiry_interval":0,
-        "keepalive_sec":args.keepalive_sec,
+        "keep_alive_seconds":args.keep_alive_seconds,
         "connect_timeout_sec":args.connect_timeout_sec,
         "disconnect_timeout_sec":args.disconnect_timeout_sec,
         "drain_sec":args.drain_sec,
@@ -1978,7 +1978,7 @@ mod tests {
             drain_sec: 1,
             window: 1,
             receive_maximum: 1,
-            keepalive_sec: 1,
+            keep_alive_seconds: 1,
             operation_timeout_sec: 1,
         };
         let running = Arc::new(AtomicBool::new(true));

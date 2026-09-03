@@ -45,7 +45,7 @@ async fn run_fault(client: &str, action: FaultAction, delay: Duration) -> Value 
         "1",
         "--receive-maximum",
         "1",
-        "--keepalive-sec",
+        "--keep-alive-seconds",
         "2",
         "--operation-timeout-sec",
         "1",

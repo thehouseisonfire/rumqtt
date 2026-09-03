@@ -49,7 +49,7 @@ async fn run_connections(client: &str, behavior: ServerBehavior) -> Value {
             "1",
             "--concurrency",
             "1",
-            "--keepalive-sec",
+            "--keep-alive-seconds",
             "2",
             "--connect-timeout-sec",
             "1",

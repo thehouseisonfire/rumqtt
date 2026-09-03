@@ -229,7 +229,7 @@ def validate_matched_args(path: Path, scenario: dict[str, Any]) -> None:
         raise RuntimeError(f"{path}: matched scenarios require an args table")
     common = {
         "duration_sec",
-        "keepalive_sec",
+        "keep_alive_seconds",
     }
     message = {
         "warmup_sec",

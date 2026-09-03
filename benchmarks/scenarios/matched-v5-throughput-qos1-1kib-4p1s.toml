@@ -25,5 +25,5 @@ publishers = 4
 subscribers = 1
 window = 100
 receive_maximum = 100
-keepalive_sec = 30
+keep_alive_seconds = 30
 operation_timeout_sec = 10
