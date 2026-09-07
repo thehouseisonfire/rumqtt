@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import sys
@@ -57,12 +58,21 @@ async def exercise(boundary: str, protocol: ProtocolVersion) -> None:
     # Reconcile that ownership before interpreter teardown so LSan observes the terminated
     # driver's channels and pending operations being released.
     await client.close_now()
+    # The pending task's exception traceback and the event iterator both retain the client
+    # (and therefore the Rust NativeClient with its flume channels) until GC runs. Release
+    # them explicitly so LSan does not report the still-referenced allocations as leaks at
+    # process exit.
+    del events
+    del pending
+    del client
+    gc.collect()
 
 
 async def main() -> None:
     boundary = sys.argv[1]
     for protocol in (ProtocolVersion.MQTT_3_1_1, ProtocolVersion.MQTT_5_0):
         await exercise(boundary, protocol)
+    gc.collect()
 
 
 asyncio.run(main())

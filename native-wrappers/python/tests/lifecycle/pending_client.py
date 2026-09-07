@@ -18,7 +18,10 @@ async def main() -> None:
     connecting = asyncio.create_task(client.connect())
     await asyncio.sleep(0)
     iterator = client.events()
-    await asyncio.wait_for(anext(iterator), timeout=2)
+    # Windows runners can take several seconds to surface the first connection-attempt
+    # failure for an unroutable port. Allow up to ~10s while remaining bounded; the point of
+    # this check is that an event eventually arrives, not how quickly.
+    await asyncio.wait_for(anext(iterator), timeout=10)
     event_wait = asyncio.ensure_future(anext(iterator))
     await asyncio.sleep(0)
     # asyncio.run closes the loop with connection and event observations pending. Module cleanup

@@ -45,11 +45,16 @@ async def gc_cycle() -> None:
 async def repetition() -> None:
     # Exercise every shutdown path before measuring. Tokio's blocking pool and platform network
     # support may create a persistent helper thread the first time a particular path is used.
-    for lifecycle in ("close", "abandon"):
+    # The measured loop mixes graceful close and immediate close, so both must be warmed up;
+    # otherwise the first close_now() can retain a helper thread beyond the baseline on
+    # macOS/Windows runners.
+    for lifecycle in ("close", "close_now", "abandon"):
         warmup = client(f"python-repetition-warmup-{lifecycle}")
         await warmup.connect()
         if lifecycle == "close":
             await warmup.close()
+        elif lifecycle == "close_now":
+            await warmup.close_now()
         else:
             warmup._native.abandon()
         reference = weakref.ref(warmup)
@@ -60,7 +65,13 @@ async def repetition() -> None:
                 break
             await asyncio.sleep(0.025)
         assert reference() is None, f"{lifecycle} warmup"
-    await asyncio.sleep(0.025)
+    # Slow and instrumented CI runners may need extra time for the warmup drivers to fully
+    # exit before the baseline is taken. Stabilize briefly so the baseline does not miss a
+    # lingering warmup thread and then flake as an apparent leak.
+    for _ in range(20):
+        gc.collect()
+        await asyncio.sleep(0.025)
+    await asyncio.sleep(0.1)
     baseline = native_thread_count()
     for lifecycle in ("close", "abandon"):
         references: list[weakref.ReferenceType[MqttClient]] = []
@@ -75,7 +86,9 @@ async def repetition() -> None:
             del mqtt
         # Abandonment is deliberately nonblocking. Slow and instrumented CI runners may need
         # several seconds to schedule all signaled native drivers through runtime teardown.
-        for _ in range(200):
+        # Windows and macOS runners have been observed needing beyond 5s under load, so allow
+        # up to ~10s while remaining a bounded leak check.
+        for _ in range(400):
             gc.collect()
             if all(reference() is None for reference in references) and native_thread_count() <= baseline:
                 break

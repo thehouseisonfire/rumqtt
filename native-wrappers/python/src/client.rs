@@ -652,7 +652,10 @@ mod tests {
                 .await;
 
             assert!(matches!(result, Err(NativeBlockingError::Timeout)));
-            assert!(started.elapsed() < Duration::from_millis(150));
+            // CI runners under load can delay Tokio timers by hundreds of milliseconds. The
+            // budget is 25ms, so a generous bound still catches a missing timeout (which would
+            // deadlock on the held permit) without flaking on scheduling latency.
+            assert!(started.elapsed() < Duration::from_secs(2));
             assert!(!called.load(Ordering::Acquire));
             drop(occupied);
         });
