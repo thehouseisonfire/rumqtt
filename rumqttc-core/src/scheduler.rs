@@ -5,6 +5,8 @@ pub enum RequestClass {
     FlowControlledPublish,
     Publish,
     Control,
+    /// An ordering boundary. Only selectable at the front of the queue.
+    Fence,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +84,12 @@ impl<T> OutboundScheduler<T> {
 
         for index in 0..self.queue.len() {
             let request = classify(&self.queue[index]);
+            // Stop searching at the boundary, including when it is blocked at
+            // the front. No later application control may cross it.
+            if request.class == RequestClass::Fence {
+                return (index == 0 && request.readiness == RequestReadiness::Ready)
+                    .then_some(index);
+            }
             match (request.class, request.readiness) {
                 (_, RequestReadiness::Ready) if index == 0 => {
                     return Some(index);
@@ -110,10 +118,15 @@ mod tests {
         ReadyFlowPublish,
         ReadyPublish,
         ReadyControl,
+        Fence,
     }
 
     fn classify(item: &Item) -> ScheduledRequest {
         match item {
+            Item::Fence => ScheduledRequest {
+                class: RequestClass::Fence,
+                readiness: RequestReadiness::Ready,
+            },
             Item::BlockedFlowPublish => ScheduledRequest {
                 class: RequestClass::FlowControlledPublish,
                 readiness: RequestReadiness::Blocked,
@@ -143,6 +156,58 @@ mod tests {
             scheduler.pop_next(classify),
             Some(Item::ReadyFlowPublish)
         ));
+    }
+
+    #[test]
+    fn fence_and_later_control_cannot_pass_blocked_publishes() {
+        for count in [1, 3] {
+            let mut scheduler = OutboundScheduler::default();
+            for _ in 0..count {
+                scheduler.push_back(Item::BlockedFlowPublish);
+            }
+            scheduler.push_back(Item::Fence);
+            scheduler.push_back(Item::ReadyControl);
+            assert!(!scheduler.has_ready(classify));
+            assert!(scheduler.pop_next(classify).is_none());
+        }
+    }
+
+    #[test]
+    fn preceding_control_can_progress_before_fence() {
+        let mut scheduler = OutboundScheduler::default();
+        scheduler.push_back(Item::BlockedFlowPublish);
+        scheduler.push_back(Item::ReadyControl);
+        scheduler.push_back(Item::Fence);
+        assert!(matches!(
+            scheduler.pop_next(classify),
+            Some(Item::ReadyControl)
+        ));
+        assert!(scheduler.pop_next(classify).is_none());
+    }
+
+    #[test]
+    fn fences_preserve_fifo_as_publishes_become_ready() {
+        let mut scheduler = OutboundScheduler::default();
+        scheduler.push_back(Item::BlockedFlowPublish);
+        scheduler.push_back(Item::BlockedFlowPublish);
+        scheduler.push_back(Item::Fence);
+        scheduler.push_back(Item::Fence);
+        assert!(scheduler.pop_next(classify).is_none());
+        let ready = |item: &Item| {
+            let mut request = classify(item);
+            request.readiness = RequestReadiness::Ready;
+            request
+        };
+        for _ in 0..2 {
+            assert!(matches!(
+                scheduler.pop_next(ready),
+                Some(Item::BlockedFlowPublish)
+            ));
+        }
+        for _ in 0..2 {
+            assert!(matches!(scheduler.pop_next(classify), Some(Item::Fence)));
+        }
+        assert!(scheduler.is_empty());
     }
 
     #[test]
