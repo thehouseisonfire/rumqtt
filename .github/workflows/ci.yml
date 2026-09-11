@@ -235,6 +235,14 @@ jobs:
             cargo hack --each-feature --exclude-all-features nextest run -p rumqttc-v4-next
             cargo hack --each-feature --exclude-all-features nextest run -p rumqttc-v5-next
 
+      - name: Test ordered shutdown with default features
+        run: |
+            cargo test --locked \
+              -p rumqttc-v4-next \
+              -p rumqttc-v5-next \
+              --features ordered-shutdown \
+              --test ordered_disconnect
+
       - name: Test standalone crates
         run: |
             cargo test -p mqttbytes-core-next
@@ -271,6 +279,7 @@ jobs:
 
       - name: Verify rumqttc-next feature forwarding
         run: |
+            cargo check -p rumqttc-next --no-default-features --features ordered-shutdown
             cargo check -p rumqttc-next --no-default-features --features websocket
             cargo check -p rumqttc-next --no-default-features --features use-native-tls
             cargo check -p rumqttc-next --no-default-features --features "auth-scram,url"
