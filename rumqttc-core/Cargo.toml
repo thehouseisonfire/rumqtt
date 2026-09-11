@@ -20,6 +20,7 @@ features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+ordered-shutdown = []
 default = ["use-rustls"]
 use-rustls = ["use-rustls-aws-lc"]
 use-rustls-no-provider = ["dep:tokio-rustls", "dep:rustls-webpki", "dep:rustls-pki-types", "dep:rustls-native-certs", "async-tungstenite?/tokio-rustls-native-certs"]
@@ -32,7 +33,7 @@ http-proxy = ["dep:async-http-proxy"]
 socks-proxy = ["dep:tokio-socks"]
 
 [dependencies]
-tokio = { version = "1.40", features = ["io-util", "net"] }
+tokio = { version = "1.40", features = ["io-util", "net", "sync", "time", "macros"] }
 thiserror = "2.0.8"
 
 # Optional

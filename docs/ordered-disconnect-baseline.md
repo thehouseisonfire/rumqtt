@@ -45,9 +45,9 @@ at one. A enters MQTT state, B remains flow-control-blocked, the control-channel
 A is acknowledged, and DISCONNECT is observed before B. Shared helpers also preserve the former v4 timeout and v5
 properties-timeout variants as independently named passing tests.
 
-The ignored `ordered_disconnect_waits_for_flow_controlled_publish_before_disconnect` tests require A/PUBACK,
-B/PUBACK, then DISCONNECT. Today they deliberately call `disconnect()` as a compiling, failing placeholder. Replace
-only that call with the future ordered operation, remove `#[ignore]`, and await its completion notice if applicable.
+The `ordered_disconnect_waits_for_flow_controlled_publish_before_disconnect` tests now use
+`disconnect_after_queued_with_timeout()` and await its completion notice. They require A/PUBACK,
+B/PUBACK, then DISCONNECT. The admitted-only counterparts remain separate regression tests.
 
 ## Admission benchmark
 

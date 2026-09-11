@@ -951,9 +951,19 @@ impl MqttState {
                 (Some(packet), None)
             }
             Request::PingReq => (self.outgoing_ping()?, None),
+            #[cfg(not(feature = "ordered-shutdown"))]
             Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) => {
                 unreachable!("graceful disconnect requests are handled by the event loop")
             }
+
+            #[cfg(feature = "ordered-shutdown")]
+            Request::Disconnect(_)
+            | Request::DisconnectWithTimeout(_, _)
+            | Request::DisconnectAfterQueued(_)
+            | Request::DisconnectAfterQueuedWithTimeout(_, _) => {
+                unreachable!("graceful disconnect requests are handled by the event loop")
+            }
+
             Request::DisconnectNow(_) => (Some(self.outgoing_disconnect()), None),
             Request::PubAck(puback) => (Some(self.outgoing_puback(puback)?), None),
             Request::PubRec(pubrec) => (Some(self.outgoing_pubrec(pubrec)?), None),

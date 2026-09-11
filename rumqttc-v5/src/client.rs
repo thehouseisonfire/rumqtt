@@ -1,6 +1,10 @@
 //! This module offers a high level synchronous and asynchronous abstraction to
 //! async eventloop.
 use std::borrow::Cow;
+#[cfg(feature = "ordered-shutdown")]
+#[path = "client_disconnect.rs"]
+mod ordered_disconnect;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -411,6 +415,13 @@ pub enum ClientError {
     },
     #[error("Tracked request API is unavailable for this client instance")]
     TrackingUnavailable,
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("Client is closing after an ordered disconnect")]
+    Closing(Box<Request>),
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("Ordered disconnect timeout overflows the monotonic clock")]
+    InvalidDisconnectTimeout,
 }
 
 /// Error returned by fallible client builders.
@@ -439,9 +450,23 @@ fn map_plain_try_send_error(error: TrySendError<Request>) -> ClientError {
 enum RequestSender {
     Plain(Sender<Request>),
     WithNotice {
+        #[cfg(not(feature = "ordered-shutdown"))]
         requests: Sender<RequestEnvelope>,
+
+        #[cfg(feature = "ordered-shutdown")]
+        requests: rumqttc_core::admission::Sender<RequestEnvelope>,
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         control_requests: Sender<RequestEnvelope>,
+
+        #[cfg(feature = "ordered-shutdown")]
+        control_requests: rumqttc_core::admission::Sender<RequestEnvelope>,
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         immediate_disconnect: Sender<RequestEnvelope>,
+
+        #[cfg(feature = "ordered-shutdown")]
+        immediate_disconnect: rumqttc_core::admission::Sender<RequestEnvelope>,
     },
 }
 
@@ -449,10 +474,25 @@ fn into_request(envelope: RequestEnvelope) -> Request {
     envelope.request
 }
 
+#[cfg(not(feature = "ordered-shutdown"))]
 fn map_send_envelope_error(err: SendError<RequestEnvelope>) -> ClientError {
     ClientError::RequestChannelDisconnected(Box::new(into_request(err.into_inner())))
 }
 
+#[cfg(feature = "ordered-shutdown")]
+fn map_send_envelope_error(
+    err: rumqttc_core::admission::SendError<RequestEnvelope>,
+) -> ClientError {
+    if err.0.meta.invalid_timeout {
+        return ClientError::InvalidDisconnectTimeout;
+    }
+    if err.0.meta.closing {
+        return ClientError::Closing(Box::new(err.0.request));
+    }
+    ClientError::RequestChannelDisconnected(Box::new(into_request(err.into_inner())))
+}
+
+#[cfg(not(feature = "ordered-shutdown"))]
 fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientError {
     match err {
         TrySendError::Full(envelope) => {
@@ -464,8 +504,45 @@ fn map_try_send_envelope_error(err: TrySendError<RequestEnvelope>) -> ClientErro
     }
 }
 
+#[cfg(feature = "ordered-shutdown")]
+fn map_try_send_envelope_error(
+    err: rumqttc_core::admission::TrySendError<RequestEnvelope>,
+) -> ClientError {
+    use rumqttc_core::admission::TrySendError;
+    if let TrySendError::Disconnected(ref envelope) = err
+        && envelope.meta.invalid_timeout
+    {
+        return ClientError::InvalidDisconnectTimeout;
+    }
+    if let TrySendError::Disconnected(ref envelope) = err
+        && envelope.meta.closing
+    {
+        return ClientError::Closing(Box::new(err.into_inner().request));
+    }
+    match err {
+        TrySendError::Full(envelope) => {
+            ClientError::RequestChannelFull(Box::new(into_request(envelope)))
+        }
+        TrySendError::Disconnected(envelope) => {
+            ClientError::RequestChannelDisconnected(Box::new(into_request(envelope)))
+        }
+    }
+}
+
 const fn is_publish_request(request: &Request) -> bool {
-    matches!(request, Request::Publish(_))
+    #[cfg(not(feature = "ordered-shutdown"))]
+    {
+        matches!(request, Request::Publish(_))
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    {
+        matches!(
+            request,
+            Request::Publish(_)
+                | Request::DisconnectAfterQueued(_)
+                | Request::DisconnectAfterQueuedWithTimeout(_, _)
+        )
+    }
 }
 
 /// Prepared acknowledgement packet for manual acknowledgement mode.
@@ -484,6 +561,7 @@ impl ManualAck {
     }
 }
 
+#[cfg(not(feature = "ordered-shutdown"))]
 /// An asynchronous MQTT client.
 ///
 /// This is cloneable and can be used to asynchronously [`publish`](`AsyncClient::publish`),
@@ -512,6 +590,42 @@ impl ManualAck {
 /// the event loop processes a graceful disconnect barrier, concurrently queued
 /// work from another clone can still be accepted by its channel and then
 /// discarded without being sent.
+#[derive(Clone, Debug)]
+pub struct AsyncClient {
+    request_tx: RequestSender,
+    publish_admission: Option<Arc<ManagedPublishAdmission>>,
+}
+
+#[cfg(feature = "ordered-shutdown")]
+/// An asynchronous MQTT client.
+///
+/// This is cloneable and can be used to asynchronously [`publish`](`AsyncClient::publish`),
+/// [`subscribe`](`AsyncClient::subscribe`) and enqueue other MQTT requests.
+///
+/// Clients created through [`Self::builder`] are paired with an [`EventLoop`] that must be
+/// polled regularly to send, receive, and process packets. Clients created through
+/// [`Self::from_senders`] instead enqueue public [`Request`] values on a caller-supplied
+/// Flume channel and do not have the full event-loop-backed behavior described below.
+///
+/// Bounded clients apply backpressure through the client request channel. If the
+/// same task that drives [`EventLoop::poll`](crate::EventLoop::poll) awaits
+/// request-sending APIs such as [`publish`](Self::publish),
+/// [`subscribe`](Self::subscribe), [`unsubscribe`](Self::unsubscribe), or
+/// [`ack`](Self::ack) while that channel is full, it can self-block: the send is
+/// waiting for the event loop to read a request, but the event loop cannot make
+/// progress until that same task polls it again. For bounded async clients,
+/// prefer driving the event loop in a dedicated task. Use [`try_publish`](Self::try_publish)
+/// when dropping outgoing publishes under overload is intended.
+///
+/// The request channel is an admission queue, not a strict global wire FIFO
+/// guarantee. Under publish flow-control pressure, non-`PUBLISH` control
+/// packets can pass earlier `QoS` 1/ `QoS` 2 publishes that are not currently
+/// sendable. Application publishes preserve FIFO with other publishes.
+/// A successful send confirms channel admission, not protocol processing. Once
+/// the event loop processes a graceful disconnect barrier, concurrently queued
+/// work from another clone can still be accepted by its channel and then
+/// discarded without being sent. In contrast, an admitted ordered-disconnect
+/// fence closes ordinary admission across clones immediately.
 #[derive(Clone, Debug)]
 pub struct AsyncClient {
     request_tx: RequestSender,
@@ -788,8 +902,32 @@ impl AsyncClient {
         }
     }
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     fn map_publish_admission_failure(publish: &Publish, failure: AdmissionFailure) -> ClientError {
         let request = Box::new(Request::Publish(publish.clone()));
+        match failure {
+            AdmissionFailure::CapabilitiesUnavailable(waiter) => {
+                ClientError::PublishAdmissionPending { request, waiter }
+            }
+            AdmissionFailure::Rejected(reason) => {
+                ClientError::PublishAdmissionRejected { request, reason }
+            }
+            AdmissionFailure::Closed => ClientError::RequestChannelDisconnected(request),
+        }
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    fn map_publish_admission_failure(
+        &self,
+        publish: &Publish,
+        failure: AdmissionFailure,
+    ) -> ClientError {
+        let request = Box::new(Request::Publish(publish.clone()));
+        if let RequestSender::WithNotice { requests, .. } = &self.request_tx
+            && requests.is_closing()
+        {
+            return ClientError::Closing(request);
+        }
         match failure {
             AdmissionFailure::CapabilitiesUnavailable(waiter) => {
                 ClientError::PublishAdmissionPending { request, waiter }
@@ -805,11 +943,22 @@ impl AsyncClient {
         let Some(admission) = &self.publish_admission else {
             return self.try_send_request(Request::Publish(publish));
         };
-        admission
-            .try_admit(&publish, || {
-                self.try_send_request(Request::Publish(publish.clone()))
-            })
-            .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            admission
+                .try_admit(&publish, || {
+                    self.try_send_request(Request::Publish(publish.clone()))
+                })
+                .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
+        }
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            admission
+                .try_admit(&publish, || {
+                    self.try_send_request(Request::Publish(publish.clone()))
+                })
+                .map_err(|failure| self.map_publish_admission_failure(&publish, failure))?
+        }
     }
 
     fn send_managed_publish(&self, publish: Publish) -> Result<(), ClientError> {
@@ -970,15 +1119,30 @@ impl AsyncClient {
             return Ok(notice);
         };
 
-        admission
-            .try_admit(&publish, || {
-                let (notice_tx, notice) = PublishNoticeTx::new();
-                request_tx
-                    .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
-                    .map_err(map_try_send_envelope_error)?;
-                Ok(notice)
-            })
-            .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            admission
+                .try_admit(&publish, || {
+                    let (notice_tx, notice) = PublishNoticeTx::new();
+                    request_tx
+                        .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
+                        .map_err(map_try_send_envelope_error)?;
+                    Ok(notice)
+                })
+                .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
+        }
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            admission
+                .try_admit(&publish, || {
+                    let (notice_tx, notice) = PublishNoticeTx::new();
+                    request_tx
+                        .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
+                        .map_err(map_try_send_envelope_error)?;
+                    Ok(notice)
+                })
+                .map_err(|failure| self.map_publish_admission_failure(&publish, failure))?
+        }
     }
 
     async fn send_tracked_subscribe_async(
@@ -2276,6 +2440,7 @@ impl AsyncClient {
         self.handle_try_unsubscribe_many_tracked(topics, None)
     }
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with default
     /// `DisconnectReasonCode::NormalDisconnection`.
     ///
@@ -2301,6 +2466,38 @@ impl AsyncClient {
             .await
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with default
+    /// `DisconnectReasonCode::NormalDisconnection`.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_senders`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub async fn disconnect(&self) -> Result<(), ClientError> {
+        self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
+            .await
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with properties.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -2328,6 +2525,40 @@ impl AsyncClient {
         self.handle_disconnect(reason, Some(properties)).await
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_senders`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub async fn disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect(reason, Some(properties)).await
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -2361,6 +2592,46 @@ impl AsyncClient {
         .await
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_senders`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub async fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(
+            DisconnectReasonCode::NormalDisconnection,
+            None,
+            timeout,
+        )
+        .await
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with properties and a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -2395,6 +2666,47 @@ impl AsyncClient {
             .await
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_senders`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub async fn disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(reason, Some(properties), timeout)
+            .await
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a priority MQTT disconnect without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -2413,6 +2725,31 @@ impl AsyncClient {
             .await
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a priority MQTT disconnect without waiting for in-flight requests.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_senders`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub async fn disconnect_now(&self) -> Result<(), ClientError> {
+        self.handle_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
+            .await
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a priority MQTT disconnect with properties without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -2426,6 +2763,33 @@ impl AsyncClient {
     ///
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
+    pub async fn disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_now(reason, Some(properties)).await
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a priority MQTT disconnect with properties without waiting for in-flight requests.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_senders`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub async fn disconnect_now_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -2468,6 +2832,7 @@ impl AsyncClient {
         Ok(())
     }
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect barrier with default
     /// `DisconnectReasonCode::NormalDisconnection`.
     ///
@@ -2492,6 +2857,37 @@ impl AsyncClient {
         self.handle_try_disconnect(DisconnectReasonCode::NormalDisconnection, None)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect barrier with default
+    /// `DisconnectReasonCode::NormalDisconnection`.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_senders`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect(&self) -> Result<(), ClientError> {
+        self.handle_try_disconnect(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect barrier with properties.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -2519,6 +2915,40 @@ impl AsyncClient {
         self.handle_try_disconnect(reason, Some(properties))
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_senders`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_try_disconnect(reason, Some(properties))
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -2551,6 +2981,45 @@ impl AsyncClient {
         )
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_senders`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle_try_disconnect_with_timeout(
+            DisconnectReasonCode::NormalDisconnection,
+            None,
+            timeout,
+        )
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect with properties and a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -2584,6 +3053,46 @@ impl AsyncClient {
         self.handle_try_disconnect_with_timeout(reason, Some(properties), timeout)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_senders`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.handle_try_disconnect_with_timeout(reason, Some(properties), timeout)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a priority MQTT disconnect.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -2601,6 +3110,30 @@ impl AsyncClient {
         self.handle_try_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a priority MQTT disconnect.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_senders`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
+        self.handle_try_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a priority MQTT disconnect with properties.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -2614,6 +3147,33 @@ impl AsyncClient {
     ///
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
+    pub fn try_disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_try_disconnect_now(reason, Some(properties))
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a priority MQTT disconnect with properties.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_senders`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect_now_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -3208,6 +3768,7 @@ impl Client {
         self.client.try_unsubscribe_many(topics)
     }
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3231,6 +3792,36 @@ impl Client {
         self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_sender`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn disconnect(&self) -> Result<(), ClientError> {
+        self.handle_disconnect(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with properties.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3258,6 +3849,40 @@ impl Client {
         self.handle_disconnect(reason, Some(properties))
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_sender`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect(reason, Some(properties))
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3290,6 +3915,45 @@ impl Client {
         )
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_sender`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(
+            DisconnectReasonCode::NormalDisconnection,
+            None,
+            timeout,
+        )
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier with properties and a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3323,6 +3987,46 @@ impl Client {
         self.handle_disconnect_with_timeout(reason, Some(properties), timeout)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a graceful MQTT disconnect barrier with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_sender`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_with_timeout(reason, Some(properties), timeout)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a priority MQTT disconnect without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -3340,6 +4044,30 @@ impl Client {
         self.handle_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a priority MQTT disconnect without waiting for in-flight requests.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_sender`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn disconnect_now(&self) -> Result<(), ClientError> {
+        self.handle_disconnect_now(DisconnectReasonCode::NormalDisconnection, None)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a priority MQTT disconnect with properties without waiting for in-flight requests.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -3353,6 +4081,33 @@ impl Client {
     ///
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
+    pub fn disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.handle_disconnect_now(reason, Some(properties))
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Queues a priority MQTT disconnect with properties without waiting for in-flight requests.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_sender`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued on the
+    /// client's request channel.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn disconnect_now_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -3394,6 +4149,7 @@ impl Client {
         Ok(())
     }
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect barrier.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3417,6 +4173,36 @@ impl Client {
         self.client.try_disconnect()
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect barrier.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_sender`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect(&self) -> Result<(), ClientError> {
+        self.client.try_disconnect()
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect barrier with properties.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3444,6 +4230,40 @@ impl Client {
         self.client.handle_try_disconnect(reason, Some(properties))
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect barrier with properties.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes and tracked
+    /// subscribe/unsubscribe requests to complete before sending MQTT
+    /// `DISCONNECT`.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. Under publish
+    /// flow-control pressure, it may pass earlier `QoS` 1/ `QoS` 2 publishes
+    /// that are not currently sendable; once observed, it becomes the graceful
+    /// drain barrier.
+    /// Clients created through [`Self::from_sender`] only enqueue the corresponding
+    /// [`Request::Disconnect`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.client.handle_try_disconnect(reason, Some(properties))
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3472,6 +4292,41 @@ impl Client {
         self.client.try_disconnect_with_timeout(timeout)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect with a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_sender`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.client.try_disconnect_with_timeout(timeout)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a graceful MQTT disconnect with properties and a drain timeout.
     ///
     /// Once the event loop observes this request, it stops processing later
@@ -3506,6 +4361,47 @@ impl Client {
             .handle_try_disconnect_with_timeout(reason, Some(properties), timeout)
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a graceful MQTT disconnect with properties and a drain timeout.
+    ///
+    /// Once the event loop observes this request, it stops processing later
+    /// application work, flushes already protocol-admitted `QoS` 0 publishes, and waits
+    /// up to `timeout` for already protocol-admitted outbound `QoS` 1/ `QoS` 2 publishes
+    /// and tracked subscribe/unsubscribe requests to complete. `QoS` 1 publishes
+    /// complete on `PUBACK`, `QoS` 2 publishes complete on `PUBCOMP`, tracked
+    /// subscribes complete on `SUBACK`, and tracked unsubscribes complete on
+    /// `UNSUBACK`.
+    ///
+    /// If the drain completes before the deadline, the event loop sends and
+    /// flushes MQTT `DISCONNECT`. If the deadline expires first, polling returns
+    /// `ConnectionError::DisconnectTimeout` and MQTT `DISCONNECT` is not sent.
+    ///
+    /// For builder-created clients, this request uses the control-request channel. The timeout starts
+    /// only after the event loop observes this request, not necessarily when
+    /// this method queues it.
+    /// Clients created through [`Self::from_sender`] only enqueue
+    /// [`Request::DisconnectWithTimeout`]; receiver-side processing determines its behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_with_properties_timeout(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.client
+            .handle_try_disconnect_with_timeout(reason, Some(properties), timeout)
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a priority MQTT disconnect.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -3523,6 +4419,30 @@ impl Client {
         self.client.try_disconnect_now()
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a priority MQTT disconnect.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_sender`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
+    pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
+        self.client.try_disconnect_now()
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     /// Attempts to queue a priority MQTT disconnect with properties.
     ///
     /// For clients created through [`Self::builder`], this request uses a dedicated immediate
@@ -3536,6 +4456,34 @@ impl Client {
     ///
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
+    pub fn try_disconnect_now_with_properties(
+        &self,
+        reason: DisconnectReasonCode,
+        properties: DisconnectProperties,
+    ) -> Result<(), ClientError> {
+        self.client
+            .handle_try_disconnect_now(reason, Some(properties))
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Attempts to queue a priority MQTT disconnect with properties.
+    ///
+    /// For clients created through [`Self::builder`], this request uses a dedicated immediate
+    /// shutdown channel, may bypass queued application work, and does not wait for unresolved
+    /// `QoS` 1/ `QoS` 2 publish handshakes. Priority is observed at event-loop scheduling
+    /// points; it does not interrupt connection setup, work already executing, buffered
+    /// events, or an application that is not polling. Clients created through [`Self::from_sender`]
+    /// enqueue [`Request::DisconnectNow`] on their single supplied channel without priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the disconnect request cannot be queued
+    /// immediately through this client.
+    ///
+    /// Policy comparison: `disconnect()` drains protocol-admitted work;
+    /// `disconnect_after_queued()` completes preceding queued publishes;
+    /// `disconnect_now()` skips the handshake drain. This method confirms
+    /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect_now_with_properties(
         &self,
         reason: DisconnectReasonCode,
@@ -5398,9 +6346,24 @@ mod test {
 
     #[test]
     fn tracked_unsubscribe_uses_control_request_channel() {
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (requests, requests_rx) = flume::bounded(1);
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (requests, requests_rx) = rumqttc_core::admission::bounded(1);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (control_requests, control_requests_rx) = flume::bounded(1);
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (control_requests, control_requests_rx) = rumqttc_core::admission::bounded(1);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (immediate_disconnect, _immediate_disconnect_rx) = flume::unbounded();
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (immediate_disconnect, _immediate_disconnect_rx) = rumqttc_core::admission::unbounded();
+
         let client = AsyncClient {
             request_tx: RequestSender::WithNotice {
                 requests,
@@ -5476,9 +6439,24 @@ mod test {
 
     #[test]
     fn graceful_disconnect_uses_control_request_channel() {
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (requests, requests_rx) = flume::bounded(1);
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (requests, requests_rx) = rumqttc_core::admission::bounded(1);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (control_requests, control_requests_rx) = flume::bounded(1);
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (control_requests, control_requests_rx) = rumqttc_core::admission::bounded(1);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (immediate_disconnect, immediate_disconnect_rx) = flume::unbounded();
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (immediate_disconnect, immediate_disconnect_rx) = rumqttc_core::admission::unbounded();
+
         let client = AsyncClient {
             request_tx: RequestSender::WithNotice {
                 requests,
@@ -5502,9 +6480,24 @@ mod test {
 
     #[test]
     fn tracked_auth_uses_control_request_channel() {
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (requests, requests_rx) = flume::bounded(1);
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (requests, requests_rx) = rumqttc_core::admission::bounded(1);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (control_requests, control_requests_rx) = flume::bounded(1);
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (control_requests, control_requests_rx) = rumqttc_core::admission::bounded(1);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (immediate_disconnect, _immediate_disconnect_rx) = flume::unbounded();
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (immediate_disconnect, _immediate_disconnect_rx) = rumqttc_core::admission::unbounded();
+
         let client = AsyncClient {
             request_tx: RequestSender::WithNotice {
                 requests,

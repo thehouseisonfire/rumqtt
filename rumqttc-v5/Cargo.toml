@@ -21,6 +21,7 @@ features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+ordered-shutdown = ["rumqttc-core/ordered-shutdown"]
 default = ["use-rustls"]
 bench-instrumentation = ["mqttbytes-v5/bench-instrumentation"]
 system-srv-resolver = ["dep:hickory-resolver"]
@@ -84,6 +85,11 @@ rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry"] }
 turmoil = "0.7.2"
 wincode = { version = "0.4.9", features = ["derive"] }
+
+[[example]]
+name = "ordered_shutdown_v5"
+required-features = ["ordered-shutdown"]
+path = "examples/ordered_shutdown_v5.rs"
 
 [[example]]
 name = "async_auth_oauth"

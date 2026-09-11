@@ -21,6 +21,7 @@ features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+ordered-shutdown = ["rumqttc-core/ordered-shutdown"]
 default = ["use-rustls"]
 bench-instrumentation = ["mqttbytes-v4/bench-instrumentation"]
 use-rustls = ["use-rustls-aws-lc"]
@@ -78,6 +79,10 @@ tokio-tungstenite = "0.30"
 rcgen = "=0.14.10"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry"] }
 turmoil = "0.7.2"
+
+[[example]]
+name = "ordered_shutdown"
+required-features = ["ordered-shutdown"]
 
 [[example]]
 name = "async_manual_acks"

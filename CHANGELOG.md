@@ -1,6 +1,21 @@
 ## [Unreleased]
 
 ### Fixed
+- Rust v5 client: Preserve ordered shutdown after recoverable connection timeouts
+  for persistent sessions, allowing another connection attempt within the original
+  ordered deadline while retaining the terminal DISCONNECT flush guard.
+- Rust v5 client: Ordered shutdown now accounts for queued publishes discarded
+  during replay cleanup because their topic alias mapping is unavailable, including
+  untracked publishes.
+- Rust v4 client: Preserve ordered-shutdown reconnection after connection and
+  pre-DISCONNECT flush timeouts when the persistent session's work is replayable.
+  The original ordered deadline and terminal DISCONNECT flush guard still apply.
+- Rust v4/v5 clients: Reduce ordered-shutdown bookkeeping overhead without a
+  second client mode. Admission uses lane-local wakeups and uncontended fast
+  paths; pre-fence lifecycle reads and successful publish accounting avoid their
+  former mutexes. The shared core no longer depends on Flume for error types.
+  Managed clients still maintain admission ordering and publish observations
+  before shutdown; no performance-parity claim is made without benchmarks.
 - `rumqttc` for Python: Allow bounded shutdown to join an already-started native
   driver after panic containment, releasing its channels and pending operations
   before interpreter teardown.
@@ -10,6 +25,25 @@
   sanitizer setup against scheduler latency and host process limits.
 
 ### Added
+- Rust v4/v5 clients: Ordered shutdown is now available behind the opt-in
+  `ordered-shutdown` Cargo feature. Existing default builds retain the baseline
+  admission and request representation; enabling the feature opts into the
+  ordered fence and `DisconnectNotice` APIs. The feature is build-time isolated,
+  not selectable independently per client instance in a unified dependency build.
+- Rust v4/v5 clients: Add `disconnect_after_queued()` and timeout/`try_*`
+  counterparts, returning a `DisconnectNotice`. The publish-only fence includes
+  preceding tracked, untracked, and replayed publishes through their QoS completion
+  milestones; success requires DISCONNECT transport flush and required persistence.
+  MQTT 5 preserves supplied disconnect reason/properties and reports negative
+  publish acknowledgements as failures. Cloned managed clients share admission
+  order and reject later operations with `ClientError::Closing`.
+  Total deadlines begin at successful admission, not at event-loop observation.
+  Fences are process-local; notices report timeout, transport/protocol/persistence
+  failure, supersession, receiver loss, and session reset/redirect explicitly.
+  External senders cannot provide managed completion. Existing `disconnect()`
+  still drains only protocol-admitted work; `disconnect_now()` remains immediate.
+  See [ordered shutdown](docs/recipes/ordered-shutdown.md) for the policy comparison,
+  concurrency contract, and timeout/persistence cleanup requirements.
 - `rumqttc` for Python: Complete public-boundary validation, reconnect and
   acknowledgement coverage, panic containment, bounded child-process lifecycle
   checks, installed wheel/sdist verification across CPython 3.10–3.14, and

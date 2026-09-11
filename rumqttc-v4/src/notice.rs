@@ -52,6 +52,18 @@ impl PublishResult {
 #[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PublishNoticeError {
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request discarded after ordered disconnect")]
+    DiscardedAfterDisconnectBarrier,
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request superseded by immediate disconnect")]
+    ShutdownSupersededByImmediate,
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request interrupted by shutdown; delivery may be ambiguous")]
+    ShutdownInterrupted,
+
     #[error("event loop dropped notice sender")]
     Recv,
     #[error("message dropped due to session reset")]
@@ -88,22 +100,50 @@ where
     }
 }
 
+#[cfg(not(feature = "ordered-shutdown"))]
 #[derive(Debug)]
 struct NoticeTx<T, E>(oneshot::Sender<Result<T, E>>);
 
+#[cfg(feature = "ordered-shutdown")]
+#[derive(Debug)]
+struct NoticeTx<T, E>(Option<oneshot::Sender<Result<T, E>>>);
+
 impl<T, E> NoticeTx<T, E> {
     fn success(self, result: T) {
-        _ = self.0.send(Ok(result));
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            _ = self.0.send(Ok(result));
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        if let Some(tx) = self.0 {
+            _ = tx.send(Ok(result));
+        }
     }
 
     fn error(self, err: E) {
-        _ = self.0.send(Err(err));
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            _ = self.0.send(Err(err));
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        if let Some(tx) = self.0 {
+            _ = tx.send(Err(err));
+        }
     }
 }
 
 fn notice_channel<T, E>() -> (NoticeTx<T, E>, NoticeRx<T, E>) {
     let (tx, rx) = oneshot::channel();
-    (NoticeTx(tx), NoticeRx(rx))
+    #[cfg(not(feature = "ordered-shutdown"))]
+    {
+        (NoticeTx(tx), NoticeRx(rx))
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    {
+        (NoticeTx(Some(tx)), NoticeRx(rx))
+    }
 }
 
 /// Wait handle returned by tracked publish APIs.
@@ -162,6 +202,18 @@ impl PublishNotice {
 #[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SubscribeNoticeError {
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request discarded after ordered disconnect")]
+    DiscardedAfterDisconnectBarrier,
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request superseded by immediate disconnect")]
+    ShutdownSupersededByImmediate,
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request interrupted by shutdown; delivery may be ambiguous")]
+    ShutdownInterrupted,
+
     #[error("event loop dropped notice sender")]
     Recv,
     #[error("message dropped due to session reset")]
@@ -237,6 +289,18 @@ impl SubscribeNotice {
 #[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UnsubscribeNoticeError {
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request discarded after ordered disconnect")]
+    DiscardedAfterDisconnectBarrier,
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request superseded by immediate disconnect")]
+    ShutdownSupersededByImmediate,
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("request interrupted by shutdown; delivery may be ambiguous")]
+    ShutdownInterrupted,
+
     #[error("event loop dropped notice sender")]
     Recv,
     #[error("message dropped due to session reset")]
@@ -304,21 +368,58 @@ impl UnsubscribeNotice {
     }
 }
 
+#[cfg(not(feature = "ordered-shutdown"))]
 #[derive(Debug)]
 pub struct PublishNoticeTx(NoticeTx<PublishResult, PublishNoticeError>);
 
+#[cfg(feature = "ordered-shutdown")]
+#[derive(Debug)]
+pub struct PublishNoticeTx(
+    NoticeTx<PublishResult, PublishNoticeError>,
+    Option<crate::disconnect::Observation>,
+);
+
 impl PublishNoticeTx {
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn internal() -> Self {
+        Self(NoticeTx(None), None)
+    }
+
     pub(crate) fn new() -> (Self, PublishNotice) {
         let (tx, rx) = notice_channel();
-        (Self(tx), PublishNotice(rx))
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            (Self(tx), PublishNotice(rx))
+        }
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            (Self(tx, None), PublishNotice(rx))
+        }
     }
 
     pub(crate) fn success(self, result: PublishResult) {
+        #[cfg(feature = "ordered-shutdown")]
+        if let Some(observation) = self.1 {
+            observation.finish(Ok(()));
+        }
+
         self.0.success(result);
     }
 
     pub(crate) fn error(self, err: PublishNoticeError) {
+        #[cfg(feature = "ordered-shutdown")]
+        if let Some(observation) = self.1 {
+            observation.finish(Err(err.clone()));
+        }
+
         self.0.error(err);
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn observe(&mut self, ledger: &std::sync::Arc<crate::disconnect::Ledger>) {
+        if self.1.is_none() {
+            self.1 = Some(crate::disconnect::Observation::new(ledger.clone()));
+        }
     }
 }
 

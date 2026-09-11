@@ -13,6 +13,9 @@ use tokio_native_tls::native_tls::TlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
 use tokio_rustls::rustls::ClientConfig;
 
+#[doc(hidden)]
+#[cfg(feature = "ordered-shutdown")]
+pub mod admission;
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 mod scheduler;

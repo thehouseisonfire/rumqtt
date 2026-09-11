@@ -39,7 +39,13 @@ mod framed;
 #[cfg(feature = "tracing")]
 mod instrumentation;
 pub use mqttbytes_v5 as mqttbytes;
+#[cfg(feature = "ordered-shutdown")]
+mod disconnect;
+
 mod notice;
+#[cfg(feature = "ordered-shutdown")]
+pub use disconnect::{DisconnectNotice, DisconnectNoticeError, ShutdownPhase};
+
 mod publish_admission;
 mod redirect;
 mod session;
@@ -727,6 +733,13 @@ pub enum Request {
     Disconnect(Disconnect),
     DisconnectNow(Disconnect),
     DisconnectWithTimeout(Disconnect, Duration),
+    #[cfg(feature = "ordered-shutdown")]
+    /// Publish-queue fence; completion requires a managed event loop.
+    DisconnectAfterQueued(Disconnect),
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Publish-queue fence with a total post-admission timeout.
+    DisconnectAfterQueuedWithTimeout(Disconnect, Duration),
 }
 
 impl From<Subscribe> for Request {

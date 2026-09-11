@@ -2203,6 +2203,7 @@ async fn graceful_disconnect_with_properties_timeout_does_not_wait_for_unsent_fl
     assert_graceful_disconnect_overtakes_flow_controlled_publish(true).await;
 }
 
+#[cfg(not(feature = "ordered-shutdown"))]
 #[tokio::test]
 #[ignore = "pending ordered-disconnect API: current disconnect is intentionally used as a failing placeholder"]
 async fn ordered_disconnect_waits_for_flow_controlled_publish_before_disconnect() {
@@ -2225,6 +2226,60 @@ async fn ordered_disconnect_waits_for_flow_controlled_publish_before_disconnect(
         // TODO: replace with the future ordered-disconnect operation. Using disconnect() here
         // deliberately makes this ignored executable specification fail at the semantic gap.
         client.disconnect().await.unwrap();
+    });
+    let mut broker = TestBroker::from_listener(
+        listener,
+        ConnectBehavior::Accept {
+            session_saved: false,
+        },
+    )
+    .await;
+    let first = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("publish A");
+    assert_eq!(first.topic, b"ordered/a"[..]);
+    broker.ack(first.pkid).await;
+    let second = broker
+        .read_publish_with_timeout(PHASE_TIMEOUT)
+        .await
+        .expect("ordered disconnect must send B before DISCONNECT");
+    assert_eq!(second.topic, b"ordered/b"[..]);
+    broker.ack(second.pkid).await;
+    assert!(matches!(
+        broker.read_packet_with_timeout(PHASE_TIMEOUT).await,
+        Some(Packet::Disconnect(_))
+    ));
+    client_task.await.unwrap();
+    eventloop_task.await.unwrap();
+}
+
+#[cfg(feature = "ordered-shutdown")]
+#[tokio::test]
+async fn ordered_disconnect_waits_for_flow_controlled_publish_before_disconnect() {
+    let (listener, port) = reserve_listener().await;
+    let mut options = MqttOptions::new("ordered-disconnect-pending", ("127.0.0.1", port));
+    options
+        .set_outgoing_inflight_upper_limit(1)
+        .set_max_request_batch(1);
+    let (client, mut eventloop) = AsyncClient::builder(options).capacity(16).build();
+    let eventloop_task = task::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    let client_task = task::spawn(async move {
+        client
+            .publish("ordered/a", "a", PublishOptions::new(QoS::AtLeastOnce))
+            .await
+            .unwrap();
+        client
+            .publish("ordered/b", "b", PublishOptions::new(QoS::AtLeastOnce))
+            .await
+            .unwrap();
+        client
+            .disconnect_after_queued_with_timeout(PHASE_TIMEOUT)
+            .await
+            .unwrap()
+            .wait_async()
+            .await
+            .unwrap();
     });
     let mut broker = TestBroker::from_listener(
         listener,

@@ -350,14 +350,35 @@ async fn stop_observer(
 
 #[derive(Clone, Copy)]
 enum SubscriptionDisconnectMode {
+    #[cfg(feature = "ordered-shutdown")]
+    Ordered,
+
     KeepSubscription,
     PlainUnsubscribe,
     TrackedUnsubscribe,
 }
 
+#[cfg(feature = "ordered-shutdown")]
+#[tokio::test]
+async fn ordered_disconnect_suppresses_will_after_publish_burst() {
+    assert_subscribed_publisher_graceful_disconnect_suppresses_will(
+        SubscriptionDisconnectMode::Ordered,
+    )
+    .await;
+}
+
 impl SubscriptionDisconnectMode {
     const fn suffix(self) -> &'static str {
+        #[cfg(not(feature = "ordered-shutdown"))]
         match self {
+            Self::KeepSubscription => "subscribed",
+            Self::PlainUnsubscribe => "plain-unsubscribe",
+            Self::TrackedUnsubscribe => "tracked-unsubscribe",
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        match self {
+            Self::Ordered => "ordered",
             Self::KeepSubscription => "subscribed",
             Self::PlainUnsubscribe => "plain-unsubscribe",
             Self::TrackedUnsubscribe => "tracked-unsubscribe",
@@ -425,6 +446,7 @@ async fn assert_subscribed_publisher_graceful_disconnect_suppresses_will(
         .expect("publisher echo channel closed");
     assert_eq!(echo, "echo");
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     match mode {
         SubscriptionDisconnectMode::KeepSubscription => {}
         SubscriptionDisconnectMode::PlainUnsubscribe => {
@@ -439,11 +461,56 @@ async fn assert_subscribed_publisher_graceful_disconnect_suppresses_will(
         }
     }
 
+    #[cfg(not(feature = "ordered-shutdown"))]
     let (reason, properties) = normal_disconnect_properties();
+
+    #[cfg(not(feature = "ordered-shutdown"))]
     client
         .disconnect_with_properties_timeout(reason, properties, Duration::from_secs(2))
         .await
         .unwrap();
+
+    #[cfg(feature = "ordered-shutdown")]
+    match mode {
+        SubscriptionDisconnectMode::KeepSubscription | SubscriptionDisconnectMode::Ordered => {}
+        SubscriptionDisconnectMode::PlainUnsubscribe => {
+            client.unsubscribe(echo_topic.clone()).await.unwrap();
+        }
+        SubscriptionDisconnectMode::TrackedUnsubscribe => {
+            let notice = client
+                .unsubscribe_tracked(echo_topic.clone())
+                .await
+                .unwrap();
+            notice.wait_completion_async().await.unwrap();
+        }
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    if matches!(mode, SubscriptionDisconnectMode::Ordered) {
+        for index in 0..16u8 {
+            client
+                .publish(
+                    echo_topic.clone(),
+                    vec![index],
+                    PublishOptions::new(QoS::AtLeastOnce),
+                )
+                .await
+                .unwrap();
+        }
+        client
+            .disconnect_after_queued_with_timeout(Duration::from_secs(2))
+            .await
+            .unwrap()
+            .wait_async()
+            .await
+            .unwrap();
+    } else {
+        let (reason, properties) = normal_disconnect_properties();
+        client
+            .disconnect_with_properties_timeout(reason, properties, Duration::from_secs(2))
+            .await
+            .unwrap();
+    }
 
     let saw_disconnect = time::timeout(PUBLISHER_TIMEOUT, publisher_task)
         .await

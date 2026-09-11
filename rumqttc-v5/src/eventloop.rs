@@ -21,12 +21,24 @@ use crate::{
     srv::{MAX_SRV_TARGETS, ResolvedSrvTarget, SrvAnswerError, prepare_srv_targets},
 };
 
+#[cfg(not(feature = "ordered-shutdown"))]
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
+
+#[cfg(feature = "ordered-shutdown")]
+use rumqttc_core::admission::TryRecvError;
+
+#[cfg(feature = "ordered-shutdown")]
+use rumqttc_core::admission::{Receiver, Sender, bounded, unbounded};
+
 use rumqttc_core::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
 use std::collections::VecDeque;
+#[cfg(feature = "ordered-shutdown")]
+#[path = "eventloop_disconnect.rs"]
+mod ordered_disconnect;
+
 use std::io;
 use std::net::Ipv6Addr;
 use std::pin::Pin;
@@ -63,6 +75,8 @@ pub struct RequestEnvelope {
     pub(crate) request: Request,
     pub(crate) notice: Option<TrackedNoticeTx>,
     pub(crate) replay: bool,
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) meta: crate::disconnect::RequestMeta,
 }
 
 impl RequestEnvelope {
@@ -75,6 +89,8 @@ impl RequestEnvelope {
             request,
             notice,
             replay,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 
@@ -83,6 +99,8 @@ impl RequestEnvelope {
             request,
             notice: None,
             replay: false,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 
@@ -91,6 +109,8 @@ impl RequestEnvelope {
             request,
             notice: None,
             replay: true,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 
@@ -99,6 +119,8 @@ impl RequestEnvelope {
             request: Request::Publish(publish),
             notice: Some(TrackedNoticeTx::Publish(notice)),
             replay: false,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 
@@ -107,6 +129,8 @@ impl RequestEnvelope {
             request: Request::Subscribe(subscribe),
             notice: Some(TrackedNoticeTx::Subscribe(notice)),
             replay: false,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 
@@ -118,6 +142,8 @@ impl RequestEnvelope {
             request: Request::Unsubscribe(unsubscribe),
             notice: Some(TrackedNoticeTx::Unsubscribe(notice)),
             replay: false,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 
@@ -129,6 +155,8 @@ impl RequestEnvelope {
             request: Request::Auth(auth),
             notice: Some(TrackedNoticeTx::Auth(notice)),
             replay: false,
+            #[cfg(feature = "ordered-shutdown")]
+            meta: crate::disconnect::RequestMeta::new(),
         }
     }
 }
@@ -197,6 +225,10 @@ impl SessionSave {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
+    #[cfg(feature = "ordered-shutdown")]
+    #[error("Ordered shutdown failed: {0}")]
+    OrderedDisconnect(#[from] crate::DisconnectNoticeError),
+
     #[error("Mqtt state: {0}")]
     MqttState(#[from] StateError),
     #[error("Connection timeout")]
@@ -281,6 +313,23 @@ impl SessionStoreState {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLoopDiagnostics {
+    #[cfg(feature = "ordered-shutdown")]
+    /// Ordered shutdown phase, or the existing admitted-work drain policy.
+    pub shutdown_phase: crate::ShutdownPhase,
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Successful admission sequence of the process-local fence.
+    pub disconnect_fence_sequence: Option<u64>,
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Absolute total shutdown deadline; never reset by reconnect.
+    pub disconnect_deadline: Option<std::time::Instant>,
+
+    #[cfg(feature = "ordered-shutdown")]
+    /// Covered publishes in the local scheduler/replay queues only. Excludes
+    /// channel backlog and in-flight state; this is not a completion count.
+    pub ordered_local_queued_publishes: Option<usize>,
+
     /// Whether an MQTT transport has been established and its initial `CONNACK` accepted.
     ///
     /// This remains `true` while a graceful disconnect is draining and until a transport failure
@@ -465,6 +514,21 @@ pub struct EventLoop {
     /// Persistent session store lifecycle flags.
     session_store: SessionStoreState,
     pending_disconnect: Option<PendingDisconnect>,
+    #[cfg(feature = "ordered-shutdown")]
+    ordered_completion: Option<Arc<crate::disconnect::Completion>>,
+
+    #[cfg(feature = "ordered-shutdown")]
+    ordered_packet: Option<crate::Disconnect>,
+
+    #[cfg(feature = "ordered-shutdown")]
+    terminal_checkpoint: Option<crate::disconnect::TerminalCheckpoint>,
+
+    #[cfg(feature = "ordered-shutdown")]
+    publish_ledger: Arc<crate::disconnect::Ledger>,
+
+    #[cfg(feature = "ordered-shutdown")]
+    shutdown_phase: crate::ShutdownPhase,
+
     disconnect_complete: bool,
     active_redirect: Option<ActiveRedirect>,
     pending_server_redirect: Option<PendingServerRedirect>,
@@ -568,15 +632,42 @@ impl EventLoop {
         Sender<RequestEnvelope>,
         Sender<RequestEnvelope>,
     ) {
+        #[cfg(feature = "ordered-shutdown")]
+        let cap = match capacity {
+            RequestChannelCapacity::Bounded(cap) => Some(cap),
+            RequestChannelCapacity::Unbounded => None,
+        };
+
+        #[cfg(feature = "ordered-shutdown")]
+        let gate = Arc::default();
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (requests_tx, requests_rx) = match capacity {
             RequestChannelCapacity::Bounded(cap) => bounded(cap),
             RequestChannelCapacity::Unbounded => unbounded(),
         };
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (requests_tx, requests_rx) =
+            rumqttc_core::admission::channel(cap, Arc::clone(&gate), false);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (control_requests_tx, control_requests_rx) = match capacity {
             RequestChannelCapacity::Bounded(cap) => bounded(cap),
             RequestChannelCapacity::Unbounded => unbounded(),
         };
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (control_requests_tx, control_requests_rx) =
+            rumqttc_core::admission::channel(cap, Arc::clone(&gate), false);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (immediate_disconnect_tx, immediate_disconnect_rx) = unbounded();
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (immediate_disconnect_tx, immediate_disconnect_rx) =
+            rumqttc_core::admission::channel(None, gate, true);
+
         let eventloop = Self::with_channel(
             options,
             requests_rx,
@@ -603,15 +694,42 @@ impl EventLoop {
         Sender<RequestEnvelope>,
         Sender<RequestEnvelope>,
     ) {
+        #[cfg(feature = "ordered-shutdown")]
+        let cap = match capacity {
+            RequestChannelCapacity::Bounded(cap) => Some(cap),
+            RequestChannelCapacity::Unbounded => None,
+        };
+
+        #[cfg(feature = "ordered-shutdown")]
+        let gate = Arc::default();
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (requests_tx, requests_rx) = match capacity {
             RequestChannelCapacity::Bounded(cap) => bounded(cap),
             RequestChannelCapacity::Unbounded => unbounded(),
         };
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (requests_tx, requests_rx) =
+            rumqttc_core::admission::channel(cap, Arc::clone(&gate), false);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (control_requests_tx, control_requests_rx) = match capacity {
             RequestChannelCapacity::Bounded(cap) => bounded(cap),
             RequestChannelCapacity::Unbounded => unbounded(),
         };
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (control_requests_tx, control_requests_rx) =
+            rumqttc_core::admission::channel(cap, Arc::clone(&gate), false);
+
+        #[cfg(not(feature = "ordered-shutdown"))]
         let (immediate_disconnect_tx, immediate_disconnect_rx) = unbounded();
+
+        #[cfg(feature = "ordered-shutdown")]
+        let (immediate_disconnect_tx, immediate_disconnect_rx) =
+            rumqttc_core::admission::channel(None, gate, true);
+
         let eventloop = Self::with_channel(
             options,
             requests_rx,
@@ -690,6 +808,21 @@ impl EventLoop {
             broker_only_session_resume: false,
             session_store: SessionStoreState::new(),
             pending_disconnect: None,
+            #[cfg(feature = "ordered-shutdown")]
+            ordered_completion: None,
+
+            #[cfg(feature = "ordered-shutdown")]
+            ordered_packet: None,
+
+            #[cfg(feature = "ordered-shutdown")]
+            terminal_checkpoint: None,
+
+            #[cfg(feature = "ordered-shutdown")]
+            publish_ledger: Arc::default(),
+
+            #[cfg(feature = "ordered-shutdown")]
+            shutdown_phase: crate::ShutdownPhase::Open,
+
             disconnect_complete: false,
             active_redirect: None,
             pending_server_redirect: None,
@@ -818,6 +951,13 @@ impl EventLoop {
         self.network = None;
         self.keepalive_timeout = None;
         self.pending_disconnect = None;
+        #[cfg(feature = "ordered-shutdown")]
+        let older_pending = if self.requests_rx.gate().has_fence() {
+            std::mem::take(&mut self.pending)
+        } else {
+            VecDeque::new()
+        };
+
         let mut replay_topic_aliases = self.state.replay_topic_aliases();
 
         for clean in self.state.clean_with_notices_for_reconnect() {
@@ -825,6 +965,11 @@ impl EventLoop {
                 RequestEnvelope::from_parts_with_replay(clean.request, clean.notice, clean.replay),
                 &mut replay_topic_aliases,
             );
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        for envelope in older_pending {
+            self.push_replay_envelope(envelope, &mut replay_topic_aliases);
         }
 
         let queued: Vec<_> = self.queued.drain().collect();
@@ -858,6 +1003,8 @@ impl EventLoop {
         // its admission gate. The late repair must resolve the former against this boundary map,
         // then apply the latter in queue order.
         self.reconnect_topic_aliases = replay_topic_aliases;
+        #[cfg(feature = "ordered-shutdown")]
+        self.restore_ordered_fence_after_cleanup();
 
         #[cfg(feature = "tracing")]
         crate::instrumentation::replay_prepared(
@@ -882,6 +1029,12 @@ impl EventLoop {
         mut envelope: RequestEnvelope,
         replay_topic_aliases: &mut std::collections::HashMap<u16, bytes::Bytes>,
     ) {
+        // Cleanup can reject queued publishes before normal request handling observes them.
+        // Attach their observation first so replay rejection also fails ordered shutdown.
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            envelope.notice = self.observe_publish(&envelope.request, envelope.notice);
+        }
         if let Err(err) = MqttState::prepare_request_for_replay_with_aliases(
             &mut envelope.request,
             replay_topic_aliases,
@@ -936,6 +1089,35 @@ impl EventLoop {
         let pending_replay_len = self.pending.len();
         let queued_len = self.queued.len();
         EventLoopDiagnostics {
+            #[cfg(feature = "ordered-shutdown")]
+            shutdown_phase: if self.shutdown_phase != crate::ShutdownPhase::Open {
+                self.shutdown_phase
+            } else if self.requests_rx.gate().has_fence() {
+                crate::ShutdownPhase::Approaching
+            } else if self.pending_disconnect.is_some() {
+                crate::ShutdownPhase::AdmittedDrain
+            } else {
+                crate::ShutdownPhase::Open
+            },
+
+            #[cfg(feature = "ordered-shutdown")]
+            disconnect_fence_sequence: self.requests_rx.gate().snapshot().0,
+
+            #[cfg(feature = "ordered-shutdown")]
+            disconnect_deadline: self.requests_rx.gate().snapshot().1,
+
+            #[cfg(feature = "ordered-shutdown")]
+            ordered_local_queued_publishes: self.requests_rx.gate().snapshot().0.map(|fence| {
+                self.pending
+                    .iter()
+                    .chain(self.queued.iter())
+                    .filter(|envelope| {
+                        envelope.meta.sequence <= fence
+                            && matches!(envelope.request, Request::Publish(_))
+                    })
+                    .count()
+            }),
+
             connected: self.network.is_some(),
             disconnecting: self.pending_disconnect.is_some()
                 || self.pending_redirect_shutdown
@@ -1081,6 +1263,21 @@ impl EventLoop {
     }
 
     fn drop_unprocessed_requests(&mut self) {
+        #[cfg(feature = "ordered-shutdown")]
+        self.requests_rx.gate().terminate();
+
+        #[cfg(feature = "ordered-shutdown")]
+        if self.requests_rx.gate().has_fence() {
+            self.pending.extend(self.requests_rx.drain());
+            self.pending.extend(self.control_requests_rx.drain());
+            self.pending.extend(self.queued.drain());
+            for envelope in &mut self.pending {
+                if let Some(notice) = envelope.notice.take() {
+                    Self::discard_shutdown_notice(notice, false, false);
+                }
+            }
+        }
+
         // These requests never became MQTT protocol state. Dropping their notice senders
         // resolves tracked handles with the existing Recv error.
         self.pending.clear();
@@ -1091,6 +1288,14 @@ impl EventLoop {
 
     /// Clears eventloop and state tracking bound to a previous session.
     pub fn reset_session_state(&mut self) {
+        #[cfg(feature = "ordered-shutdown")]
+        if self.requests_rx.gate().has_fence() {
+            self.finish_ordered(Err(crate::DisconnectNoticeError::SessionReset));
+            self.requests_rx.gate().terminate();
+            self.disconnect_complete = true;
+            self.shutdown_phase = crate::ShutdownPhase::Failed;
+        }
+
         self.reset_session_state_internal(SessionStoreResetAction::Clear);
     }
 
@@ -1111,6 +1316,16 @@ impl EventLoop {
     }
 
     fn reset_session_state_internal(&mut self, store_reset: SessionStoreResetAction) {
+        #[cfg(feature = "ordered-shutdown")]
+        if self.requests_rx.gate().has_fence()
+            && (!self.pending.is_empty() || self.ordered_packet.is_some())
+        {
+            self.finish_ordered(Err(crate::DisconnectNoticeError::SessionReset));
+            self.requests_rx.gate().terminate();
+            self.disconnect_complete = true;
+            self.shutdown_phase = crate::ShutdownPhase::Failed;
+        }
+
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.fail_reauth_exchange_due_to_session_reset();
         self.state.reset_session_state();
@@ -1567,6 +1782,11 @@ impl EventLoop {
         &mut self,
         outcome: RedirectOutcome,
     ) -> Result<Event, ConnectionError> {
+        #[cfg(feature = "ordered-shutdown")]
+        if self.requests_rx.gate().has_fence() {
+            return Err(crate::DisconnectNoticeError::Redirected.into());
+        }
+
         if self.pending_redirect_shutdown || self.redirect_shutdown_requested() {
             return Err(self.finish_redirected_shutdown());
         }
@@ -1969,6 +2189,7 @@ impl EventLoop {
         &mut self,
         result: Result<Event, ConnectionError>,
     ) -> Result<Event, ConnectionError> {
+        #[cfg(not(feature = "ordered-shutdown"))]
         match result {
             Ok(v) => Ok(v),
             Err(ConnectionError::MqttState(StateError::ServerRedirect(outcome))) => {
@@ -2041,6 +2262,84 @@ impl EventLoop {
                 Err(e)
             }
         }
+
+        #[cfg(feature = "ordered-shutdown")]
+        match result {
+            Ok(v) => Ok(v),
+            Err(ConnectionError::DisconnectTimeout) if self.requests_rx.gate().has_fence() => {
+                Err(ConnectionError::DisconnectTimeout)
+            }
+            Err(ConnectionError::MqttState(StateError::ServerRedirect(outcome))) => {
+                if let Some(event) = self.state.events.pop_front() {
+                    self.pending_server_redirect =
+                        Some(PendingServerRedirect::DrainEvents(outcome));
+                    return Ok(event);
+                }
+                self.complete_server_redirect(outcome, true).await
+            }
+            Err(ConnectionError::DisconnectTimeout) => {
+                let error = ConnectionError::DisconnectTimeout;
+                #[cfg(feature = "tracing")]
+                {
+                    crate::instrumentation::connection_lost(
+                        self.telemetry.last_attempt(),
+                        &error,
+                        &self.diagnostics(),
+                    );
+                }
+                #[cfg(not(feature = "tracing"))]
+                warn!(
+                    "Graceful disconnect timed out before outbound protocol state drained: {}; \
+                     pending={}, queued={}, requests_rx={}, control_requests_rx={}",
+                    self.state.outbound_drain_diagnostics(),
+                    self.pending.len(),
+                    self.queued.len(),
+                    self.requests_rx.len(),
+                    self.control_requests_rx.len()
+                );
+                // The timeout closes the network without sending DISCONNECT. Normalize
+                // all in-flight protocol state into replay envelopes before replacing
+                // the durable checkpoint, then discard terminal in-memory work.
+                self.requests_rx.gate().terminate();
+                self.clean_with_notice_reason(NoticeFailureReason::SessionReset);
+                self.disconnect_complete = true;
+                self.checkpoint_after_connection_loss().await?;
+                self.drop_unprocessed_requests();
+                Err(error)
+            }
+            Err(e) => {
+                #[cfg(feature = "tracing")]
+                crate::instrumentation::connection_lost(
+                    self.telemetry.last_attempt(),
+                    &e,
+                    &self.diagnostics(),
+                );
+                if self.clean_after_deferred_redirect_failure() {
+                    return Err(e);
+                }
+                // MQTT requires that packets pending acknowledgement should be republished on session resume.
+                // Move pending messages from state to eventloop.
+                let restoring_isolated_redirect = self
+                    .active_redirect
+                    .as_ref()
+                    .is_some_and(|active| active.established && !active.session_preserved);
+                if restoring_isolated_redirect {
+                    self.clean_with_notice_reason(NoticeFailureReason::Redirected);
+                } else {
+                    self.clean_with_notice_reason(NoticeFailureReason::SessionReset);
+                }
+                let checkpoint = self.checkpoint_after_connection_loss().await;
+                let restore_temporary_origin = self
+                    .active_redirect
+                    .as_ref()
+                    .is_some_and(|active| active.established);
+                if restore_temporary_origin {
+                    self.restore_redirect_origin();
+                }
+                checkpoint?;
+                Err(e)
+            }
+        }
     }
 
     async fn complete_server_redirect(
@@ -2048,6 +2347,11 @@ impl EventLoop {
         outcome: RedirectOutcome,
         cleanup_required: bool,
     ) -> Result<Event, ConnectionError> {
+        #[cfg(feature = "ordered-shutdown")]
+        if self.requests_rx.gate().has_fence() {
+            return Err(crate::DisconnectNoticeError::Redirected.into());
+        }
+
         self.pending_redirect_shutdown |= self.redirect_shutdown_requested();
         if cleanup_required {
             #[cfg(feature = "tracing")]
@@ -2081,7 +2385,7 @@ impl EventLoop {
     /// # Panics
     ///
     /// Panics if a pending server redirect is expected but missing.
-    pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
+    async fn poll_inner(&mut self) -> Result<Event, ConnectionError> {
         let result = self.poll_once().await;
         if matches!(result, Err(ConnectionError::RequestsDone))
             && let Some(admission) = &self.publish_admission
@@ -2093,6 +2397,8 @@ impl EventLoop {
 
     async fn poll_once(&mut self) -> Result<Event, ConnectionError> {
         if self.disconnect_complete {
+            #[cfg(feature = "ordered-shutdown")]
+            self.requests_rx.gate().terminate();
             return Err(ConnectionError::RequestsDone);
         }
 
@@ -2118,6 +2424,15 @@ impl EventLoop {
 
         if self.network.is_none() {
             if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
+                #[cfg(feature = "ordered-shutdown")]
+                self.requests_rx.gate().terminate();
+                #[cfg(feature = "ordered-shutdown")]
+                if self.requests_rx.gate().has_fence() {
+                    self.finish_ordered(Err(crate::DisconnectNoticeError::SupersededByImmediate));
+                    self.discard_shutdown_work(true);
+                    self.shutdown_phase = crate::ShutdownPhase::Failed;
+                }
+
                 self.disconnect_complete = true;
                 drop(envelope.notice);
                 return Err(ConnectionError::RequestsDone);
@@ -2165,6 +2480,7 @@ impl EventLoop {
     /// established. Connection errors return to `poll`, which normalizes the lifecycle through
     /// [`Self::handle_network_result`] before another establishment attempt.
     async fn select(&mut self) -> Result<Event, ConnectionError> {
+        #[cfg(not(feature = "ordered-shutdown"))]
         loop {
             if let Some(event) = self.state.events.pop_front() {
                 return Ok(event);
@@ -2187,6 +2503,96 @@ impl EventLoop {
 
             if self.pending_disconnect.is_some() {
                 if self.state.outbound_requests_drained() {
+                    return self.send_pending_disconnect().await;
+                }
+
+                if let Some(event) = self.poll_disconnect_drain().await? {
+                    return Ok(event);
+                }
+                continue;
+            }
+
+            let read_batch_size = self.effective_read_batch_size();
+            let normal_request_admission_allowed =
+                self.normal_request_admission_allowed() || !self.pending.is_empty();
+            let no_sleep = self
+                .no_sleep
+                .get_or_insert_with(|| Box::pin(time::sleep(Duration::MAX)));
+
+            return select! {
+                biased;
+                o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
+                    Ok(envelope) => self.handle_immediate_disconnect(envelope).await,
+                    Err(_) => continue,
+                },
+                o = self.control_requests_rx.recv_async(),
+                    if self.pending_disconnect.is_none()
+                        && (!self.control_requests_rx.is_empty()
+                            || !self.control_requests_rx.is_disconnected()) => match o {
+                    Ok(envelope) => {
+                        self.try_admit_existing_normal_requests().await;
+                        self.queued.push_back(envelope);
+                        continue;
+                    }
+                    Err(_) => continue,
+                },
+                o = Self::next_request(
+                    &mut self.pending,
+                    &self.requests_rx,
+                    self.options.pending_throttle,
+                    self.publish_admission.as_deref(),
+                ), if self.pending_disconnect.is_none()
+                    && normal_request_admission_allowed
+                    && (!self.pending.is_empty()
+                        || !self.requests_rx.is_empty()
+                        || !self.requests_rx.is_disconnected()) => match o {
+                    Ok(envelope) => {
+                        self.admit_normal_request_batch(envelope).await;
+                        continue;
+                    }
+                    Err(_) => continue,
+                },
+                o = self
+                    .network
+                    .as_mut()
+                    .expect("connected event loop must have an active network")
+                    .readb(&mut self.state, read_batch_size) => self.handle_network_read(o).await,
+                () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
+                    if self.keepalive_timeout.is_some() && !self.effective_keep_alive.is_zero() => {
+                    self.handle_keepalive_ping().await
+                }
+            };
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        loop {
+            self.ensure_ordered_deadline()?;
+            if let Some(event) = self.state.events.pop_front() {
+                return Ok(event);
+            }
+
+            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
+                return self.handle_immediate_disconnect(envelope).await;
+            }
+
+            if self.all_request_sources_drained() {
+                return Err(ConnectionError::RequestsDone);
+            }
+
+            if self.pending_disconnect.is_none() && self.handle_ready_requests().await? {
+                if let Some(event) = self.state.events.pop_front() {
+                    return Ok(event);
+                }
+                continue;
+            }
+
+            if self.pending_disconnect.is_some() {
+                let drained = if self.ordered_packet.is_some() {
+                    self.publish_ledger.result()?
+                } else {
+                    self.state.outbound_requests_drained()
+                };
+                if drained {
                     return self.send_pending_disconnect().await;
                 }
 
@@ -2292,6 +2698,16 @@ impl EventLoop {
         &mut self,
         envelope: RequestEnvelope,
     ) -> Result<Event, ConnectionError> {
+        #[cfg(feature = "ordered-shutdown")]
+        self.requests_rx.gate().terminate();
+
+        #[cfg(feature = "ordered-shutdown")]
+        if self.requests_rx.gate().has_fence() {
+            self.finish_ordered(Err(crate::DisconnectNoticeError::SupersededByImmediate));
+            self.discard_shutdown_work(true);
+            self.shutdown_phase = crate::ShutdownPhase::Failed;
+        }
+
         let mut should_flush = false;
         let mut qos0_notices = Vec::new();
         let mut checkpoint_action = SessionCheckpointAction::Save;
@@ -2432,11 +2848,52 @@ impl EventLoop {
         qos0_notices: &mut Vec<PublishNoticeTx>,
         checkpoint_action: &mut SessionCheckpointAction,
     ) -> Result<BatchControl, ConnectionError> {
+        #[cfg(not(feature = "ordered-shutdown"))]
         let RequestEnvelope {
             request,
             notice,
             replay,
         } = envelope;
+
+        #[cfg(feature = "ordered-shutdown")]
+        let RequestEnvelope {
+            request,
+            notice,
+            replay,
+            meta,
+        } = envelope;
+
+        #[cfg(feature = "ordered-shutdown")]
+        if self
+            .requests_rx
+            .gate()
+            .snapshot()
+            .0
+            .is_some_and(|fence| meta.sequence > fence)
+            && !matches!(request, Request::DisconnectNow(_))
+        {
+            if let Some(notice) = notice {
+                Self::discard_shutdown_notice(notice, false, true);
+            }
+            return Ok(BatchControl::Continue);
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        if !matches!(request, Request::DisconnectNow(_))
+            && let Err(error) = self.ensure_ordered_deadline()
+        {
+            if let Some(completion) = &meta.completion {
+                completion.finish(Err(crate::DisconnectNoticeError::DisconnectTimeout));
+            }
+            if let Some(notice) = notice {
+                Self::discard_shutdown_notice(notice, false, false);
+            }
+            return Err(error);
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        let notice = self.observe_publish(&request, notice);
+
         if self.broker_only_session_resume && request_allocates_client_packet_id(&request) {
             if replay {
                 self.state.discard_replayed_request(&request);
@@ -2463,6 +2920,7 @@ impl EventLoop {
             return Ok(BatchControl::Continue);
         }
 
+        #[cfg(not(feature = "ordered-shutdown"))]
         match request {
             Request::Disconnect(disconnect) => {
                 self.state.fail_auth_exchange_due_to_client_disconnect();
@@ -2475,6 +2933,101 @@ impl EventLoop {
                 Ok(BatchControl::Stop)
             }
             Request::DisconnectNow(disconnect) => {
+                self.state.fail_auth_exchange_due_to_client_disconnect();
+                let session_expiry_interval = self.disconnect_session_expiry_interval(&disconnect);
+                let session_expiry_override = Self::disconnect_session_expiry_override(&disconnect);
+                let (outgoing, _) = self.state.handle_outgoing_packet_with_notice(
+                    Request::DisconnectNow(disconnect),
+                    notice,
+                )?;
+                if session_expiry_interval.unwrap_or(0) == 0 || session_expiry_override.is_some() {
+                    *checkpoint_action =
+                        SessionCheckpointAction::ApplySessionExpiry(session_expiry_interval);
+                }
+                if let Some(outgoing) = outgoing {
+                    if let Err(err) = self
+                        .network
+                        .as_mut()
+                        .expect("connected event loop must have an active network")
+                        .write(outgoing)
+                        .await
+                    {
+                        return Err(ConnectionError::MqttState(err));
+                    }
+                    *should_flush = true;
+                }
+                self.disconnect_complete = true;
+                Ok(BatchControl::Stop)
+            }
+            request => {
+                let (outgoing, flush_notice) = if replay {
+                    self.state
+                        .handle_replayed_outgoing_packet_with_notice(request, notice)?
+                } else {
+                    self.state
+                        .handle_outgoing_packet_with_notice(request, notice)?
+                };
+                if let Some(Packet::Publish(publish)) = &outgoing
+                    && let Some(admission) = &self.publish_admission
+                {
+                    // The state machine is the source of truth for automatic Topic Alias
+                    // assignment. Mirror its committed mapping before yielding so strict
+                    // producers observe the same ordered state.
+                    admission.record_outgoing_topic_alias(publish);
+                }
+                self.persist_session_or_fail_qos0_notices(qos0_notices, flush_notice)
+                    .await?;
+                if let Some(outgoing) = outgoing {
+                    if let Err(err) = self
+                        .network
+                        .as_mut()
+                        .expect("connected event loop must have an active network")
+                        .write(outgoing)
+                        .await
+                    {
+                        for notice in qos0_notices.drain(..) {
+                            notice.error(PublishNoticeError::Qos0NotFlushed);
+                        }
+                        return Err(ConnectionError::MqttState(err));
+                    }
+                    *should_flush = true;
+                }
+                Ok(BatchControl::Continue)
+            }
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        match request {
+            Request::DisconnectAfterQueued(disconnect)
+            | Request::DisconnectAfterQueuedWithTimeout(disconnect, _) => {
+                self.ordered_packet = Some(disconnect.clone());
+                self.ordered_completion = meta.completion;
+                self.shutdown_phase = crate::ShutdownPhase::Draining;
+                self.record_ordered_shutdown("pending");
+                self.pending_disconnect = Some(PendingDisconnect {
+                    disconnect,
+                    deadline: meta.deadline.map(Instant::from_std),
+                });
+                Ok(BatchControl::Stop)
+            }
+            Request::Disconnect(disconnect) => {
+                if self.requests_rx.gate().has_fence() {
+                    self.finish_ordered(Err(crate::DisconnectNoticeError::Superseded));
+                }
+                self.state.fail_auth_exchange_due_to_client_disconnect();
+                self.pending_disconnect = Some(PendingDisconnect::new(disconnect, None));
+                Ok(BatchControl::Stop)
+            }
+            Request::DisconnectWithTimeout(disconnect, timeout) => {
+                if self.requests_rx.gate().has_fence() {
+                    self.finish_ordered(Err(crate::DisconnectNoticeError::Superseded));
+                }
+                self.state.fail_auth_exchange_due_to_client_disconnect();
+                self.pending_disconnect = Some(PendingDisconnect::new(disconnect, Some(timeout)));
+                Ok(BatchControl::Stop)
+            }
+            Request::DisconnectNow(disconnect) => {
+                self.requests_rx.gate().terminate();
                 self.state.fail_auth_exchange_due_to_client_disconnect();
                 let session_expiry_interval = self.disconnect_session_expiry_interval(&disconnect);
                 let session_expiry_override = Self::disconnect_session_expiry_override(&disconnect);
@@ -2659,6 +3212,15 @@ impl EventLoop {
     }
 
     async fn send_pending_disconnect(&mut self) -> Result<Event, ConnectionError> {
+        #[cfg(feature = "ordered-shutdown")]
+        self.ensure_ordered_deadline()?;
+
+        #[cfg(feature = "ordered-shutdown")]
+        if self.ordered_packet.is_some() {
+            self.shutdown_phase = crate::ShutdownPhase::Flushing;
+            self.record_ordered_shutdown("pending");
+        }
+
         let disconnect = self
             .pending_disconnect
             .take()
@@ -2692,9 +3254,19 @@ impl EventLoop {
             }
         }
 
+        #[cfg(feature = "ordered-shutdown")]
+        self.requests_rx.gate().terminate();
         self.drop_unprocessed_requests();
         self.checkpoint_after_connection_loss().await?;
         self.disconnect_complete = true;
+        #[cfg(feature = "ordered-shutdown")]
+        if self.ordered_packet.is_some() {
+            self.ensure_ordered_deadline()?;
+            self.finish_ordered(Ok(()));
+            self.discard_shutdown_work(false);
+            self.shutdown_phase = crate::ShutdownPhase::Completed;
+        }
+
         Ok(self
             .state
             .events
@@ -2854,7 +3426,44 @@ fn classify_publish_or_control_request(
     can_send_publish: impl FnOnce(&Publish) -> bool,
     can_send_control: impl FnOnce() -> bool,
 ) -> ScheduledRequest {
+    #[cfg(not(feature = "ordered-shutdown"))]
     match request {
+        Request::Publish(publish) if publish.qos != crate::mqttbytes::QoS::AtMostOnce => {
+            ScheduledRequest {
+                class: RequestClass::FlowControlledPublish,
+                readiness: if can_send_publish(publish) {
+                    RequestReadiness::Ready
+                } else {
+                    RequestReadiness::Blocked
+                },
+            }
+        }
+        Request::Publish(_) => ScheduledRequest {
+            class: RequestClass::Publish,
+            readiness: RequestReadiness::Ready,
+        },
+        request if request_needs_fresh_client_packet_id(request) => ScheduledRequest {
+            class: RequestClass::Control,
+            readiness: if can_send_control() {
+                RequestReadiness::Ready
+            } else {
+                RequestReadiness::Blocked
+            },
+        },
+        _ => ScheduledRequest {
+            class: RequestClass::Control,
+            readiness: RequestReadiness::Ready,
+        },
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    match request {
+        Request::DisconnectAfterQueued(_) | Request::DisconnectAfterQueuedWithTimeout(_, _) => {
+            ScheduledRequest {
+                class: RequestClass::Fence,
+                readiness: RequestReadiness::Ready,
+            }
+        }
         Request::Publish(publish) if publish.qos != crate::mqttbytes::QoS::AtMostOnce => {
             ScheduledRequest {
                 class: RequestClass::FlowControlledPublish,
@@ -2950,10 +3559,26 @@ fn reject_unsupported_request(
 }
 
 const fn is_disconnect_request(request: &Request) -> bool {
-    matches!(
-        request,
-        Request::Disconnect(_) | Request::DisconnectWithTimeout(_, _) | Request::DisconnectNow(_)
-    )
+    #[cfg(not(feature = "ordered-shutdown"))]
+    {
+        matches!(
+            request,
+            Request::Disconnect(_)
+                | Request::DisconnectWithTimeout(_, _)
+                | Request::DisconnectNow(_)
+        )
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    {
+        matches!(
+            request,
+            Request::Disconnect(_)
+                | Request::DisconnectWithTimeout(_, _)
+                | Request::DisconnectNow(_)
+                | Request::DisconnectAfterQueued(_)
+                | Request::DisconnectAfterQueuedWithTimeout(_, _)
+        )
+    }
 }
 
 const fn is_graceful_disconnect_request(request: &Request) -> bool {
@@ -3391,7 +4016,12 @@ mod tests {
         UnsubAckReason,
     };
     use bytes::{Bytes, BytesMut};
+    #[cfg(not(feature = "ordered-shutdown"))]
     use flume::TryRecvError;
+
+    #[cfg(feature = "ordered-shutdown")]
+    use rumqttc_core::admission::TryRecvError;
+
     use std::future::Future;
     use std::io;
     use std::pin::Pin;
@@ -4786,6 +5416,8 @@ mod tests {
                     request: Request::Publish(publish(QoS::AtMostOnce)),
                     notice: Some(TrackedNoticeTx::Publish(notice_tx)),
                     replay: false,
+                    #[cfg(feature = "ordered-shutdown")]
+                    meta: crate::disconnect::RequestMeta::new(),
                 },
                 &mut should_flush,
                 &mut qos0_notices,
@@ -4842,6 +5474,7 @@ mod tests {
         let mut qos0_notices = Vec::new();
         let mut checkpoint_action = SessionCheckpointAction::Save;
 
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert_eq!(
             eventloop
                 .handle_request_internal(
@@ -4858,6 +5491,26 @@ mod tests {
                 .unwrap(),
             BatchControl::Continue
         );
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert_eq!(
+            eventloop
+                .handle_request_internal(
+                    RequestEnvelope {
+                        request: Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                        notice: Some(TrackedNoticeTx::Auth(notice_tx)),
+                        replay: false,
+                        meta: crate::disconnect::RequestMeta::new(),
+                    },
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap(),
+            BatchControl::Continue
+        );
+
         assert!(eventloop.state.outbound_requests_drained());
 
         let handled = eventloop
@@ -6896,12 +7549,24 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             request,
             RequestEnvelope {
                 request: Request::PingReq,
                 notice: None,
                 replay: false
+            }
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            request,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false,
+                ..
             }
         ));
 
@@ -6952,12 +7617,24 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             first,
             RequestEnvelope {
                 request: Request::PingReq,
                 notice: None,
                 replay: false
+            }
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            first,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false,
+                ..
             }
         ));
 
@@ -6997,12 +7674,24 @@ mod tests {
         .await
         .unwrap();
 
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             received,
             Some(RequestEnvelope {
                 request: Request::PingReq,
                 notice: None,
                 replay: false
+            })
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            received,
+            Some(RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false,
+                ..
             })
         ));
     }
@@ -7116,6 +7805,7 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             first,
             RequestEnvelope {
@@ -7124,6 +7814,18 @@ mod tests {
                 replay: false
             }
         ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            first,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false,
+                ..
+            }
+        ));
+
         assert!(eventloop.pending.is_empty());
 
         let second = EventLoop::next_request(
@@ -7134,12 +7836,24 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             second,
             RequestEnvelope {
                 request: Request::PingReq,
                 notice: None,
                 replay: false
+            }
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            second,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false,
+                ..
             }
         ));
     }
@@ -7180,12 +7894,24 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             first,
             RequestEnvelope {
                 request: Request::PingReq,
                 notice: None,
                 replay: false
+            }
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            first,
+            RequestEnvelope {
+                request: Request::PingReq,
+                notice: None,
+                replay: false,
+                ..
             }
         ));
 
@@ -7197,9 +7923,16 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             second,
             RequestEnvelope { request: Request::Publish(publish), notice: Some(_), replay: false } if publish == tracked_publish
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            second,
+            RequestEnvelope { request: Request::Publish(publish), notice: Some(_), replay: false, .. } if publish == tracked_publish
         ));
 
         let third = EventLoop::next_request(
@@ -7210,12 +7943,24 @@ mod tests {
         )
         .await
         .unwrap();
+        #[cfg(not(feature = "ordered-shutdown"))]
         assert!(matches!(
             third,
             RequestEnvelope {
                 request: Request::PingResp,
                 notice: None,
                 replay: false
+            }
+        ));
+
+        #[cfg(feature = "ordered-shutdown")]
+        assert!(matches!(
+            third,
+            RequestEnvelope {
+                request: Request::PingResp,
+                notice: None,
+                replay: false,
+                ..
             }
         ));
     }
@@ -7546,6 +8291,7 @@ mod tests {
             (Request::Publish(publish(QoS::ExactlyOnce)), None),
         ];
 
+        #[cfg(not(feature = "ordered-shutdown"))]
         for (request, notice) in requests {
             let mut should_flush = false;
             let mut qos0_notices = Vec::new();
@@ -7556,6 +8302,31 @@ mod tests {
                         request,
                         notice,
                         replay: false,
+                    },
+                    &mut should_flush,
+                    &mut qos0_notices,
+                    &mut checkpoint_action,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(keep_batching, BatchControl::Continue);
+            assert!(!should_flush);
+            assert!(qos0_notices.is_empty());
+        }
+
+        #[cfg(feature = "ordered-shutdown")]
+        for (request, notice) in requests {
+            let mut should_flush = false;
+            let mut qos0_notices = Vec::new();
+            let mut checkpoint_action = SessionCheckpointAction::Save;
+            let keep_batching = eventloop
+                .handle_request_internal(
+                    RequestEnvelope {
+                        request,
+                        notice,
+                        replay: false,
+                        meta: crate::disconnect::RequestMeta::new(),
                     },
                     &mut should_flush,
                     &mut qos0_notices,
@@ -7639,6 +8410,8 @@ mod tests {
                     request: Request::Publish(retained),
                     notice: Some(TrackedNoticeTx::Publish(notice_tx)),
                     replay: false,
+                    #[cfg(feature = "ordered-shutdown")]
+                    meta: crate::disconnect::RequestMeta::new(),
                 },
                 &mut should_flush,
                 &mut qos0_notices,
@@ -12229,4 +13002,30 @@ mod tests {
             ["primary.example:1883"]
         );
     }
+}
+
+#[cfg(not(feature = "ordered-shutdown"))]
+impl EventLoop {
+    pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
+        self.poll_inner().await
+    }
+}
+
+#[cfg(all(test, not(feature = "ordered-shutdown")))]
+#[test]
+fn ordinary_envelope_retains_baseline_layout() {
+    #[allow(dead_code)]
+    struct BaselineEnvelope {
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+        replay: bool,
+    }
+    assert_eq!(
+        std::mem::size_of::<RequestEnvelope>(),
+        std::mem::size_of::<BaselineEnvelope>()
+    );
+    assert_eq!(
+        std::mem::align_of::<RequestEnvelope>(),
+        std::mem::align_of::<BaselineEnvelope>()
+    );
 }

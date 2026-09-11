@@ -263,6 +263,12 @@ impl Broker {
         self.framed.write(packet).await.unwrap();
     }
 
+    #[cfg(feature = "ordered-shutdown")]
+    #[allow(dead_code)] // Used by the ordered-disconnect integration target.
+    pub async fn send_packet(&mut self, packet: Packet) {
+        self.framed.write(packet).await.unwrap();
+    }
+
     pub async fn ack_many(&mut self, packet_ids: &[u16]) {
         for pkid in packet_ids {
             self.ack(*pkid).await;

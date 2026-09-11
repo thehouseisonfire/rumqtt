@@ -177,7 +177,37 @@ pub fn protocol_violation(violation: &ProtocolViolation) {
 }
 
 const fn connection_error_kind(error: &ConnectionError) -> &'static str {
+    #[cfg(not(feature = "ordered-shutdown"))]
     match error {
+        ConnectionError::MqttState(StateError::Io(_)) | ConnectionError::Io(_) => "io",
+        ConnectionError::MqttState(
+            StateError::ProtocolViolation(_) | StateError::Deserialization(_),
+        )
+        | ConnectionError::NotConnAck(_)
+        | ConnectionError::SessionStateMismatch { .. } => "protocol",
+        ConnectionError::NetworkTimeout | ConnectionError::FlushTimeout => "timeout",
+        ConnectionError::DisconnectTimeout => "disconnect_timeout",
+        #[cfg(feature = "websocket")]
+        ConnectionError::Websocket(_)
+        | ConnectionError::WsConnect(_)
+        | ConnectionError::ResponseValidation(_) => "websocket",
+        #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+        ConnectionError::Tls(_) => "tls",
+        ConnectionError::ConnectionRefused(_) => "refused",
+        ConnectionError::SessionStore(_) => "session_store",
+        ConnectionError::SessionRestore(_) => "session_restore",
+        ConnectionError::BrokerTransportMismatch => "configuration",
+        ConnectionError::RequestsDone => "requests_done",
+        #[cfg(feature = "websocket")]
+        ConnectionError::InvalidUrl(_) | ConnectionError::RequestModifier(_) => "configuration",
+        #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+        ConnectionError::Proxy(_) => "proxy",
+        ConnectionError::MqttState(_) => "state",
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    match error {
+        ConnectionError::OrderedDisconnect(_) => "ordered_disconnect",
         ConnectionError::MqttState(StateError::Io(_)) | ConnectionError::Io(_) => "io",
         ConnectionError::MqttState(
             StateError::ProtocolViolation(_) | StateError::Deserialization(_),

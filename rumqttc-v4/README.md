@@ -210,6 +210,10 @@ properties are not recorded. A cancelled `EventLoop::poll()` may leave a
 receives a new `attempt_id`.
 
 Quick overview of features
+
+`ordered-shutdown` is opt-in. Enable it to use the `disconnect_after_queued()`
+fence APIs and `DisconnectNotice`; default builds retain the ordinary admission
+path. This is a Cargo build feature, so feature unification applies.
 - Eventloop orchestrates outgoing/incoming packets concurrently and handles the state
 - Pings the broker when necessary and detects client side half open connections as well
 - Protocol-aware outgoing flow control with configurable in-flight limits

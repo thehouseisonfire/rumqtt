@@ -20,6 +20,7 @@ features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+ordered-shutdown = ["rumqttc_v5/ordered-shutdown"]
 default = ["use-rustls"]
 use-rustls = ["rumqttc_v5/use-rustls"]
 use-rustls-no-provider = ["rumqttc_v5/use-rustls-no-provider"]
