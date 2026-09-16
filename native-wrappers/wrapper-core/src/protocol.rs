@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 /// MQTT protocol version selected for a client.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProtocolVersion {
     V4,
     V5,

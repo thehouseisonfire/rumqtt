@@ -60,6 +60,7 @@ pub struct ShutdownCoordinator {
     lifecycle: AtomicU8,
     phase: AtomicU8,
     record: Mutex<ShutdownRecord>,
+    payload: Mutex<Option<crate::DisconnectProtocolOptions>>,
     operations: OperationRegistry,
     immediate_tx: Sender<()>,
     progress: Notify,
@@ -71,6 +72,7 @@ impl ShutdownCoordinator {
             lifecycle: AtomicU8::new(LifecycleState::Running as u8),
             phase: AtomicU8::new(0),
             record: Mutex::new(ShutdownRecord::Running),
+            payload: Mutex::new(None),
             operations,
             immediate_tx,
             progress: Notify::new(),
@@ -79,6 +81,38 @@ impl ShutdownCoordinator {
 
     pub(crate) fn state(&self) -> LifecycleState {
         LifecycleState::from_u8(self.lifecycle.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn check_payload(&self, payload: &crate::DisconnectProtocolOptions) -> Result<()> {
+        if self
+            .payload
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|first| first != payload)
+        {
+            return Err(Error::new(
+                ErrorKind::Shutdown,
+                "disconnect payload conflicts with the first admitted close",
+            )
+            .with_delivery(DeliveryStatus::NotAdmitted));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_payload(&self, payload: crate::DisconnectProtocolOptions) {
+        self.payload
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert(payload);
+    }
+
+    pub(crate) fn payload(&self) -> crate::DisconnectProtocolOptions {
+        self.payload
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_default()
     }
 
     pub(crate) fn require_running(&self) -> Result<()> {

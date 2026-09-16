@@ -478,6 +478,9 @@ pub struct MqttState {
     pub(crate) pending_unsubscribe: BTreeMap<u16, PendingUnsubscribe>,
     /// Buffered incoming packets
     pub events: VecDeque<Event>,
+    // Connection outcomes may be consumed by error/redirect handling rather than
+    // yielded as Incoming events. Retain one owned packet for observation.
+    pub(crate) connection_failure_packet: Option<Packet>,
     /// Controls how incoming publish acknowledgements are handled.
     pub ack_mode: AckMode,
     topic_aliases: TopicAliasState,
@@ -766,6 +769,7 @@ impl MqttState {
             pending_subscribe: BTreeMap::new(),
             pending_unsubscribe: BTreeMap::new(),
             events: VecDeque::with_capacity(Self::initial_events_capacity()),
+            connection_failure_packet: None,
             ack_mode,
             topic_aliases: TopicAliasState::new(auto_topic_alias_policy, client_topic_alias_max),
             connack_received: false,
@@ -1589,6 +1593,9 @@ impl MqttState {
         &mut self,
         mut packet: Incoming,
     ) -> Result<IncomingPacketEffects, StateError> {
+        if matches!(packet, Incoming::Disconnect(_)) {
+            self.connection_failure_packet = Some(packet.clone());
+        }
         let events_len_before = self.events.len();
         let is_duplicate_incoming_qos2_publish = self.is_duplicate_incoming_qos2_publish(&packet);
         let effects = match &mut packet {
@@ -1609,9 +1616,9 @@ impl MqttState {
             Incoming::ConnAck(connack) => self
                 .handle_incoming_connack(connack)
                 .map(IncomingPacketEffects::outgoing),
-            Incoming::Disconnect(disconn) => {
-                Self::handle_incoming_disconn(disconn).map(IncomingPacketEffects::outgoing)
-            }
+            Incoming::Disconnect(disconn) => self
+                .handle_incoming_disconn(disconn)
+                .map(IncomingPacketEffects::outgoing),
             Incoming::Auth(auth) => self
                 .handle_incoming_auth(auth)
                 .map(IncomingPacketEffects::outgoing),
@@ -1811,6 +1818,18 @@ impl MqttState {
         }
 
         self.auth.validate_successful_connack(connack)?;
+        if let Some((AuthExchangeKind::InitialConnect, method)) = self.auth.active_exchange() {
+            let properties = connack
+                .properties
+                .as_ref()
+                .map(|properties| crate::AuthProperties {
+                    method: properties.authentication_method.clone(),
+                    data: properties.authentication_data.clone(),
+                    reason: properties.reason_string.clone(),
+                    user_properties: properties.user_properties.clone(),
+                });
+            self.authenticate_success(AuthExchangeKind::InitialConnect, &method, properties)?;
+        }
         // Restore omitted negotiated properties to their MQTT defaults without
         // discarding quota already consumed on this network connection.
         self.reset_connack_scoped_state();
@@ -1848,7 +1867,10 @@ impl MqttState {
         Ok(None)
     }
 
-    fn handle_incoming_disconn(disconn: &Disconnect) -> Result<Option<Packet>, StateError> {
+    fn handle_incoming_disconn(
+        &mut self,
+        disconn: &Disconnect,
+    ) -> Result<Option<Packet>, StateError> {
         let reason_code = disconn.reason_code;
         let redirect_reason = match reason_code {
             DisconnectReasonCode::UseAnotherServer => Some(crate::RedirectReason::UseAnotherServer),
@@ -1865,6 +1887,10 @@ impl MqttState {
                 source: crate::RedirectSource::Disconnect,
             }));
         }
+        self.fail_auth_exchange(
+            AuthNoticeError::BrokerDisconnected(reason_code),
+            AuthError::Failed("broker disconnected during authentication".into()),
+        );
         let reason_string = disconn
             .properties
             .as_ref()
@@ -2149,6 +2175,29 @@ impl MqttState {
         None
     }
 
+    fn authenticate_success(
+        &mut self,
+        kind: AuthExchangeKind,
+        method: &str,
+        properties: Option<crate::AuthProperties>,
+    ) -> Result<(), StateError> {
+        if let Some(authenticator) = self.authenticator.clone() {
+            let context = AuthContext { kind, method };
+            let result = match authenticator.lock() {
+                Ok(mut locked) => locked.success(context, properties),
+                Err(poisoned) => {
+                    drop(poisoned);
+                    self.fail_auth_exchange_due_to_authenticator_lock_poisoned();
+                    return Err(StateError::AuthenticatorLockPoisoned);
+                }
+            };
+            if let Err(error) = result {
+                return Err(self.fail_authenticator(&error));
+            }
+        }
+        Ok(())
+    }
+
     fn handle_incoming_auth(&mut self, auth: &Auth) -> Result<Option<Packet>, StateError> {
         let effect = match self.auth.incoming_auth(auth, &mut self.events) {
             Ok(effect) => effect,
@@ -2164,23 +2213,7 @@ impl MqttState {
 
         match effect {
             IncomingAuthEffect::Success { kind, method } => {
-                if let Some(authenticator) = self.authenticator.clone() {
-                    let context = AuthContext {
-                        kind,
-                        method: &method,
-                    };
-                    let auth_result = match authenticator.lock() {
-                        Ok(mut locked) => locked.success(context, auth.properties.clone()),
-                        Err(poisoned) => {
-                            drop(poisoned);
-                            self.fail_auth_exchange_due_to_authenticator_lock_poisoned();
-                            return Err(StateError::AuthenticatorLockPoisoned);
-                        }
-                    };
-                    if let Err(err) = auth_result {
-                        return Err(self.fail_authenticator(&err));
-                    }
-                }
+                self.authenticate_success(kind, &method, auth.properties.clone())?;
                 self.auth.complete_success(kind, method, &mut self.events);
                 Ok(None)
             }
@@ -3659,6 +3692,7 @@ impl Clone for MqttState {
                 })
                 .collect(),
             events: self.events.clone(),
+            connection_failure_packet: self.connection_failure_packet.clone(),
             ack_mode: self.ack_mode,
             topic_aliases: self.topic_aliases.clone(),
             connack_received: self.connack_received,

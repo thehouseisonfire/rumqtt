@@ -28,6 +28,7 @@ impl AdmissionGate {
 pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Shared {
+    error_context: Mutex<crate::ErrorContext>,
     backend: BackendClient,
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
@@ -36,6 +37,8 @@ pub struct Shared {
     operations: OperationRegistry,
     shutdown: Arc<ShutdownCoordinator>,
     panic_tx: Sender<()>,
+    session_expiry_zero: std::sync::atomic::AtomicBool,
+    reauthentication_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -47,7 +50,16 @@ impl Shared {
         shutdown: Arc<ShutdownCoordinator>,
         panic_tx: Sender<()>,
     ) -> Arc<Self> {
+        let protocol = match backend {
+            BackendClient::V4(_) => ProtocolVersion::V4,
+            BackendClient::V5(_) => ProtocolVersion::V5,
+        };
         Arc::new(Self {
+            error_context: Mutex::new(crate::ErrorContext {
+                protocol: Some(protocol),
+                phase: Some(crate::ConnectionPhase::Attempt),
+                ..Default::default()
+            }),
             backend,
             handle_count: AtomicUsize::new(1),
             admission_gate: AdmissionGate::default(),
@@ -56,6 +68,8 @@ impl Shared {
             operations,
             shutdown,
             panic_tx,
+            session_expiry_zero: std::sync::atomic::AtomicBool::new(true),
+            reauthentication_enabled: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -69,6 +83,36 @@ impl Shared {
 
     pub(crate) fn immediate_shutdown_requested(&self) -> bool {
         self.shutdown.immediate_requested()
+    }
+
+    pub(crate) fn set_protocol_admission_state(
+        &self,
+        session_expiry_zero: bool,
+        reauthentication_enabled: bool,
+    ) {
+        let _admission_guard = self
+            .admission_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.session_expiry_zero
+            .store(session_expiry_zero, Ordering::Release);
+        self.reauthentication_enabled
+            .store(reauthentication_enabled, Ordering::Release);
+    }
+
+    fn validate_disconnect(&self, payload: &crate::DisconnectProtocolOptions) -> Result<()> {
+        self.shutdown.check_payload(payload)?;
+        if let crate::DisconnectProtocolOptions::V5(properties) = payload
+            && self.session_expiry_zero.load(Ordering::Acquire)
+            && properties
+                .session_expiry_interval
+                .is_some_and(|expiry| expiry > 0)
+        {
+            return Err(protocol_option_error(
+                "DISCONNECT cannot increase a zero CONNECT session expiry",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn timeout_graceful_shutdown(&self, error: Error) -> bool {
@@ -90,6 +134,14 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         discard_pending_acknowledgements();
+        {
+            let mut context = self
+                .error_context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            context.phase = Some(crate::ConnectionPhase::Established);
+            context.generation = Some(context.generation.unwrap_or(0).saturating_add(1));
+        }
         self.acknowledgements.begin_connection();
         self.connection.connected(ConnectionResult {
             protocol,
@@ -131,6 +183,10 @@ impl Shared {
     }
 
     pub(crate) fn invalidate_connection(&self, error: &Error) {
+        self.error_context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .phase = Some(crate::ConnectionPhase::Attempt);
         let _admission_guard = self
             .admission_gate
             .lock()
@@ -190,7 +246,22 @@ impl Shared {
     }
 
     fn admission(&self, future: crate::operations::CompletionFuture) -> Result<Admission> {
-        self.operations.register(future)
+        let context = *self
+            .error_context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.operations.register(Box::pin(async move {
+            future.await.map_err(|error| error.with_context(context))
+        }))
+    }
+
+    pub(crate) fn contextualize(&self, error: Error) -> Error {
+        error.with_context(
+            *self
+                .error_context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     fn shutdown_admission(&self) -> Result<Admission> {
@@ -218,7 +289,8 @@ impl Shared {
         {
             return;
         }
-        self.backend.best_effort_disconnect_now();
+        self.backend
+            .best_effort_disconnect_now(&self.shutdown.payload());
         self.shutdown.commit_immediate(None);
     }
 }
@@ -254,6 +326,12 @@ impl Drop for ClientHandle {
 }
 
 impl ClientHandle {
+    pub(crate) fn check_disconnect_payload(
+        &self,
+        payload: &crate::DisconnectProtocolOptions,
+    ) -> Result<()> {
+        self.shared.validate_disconnect(payload)
+    }
     pub(crate) const fn new(shared: Arc<Shared>) -> Self {
         Self { shared }
     }
@@ -290,16 +368,30 @@ impl ClientHandle {
     ///
     /// Returns an error when the command is invalid, the request channel is full or closed, or the
     /// client is shutting down.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "mqtt.wrapper.try_admit", skip_all)
+    )]
     pub fn try_admit(&self, command: Command) -> Result<Admission> {
         match command {
             Command::Publish(command) => self.try_publish(command),
             Command::Subscribe(command) => self.try_subscribe(command),
             Command::Unsubscribe(filters) => self.try_unsubscribe(filters),
             Command::Acknowledge(token) => self.try_acknowledge(token),
-            Command::GracefulDisconnect { timeout } => self.try_close(timeout),
-            Command::ImmediateDisconnect => self.try_close_now(),
+            Command::Reauthenticate(properties) => self.try_reauthenticate(properties),
+            Command::GracefulDisconnect { timeout } => {
+                self.try_close(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
+            }
+            Command::ImmediateDisconnect => {
+                self.try_close_now(crate::DisconnectProtocolOptions::VersionNeutral)
+            }
+            Command::GracefulDisconnectWithOptions { timeout, protocol } => {
+                self.try_close(timeout, protocol)
+            }
+            Command::ImmediateDisconnectWithOptions { protocol } => self.try_close_now(protocol),
             Command::Diagnostics => self.try_diagnostics(),
         }
+        .map_err(|error| self.shared.contextualize(error))
     }
 
     /// Waits asynchronously for bounded request-channel capacity.
@@ -308,15 +400,24 @@ impl ClientHandle {
     ///
     /// Returns an error when the command is invalid, the request channel closes, or the client is
     /// shutting down.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "mqtt.wrapper.admit", skip_all)
+    )]
     pub async fn admit_async(&self, command: Command) -> Result<Admission> {
         match command {
             Command::Publish(command) => self.publish(command).await,
             Command::Subscribe(command) => self.subscribe(command).await,
             Command::Unsubscribe(filters) => self.unsubscribe(filters).await,
             Command::Acknowledge(token) => self.acknowledge(token).await,
+            Command::Reauthenticate(properties) => {
+                self.retry_on_backpressure(|| self.try_reauthenticate(properties.clone()))
+                    .await
+            }
             // Shutdown and diagnostics use priority/control paths and never wait for the publish queue.
             other => self.try_admit(other),
         }
+        .map_err(|error| self.shared.contextualize(error))
     }
 
     /// Blocking counterpart to [`Self::admit_async`].
@@ -360,6 +461,25 @@ impl ClientHandle {
         self.shared.require_running()?;
         validate_mqtt_utf8_string(&command.topic, "publish topic")?;
         let completion = self.shared.backend.try_publish(command)?;
+        self.shared.admission(completion)
+    }
+
+    fn try_reauthenticate(&self, properties: Option<crate::AuthProperties>) -> Result<Admission> {
+        let _guard = self
+            .shared
+            .admission_gate
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
+        self.shared.require_running()?;
+        if matches!(self.shared.backend, BackendClient::V4(_)) {
+            return Err(protocol_option_error("reauthentication requires MQTT 5"));
+        }
+        if !self.shared.reauthentication_enabled.load(Ordering::Acquire) {
+            return Err(
+                Error::auth(crate::AuthFailure::Method).with_delivery(DeliveryStatus::NotAdmitted)
+            );
+        }
+        let completion = self.shared.backend.try_reauthenticate(properties)?;
         self.shared.admission(completion)
     }
 
@@ -446,12 +566,17 @@ impl ClientHandle {
             .await
     }
 
-    fn try_close(&self, timeout: Option<Duration>) -> Result<Admission> {
+    fn try_close(
+        &self,
+        timeout: Option<Duration>,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<Admission> {
         let _shutdown_guard = self
             .shared
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
+        self.shared.validate_disconnect(&protocol)?;
         if !self.shared.shutdown.graceful_admission_allowed() {
             return Err(
                 Error::new(ErrorKind::Shutdown, "client is already closing or closed")
@@ -463,22 +588,24 @@ impl ClientHandle {
             self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
-        let result = self.shared.backend.try_disconnect(timeout);
+        let result = self.shared.backend.try_disconnect(timeout, &protocol);
         if let Err(error) = result {
             self.shared.restore_running();
             self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
+        self.shared.shutdown.commit_payload(protocol);
         self.shared.shutdown.commit_graceful(&admission);
         Ok(admission)
     }
 
-    fn try_close_now(&self) -> Result<Admission> {
+    fn try_close_now(&self, protocol: crate::DisconnectProtocolOptions) -> Result<Admission> {
         let _shutdown_guard = self
             .shared
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
+        self.shared.validate_disconnect(&protocol)?;
         let Some(immediate_admission) = self.shared.shutdown.immediate_admission() else {
             return Err(
                 Error::new(ErrorKind::Shutdown, "client is already closing or closed")
@@ -491,7 +618,7 @@ impl ClientHandle {
             self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
-        let result = self.shared.backend.try_disconnect_now();
+        let result = self.shared.backend.try_disconnect_now(&protocol);
         if let Err(error) = result {
             if newly_closing {
                 self.shared.restore_running();
@@ -499,6 +626,7 @@ impl ClientHandle {
             self.shared.operations.cancel(admission.operation_id);
             return Err(error);
         }
+        self.shared.shutdown.commit_payload(protocol);
         self.shared.shutdown.commit_immediate(Some(&admission));
         Ok(admission)
     }

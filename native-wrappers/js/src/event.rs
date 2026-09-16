@@ -43,15 +43,42 @@ impl AckRegistry {
 
 pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
     let event = match event {
+        WrapperEvent::ConnectionRejected(details) => {
+            json!({ "type": "connectionRejected", "details": connack_details(details) })
+        }
+        WrapperEvent::BrokerDisconnect(event) => json!({
+            "type": "brokerDisconnect", "reasonCode": event.reason_code,
+            "sessionExpiryInterval": event.session_expiry_interval,
+            "reasonString": event.reason_string, "userProperties": event.user_properties,
+            "serverReference": event.server_reference,
+        }),
+        WrapperEvent::Redirect(event) => json!({
+            "type": "redirect", "serverReference": event.server_reference,
+            "source": if event.source == rumqttc_wrapper_core::RedirectSource::ConnAck { "connack" } else { "disconnect" },
+            "reason": if event.reason == rumqttc_wrapper_core::RedirectReason::UseAnotherServer { 0x9c } else { 0x9d },
+            "target": event.target.map(|target| match target {
+                rumqttc_wrapper_core::BrokerTarget::Tcp { host, port } => json!({"type":"tcp", "host":host, "port":port}),
+                rumqttc_wrapper_core::BrokerTarget::WebSocket { url } => json!({"type":"websocket", "url":url}),
+                rumqttc_wrapper_core::BrokerTarget::Unix { path } => json!({"type":"unix", "path":path}),
+            }),
+            "failure": event.failure.map(|failure| format!("{failure:?}")),
+        }),
+        WrapperEvent::Authentication(event) => json!({
+            "type": "authentication", "method": event.method,
+            "exchange": if event.exchange == rumqttc_wrapper_core::AuthExchange::Initial { "initial" } else { "reauthentication" },
+            "stage": event.stage.as_str(), "failure": event.failure.map(|failure| failure.to_string()),
+        }),
         WrapperEvent::Connected {
             protocol,
             session_present,
+            details,
         } => {
             acknowledgements.clear();
             json!({
                 "type": "connected",
                 "protocol": protocol_name(protocol),
                 "sessionPresent": session_present,
+                "details": connack_details(details),
             })
         }
         WrapperEvent::Disconnected { phase, error } => {
@@ -131,7 +158,7 @@ pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
             json!({ "type": "publish", "message": message })
         }
         WrapperEvent::Outgoing(activity) => {
-            json!({ "type": "outgoing", "packet": outgoing(activity) })
+            json!({ "type": "outgoing", "packet": outgoing(activity.activity), "packetId": activity.packet_id })
         }
         WrapperEvent::GracefulShutdownCompleted => {
             acknowledgements.clear();
@@ -147,6 +174,31 @@ pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
         }
     };
     event.to_string()
+}
+
+fn connack_details(details: rumqttc_wrapper_core::ConnAckDetails) -> Value {
+    json!({
+        "reasonCode": details.reason_code,
+        "properties": details.v5_properties.map(|p| json!({
+            "sessionExpiryInterval": p.session_expiry_interval,
+            "receiveMaximum": p.receive_maximum,
+            "maximumQos": p.maximum_qos,
+            "retainAvailable": p.retain_available,
+            "maximumPacketSize": p.maximum_packet_size,
+            "assignedClientIdentifier": p.assigned_client_identifier,
+            "topicAliasMaximum": p.topic_alias_maximum,
+            "reasonString": p.reason_string,
+            "wildcardSubscriptionAvailable": p.wildcard_subscription_available,
+            "subscriptionIdentifiersAvailable": p.subscription_identifiers_available,
+            "sharedSubscriptionAvailable": p.shared_subscription_available,
+            "serverKeepAlive": p.server_keep_alive,
+            "responseInformation": p.response_information,
+            "serverReference": p.server_reference,
+            "authenticationMethod": p.authentication_method,
+            "authenticationDataBase64": p.authentication_data.map(|value| base64::engine::general_purpose::STANDARD.encode(value)),
+            "userProperties": p.user_properties,
+        })),
+    })
 }
 
 fn insert_optional(object: &mut Map<String, Value>, name: &str, value: Option<Value>) {

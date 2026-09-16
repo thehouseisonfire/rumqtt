@@ -1,6 +1,17 @@
 ## [Unreleased]
 
 ### Fixed
+- Native wrapper core: Return startup errors safely from async callers, including
+  TLS construction and driver-thread spawn failures. Preserve broker packet order
+  when a batch contains PUBLISH followed by DISCONNECT.
+- Rust v5 client: Deliver queued broker DISCONNECT and authentication-failure
+  events before connection cleanup returns the terminal disconnect error.
+- Native wrapper core: Reject caller-supplied reauthentication properties when
+  the configured authenticator or SCRAM mechanism owns the exchange, preventing
+  stateful authenticator output from being silently discarded.
+- Rust v5 client: Invoke the authenticator's success callback with CONNACK
+  authentication properties before completing an initial enhanced exchange.
+  A mechanism can now reject an invalid server proof before connection success.
 - Rust v5 client: Preserve ordered shutdown after recoverable connection timeouts
   for persistent sessions, allowing another connection attempt within the original
   ordered deadline while retaining the terminal DISCONNECT flush guard.
@@ -23,8 +34,33 @@
   operation followed by immediate closure, so terminal events no longer race
   between `Closed` and `DriverError`. Harden cross-platform lifecycle checks and
   sanitizer setup against scheduler latency and host process limits.
+- Native wrapper core: Keep reauthentication and MQTT 5 session-expiry admission
+  synchronized while entering and leaving isolated redirect targets.
 
 ### Added
+- Native wrapper core: Add owned wills, CONNECT properties, packet-limit modes,
+  batching, inflight controls, retransmission throttling, topic-alias policies,
+  Unix targets, declarative WebSocket headers, HTTP/SOCKS5 proxies, socket tuning,
+  versioned asynchronous session stores and opt-in Rust-native store adapters.
+  Add enhanced-authentication callbacks, tracked reauthentication, optional
+  SCRAM-SHA-256, redirect/SRV policies, explicit TLS backend/root/identity policies,
+  ALPN, and redacted, zeroizing owned TLS and SCRAM secrets. Feature forwarding is
+  explicit for both protocol dependencies; disabled capabilities fail at start.
+- Native wrapper core: Add MQTT 5 close payloads with first-admitted-payload
+  conflict detection, complete owned CONNACK and broker DISCONNECT details,
+  authentication/redirect events, outgoing packet identifiers, and payload-free
+  lifecycle/admission/completion tracing spans. Runtime and TLS construction
+  failures are returned before starting a driver thread.
+- Rust v5 client: Add `set_local_incoming_packet_size_limit` to configure the
+  decoder independently of CONNECT Maximum Packet Size, and
+  `take_connection_failure_packet` to observe rejected CONNACK and broker
+  DISCONNECT properties after poll error/redirect handling. Add eager
+  `SrvResolver::system()` construction and typed broker-disconnect failures for
+  tracked authentication exchanges.
+- Native wrapper core: Preserve protocol, connection phase/generation, and
+  operation identifiers in structured errors. SRV redirects report their
+  selected endpoint before connection success. JavaScript and Python decode
+  the supplemental connection/authentication/redirect events as owned values.
 - Rust v4/v5 clients: Ordered shutdown is now available behind the opt-in
   `ordered-shutdown` Cargo feature. Existing default builds retain the baseline
   admission and request representation; enabling the feature opts into the
@@ -162,6 +198,15 @@
   Multipath TCP connections, with regular TCP fallback when the local kernel
   reports MPTCP as unavailable or disabled.
 ### Changed
+- Native wrapper core (pre-stable Rust API): `CommonConfig::broker` replaces
+  host/port fields with `BrokerTarget`; MQTT 5 CONNECT options are nested under
+  `V5Config::connect_properties`. `IncomingPacketLimit` replaces the scalar local
+  limit. `TlsConfig` uses explicit roots and identity variants; `rustls_pem`
+  migrates the original optional PEM fields with the same trust policy.
+  `Connected` gains `details`, and `Outgoing` now carries `OutgoingEvent`.
+  Configuration records containing callback owners are `Clone`, not `Copy`.
+  Existing C/JavaScript/Python configuration inputs retain their PEM and scalar
+  limit behavior through conversion; new foreign-language APIs are separate work.
 - `@rumqtt-next/rumqttc`: Make `connect()` the only native startup boundary,
   add stable pre-connect rejection, protocol-aware TypeScript operation options,
   Node/Bun `Buffer` results, `Promise<void>` manual acknowledgements, and

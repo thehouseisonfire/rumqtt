@@ -53,6 +53,7 @@ fn success(operation_id: u64, completion: Completion) -> Value {
             result
         }
         Completion::Acknowledged => json!({ "type": "acknowledged" }),
+        Completion::Authenticated => json!({ "type": "authenticated" }),
         Completion::Diagnostics(diagnostics) => json!({
             "type": "diagnostics",
             "connected": diagnostics.connected,

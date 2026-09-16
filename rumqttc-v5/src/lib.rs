@@ -637,6 +637,7 @@ impl From<&str> for AuthError {
 /// Structured reason emitted when an authentication exchange fails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthFailureReason {
+    BrokerDisconnected(DisconnectReasonCode),
     SessionReset,
     Redirected,
     ProtocolError,
@@ -1691,8 +1692,24 @@ impl MqttOptions {
     }
 
     /// disable local incoming packet size checks
+    ///
+    /// This also removes the advertised CONNECT Maximum Packet Size. To change
+    /// only the decoder policy, use [`Self::set_local_incoming_packet_size_limit`].
     pub fn set_unlimited_incoming_packet_size(&mut self) -> &mut Self {
         self.set_incoming_packet_size_limit(IncomingPacketSizeLimit::Unlimited)
+    }
+
+    /// Set the local decoder limit without changing CONNECT Maximum Packet Size.
+    ///
+    /// Use this after configuring CONNECT properties when local resource limits
+    /// and the advertised broker limit must be independent. `Bytes(0)` is invalid
+    /// and is rejected by [`Self::validate`].
+    pub const fn set_local_incoming_packet_size_limit(
+        &mut self,
+        limit: IncomingPacketSizeLimit,
+    ) -> &mut Self {
+        self.incoming_packet_size_limit = limit;
+        self
     }
 
     /// get local incoming packet size policy

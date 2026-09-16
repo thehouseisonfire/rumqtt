@@ -19,13 +19,20 @@ from . import _native
 from ._errors import ClientClosedError, ClientStateError, ConfigurationError, DeliveryStatus, ErrorKind, error_from_data
 from ._events import (
     Acknowledgement,
+    Authentication,
+    BrokerDisconnect,
     Closed,
+    ConnAckDetails,
     Connected,
+    ConnectionRejected,
     Disconnected,
     DriverError,
     IncomingPublish,
     MqttEvent,
     Outgoing,
+    Redirect,
+    RedirectTarget,
+    V5ConnAckProperties,
 )
 from ._types import (
     AckMode,
@@ -803,14 +810,69 @@ def _subscription(value: Subscription, protocol: ProtocolVersion) -> dict[str, A
     }
 
 
+def _connack_details(value: dict[str, Any]) -> ConnAckDetails:
+    properties = value.get("properties")
+    if properties is None:
+        return ConnAckDetails(value["reasonCode"])
+    data = properties.get("authenticationDataBase64")
+    return ConnAckDetails(
+        value["reasonCode"],
+        V5ConnAckProperties(
+            session_expiry_interval=properties.get("sessionExpiryInterval"),
+            receive_maximum=properties.get("receiveMaximum"),
+            maximum_qos=properties.get("maximumQos"),
+            retain_available=properties.get("retainAvailable"),
+            maximum_packet_size=properties.get("maximumPacketSize"),
+            assigned_client_identifier=properties.get("assignedClientIdentifier"),
+            topic_alias_maximum=properties.get("topicAliasMaximum"),
+            reason_string=properties.get("reasonString"),
+            wildcard_subscription_available=properties.get("wildcardSubscriptionAvailable"),
+            subscription_identifiers_available=properties.get("subscriptionIdentifiersAvailable"),
+            shared_subscription_available=properties.get("sharedSubscriptionAvailable"),
+            server_keep_alive=properties.get("serverKeepAlive"),
+            response_information=properties.get("responseInformation"),
+            server_reference=properties.get("serverReference"),
+            authentication_method=properties.get("authenticationMethod"),
+            authentication_data=None if data is None else base64.b64decode(data),
+            user_properties=tuple(tuple(pair) for pair in properties.get("userProperties", ())),
+        ),
+    )
+
+
 def _event(client: MqttClient, value: dict[str, Any]) -> MqttEvent:
     kind = value["type"]
     if kind == "connected":
-        return Connected(ProtocolVersion(value["protocol"]), value["sessionPresent"])
+        details = value.get("details")
+        return Connected(
+            ProtocolVersion(value["protocol"]),
+            value["sessionPresent"],
+            None if details is None else _connack_details(details),
+        )
+    if kind == "connectionRejected":
+        return ConnectionRejected(_connack_details(value["details"]))
+    if kind == "brokerDisconnect":
+        return BrokerDisconnect(
+            value["reasonCode"],
+            value.get("sessionExpiryInterval"),
+            value.get("reasonString"),
+            tuple(tuple(pair) for pair in value["userProperties"]),
+            value.get("serverReference"),
+        )
+    if kind == "authentication":
+        return Authentication(value["method"], value["exchange"], value["stage"], value.get("failure"))
+    if kind == "redirect":
+        target = value.get("target")
+        return Redirect(
+            value["source"],
+            value["reason"],
+            value.get("serverReference"),
+            None if target is None else RedirectTarget(**target),
+            value.get("failure"),
+        )
     if kind == "disconnected":
         return Disconnected(ConnectionPhase(value["phase"]), error_from_data(value["error"]))
     if kind == "outgoing":
-        return Outgoing(OutgoingActivity(value["packet"]))
+        return Outgoing(OutgoingActivity(value["packet"]), value.get("packetId"))
     if kind == "closed":
         return Closed(value["graceful"])
     if kind == "driverError":

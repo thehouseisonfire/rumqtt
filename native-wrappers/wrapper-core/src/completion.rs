@@ -47,9 +47,23 @@ pub enum Completion {
     Subscribe(SubscribeCompletion),
     Unsubscribe(UnsubscribeCompletion),
     Acknowledged,
+    Authenticated,
     Diagnostics(crate::DiagnosticsSnapshot),
     GracefulShutdown,
     ImmediateShutdown,
+}
+
+impl Completion {
+    /// Successful authentication has no MQTT acknowledgement payload. Broker
+    /// rejection is an Error with structured authentication and reason fields.
+    #[must_use]
+    pub const fn authentication_outcome(&self) -> Option<crate::AuthOutcome> {
+        if matches!(self, Self::Authenticated) {
+            Some(crate::AuthOutcome::Success)
+        } else {
+            None
+        }
+    }
 }
 
 /// Result of waiting for an operation until a caller-supplied deadline.

@@ -27,12 +27,27 @@ use crate::{
 
 struct BoundaryTerminationPanic;
 
+thread_local! {
+    static IN_HOST_CALLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn with_host_callback<T>(call: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_HOST_CALLBACK.set(self.0);
+        }
+    }
+    let _restore = Restore(IN_HOST_CALLBACK.replace(true));
+    call()
+}
+
 fn install_boundary_panic_hook() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if !info.payload().is::<BoundaryTerminationPanic>() {
+            if !info.payload().is::<BoundaryTerminationPanic>() && !IN_HOST_CALLBACK.get() {
                 previous(info);
             }
         }));
@@ -282,14 +297,28 @@ impl NativeClientCloser {
     }
 
     pub fn close(&self, timeout: Duration) -> Result<Completion> {
+        self.close_with_options(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
+    }
+
+    /// Coalesces matching close callers. The first admitted payload wins;
+    /// conflicting later payloads fail even after the driver closes.
+    pub fn close_with_options(
+        &self,
+        timeout: Duration,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<Completion> {
         let started = Instant::now();
         let completion = {
             let mut state = self.lock_state_until(started, timeout)?;
+            self.handle.check_disconnect_payload(&protocol)?;
             match &*state {
                 NativeCloseState::Open => {
-                    let admission = self.handle.try_admit(Command::GracefulDisconnect {
-                        timeout: Some(timeout.saturating_sub(started.elapsed())),
-                    })?;
+                    let admission =
+                        self.handle
+                            .try_admit(Command::GracefulDisconnectWithOptions {
+                                timeout: Some(timeout.saturating_sub(started.elapsed())),
+                                protocol,
+                            })?;
                     let completion = admission.completion;
                     *state = NativeCloseState::Graceful(completion.clone());
                     completion
@@ -320,8 +349,17 @@ impl NativeClientCloser {
     }
 
     pub fn close_now(&self, timeout: Duration) -> Result<()> {
+        self.close_now_with_options(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
+    }
+
+    pub fn close_now_with_options(
+        &self,
+        timeout: Duration,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<()> {
         let started = Instant::now();
         let mut state = self.lock_state_until(started, timeout)?;
+        self.handle.check_disconnect_payload(&protocol)?;
         match &*state {
             NativeCloseState::GracefullyClosed => {}
             NativeCloseState::Graceful(completion)
@@ -334,12 +372,37 @@ impl NativeClientCloser {
             }
             NativeCloseState::Immediate => {}
             NativeCloseState::Open | NativeCloseState::Graceful(_) => {
-                self.handle.close_now_idempotent();
+                if let Err(error) = self
+                    .handle
+                    .try_admit(Command::ImmediateDisconnectWithOptions { protocol })
+                    && !(error.kind() == ErrorKind::Shutdown
+                        && self.handle.state() != crate::LifecycleState::Running)
+                {
+                    return Err(error);
+                }
                 *state = NativeCloseState::Immediate;
             }
         }
         drop(state);
         self.thread.join(timeout.saturating_sub(started.elapsed()))
+    }
+}
+
+// Until the driver thread takes ownership, startup errors (including a failed
+// thread spawn dropping its closure) may dispose of this runtime in an async caller.
+struct StartupRuntime(Option<tokio::runtime::Runtime>);
+
+impl StartupRuntime {
+    fn into_runtime(mut self) -> tokio::runtime::Runtime {
+        self.0.take().expect("startup runtime is present")
+    }
+}
+
+impl Drop for StartupRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 
@@ -365,15 +428,33 @@ impl NativeClient {
     ///
     /// Returns an error when configuration validation, protocol client construction, TLS setup,
     /// or driver-thread creation fails.
+    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.start", skip_all, fields(protocol = ?config.protocol_version())))]
     pub fn start(config: ClientConfig) -> Result<Self> {
         install_boundary_panic_hook();
         config.validate()?;
+        // Construct fallible local resources before transferring callback owners or
+        // starting the driver. A successful start must own a usable runtime.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                Error::sourced(ErrorKind::Internal, DeliveryStatus::NotApplicable, error)
+            })?;
+        let runtime = StartupRuntime(Some(runtime));
         let protocol = config.protocol_version();
+        let reauthentication_enabled = matches!(&config.protocol, crate::ProtocolConfig::V5(v5)
+            if v5.authenticator.is_some() || v5.scram.is_some());
         let event_capacity = config.common.event_buffer_capacity;
         let delivery_timeout = config.common.event_delivery_timeout;
         let request_capacity = config.common.request_channel_capacity;
         let emit_outgoing = config.common.emit_outgoing_events;
         let manual_ack = config.common.ack_mode == AckMode::Manual;
+        let session_expiry_zero = match &config.protocol {
+            crate::ProtocolConfig::V4(_) => true,
+            crate::ProtocolConfig::V5(v5) => {
+                v5.connect_properties.session_expiry_interval.unwrap_or(0) == 0
+            }
+        };
 
         let (operations, operation_receivers) = OperationRegistry::new(request_capacity);
         let (completion_rx, diagnostics_rx) = operation_receivers.into_parts();
@@ -397,6 +478,7 @@ impl NativeClient {
             panic_tx,
         );
         let driver_shared = Arc::clone(&shared);
+        shared.set_protocol_admission_state(session_expiry_zero, reauthentication_enabled);
         let context = DriverContext {
             shared: Arc::clone(&driver_shared),
             completion_rx,
@@ -413,24 +495,21 @@ impl NativeClient {
         let join = thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
+                let runtime = runtime.into_runtime();
                 let terminal = match catch_unwind(AssertUnwindSafe(|| {
-                    match tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                    {
-                        Ok(runtime) => runtime.block_on(run_driver(driver, context)),
-                        Err(error) => TerminalStatus::Failed(Error::sourced(
-                            ErrorKind::Internal,
-                            DeliveryStatus::NotApplicable,
-                            error,
-                        )),
-                    }
+                    runtime.block_on(run_driver(driver, context))
                 })) {
                     Ok(terminal) => terminal,
                     Err(_) => TerminalStatus::Failed(
                         Error::new(ErrorKind::Internal, "driver thread panicked")
                             .with_code(ErrorCode::InternalPanic),
                     ),
+                };
+                let terminal = match terminal {
+                    TerminalStatus::Failed(error) => {
+                        TerminalStatus::Failed(driver_shared.contextualize(error))
+                    }
+                    other => other,
                 };
                 let unresolved = match &terminal {
                     TerminalStatus::Closed { graceful } => Error::new(
@@ -570,6 +649,7 @@ impl<'a> ShutdownInputs<'a> {
     }
 }
 
+#[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.driver", skip_all, fields(protocol = ?context.protocol)))]
 async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalStatus {
     driver.run(context).await
 }
@@ -641,6 +721,19 @@ pub fn overflow_error() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unstarted_driver_closure_can_drop_runtime_in_async_context() {
+        let runtime = StartupRuntime(Some(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        ));
+        // A failed thread spawn drops the closure without calling it.
+        let driver = move || drop(runtime.into_runtime());
+        drop(driver);
+    }
 
     #[test]
     fn join_coordination_honors_the_timeout_budget() {

@@ -9,11 +9,31 @@ pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
         rumqttc_v4::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
         _ => ErrorKind::Admission,
     };
-    Error::sourced(kind, DeliveryStatus::NotAdmitted, error)
+    // Client errors can own rejected requests, including payloads and AUTH data.
+    Error::new(kind, "MQTT request admission failed").with_delivery(DeliveryStatus::NotAdmitted)
 }
 
 pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
+    if let rumqttc_v4::ConnectionError::SessionStore(source) = &error {
+        return Error::store(
+            source
+                .downcast_ref::<crate::StoreFailure>()
+                .copied()
+                .unwrap_or(crate::StoreFailure::Corrupt),
+        )
+        .with_delivery(DeliveryStatus::Ambiguous);
+    }
+    if let rumqttc_v4::ConnectionError::SessionRestore(source) = &error {
+        let failure = match source {
+            rumqttc_v4::SessionRestoreError::UnsupportedFormatVersion { .. } => {
+                crate::StoreFailure::Version
+            }
+            _ => crate::StoreFailure::Corrupt,
+        };
+        return Error::store(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
     let kind = match error {
+        #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
         rumqttc_v4::ConnectionError::Tls(_) => ErrorKind::Tls,
         rumqttc_v4::ConnectionError::ConnectionRefused(
             rumqttc_v4::ConnectReturnCode::BadUserNamePassword
@@ -24,12 +44,22 @@ pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
         rumqttc_v4::ConnectionError::NetworkTimeout
         | rumqttc_v4::ConnectionError::FlushTimeout
         | rumqttc_v4::ConnectionError::DisconnectTimeout => ErrorKind::Timeout,
-        rumqttc_v4::ConnectionError::Io(_)
-        | rumqttc_v4::ConnectionError::Websocket(_)
-        | rumqttc_v4::ConnectionError::WsConnect(_) => ErrorKind::Network,
+        rumqttc_v4::ConnectionError::Io(_) => ErrorKind::Network,
+        #[cfg(feature = "websocket")]
+        rumqttc_v4::ConnectionError::Websocket(_) | rumqttc_v4::ConnectionError::WsConnect(_) => {
+            ErrorKind::Network
+        }
         _ => ErrorKind::Protocol,
     };
-    Error::sourced(kind, DeliveryStatus::Ambiguous, error)
+    let reason = match &error {
+        rumqttc_v4::ConnectionError::ConnectionRefused(reason) => Some(*reason as u8),
+
+        _ => None,
+    };
+    // Error source chains may contain raw packets, credentials, or peer-supplied
+    // text. Owned connection events carry legal details without logging them.
+    let error = Error::new(kind, "MQTT connection failed").with_delivery(DeliveryStatus::Ambiguous);
+    reason.map_or(error.clone(), |reason| error.with_broker_reason(reason))
 }
 
 pub const fn map_outgoing(outgoing: &rumqttc_v4::Outgoing) -> OutgoingActivity {
@@ -65,34 +95,43 @@ use crate::{
     WrapperEvent,
 };
 
-pub fn build(
+fn build_options(
     common: &crate::CommonConfig,
     protocol: crate::V4Config,
-) -> crate::Result<(rumqttc_v4::AsyncClient, Box<rumqttc_v4::EventLoop>)> {
+) -> crate::Result<rumqttc_v4::MqttOptions> {
+    #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
     let tls = match &common.transport {
-        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss { tls, .. } => {
+        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
             Some(super::build_tls(tls)?)
         }
         _ => None,
     };
-    let mut options = match &common.transport {
-        crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_) => {
+    let mut options = match (&common.broker, &common.transport) {
+        (
+            crate::BrokerTarget::Tcp { host, port },
+            crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_),
+        ) => rumqttc_v4::MqttOptions::new(
+            common.client_id.clone(),
+            rumqttc_v4::Broker::tcp(host.clone(), *port),
+        ),
+        #[cfg(feature = "websocket")]
+        (crate::BrokerTarget::WebSocket { url }, crate::TransportConfig::WebSocket) => {
             rumqttc_v4::MqttOptions::new(
                 common.client_id.clone(),
-                rumqttc_v4::Broker::tcp(common.broker_host.clone(), common.broker_port),
+                rumqttc_v4::Broker::websocket(url.clone()).map_err(|error| {
+                    Error::sourced(
+                        ErrorKind::Configuration,
+                        DeliveryStatus::NotApplicable,
+                        error,
+                    )
+                })?,
             )
         }
-        crate::TransportConfig::WebSocket { url } => rumqttc_v4::MqttOptions::new(
-            common.client_id.clone(),
-            rumqttc_v4::Broker::websocket(url.clone()).map_err(|error| {
-                Error::sourced(
-                    ErrorKind::Configuration,
-                    DeliveryStatus::NotApplicable,
-                    error,
-                )
-            })?,
-        ),
-        crate::TransportConfig::Wss { url, .. } => {
+        #[cfg(all(
+            feature = "websocket",
+            any(feature = "use-rustls", feature = "use-native-tls")
+        ))]
+        (crate::BrokerTarget::WebSocket { url }, crate::TransportConfig::Wss(_)) => {
             rumqttc_v4::MqttOptions::websocket_with_tls_config(
                 common.client_id.clone(),
                 url.clone(),
@@ -106,7 +145,20 @@ pub fn build(
                 )
             })?
         }
+        #[cfg(unix)]
+        (crate::BrokerTarget::Unix { path }, crate::TransportConfig::Unix) => {
+            rumqttc_v4::MqttOptions::new(
+                common.client_id.clone(),
+                rumqttc_v4::Broker::unix(path.clone()),
+            )
+        }
+        _ => {
+            return Err(Error::configuration(
+                "unsupported broker and transport configuration",
+            ));
+        }
     };
+    #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
     if matches!(common.transport, crate::TransportConfig::Tls(_)) {
         options.set_transport(rumqttc_v4::Transport::tls_with_config(
             tls.expect("TLS built"),
@@ -116,8 +168,36 @@ pub fn build(
         common.keep_alive,
         "keep alive",
     )?);
-    options.set_max_packet_size(common.incoming_packet_size_limit as usize, usize::MAX);
+    options.set_max_packet_size(
+        match common.incoming_packet_size_limit {
+            crate::IncomingPacketLimit::Default => 10 * 1024,
+            crate::IncomingPacketLimit::Bytes(bytes) => usize::try_from(bytes)
+                .map_err(|_| Error::configuration("incoming packet limit exceeds platform size"))?,
+            crate::IncomingPacketLimit::Unlimited => usize::MAX,
+        },
+        protocol.max_outgoing_packet_size,
+    );
+    options.set_inflight(protocol.inflight_limit);
+    options.set_max_request_batch(common.max_request_batch);
+    options.set_read_batch_size(common.read_batch_size);
+    options.set_pending_throttle(common.pending_throttle);
+    if let Some(will) = &common.last_will {
+        options.set_last_will(rumqttc_v4::LastWill {
+            topic: will.topic.clone(),
+            message: will.payload.clone(),
+            qos: to_qos(will.qos),
+            retain: will.retain,
+        });
+    }
     options.set_request_channel_capacity(common.request_channel_capacity);
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+    if let Some(proxy) = &common.proxy {
+        options.set_proxy(super::build_proxy(proxy)?);
+    }
+    #[cfg(feature = "websocket")]
+    if !common.websocket_headers.is_empty() {
+        options.set_request_modifier(crate::websocket::prepare(&common.websocket_headers)?);
+    }
     options.set_ack_mode(match common.ack_mode {
         crate::AckMode::Automatic => rumqttc_v4::AckMode::Automatic,
         crate::AckMode::Manual => rumqttc_v4::AckMode::Manual,
@@ -140,6 +220,14 @@ pub fn build(
                 error,
             )
         })?;
+    if let Some(store) = protocol.session_store {
+        options.set_session_store_scope(store.scope.clone());
+        options.set_session_store(super::session::Adapter::new(
+            store,
+            ProtocolVersion::V4,
+            &common.client_id,
+        )?);
+    }
     options.validate().map_err(|error| {
         Error::sourced(
             ErrorKind::Configuration,
@@ -147,6 +235,14 @@ pub fn build(
             error,
         )
     })?;
+    Ok(options)
+}
+
+pub fn build(
+    common: &crate::CommonConfig,
+    protocol: crate::V4Config,
+) -> crate::Result<(rumqttc_v4::AsyncClient, Box<rumqttc_v4::EventLoop>)> {
+    let options = build_options(common, protocol)?;
     let (client, mut eventloop) = rumqttc_v4::AsyncClient::builder(options)
         .capacity(common.request_channel_capacity)
         .try_build()
@@ -157,9 +253,7 @@ pub fn build(
                 error,
             )
         })?;
-    let mut network = rumqttc_v4::NetworkOptions::new();
-    network.set_connection_timeout(common.connection_timeout.as_secs());
-    eventloop.network_options = network;
+    eventloop.network_options = super::build_network(common);
     Ok((client, Box::new(eventloop)))
 }
 pub async fn run(
@@ -255,7 +349,12 @@ pub async fn run(
             Err(error) => {
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v4::ConnectionError::DisconnectTimeout);
-                let error = map_connection_error(error);
+                let error = shared.contextualize(map_connection_error(error));
+                if error.kind() == ErrorKind::Persistence {
+                    shared.fail_acknowledgements(&error);
+                    fail_pending(&mut senders, &error);
+                    return TerminalStatus::Failed(error);
+                }
                 if graceful_disconnect_timed_out && shared.timeout_graceful_shutdown(error.clone())
                 {
                     return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
@@ -308,6 +407,10 @@ fn map_v4_event(
             Some(WrapperEvent::Connected {
                 protocol,
                 session_present: connack.session_present,
+                details: crate::ConnAckDetails {
+                    reason_code: connack.code as u8,
+                    v5_properties: None,
+                },
             })
         }
         rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::Publish(publish)) => {
@@ -342,7 +445,23 @@ fn map_v4_event(
                 }
                 _ => {}
             }
-            emit_outgoing.then(|| WrapperEvent::Outgoing(map_outgoing(&outgoing)))
+            emit_outgoing.then(|| {
+                let packet_id = match outgoing {
+                    rumqttc_v4::Outgoing::Publish(id)
+                    | rumqttc_v4::Outgoing::Subscribe(id)
+                    | rumqttc_v4::Outgoing::Unsubscribe(id)
+                    | rumqttc_v4::Outgoing::PubAck(id)
+                    | rumqttc_v4::Outgoing::PubRec(id)
+                    | rumqttc_v4::Outgoing::PubRel(id)
+                    | rumqttc_v4::Outgoing::PubComp(id)
+                    | rumqttc_v4::Outgoing::AwaitAck(id) => (id != 0).then_some(id),
+                    _ => None,
+                };
+                WrapperEvent::Outgoing(crate::OutgoingEvent {
+                    activity: map_outgoing(&outgoing),
+                    packet_id,
+                })
+            })
         }
         rumqttc_v4::Event::Incoming(_) => None,
     }
@@ -431,4 +550,44 @@ pub fn map_unsubscribe_notice(
 
 pub fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
     Error::sourced(ErrorKind::Protocol, DeliveryStatus::Ambiguous, error)
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn options_preserve_operational_controls_and_will() {
+        let mut common = crate::CommonConfig::new("mapping", "localhost", 1883);
+        common.max_request_batch = 17;
+        common.read_batch_size = 23;
+        common.pending_throttle = std::time::Duration::from_nanos(313);
+        common.incoming_packet_size_limit = crate::IncomingPacketLimit::Bytes(65537);
+        common.last_will = Some(crate::LastWillConfig {
+            topic: "will".into(),
+            payload: bytes::Bytes::from_static(b"\0\xff"),
+            qos: QoS::ExactlyOnce,
+            retain: true,
+            protocol: crate::LastWillProtocolOptions::VersionNeutral,
+        });
+        let options = build_options(
+            &common,
+            crate::V4Config {
+                inflight_limit: 7,
+                max_outgoing_packet_size: 121,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(options.max_request_batch(), 17);
+        assert_eq!(options.read_batch_size(), 23);
+        assert_eq!(options.pending_throttle(), common.pending_throttle);
+        assert_eq!(options.max_packet_size(), 65537);
+        assert_eq!(options.inflight(), 7);
+        let will = options.last_will().unwrap();
+        assert_eq!(will.topic, "will");
+        assert_eq!(will.message.as_ref(), b"\0\xff");
+        assert_eq!(will.qos, rumqttc_v4::QoS::ExactlyOnce);
+        assert!(will.retain);
+    }
 }

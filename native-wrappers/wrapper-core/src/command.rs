@@ -116,7 +116,35 @@ pub enum Command {
     Subscribe(SubscribeCommand),
     Unsubscribe(UnsubscribeCommand),
     Acknowledge(AckToken),
-    GracefulDisconnect { timeout: Option<Duration> },
+    /// MQTT 5 only. Admission queues an exchange owned by the configured authenticator;
+    /// caller-supplied properties are rejected. Completion observes the exchange outcome.
+    Reauthenticate(Option<crate::AuthProperties>),
+    GracefulDisconnect {
+        timeout: Option<Duration>,
+    },
     ImmediateDisconnect,
+    GracefulDisconnectWithOptions {
+        timeout: Option<Duration>,
+        protocol: DisconnectProtocolOptions,
+    },
+    ImmediateDisconnectWithOptions {
+        protocol: DisconnectProtocolOptions,
+    },
     Diagnostics,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DisconnectProtocolOptions {
+    #[default]
+    VersionNeutral,
+    V5(V5DisconnectOptions),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct V5DisconnectOptions {
+    pub reason_code: u8,
+    pub session_expiry_interval: Option<u32>,
+    pub reason_string: Option<String>,
+    pub user_properties: Vec<(String, String)>,
+    pub server_reference: Option<String>,
 }

@@ -64,11 +64,14 @@ pub fn parse(value: &str) -> Result<ClientConfig, String> {
     config.common.transport = match input.transport {
         Transport::Tcp => TransportConfig::Tcp,
         Transport::Tls { ca, cert, key } => TransportConfig::Tls(tls(ca, cert, key)?),
-        Transport::Websocket { url } => TransportConfig::WebSocket { url },
-        Transport::Wss { url, ca, cert, key } => TransportConfig::Wss {
-            url,
-            tls: tls(ca, cert, key)?,
-        },
+        Transport::Websocket { url } => {
+            config.common.broker = rumqttc_wrapper_core::BrokerTarget::WebSocket { url };
+            TransportConfig::WebSocket
+        }
+        Transport::Wss { url, ca, cert, key } => {
+            config.common.broker = rumqttc_wrapper_core::BrokerTarget::WebSocket { url };
+            TransportConfig::Wss(tls(ca, cert, key)?)
+        }
     };
     config.common.keep_alive = Duration::from_secs(input.keep_alive_seconds);
     config.common.connection_timeout = Duration::from_secs(input.connection_timeout_seconds);
@@ -85,7 +88,8 @@ pub fn parse(value: &str) -> Result<ClientConfig, String> {
         "manual" => AckMode::Manual,
         _ => return Err("invalid acknowledgement mode".into()),
     };
-    config.common.incoming_packet_size_limit = input.incoming_packet_size_limit;
+    config.common.incoming_packet_size_limit =
+        rumqttc_wrapper_core::IncomingPacketLimit::Bytes(input.incoming_packet_size_limit);
     config.common.emit_outgoing_events = input.emit_outgoing_events;
     match &mut config.protocol {
         ProtocolConfig::V4(v4) => {
@@ -99,7 +103,8 @@ pub fn parse(value: &str) -> Result<ClientConfig, String> {
                 return Err("cleanSession is only valid for protocol '3.1.1'".into());
             }
             v5.clean_start = input.clean_start.unwrap_or(true);
-            v5.session_expiry_interval = input.session_expiry_interval;
+            v5.connect_properties.session_expiry_interval = input.session_expiry_interval;
+            v5.connect_properties.maximum_packet_size = Some(input.incoming_packet_size_limit);
         }
     }
     config.validate().map_err(|e| e.to_string())?;
@@ -107,11 +112,12 @@ pub fn parse(value: &str) -> Result<ClientConfig, String> {
 }
 
 fn tls(ca: Option<String>, cert: Option<String>, key: Option<String>) -> Result<TlsConfig, String> {
-    Ok(TlsConfig {
-        ca: ca.map(|v| decode(&v).map(Bytes::from)).transpose()?,
-        client_certificate: cert.map(|v| decode(&v).map(Bytes::from)).transpose()?,
-        private_key: key.map(|v| decode(&v).map(Bytes::from)).transpose()?,
-    })
+    TlsConfig::rustls_pem(
+        ca.map(|v| decode(&v).map(Bytes::from)).transpose()?,
+        cert.map(|v| decode(&v).map(Bytes::from)).transpose()?,
+        key.map(|v| decode(&v)).transpose()?,
+    )
+    .map_err(|error| error.to_string())
 }
 fn decode(value: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD

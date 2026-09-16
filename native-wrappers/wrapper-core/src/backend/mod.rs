@@ -1,3 +1,6 @@
+mod auth;
+mod redirect;
+pub mod session;
 pub mod v4;
 pub mod v5;
 
@@ -6,9 +9,9 @@ use std::time::Duration;
 use crate::operations::CompletionFuture;
 use crate::validation::protocol_option_error;
 use crate::{
-    ClientConfig, DeliveryStatus, Error, ErrorKind, ProtocolConfig, PublishCommand,
-    PublishProtocolOptions, Result, SubscribeCommand, SubscribeProtocolOptions,
-    SubscriptionProtocolOptions, TlsConfig, UnsubscribeCommand, UnsubscribeProtocolOptions,
+    ClientConfig, Error, ErrorKind, ProtocolConfig, PublishCommand, PublishProtocolOptions, Result,
+    SubscribeCommand, SubscribeProtocolOptions, SubscriptionProtocolOptions, UnsubscribeCommand,
+    UnsubscribeProtocolOptions,
 };
 
 pub enum BackendClient {
@@ -18,7 +21,7 @@ pub enum BackendClient {
 
 pub enum BackendDriver {
     V4(Box<rumqttc_v4::EventLoop>),
-    V5(Box<rumqttc_v5::EventLoop>),
+    V5(Box<v5::Driver>),
 }
 
 #[derive(Clone)]
@@ -47,6 +50,51 @@ pub enum AckKey {
 }
 
 impl BackendClient {
+    pub(crate) fn try_reauthenticate(
+        &self,
+        properties: Option<crate::AuthProperties>,
+    ) -> Result<CompletionFuture> {
+        let Self::V5(client) = self else {
+            return Err(protocol_option_error("reauthentication requires MQTT 5"));
+        };
+        if properties.is_some() {
+            return Err(protocol_option_error(
+                "reauthentication properties must come from the configured authenticator",
+            ));
+        }
+        let notice = client
+            .try_reauth_tracked(None)
+            .map_err(v5::map_client_error)?;
+        Ok(Box::pin(async move {
+            notice
+                .wait_async()
+                .await
+                .map(|_| crate::Completion::Authenticated)
+                .map_err(|error| {
+                    if let rumqttc_v5::AuthNoticeError::BrokerDisconnected(reason) = error {
+                        return Error::auth(crate::AuthFailure::BrokerRejected)
+                            .with_broker_reason(reason as u8)
+                            .with_delivery(crate::DeliveryStatus::Rejected);
+                    }
+                    let failure = match error {
+                        rumqttc_v5::AuthNoticeError::OverlappingReauth => {
+                            crate::AuthFailure::Overlapping
+                        }
+                        rumqttc_v5::AuthNoticeError::MissingAuthenticationMethod => {
+                            crate::AuthFailure::Method
+                        }
+                        rumqttc_v5::AuthNoticeError::AuthenticationFailed(_) => {
+                            crate::AuthFailure::Rejected
+                        }
+                        rumqttc_v5::AuthNoticeError::ProtocolError => {
+                            crate::AuthFailure::InvalidResponse
+                        }
+                        _ => crate::AuthFailure::ConnectionClosed,
+                    };
+                    Error::auth(failure).with_delivery(crate::DeliveryStatus::Ambiguous)
+                })
+        }))
+    }
     pub(crate) fn try_publish(&self, command: PublishCommand) -> Result<CompletionFuture> {
         match self {
             Self::V4(client) => {
@@ -207,7 +255,26 @@ impl BackendClient {
         }
     }
 
-    pub(crate) fn try_disconnect(&self, timeout: Option<Duration>) -> Result<()> {
+    pub(crate) fn try_disconnect(
+        &self,
+        timeout: Option<Duration>,
+        protocol: &crate::DisconnectProtocolOptions,
+    ) -> Result<()> {
+        if let crate::DisconnectProtocolOptions::V5(properties) = protocol {
+            let Self::V5(client) = self else {
+                return Err(protocol_option_error(
+                    "MQTT 5 disconnect options require MQTT 5",
+                ));
+            };
+            let (reason, properties) = v5::disconnect_properties(properties)?;
+            return match timeout {
+                Some(timeout) => {
+                    client.try_disconnect_with_properties_timeout(reason, properties, timeout)
+                }
+                None => client.try_disconnect_with_properties(reason, properties),
+            }
+            .map_err(v5::map_client_error);
+        }
         match self {
             Self::V4(client) => timeout
                 .map_or_else(
@@ -224,15 +291,29 @@ impl BackendClient {
         }
     }
 
-    pub(crate) fn try_disconnect_now(&self) -> Result<()> {
+    pub(crate) fn try_disconnect_now(
+        &self,
+        protocol: &crate::DisconnectProtocolOptions,
+    ) -> Result<()> {
+        if let crate::DisconnectProtocolOptions::V5(properties) = protocol {
+            let Self::V5(client) = self else {
+                return Err(protocol_option_error(
+                    "MQTT 5 disconnect options require MQTT 5",
+                ));
+            };
+            let (reason, properties) = v5::disconnect_properties(properties)?;
+            return client
+                .try_disconnect_now_with_properties(reason, properties)
+                .map_err(v5::map_client_error);
+        }
         match self {
             Self::V4(client) => client.try_disconnect_now().map_err(v4::map_client_error),
             Self::V5(client) => client.try_disconnect_now().map_err(v5::map_client_error),
         }
     }
 
-    pub(crate) fn best_effort_disconnect_now(&self) {
-        _ = self.try_disconnect_now();
+    pub(crate) fn best_effort_disconnect_now(&self, protocol: &crate::DisconnectProtocolOptions) {
+        _ = self.try_disconnect_now(protocol);
     }
 }
 
@@ -262,18 +343,151 @@ pub fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
     }
 }
 
-fn build_tls(config: &TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
-    let client_auth = config
-        .client_certificate
-        .as_ref()
-        .zip(config.private_key.as_ref())
-        .map(|(certificate, key)| (certificate.to_vec(), key.to_vec()));
-    let result = if let Some(ca) = &config.ca {
+#[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+fn build_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
+    match config.backend {
+        #[cfg(feature = "use-rustls")]
+        crate::TlsBackend::Rustls => build_rustls(config),
+        #[cfg(feature = "use-native-tls")]
+        crate::TlsBackend::Native => build_native_tls(config),
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::configuration("selected TLS backend is disabled")),
+    }
+}
+
+#[cfg(feature = "use-rustls")]
+fn build_rustls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
+    let client_auth = match &config.identity {
+        Some(crate::TlsClientIdentity::RustlsPem {
+            certificate,
+            private_key,
+        }) => Some((certificate.to_vec(), private_key.expose().to_vec())),
+        None => None,
+        _ => return Err(Error::configuration("rustls requires a PEM identity")),
+    };
+    let result = if let crate::TlsRootPolicy::Pem(ca) = &config.roots {
         rumqttc_v4::TlsConfiguration::try_rustls_with_pem_roots(ca, client_auth)
     } else {
         rumqttc_v4::TlsConfiguration::try_rustls_with_native_roots(client_auth)
     };
-    result.map_err(|error| Error::sourced(ErrorKind::Tls, DeliveryStatus::NotApplicable, error))
+    // Do not retain source errors from credential parsing: native host diagnostics may
+    // recursively display their source chains.
+    let mut tls =
+        result.map_err(|_| Error::new(ErrorKind::Tls, "failed to construct rustls credentials"))?;
+    if let rumqttc_v4::TlsConfiguration::Rustls(client) = &mut tls {
+        std::sync::Arc::make_mut(client).alpn_protocols = config.alpn_protocols.clone();
+    }
+    Ok(tls)
+}
+
+#[cfg(feature = "use-native-tls")]
+fn build_native_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
+    let invalid = || Error::new(ErrorKind::Tls, "failed to construct native TLS credentials");
+    let mut builder = native_tls::TlsConnector::builder();
+    if let crate::TlsRootPolicy::Pem(ca) = &config.roots {
+        builder.disable_built_in_roots(true);
+        // native-tls accepts one PEM certificate per call. Split a bundle explicitly.
+        let pem = std::str::from_utf8(ca).map_err(|_| invalid())?;
+        let mut rest = pem.trim();
+        let mut count = 0;
+        while !rest.is_empty() {
+            if !rest.starts_with("-----BEGIN CERTIFICATE-----") {
+                return Err(invalid());
+            }
+            let end = rest.find("-----END CERTIFICATE-----").ok_or_else(invalid)?
+                + "-----END CERTIFICATE-----".len();
+            builder.add_root_certificate(
+                native_tls::Certificate::from_pem(&rest.as_bytes()[..end])
+                    .map_err(|_| invalid())?,
+            );
+            count += 1;
+            rest = rest[end..].trim();
+        }
+        if count == 0 {
+            return Err(invalid());
+        }
+    }
+    if let Some(crate::TlsClientIdentity::NativePkcs12 { identity, password }) = &config.identity {
+        let password = std::str::from_utf8(password.expose()).map_err(|_| invalid())?;
+        builder.identity(
+            native_tls::Identity::from_pkcs12(identity.expose(), password)
+                .map_err(|_| invalid())?,
+        );
+    }
+    let alpn: Vec<&str> = config
+        .alpn_protocols
+        .iter()
+        .map(|value| std::str::from_utf8(value).map_err(|_| invalid()))
+        .collect::<Result<_>>()?;
+    builder.request_alpns(&alpn);
+    Ok(rumqttc_v4::TlsConfiguration::NativeConnector(
+        builder.build().map_err(|_| invalid())?,
+    ))
+}
+
+fn build_network(common: &crate::CommonConfig) -> rumqttc_v4::NetworkOptions {
+    let config = &common.network;
+    let mut network = rumqttc_v4::NetworkOptions::new();
+    network.set_connection_timeout(common.connection_timeout.as_secs());
+    network.set_tcp_nodelay(config.tcp_nodelay);
+    if let Some(size) = config.tcp_send_buffer_size {
+        network.set_tcp_send_buffer_size(size);
+    }
+    if let Some(size) = config.tcp_receive_buffer_size {
+        network.set_tcp_recv_buffer_size(size);
+    }
+    if let Some(address) = config.local_address {
+        network.set_bind_addr(address);
+    }
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "fuchsia"))]
+    if let Some(device) = &config.bind_device {
+        network.set_bind_device(device);
+    }
+    #[cfg(target_os = "linux")]
+    network.set_mptcp(config.mptcp);
+    network
+}
+
+#[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+fn build_proxy(config: &crate::ProxyConfig) -> Result<rumqttc_v4::Proxy> {
+    let (proxy, credentials) = match config {
+        #[cfg(feature = "http-proxy")]
+        crate::ProxyConfig::Http {
+            host,
+            port,
+            credentials,
+            tls: None,
+        } => (rumqttc_v4::Proxy::http(host.clone(), *port), credentials),
+        #[cfg(all(
+            feature = "http-proxy",
+            any(feature = "use-rustls", feature = "use-native-tls")
+        ))]
+        crate::ProxyConfig::Http {
+            host,
+            port,
+            credentials,
+            tls: Some(tls),
+        } => (
+            rumqttc_v4::Proxy::https(host.clone(), *port, build_tls(tls)?),
+            credentials,
+        ),
+        #[cfg(feature = "socks-proxy")]
+        crate::ProxyConfig::Socks5 {
+            host,
+            port,
+            credentials,
+        } => (rumqttc_v4::Proxy::socks5(host.clone(), *port), credentials),
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(Error::configuration(
+                "proxy configuration requires disabled features",
+            ));
+        }
+    };
+    Ok(match credentials {
+        Some(c) => proxy.with_credentials(c.username.clone(), c.password.clone()),
+        None => proxy,
+    })
 }
 
 #[cfg(test)]

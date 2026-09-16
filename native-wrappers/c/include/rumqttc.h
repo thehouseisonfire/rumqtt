@@ -70,6 +70,10 @@ typedef uint32_t rumqttc_event_kind_t;
 #define RUMQTTC_EVENT_GRACEFUL_SHUTDOWN 5u
 #define RUMQTTC_EVENT_DRIVER_TERMINATED 6u
 #define RUMQTTC_EVENT_IMMEDIATE_SHUTDOWN 7u
+#define RUMQTTC_EVENT_AUTHENTICATION 8u
+#define RUMQTTC_EVENT_REDIRECT 9u
+#define RUMQTTC_EVENT_BROKER_DISCONNECT 10u
+#define RUMQTTC_EVENT_CONNECTION_REJECTED 11u
 
 /* Disconnect phases returned by rumqttc_event_disconnected. */
 #define RUMQTTC_CONNECTION_PHASE_NONE 0u
@@ -101,6 +105,7 @@ typedef uint32_t rumqttc_completion_kind_t;
 #define RUMQTTC_COMPLETION_DIAGNOSTICS 7u
 #define RUMQTTC_COMPLETION_GRACEFUL_SHUTDOWN 8u
 #define RUMQTTC_COMPLETION_IMMEDIATE_SHUTDOWN 9u
+#define RUMQTTC_COMPLETION_AUTHENTICATED 10u
 
 typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_ERROR_NONE 0u

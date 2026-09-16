@@ -5,7 +5,13 @@ use bytes::Bytes;
 use rumqttc_wrapper_core::{AckMode, ClientConfig, ProtocolConfig, TlsConfig, TransportConfig};
 
 pub struct ConfigHandle {
-    pub inner: Mutex<ClientConfig>,
+    inner: Mutex<ConfigState>,
+}
+
+struct ConfigState {
+    config: ClientConfig,
+    // The legacy C builder keeps its TCP address when selecting a WebSocket URL.
+    tcp_broker: rumqttc_wrapper_core::BrokerTarget,
 }
 
 impl ConfigHandle {
@@ -16,14 +22,17 @@ impl ConfigHandle {
             _ => return None,
         };
         Some(Self {
-            inner: Mutex::new(config),
+            inner: Mutex::new(ConfigState {
+                tcp_broker: config.common.broker.clone(),
+                config,
+            }),
         })
     }
 
     pub fn clone_config(&self) -> Result<ClientConfig, &'static str> {
         self.inner
             .lock()
-            .map(|config| config.clone())
+            .map(|state| state.config.clone())
             .map_err(|_| "configuration lock is poisoned")
     }
 
@@ -31,20 +40,51 @@ impl ConfigHandle {
         &self,
         update: impl FnOnce(&mut ClientConfig) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
-        let mut config = self
-            .inner
-            .lock()
-            .map_err(|_| "configuration lock is poisoned")?;
-        update(&mut config)
+        self.update_with_error(update, || "configuration lock is poisoned")
+    }
+
+    pub fn update_with_error<E>(
+        &self,
+        update: impl FnOnce(&mut ClientConfig) -> Result<(), E>,
+        poisoned: impl FnOnce() -> E,
+    ) -> Result<(), E> {
+        let mut state = self.inner.lock().map_err(|_| poisoned())?;
+        let previous = state.config.common.broker.clone();
+        update(&mut state.config)?;
+        if matches!(
+            state.config.common.broker,
+            rumqttc_wrapper_core::BrokerTarget::Tcp { .. }
+        ) {
+            state.tcp_broker = state.config.common.broker.clone();
+            if matches!(
+                state.config.common.transport,
+                TransportConfig::WebSocket | TransportConfig::Wss(_)
+            ) && matches!(
+                previous,
+                rumqttc_wrapper_core::BrokerTarget::WebSocket { .. }
+            ) {
+                state.config.common.broker = previous;
+            }
+        } else if matches!(
+            state.config.common.transport,
+            TransportConfig::Tcp | TransportConfig::Tls(_)
+        ) {
+            state.config.common.broker = state.tcp_broker.clone();
+        }
+        Ok(())
     }
 }
 
-pub fn tls_config(ca: Vec<u8>, certificate: Vec<u8>, key: Vec<u8>) -> TlsConfig {
-    TlsConfig {
-        ca: (!ca.is_empty()).then(|| Bytes::from(ca)),
-        client_certificate: (!certificate.is_empty()).then(|| Bytes::from(certificate)),
-        private_key: (!key.is_empty()).then(|| Bytes::from(key)),
-    }
+pub fn tls_config(
+    ca: Vec<u8>,
+    certificate: Vec<u8>,
+    key: Vec<u8>,
+) -> rumqttc_wrapper_core::Result<TlsConfig> {
+    TlsConfig::rustls_pem(
+        (!ca.is_empty()).then(|| Bytes::from(ca)),
+        (!certificate.is_empty()).then(|| Bytes::from(certificate)),
+        (!key.is_empty()).then_some(key),
+    )
 }
 
 pub fn set_transport_tcp(config: &mut ClientConfig) {
@@ -56,11 +96,13 @@ pub fn set_transport_tls(config: &mut ClientConfig, tls: TlsConfig) {
 }
 
 pub fn set_transport_websocket(config: &mut ClientConfig, url: String) {
-    config.common.transport = TransportConfig::WebSocket { url };
+    config.common.broker = rumqttc_wrapper_core::BrokerTarget::WebSocket { url };
+    config.common.transport = TransportConfig::WebSocket;
 }
 
 pub fn set_transport_wss(config: &mut ClientConfig, url: String, tls: TlsConfig) {
-    config.common.transport = TransportConfig::Wss { url, tls };
+    config.common.broker = rumqttc_wrapper_core::BrokerTarget::WebSocket { url };
+    config.common.transport = TransportConfig::Wss(tls);
 }
 
 pub const fn set_keep_alive(config: &mut ClientConfig, seconds: u64) {
@@ -106,7 +148,7 @@ pub fn set_v5_session(
     match &mut config.protocol {
         ProtocolConfig::V5(protocol) => {
             protocol.clean_start = clean_start;
-            protocol.session_expiry_interval = expiry_present.then_some(expiry);
+            protocol.connect_properties.session_expiry_interval = expiry_present.then_some(expiry);
             Ok(())
         }
         ProtocolConfig::V4(_) => Err("clean start and session expiry require MQTT 5"),

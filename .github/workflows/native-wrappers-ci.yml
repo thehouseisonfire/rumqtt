@@ -64,7 +64,7 @@ jobs:
       - name: Enforce wrapper backend source boundary
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
-          if rg -n 'rumqttc_v[45]::' wrapper-core/src --glob '!**/backend/**'; then
+          if rg -n 'rumqttc_v[45]::' wrapper-core/src --glob '!**/backend/**' --glob '!rust_session_store.rs'; then
             echo 'native protocol paths must remain inside wrapper-core/src/backend' >&2
             exit 1
           fi
@@ -107,6 +107,24 @@ jobs:
         run: |
           cargo test --locked --workspace
           cargo test --locked --workspace --doc
+
+      - name: Audit native API parity
+        run: cargo test --locked -p rumqttc-wrapper-core-next --test parity_inventory
+
+      - name: Real-broker will behavior
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto
+          cargo test --locked -p rumqttc-wrapper-core-next --test will_broker -- --ignored
+
+      - name: Wrapper feature matrix
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cargo install cargo-hack --locked
+          cargo hack test --each-feature --exclude-all-features -p rumqttc-wrapper-core-next
+          cargo test -p rumqttc-wrapper-core-next --all-features
+          cargo test -p rumqttc-wrapper-core-next --no-default-features --features use-native-tls,websocket,proxy
 
       - name: C FFI/header consistency
         if: ${{ runner.os != 'Windows' }}

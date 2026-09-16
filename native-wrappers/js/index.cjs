@@ -327,6 +327,13 @@ class MqttClient {
   }
 
   #hydrateEvent(event) {
+    if (event.details?.properties) {
+      const properties = event.details.properties
+      if (properties.authenticationDataBase64 != null) {
+        properties.authenticationData = fromBase64(properties.authenticationDataBase64)
+      }
+      delete properties.authenticationDataBase64
+    }
     if (event.type === 'publish') {
       event.message.topic = textDecoder.decode(fromBase64(event.message.topicBase64))
       event.message.payload = fromBase64(event.message.payloadBase64)

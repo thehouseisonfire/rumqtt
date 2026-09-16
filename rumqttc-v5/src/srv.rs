@@ -140,6 +140,21 @@ pub struct SrvResolver {
 }
 
 impl SrvResolver {
+    /// Constructs a host-system resolver eagerly, validating local resolver
+    /// configuration without issuing a DNS query.
+    ///
+    /// # Errors
+    /// Returns an initialization error if host resolver configuration is invalid.
+    #[cfg(feature = "system-srv-resolver")]
+    pub fn system() -> Result<Self, SrvLookupError> {
+        let resolver = SystemSrvResolver::new();
+        resolver.resolver()?;
+        Ok(Self::new(move |owner| {
+            let resolver = resolver.clone();
+            async move { resolver.lookup(owner).await }
+        }))
+    }
+
     /// Create a resolver backed by an application callback.
     #[must_use]
     pub fn new<F, Fut>(resolver: F) -> Self

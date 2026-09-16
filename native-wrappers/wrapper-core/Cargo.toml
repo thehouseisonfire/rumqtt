@@ -16,6 +16,17 @@ readme = "README.md"
 name = "rumqttc_wrapper_core"
 
 [features]
+default = ["use-rustls", "websocket"]
+use-rustls = ["rumqttc_v4/use-rustls", "rumqttc_v5/use-rustls"]
+use-native-tls = ["rumqttc_v4/use-native-tls", "rumqttc_v5/use-native-tls", "dep:native-tls"]
+websocket = ["rumqttc_v4/websocket", "rumqttc_v5/websocket", "dep:http"]
+http-proxy = ["rumqttc_v4/http-proxy", "rumqttc_v5/http-proxy"]
+socks-proxy = ["rumqttc_v4/socks-proxy", "rumqttc_v5/socks-proxy"]
+proxy = ["http-proxy", "socks-proxy"]
+system-srv-resolver = ["rumqttc_v5/system-srv-resolver"]
+auth-scram = ["rumqttc_v5/auth-scram", "dep:scram"]
+tracing = ["rumqttc_v4/tracing", "rumqttc_v5/tracing", "dep:tracing"]
+tracing-log-compat = ["tracing", "rumqttc_v4/tracing-log-compat", "rumqttc_v5/tracing-log-compat", "tracing/log"]
 panic-testing = []
 
 [dependencies]
@@ -24,7 +35,19 @@ flume = { version = "0.12", default-features = false, features = ["async", "sele
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-executor = "0.3"
 parking_lot = "0.12"
+zeroize = "1"
+scram = { package = "scram-rs", version = "0.24.0", default-features = false, features = ["std"], optional = true }
 thiserror = "2.0.8"
 tokio = { version = "1.40", features = ["macros", "rt", "sync", "time"] }
-rumqttc_v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", version = "0.34.0-alpha", features = ["websocket"] }
-rumqttc_v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", version = "0.34.0-alpha", features = ["websocket"] }
+rumqttc_v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", version = "0.34.0-alpha", default-features = false }
+rumqttc_v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", version = "0.34.0-alpha", default-features = false }
+native-tls = { version = "0.2.12", optional = true, features = ["alpn"] }
+http = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std", "attributes"] }
+
+[dev-dependencies]
+syn = { version = "2", features = ["full"] }
+tempfile = "3"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }

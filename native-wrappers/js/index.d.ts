@@ -93,11 +93,42 @@ export interface IncomingMessage {
   ack?: () => Promise<void>
 }
 export type OutgoingSummary = 'publish' | 'subscribe' | 'unsubscribe' | 'acknowledgement' | 'ping' | 'disconnect' | 'awaitAcknowledgement' | 'other'
+export interface V5ConnAckProperties {
+  sessionExpiryInterval: number | null
+  receiveMaximum: number | null
+  maximumQos: number | null
+  retainAvailable: number | null
+  maximumPacketSize: number | null
+  assignedClientIdentifier: string | null
+  topicAliasMaximum: number | null
+  reasonString: string | null
+  wildcardSubscriptionAvailable: number | null
+  subscriptionIdentifiersAvailable: number | null
+  sharedSubscriptionAvailable: number | null
+  serverKeepAlive: number | null
+  responseInformation: string | null
+  serverReference: string | null
+  authenticationMethod: string | null
+  authenticationData?: Uint8Array
+  userProperties: Array<[string, string]>
+}
+export interface ConnAckDetails {
+  reasonCode: number
+  properties: V5ConnAckProperties | null
+}
+export type RedirectTarget =
+  | { type: 'tcp'; host: string; port: number }
+  | { type: 'websocket'; url: string }
+  | { type: 'unix'; path: string }
 export type MqttEvent =
-  | { type: 'connected'; protocol: ProtocolVersion; sessionPresent: boolean }
+  | { type: 'connected'; protocol: ProtocolVersion; sessionPresent: boolean; details: ConnAckDetails }
+  | { type: 'connectionRejected'; details: ConnAckDetails }
+  | { type: 'brokerDisconnect'; reasonCode: number; sessionExpiryInterval: number | null; reasonString: string | null; userProperties: Array<[string, string]>; serverReference: string | null }
+  | { type: 'authentication'; method: string; exchange: 'initial' | 'reauthentication'; stage: 'started' | 'continue' | 'succeeded' | 'failed'; failure: string | null }
+  | { type: 'redirect'; source: 'connack' | 'disconnect'; reason: number; serverReference: string | null; target: RedirectTarget | null; failure: string | null }
   | { type: 'disconnected'; phase: 'attempt' | 'established'; error: MqttError; reconnecting: true }
   | { type: 'publish'; message: IncomingMessage }
-  | { type: 'outgoing'; packet: OutgoingSummary }
+  | { type: 'outgoing'; packet: OutgoingSummary; packetId: number | null }
   | { type: 'closed'; graceful: boolean }
   | { type: 'driverError'; error: MqttError }
 

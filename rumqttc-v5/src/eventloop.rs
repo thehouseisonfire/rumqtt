@@ -532,6 +532,7 @@ pub struct EventLoop {
     disconnect_complete: bool,
     active_redirect: Option<ActiveRedirect>,
     pending_server_redirect: Option<PendingServerRedirect>,
+    pending_server_disconnect: Option<ConnectionError>,
     pending_redirect_shutdown: bool,
     redirect_attempts: usize,
     redirect_visited: Vec<String>,
@@ -569,6 +570,17 @@ impl Drop for EventLoop {
 }
 
 impl EventLoop {
+    /// Takes the latest rejected CONNACK or broker DISCONNECT, including all
+    /// properties, even when polling returned an error or accepted a redirect.
+    ///
+    /// This observation does not change recovery or completion behavior. At most
+    /// one packet is retained; take it after each poll before starting another
+    /// connection attempt. It may duplicate an Incoming event. Authentication
+    /// data and server-supplied text must not be logged indiscriminately.
+    pub fn take_connection_failure_packet(&mut self) -> Option<Packet> {
+        self.state.connection_failure_packet.take()
+    }
+
     fn has_local_session_state(&self) -> bool {
         self.session_store_key.as_ref() == Some(&self.options.session_store_key())
     }
@@ -826,6 +838,7 @@ impl EventLoop {
             disconnect_complete: false,
             active_redirect: None,
             pending_server_redirect: None,
+            pending_server_disconnect: None,
             pending_redirect_shutdown: false,
             redirect_attempts: 0,
             redirect_visited: Vec::new(),
@@ -2189,6 +2202,20 @@ impl EventLoop {
         &mut self,
         result: Result<Event, ConnectionError>,
     ) -> Result<Event, ConnectionError> {
+        if matches!(
+            &result,
+            Err(ConnectionError::MqttState(
+                StateError::ServerDisconnect { .. }
+            ))
+        ) && let Some(event) = self.state.events.pop_front()
+        {
+            let Err(error) = result else {
+                unreachable!("server disconnect result must be an error")
+            };
+            self.pending_server_disconnect = Some(error);
+            return Ok(event);
+        }
+
         #[cfg(not(feature = "ordered-shutdown"))]
         match result {
             Ok(v) => Ok(v),
@@ -2400,6 +2427,17 @@ impl EventLoop {
             #[cfg(feature = "ordered-shutdown")]
             self.requests_rx.gate().terminate();
             return Err(ConnectionError::RequestsDone);
+        }
+
+        if self.pending_server_disconnect.is_some() {
+            if let Some(event) = self.state.events.pop_front() {
+                return Ok(event);
+            }
+            let error = self
+                .pending_server_disconnect
+                .take()
+                .expect("pending server disconnect must be present");
+            return self.handle_network_result(Err(error)).await;
         }
 
         if self.pending_server_redirect.is_some() {
@@ -3818,6 +3856,7 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
+    state.connection_failure_packet = None;
     network.set_max_outgoing_size(None);
     state.set_client_topic_alias_max(options.topic_alias_max());
     state.set_client_receive_maximum(options.receive_maximum());
@@ -3869,6 +3908,9 @@ async fn mqtt_connect_inner(
     loop {
         match network.read().await? {
             Incoming::ConnAck(connack) => {
+                if connack.code != ConnectReturnCode::Success {
+                    state.connection_failure_packet = Some(Packet::ConnAck(connack.clone()));
+                }
                 if let Err(err) = validate_connack_session_present_for_reason_code(&connack) {
                     send_protocol_error_disconnect(network).await;
                     return Err(err.into());
@@ -7005,15 +7047,81 @@ mod tests {
         .await
         .unwrap();
 
-        let err = time::timeout(Duration::from_secs(1), eventloop.poll())
+        let event = time::timeout(Duration::from_secs(1), eventloop.poll())
             .await
             .expect("poll should return after inbound disconnect")
-            .unwrap_err();
+            .unwrap();
+
+        assert!(matches!(
+            event,
+            Event::Incoming(Incoming::Disconnect(Disconnect {
+                reason_code: DisconnectReasonCode::SessionTakenOver,
+                ..
+            }))
+        ));
+        assert!(eventloop.network.is_some());
+
+        let err = eventloop.poll().await.unwrap_err();
 
         assert!(matches!(
             err,
             ConnectionError::MqttState(StateError::ServerDisconnect {
                 reason_code: DisconnectReasonCode::SessionTakenOver,
+                reason_string: None,
+            })
+        ));
+        assert!(eventloop.network.is_none());
+        assert!(eventloop.state.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn broker_disconnect_during_reauthentication_delivers_failure_before_cleanup() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let mut eventloop = EventLoop::new(options, 1);
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap();
+        eventloop.state.events.clear();
+
+        let (client, mut peer) = tokio::io::duplex(64);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        peer.write_all(&[0xE0, 0x02, DisconnectReasonCode::NotAuthorized as u8, 0x00])
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Incoming::Disconnect(Disconnect {
+                reason_code: DisconnectReasonCode::NotAuthorized,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Auth(AuthEvent::Failed {
+                kind: crate::AuthExchangeKind::Reauthentication,
+                reason: crate::AuthFailureReason::BrokerDisconnected(
+                    DisconnectReasonCode::NotAuthorized
+                ),
+                ..
+            })
+        ));
+        assert!(eventloop.network.is_some());
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            crate::AuthNoticeError::BrokerDisconnected(DisconnectReasonCode::NotAuthorized)
+        );
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap_err(),
+            ConnectionError::MqttState(StateError::ServerDisconnect {
+                reason_code: DisconnectReasonCode::NotAuthorized,
                 reason_string: None,
             })
         ));

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use rumqttc_wrapper_core::{ClientConfig, ErrorKind, NativeClient, TlsConfig, TransportConfig};
+use rumqttc_wrapper_core::{ClientConfig, ErrorKind, TlsConfig, TransportConfig};
 
 #[test]
 fn rejects_password_without_username() {
@@ -79,26 +79,28 @@ fn rejects_lossy_duration_conversion() {
 
 #[test]
 fn rejects_unpaired_client_tls_material() {
-    let mut config = ClientConfig::v5("client", "localhost", 8883);
-    config.common.transport = TransportConfig::Tls(TlsConfig {
-        client_certificate: Some(Bytes::from_static(b"certificate")),
-        ..TlsConfig::default()
-    });
     assert_eq!(
-        config.validate().unwrap_err().kind(),
+        TlsConfig::rustls_pem(None, Some(Bytes::from_static(b"certificate")), None)
+            .unwrap_err()
+            .kind(),
         ErrorKind::Configuration
     );
 }
 
 #[test]
+#[cfg(feature = "use-rustls")]
 fn malformed_tls_material_fails_before_driver_start() {
     let mut config = ClientConfig::v5("client", "localhost", 8883);
     config.common.transport = TransportConfig::Tls(TlsConfig {
-        ca: Some(Bytes::from_static(b"not a PEM certificate")),
+        roots: rumqttc_wrapper_core::TlsRootPolicy::Pem(Bytes::from_static(
+            b"not a PEM certificate",
+        )),
         ..TlsConfig::default()
     });
     assert_eq!(
-        NativeClient::start(config).unwrap_err().kind(),
+        rumqttc_wrapper_core::NativeClient::start(config)
+            .unwrap_err()
+            .kind(),
         ErrorKind::Tls
     );
 }
@@ -106,9 +108,10 @@ fn malformed_tls_material_fails_before_driver_start() {
 #[test]
 fn rejects_protocol_inappropriate_websocket_scheme() {
     let mut config = ClientConfig::v4("client", "localhost", 8080);
-    config.common.transport = TransportConfig::WebSocket {
+    config.common.broker = rumqttc_wrapper_core::BrokerTarget::WebSocket {
         url: "wss://localhost:8080/mqtt".into(),
     };
+    config.common.transport = TransportConfig::WebSocket;
     assert_eq!(
         config.validate().unwrap_err().kind(),
         ErrorKind::Configuration

@@ -83,6 +83,16 @@ pub enum DeliveryStatus {
     Ambiguous,
 }
 
+/// Context independent of formatted diagnostic text. Generation identifies an
+/// installed connection; it is absent before the first successful CONNACK.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ErrorContext {
+    pub protocol: Option<crate::ProtocolVersion>,
+    pub phase: Option<crate::ConnectionPhase>,
+    pub generation: Option<u64>,
+    pub operation_id: Option<crate::OperationId>,
+}
+
 #[derive(Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct Error {
@@ -92,6 +102,10 @@ pub struct Error {
     delivery: DeliveryStatus,
     message: Arc<str>,
     broker_reason: Option<u8>,
+    store_failure: Option<crate::StoreFailure>,
+    auth_failure: Option<crate::AuthFailure>,
+    redirect_failure: Option<crate::RedirectFailure>,
+    context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
 }
@@ -107,6 +121,10 @@ impl Error {
             delivery: DeliveryStatus::NotApplicable,
             message: Arc::from(message.into()),
             broker_reason: None,
+            store_failure: None,
+            auth_failure: None,
+            redirect_failure: None,
+            context: ErrorContext::default(),
             source: None,
         }
     }
@@ -128,6 +146,10 @@ impl Error {
             delivery,
             message,
             broker_reason: None,
+            store_failure: None,
+            auth_failure: None,
+            redirect_failure: None,
+            context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }
     }
@@ -135,6 +157,41 @@ impl Error {
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
         self.kind
+    }
+
+    /// Structured terminal persistence failure, independent of diagnostic text.
+    #[must_use]
+    pub const fn store_failure(&self) -> Option<crate::StoreFailure> {
+        self.store_failure
+    }
+
+    pub(crate) fn store(failure: crate::StoreFailure) -> Self {
+        let mut error = Self::new(ErrorKind::Persistence, failure.to_string());
+        error.store_failure = Some(failure);
+        error
+    }
+
+    #[must_use]
+    pub const fn auth_failure(&self) -> Option<crate::AuthFailure> {
+        self.auth_failure
+    }
+
+    pub(crate) fn auth(failure: crate::AuthFailure) -> Self {
+        let mut error = Self::new(ErrorKind::Authentication, failure.to_string());
+        error.auth_failure = Some(failure);
+        error
+    }
+
+    #[must_use]
+    pub const fn redirect_failure(&self) -> Option<crate::RedirectFailure> {
+        self.redirect_failure
+    }
+
+    pub(crate) fn redirect(failure: crate::RedirectFailure) -> Self {
+        let mut error = Self::new(ErrorKind::Network, "broker redirect failed");
+        error.redirect_failure = Some(failure);
+        error.retryable = false;
+        error
     }
 
     #[must_use]
@@ -199,11 +256,35 @@ impl fmt::Debug for Error {
             .field("delivery", &self.delivery)
             .field("message", &self.message)
             .field("broker_reason", &self.broker_reason)
+            .field("store_failure", &self.store_failure)
+            .field("auth_failure", &self.auth_failure)
+            .field("redirect_failure", &self.redirect_failure)
+            .field("context", &self.context)
             .finish_non_exhaustive()
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    #[must_use]
+    pub const fn context(&self) -> ErrorContext {
+        self.context
+    }
+    pub(crate) fn with_context(mut self, context: ErrorContext) -> Self {
+        self.context.protocol = self.context.protocol.or(context.protocol);
+        self.context.phase = self.context.phase.or(context.phase);
+        self.context.generation = self.context.generation.or(context.generation);
+        self.context.operation_id = self.context.operation_id.or(context.operation_id);
+        self
+    }
+    pub(crate) fn with_operation(self, operation_id: crate::OperationId) -> Self {
+        self.with_context(ErrorContext {
+            operation_id: Some(operation_id),
+            ..Default::default()
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

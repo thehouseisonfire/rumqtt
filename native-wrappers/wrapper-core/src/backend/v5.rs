@@ -51,6 +51,35 @@ pub fn validate_publish(command: &PublishCommand) -> Result<()> {
     Ok(())
 }
 
+pub fn disconnect_properties(
+    p: &crate::V5DisconnectOptions,
+) -> Result<(
+    rumqttc_v5::DisconnectReasonCode,
+    rumqttc_v5::DisconnectProperties,
+)> {
+    let reason = rumqttc_v5::DisconnectReasonCode::try_from(p.reason_code)
+        .map_err(|_| protocol_option_error("invalid MQTT 5 disconnect reason code"))?;
+    if let Some(reason) = &p.reason_string {
+        validate_mqtt_utf8_string(reason, "disconnect reason string")?;
+    }
+    if let Some(reference) = &p.server_reference {
+        validate_mqtt_utf8_string(reference, "disconnect server reference")?;
+    }
+    for (key, value) in &p.user_properties {
+        validate_mqtt_utf8_string(key, "disconnect user property key")?;
+        validate_mqtt_utf8_string(value, "disconnect user property value")?;
+    }
+    Ok((
+        reason,
+        rumqttc_v5::DisconnectProperties {
+            session_expiry_interval: p.session_expiry_interval,
+            reason_string: p.reason_string.clone(),
+            user_properties: p.user_properties.clone(),
+            server_reference: p.server_reference.clone(),
+        },
+    ))
+}
+
 pub fn validate_subscribe(command: &SubscribeCommand) -> Result<()> {
     let SubscribeProtocolOptions::V5(properties) = &command.protocol else {
         return Ok(());
@@ -89,11 +118,31 @@ pub fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
         rumqttc_v5::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
         _ => ErrorKind::Admission,
     };
-    Error::sourced(kind, DeliveryStatus::NotAdmitted, error)
+    // Client errors can own rejected requests, including payloads and AUTH data.
+    Error::new(kind, "MQTT request admission failed").with_delivery(DeliveryStatus::NotAdmitted)
 }
 
 pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
+    if let rumqttc_v5::ConnectionError::SessionStore(source) = &error {
+        return Error::store(
+            source
+                .downcast_ref::<crate::StoreFailure>()
+                .copied()
+                .unwrap_or(crate::StoreFailure::Corrupt),
+        )
+        .with_delivery(DeliveryStatus::Ambiguous);
+    }
+    if let rumqttc_v5::ConnectionError::SessionRestore(source) = &error {
+        let failure = match source {
+            rumqttc_v5::SessionRestoreError::UnsupportedFormatVersion { .. } => {
+                crate::StoreFailure::Version
+            }
+            _ => crate::StoreFailure::Corrupt,
+        };
+        return Error::store(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
     let kind = match error {
+        #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
         rumqttc_v5::ConnectionError::Tls(_) => ErrorKind::Tls,
         rumqttc_v5::ConnectionError::ConnectionRefused(
             rumqttc_v5::ConnectReturnCode::BadUserNamePassword
@@ -104,12 +153,25 @@ pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
         | rumqttc_v5::ConnectionError::SessionRestore(_) => ErrorKind::Persistence,
         rumqttc_v5::ConnectionError::Timeout(_)
         | rumqttc_v5::ConnectionError::DisconnectTimeout => ErrorKind::Timeout,
-        rumqttc_v5::ConnectionError::Io(_)
-        | rumqttc_v5::ConnectionError::Websocket(_)
-        | rumqttc_v5::ConnectionError::WsConnect(_) => ErrorKind::Network,
+        rumqttc_v5::ConnectionError::Io(_) => ErrorKind::Network,
+        #[cfg(feature = "websocket")]
+        rumqttc_v5::ConnectionError::Websocket(_) | rumqttc_v5::ConnectionError::WsConnect(_) => {
+            ErrorKind::Network
+        }
         _ => ErrorKind::Protocol,
     };
-    Error::sourced(kind, DeliveryStatus::Ambiguous, error)
+    let reason = match &error {
+        rumqttc_v5::ConnectionError::ConnectionRefused(reason) => Some(connack_reason(*reason)),
+        rumqttc_v5::ConnectionError::MqttState(rumqttc_v5::StateError::ServerDisconnect {
+            reason_code,
+            ..
+        }) => Some(*reason_code as u8),
+        _ => None,
+    };
+    // Error source chains may contain raw packets, credentials, or peer-supplied
+    // text. Owned connection events carry legal details without logging them.
+    let error = Error::new(kind, "MQTT connection failed").with_delivery(DeliveryStatus::Ambiguous);
+    reason.map_or(error.clone(), |reason| error.with_broker_reason(reason))
 }
 
 pub const fn map_outgoing(outgoing: &rumqttc_v5::Outgoing) -> OutgoingActivity {
@@ -146,48 +208,65 @@ use crate::{
     WrapperEvent,
 };
 
-pub fn build(
+fn build_options(
     common: &crate::CommonConfig,
     protocol: crate::V5Config,
-) -> crate::Result<(rumqttc_v5::AsyncClient, Box<rumqttc_v5::EventLoop>)> {
+) -> crate::Result<rumqttc_v5::MqttOptions> {
+    #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
     let tls = match &common.transport {
-        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss { tls, .. } => {
+        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
             Some(super::build_tls(tls)?)
         }
         _ => None,
     };
-    let mut options = match &common.transport {
-        crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_) => {
+    let mut options = match (&common.broker, &common.transport) {
+        (
+            crate::BrokerTarget::Tcp { host, port },
+            crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_),
+        ) => rumqttc_v5::MqttOptions::new(
+            common.client_id.clone(),
+            rumqttc_v5::Broker::tcp(host.clone(), *port),
+        ),
+        #[cfg(feature = "websocket")]
+        (crate::BrokerTarget::WebSocket { url }, crate::TransportConfig::WebSocket) => {
             rumqttc_v5::MqttOptions::new(
                 common.client_id.clone(),
-                rumqttc_v5::Broker::tcp(common.broker_host.clone(), common.broker_port),
+                rumqttc_v5::Broker::websocket(url.clone()).map_err(|_| {
+                    Error::new(ErrorKind::Configuration, "invalid WebSocket broker URL")
+                })?,
             )
         }
-        crate::TransportConfig::WebSocket { url } => rumqttc_v5::MqttOptions::new(
-            common.client_id.clone(),
-            rumqttc_v5::Broker::websocket(url.clone()).map_err(|error| {
-                Error::sourced(
-                    ErrorKind::Configuration,
-                    DeliveryStatus::NotApplicable,
-                    error,
-                )
-            })?,
-        ),
-        crate::TransportConfig::Wss { url, .. } => {
+        #[cfg(all(
+            feature = "websocket",
+            any(feature = "use-rustls", feature = "use-native-tls")
+        ))]
+        (crate::BrokerTarget::WebSocket { url }, crate::TransportConfig::Wss(_)) => {
             rumqttc_v5::MqttOptions::websocket_with_tls_config(
                 common.client_id.clone(),
                 url.clone(),
                 tls.clone().expect("WSS TLS built"),
             )
-            .map_err(|error| {
-                Error::sourced(
+            .map_err(|_| {
+                Error::new(
                     ErrorKind::Configuration,
-                    DeliveryStatus::NotApplicable,
-                    error,
+                    "invalid secure WebSocket broker URL",
                 )
             })?
         }
+        #[cfg(unix)]
+        (crate::BrokerTarget::Unix { path }, crate::TransportConfig::Unix) => {
+            rumqttc_v5::MqttOptions::new(
+                common.client_id.clone(),
+                rumqttc_v5::Broker::unix(path.clone()),
+            )
+        }
+        _ => {
+            return Err(Error::configuration(
+                "unsupported broker and transport configuration",
+            ));
+        }
     };
+    #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
     if matches!(common.transport, crate::TransportConfig::Tls(_)) {
         options.set_transport(rumqttc_v5::Transport::tls_with_config(
             tls.expect("TLS built"),
@@ -197,17 +276,52 @@ pub fn build(
         common.keep_alive,
         "keep alive",
     )?);
-    options.set_incoming_packet_size_limit(rumqttc_v5::IncomingPacketSizeLimit::Bytes(
-        common.incoming_packet_size_limit,
-    ));
+    options.set_max_request_batch(common.max_request_batch);
+    options.set_read_batch_size(common.read_batch_size);
+    options.set_pending_throttle(common.pending_throttle);
+    options.set_connect_timeout(common.connection_timeout);
+    if let Some(limit) = protocol.outgoing_inflight_upper_limit {
+        options.set_outgoing_inflight_upper_limit(limit);
+    }
+    options.set_topic_alias_policy(match protocol.topic_alias_policy {
+        crate::TopicAliasPolicy::Disabled => rumqttc_v5::TopicAliasPolicy::Disabled,
+        crate::TopicAliasPolicy::Monotonic => rumqttc_v5::TopicAliasPolicy::Monotonic,
+        crate::TopicAliasPolicy::Lru => rumqttc_v5::TopicAliasPolicy::Lru,
+    });
+    if let Some(will) = &common.last_will {
+        options.set_last_will(rumqttc_v5::LastWill {
+            topic: bytes::Bytes::copy_from_slice(will.topic.as_bytes()),
+            message: will.payload.clone(),
+            qos: to_qos(will.qos),
+            retain: will.retain,
+            properties: match &will.protocol {
+                crate::LastWillProtocolOptions::VersionNeutral => None,
+                crate::LastWillProtocolOptions::V5(p) => Some(rumqttc_v5::LastWillProperties {
+                    delay_interval: p.will_delay_interval,
+                    payload_format_indicator: p.payload_format_indicator,
+                    message_expiry_interval: p.message_expiry_interval,
+                    content_type: p.content_type.clone(),
+                    response_topic: p.response_topic.clone(),
+                    correlation_data: p.correlation_data.clone(),
+                    user_properties: p.user_properties.clone(),
+                }),
+            },
+        });
+    }
     options.set_request_channel_capacity(common.request_channel_capacity);
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+    if let Some(proxy) = &common.proxy {
+        options.set_proxy(super::build_proxy(proxy)?);
+    }
+    #[cfg(feature = "websocket")]
+    if !common.websocket_headers.is_empty() {
+        options.set_request_modifier(crate::websocket::prepare(&common.websocket_headers)?);
+    }
     options.set_ack_mode(match common.ack_mode {
         crate::AckMode::Automatic => rumqttc_v5::AckMode::Automatic,
         crate::AckMode::Manual => rumqttc_v5::AckMode::Manual,
     });
-    let mut network = rumqttc_v5::NetworkOptions::new();
-    network.set_connection_timeout(common.connection_timeout.as_secs());
-    options.set_network_options(network);
+    options.set_network_options(super::build_network(common));
     match (&common.username, &common.password) {
         (Some(username), Some(password)) => {
             options.set_credentials(username.clone(), password.clone());
@@ -221,7 +335,44 @@ pub fn build(
         (None, None) => {}
     }
     options.set_clean_start(protocol.clean_start);
-    options.set_session_expiry_interval(protocol.session_expiry_interval);
+    super::redirect::configure(
+        &mut options,
+        &protocol.redirect_policy,
+        protocol.srv_resolver,
+    )?;
+    options.set_broker_session_resume_policy(match protocol.broker_session_resume_policy {
+        crate::BrokerSessionResumePolicy::Strict => rumqttc_v5::BrokerSessionResumePolicy::Strict,
+        crate::BrokerSessionResumePolicy::AllowBrokerOnly => {
+            rumqttc_v5::BrokerSessionResumePolicy::AllowBrokerOnly
+        }
+    });
+    let p = protocol.connect_properties;
+    options.set_connect_properties(rumqttc_v5::ConnectProperties {
+        session_expiry_interval: p.session_expiry_interval,
+        receive_maximum: p.receive_maximum,
+        max_packet_size: p.maximum_packet_size,
+        topic_alias_max: p.topic_alias_maximum,
+        request_response_info: p.request_response_information,
+        request_problem_info: p.request_problem_information,
+        user_properties: p.user_properties,
+        authentication_method: p.authentication_method,
+        authentication_data: p.authentication_data,
+    });
+    options.set_local_incoming_packet_size_limit(match common.incoming_packet_size_limit {
+        crate::IncomingPacketLimit::Default => rumqttc_v5::IncomingPacketSizeLimit::Default,
+        crate::IncomingPacketLimit::Bytes(bytes) => {
+            rumqttc_v5::IncomingPacketSizeLimit::Bytes(bytes)
+        }
+        crate::IncomingPacketLimit::Unlimited => rumqttc_v5::IncomingPacketSizeLimit::Unlimited,
+    });
+    if let Some(store) = protocol.session_store {
+        options.set_session_store_scope(store.scope.clone());
+        options.set_session_store(super::session::Adapter::new(
+            store,
+            ProtocolVersion::V5,
+            &common.client_id,
+        )?);
+    }
     options.validate().map_err(|error| {
         Error::sourced(
             ErrorKind::Configuration,
@@ -229,6 +380,36 @@ pub fn build(
             error,
         )
     })?;
+    Ok(options)
+}
+
+pub struct Driver {
+    eventloop: rumqttc_v5::EventLoop,
+    auth: std::sync::Arc<super::auth::Monitor>,
+}
+
+pub fn build(
+    common: &crate::CommonConfig,
+    protocol: crate::V5Config,
+) -> crate::Result<(rumqttc_v5::AsyncClient, Box<Driver>)> {
+    let authenticator = protocol.authenticator.clone();
+    #[cfg(feature = "auth-scram")]
+    let authenticator = match &protocol.scram {
+        Some(scram) => Some(crate::scram::build(scram.clone())),
+        None => authenticator,
+    };
+    let mut options = build_options(common, protocol)?;
+    let auth = std::sync::Arc::new(super::auth::Monitor::default());
+    if let Some(config) = authenticator {
+        options.set_authenticator(std::sync::Arc::new(std::sync::Mutex::new(
+            super::auth::Adapter {
+                client_id: common.client_id.clone(),
+                config,
+                monitor: auth.clone(),
+                generation: 0,
+            },
+        )));
+    }
     let (client, eventloop) = rumqttc_v5::AsyncClient::builder(options)
         .capacity(common.request_channel_capacity)
         .publish_admission_policy(rumqttc_v5::PublishAdmissionPolicy::RequireNegotiatedCapabilities)
@@ -240,12 +421,13 @@ pub fn build(
                 error,
             )
         })?;
-    Ok((client, Box::new(eventloop)))
+    Ok((client, Box::new(Driver { eventloop, auth })))
 }
-pub async fn run(
-    mut eventloop: Box<rumqttc_v5::EventLoop>,
-    context: DriverContext,
-) -> TerminalStatus {
+pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
+    let Driver {
+        mut eventloop,
+        auth,
+    } = *driver;
     let DriverContext {
         shared,
         completion_rx,
@@ -261,6 +443,7 @@ pub async fn run(
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
     let mut connected = false;
+    let mut unresolved_redirect: Option<crate::RedirectEvent> = None;
     let mut diagnostics = snapshot_v5(&eventloop);
     let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
     let delivery = EventDelivery {
@@ -277,8 +460,21 @@ pub async fn run(
             let poll = eventloop.poll();
             tokio::pin!(poll);
             loop {
+                let (failure, deadline) = auth.snapshot();
+                if let Some(failure) = failure.or_else(|| {
+                    deadline
+                        .filter(|deadline| *deadline <= tokio::time::Instant::now())
+                        .map(|_| crate::AuthFailure::Timeout)
+                }) {
+                    let error = Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous);
+                    shared.fail_acknowledgements(&error);
+                    fail_pending(&mut senders, &error);
+                    return TerminalStatus::Failed(error);
+                }
                 // Keep parity with the fair and cooperative v4 arbitration above.
                 tokio::select! {
+                    () = auth.changed.notified() => {},
+                    () = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await; } else { std::future::pending::<()>().await; } } => {},
                     _ = panic_rx.recv_async() => crate::runtime::terminate_driver_for_boundary_panic(),
                     _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
@@ -302,6 +498,42 @@ pub async fn run(
             return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
         };
         shared.notify_progress();
+        synchronize_admission_state(&eventloop, &shared);
+        if let Some(packet) = eventloop.take_connection_failure_packet() {
+            // Native poll cleanup can consume these packets without yielding an
+            // Incoming event. Preserve their owned properties before recovery.
+            // A packet still queued behind the current event must be delivered
+            // by a later poll, preserving the broker's packet order.
+            let queued = eventloop.state.events.iter().any(
+                |event| matches!(event, rumqttc_v5::Event::Incoming(queued) if queued == &packet),
+            );
+            let event = if queued
+                || matches!(&polled, Ok(rumqttc_v5::Event::Incoming(current)) if current == &packet)
+            {
+                None
+            } else {
+                map_v5_event(
+                    &mut eventloop,
+                    rumqttc_v5::Event::Incoming(packet),
+                    &shared,
+                    &mut connected,
+                    emit_outgoing,
+                    manual_ack,
+                    protocol,
+                )
+            };
+            if let Some(event) = event
+                && !deliver(&delivery, event).await
+            {
+                return TerminalStatus::Failed(overflow_error());
+            }
+        }
+        if let Some(failure) = auth.snapshot().0 {
+            let error = Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous);
+            shared.fail_acknowledgements(&error);
+            fail_pending(&mut senders, &error);
+            return TerminalStatus::Failed(error);
+        }
         diagnostics = snapshot_v5(&eventloop);
         match polled {
             Ok(event) => {
@@ -313,12 +545,27 @@ pub async fn run(
                     emit_outgoing,
                     manual_ack,
                     protocol,
-                ) && !deliver(&delivery, event).await
-                {
-                    let error = overflow_error();
-                    shared.fail_acknowledgements(&error);
-                    fail_pending(&mut senders, &error);
-                    return TerminalStatus::Failed(error);
+                ) {
+                    if let WrapperEvent::Redirect(redirect) = &event {
+                        unresolved_redirect = redirect.target.is_none().then(|| redirect.clone());
+                    }
+                    if matches!(&event, WrapperEvent::Connected { .. })
+                        && let Some(mut redirect) = unresolved_redirect.take()
+                    {
+                        redirect.target = super::redirect::broker(eventloop.options.broker());
+                        if !deliver(&delivery, WrapperEvent::Redirect(redirect)).await {
+                            let error = overflow_error();
+                            shared.fail_acknowledgements(&error);
+                            fail_pending(&mut senders, &error);
+                            return TerminalStatus::Failed(error);
+                        }
+                    }
+                    if !deliver(&delivery, event).await {
+                        let error = overflow_error();
+                        shared.fail_acknowledgements(&error);
+                        fail_pending(&mut senders, &error);
+                        return TerminalStatus::Failed(error);
+                    }
                 }
             }
             Err(rumqttc_v5::ConnectionError::RequestsDone) => {
@@ -327,9 +574,27 @@ pub async fn run(
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
+                if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
+                    let failure = super::redirect::failure(&redirect.failure);
+                    let event =
+                        super::redirect::event(redirect.outcome.clone(), None, Some(failure));
+                    let terminal =
+                        Error::redirect(failure).with_delivery(DeliveryStatus::Ambiguous);
+                    shared.fail_acknowledgements(&terminal);
+                    fail_pending(&mut senders, &terminal);
+                    if !deliver(&delivery, WrapperEvent::Redirect(event)).await {
+                        return TerminalStatus::Failed(overflow_error());
+                    }
+                    return TerminalStatus::Failed(terminal);
+                }
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v5::ConnectionError::DisconnectTimeout);
-                let error = map_connection_error(error);
+                let error = shared.contextualize(map_connection_error(error));
+                if error.kind() == ErrorKind::Persistence {
+                    shared.fail_acknowledgements(&error);
+                    fail_pending(&mut senders, &error);
+                    return TerminalStatus::Failed(error);
+                }
                 if graceful_disconnect_timed_out && shared.timeout_graceful_shutdown(error.clone())
                 {
                     return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
@@ -364,6 +629,64 @@ pub async fn run(
     }
 }
 
+const fn connack_reason(reason: rumqttc_v5::ConnectReturnCode) -> u8 {
+    use rumqttc_v5::ConnectReturnCode as C;
+    match reason {
+        C::Success => 0,
+        C::RefusedProtocolVersion => 1,
+        C::BadClientId => 2,
+        C::ServiceUnavailable => 3,
+        C::UnspecifiedError => 0x80,
+        C::MalformedPacket => 0x81,
+        C::ProtocolError => 0x82,
+        C::ImplementationSpecificError => 0x83,
+        C::UnsupportedProtocolVersion => 0x84,
+        C::ClientIdentifierNotValid => 0x85,
+        C::BadUserNamePassword => 0x86,
+        C::NotAuthorized => 0x87,
+        C::ServerUnavailable => 0x88,
+        C::ServerBusy => 0x89,
+        C::Banned => 0x8a,
+        C::BadAuthenticationMethod => 0x8c,
+        C::TopicNameInvalid => 0x90,
+        C::PacketTooLarge => 0x95,
+        C::QuotaExceeded => 0x97,
+        C::PayloadFormatInvalid => 0x99,
+        C::RetainNotSupported => 0x9a,
+        C::QoSNotSupported => 0x9b,
+        C::UseAnotherServer => 0x9c,
+        C::ServerMoved => 0x9d,
+        C::ConnectionRateExceeded => 0x9f,
+    }
+}
+
+fn connack_details(connack: rumqttc_v5::ConnAck) -> crate::ConnAckDetails {
+    crate::ConnAckDetails {
+        reason_code: connack_reason(connack.code),
+        v5_properties: connack.properties.map(|p| {
+            Box::new(crate::V5ConnAckProperties {
+                session_expiry_interval: p.session_expiry_interval,
+                receive_maximum: p.receive_max,
+                maximum_qos: p.max_qos,
+                retain_available: p.retain_available,
+                maximum_packet_size: p.max_packet_size,
+                assigned_client_identifier: p.assigned_client_identifier,
+                topic_alias_maximum: p.topic_alias_max,
+                reason_string: p.reason_string,
+                wildcard_subscription_available: p.wildcard_subscription_available,
+                subscription_identifiers_available: p.subscription_identifiers_available,
+                shared_subscription_available: p.shared_subscription_available,
+                server_keep_alive: p.server_keep_alive,
+                response_information: p.response_information,
+                server_reference: p.server_reference,
+                authentication_method: p.authentication_method,
+                authentication_data: p.authentication_data,
+                user_properties: p.user_properties,
+            })
+        }),
+    }
+}
+
 fn map_v5_event(
     eventloop: &mut rumqttc_v5::EventLoop,
     event: rumqttc_v5::Event,
@@ -374,7 +697,67 @@ fn map_v5_event(
     protocol: ProtocolVersion,
 ) -> Option<WrapperEvent> {
     match event {
+        rumqttc_v5::Event::Redirect(outcome) => {
+            shared.invalidate_connection(&Error::new(ErrorKind::Network, "connection redirected"));
+            *connected = false;
+            let redirect = eventloop.diagnostics().redirect;
+            let target = if redirect.srv_owner.is_some() && redirect.srv_current_target.is_none() {
+                None
+            } else {
+                super::redirect::broker(eventloop.options.broker())
+            };
+            Some(WrapperEvent::Redirect(super::redirect::event(
+                outcome, target, None,
+            )))
+        }
+        rumqttc_v5::Event::Auth(event) => {
+            use rumqttc_v5::AuthEvent as E;
+            let (kind, method, stage, failure) = match event {
+                E::Started { kind, method } => (kind, method, crate::AuthStage::Started, None),
+                E::Continue { kind, method } => (kind, method, crate::AuthStage::Continue, None),
+                E::Succeeded { kind, method } => (kind, method, crate::AuthStage::Succeeded, None),
+                E::Failed {
+                    kind,
+                    method,
+                    reason,
+                } => {
+                    let failure = match reason {
+                        rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
+                            crate::AuthFailure::BrokerRejected
+                        }
+                        rumqttc_v5::AuthFailureReason::OverlappingReauth => {
+                            crate::AuthFailure::Overlapping
+                        }
+                        rumqttc_v5::AuthFailureReason::MissingAuthenticationMethod => {
+                            crate::AuthFailure::Method
+                        }
+                        rumqttc_v5::AuthFailureReason::AuthenticationFailed(_) => {
+                            crate::AuthFailure::Rejected
+                        }
+                        rumqttc_v5::AuthFailureReason::ProtocolError => {
+                            crate::AuthFailure::InvalidResponse
+                        }
+                        _ => crate::AuthFailure::ConnectionClosed,
+                    };
+                    (kind, method, crate::AuthStage::Failed, Some(failure))
+                }
+            };
+            Some(WrapperEvent::Authentication(crate::AuthEvent {
+                exchange: match kind {
+                    rumqttc_v5::AuthExchangeKind::InitialConnect => crate::AuthExchange::Initial,
+                    rumqttc_v5::AuthExchangeKind::Reauthentication => {
+                        crate::AuthExchange::Reauthentication
+                    }
+                },
+                method,
+                stage,
+                failure,
+            }))
+        }
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::ConnAck(connack)) => {
+            if connack.code != rumqttc_v5::ConnectReturnCode::Success {
+                return Some(WrapperEvent::ConnectionRejected(connack_details(connack)));
+            }
             shared.begin_connection(protocol, connack.session_present, || {
                 eventloop.discard_pending_manual_acknowledgements();
             });
@@ -382,7 +765,25 @@ fn map_v5_event(
             Some(WrapperEvent::Connected {
                 protocol,
                 session_present: connack.session_present,
+                details: connack_details(connack),
             })
+        }
+        rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Disconnect(packet)) => {
+            let p = packet
+                .properties
+                .unwrap_or(rumqttc_v5::DisconnectProperties {
+                    session_expiry_interval: None,
+                    reason_string: None,
+                    user_properties: Vec::new(),
+                    server_reference: None,
+                });
+            Some(WrapperEvent::BrokerDisconnect(crate::V5DisconnectOptions {
+                reason_code: packet.reason_code as u8,
+                session_expiry_interval: p.session_expiry_interval,
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+                server_reference: p.server_reference,
+            }))
         }
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Publish(publish)) => {
             let ack_token = if manual_ack {
@@ -416,10 +817,34 @@ fn map_v5_event(
                 }
                 _ => {}
             }
-            emit_outgoing.then(|| WrapperEvent::Outgoing(map_outgoing(&outgoing)))
+            emit_outgoing.then(|| {
+                let packet_id = match outgoing {
+                    rumqttc_v5::Outgoing::Publish(id)
+                    | rumqttc_v5::Outgoing::Subscribe(id)
+                    | rumqttc_v5::Outgoing::Unsubscribe(id)
+                    | rumqttc_v5::Outgoing::PubAck(id)
+                    | rumqttc_v5::Outgoing::PubRec(id)
+                    | rumqttc_v5::Outgoing::PubRel(id)
+                    | rumqttc_v5::Outgoing::PubComp(id)
+                    | rumqttc_v5::Outgoing::AwaitAck(id) => (id != 0).then_some(id),
+                    _ => None,
+                };
+                WrapperEvent::Outgoing(crate::OutgoingEvent {
+                    activity: map_outgoing(&outgoing),
+                    packet_id,
+                })
+            })
         }
         _ => None,
     }
+}
+
+fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Shared) {
+    let options = &eventloop.options;
+    shared.set_protocol_admission_state(
+        options.session_expiry_interval().unwrap_or(0) == 0,
+        options.authenticator().is_some(),
+    );
 }
 
 fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
@@ -646,4 +1071,132 @@ pub fn broker_rejection(code: u8) -> Error {
     )
     .with_delivery(DeliveryStatus::Rejected)
     .with_broker_reason(code)
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn connack_conversion_preserves_every_owned_property() {
+        let properties = rumqttc_v5::ConnAckProperties {
+            session_expiry_interval: Some(11),
+            receive_max: Some(12),
+            max_qos: Some(1),
+            retain_available: Some(0),
+            max_packet_size: Some(12345),
+            assigned_client_identifier: Some("assigned".into()),
+            topic_alias_max: Some(13),
+            reason_string: Some(String::new()),
+            wildcard_subscription_available: Some(0),
+            subscription_identifiers_available: Some(1),
+            shared_subscription_available: Some(0),
+            server_keep_alive: Some(14),
+            response_information: Some(String::new()),
+            server_reference: Some("target".into()),
+            authentication_method: Some("method".into()),
+            authentication_data: Some(bytes::Bytes::from_static(&[0, 255])),
+            user_properties: vec![("k".into(), "one".into()), ("k".into(), String::new())],
+        };
+        let details = connack_details(rumqttc_v5::ConnAck {
+            session_present: false,
+            code: rumqttc_v5::ConnectReturnCode::NotAuthorized,
+            properties: Some(properties.clone()),
+        });
+        assert_eq!(details.reason_code, 0x87);
+        assert_eq!(
+            *details.v5_properties.unwrap(),
+            crate::V5ConnAckProperties {
+                session_expiry_interval: properties.session_expiry_interval,
+                receive_maximum: properties.receive_max,
+                maximum_qos: properties.max_qos,
+                retain_available: properties.retain_available,
+                maximum_packet_size: properties.max_packet_size,
+                assigned_client_identifier: properties.assigned_client_identifier,
+                topic_alias_maximum: properties.topic_alias_max,
+                reason_string: properties.reason_string,
+                wildcard_subscription_available: properties.wildcard_subscription_available,
+                subscription_identifiers_available: properties.subscription_identifiers_available,
+                shared_subscription_available: properties.shared_subscription_available,
+                server_keep_alive: properties.server_keep_alive,
+                response_information: properties.response_information,
+                server_reference: properties.server_reference,
+                authentication_method: properties.authentication_method,
+                authentication_data: properties.authentication_data,
+                user_properties: properties.user_properties,
+            }
+        );
+    }
+
+    #[test]
+    fn options_preserve_all_connect_properties_and_operational_controls() {
+        let mut common = crate::CommonConfig::new("mapping", "localhost", 1883);
+        common.max_request_batch = 17;
+        common.read_batch_size = 23;
+        common.pending_throttle = std::time::Duration::from_nanos(313);
+        common.connection_timeout = std::time::Duration::from_secs(19);
+        common.incoming_packet_size_limit = crate::IncomingPacketLimit::Unlimited;
+        common.network.local_address = Some("127.0.0.1:0".parse().unwrap());
+        let properties = crate::V5ConnectProperties {
+            session_expiry_interval: Some(11),
+            receive_maximum: Some(13),
+            maximum_packet_size: Some(65537),
+            topic_alias_maximum: Some(17),
+            request_response_information: Some(0),
+            request_problem_information: Some(1),
+            user_properties: vec![("k".into(), "v".into()), ("k".into(), String::new())],
+            authentication_method: Some("method".into()),
+            authentication_data: Some(bytes::Bytes::new()),
+        };
+        let options = build_options(
+            &common,
+            crate::V5Config {
+                connect_properties: properties.clone(),
+                topic_alias_policy: crate::TopicAliasPolicy::Lru,
+                outgoing_inflight_upper_limit: Some(7),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let actual = options.connect_properties().unwrap();
+        assert_eq!(
+            actual.session_expiry_interval,
+            properties.session_expiry_interval
+        );
+        assert_eq!(actual.receive_maximum, properties.receive_maximum);
+        assert_eq!(actual.max_packet_size, properties.maximum_packet_size);
+        assert_eq!(actual.topic_alias_max, properties.topic_alias_maximum);
+        assert_eq!(
+            actual.request_response_info,
+            properties.request_response_information
+        );
+        assert_eq!(
+            actual.request_problem_info,
+            properties.request_problem_information
+        );
+        assert_eq!(actual.user_properties, properties.user_properties);
+        assert_eq!(
+            actual.authentication_method,
+            properties.authentication_method
+        );
+        assert_eq!(actual.authentication_data, properties.authentication_data);
+        assert_eq!(options.max_request_batch(), 17);
+        assert_eq!(options.read_batch_size(), 23);
+        assert_eq!(options.pending_throttle(), common.pending_throttle);
+        assert_eq!(options.connect_timeout(), common.connection_timeout);
+        assert_eq!(options.network_options().connection_timeout(), 19);
+        assert_eq!(
+            options.network_options().bind_addr(),
+            common.network.local_address
+        );
+        assert_eq!(
+            options.incoming_packet_size_limit(),
+            rumqttc_v5::IncomingPacketSizeLimit::Unlimited
+        );
+        assert_eq!(
+            options.topic_alias_policy(),
+            rumqttc_v5::TopicAliasPolicy::Lru
+        );
+        assert_eq!(options.get_outgoing_inflight_upper_limit(), Some(7));
+    }
 }

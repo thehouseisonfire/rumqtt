@@ -444,11 +444,9 @@ fn config_update(
     boundary(error_out, ptr::null_mut(), || {
         // SAFETY: Validated and borrowed only for this call.
         let config = unsafe { config_ref(config) }?;
-        let mut inner = config
-            .inner
-            .lock()
-            .map_err(|_| ErrorHandle::internal("configuration lock is poisoned"))?;
-        update(&mut inner)
+        config.update_with_error(update, || {
+            ErrorHandle::internal("configuration lock is poisoned")
+        })
     })
 }
 
@@ -469,8 +467,7 @@ pub unsafe extern "C" fn rumqttc_config_set_broker(
         // SAFETY: Validated opaque handle.
         unsafe { config_ref(config) }?
             .update(|config| {
-                config.common.broker_host = host;
-                config.common.broker_port = port;
+                config.common.broker = rumqttc_wrapper_core::BrokerTarget::Tcp { host, port };
                 Ok(())
             })
             .map_err(ErrorHandle::internal)
@@ -576,7 +573,8 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_tls(
     let certificate = unsafe { bytes_from_view(certificate) }.map(<[u8]>::to_vec);
     let private_key = unsafe { bytes_from_view(private_key) }.map(<[u8]>::to_vec);
     boundary(error_out, ptr::null_mut(), || {
-        let tls = tls_config(ca?, certificate?, private_key?);
+        let tls = tls_config(ca?, certificate?, private_key?)
+            .map_err(|error| ErrorHandle::from_core(&error, None))?;
         unsafe { config_ref(config) }?
             .update(|config| {
                 set_transport_tls(config, tls);
@@ -618,7 +616,8 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss(
     let certificate = unsafe { bytes_from_view(certificate) }.map(<[u8]>::to_vec);
     let private_key = unsafe { bytes_from_view(private_key) }.map(<[u8]>::to_vec);
     boundary(error_out, ptr::null_mut(), || {
-        let tls = tls_config(ca?, certificate?, private_key?);
+        let tls = tls_config(ca?, certificate?, private_key?)
+            .map_err(|error| ErrorHandle::from_core(&error, None))?;
         let url = url?;
         unsafe { config_ref(config) }?
             .update(|config| {
@@ -707,7 +706,11 @@ pub unsafe extern "C" fn rumqttc_config_set_incoming_packet_limit(
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
     config_update(config, error_out, |config| {
-        config.common.incoming_packet_size_limit = bytes;
+        config.common.incoming_packet_size_limit =
+            rumqttc_wrapper_core::IncomingPacketLimit::Bytes(bytes);
+        if let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol {
+            v5.connect_properties.maximum_packet_size = Some(bytes);
+        }
         Ok(())
     })
 }
@@ -1511,6 +1514,7 @@ const fn completion_kind(completion: &Completion) -> u32 {
         Completion::Subscribe(_) => 4,
         Completion::Unsubscribe(_) => 5,
         Completion::Acknowledged => 6,
+        Completion::Authenticated => 10,
         Completion::Diagnostics(_) => 7,
         Completion::GracefulShutdown => 8,
         Completion::ImmediateShutdown => 9,
@@ -1724,6 +1728,10 @@ pub unsafe extern "C" fn rumqttc_client_event_recv_timeout_ms(
 const fn event_kind(event: &WrapperEvent) -> u32 {
     match event {
         WrapperEvent::Connected { .. } => 1,
+        WrapperEvent::Authentication(_) => 8,
+        WrapperEvent::Redirect(_) => 9,
+        WrapperEvent::BrokerDisconnect(_) => 10,
+        WrapperEvent::ConnectionRejected(_) => 11,
         WrapperEvent::Disconnected { .. } => 2,
         WrapperEvent::IncomingPublish(_) => 3,
         WrapperEvent::Outgoing(_) => 4,
@@ -1765,6 +1773,7 @@ pub unsafe extern "C" fn rumqttc_event_connected(
         let WrapperEvent::Connected {
             protocol,
             session_present,
+            ..
         } = event.event
         else {
             return Err(ErrorHandle::state("event is not a connected event"));
@@ -2147,7 +2156,7 @@ pub unsafe extern "C" fn rumqttc_event_outgoing_kind(
         let WrapperEvent::Outgoing(activity) = &event.event else {
             return Err(ErrorHandle::state("event is not an outgoing event"));
         };
-        let kind = match activity {
+        let kind = match activity.activity {
             OutgoingActivity::Publish => 1,
             OutgoingActivity::Subscribe => 2,
             OutgoingActivity::Unsubscribe => 3,

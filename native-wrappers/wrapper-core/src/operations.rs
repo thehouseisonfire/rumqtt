@@ -160,6 +160,7 @@ impl OperationRegistry {
         Ok(admission)
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.complete", skip_all, fields(operation_id = ?operation_id, success = result.is_ok())))]
     pub(crate) fn complete(&self, operation_id: OperationId, result: Result<Completion>) {
         if let Some(cell) = self
             .inner
@@ -168,7 +169,7 @@ impl OperationRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&operation_id)
         {
-            cell.complete(result);
+            cell.complete(result.map_err(|error| error.with_operation(operation_id)));
         }
     }
 
@@ -180,8 +181,8 @@ impl OperationRegistry {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        for cell in cells.into_values() {
-            cell.complete(Err(error.clone()));
+        for (operation_id, cell) in cells {
+            cell.complete(Err(error.clone().with_operation(operation_id)));
         }
     }
 

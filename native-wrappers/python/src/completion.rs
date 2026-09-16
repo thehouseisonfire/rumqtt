@@ -84,6 +84,7 @@ fn success(value: Completion) -> Value {
             out
         }
         Completion::Acknowledged => json!({"type":"acknowledged"}),
+        Completion::Authenticated => json!({"type":"authenticated"}),
         Completion::Diagnostics(v) => {
             json!({"type":"diagnostics","connected":v.connected,"disconnecting":v.disconnecting,"pendingRequests":v.pending_requests,"queuedRequests":v.queued_requests,"inflightPublishes":v.inflight_publishes,"maxInflightPublishes":v.max_inflight_publishes,"pendingSubscribes":v.pending_subscribes,"pendingUnsubscribes":v.pending_unsubscribes,"outboundDrained":v.outbound_drained})
         }

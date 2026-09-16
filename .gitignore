@@ -79,6 +79,7 @@ pids
 
 # Dependency directories
 **/node_modules/
+native-wrappers/js/*.node
 
 # dotenv environment variable files
 .env
