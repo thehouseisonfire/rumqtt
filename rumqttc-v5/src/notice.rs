@@ -494,13 +494,13 @@ impl AuthFailureReason {
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
             AuthNoticeError::DiscardedAfterDisconnectBarrier
             | AuthNoticeError::ShutdownInterrupted
-            | AuthNoticeError::ShutdownSupersededByImmediate => Self::ConnectionClosed,
+            | AuthNoticeError::ShutdownSupersededByImmediate
+            | AuthNoticeError::ConnectionClosed => Self::ConnectionClosed,
             AuthNoticeError::Recv => Self::NoticeDropped,
             AuthNoticeError::SessionReset => Self::SessionReset,
             AuthNoticeError::Redirected => Self::Redirected,
             AuthNoticeError::ProtocolError => Self::ProtocolError,
             AuthNoticeError::AuthenticationFailed(message) => Self::AuthenticationFailed(message),
-            AuthNoticeError::ConnectionClosed => Self::ConnectionClosed,
             AuthNoticeError::OverlappingReauth => Self::OverlappingReauth,
             AuthNoticeError::MissingAuthenticationMethod => Self::MissingAuthenticationMethod,
         }
@@ -550,7 +550,7 @@ pub struct PublishNoticeTx(
 
 impl PublishNoticeTx {
     #[cfg(feature = "ordered-shutdown")]
-    pub(crate) fn internal() -> Self {
+    pub(crate) const fn internal() -> Self {
         Self(NoticeTx(None), None)
     }
 

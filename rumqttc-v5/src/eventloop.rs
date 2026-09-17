@@ -577,7 +577,7 @@ impl EventLoop {
     /// one packet is retained; take it after each poll before starting another
     /// connection attempt. It may duplicate an Incoming event. Authentication
     /// data and server-supplied text must not be logged indiscriminately.
-    pub fn take_connection_failure_packet(&mut self) -> Option<Packet> {
+    pub const fn take_connection_failure_packet(&mut self) -> Option<Packet> {
         self.state.connection_failure_packet.take()
     }
 
@@ -1097,6 +1097,7 @@ impl EventLoop {
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::too_many_lines)]
     #[must_use]
     pub fn diagnostics(&self) -> EventLoopDiagnostics {
         let pending_replay_len = self.pending.len();
@@ -2198,6 +2199,7 @@ impl EventLoop {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_network_result(
         &mut self,
         result: Result<Event, ConnectionError>,
@@ -2517,6 +2519,7 @@ impl EventLoop {
     /// This connected-only driver is called by [`Self::poll`] only after a network has been
     /// established. Connection errors return to `poll`, which normalizes the lifecycle through
     /// [`Self::handle_network_result`] before another establishment attempt.
+    #[allow(clippy::too_many_lines)]
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         #[cfg(not(feature = "ordered-shutdown"))]
         loop {
@@ -3881,6 +3884,7 @@ async fn mqtt_connect(
     result
 }
 
+#[allow(clippy::too_many_lines)]
 async fn mqtt_connect_inner(
     options: &mut MqttOptions,
     network: &mut Network,
@@ -13114,6 +13118,11 @@ mod tests {
 
 #[cfg(not(feature = "ordered-shutdown"))]
 impl EventLoop {
+    /// Poll the event loop for the next MQTT event.
+    ///
+    /// # Errors
+    ///
+    /// Returns connection, protocol, or request-processing errors encountered while polling.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
         self.poll_inner().await
     }

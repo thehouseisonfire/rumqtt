@@ -1348,6 +1348,7 @@ impl EventLoop {
     /// This connected-only driver is called by [`Self::poll`] only after a network has been
     /// established. Connection errors return to `poll`, which normalizes the lifecycle through
     /// [`Self::handle_network_result`] before another establishment attempt.
+    #[allow(clippy::too_many_lines)]
     async fn select(&mut self) -> Result<Event, ConnectionError> {
         #[cfg(not(feature = "ordered-shutdown"))]
         loop {
@@ -1683,6 +1684,7 @@ impl EventLoop {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_request(
         &mut self,
         envelope: RequestEnvelope,
@@ -1798,7 +1800,7 @@ impl EventLoop {
         match request {
             Request::DisconnectAfterQueued(disconnect)
             | Request::DisconnectAfterQueuedWithTimeout(disconnect, _) => {
-                self.ordered_packet = Some(disconnect.clone());
+                self.ordered_packet = Some(disconnect);
                 self.ordered_completion = meta.completion;
                 self.shutdown_phase = crate::ShutdownPhase::Draining;
                 self.record_ordered_shutdown("pending");
@@ -5114,6 +5116,11 @@ mod tests {
 
 #[cfg(not(feature = "ordered-shutdown"))]
 impl EventLoop {
+    /// Poll the event loop for the next MQTT event.
+    ///
+    /// # Errors
+    ///
+    /// Returns connection, protocol, or request-processing errors encountered while polling.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
         self.poll_inner().await
     }

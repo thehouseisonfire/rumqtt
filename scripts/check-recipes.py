@@ -280,7 +280,7 @@ tracing-subscriber = {{ version = "0.3", features = ["env-filter", "fmt"] }}
 [dependencies.rumqttc]
 package = "{package}"
 path = "../../../{directory}"
-features = ["http-proxy", "socks-proxy", "tracing", "websocket"]
+features = ["http-proxy", "ordered-shutdown", "socks-proxy", "tracing", "websocket"]
 
 [workspace]
 '''

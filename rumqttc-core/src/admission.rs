@@ -153,6 +153,7 @@ impl SendWake {
         if self.blocking_waiters.load(Ordering::SeqCst) != 0 {
             let mut progress = self.progress.lock().unwrap();
             *progress = progress.wrapping_add(1);
+            drop(progress);
             self.blocking.notify_all();
         }
         self.changed.notify_waiters();
@@ -207,10 +208,12 @@ pub fn channel<T>(
     (Sender(shared.clone()), Receiver(shared))
 }
 
+#[must_use]
 pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     channel(Some(capacity), Arc::default(), false)
 }
 
+#[must_use]
 pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
     channel(None, Arc::default(), false)
 }
@@ -248,6 +251,7 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T: Item> Sender<T> {
+    #[must_use]
     pub fn is_closing(&self) -> bool {
         self.0.gate.has_fence() && !self.0.priority
     }
@@ -348,15 +352,19 @@ impl<T: Item> Sender<T> {
         }
     }
 
+    #[must_use]
     pub fn capacity(&self) -> Option<usize> {
         self.0.capacity
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.queue.lock().unwrap().items.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    #[must_use]
     pub fn is_disconnected(&self) -> bool {
         self.0.queue.lock().unwrap().receivers == 0
     }
@@ -375,15 +383,19 @@ impl<T> Drop for WaitingReceiver<'_, T> {
 }
 
 impl<T> Receiver<T> {
+    #[must_use]
     pub fn gate(&self) -> &Arc<Gate> {
         &self.0.gate
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.queue.lock().unwrap().items.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    #[must_use]
     pub fn is_disconnected(&self) -> bool {
         self.0.queue.lock().unwrap().senders == 0
     }
@@ -400,6 +412,7 @@ impl<T> Receiver<T> {
         }
         result
     }
+    #[must_use]
     pub fn drain(&self) -> std::collections::vec_deque::IntoIter<T> {
         let items = std::mem::take(&mut self.0.queue.lock().unwrap().items);
         if !items.is_empty() && self.0.capacity.is_some() {

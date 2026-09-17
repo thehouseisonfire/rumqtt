@@ -381,7 +381,7 @@ pub struct PublishNoticeTx(
 
 impl PublishNoticeTx {
     #[cfg(feature = "ordered-shutdown")]
-    pub(crate) fn internal() -> Self {
+    pub(crate) const fn internal() -> Self {
         Self(NoticeTx(None), None)
     }
 
