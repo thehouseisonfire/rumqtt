@@ -111,6 +111,17 @@ jobs:
       - name: Audit native API parity
         run: cargo test --locked -p rumqttc-wrapper-core-next --test parity_inventory
 
+      - name: TLS backends and transport composition
+        run: cargo test --locked -p rumqttc-wrapper-core-next --features use-native-tls,websocket,proxy
+
+      - name: Independent tracing and log-fallback redaction
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next --no-default-features --features use-rustls,websocket,proxy,auth-scram,tracing
+          cargo test --locked -p rumqttc-wrapper-core-next --no-default-features --features use-rustls,websocket,proxy,auth-scram,tracing-log-compat
+          cargo test --locked --manifest-path ../Cargo.toml -p rumqttc-core-next network_controls_are_applied_to_the_created_socket
+          cargo test --locked --manifest-path ../Cargo.toml -p rumqttc-v5-next srv::tests
+
       - name: Real-broker will behavior
         if: ${{ runner.os == 'Linux' }}
         run: |

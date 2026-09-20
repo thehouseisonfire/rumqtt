@@ -2793,8 +2793,9 @@ impl MqttState {
             .as_ref()
             .expect("AUTH packets created by state always contain properties");
         debug!(
-            "Auth packet sent. Auth Method: {:?}. Auth Data: {:?}",
-            props.method, props.data
+            "Auth packet sent. Auth Method: {:?}. Authentication data present: {}",
+            props.method,
+            props.data.is_some()
         );
         let event = Event::Outgoing(Outgoing::Auth);
         self.events.push_back(event);

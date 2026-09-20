@@ -1722,6 +1722,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "http",
+ "log",
  "native-tls",
  "parking_lot",
  "rcgen",

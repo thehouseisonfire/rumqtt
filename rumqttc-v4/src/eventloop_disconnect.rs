@@ -288,6 +288,10 @@ impl EventLoop {
 
 #[cfg(test)]
 mod tests {
+    use std::{io, pin::Pin, time::Duration};
+
+    use crate::{MqttOptions, Outgoing, framed::Network};
+
     #[tokio::test]
     async fn publish_flush_timeout_preserves_only_replayable_shutdowns() {
         for qos in [

@@ -154,6 +154,8 @@ pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
         rumqttc_v5::ConnectionError::Timeout(_)
         | rumqttc_v5::ConnectionError::DisconnectTimeout => ErrorKind::Timeout,
         rumqttc_v5::ConnectionError::Io(_) => ErrorKind::Network,
+        #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+        rumqttc_v5::ConnectionError::Proxy(_) => ErrorKind::Network,
         #[cfg(feature = "websocket")]
         rumqttc_v5::ConnectionError::Websocket(_) | rumqttc_v5::ConnectionError::WsConnect(_) => {
             ErrorKind::Network
@@ -1076,6 +1078,23 @@ pub fn broker_rejection(code: u8) -> Error {
 #[cfg(test)]
 mod config_tests {
     use super::*;
+
+    #[test]
+    fn unrecoverable_alias_notice_retains_the_native_terminal_reason() {
+        // Managed producer admission prevents unknown alias-only publishes.
+        // Keep the defensive native replay failure observable if a restored or
+        // legacy request nevertheless reaches this path.
+        let error = map_publish_notice(Err(
+            rumqttc_v5::PublishNoticeError::TopicAliasReplayUnavailable(7),
+        ))
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Protocol);
+        assert_eq!(error.delivery_status(), DeliveryStatus::Ambiguous);
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            rumqttc_v5::PublishNoticeError::TopicAliasReplayUnavailable(7).to_string()
+        );
+    }
 
     #[test]
     fn connack_conversion_preserves_every_owned_property() {

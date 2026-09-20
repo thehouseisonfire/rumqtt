@@ -1,6 +1,16 @@
 ## [Unreleased]
 
 ### Fixed
+- Native wrapper core: Enforce graceful-close deadlines while a session-store
+  callback or connection attempt is pending, with bounded driver cleanup and
+  terminal completion of admitted work. Classify proxy connection failures as
+  network errors instead of MQTT protocol errors.
+- Rust v4/v5 clients: Keep raw connection errors out of lifecycle tracing and
+  tracing-to-log fallback output. Broker redirect URLs, header values, and host
+  callback text remain available through returned errors and structured events
+  without being copied into automatic lifecycle traces.
+- Rust v5 client: Redact authentication data in legacy AUTH debug logs, including
+  SCRAM nonces and proofs when tracing uses the log compatibility feature.
 - Native wrapper core: Return startup errors safely from async callers, including
   TLS construction and driver-thread spawn failures. Preserve broker packet order
   when a batch contains PUBLISH followed by DISCONNECT.
@@ -38,6 +48,9 @@
   synchronized while entering and leaving isolated redirect targets.
 
 ### Added
+- Native wrapper core: Deterministic parity coverage for mixed durable recovery,
+  runtime limits, aliases, authentication, redirect isolation, proxy/TLS/WebSocket
+  composition, Unix sockets, network controls, close races, and secret redaction.
 - Native wrapper core: Add owned wills, CONNECT properties, packet-limit modes,
   batching, inflight controls, retransmission throttling, topic-alias policies,
   Unix targets, declarative WebSocket headers, HTTP/SOCKS5 proxies, socket tuning,

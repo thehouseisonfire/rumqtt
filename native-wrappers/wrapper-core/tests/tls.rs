@@ -12,6 +12,360 @@ use rcgen::{
 };
 use rumqttc_wrapper_core::*;
 
+#[path = "support/tls.rs"]
+mod fixture;
+mod support;
+
+#[test]
+fn tls_input_ownership_is_released_on_every_driver_exit() {
+    struct OwnedPem {
+        bytes: Vec<u8>,
+        _owner: Arc<()>,
+    }
+    impl AsRef<[u8]> for OwnedPem {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+    support::capture::start();
+    let fixture = fixture::Fixture::new();
+    for backend in [TlsBackend::Rustls, TlsBackend::Native] {
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+            || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
+        {
+            continue;
+        }
+        for mqtt5 in [false, true] {
+            for mode in [
+                "failed-start",
+                "graceful",
+                "immediate",
+                "abandon",
+                "driver-failure",
+            ] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let owner = Arc::new(());
+                let weak = Arc::downgrade(&owner);
+                let roots = Bytes::from_owner(OwnedPem {
+                    bytes: fixture.pem.as_bytes().to_vec(),
+                    _owner: owner,
+                });
+                let retained = roots.clone();
+                let mut config = support::config(mqtt5, listener.local_addr().unwrap().port());
+                config.common.transport = TransportConfig::Tls(TlsConfig {
+                    backend,
+                    roots: TlsRootPolicy::Pem(roots),
+                    alpn_protocols: if mode == "failed-start" {
+                        vec![vec![]]
+                    } else {
+                        vec![]
+                    },
+                    identity: if backend == TlsBackend::Rustls {
+                        Some(TlsClientIdentity::RustlsPem {
+                            certificate: fixture.pem.clone().into(),
+                            private_key: SecretBytes::new(fixture.key_pem.as_bytes().to_vec()),
+                        })
+                    } else {
+                        #[cfg(all(target_os = "linux", feature = "use-native-tls"))]
+                        {
+                            Some(native_identity(&fixture.pem, &fixture.key_pem))
+                        }
+                        #[cfg(not(all(target_os = "linux", feature = "use-native-tls")))]
+                        {
+                            None
+                        }
+                    },
+                });
+                if mode == "failed-start" {
+                    assert_eq!(
+                        NativeClient::start(config).unwrap_err().kind(),
+                        ErrorKind::Configuration
+                    );
+                } else {
+                    let server = fixture.server.clone();
+                    let broker = support::Broker::spawn(move || {
+                        let mut stream =
+                            fixture::wrap(Box::new(support::accept(&listener)), server);
+                        assert_eq!(support::frame(&mut stream)[0], 0x10);
+                        stream
+                            .write_all(if mqtt5 {
+                                &[0x20, 3, 0, 0, 0]
+                            } else {
+                                &[0x20, 2, 0, 0]
+                            })
+                            .unwrap();
+                        stream.flush().unwrap();
+                        if mode == "driver-failure" {
+                            // Abrupt TLS closure can be EOF or UnexpectedEof,
+                            // depending on whether close_notify was transmitted.
+                            let result = stream.read(&mut [0]);
+                            assert!(matches!(result, Ok(0) | Err(_)));
+                        } else {
+                            assert_eq!(support::frame(&mut stream)[0], 0xe0);
+                        }
+                    });
+                    let mut client = NativeClient::start(config).unwrap();
+                    let mut events = support::connected(&mut client);
+                    let closer = client.closer();
+                    match mode {
+                        "graceful" => {
+                            closer.close(support::DEADLINE).unwrap();
+                        }
+                        "immediate" => closer.close_now(support::DEADLINE).unwrap(),
+                        "abandon" => {
+                            drop(client);
+                            closer.close_now(support::DEADLINE).unwrap();
+                        }
+                        "driver-failure" => {
+                            client.handle().terminate_for_internal_panic();
+                            let event = support::until(&mut events, |event| {
+                                matches!(event, WrapperEvent::DriverTerminated(_))
+                            });
+                            let WrapperEvent::DriverTerminated(error) = event else {
+                                unreachable!()
+                            };
+                            assert_eq!(error.code(), ErrorCode::InternalPanic);
+                            support::capture::assert_redacted(
+                                &format!("{error} {error:?}"),
+                                &[&fixture.key_pem],
+                            );
+                            client.join(support::DEADLINE).unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    broker.join();
+                }
+                // Host-retained copies keep their own ownership; destroying
+                // them after driver teardown releases the final input buffer.
+                assert!(weak.upgrade().is_some());
+                drop(retained);
+                assert!(weak.upgrade().is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn tls_failure_panic_output_is_redacted() {
+    let output = support::process_output(
+        std::process::Command::new(std::env::current_exe().unwrap()).args([
+            "--exact",
+            "tls_input_ownership_is_released_on_every_driver_exit",
+            "--nocapture",
+        ]),
+    );
+    assert!(
+        output.status.success(),
+        "TLS lifecycle subprocess failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.contains("BEGIN PRIVATE KEY"));
+    assert!(!output.contains("panicked at"));
+}
+
+#[cfg(all(target_os = "linux", feature = "use-native-tls"))]
+#[test]
+fn valid_pkcs12_with_wrong_password_fails_without_disclosing_identity() {
+    support::capture::start();
+    let fixture = fixture::Fixture::new();
+    let TlsClientIdentity::NativePkcs12 { identity, .. } =
+        native_identity(&fixture.pem, &fixture.key_pem)
+    else {
+        unreachable!()
+    };
+    let archive_debug = format!("{:?}", identity.expose());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    for mqtt5 in [false, true] {
+        let mut config = support::config(mqtt5, listener.local_addr().unwrap().port());
+        config.common.transport = TransportConfig::Tls(TlsConfig {
+            identity: Some(TlsClientIdentity::NativePkcs12 {
+                identity: identity.clone(),
+                password: SecretBytes::new(b"private-wrong-password".to_vec()),
+            }),
+            ..fixture.client(TlsBackend::Native)
+        });
+        let formatted = format!("{config:?}");
+        let error = NativeClient::start(config).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Tls);
+        support::capture::assert_redacted(
+            &format!("{formatted} {error:?} {error}"),
+            &[
+                &archive_debug,
+                &fixture.key_pem,
+                "private-wrong-password",
+                "wrapper-test-password",
+            ],
+        );
+    }
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure() {
+    support::capture::start();
+    let fixture = fixture::Fixture::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    for backend in [TlsBackend::Rustls, TlsBackend::Native] {
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+            || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
+        {
+            continue;
+        }
+        for mqtt5 in [false, true] {
+            let malformed = if backend == TlsBackend::Rustls {
+                vec![
+                    TlsClientIdentity::RustlsPem {
+                        certificate: b"private-invalid-certificate".as_slice().into(),
+                        private_key: SecretBytes::new(fixture.key_pem.as_bytes().to_vec()),
+                    },
+                    TlsClientIdentity::RustlsPem {
+                        certificate: fixture.pem.clone().into(),
+                        private_key: SecretBytes::new(b"private-invalid-key".to_vec()),
+                    },
+                ]
+            } else {
+                vec![
+                    TlsClientIdentity::NativePkcs12 {
+                        identity: SecretBytes::new(b"private-invalid-archive".to_vec()),
+                        password: SecretBytes::new(b"private-archive-password".to_vec()),
+                    },
+                    TlsClientIdentity::NativePkcs12 {
+                        identity: SecretBytes::new(b"private-invalid-archive".to_vec()),
+                        password: SecretBytes::new(vec![255]),
+                    },
+                ]
+            };
+            for identity in malformed {
+                let mut config = support::config(mqtt5, listener.local_addr().unwrap().port());
+                config.common.transport = TransportConfig::Tls(TlsConfig {
+                    identity: Some(identity),
+                    ..fixture.client(backend)
+                });
+                let debug = format!("{config:?}");
+                let error = NativeClient::start(config).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::Tls);
+                support::capture::assert_redacted(
+                    &format!("{debug} {error:?} {error}"),
+                    &[
+                        &fixture.key_pem,
+                        "private-invalid-certificate",
+                        "private-invalid-key",
+                        "private-invalid-archive",
+                        "private-archive-password",
+                    ],
+                );
+            }
+            for alpn in [vec![], vec![b'a'; 256]] {
+                let mut config = support::config(mqtt5, listener.local_addr().unwrap().port());
+                config.common.transport = TransportConfig::Tls(TlsConfig {
+                    alpn_protocols: vec![alpn],
+                    ..fixture.client(backend)
+                });
+                assert_eq!(
+                    NativeClient::start(config).unwrap_err().kind(),
+                    ErrorKind::Configuration
+                );
+            }
+            if backend == TlsBackend::Native {
+                let mut config = support::config(mqtt5, listener.local_addr().unwrap().port());
+                config.common.transport = TransportConfig::Tls(TlsConfig {
+                    alpn_protocols: vec![vec![255]],
+                    ..fixture.client(backend)
+                });
+                assert_eq!(
+                    NativeClient::start(config).unwrap_err().kind(),
+                    ErrorKind::Configuration
+                );
+            }
+        }
+    }
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn platform_roots_validate_an_isolated_process_trust_store() {
+    let fixture = fixture::Fixture::new();
+    let directory = tempfile::tempdir().unwrap();
+    let roots = directory.path().join("roots.pem");
+    std::fs::write(&roots, &fixture.pem).unwrap();
+    for backend in ["rustls", "native"] {
+        if (backend == "rustls" && !cfg!(feature = "use-rustls"))
+            || (backend == "native" && !cfg!(feature = "use-native-tls"))
+        {
+            continue;
+        }
+        for mqtt5 in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = fixture.server.clone();
+            let broker = support::Broker::spawn(move || {
+                let mut stream = fixture::wrap(Box::new(support::accept(&listener)), server);
+                assert_eq!(support::frame(&mut stream)[0], 0x10);
+                stream
+                    .write_all(if mqtt5 {
+                        &[0x20, 3, 0, 0, 0]
+                    } else {
+                        &[0x20, 2, 0, 0]
+                    })
+                    .unwrap();
+                stream.flush().unwrap();
+                assert_eq!(support::frame(&mut stream)[0], 0xe0);
+            });
+            let output = support::process_output(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "platform_roots_child", "--nocapture"])
+                    .env("SSL_CERT_FILE", &roots)
+                    .env("SSL_CERT_DIR", directory.path())
+                    .env("RUMQTTC_ROOTS_PORT", port.to_string())
+                    .env("RUMQTTC_ROOTS_BACKEND", backend)
+                    .env("RUMQTTC_ROOTS_MQTT5", mqtt5.to_string()),
+            );
+            assert!(
+                output.status.success(),
+                "platform-root subprocess: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            broker.join();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn platform_roots_child() {
+    let Ok(port) = std::env::var("RUMQTTC_ROOTS_PORT") else {
+        return;
+    };
+    let mqtt5 = std::env::var("RUMQTTC_ROOTS_MQTT5").unwrap() == "true";
+    let mut config = support::config(mqtt5, port.parse().unwrap());
+    config.common.transport = TransportConfig::Tls(TlsConfig {
+        backend: if std::env::var("RUMQTTC_ROOTS_BACKEND").unwrap() == "rustls" {
+            TlsBackend::Rustls
+        } else {
+            TlsBackend::Native
+        },
+        roots: TlsRootPolicy::Platform,
+        ..Default::default()
+    });
+    let mut client = NativeClient::start(config).unwrap();
+    let _events = support::connected(&mut client);
+    client.closer().close(support::DEADLINE).unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_roots_return_startup_errors_inside_async_callers() {
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {

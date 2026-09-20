@@ -64,6 +64,7 @@ pub struct ShutdownCoordinator {
     operations: OperationRegistry,
     immediate_tx: Sender<()>,
     progress: Notify,
+    graceful_deadline: Mutex<Option<std::time::Instant>>,
 }
 
 impl ShutdownCoordinator {
@@ -76,6 +77,7 @@ impl ShutdownCoordinator {
             operations,
             immediate_tx,
             progress: Notify::new(),
+            graceful_deadline: Mutex::new(None),
         })
     }
 
@@ -182,6 +184,47 @@ impl ShutdownCoordinator {
             operation_id: admission.operation_id,
         };
         self.phase.store(1, Ordering::Release);
+    }
+
+    pub(crate) fn set_graceful_timeout(&self, timeout: Option<std::time::Duration>) {
+        *self
+            .graceful_deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            timeout.and_then(|timeout| std::time::Instant::now().checked_add(timeout));
+        self.progress.notify_waiters();
+    }
+
+    /// The protocol loop may be awaiting a host store or connection future and
+    /// cannot observe its queued DISCONNECT. Enforce the admitted deadline at
+    /// the wrapper boundary as well, without cancelling and resuming that poll.
+    pub(crate) async fn wait_graceful_timeout(&self) {
+        loop {
+            let changed = self.progress.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let deadline = *self
+                .graceful_deadline
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(deadline) = deadline {
+                tokio::select! {
+                    () = &mut changed => continue,
+                    () = tokio::time::sleep_until(deadline.into()) => {}
+                }
+                if self.timeout_graceful(
+                    Error::new(ErrorKind::Timeout, "graceful shutdown timed out")
+                        .with_delivery(DeliveryStatus::Ambiguous),
+                ) {
+                    return;
+                }
+                // Another terminal transition won. Its driver path owns
+                // reconciliation; the expired deadline must not spin.
+                std::future::pending::<()>().await;
+            } else {
+                changed.await;
+            }
+        }
     }
 
     pub(crate) fn commit_immediate(&self, admission: Option<&Admission>) {

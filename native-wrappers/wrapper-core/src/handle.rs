@@ -119,6 +119,10 @@ impl Shared {
         self.shutdown.timeout_graceful(error)
     }
 
+    pub(crate) async fn wait_graceful_timeout(&self) {
+        self.shutdown.wait_graceful_timeout().await;
+    }
+
     pub(crate) fn notify_progress(&self) {
         self.shutdown.notify_progress();
     }
@@ -596,6 +600,7 @@ impl ClientHandle {
         }
         self.shared.shutdown.commit_payload(protocol);
         self.shared.shutdown.commit_graceful(&admission);
+        self.shared.shutdown.set_graceful_timeout(timeout);
         Ok(admission)
     }
 

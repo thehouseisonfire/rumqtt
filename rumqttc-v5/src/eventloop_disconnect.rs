@@ -308,6 +308,11 @@ impl EventLoop {
 
 #[cfg(test)]
 mod tests {
+    use std::{io, pin::Pin, time::Duration};
+
+    use super::super::SessionCheckpointAction;
+    use crate::{MqttOptions, Outgoing, framed::Network};
+
     #[tokio::test]
     async fn fence_admitted_during_stalled_poll_activates_deadline() {
         use std::future::Future;

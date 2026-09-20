@@ -6,6 +6,230 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use rumqttc_wrapper_core::*;
 
+mod support;
+
+#[test]
+fn explicit_callback_rejection_is_terminal_and_releases_owner() {
+    struct Reject;
+    impl Authenticator for Reject {
+        fn respond(
+            &self,
+            _: AuthContext,
+            _: AuthChallenge,
+        ) -> std::result::Result<AuthAction, AuthFailure> {
+            Err(AuthFailure::Rejected)
+        }
+    }
+    let owner = Arc::new(Reject);
+    let weak = Arc::downgrade(&owner);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = NativeClient::start(config(port, owner)).unwrap();
+    let mut events = client.take_events().unwrap();
+    let event = support::until(&mut events, |event| {
+        matches!(event, WrapperEvent::DriverTerminated(_))
+    });
+    let WrapperEvent::DriverTerminated(error) = event else {
+        unreachable!()
+    };
+    assert_eq!(error.kind(), ErrorKind::Authentication);
+    assert_eq!(error.auth_failure(), Some(AuthFailure::Rejected));
+    client.join(support::DEADLINE).unwrap();
+    assert!(weak.upgrade().is_none());
+    broker.join();
+}
+
+#[test]
+fn broker_authentication_method_change_retains_typed_failure() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        let mut packet = BytesMut::new();
+        rumqttc_v5::Auth::new(
+            rumqttc_v5::AuthReasonCode::Continue,
+            Some(rumqttc_v5::AuthProperties {
+                method: Some("changed".into()),
+                data: Some(Bytes::from_static(b"secret-challenge")),
+                ..Default::default()
+            }),
+        )
+        .write(&mut packet)
+        .unwrap();
+        socket.write_all(&packet).unwrap();
+    });
+    let mut client = NativeClient::start(config(
+        port,
+        Arc::new(Mechanism {
+            contexts: Mutex::new(vec![]),
+        }),
+    ))
+    .unwrap();
+    let mut events = client.take_events().unwrap();
+    let event = support::until(&mut events, |event| {
+        matches!(event, WrapperEvent::Disconnected { .. })
+    });
+    let WrapperEvent::Disconnected { error, phase } = event else {
+        unreachable!()
+    };
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+    assert_eq!(phase, ConnectionPhase::Attempt);
+    assert_eq!(error.context().generation, None);
+    assert!(!format!("{error:?} {error}").contains("secret-challenge"));
+    client.closer().close_now(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn overlapping_reauthentication_resolves_both_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        socket
+            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+            .unwrap();
+        assert!(matches!(
+            read_packet(&mut socket),
+            rumqttc_v5::Packet::Auth(_)
+        ));
+        ready_tx.send(()).unwrap();
+        release_rx.recv_timeout(support::DEADLINE).unwrap();
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = NativeClient::start(config(
+        port,
+        Arc::new(Mechanism {
+            contexts: Mutex::new(vec![]),
+        }),
+    ))
+    .unwrap();
+    let _events = support::connected(&mut client);
+    let first = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    ready_rx.recv_timeout(support::DEADLINE).unwrap();
+    let second = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    let error = support::terminal(&second).unwrap_err();
+    assert_eq!(error.auth_failure(), Some(AuthFailure::Overlapping));
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        support::terminal(&first).unwrap_err().auth_failure(),
+        Some(AuthFailure::ConnectionClosed)
+    );
+    client.closer().close_now(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn authentication_reconnect_and_pending_challenge_shutdown_release_exchange() {
+    for reauth in [false, true] {
+        for reconnect in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let broker = support::Broker::spawn(move || {
+                let mut socket = support::accept(&listener);
+                read_packet(&mut socket);
+                if reauth {
+                    socket
+                        .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                        .unwrap();
+                    assert!(matches!(
+                        read_packet(&mut socket),
+                        rumqttc_v5::Packet::Auth(_)
+                    ));
+                }
+                send_auth(
+                    &mut socket,
+                    rumqttc_v5::AuthReasonCode::Continue,
+                    b"challenge",
+                );
+                assert!(matches!(
+                    read_packet(&mut socket),
+                    rumqttc_v5::Packet::Auth(_)
+                ));
+                ready_tx.send(()).unwrap();
+                release_rx.recv_timeout(support::DEADLINE).unwrap();
+                if reconnect {
+                    drop(socket);
+                    let mut socket = support::accept(&listener);
+                    assert!(matches!(
+                        read_packet(&mut socket),
+                        rumqttc_v5::Packet::Connect(..)
+                    ));
+                    socket
+                        .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                        .unwrap();
+                    assert!(matches!(
+                        read_packet(&mut socket),
+                        rumqttc_v5::Packet::Disconnect(_)
+                    ));
+                } else {
+                    let mut bytes = [0; 32];
+                    let _ = socket.read(&mut bytes);
+                }
+            });
+            let owner = Arc::new(Mechanism {
+                contexts: Mutex::new(vec![]),
+            });
+            let weak = Arc::downgrade(&owner);
+            let mut client = NativeClient::start(config(port, owner.clone())).unwrap();
+            let mut events = client.take_events().unwrap();
+            let operation = if reauth {
+                support::until(&mut events, |event| {
+                    matches!(event, WrapperEvent::Connected { .. })
+                });
+                Some(
+                    client
+                        .handle()
+                        .try_admit(Command::Reauthenticate(None))
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            ready_rx.recv_timeout(support::DEADLINE).unwrap();
+            release_tx.send(()).unwrap();
+            if reconnect {
+                support::until(&mut events, |event| {
+                    matches!(event, WrapperEvent::Connected { .. })
+                });
+                let contexts = owner.contexts.lock().unwrap();
+                assert!(
+                    contexts.iter().any(|context| context.generation == 2
+                        && context.exchange == AuthExchange::Initial)
+                );
+            }
+            client.closer().close_now(support::DEADLINE).unwrap();
+            if let Some(operation) = operation {
+                let error = support::terminal(&operation).unwrap_err();
+                if reconnect {
+                    assert_eq!(error.auth_failure(), Some(AuthFailure::ConnectionClosed));
+                } else {
+                    assert_eq!(error.delivery_status(), DeliveryStatus::Ambiguous);
+                }
+            }
+            drop(owner);
+            assert!(weak.upgrade().is_none());
+            broker.join();
+        }
+    }
+}
+
 struct Mechanism {
     contexts: Mutex<Vec<AuthContext>>,
 }
@@ -796,6 +1020,7 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
         SCRAM_TYPES, ScramAuthServer, ScramCbHelper, ScramHashing, ScramNonce, ScramPassword,
         ScramServerDyn, ScramSha256RustNative, scram_sync::SyncScramServer,
     };
+    use std::fmt::Write as _;
     #[derive(Debug, Clone, Copy)]
     struct Credentials;
     impl ScramCbHelper for Credentials {}
@@ -805,10 +1030,15 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
             username: &str,
             _: Option<&str>,
         ) -> scram::ScramResult<ScramPassword> {
-            assert_eq!(username, "user");
+            assert_eq!(username, "scram-private-username");
             let iterations = std::num::NonZeroU32::new(4096).unwrap();
             let mut hash = vec![0; 32];
-            ScramSha256RustNative::derive(b"pencil", b"fixed-salt", iterations, &mut hash)?;
+            ScramSha256RustNative::derive(
+                b"scram-private-password",
+                b"fixed-salt",
+                iterations,
+                &mut hash,
+            )?;
             Ok(ScramPassword::found_secret_password(
                 hash,
                 scram::base64_encode_block(b"fixed-salt"),
@@ -817,7 +1047,14 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
             ))
         }
     }
+    support::capture::start();
     for invalid_signature in [false, true] {
+        let secrets = Arc::new(Mutex::new(vec![
+            "scram-private-username".to_owned(),
+            "scram-private-password".to_owned(),
+            "fixedServerNonce".to_owned(),
+        ]));
+        let captured = secrets.clone();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let broker = std::thread::spawn(move || {
@@ -846,6 +1083,17 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
                 .unwrap();
                 let response = server.parse_response(std::str::from_utf8(&first).unwrap());
                 assert!(response.is_ok());
+                for data in [
+                    std::str::from_utf8(&first).unwrap(),
+                    response.get_raw_output(),
+                ] {
+                    captured.lock().unwrap().push(data.to_owned());
+                    for field in data.split(',') {
+                        if let Some(value) = field.strip_prefix("r=") {
+                            captured.lock().unwrap().push(value.to_owned());
+                        }
+                    }
+                }
                 let mut frame = BytesMut::new();
                 rumqttc_v5::Auth::new(
                     rumqttc_v5::AuthReasonCode::Continue,
@@ -862,15 +1110,25 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
                 let rumqttc_v5::Packet::Auth(auth) = read_packet(&mut socket) else {
                     panic!("AUTH response")
                 };
-                let response = server.parse_response(
-                    std::str::from_utf8(&auth.properties.unwrap().data.unwrap()).unwrap(),
-                );
+                let data = auth.properties.unwrap().data.unwrap();
+                let data = std::str::from_utf8(&data).unwrap();
+                captured.lock().unwrap().push(data.to_owned());
+                for field in data.split(',') {
+                    if let Some(proof) = field.strip_prefix("p=") {
+                        captured.lock().unwrap().push(proof.to_owned());
+                    }
+                }
+                let response = server.parse_response(data);
                 assert!(response.is_ok());
                 let proof = if invalid_signature {
                     "v=AAAA"
                 } else {
                     response.get_raw_output()
                 };
+                captured.lock().unwrap().push(proof.to_owned());
+                if let Some(proof) = proof.strip_prefix("v=") {
+                    captured.lock().unwrap().push(proof.to_owned());
+                }
                 frame.clear();
                 if reauth {
                     rumqttc_v5::Auth::new(
@@ -915,23 +1173,25 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
         };
         v5.connect_properties.authentication_method = Some("SCRAM-SHA-256".into());
         v5.scram = Some(ScramConfig::new(
-            "user",
-            SecretBytes::new(b"pencil".to_vec()),
+            "scram-private-username",
+            SecretBytes::new(b"scram-private-password".to_vec()),
         ));
-        assert!(!format!("{config:?}").contains("pencil"));
+        let mut formatted = format!("{config:?}");
         let mut native = NativeClient::start(config).unwrap();
         let mut events = native.take_events().unwrap();
         loop {
-            match events
+            let event = events
                 .recv_timeout(Duration::from_secs(3))
                 .unwrap()
-                .unwrap()
-            {
+                .unwrap();
+            write!(formatted, "{event:?}").unwrap();
+            match event {
                 WrapperEvent::Connected { .. } => {
                     assert!(!invalid_signature);
                     break;
                 }
                 WrapperEvent::DriverTerminated(error) => {
+                    formatted.push_str(&error.to_string());
                     assert!(invalid_signature);
                     assert_eq!(error.auth_failure(), Some(AuthFailure::Rejected));
                     break;
@@ -955,5 +1215,11 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
         }
         native.join(Duration::from_secs(3)).unwrap();
         broker.join().unwrap();
+        let secrets = secrets.lock().unwrap();
+        support::capture::assert_redacted(
+            &formatted,
+            &secrets.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        support::capture::assert_activity();
     }
 }

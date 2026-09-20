@@ -671,6 +671,37 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn network_controls_are_applied_to_the_created_socket() {
+        let address = "127.0.0.1:1883".parse().unwrap();
+        let mut options = NetworkOptions::new();
+        options.set_bind_addr("127.0.0.1:0".parse().unwrap());
+        options.set_bind_device("lo");
+        options.set_tcp_nodelay(true);
+        let socket = super::new_tcp_socket(address, &options).unwrap();
+        super::configure_tcp_socket(&socket, &options).unwrap();
+        let view = socket2::SockRef::from(&socket);
+        assert_eq!(view.device().unwrap().as_deref(), Some(b"lo".as_slice()));
+        assert_eq!(view.protocol().unwrap(), Some(socket2::Protocol::TCP));
+        assert_eq!(
+            socket.local_addr().unwrap().ip(),
+            std::net::Ipv4Addr::LOCALHOST
+        );
+        assert!(socket.nodelay().unwrap());
+
+        options.set_mptcp(true);
+        let socket = super::new_tcp_socket(address, &options).unwrap();
+        let actual = socket2::SockRef::from(&socket).protocol().unwrap();
+        match super::create_mptcp_socket(address) {
+            Ok(_) => assert_eq!(actual, Some(socket2::Protocol::MPTCP)),
+            Err(error) => {
+                assert!(super::is_mptcp_unavailable(&error));
+                assert_eq!(actual, Some(socket2::Protocol::TCP));
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn mptcp_fallback_is_limited_to_unavailable_protocol_errors() {
         for error_code in [libc::EINVAL, libc::EPROTONOSUPPORT, libc::ENOPROTOOPT] {

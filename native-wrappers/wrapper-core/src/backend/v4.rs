@@ -45,6 +45,8 @@ pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
         | rumqttc_v4::ConnectionError::FlushTimeout
         | rumqttc_v4::ConnectionError::DisconnectTimeout => ErrorKind::Timeout,
         rumqttc_v4::ConnectionError::Io(_) => ErrorKind::Network,
+        #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+        rumqttc_v4::ConnectionError::Proxy(_) => ErrorKind::Network,
         #[cfg(feature = "websocket")]
         rumqttc_v4::ConnectionError::Websocket(_) | rumqttc_v4::ConnectionError::WsConnect(_) => {
             ErrorKind::Network

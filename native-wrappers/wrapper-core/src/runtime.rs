@@ -651,7 +651,14 @@ impl<'a> ShutdownInputs<'a> {
 
 #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.driver", skip_all, fields(protocol = ?context.protocol)))]
 async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalStatus {
-    driver.run(context).await
+    let shared = Arc::clone(&context.shared);
+    tokio::select! {
+        terminal = driver.run(context) => terminal,
+        () = shared.wait_graceful_timeout() => {
+            shared.reconcile_closed();
+            TerminalStatus::Closed { graceful: false }
+        }
+    }
 }
 
 pub struct EventDelivery<'a> {

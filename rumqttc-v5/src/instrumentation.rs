@@ -93,7 +93,8 @@ pub fn connection_attempt_failed(
         reconnect = context.reconnect(),
         phase,
         error_kind = connection_error_kind(error),
-        error = %error,
+        // Error display can include Server References, headers or callback text.
+        error = connection_error_kind(error),
     );
 }
 
@@ -137,7 +138,7 @@ pub fn connection_lost(
         inflight_limit = diagnostics.outbound.max_inflight,
         queue_depth,
         error_kind = connection_error_kind(error),
-        error = %error,
+        error = connection_error_kind(error),
     );
 }
 

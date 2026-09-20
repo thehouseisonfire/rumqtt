@@ -45,6 +45,10 @@ Prefer event names and typed primitive fields over parsing the rendered error
 message. Useful correlation fields include `protocol`, `attempt_id`,
 `connection_generation`, `attempt_in_generation`, and `reconnect`. Failure
 events also provide stable `error_kind` or `violation_kind` classifications.
+Connection-failure `error` fields contain the same safe classification as
+`error_kind`. Raw error messages can include broker-provided URLs, sensitive
+headers, or callback text and are not recorded in lifecycle traces. Inspect
+the returned error or structured protocol events when more context is needed.
 
 A cancelled `EventLoop::poll()` can leave an `mqtt.connection_attempt` without
 a matching terminal event. Correlate attempts by `attempt_id` and do not treat
