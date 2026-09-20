@@ -1,4 +1,9 @@
-use super::*;
+#![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+
+use super::{
+    Arc, ConnectionError, Event, EventLoop, PublishNoticeTx, Request, RequestEnvelope, StateError,
+    TrackedNoticeTx, VecDeque,
+};
 impl EventLoop {
     pub(super) fn restore_ordered_fence_after_cleanup(&mut self) {
         let gate = self.requests_rx.gate();
@@ -33,6 +38,15 @@ impl EventLoop {
         self.shutdown_phase = crate::ShutdownPhase::Approaching;
     }
     /// Drive protocol progress and the total post-admission ordered deadline.
+    /// Poll the event loop while applying the ordered-shutdown fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns connection, protocol, request-processing, or ordered-shutdown errors.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the admission gate reports a fence without its required sequence.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
         if self.disconnect_complete {
             if let Some(checkpoint) = self.terminal_checkpoint.as_mut() {

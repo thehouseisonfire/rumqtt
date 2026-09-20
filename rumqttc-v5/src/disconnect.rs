@@ -2,7 +2,7 @@
 
 use crate::eventloop::RequestEnvelope;
 use crate::{ConnectionError, PublishNoticeError, Request};
-pub(crate) type TerminalCheckpoint =
+pub type TerminalCheckpoint =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ConnectionError>> + Send>>;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 #[derive(Debug, Default)]
-pub(crate) struct Ledger {
+pub struct Ledger {
     pending: AtomicUsize,
     failure: OnceLock<PublishNoticeError>,
 }
@@ -18,15 +18,15 @@ impl Ledger {
     pub fn result(&self) -> Result<bool, DisconnectNoticeError> {
         // Acquire completed observations before inspecting the failure they published.
         let pending = self.pending.load(Ordering::Acquire);
-        match self.failure.get() {
-            Some(error) => Err(DisconnectNoticeError::Publish(error.clone())),
-            None => Ok(pending == 0),
-        }
+        self.failure.get().map_or_else(
+            || Ok(pending == 0),
+            |error| Err(DisconnectNoticeError::Publish(error.clone())),
+        )
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Observation(Option<Arc<Ledger>>);
+pub struct Observation(Option<Arc<Ledger>>);
 impl Observation {
     pub fn new(ledger: Arc<Ledger>) -> Self {
         ledger.pending.fetch_add(1, Ordering::Relaxed);
@@ -112,7 +112,7 @@ impl DisconnectNoticeError {
 
 /// Completion of an ordered disconnect, independently of channel admission.
 ///
-/// Success proves that preceding publishes reached their QoS milestones and
+/// Success proves that preceding publishes reached their `QoS` milestones and
 /// DISCONNECT was flushed through the transport. It does not prove server receipt
 /// or application consumption. Keep polling the event loop while waiting.
 /// Dropping this handle does not cancel shutdown.
@@ -125,6 +125,10 @@ impl DisconnectNotice {
     ///
     /// # Panics
     /// Panics when called from an asynchronous execution context.
+    ///
+    /// # Errors
+    ///
+    /// Returns the terminal ordered-shutdown failure when it does not complete successfully.
     pub fn wait(self) -> Result<(), DisconnectNoticeError> {
         self.0
             .blocking_recv()
@@ -132,6 +136,10 @@ impl DisconnectNotice {
     }
     /// Await DISCONNECT flush or a typed terminal failure while another task
     /// continues driving the event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns the terminal ordered-shutdown failure when it does not complete successfully.
     pub async fn wait_async(self) -> Result<(), DisconnectNoticeError> {
         self.0
             .await
@@ -140,14 +148,15 @@ impl DisconnectNotice {
 }
 
 #[derive(Debug)]
-pub(crate) struct Completion(Mutex<Option<oneshot::Sender<Result<(), DisconnectNoticeError>>>>);
+pub struct Completion(Mutex<Option<oneshot::Sender<Result<(), DisconnectNoticeError>>>>);
 impl Completion {
     pub(crate) fn new() -> (Arc<Self>, DisconnectNotice) {
         let (tx, rx) = oneshot::channel();
         (Arc::new(Self(Mutex::new(Some(tx)))), DisconnectNotice(rx))
     }
     pub(crate) fn finish(&self, result: Result<(), DisconnectNoticeError>) {
-        if let Some(tx) = self.0.lock().unwrap().take() {
+        let tx = self.0.lock().unwrap().take();
+        if let Some(tx) = tx {
             let _ = tx.send(result);
         }
     }
@@ -159,7 +168,7 @@ impl Drop for Completion {
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestMeta {
+pub struct RequestMeta {
     pub sequence: u64,
     pub closing: bool,
     pub invalid_timeout: bool,

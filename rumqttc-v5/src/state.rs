@@ -1455,6 +1455,7 @@ impl MqttState {
         self.handle_outgoing_packet_with_notice_internal(request, notice, true)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_outgoing_packet_with_notice_internal(
         &mut self,
         request: Request,
