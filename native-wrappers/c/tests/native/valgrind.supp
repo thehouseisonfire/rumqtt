@@ -3,6 +3,7 @@
    Memcheck:Leak
    match-leak-kinds: possible
    fun:malloc
+   ...
    fun:*std*thread*Thread*new
    fun:*std*thread*current*init_current
 }

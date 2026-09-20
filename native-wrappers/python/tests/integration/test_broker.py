@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import os
 from pathlib import Path
 
@@ -281,26 +282,53 @@ async def test_event_overflow_has_stable_terminal_error_and_ends_iteration(proto
             event_delivery_timeout=0.05,
         )
     )
-    await client.connect()
-    events = client.events()
-    await anext(events)
-    pending = asyncio.create_task(
-        client.publish("rumqttc/native/stall", b"pending", PublishOptions(qos=QoS.AT_LEAST_ONCE))
-    )
-    await client.subscribe([Subscription("rumqttc/native/overflow")])
-    await asyncio.sleep(0.15)
-    with pytest.raises(MqttError) as failure:
-        while True:
-            await anext(events)
-    assert failure.value.code == "EVENT_BUFFER_OVERFLOW"
-    with pytest.raises(MqttError) as pending_failure:
-        await asyncio.wait_for(pending, timeout=2)
-    assert pending_failure.value.code == "EVENT_BUFFER_OVERFLOW"
-    assert pending_failure.value.operation_id is not None
-    assert pending_failure.value.ambiguous
-    with pytest.raises(StopAsyncIteration):
+    events = None
+    pending = None
+    try:
+        await client.connect()
+        events = client.events()
         await anext(events)
-    await client.close_now()
+        pending = asyncio.create_task(
+            client.publish("rumqttc/native/stall", b"pending", PublishOptions(qos=QoS.AT_LEAST_ONCE))
+        )
+        try:
+            await client.subscribe([Subscription("rumqttc/native/overflow")])
+        except MqttError as error:
+            # The one-slot event buffer is intentionally left undrained. On a slow runner the
+            # overflow can terminate this admitted operation before its SUBACK is observed.
+            assert error.code == "EVENT_BUFFER_OVERFLOW"
+        await asyncio.sleep(0.15)
+
+        try:
+            while True:
+                await anext(events)
+        except MqttError as error:
+            assert error.code == "EVENT_BUFFER_OVERFLOW"
+        else:
+            pytest.fail("event iteration ended without the overflow error")
+
+        try:
+            await asyncio.wait_for(pending, timeout=2)
+        except MqttError as error:
+            assert error.code == "EVENT_BUFFER_OVERFLOW"
+            assert error.operation_id is not None
+            assert error.ambiguous
+        else:
+            pytest.fail("pending publish survived event-buffer overflow")
+
+        try:
+            await anext(events)
+        except StopAsyncIteration:
+            pass
+        else:
+            pytest.fail("event iteration remained open after reporting overflow")
+    finally:
+        await client.close_now()
+
+    # Exception tracebacks and tasks can retain the native client until the next cyclic GC pass.
+    # Release them before sanitizer process teardown so the joined driver's allocations are freed.
+    del events, pending, client
+    gc.collect()
 
 
 @pytest.mark.asyncio
