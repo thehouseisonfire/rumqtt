@@ -2,16 +2,19 @@
 
 ## Goal
 
-Expose every native-client capability planned in `TODO15.md` through
-`rumqttc-c-next` as a coherent C11/C++17 API. The C layer must translate the
-owned wrapper-core model without weakening its validation, completion,
-backpressure, protocol, security, or lifecycle guarantees.
+Expose the supported native-client capabilities recorded in
+`native-wrappers/wrapper-core/PARITY.md` through `rumqttc-c-next` as a coherent
+C11/C++17 API. The C layer must translate the owned wrapper-core model without
+weakening its validation, completion, backpressure, protocol, security, or
+lifecycle guarantees. `TODO15.md` records completion of the wrapper-core work;
+the parity matrix is the current source for supported and intentionally omitted
+capabilities.
 
-This work begins feature by feature after the corresponding `WC-*` core API is
-stable enough to bind. Do not bypass wrapper-core by constructing
-`rumqttc-v4-next` or `rumqttc-v5-next` values directly in the C crate. If a
-feature cannot be represented safely in wrapper-core, resolve that design in
-`TODO15.md` first.
+Bind the existing wrapper-core APIs feature by feature. Do not bypass
+wrapper-core by constructing `rumqttc-v4-next` or `rumqttc-v5-next` values
+directly in the C crate. If a C binding needs a capability or contract that
+wrapper-core does not provide, resolve and verify the core design first, then
+update its parity matrix before binding it.
 
 ## ABI strategy
 
@@ -140,7 +143,8 @@ Document the resulting shared-library unload restriction.
 
 ## Feature bindings
 
-The following sections map one-to-one to `TODO15.md`.
+The following sections define the C work by `WC-*` capability. Check the
+current wrapper-core parity matrix before implementing each binding.
 
 ### C-WC-01: Last Will and Testament
 
@@ -260,11 +264,12 @@ enabled.
 
 ### C-WC-06: MQTT 5 redirects and DNS SRV
 
-Expose fixed redirect policies through values and application policy through a
-versioned asynchronous callback vtable. Add a resolver vtable returning an
-owned array of priority, weight, port, and target records through the common
-completion mechanism. Provide a system-resolver selector only when the library
-was built with that capability, with an API to query build capabilities.
+Expose the supported fixed redirect policies through values. An application
+policy callback needs a wrapper-core contract before a C vtable is added. Add a
+resolver vtable returning an owned array of priority, weight, port, and target
+records through the common completion mechanism. Provide a system-resolver
+selector only when the library was built with that capability, with an API to
+query build capabilities.
 
 Add redirect event accessors for reason, source, advertised Server Reference,
 decision, selected endpoint, and attempt/loop metadata. Views are owned by the
@@ -299,31 +304,36 @@ platform path rules; do not reinterpret `rumqttc_config_set_broker` host/port.
 Return unsupported-platform before start on non-Unix targets and document path
 encoding.
 
-If wrapper-core ships custom streams, define opaque
+Custom connectors are intentionally omitted in the current wrapper-core parity
+matrix. If a future core contract supports them, define opaque
 `rumqttc_async_stream_t`/connector vtables with partial read/write, flush,
 shutdown, cancellation, and exactly-once destroy. The stream API must support
 concurrent read and write if the Rust transport does. Never call a blocking C
 read on the single wrapper runtime thread unless the contract dispatches it to
 a dedicated blocking executor.
 
-Ship Unix binding independently; custom connectors remain gated until native
-stress tests prove wakeup and destruction safety. Acceptance mirrors WC-08 and
-adds C header tests for platform declarations or portable runtime rejection.
+Ship the Unix binding independently. Custom connectors require native stress
+tests proving wakeup and destruction safety before a C binding is considered.
+Unix acceptance includes path and shutdown behavior, plus C header tests for
+platform declarations or portable runtime rejection.
 
 ### C-WC-09: WebSocket handshake customization
 
 For the common case, expose a copied array of header name/value byte views and
 an operation enum for add/replace/remove. Validate protected headers and
-sensitive values. For dynamic behavior, add a fallible vtable using the common
-async callback model and an owned handshake request/result representation.
+sensitive values. Dynamic handshake callbacks are intentionally omitted in the
+current wrapper-core parity matrix. If a future core contract supports them,
+add a fallible vtable using the common async callback model and an owned
+handshake request/result representation.
 
 Do not expose `http::Request` layout. State which headers are canonicalized,
 whether duplicates retain order, and how redirect/reconnect reinvokes the
 modifier. Authorization/cookie/header secrets must be redacted.
 
-Acceptance requires C WebSocket fixture tests for declarative and callback
-paths, invalid/protected headers, WSS/proxy composition, callback cancellation,
-and disabled-feature behavior.
+Acceptance requires C WebSocket fixture tests for declarative edits,
+invalid/protected headers, WSS/proxy composition, and disabled-feature
+behavior. If dynamic callbacks are later supported, also test their fixture
+path and cancellation.
 
 ### C-WC-10: MQTT 5 DISCONNECT reason and properties
 
@@ -415,8 +425,8 @@ Every feature slice must update:
 - `CHANGELOG.md` with C ABI additions, build-feature changes, and migrations;
 - installed CMake and pkg-config documentation/options where artifact
   capabilities vary; and
-- `TODO15.md`/`TODO16.md` parity status or the eventual checked-in parity
-  matrix.
+- `TODO16.md` C binding status and the checked-in wrapper-core parity matrix
+  when core capabilities or omission decisions change.
 
 Examples must be warning-clean C11, compile as C++17 where the header promises
 it, check every fallible return, destroy all owners, and avoid public brokers.
@@ -468,7 +478,7 @@ on every supported OS as documented in `native-wrappers/c/README.md`.
 
 ## Delivery order and definition of done
 
-Bind features in the same order as `TODO15.md`:
+Bind features in this order, using the completed wrapper-core APIs:
 
 1. capability query, ABI helpers, common async callback completion, and
    redaction/error foundations;
@@ -476,15 +486,15 @@ Bind features in the same order as `TODO15.md`:
    C-WC-07, Unix C-WC-08, declarative C-WC-09, C-WC-10, value C-WC-12);
 3. session storage (C-WC-02);
 4. enhanced authentication (C-WC-05);
-5. redirect/SRV and dynamic transport hooks (C-WC-06, remaining C-WC-08 and
-   C-WC-09);
+5. redirect/SRV (C-WC-06); bind custom connectors and dynamic WebSocket
+   modifiers from C-WC-08 and C-WC-09 only if wrapper-core later supports them;
 6. rich events and observability (C-WC-11 and remaining C-WC-12);
 7. TLS backend/credential completion (C-WC-13); and
 8. final API-coherence, ABI, package, and parity review.
 
 One feature is complete at the C boundary only when:
 
-- its `WC-*` acceptance criteria pass in wrapper-core;
+- its wrapper-core capability is supported and verified in the parity matrix;
 - all supplied values survive C-to-core conversion exactly;
 - the C API has documented ownership, concurrency, cancellation, lifecycle,
   units, presence, and error semantics;
@@ -498,7 +508,7 @@ One feature is complete at the C boundary only when:
 - headers, examples, README, `CHANGELOG.md`, CMake/pkg-config metadata, exports,
   and ABI manifests agree with the shipped library.
 
-Overall C parity is complete only when every WC-01 through WC-13 item is bound
-or carries the same reviewed `intentionally omitted` rationale as the core
-parity matrix. A C-only omission must not be hidden by claiming wrapper-core
-parity.
+Overall C parity is complete only when every supported wrapper-core capability
+covered by C-WC-01 through C-WC-13 is bound, and every intentionally omitted
+core capability retains its reviewed rationale in the parity matrix. Record
+any C-only omission explicitly; do not claim wrapper-core parity as C parity.
