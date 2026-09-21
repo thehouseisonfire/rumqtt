@@ -61,6 +61,13 @@ void native_test_error_out_contract(void) {
   /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_tls */
   EXPECT_FAILURE(
       rumqttc_config_set_transport_tls(NULL, empty, empty, empty, NULL));
+  {
+    rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_tls_with_options */
+    CHECK(rumqttc_config_set_transport_tls_with_options(v4, &tls, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_tls_with_options */
+    EXPECT_FAILURE(rumqttc_config_set_transport_tls_with_options(NULL, &tls, NULL));
+  }
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_websocket */
   CHECK(rumqttc_config_set_transport_websocket(
       v4, native_string("ws://localhost"), NULL));
@@ -72,6 +79,14 @@ void native_test_error_out_contract(void) {
   /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_wss */
   EXPECT_FAILURE(
       rumqttc_config_set_transport_wss(NULL, valid, empty, empty, empty, NULL));
+  {
+    rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_wss_with_options */
+    CHECK(rumqttc_config_set_transport_wss_with_options(
+        v4, native_string("wss://localhost"), &tls, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_wss_with_options */
+    EXPECT_FAILURE(rumqttc_config_set_transport_wss_with_options(NULL, valid, &tls, NULL));
+  }
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_keep_alive_seconds */
   CHECK(rumqttc_config_set_keep_alive_seconds(v4, 5, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_keep_alive_seconds */
@@ -112,6 +127,133 @@ void native_test_error_out_contract(void) {
   CHECK(rumqttc_config_set_v5_session(v5, 1, 0, 0, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_session */
   EXPECT_FAILURE(rumqttc_config_set_v5_session(NULL, 1, 0, 0, NULL));
+  {
+    rumqttc_last_will_t will = RUMQTTC_LAST_WILL_INIT;
+    rumqttc_v5_connect_properties_t connect = RUMQTTC_V5_CONNECT_PROPERTIES_INIT;
+    will.topic = native_string("error/out/will");
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_last_will */
+    CHECK(rumqttc_config_set_last_will(v4, &will, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_last_will */
+    EXPECT_FAILURE(rumqttc_config_set_last_will(NULL, &will, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_last_will */
+    CHECK(rumqttc_config_clear_last_will(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_last_will */
+    EXPECT_FAILURE(rumqttc_config_clear_last_will(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_max_request_batch */
+    CHECK(rumqttc_config_set_max_request_batch(v4, 4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_max_request_batch */
+    EXPECT_FAILURE(rumqttc_config_set_max_request_batch(NULL, 4, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_read_batch_size */
+    CHECK(rumqttc_config_set_read_batch_size(v4, 4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_read_batch_size */
+    EXPECT_FAILURE(rumqttc_config_set_read_batch_size(NULL, 4, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_pending_throttle_us */
+    CHECK(rumqttc_config_set_pending_throttle_us(v4, 1, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_pending_throttle_us */
+    EXPECT_FAILURE(rumqttc_config_set_pending_throttle_us(NULL, 1, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_local_incoming_packet_limit_bytes */
+    CHECK(rumqttc_config_set_local_incoming_packet_limit_bytes(v4, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_local_incoming_packet_limit_bytes */
+    EXPECT_FAILURE(rumqttc_config_set_local_incoming_packet_limit_bytes(NULL, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_local_incoming_packet_limit_mode */
+    CHECK(rumqttc_config_set_local_incoming_packet_limit_mode(v4, RUMQTTC_INCOMING_PACKET_LIMIT_DEFAULT, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_local_incoming_packet_limit_mode */
+    EXPECT_FAILURE(rumqttc_config_set_local_incoming_packet_limit_mode(NULL, 0, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v4_outgoing_packet_limit_bytes */
+    CHECK(rumqttc_config_set_v4_outgoing_packet_limit_bytes(v4, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v4_outgoing_packet_limit_bytes */
+    EXPECT_FAILURE(rumqttc_config_set_v4_outgoing_packet_limit_bytes(NULL, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_reset_v4_outgoing_packet_limit */
+    CHECK(rumqttc_config_reset_v4_outgoing_packet_limit(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_reset_v4_outgoing_packet_limit */
+    EXPECT_FAILURE(rumqttc_config_reset_v4_outgoing_packet_limit(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v4_inflight_limit */
+    CHECK(rumqttc_config_set_v4_inflight_limit(v4, 2, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v4_inflight_limit */
+    EXPECT_FAILURE(rumqttc_config_set_v4_inflight_limit(NULL, 2, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_advertised_max_packet_size_bytes */
+    CHECK(rumqttc_config_set_v5_advertised_max_packet_size_bytes(v5, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_advertised_max_packet_size_bytes */
+    EXPECT_FAILURE(rumqttc_config_set_v5_advertised_max_packet_size_bytes(NULL, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_v5_advertised_max_packet_size */
+    CHECK(rumqttc_config_clear_v5_advertised_max_packet_size(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_advertised_max_packet_size */
+    EXPECT_FAILURE(rumqttc_config_clear_v5_advertised_max_packet_size(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_outgoing_inflight_upper_limit */
+    CHECK(rumqttc_config_set_v5_outgoing_inflight_upper_limit(v5, 2, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_outgoing_inflight_upper_limit */
+    EXPECT_FAILURE(rumqttc_config_set_v5_outgoing_inflight_upper_limit(NULL, 2, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_v5_outgoing_inflight_upper_limit */
+    CHECK(rumqttc_config_clear_v5_outgoing_inflight_upper_limit(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_outgoing_inflight_upper_limit */
+    EXPECT_FAILURE(rumqttc_config_clear_v5_outgoing_inflight_upper_limit(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_connect_properties */
+    CHECK(rumqttc_config_set_v5_connect_properties(v5, &connect, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_connect_properties */
+    EXPECT_FAILURE(rumqttc_config_set_v5_connect_properties(NULL, &connect, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_v5_connect_properties */
+    CHECK(rumqttc_config_clear_v5_connect_properties(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_connect_properties */
+    EXPECT_FAILURE(rumqttc_config_clear_v5_connect_properties(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_topic_alias_policy */
+    CHECK(rumqttc_config_set_v5_topic_alias_policy(v5, 0, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_topic_alias_policy */
+    EXPECT_FAILURE(rumqttc_config_set_v5_topic_alias_policy(NULL, 0, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_websocket_header_edits */
+    CHECK(rumqttc_config_set_websocket_header_edits(v5, NULL, 0, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_websocket_header_edits */
+    EXPECT_FAILURE(rumqttc_config_set_websocket_header_edits(NULL, NULL, 0, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_tcp_send_buffer_size_bytes */
+    CHECK(rumqttc_config_set_tcp_send_buffer_size_bytes(v4, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_tcp_send_buffer_size_bytes */
+    EXPECT_FAILURE(rumqttc_config_set_tcp_send_buffer_size_bytes(NULL, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_tcp_receive_buffer_size_bytes */
+    CHECK(rumqttc_config_set_tcp_receive_buffer_size_bytes(v4, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_tcp_receive_buffer_size_bytes */
+    EXPECT_FAILURE(rumqttc_config_set_tcp_receive_buffer_size_bytes(NULL, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_tcp_buffer_sizes */
+    CHECK(rumqttc_config_clear_tcp_buffer_sizes(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_tcp_buffer_sizes */
+    EXPECT_FAILURE(rumqttc_config_clear_tcp_buffer_sizes(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_tcp_nodelay */
+    CHECK(rumqttc_config_set_tcp_nodelay(v4, 1, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_tcp_nodelay */
+    EXPECT_FAILURE(rumqttc_config_set_tcp_nodelay(NULL, 1, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_local_bind_address */
+    CHECK(rumqttc_config_set_local_bind_address(v4, native_string("127.0.0.1:0"), NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_local_bind_address */
+    EXPECT_FAILURE(rumqttc_config_set_local_bind_address(NULL, valid, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_local_bind_address */
+    CHECK(rumqttc_config_clear_local_bind_address(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_local_bind_address */
+    EXPECT_FAILURE(rumqttc_config_clear_local_bind_address(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_mptcp */
+    CHECK(rumqttc_config_set_mptcp(v4, 0, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_mptcp */
+    EXPECT_FAILURE(rumqttc_config_set_mptcp(NULL, 0, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_bind_device */
+    CHECK(rumqttc_config_clear_bind_device(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_bind_device */
+    EXPECT_FAILURE(rumqttc_config_clear_bind_device(NULL, NULL));
+#if defined(__linux__)
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_bind_device */
+    CHECK(rumqttc_config_set_bind_device(v4, native_string("lo"), NULL));
+#else
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_bind_device */
+    EXPECT_FAILURE(rumqttc_config_set_bind_device(v4, native_string("lo"), NULL));
+#endif
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_bind_device */
+    EXPECT_FAILURE(rumqttc_config_set_bind_device(NULL, valid, NULL));
+#if defined(__unix__)
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_unix_broker */
+    CHECK(rumqttc_config_set_unix_broker(v4, native_bytes((const uint8_t *)"/tmp/rumqttc", 12), NULL));
+#else
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_unix_broker */
+    EXPECT_FAILURE(rumqttc_config_set_unix_broker(v4, empty, NULL));
+#endif
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_unix_broker */
+    EXPECT_FAILURE(rumqttc_config_set_unix_broker(NULL, empty, NULL));
+  }
   rumqttc_config_destroy(v4);
   rumqttc_config_destroy(v5);
 
@@ -272,6 +414,18 @@ void native_test_error_out_contract(void) {
   CHECK(rumqttc_client_close_now_timeout_ms(client, 5000, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_client_close_now_timeout_ms */
   EXPECT_FAILURE(rumqttc_client_close_now_timeout_ms(NULL, 5000, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_client_close_now_with_options_timeout_ms */
+  CHECK(rumqttc_client_close_now_with_options_timeout_ms(client, 5000, NULL, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_client_close_now_with_options_timeout_ms */
+  EXPECT_FAILURE(rumqttc_client_close_now_with_options_timeout_ms(NULL, 0, NULL, NULL));
+  CHECK(rumqttc_client_destroy_timeout_ms(client, 5000, NULL));
+
+  client = native_start_client(RUMQTTC_PROTOCOL_V4, "error-close-options",
+                               RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
+  /* ERROR_OUT_SUCCESS: rumqttc_client_close_with_options_timeout_ms */
+  CHECK(rumqttc_client_close_with_options_timeout_ms(client, 5000, NULL, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_client_close_with_options_timeout_ms */
+  EXPECT_FAILURE(rumqttc_client_close_with_options_timeout_ms(NULL, 0, NULL, NULL));
   CHECK(rumqttc_client_destroy_timeout_ms(client, 5000, NULL));
 
   client = native_start_client(RUMQTTC_PROTOCOL_V4, "error-disconnect",

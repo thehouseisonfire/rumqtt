@@ -35,6 +35,7 @@ set(RUMQTTC_C_EXAMPLES
     tracked_completion
     manual_acknowledgement
     shutdown)
+list(APPEND RUMQTTC_C_EXAMPLES resource_limits)
 
 foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     set(target "rumqttc-example-${example}")

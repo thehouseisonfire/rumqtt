@@ -16,12 +16,15 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    Admission, Command, Completion, DiagnosticsSnapshot, IncomingPublish, OutgoingActivity,
-    ProtocolVersion, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS,
-    SubscribeCommand, SubscribeProtocolOptions, SubscribeResult, Subscription,
-    SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions, UnsubscribeResult,
+    Admission, Command, Completion, DiagnosticsSnapshot, DisconnectProtocolOptions,
+    IncomingPublish, LastWillConfig, LastWillProtocolOptions, OutgoingActivity, ProtocolVersion,
+    PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, SecretBytes, SubscribeCommand,
+    SubscribeProtocolOptions, SubscribeResult, Subscription, SubscriptionProtocolOptions,
+    TlsBackend, TlsClientIdentity, TlsConfig, TlsRootPolicy, TopicAliasPolicy, UnsubscribeCommand,
+    UnsubscribeProtocolOptions, UnsubscribeResult, V5ConnectProperties, V5DisconnectOptions,
     V5IncomingPublishProperties, V5OutgoingPublishProperties, V5RetainForwardRule,
-    V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties, WrapperEvent,
+    V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties, V5WillProperties,
+    WebSocketHeader, WrapperEvent,
 };
 
 use crate::client::{ClientError, ClientObject};
@@ -38,6 +41,139 @@ const ABI_VERSION: u32 = 1;
 const MQTT5_NO_SUBSCRIPTION_EXISTED: u8 = 0x11;
 const PROTOCOL_OPTIONS_VERSION_NEUTRAL: u32 = 0;
 const PROTOCOL_OPTIONS_V5: u32 = 5;
+
+const CAP_V4: u64 = 1 << 0;
+const CAP_V5: u64 = 1 << 1;
+const CAP_RUSTLS: u64 = 1 << 2;
+const CAP_NATIVE_TLS: u64 = 1 << 3;
+const CAP_WEBSOCKET: u64 = 1 << 4;
+const CAP_HTTP_PROXY: u64 = 1 << 5;
+const CAP_SOCKS5_PROXY: u64 = 1 << 6;
+const CAP_UNIX: u64 = 1 << 7;
+const CAP_SYSTEM_SRV: u64 = 1 << 8;
+const CAP_SCRAM: u64 = 1 << 9;
+const CAP_TRACING: u64 = 1 << 10;
+
+#[repr(C)]
+pub struct rumqttc_v5_will_properties_t {
+    pub struct_size: u32,
+    pub will_delay_present: u8,
+    pub payload_format_present: u8,
+    pub message_expiry_present: u8,
+    pub content_type_present: u8,
+    pub response_topic_present: u8,
+    pub correlation_data_present: u8,
+    pub reserved: [u8; 2],
+    pub will_delay_interval: u32,
+    pub payload_format_indicator: u32,
+    pub message_expiry_interval: u32,
+    pub content_type: rumqttc_string_view_t,
+    pub response_topic: rumqttc_string_view_t,
+    pub correlation_data: rumqttc_bytes_view_t,
+    pub user_properties: *const rumqttc_user_property_t,
+    pub user_property_count: usize,
+}
+
+#[repr(C)]
+pub struct rumqttc_last_will_t {
+    pub struct_size: u32,
+    pub topic: rumqttc_string_view_t,
+    pub payload: rumqttc_bytes_view_t,
+    pub qos: u32,
+    pub retain: u8,
+    pub reserved: [u8; 3],
+    pub protocol_options: u32,
+    pub v5_properties: *const rumqttc_v5_will_properties_t,
+}
+
+#[repr(C)]
+pub struct rumqttc_v5_connect_properties_t {
+    pub struct_size: u32,
+    pub session_expiry_present: u8,
+    pub receive_maximum_present: u8,
+    pub maximum_packet_size_present: u8,
+    pub topic_alias_maximum_present: u8,
+    pub request_response_info_present: u8,
+    pub request_problem_info_present: u8,
+    pub authentication_method_present: u8,
+    pub authentication_data_present: u8,
+    pub reserved: [u8; 4],
+    pub session_expiry_interval: u32,
+    pub receive_maximum: u32,
+    pub maximum_packet_size: u32,
+    pub topic_alias_maximum: u32,
+    pub request_response_information: u8,
+    pub request_problem_information: u8,
+    pub reserved_tail: [u8; 2],
+    pub authentication_method: rumqttc_string_view_t,
+    pub authentication_data: rumqttc_bytes_view_t,
+    pub user_properties: *const rumqttc_user_property_t,
+    pub user_property_count: usize,
+}
+
+#[repr(C)]
+pub struct rumqttc_websocket_header_edit_t {
+    pub struct_size: u32,
+    pub operation: u32,
+    pub name: rumqttc_string_view_t,
+    pub value: rumqttc_string_view_t,
+    pub reserved: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_v5_disconnect_properties_t {
+    pub struct_size: u32,
+    pub reason_code: u32,
+    pub session_expiry_present: u8,
+    pub reason_string_present: u8,
+    pub server_reference_present: u8,
+    pub reserved: [u8; 5],
+    pub session_expiry_interval: u32,
+    pub reason_string: rumqttc_string_view_t,
+    pub server_reference: rumqttc_string_view_t,
+    pub user_properties: *const rumqttc_user_property_t,
+    pub user_property_count: usize,
+}
+
+#[repr(C)]
+pub struct rumqttc_disconnect_options_t {
+    pub struct_size: u32,
+    pub protocol_options: u32,
+    pub v5_properties: *const rumqttc_v5_disconnect_properties_t,
+    pub reserved: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_tls_pem_identity_t {
+    pub struct_size: u32,
+    pub reserved: u32,
+    pub certificate: rumqttc_bytes_view_t,
+    pub private_key: rumqttc_bytes_view_t,
+    pub reserved_tail: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_tls_pkcs12_identity_t {
+    pub struct_size: u32,
+    pub reserved: u32,
+    pub identity: rumqttc_bytes_view_t,
+    pub password: rumqttc_bytes_view_t,
+    pub reserved_tail: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_tls_options_t {
+    pub struct_size: u32,
+    pub backend: u32,
+    pub root_policy: u32,
+    pub reserved: u32,
+    pub ca_pem: rumqttc_bytes_view_t,
+    pub pem_identity: *const rumqttc_tls_pem_identity_t,
+    pub pkcs12_identity: *const rumqttc_tls_pkcs12_identity_t,
+    pub alpn_protocols: *const rumqttc_bytes_view_t,
+    pub alpn_protocol_count: usize,
+    pub reserved_tail: [u64; 2],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -357,6 +493,53 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rumqttc_library_capabilities() -> u64 {
+    CAP_V4
+        | CAP_V5
+        | if cfg!(feature = "use-rustls") {
+            CAP_RUSTLS
+        } else {
+            0
+        }
+        | if cfg!(feature = "use-native-tls") {
+            CAP_NATIVE_TLS
+        } else {
+            0
+        }
+        | if cfg!(feature = "websocket") {
+            CAP_WEBSOCKET
+        } else {
+            0
+        }
+        | if cfg!(feature = "http-proxy") {
+            CAP_HTTP_PROXY
+        } else {
+            0
+        }
+        | if cfg!(feature = "socks-proxy") {
+            CAP_SOCKS5_PROXY
+        } else {
+            0
+        }
+        | if cfg!(unix) { CAP_UNIX } else { 0 }
+        | if cfg!(feature = "system-srv-resolver") {
+            CAP_SYSTEM_SRV
+        } else {
+            0
+        }
+        | if cfg!(feature = "auth-scram") {
+            CAP_SCRAM
+        } else {
+            0
+        }
+        | if cfg!(feature = "tracing") {
+            CAP_TRACING
+        } else {
+            0
+        }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_config_new(
     protocol: u32,
     out: *mut *mut rumqttc_config,
@@ -468,6 +651,12 @@ pub unsafe extern "C" fn rumqttc_config_set_broker(
         unsafe { config_ref(config) }?
             .update(|config| {
                 config.common.broker = rumqttc_wrapper_core::BrokerTarget::Tcp { host, port };
+                if matches!(
+                    config.common.transport,
+                    rumqttc_wrapper_core::TransportConfig::Unix
+                ) {
+                    config.common.transport = rumqttc_wrapper_core::TransportConfig::Tcp;
+                }
                 Ok(())
             })
             .map_err(ErrorHandle::internal)
@@ -569,11 +758,18 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_tls(
     private_key: rumqttc_bytes_view_t,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
-    let ca = unsafe { bytes_from_view(ca) }.map(<[u8]>::to_vec);
-    let certificate = unsafe { bytes_from_view(certificate) }.map(<[u8]>::to_vec);
-    let private_key = unsafe { bytes_from_view(private_key) }.map(<[u8]>::to_vec);
     boundary(error_out, ptr::null_mut(), || {
-        let tls = tls_config(ca?, certificate?, private_key?)
+        if !cfg!(feature = "use-rustls") {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "legacy TLS setter requires the Rustls backend",
+            ));
+        }
+        let ca = unsafe { bytes_from_view(ca) }?.to_vec();
+        let certificate = unsafe { bytes_from_view(certificate) }?.to_vec();
+        let private_key = unsafe { bytes_from_view(private_key) }?.to_vec();
+        let tls = tls_config(ca, certificate, private_key)
             .map_err(|error| ErrorHandle::from_core(&error, None))?;
         unsafe { config_ref(config) }?
             .update(|config| {
@@ -611,20 +807,202 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss(
     private_key: rumqttc_bytes_view_t,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
-    let url = unsafe { string_from_view(url) };
-    let ca = unsafe { bytes_from_view(ca) }.map(<[u8]>::to_vec);
-    let certificate = unsafe { bytes_from_view(certificate) }.map(<[u8]>::to_vec);
-    let private_key = unsafe { bytes_from_view(private_key) }.map(<[u8]>::to_vec);
     boundary(error_out, ptr::null_mut(), || {
-        let tls = tls_config(ca?, certificate?, private_key?)
+        if !cfg!(feature = "use-rustls") {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "legacy WSS setter requires the Rustls backend",
+            ));
+        }
+        let ca = unsafe { bytes_from_view(ca) }?.to_vec();
+        let certificate = unsafe { bytes_from_view(certificate) }?.to_vec();
+        let private_key = unsafe { bytes_from_view(private_key) }?.to_vec();
+        let tls = tls_config(ca, certificate, private_key)
             .map_err(|error| ErrorHandle::from_core(&error, None))?;
-        let url = url?;
+        let url = unsafe { string_from_view(url) }?;
         unsafe { config_ref(config) }?
             .update(|config| {
                 set_transport_wss(config, url, tls);
                 Ok(())
             })
             .map_err(ErrorHandle::internal)
+    })
+}
+
+unsafe fn parse_tls_options(
+    options: *const rumqttc_tls_options_t,
+) -> Result<TlsConfig, ErrorHandle> {
+    if options.is_null() {
+        return Err(ErrorHandle::argument("TLS options are NULL"));
+    }
+    let options = unsafe { &*options };
+    if options.struct_size < struct_size::<rumqttc_tls_options_t>()
+        || options.reserved != 0
+        || options.reserved_tail != [0; 2]
+    {
+        return Err(ErrorHandle::argument(
+            "invalid TLS options size or reserved fields",
+        ));
+    }
+    let backend = match options.backend {
+        0 if cfg!(feature = "use-rustls") => TlsBackend::Rustls,
+        1 if cfg!(feature = "use-native-tls") => TlsBackend::Native,
+        0 | 1 => {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "selected TLS backend is unavailable in this library",
+            ));
+        }
+        _ => return Err(ErrorHandle::argument("unknown TLS backend")),
+    };
+    let roots = match options.root_policy {
+        0 => {
+            if options.ca_pem.len != 0 {
+                return Err(ErrorHandle::argument(
+                    "platform roots cannot include CA PEM data",
+                ));
+            }
+            TlsRootPolicy::Platform
+        }
+        1 => {
+            let pem = unsafe { bytes_from_view(options.ca_pem) }?;
+            if pem.is_empty() {
+                return Err(ErrorHandle::argument("custom roots require CA PEM data"));
+            }
+            TlsRootPolicy::Pem(Bytes::copy_from_slice(pem))
+        }
+        _ => return Err(ErrorHandle::argument("unknown TLS root policy")),
+    };
+    let identity = match (
+        backend,
+        options.pem_identity.is_null(),
+        options.pkcs12_identity.is_null(),
+    ) {
+        (_, true, true) => None,
+        (TlsBackend::Rustls, false, true) => {
+            let raw = unsafe { &*options.pem_identity };
+            if raw.struct_size < struct_size::<rumqttc_tls_pem_identity_t>()
+                || raw.reserved != 0
+                || raw.reserved_tail != [0; 2]
+            {
+                return Err(ErrorHandle::argument("invalid PEM identity record"));
+            }
+            let certificate = unsafe { bytes_from_view(raw.certificate) }?;
+            let private_key = unsafe { bytes_from_view(raw.private_key) }?;
+            if certificate.is_empty() || private_key.is_empty() {
+                return Err(ErrorHandle::argument(
+                    "PEM certificate and private key must be nonempty",
+                ));
+            }
+            Some(TlsClientIdentity::RustlsPem {
+                certificate: Bytes::copy_from_slice(certificate),
+                private_key: SecretBytes::new(private_key.to_vec()),
+            })
+        }
+        (TlsBackend::Native, true, false) => {
+            let raw = unsafe { &*options.pkcs12_identity };
+            if raw.struct_size < struct_size::<rumqttc_tls_pkcs12_identity_t>()
+                || raw.reserved != 0
+                || raw.reserved_tail != [0; 2]
+            {
+                return Err(ErrorHandle::argument("invalid PKCS#12 identity record"));
+            }
+            let identity = unsafe { bytes_from_view(raw.identity) }?;
+            let password = unsafe { bytes_from_view(raw.password) }?;
+            if identity.is_empty() {
+                return Err(ErrorHandle::argument("PKCS#12 identity must be nonempty"));
+            }
+            Some(TlsClientIdentity::NativePkcs12 {
+                identity: SecretBytes::new(identity.to_vec()),
+                password: SecretBytes::new(password.to_vec()),
+            })
+        }
+        _ => {
+            return Err(ErrorHandle::argument(
+                "TLS identity does not match selected backend",
+            ));
+        }
+    };
+    if options.alpn_protocol_count > isize::MAX as usize / size_of::<rumqttc_bytes_view_t>() {
+        return Err(ErrorHandle::argument("ALPN protocol count is too large"));
+    }
+    if options.alpn_protocol_count != 0 && options.alpn_protocols.is_null() {
+        return Err(ErrorHandle::argument("ALPN protocol pointer is NULL"));
+    }
+    let views = if options.alpn_protocol_count == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(options.alpn_protocols, options.alpn_protocol_count) }
+    };
+    let mut alpn_protocols = Vec::with_capacity(views.len());
+    for view in views {
+        let protocol = unsafe { bytes_from_view(*view) }?;
+        if protocol.is_empty() || protocol.len() > 255 {
+            return Err(ErrorHandle::argument(
+                "ALPN identifiers must contain 1 to 255 bytes",
+            ));
+        }
+        if backend == TlsBackend::Native && std::str::from_utf8(protocol).is_err() {
+            return Err(ErrorHandle::argument(
+                "native TLS ALPN identifiers must be UTF-8",
+            ));
+        }
+        alpn_protocols.push(protocol.to_vec());
+    }
+    Ok(TlsConfig {
+        backend,
+        roots,
+        identity,
+        alpn_protocols,
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_transport_tls_with_options(
+    config: *mut rumqttc_config,
+    options: *const rumqttc_tls_options_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        let tls = unsafe { parse_tls_options(options) }?;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                set_transport_tls(config, tls);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_transport_wss_with_options(
+    config: *mut rumqttc_config,
+    url: rumqttc_string_view_t,
+    options: *const rumqttc_tls_options_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if !cfg!(feature = "websocket") {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "WebSocket is unavailable in this library",
+            ));
+        }
+        let url = unsafe { string_from_view(url) }?;
+        let tls = unsafe { parse_tls_options(options) }?;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                set_transport_wss(config, url, tls);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
     })
 }
 
@@ -756,6 +1134,706 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_session(
     })
 }
 
+unsafe fn parse_last_will(will: *const rumqttc_last_will_t) -> Result<LastWillConfig, ErrorHandle> {
+    if will.is_null() {
+        return Err(ErrorHandle::argument("last will is NULL"));
+    }
+    let will = unsafe { &*will };
+    if will.struct_size < struct_size::<rumqttc_last_will_t>() {
+        return Err(ErrorHandle::argument("last will struct is too small"));
+    }
+    if will.reserved != [0; 3] {
+        return Err(ErrorHandle::argument(
+            "last will reserved fields must be zero",
+        ));
+    }
+    let protocol = match (will.protocol_options, will.v5_properties.is_null()) {
+        (PROTOCOL_OPTIONS_VERSION_NEUTRAL, true) => LastWillProtocolOptions::VersionNeutral,
+        (PROTOCOL_OPTIONS_V5, false) => {
+            let props = unsafe { &*will.v5_properties };
+            if props.struct_size < struct_size::<rumqttc_v5_will_properties_t>() {
+                return Err(ErrorHandle::argument(
+                    "v5 will properties struct is too small",
+                ));
+            }
+            if props.reserved != [0; 2] {
+                return Err(ErrorHandle::argument(
+                    "v5 will reserved fields must be zero",
+                ));
+            }
+            let payload_format_indicator =
+                boolean(props.payload_format_present, "payload_format_present")?
+                    .then(|| {
+                        u8::try_from(props.payload_format_indicator)
+                            .map_err(|_| ErrorHandle::argument("payload format exceeds uint8_t"))
+                    })
+                    .transpose()?;
+            let properties = V5WillProperties {
+                will_delay_interval: boolean(props.will_delay_present, "will_delay_present")?
+                    .then_some(props.will_delay_interval),
+                payload_format_indicator,
+                message_expiry_interval: boolean(
+                    props.message_expiry_present,
+                    "message_expiry_present",
+                )?
+                .then_some(props.message_expiry_interval),
+                content_type: boolean(props.content_type_present, "content_type_present")?
+                    .then(|| unsafe { string_from_view(props.content_type) })
+                    .transpose()?,
+                response_topic: boolean(props.response_topic_present, "response_topic_present")?
+                    .then(|| unsafe { string_from_view(props.response_topic) })
+                    .transpose()?,
+                correlation_data: boolean(
+                    props.correlation_data_present,
+                    "correlation_data_present",
+                )?
+                .then(|| {
+                    unsafe { bytes_from_view(props.correlation_data) }.map(Bytes::copy_from_slice)
+                })
+                .transpose()?,
+                user_properties: unsafe {
+                    parse_user_properties(props.user_properties, props.user_property_count)
+                }?,
+            };
+            LastWillProtocolOptions::V5(properties)
+        }
+        _ => {
+            return Err(ErrorHandle::argument(
+                "invalid last will protocol selector or properties",
+            ));
+        }
+    };
+    Ok(LastWillConfig {
+        topic: unsafe { string_from_view(will.topic) }?,
+        payload: Bytes::copy_from_slice(unsafe { bytes_from_view(will.payload) }?),
+        qos: qos(will.qos)?,
+        retain: boolean(will.retain, "retain")?,
+        protocol,
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_last_will(
+    config: *mut rumqttc_config,
+    will: *const rumqttc_last_will_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        let will = unsafe { parse_last_will(will) }?;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                will.validate(config.protocol_version())
+                    .map_err(|e| core_error(&e, None))?;
+                config.common.last_will = Some(will);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_last_will(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.last_will = None;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_max_request_batch(
+    config: *mut rumqttc_config,
+    count: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.max_request_batch = count as usize;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_read_batch_size(
+    config: *mut rumqttc_config,
+    count: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.read_batch_size = count as usize;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_pending_throttle_us(
+    config: *mut rumqttc_config,
+    microseconds: u64,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.pending_throttle = Duration::from_micros(microseconds);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_local_incoming_packet_limit_bytes(
+    config: *mut rumqttc_config,
+    bytes: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if bytes == 0 {
+            return Err(ErrorHandle::argument(
+                "incoming packet limit must be nonzero",
+            ));
+        }
+        config.common.incoming_packet_size_limit =
+            rumqttc_wrapper_core::IncomingPacketLimit::Bytes(bytes);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_local_incoming_packet_limit_mode(
+    config: *mut rumqttc_config,
+    mode: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.incoming_packet_size_limit = match mode {
+            0 => rumqttc_wrapper_core::IncomingPacketLimit::Default,
+            1 => rumqttc_wrapper_core::IncomingPacketLimit::Unlimited,
+            _ => return Err(ErrorHandle::argument("unknown incoming packet limit mode")),
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v4_outgoing_packet_limit_bytes(
+    config: *mut rumqttc_config,
+    bytes: u64,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let size = usize::try_from(bytes)
+            .map_err(|_| ErrorHandle::argument("packet limit exceeds usize"))?;
+        if size == 0 {
+            return Err(ErrorHandle::argument("packet limit must be nonzero"));
+        }
+        match &mut config.protocol {
+            rumqttc_wrapper_core::ProtocolConfig::V4(v4) => v4.max_outgoing_packet_size = size,
+            _ => return Err(ErrorHandle::argument("v4 packet limit requires MQTT 3.1.1")),
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_reset_v4_outgoing_packet_limit(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| match &mut config.protocol {
+        rumqttc_wrapper_core::ProtocolConfig::V4(v4) => {
+            v4.max_outgoing_packet_size = usize::MAX;
+            Ok(())
+        }
+        _ => Err(ErrorHandle::argument("v4 packet limit requires MQTT 3.1.1")),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v4_inflight_limit(
+    config: *mut rumqttc_config,
+    limit: u16,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if limit == 0 {
+            return Err(ErrorHandle::argument("inflight limit must be nonzero"));
+        }
+        match &mut config.protocol {
+            rumqttc_wrapper_core::ProtocolConfig::V4(v4) => v4.inflight_limit = limit,
+            _ => {
+                return Err(ErrorHandle::argument(
+                    "v4 inflight limit requires MQTT 3.1.1",
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_advertised_max_packet_size_bytes(
+    config: *mut rumqttc_config,
+    bytes: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if bytes == 0 {
+            return Err(ErrorHandle::argument("maximum packet size must be nonzero"));
+        }
+        match &mut config.protocol {
+            rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
+                v5.connect_properties.maximum_packet_size = Some(bytes)
+            }
+            _ => {
+                return Err(ErrorHandle::argument(
+                    "advertised packet size requires MQTT 5",
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_v5_advertised_max_packet_size(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| match &mut config.protocol {
+        rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
+            v5.connect_properties.maximum_packet_size = None;
+            Ok(())
+        }
+        _ => Err(ErrorHandle::argument(
+            "advertised packet size requires MQTT 5",
+        )),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_outgoing_inflight_upper_limit(
+    config: *mut rumqttc_config,
+    limit: u16,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if limit == 0 {
+            return Err(ErrorHandle::argument(
+                "inflight upper limit must be nonzero",
+            ));
+        }
+        match &mut config.protocol {
+            rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
+                v5.outgoing_inflight_upper_limit = Some(limit)
+            }
+            _ => {
+                return Err(ErrorHandle::argument(
+                    "v5 inflight upper limit requires MQTT 5",
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_v5_outgoing_inflight_upper_limit(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| match &mut config.protocol {
+        rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
+            v5.outgoing_inflight_upper_limit = None;
+            Ok(())
+        }
+        _ => Err(ErrorHandle::argument(
+            "v5 inflight upper limit requires MQTT 5",
+        )),
+    })
+}
+
+unsafe fn parse_v5_connect_properties(
+    raw: *const rumqttc_v5_connect_properties_t,
+) -> Result<V5ConnectProperties, ErrorHandle> {
+    if raw.is_null() {
+        return Err(ErrorHandle::argument("CONNECT properties are NULL"));
+    }
+    let raw = unsafe { &*raw };
+    if raw.struct_size < struct_size::<rumqttc_v5_connect_properties_t>() {
+        return Err(ErrorHandle::argument(
+            "CONNECT properties struct is too small",
+        ));
+    }
+    if raw.reserved != [0; 4] || raw.reserved_tail != [0; 2] {
+        return Err(ErrorHandle::argument(
+            "CONNECT reserved fields must be zero",
+        ));
+    }
+    let receive_maximum = boolean(raw.receive_maximum_present, "receive_maximum_present")?
+        .then(|| {
+            u16::try_from(raw.receive_maximum)
+                .map_err(|_| ErrorHandle::argument("receive maximum exceeds uint16_t"))
+        })
+        .transpose()?;
+    let topic_alias_maximum = boolean(
+        raw.topic_alias_maximum_present,
+        "topic_alias_maximum_present",
+    )?
+    .then(|| {
+        u16::try_from(raw.topic_alias_maximum)
+            .map_err(|_| ErrorHandle::argument("topic alias maximum exceeds uint16_t"))
+    })
+    .transpose()?;
+    let properties = V5ConnectProperties {
+        session_expiry_interval: boolean(raw.session_expiry_present, "session_expiry_present")?
+            .then_some(raw.session_expiry_interval),
+        receive_maximum,
+        maximum_packet_size: boolean(
+            raw.maximum_packet_size_present,
+            "maximum_packet_size_present",
+        )?
+        .then_some(raw.maximum_packet_size),
+        topic_alias_maximum,
+        request_response_information: boolean(
+            raw.request_response_info_present,
+            "request_response_info_present",
+        )?
+        .then_some(raw.request_response_information),
+        request_problem_information: boolean(
+            raw.request_problem_info_present,
+            "request_problem_info_present",
+        )?
+        .then_some(raw.request_problem_information),
+        authentication_method: boolean(
+            raw.authentication_method_present,
+            "authentication_method_present",
+        )?
+        .then(|| unsafe { string_from_view(raw.authentication_method) })
+        .transpose()?,
+        authentication_data: boolean(
+            raw.authentication_data_present,
+            "authentication_data_present",
+        )?
+        .then(|| unsafe { bytes_from_view(raw.authentication_data) }.map(Bytes::copy_from_slice))
+        .transpose()?,
+        user_properties: unsafe {
+            parse_user_properties(raw.user_properties, raw.user_property_count)
+        }?,
+    };
+    properties.validate().map_err(|e| core_error(&e, None))?;
+    Ok(properties)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_connect_properties(
+    config: *mut rumqttc_config,
+    properties: *const rumqttc_v5_connect_properties_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        let properties = unsafe { parse_v5_connect_properties(properties) }?;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| match &mut config.protocol {
+                rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
+                    v5.connect_properties = properties;
+                    Ok(())
+                }
+                _ => Err(ErrorHandle::argument("CONNECT properties require MQTT 5")),
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_v5_connect_properties(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| match &mut config.protocol {
+        rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
+            v5.connect_properties = rumqttc_wrapper_core::V5Config::default().connect_properties;
+            Ok(())
+        }
+        _ => Err(ErrorHandle::argument("CONNECT properties require MQTT 5")),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_topic_alias_policy(
+    config: *mut rumqttc_config,
+    policy: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let policy = match policy {
+            0 => TopicAliasPolicy::Disabled,
+            1 => TopicAliasPolicy::Monotonic,
+            2 => TopicAliasPolicy::Lru,
+            _ => return Err(ErrorHandle::argument("unknown topic alias policy")),
+        };
+        match &mut config.protocol {
+            rumqttc_wrapper_core::ProtocolConfig::V5(v5) => v5.topic_alias_policy = policy,
+            _ => return Err(ErrorHandle::argument("topic alias policy requires MQTT 5")),
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_unix_broker(
+    config: *mut rumqttc_config,
+    path: rumqttc_bytes_view_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if !cfg!(unix) {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "Unix sockets are unsupported on this platform",
+            ));
+        }
+        let path = unsafe { bytes_from_view(path) }?;
+        if path.is_empty() || path.contains(&0) {
+            return Err(ErrorHandle::argument(
+                "Unix socket path must be nonempty and contain no NUL",
+            ));
+        }
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::ffi::OsStringExt;
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(path.to_vec()))
+        };
+        #[cfg(not(unix))]
+        let path = std::path::PathBuf::new();
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                config.common.broker = rumqttc_wrapper_core::BrokerTarget::Unix { path };
+                config.common.transport = rumqttc_wrapper_core::TransportConfig::Unix;
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_websocket_header_edits(
+    config: *mut rumqttc_config,
+    edits: *const rumqttc_websocket_header_edit_t,
+    count: usize,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if count > isize::MAX as usize / size_of::<rumqttc_websocket_header_edit_t>() {
+            return Err(ErrorHandle::argument("WebSocket header count is too large"));
+        }
+        if count != 0 && edits.is_null() {
+            return Err(ErrorHandle::argument("WebSocket header pointer is NULL"));
+        }
+        let inputs = if count == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(edits, count) }
+        };
+        let mut parsed = Vec::with_capacity(count);
+        for edit in inputs {
+            if edit.struct_size < struct_size::<rumqttc_websocket_header_edit_t>()
+                || edit.reserved != [0; 2]
+            {
+                return Err(ErrorHandle::argument("invalid WebSocket header record"));
+            }
+            let name = unsafe { string_from_view(edit.name) }?;
+            let header = match edit.operation {
+                0 => WebSocketHeader::Append {
+                    name,
+                    value: unsafe { string_from_view(edit.value) }?,
+                },
+                1 => WebSocketHeader::Replace {
+                    name,
+                    value: unsafe { string_from_view(edit.value) }?,
+                },
+                2 => {
+                    if edit.value.len != 0 {
+                        return Err(ErrorHandle::argument(
+                            "remove header cannot include a value",
+                        ));
+                    }
+                    WebSocketHeader::Remove { name }
+                }
+                _ => return Err(ErrorHandle::argument("unknown WebSocket header operation")),
+            };
+            header.validate().map_err(|e| core_error(&e, None))?;
+            parsed.push(header);
+        }
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                config.common.websocket_headers = parsed;
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_tcp_send_buffer_size_bytes(
+    config: *mut rumqttc_config,
+    bytes: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if bytes == 0 {
+            return Err(ErrorHandle::argument(
+                "TCP send buffer size must be nonzero",
+            ));
+        }
+        config.common.network.tcp_send_buffer_size = Some(bytes);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_tcp_receive_buffer_size_bytes(
+    config: *mut rumqttc_config,
+    bytes: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if bytes == 0 {
+            return Err(ErrorHandle::argument(
+                "TCP receive buffer size must be nonzero",
+            ));
+        }
+        config.common.network.tcp_receive_buffer_size = Some(bytes);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_tcp_buffer_sizes(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.network.tcp_send_buffer_size = None;
+        config.common.network.tcp_receive_buffer_size = None;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_tcp_nodelay(
+    config: *mut rumqttc_config,
+    enabled: u8,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.network.tcp_nodelay = boolean(enabled, "TCP_NODELAY enabled")?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_local_bind_address(
+    config: *mut rumqttc_config,
+    address: rumqttc_string_view_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        let address = unsafe { string_from_view(address) }?
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| ErrorHandle::argument("invalid local bind address"))?;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                config.common.network.local_address = Some(address);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_local_bind_address(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.network.local_address = None;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_bind_device(
+    config: *mut rumqttc_config,
+    device: rumqttc_string_view_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if !cfg!(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "fuchsia"
+        )) {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "bind device is unsupported on this platform",
+            ));
+        }
+        let device = unsafe { string_from_view(device) }?;
+        if device.is_empty() || device.contains('\0') {
+            return Err(ErrorHandle::argument("invalid bind device"));
+        }
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                config.common.network.bind_device = Some(device);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_bind_device(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.network.bind_device = None;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_mptcp(
+    config: *mut rumqttc_config,
+    enabled: u8,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let enabled = boolean(enabled, "MPTCP enabled")?;
+        if enabled && !cfg!(target_os = "linux") {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "MPTCP is unsupported on this platform",
+            ));
+        }
+        config.common.network.mptcp = enabled;
+        Ok(())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_client_start(
     config: *const rumqttc_config,
@@ -806,6 +1884,107 @@ pub unsafe extern "C" fn rumqttc_client_close_now_timeout_ms(
         let client = unsafe { client_ref_for_shutdown(client) }?;
         client
             .close_now(Duration::from_millis(timeout_ms))
+            .map_err(client_error)
+    })
+}
+
+unsafe fn parse_disconnect_options(
+    options: *const rumqttc_disconnect_options_t,
+) -> Result<DisconnectProtocolOptions, ErrorHandle> {
+    if options.is_null() {
+        return Ok(DisconnectProtocolOptions::VersionNeutral);
+    }
+    let options = unsafe { &*options };
+    if options.struct_size < struct_size::<rumqttc_disconnect_options_t>()
+        || options.reserved != [0; 2]
+    {
+        return Err(ErrorHandle::argument("invalid disconnect options record"));
+    }
+    match (options.protocol_options, options.v5_properties.is_null()) {
+        (PROTOCOL_OPTIONS_VERSION_NEUTRAL, true) => Ok(DisconnectProtocolOptions::VersionNeutral),
+        (PROTOCOL_OPTIONS_V5, false) => {
+            let raw = unsafe { &*options.v5_properties };
+            if raw.struct_size < struct_size::<rumqttc_v5_disconnect_properties_t>()
+                || raw.reserved != [0; 5]
+            {
+                return Err(ErrorHandle::argument(
+                    "invalid MQTT 5 disconnect properties record",
+                ));
+            }
+            let reason_code = u8::try_from(raw.reason_code)
+                .map_err(|_| ErrorHandle::argument("disconnect reason exceeds uint8_t"))?;
+            let parsed = V5DisconnectOptions {
+                reason_code,
+                session_expiry_interval: boolean(
+                    raw.session_expiry_present,
+                    "session_expiry_present",
+                )?
+                .then_some(raw.session_expiry_interval),
+                reason_string: boolean(raw.reason_string_present, "reason_string_present")?
+                    .then(|| unsafe { string_from_view(raw.reason_string) })
+                    .transpose()?,
+                server_reference: boolean(
+                    raw.server_reference_present,
+                    "server_reference_present",
+                )?
+                .then(|| unsafe { string_from_view(raw.server_reference) })
+                .transpose()?,
+                user_properties: unsafe {
+                    parse_user_properties(raw.user_properties, raw.user_property_count)
+                }?,
+            };
+            parsed.validate().map_err(|e| core_error(&e, None))?;
+            Ok(DisconnectProtocolOptions::V5(parsed))
+        }
+        _ => Err(ErrorHandle::argument(
+            "invalid disconnect selector or properties",
+        )),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_close_with_options_timeout_ms(
+    client: *mut rumqttc_client,
+    timeout_ms: u64,
+    options: *const rumqttc_disconnect_options_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, client, || {
+        let options = unsafe { parse_disconnect_options(options) }?;
+        let client = unsafe { client_ref(client) }?;
+        if matches!(options, DisconnectProtocolOptions::V5(_))
+            && client.protocol != ProtocolVersion::V5
+        {
+            return Err(ErrorHandle::argument(
+                "MQTT 5 disconnect options require MQTT 5",
+            ));
+        }
+        client
+            .close_with_options(Duration::from_millis(timeout_ms), options)
+            .map_err(client_error)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_close_now_with_options_timeout_ms(
+    client: *mut rumqttc_client,
+    timeout_ms: u64,
+    options: *const rumqttc_disconnect_options_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, client, || {
+        let options = unsafe { parse_disconnect_options(options) }?;
+        let client = unsafe { client_ref_for_shutdown(client) }?;
+        if matches!(options, DisconnectProtocolOptions::V5(_))
+            && client.protocol != ProtocolVersion::V5
+        {
+            return Err(ErrorHandle::argument(
+                "MQTT 5 disconnect options require MQTT 5",
+            ));
+        }
+        client
+            .close_now_with_options(Duration::from_millis(timeout_ms), options)
             .map_err(client_error)
     })
 }
@@ -2209,7 +3388,7 @@ pub unsafe extern "C" fn rumqttc_error_code(
         if out.is_null() {
             return Err(ErrorHandle::argument("error code output is NULL"));
         }
-        unsafe { *out = view_string(&error_ref(error)?.code) };
+        unsafe { *out = view_string(error_ref(error)?.code) };
         Ok(())
     })
 }
@@ -2312,6 +3491,45 @@ pub unsafe extern "C" fn rumqttc_error_operation_id(
         unsafe {
             write_optional(present_out, u8::from(error.operation_id.is_some()));
             write_optional(operation_id_out, error.operation_id.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_context(
+    error: *const rumqttc_error,
+    protocol_out: *mut u32,
+    phase_out: *mut u32,
+    generation_present_out: *mut u8,
+    generation_out: *mut u64,
+    delivery_status_out: *mut u32,
+) -> u32 {
+    unsafe {
+        write_optional(protocol_out, 0);
+        write_optional(phase_out, 0);
+        write_optional(generation_present_out, 0);
+        write_optional(generation_out, 0);
+        write_optional(delivery_status_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if protocol_out.is_null()
+            && phase_out.is_null()
+            && generation_present_out.is_null()
+            && generation_out.is_null()
+            && delivery_status_out.is_null()
+        {
+            return Err(ErrorHandle::argument(
+                "at least one error context output is required",
+            ));
+        }
+        let error = unsafe { error_ref(error) }?;
+        unsafe {
+            write_optional(protocol_out, error.protocol.unwrap_or(0));
+            write_optional(phase_out, error.phase.unwrap_or(0));
+            write_optional(generation_present_out, u8::from(error.generation.is_some()));
+            write_optional(generation_out, error.generation.unwrap_or(0));
+            write_optional(delivery_status_out, error.delivery_status);
         }
         Ok(())
     })
@@ -2521,6 +3739,49 @@ mod tests {
         };
         assert!(result.is_ok());
         assert_eq!(&same_buffer, b"same");
+    }
+
+    #[test]
+    fn tls_options_preserve_backend_roots_identity_and_alpn() {
+        let ca = b"custom-ca";
+        let alpn = [view_bytes(b"mqtt"), view_bytes(b"mqtt-v5")];
+        let pkcs12 = rumqttc_tls_pkcs12_identity_t {
+            struct_size: struct_size::<rumqttc_tls_pkcs12_identity_t>(),
+            reserved: 0,
+            identity: view_bytes(b"identity"),
+            password: view_bytes(b"password"),
+            reserved_tail: [0; 2],
+        };
+        let options = rumqttc_tls_options_t {
+            struct_size: struct_size::<rumqttc_tls_options_t>(),
+            backend: 1,
+            root_policy: 1,
+            reserved: 0,
+            ca_pem: view_bytes(ca),
+            pem_identity: ptr::null(),
+            pkcs12_identity: &raw const pkcs12,
+            alpn_protocols: alpn.as_ptr(),
+            alpn_protocol_count: alpn.len(),
+            reserved_tail: [0; 2],
+        };
+        let parsed = unsafe { parse_tls_options(&raw const options) };
+        if cfg!(feature = "use-native-tls") {
+            let parsed = parsed.unwrap();
+            assert_eq!(parsed.backend, TlsBackend::Native);
+            assert_eq!(parsed.roots, TlsRootPolicy::Pem(Bytes::from_static(ca)));
+            assert_eq!(
+                parsed.alpn_protocols,
+                vec![b"mqtt".to_vec(), b"mqtt-v5".to_vec()]
+            );
+            let Some(TlsClientIdentity::NativePkcs12 { identity, password }) = parsed.identity
+            else {
+                panic!("expected PKCS#12 identity");
+            };
+            assert_eq!(identity.expose(), b"identity");
+            assert_eq!(password.expose(), b"password");
+        } else {
+            assert!(parsed.is_err());
+        }
     }
 
     #[test]

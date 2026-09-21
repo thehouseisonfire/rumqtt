@@ -148,3 +148,9 @@ pub struct V5DisconnectOptions {
     pub user_properties: Vec<(String, String)>,
     pub server_reference: Option<String>,
 }
+
+impl V5DisconnectOptions {
+    pub fn validate(&self) -> crate::Result<()> {
+        crate::backend::v5::disconnect_properties(self).map(|_| ())
+    }
+}

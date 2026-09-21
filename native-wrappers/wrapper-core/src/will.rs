@@ -34,7 +34,7 @@ pub struct V5WillProperties {
 }
 
 impl LastWillConfig {
-    pub(crate) fn validate(&self, protocol: ProtocolVersion) -> Result<()> {
+    pub fn validate(&self, protocol: ProtocolVersion) -> Result<()> {
         validate_topic(&self.topic, "will topic")?;
         validate_binary(&self.payload, "will payload")?;
         if let LastWillProtocolOptions::V5(properties) = &self.protocol {

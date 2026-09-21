@@ -16,9 +16,20 @@ readme = "README.md"
 name = "rumqttc"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+default = ["use-rustls", "websocket"]
+use-rustls = ["rumqttc-wrapper-core-next/use-rustls"]
+use-native-tls = ["rumqttc-wrapper-core-next/use-native-tls"]
+websocket = ["rumqttc-wrapper-core-next/websocket"]
+http-proxy = ["rumqttc-wrapper-core-next/http-proxy"]
+socks-proxy = ["rumqttc-wrapper-core-next/socks-proxy"]
+system-srv-resolver = ["rumqttc-wrapper-core-next/system-srv-resolver"]
+auth-scram = ["rumqttc-wrapper-core-next/auth-scram"]
+tracing = ["rumqttc-wrapper-core-next/tracing"]
+
 [dependencies]
 bytes = "1.5"
-rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha" }
+rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha", default-features = false }
 
 [build-dependencies]
 cbindgen = "0.29"

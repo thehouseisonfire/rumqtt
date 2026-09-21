@@ -22,6 +22,9 @@ int main() {
   rumqttc_unsubscribe_options_t unsubscribe_options =
       RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT;
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
+  rumqttc_tls_options_t tls_options = RUMQTTC_TLS_OPTIONS_INIT;
+  rumqttc_tls_pem_identity_t pem_identity = RUMQTTC_TLS_PEM_IDENTITY_INIT;
+  rumqttc_tls_pkcs12_identity_t pkcs12_identity = RUMQTTC_TLS_PKCS12_IDENTITY_INIT;
   rumqttc_config_t *config = nullptr;
   if (user_property.struct_size != sizeof(user_property) ||
       properties.struct_size != sizeof(properties) ||
@@ -33,7 +36,10 @@ int main() {
       v5_unsubscribe_properties.struct_size !=
           sizeof(v5_unsubscribe_properties) ||
       unsubscribe_options.struct_size != sizeof(unsubscribe_options) ||
-      diagnostics.struct_size != sizeof(diagnostics)) {
+      diagnostics.struct_size != sizeof(diagnostics) ||
+      tls_options.struct_size != sizeof(tls_options) ||
+      pem_identity.struct_size != sizeof(pem_identity) ||
+      pkcs12_identity.struct_size != sizeof(pkcs12_identity)) {
     return 1;
   }
   const auto status = rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &config, nullptr);

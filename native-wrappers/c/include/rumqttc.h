@@ -79,6 +79,10 @@ typedef uint32_t rumqttc_event_kind_t;
 #define RUMQTTC_CONNECTION_PHASE_NONE 0u
 #define RUMQTTC_CONNECTION_PHASE_ATTEMPT 1u
 #define RUMQTTC_CONNECTION_PHASE_ESTABLISHED 2u
+#define RUMQTTC_DELIVERY_NOT_APPLICABLE 0u
+#define RUMQTTC_DELIVERY_NOT_ADMITTED 1u
+#define RUMQTTC_DELIVERY_REJECTED 2u
+#define RUMQTTC_DELIVERY_AMBIGUOUS 3u
 
 /* Outgoing activity values returned by rumqttc_event_outgoing_kind. */
 #define RUMQTTC_OUTGOING_PUBLISH 1u
@@ -121,6 +125,35 @@ typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_ERROR_SHUTDOWN 10u
 #define RUMQTTC_ERROR_INTERNAL 11u
 
+/* Bits describe the loaded library. Unknown bits must be ignored. */
+#define RUMQTTC_CAP_PROTOCOL_V4 (UINT64_C(1) << 0)
+#define RUMQTTC_CAP_PROTOCOL_V5 (UINT64_C(1) << 1)
+#define RUMQTTC_CAP_RUSTLS (UINT64_C(1) << 2)
+#define RUMQTTC_CAP_NATIVE_TLS (UINT64_C(1) << 3)
+#define RUMQTTC_CAP_WEBSOCKET (UINT64_C(1) << 4)
+#define RUMQTTC_CAP_HTTP_PROXY (UINT64_C(1) << 5)
+#define RUMQTTC_CAP_SOCKS5_PROXY (UINT64_C(1) << 6)
+#define RUMQTTC_CAP_UNIX_SOCKET (UINT64_C(1) << 7)
+#define RUMQTTC_CAP_SYSTEM_SRV (UINT64_C(1) << 8)
+#define RUMQTTC_CAP_SCRAM (UINT64_C(1) << 9)
+#define RUMQTTC_CAP_TRACING (UINT64_C(1) << 10)
+#define RUMQTTC_CAP_SESSION_STORE_CALLBACKS (UINT64_C(1) << 11)
+
+typedef uint32_t rumqttc_tls_backend_t;
+#define RUMQTTC_TLS_BACKEND_RUSTLS 0u
+#define RUMQTTC_TLS_BACKEND_NATIVE 1u
+typedef uint32_t rumqttc_tls_root_policy_t;
+#define RUMQTTC_TLS_ROOTS_PLATFORM 0u
+#define RUMQTTC_TLS_ROOTS_PEM 1u
+#define RUMQTTC_INCOMING_PACKET_LIMIT_DEFAULT 0u
+#define RUMQTTC_INCOMING_PACKET_LIMIT_UNLIMITED 1u
+#define RUMQTTC_TOPIC_ALIAS_DISABLED 0u
+#define RUMQTTC_TOPIC_ALIAS_MONOTONIC 1u
+#define RUMQTTC_TOPIC_ALIAS_LRU 2u
+#define RUMQTTC_WEBSOCKET_HEADER_ADD 0u
+#define RUMQTTC_WEBSOCKET_HEADER_REPLACE 1u
+#define RUMQTTC_WEBSOCKET_HEADER_REMOVE 2u
+
 typedef struct rumqttc_config_t rumqttc_config_t;
 typedef struct rumqttc_client_t rumqttc_client_t;
 typedef struct rumqttc_event_t rumqttc_event_t;
@@ -161,6 +194,118 @@ typedef struct rumqttc_user_property_t {
     rumqttc_string_view_t name;
     rumqttc_string_view_t value;
 } rumqttc_user_property_t;
+
+typedef struct rumqttc_v5_will_properties_t {
+    uint32_t struct_size;
+    uint8_t will_delay_present;
+    uint8_t payload_format_present;
+    uint8_t message_expiry_present;
+    uint8_t content_type_present;
+    uint8_t response_topic_present;
+    uint8_t correlation_data_present;
+    uint8_t reserved[2];
+    uint32_t will_delay_interval;
+    uint32_t payload_format_indicator;
+    uint32_t message_expiry_interval;
+    rumqttc_string_view_t content_type;
+    rumqttc_string_view_t response_topic;
+    rumqttc_bytes_view_t correlation_data;
+    const rumqttc_user_property_t *user_properties;
+    size_t user_property_count;
+} rumqttc_v5_will_properties_t;
+
+typedef struct rumqttc_last_will_t {
+    uint32_t struct_size;
+    rumqttc_string_view_t topic;
+    rumqttc_bytes_view_t payload;
+    rumqttc_qos_t qos;
+    uint8_t retain;
+    uint8_t reserved[3];
+    rumqttc_protocol_options_t protocol_options;
+    const rumqttc_v5_will_properties_t *v5_properties;
+} rumqttc_last_will_t;
+
+typedef struct rumqttc_v5_connect_properties_t {
+    uint32_t struct_size;
+    uint8_t session_expiry_present;
+    uint8_t receive_maximum_present;
+    uint8_t maximum_packet_size_present;
+    uint8_t topic_alias_maximum_present;
+    uint8_t request_response_info_present;
+    uint8_t request_problem_info_present;
+    uint8_t authentication_method_present;
+    uint8_t authentication_data_present;
+    uint8_t reserved[4];
+    uint32_t session_expiry_interval;
+    uint32_t receive_maximum;
+    uint32_t maximum_packet_size;
+    uint32_t topic_alias_maximum;
+    uint8_t request_response_information;
+    uint8_t request_problem_information;
+    uint8_t reserved_tail[2];
+    rumqttc_string_view_t authentication_method;
+    rumqttc_bytes_view_t authentication_data;
+    const rumqttc_user_property_t *user_properties;
+    size_t user_property_count;
+} rumqttc_v5_connect_properties_t;
+
+typedef struct rumqttc_websocket_header_edit_t {
+    uint32_t struct_size;
+    uint32_t operation;
+    rumqttc_string_view_t name;
+    rumqttc_string_view_t value;
+    uint64_t reserved[2];
+} rumqttc_websocket_header_edit_t;
+
+typedef struct rumqttc_v5_disconnect_properties_t {
+    uint32_t struct_size;
+    uint32_t reason_code;
+    uint8_t session_expiry_present;
+    uint8_t reason_string_present;
+    uint8_t server_reference_present;
+    uint8_t reserved[5];
+    uint32_t session_expiry_interval;
+    rumqttc_string_view_t reason_string;
+    rumqttc_string_view_t server_reference;
+    const rumqttc_user_property_t *user_properties;
+    size_t user_property_count;
+} rumqttc_v5_disconnect_properties_t;
+
+typedef struct rumqttc_disconnect_options_t {
+    uint32_t struct_size;
+    rumqttc_protocol_options_t protocol_options;
+    const rumqttc_v5_disconnect_properties_t *v5_properties;
+    uint64_t reserved[2];
+} rumqttc_disconnect_options_t;
+
+typedef struct rumqttc_tls_pem_identity_t {
+    uint32_t struct_size;
+    uint32_t reserved;
+    rumqttc_bytes_view_t certificate;
+    rumqttc_bytes_view_t private_key;
+    uint64_t reserved_tail[2];
+} rumqttc_tls_pem_identity_t;
+
+typedef struct rumqttc_tls_pkcs12_identity_t {
+    uint32_t struct_size;
+    uint32_t reserved;
+    rumqttc_bytes_view_t identity;
+    rumqttc_bytes_view_t password;
+    uint64_t reserved_tail[2];
+} rumqttc_tls_pkcs12_identity_t;
+
+typedef struct rumqttc_tls_options_t {
+    uint32_t struct_size;
+    rumqttc_tls_backend_t backend;
+    rumqttc_tls_root_policy_t root_policy;
+    uint32_t reserved;
+    rumqttc_bytes_view_t ca_pem;
+    const rumqttc_tls_pem_identity_t *pem_identity;
+    const rumqttc_tls_pkcs12_identity_t *pkcs12_identity;
+    const rumqttc_bytes_view_t *alpn_protocols;
+    size_t alpn_protocol_count;
+    uint64_t reserved_tail[2];
+} rumqttc_tls_options_t;
 
 typedef struct rumqttc_v5_publish_properties_t {
     uint32_t struct_size;
@@ -249,6 +394,32 @@ typedef struct rumqttc_diagnostics_t {
 /* C11/C++17-compatible defaults for every extensible public record. */
 #define RUMQTTC_USER_PROPERTY_INIT \
     { sizeof(rumqttc_user_property_t), { NULL, 0 }, { NULL, 0 } }
+#define RUMQTTC_V5_WILL_PROPERTIES_INIT \
+    { sizeof(rumqttc_v5_will_properties_t), 0, 0, 0, 0, 0, 0, { 0, 0 }, \
+      0, 0, 0, { NULL, 0 }, { NULL, 0 }, { NULL, 0 }, NULL, 0 }
+#define RUMQTTC_LAST_WILL_INIT \
+    { sizeof(rumqttc_last_will_t), { NULL, 0 }, { NULL, 0 }, RUMQTTC_QOS_0, \
+      0, { 0, 0, 0 }, RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, NULL }
+#define RUMQTTC_V5_CONNECT_PROPERTIES_INIT \
+    { sizeof(rumqttc_v5_connect_properties_t), 0, 0, 0, 0, 0, 0, 0, 0, \
+      { 0, 0, 0, 0 }, 0, 0, 0, 0, 0, 0, { 0, 0 }, \
+      { NULL, 0 }, { NULL, 0 }, NULL, 0 }
+#define RUMQTTC_WEBSOCKET_HEADER_EDIT_INIT \
+    { sizeof(rumqttc_websocket_header_edit_t), RUMQTTC_WEBSOCKET_HEADER_ADD, \
+      { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
+#define RUMQTTC_V5_DISCONNECT_PROPERTIES_INIT \
+    { sizeof(rumqttc_v5_disconnect_properties_t), 0, 0, 0, 0, { 0, 0, 0, 0, 0 }, \
+      0, { NULL, 0 }, { NULL, 0 }, NULL, 0 }
+#define RUMQTTC_DISCONNECT_OPTIONS_INIT \
+    { sizeof(rumqttc_disconnect_options_t), RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, \
+      NULL, { 0, 0 } }
+#define RUMQTTC_TLS_PEM_IDENTITY_INIT \
+    { sizeof(rumqttc_tls_pem_identity_t), 0, { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
+#define RUMQTTC_TLS_PKCS12_IDENTITY_INIT \
+    { sizeof(rumqttc_tls_pkcs12_identity_t), 0, { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
+#define RUMQTTC_TLS_OPTIONS_INIT \
+    { sizeof(rumqttc_tls_options_t), RUMQTTC_TLS_BACKEND_RUSTLS, \
+      RUMQTTC_TLS_ROOTS_PLATFORM, 0, { NULL, 0 }, NULL, NULL, NULL, 0, { 0, 0 } }
 #define RUMQTTC_V5_PUBLISH_PROPERTIES_INIT \
     { sizeof(rumqttc_v5_publish_properties_t), { NULL, 0 }, 0, 0, 0, 0, \
       { NULL, 0 }, { NULL, 0 }, 0, 0, 0, { 0, 0, 0 }, 0, NULL, 0 }
@@ -276,6 +447,7 @@ typedef struct rumqttc_diagnostics_t {
 
 RUMQTTC_API uint32_t rumqttc_abi_version(void);
 RUMQTTC_API const char *rumqttc_library_version(void);
+RUMQTTC_API uint64_t rumqttc_library_capabilities(void);
 
 RUMQTTC_API rumqttc_status_t rumqttc_config_new(rumqttc_protocol_t protocol, rumqttc_config_t **out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_config_destroy(rumqttc_config_t *config);
@@ -287,8 +459,14 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_password(rumqttc_config_t *confi
 RUMQTTC_API rumqttc_status_t rumqttc_config_clear_password(rumqttc_config_t *config, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tcp(rumqttc_config_t *config, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tls(rumqttc_config_t *config, rumqttc_bytes_view_t ca, rumqttc_bytes_view_t certificate, rumqttc_bytes_view_t private_key, rumqttc_error_t **error_out);
+/* Explicit TLS backend and trust policy. All inputs are copied before return.
+ * PEM CA roots replace platform roots. Private key, PKCS#12 data, and password
+ * are wiped when wrapper-owned copies are dropped; caller and TLS-library copies
+ * have independent lifetimes. The old TLS setter always selects Rustls. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tls_with_options(rumqttc_config_t *config, const rumqttc_tls_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_websocket(rumqttc_config_t *config, rumqttc_string_view_t url, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss(rumqttc_config_t *config, rumqttc_string_view_t url, rumqttc_bytes_view_t ca, rumqttc_bytes_view_t certificate, rumqttc_bytes_view_t private_key, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss_with_options(rumqttc_config_t *config, rumqttc_string_view_t url, const rumqttc_tls_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_keep_alive_seconds(rumqttc_config_t *config, uint64_t seconds, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_connection_timeout_seconds(rumqttc_config_t *config, uint64_t seconds, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_request_capacity(rumqttc_config_t *config, uint32_t capacity, rumqttc_error_t **error_out);
@@ -299,10 +477,48 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_incoming_packet_limit(rumqttc_co
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_emit_outgoing_events(rumqttc_config_t *config, uint8_t enabled, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v4_clean_session(rumqttc_config_t *config, uint8_t clean_session, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_session(rumqttc_config_t *config, uint8_t clean_start, uint8_t expiry_present, uint32_t expiry_seconds, rumqttc_error_t **error_out);
+/* Copies every supplied view. V5 selector/properties require a V5 config. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_last_will(rumqttc_config_t *config, const rumqttc_last_will_t *will, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_last_will(rumqttc_config_t *config, rumqttc_error_t **error_out);
+/* Zero means legacy single-request processing or adaptive read batching. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_max_request_batch(rumqttc_config_t *config, uint32_t count, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_read_batch_size(rumqttc_config_t *config, uint32_t count, rumqttc_error_t **error_out);
+/* Zero disables pending retransmission throttling. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_pending_throttle_us(rumqttc_config_t *config, uint64_t microseconds, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_local_incoming_packet_limit_bytes(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_local_incoming_packet_limit_mode(rumqttc_config_t *config, uint32_t mode, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v4_outgoing_packet_limit_bytes(rumqttc_config_t *config, uint64_t bytes, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_reset_v4_outgoing_packet_limit(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v4_inflight_limit(rumqttc_config_t *config, uint16_t limit, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_advertised_max_packet_size_bytes(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_v5_advertised_max_packet_size(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_outgoing_inflight_upper_limit(rumqttc_config_t *config, uint16_t limit, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_v5_outgoing_inflight_upper_limit(rumqttc_config_t *config, rumqttc_error_t **error_out);
+/* Explicit presence flags preserve absent and present-empty fields. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_connect_properties(rumqttc_config_t *config, const rumqttc_v5_connect_properties_t *properties, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_v5_connect_properties(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_topic_alias_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
+/* Unix path bytes use the platform's native Unix encoding; no UTF-8 conversion. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_unix_broker(rumqttc_config_t *config, rumqttc_bytes_view_t path, rumqttc_error_t **error_out);
+/* Copies ordered edits; append retains duplicates, replace and remove act in order. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_websocket_header_edits(rumqttc_config_t *config, const rumqttc_websocket_header_edit_t *edits, size_t count, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_tcp_send_buffer_size_bytes(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_tcp_receive_buffer_size_bytes(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_tcp_buffer_sizes(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_tcp_nodelay(rumqttc_config_t *config, uint8_t enabled, rumqttc_error_t **error_out);
+/* Numeric IPv4/IPv6 socket address with port, for example 127.0.0.1:0. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_local_bind_address(rumqttc_config_t *config, rumqttc_string_view_t address, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_local_bind_address(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_bind_device(rumqttc_config_t *config, rumqttc_string_view_t device, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_bind_device(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_mptcp(rumqttc_config_t *config, uint8_t enabled, rumqttc_error_t **error_out);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_start(const rumqttc_config_t *config, rumqttc_client_t **out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_close_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_close_now_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
+/* The first admitted options win; incompatible later close options fail. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_close_with_options_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, const rumqttc_disconnect_options_t *options, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_close_now_with_options_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, const rumqttc_disconnect_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_destroy_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_client_abandon(rumqttc_client_t *client);
 
@@ -349,6 +565,7 @@ RUMQTTC_API rumqttc_status_t rumqttc_error_message(const rumqttc_error_t *error,
 RUMQTTC_API rumqttc_status_t rumqttc_error_source_chain(const rumqttc_error_t *error, rumqttc_string_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_flags(const rumqttc_error_t *error, uint8_t *retryable_out, uint8_t *ambiguous_out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_broker_reason(const rumqttc_error_t *error, uint8_t *present_out, uint8_t *reason_out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_context(const rumqttc_error_t *error, rumqttc_protocol_t *protocol_out, uint32_t *phase_out, uint8_t *generation_present_out, uint64_t *generation_out, uint32_t *delivery_status_out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_operation_id(const rumqttc_error_t *error, uint8_t *present_out, uint64_t *operation_id_out);
 RUMQTTC_API void rumqttc_error_destroy(rumqttc_error_t *error);
 

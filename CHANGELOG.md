@@ -1,6 +1,12 @@
 ## [Unreleased]
 
 ### Fixed
+- C wrapper: Restore TCP transport when a TCP broker replaces a Unix broker,
+  so the resulting configuration can connect without an extra transport setter.
+- C wrapper: Make the advertised native TLS backend selectable through new
+  size-versioned TLS/WSS options with explicit trust and identity records.
+  Legacy PEM setters continue to select Rustls and now reject native-TLS-only
+  builds at the setter instead of failing at client start.
 - Native wrapper core: Enforce graceful-close deadlines while a session-store
   callback or connection attempt is pending, with bounded driver cleanup and
   terminal completion of admitted work. Classify proxy connection failures as
@@ -48,6 +54,12 @@
   synchronized while entering and leaving isolated redirect targets.
 
 ### Added
+- C wrapper: Add a loaded-library capability query and structured error context;
+  copied Last Will and MQTT 5
+  CONNECT property records; packet, batching, inflight, and alias controls;
+  Unix socket endpoints; ordered WebSocket header edits; portable TCP
+  network setters; and MQTT 5 graceful/immediate close options. The existing C
+  ABI version and exported signatures remain unchanged.
 - Native wrapper core: Deterministic parity coverage for mixed durable recovery,
   runtime limits, aliases, authentication, redirect isolation, proxy/TLS/WebSocket
   composition, Unix sockets, network controls, close races, and secret redaction.

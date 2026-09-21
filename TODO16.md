@@ -1,5 +1,17 @@
 # C Wrapper Feature Parity
 
+## Implementation status
+
+In progress. The C library now exposes capability bits, WC-01 Last Will,
+substantial WC-03 limits and batching controls, WC-04 CONNECT properties and
+topic-alias policy, Unix WC-08, declarative WC-09, WC-10 disconnect options,
+portable socket settings from WC-12, and explicit TLS backend/trust/identity
+options from WC-13. These bindings have checked
+header/export consistency and targeted FFI validation. WC-02, WC-05 through
+WC-07, WC-11, the remaining WC-13 fixture and package coverage, and the
+remaining acceptance coverage are still open; the capability bit for session
+store callbacks remains unset until those callbacks exist.
+
 ## Goal
 
 Expose the supported native-client capabilities recorded in

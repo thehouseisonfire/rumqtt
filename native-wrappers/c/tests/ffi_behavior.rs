@@ -171,6 +171,66 @@ fn spawn_stalled_publish_broker() -> (u16, mpsc::Receiver<()>, thread::JoinHandl
     (port, publish_rx, join)
 }
 
+#[cfg(unix)]
+#[test]
+fn tcp_broker_replaces_unix_transport_and_connects() {
+    // SAFETY: Every view refers to live storage, and this test owns all C handles.
+    unsafe {
+        for protocol in [1, 2] {
+            let (port, broker) = spawn_broker(protocol);
+            let mut config = ptr::null_mut();
+            assert_eq!(
+                rumqttc_config_new(protocol, &mut config, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_unix_broker(
+                    config,
+                    bytes_view(b"/tmp/rumqttc-unused-broker.sock"),
+                    ptr::null_mut(),
+                ),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_broker(config, string_view("127.0.0.1"), port, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_client_id(
+                    config,
+                    string_view("unix-to-tcp-regression"),
+                    ptr::null_mut(),
+                ),
+                0
+            );
+            let mut client = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_start(config, &mut client, ptr::null_mut()),
+                0
+            );
+            rumqttc_config_destroy(config);
+            let mut event = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
+                0
+            );
+            let mut kind = 0;
+            assert_eq!(rumqttc_event_kind(event, &mut kind), 0);
+            assert_eq!(kind, 1);
+            rumqttc_event_destroy(event);
+            assert_eq!(
+                rumqttc_client_close_timeout_ms(client, 2_000, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_destroy_timeout_ms(client, 2_000, ptr::null_mut()),
+                0
+            );
+            broker.join().unwrap();
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn assert_protocol_round_trip(protocol: u32) {
     // SAFETY: This test owns every handle and provides valid views and output locations for each
@@ -655,4 +715,318 @@ fn assert_manual_ack(protocol: u32) {
 fn manual_acknowledgement_is_event_bound_for_both_protocols() {
     assert_manual_ack(1);
     assert_manual_ack(2);
+}
+
+#[test]
+fn added_configuration_records_validate_before_start() {
+    // SAFETY: All handles and input arrays remain live for each call and are destroyed here.
+    unsafe {
+        let capabilities = rumqttc_library_capabilities();
+        assert_eq!(capabilities & 3, 3);
+        let mut v4 = ptr::null_mut();
+        let mut v5 = ptr::null_mut();
+        assert_eq!(rumqttc_config_new(1, &mut v4, ptr::null_mut()), 0);
+        assert_eq!(rumqttc_config_new(2, &mut v5, ptr::null_mut()), 0);
+
+        let mut properties = rumqttc_v5_will_properties_t {
+            struct_size: std::mem::size_of::<rumqttc_v5_will_properties_t>() as u32,
+            will_delay_present: 0,
+            payload_format_present: 0,
+            message_expiry_present: 0,
+            content_type_present: 0,
+            response_topic_present: 0,
+            correlation_data_present: 0,
+            reserved: [0; 2],
+            will_delay_interval: 0,
+            payload_format_indicator: 0,
+            message_expiry_interval: 0,
+            content_type: string_view(""),
+            response_topic: string_view(""),
+            correlation_data: bytes_view(&[]),
+            user_properties: ptr::null(),
+            user_property_count: 0,
+        };
+        let will = rumqttc_last_will_t {
+            struct_size: std::mem::size_of::<rumqttc_last_will_t>() as u32,
+            topic: string_view("test/will"),
+            payload: bytes_view(b"payload"),
+            qos: 1,
+            retain: 0,
+            reserved: [0; 3],
+            protocol_options: 5,
+            v5_properties: &properties,
+        };
+        assert_eq!(rumqttc_config_set_last_will(v4, &will, ptr::null_mut()), 3);
+        assert_eq!(rumqttc_config_set_last_will(v5, &will, ptr::null_mut()), 0);
+        properties.reserved[0] = 1;
+        std::hint::black_box(&properties);
+        assert_eq!(rumqttc_config_set_last_will(v5, &will, ptr::null_mut()), 1);
+        assert_eq!(rumqttc_config_clear_last_will(v5, ptr::null_mut()), 0);
+
+        assert_eq!(
+            rumqttc_config_set_v4_inflight_limit(v5, 1, ptr::null_mut()),
+            1
+        );
+        assert_eq!(
+            rumqttc_config_set_v4_inflight_limit(v4, 0, ptr::null_mut()),
+            1
+        );
+        assert_eq!(
+            rumqttc_config_set_v4_inflight_limit(v4, 2, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_config_set_local_incoming_packet_limit_bytes(v5, 0, ptr::null_mut()),
+            1
+        );
+        assert_eq!(
+            rumqttc_config_set_local_incoming_packet_limit_mode(v5, 1, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_config_set_v5_topic_alias_policy(v4, 1, ptr::null_mut()),
+            1
+        );
+        assert_eq!(
+            rumqttc_config_set_v5_topic_alias_policy(v5, 2, ptr::null_mut()),
+            0
+        );
+
+        let connect = rumqttc_v5_connect_properties_t {
+            struct_size: std::mem::size_of::<rumqttc_v5_connect_properties_t>() as u32,
+            session_expiry_present: 0,
+            receive_maximum_present: 1,
+            maximum_packet_size_present: 0,
+            topic_alias_maximum_present: 0,
+            request_response_info_present: 0,
+            request_problem_info_present: 0,
+            authentication_method_present: 0,
+            authentication_data_present: 0,
+            reserved: [0; 4],
+            session_expiry_interval: 0,
+            receive_maximum: 0,
+            maximum_packet_size: 0,
+            topic_alias_maximum: 0,
+            request_response_information: 0,
+            request_problem_information: 0,
+            reserved_tail: [0; 2],
+            authentication_method: string_view(""),
+            authentication_data: bytes_view(&[]),
+            user_properties: ptr::null(),
+            user_property_count: 0,
+        };
+        assert_eq!(
+            rumqttc_config_set_v5_connect_properties(v5, &connect, ptr::null_mut()),
+            3
+        );
+        assert_eq!(
+            rumqttc_config_clear_v5_connect_properties(v5, ptr::null_mut()),
+            0
+        );
+
+        rumqttc_config_destroy(v4);
+        rumqttc_config_destroy(v5);
+    }
+}
+
+#[test]
+fn disconnect_options_reject_v4_without_closing_it() {
+    // SAFETY: The test owns the live client, config, and options throughout each call.
+    unsafe {
+        let (port, broker) = spawn_broker(1);
+        let mut config = ptr::null_mut();
+        assert_eq!(rumqttc_config_new(1, &mut config, ptr::null_mut()), 0);
+        assert_eq!(
+            rumqttc_config_set_broker(config, string_view("127.0.0.1"), port, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_config_set_client_id(config, string_view("v4-close-options"), ptr::null_mut()),
+            0
+        );
+        let mut client = ptr::null_mut();
+        assert_eq!(
+            rumqttc_client_start(config, &mut client, ptr::null_mut()),
+            0
+        );
+        rumqttc_config_destroy(config);
+        let mut connected = ptr::null_mut();
+        assert_eq!(
+            rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut connected, ptr::null_mut()),
+            0
+        );
+        rumqttc_event_destroy(connected);
+        let properties = rumqttc_v5_disconnect_properties_t {
+            struct_size: std::mem::size_of::<rumqttc_v5_disconnect_properties_t>() as u32,
+            reason_code: 0,
+            session_expiry_present: 0,
+            reason_string_present: 0,
+            server_reference_present: 0,
+            reserved: [0; 5],
+            session_expiry_interval: 0,
+            reason_string: string_view(""),
+            server_reference: string_view(""),
+            user_properties: ptr::null(),
+            user_property_count: 0,
+        };
+        let options = rumqttc_disconnect_options_t {
+            struct_size: std::mem::size_of::<rumqttc_disconnect_options_t>() as u32,
+            protocol_options: 5,
+            v5_properties: &properties,
+            reserved: [0; 2],
+        };
+        assert_eq!(
+            rumqttc_client_close_with_options_timeout_ms(client, 500, &options, ptr::null_mut()),
+            1
+        );
+        assert_eq!(
+            rumqttc_client_close_now_timeout_ms(client, 5_000, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+            0
+        );
+        broker.join().unwrap();
+    }
+}
+
+#[test]
+fn explicit_tls_backend_matches_loaded_capabilities() {
+    // SAFETY: Every C input points to live caller-owned storage for the call;
+    // each returned handle is destroyed before the test ends.
+    unsafe {
+        let mut config = ptr::null_mut();
+        assert_eq!(rumqttc_config_new(1, &mut config, ptr::null_mut()), 0);
+        let options = rumqttc_tls_options_t {
+            struct_size: std::mem::size_of::<rumqttc_tls_options_t>() as u32,
+            backend: 1,
+            root_policy: 0,
+            reserved: 0,
+            ca_pem: bytes_view(&[]),
+            pem_identity: ptr::null(),
+            pkcs12_identity: ptr::null(),
+            alpn_protocols: ptr::null(),
+            alpn_protocol_count: 0,
+            reserved_tail: [0; 2],
+        };
+        let capabilities = rumqttc_library_capabilities();
+        if capabilities & (1 << 2) == 0 {
+            assert_eq!(
+                rumqttc_config_set_transport_tls(
+                    config,
+                    bytes_view(&[]),
+                    bytes_view(&[]),
+                    bytes_view(&[]),
+                    ptr::null_mut()
+                ),
+                3
+            );
+        }
+        let status =
+            rumqttc_config_set_transport_tls_with_options(config, &options, ptr::null_mut());
+        if capabilities & (1 << 3) == 0 {
+            assert_eq!(status, 3);
+        } else {
+            assert_eq!(status, 0);
+            assert_eq!(
+                rumqttc_config_set_broker(config, string_view("127.0.0.1"), 9, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_client_id(
+                    config,
+                    string_view("native-tls-c-test"),
+                    ptr::null_mut()
+                ),
+                0
+            );
+            let mut client = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_start(config, &mut client, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_close_now_timeout_ms(client, 5_000, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+                0
+            );
+        }
+        rumqttc_config_destroy(config);
+
+        let mut malformed = rumqttc_tls_options_t {
+            struct_size: std::mem::size_of::<rumqttc_tls_options_t>() as u32,
+            backend: 1,
+            root_policy: 0,
+            reserved: 1,
+            ca_pem: bytes_view(&[]),
+            pem_identity: ptr::null(),
+            pkcs12_identity: ptr::null(),
+            alpn_protocols: ptr::null(),
+            alpn_protocol_count: 0,
+            reserved_tail: [0; 2],
+        };
+        let mut config = ptr::null_mut();
+        assert_eq!(rumqttc_config_new(2, &mut config, ptr::null_mut()), 0);
+        assert_eq!(
+            rumqttc_config_set_transport_tls_with_options(config, &malformed, ptr::null_mut()),
+            1
+        );
+        malformed.reserved = 0;
+        if capabilities & (1 << 3) != 0 {
+            let pkcs12 = rumqttc_tls_pkcs12_identity_t {
+                struct_size: std::mem::size_of::<rumqttc_tls_pkcs12_identity_t>() as u32,
+                reserved: 0,
+                identity: bytes_view(b"dummy"),
+                password: bytes_view(b"secret"),
+                reserved_tail: [0; 2],
+            };
+            malformed.pkcs12_identity = &pkcs12;
+            std::hint::black_box(&malformed);
+            assert_eq!(
+                rumqttc_config_set_transport_tls_with_options(config, &malformed, ptr::null_mut()),
+                0
+            );
+        }
+        rumqttc_config_destroy(config);
+
+        if capabilities & (1 << 3) != 0 && capabilities & (1 << 4) != 0 {
+            let mut config = ptr::null_mut();
+            assert_eq!(rumqttc_config_new(2, &mut config, ptr::null_mut()), 0);
+            assert_eq!(
+                rumqttc_config_set_client_id(
+                    config,
+                    string_view("native-wss-c-test"),
+                    ptr::null_mut()
+                ),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_transport_wss_with_options(
+                    config,
+                    string_view("wss://127.0.0.1:9/"),
+                    &options,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            let mut client = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_start(config, &mut client, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_close_now_timeout_ms(client, 5_000, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+                0
+            );
+            rumqttc_config_destroy(config);
+        }
+    }
 }

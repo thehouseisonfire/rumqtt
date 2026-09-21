@@ -1,4 +1,5 @@
 use crate::{Error, Result, TlsConfig};
+use zeroize::Zeroize;
 
 /// Owned proxy authentication; debug output never includes either credential.
 #[derive(Clone, PartialEq, Eq)]
@@ -10,6 +11,13 @@ pub struct ProxyCredentials {
 impl std::fmt::Debug for ProxyCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ProxyCredentials([REDACTED])")
+    }
+}
+
+impl Drop for ProxyCredentials {
+    fn drop(&mut self) {
+        self.username.zeroize();
+        self.password.zeroize();
     }
 }
 

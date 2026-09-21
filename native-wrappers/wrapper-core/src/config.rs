@@ -530,7 +530,7 @@ impl std::fmt::Debug for V5ConnectProperties {
 }
 
 impl V5ConnectProperties {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.receive_maximum == Some(0) || self.maximum_packet_size == Some(0) {
             return Err(Error::configuration(
                 "CONNECT receive maximum and maximum packet size must be nonzero",

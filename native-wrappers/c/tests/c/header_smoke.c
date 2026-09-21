@@ -49,6 +49,9 @@ int main(void) {
   rumqttc_unsubscribe_options_t unsubscribe_options =
       RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT;
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
+  rumqttc_tls_options_t tls_options = RUMQTTC_TLS_OPTIONS_INIT;
+  rumqttc_tls_pem_identity_t pem_identity = RUMQTTC_TLS_PEM_IDENTITY_INIT;
+  rumqttc_tls_pkcs12_identity_t pkcs12_identity = RUMQTTC_TLS_PKCS12_IDENTITY_INIT;
   rumqttc_config_t *config = NULL;
   rumqttc_error_t *error = NULL;
   rumqttc_string_view_t host = {"127.0.0.1", strlen("127.0.0.1")};
@@ -79,6 +82,9 @@ int main(void) {
          sizeof(v5_unsubscribe_properties));
   assert(unsubscribe_options.struct_size == sizeof(unsubscribe_options));
   assert(diagnostics.struct_size == sizeof(diagnostics));
+  assert(tls_options.struct_size == sizeof(tls_options));
+  assert(pem_identity.struct_size == sizeof(pem_identity));
+  assert(pkcs12_identity.struct_size == sizeof(pkcs12_identity));
   assert(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &config, &error) ==
          RUMQTTC_OK);
   assert(config != NULL && error == NULL);

@@ -179,6 +179,26 @@ jobs:
         shell: pwsh
         run: c/tests/abi/check.ps1 package
 
+      - name: Native-TLS-only C consumer
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cargo test --locked -p rumqttc-c-next --no-default-features --features use-native-tls,websocket explicit_tls_backend_matches_loaded_capabilities
+          cargo build --locked -p rumqttc-c-next --no-default-features --features use-native-tls,websocket
+          cc -std=c11 -Wall -Wextra -Werror -I c/include c/tests/c/native_tls_smoke.c \
+            -L target/debug -lrumqttc -Wl,-rpath,"$PWD/target/debug" \
+            -o target/native_tls_c_smoke
+          target/native_tls_c_smoke
+          python3 c/tests/native/broker_fixture.py --omit-address-arguments --binary target/native_tls_c_smoke
+          cmake -S c -B target/native-tls-c-package -DRUMQTTC_NATIVE_TLS=ON
+          grep -Fx 'Requires.private: openssl' target/native-tls-c-package/rumqttc.pc
+          cc -std=c11 -Wall -Wextra -Werror -DRUMQTTC_STATIC -I c/include \
+            c/tests/c/native_tls_smoke.c target/debug/librumqttc.a \
+            $(pkg-config --libs openssl) -lpthread -ldl -lm \
+            -o target/native_tls_c_smoke_static
+          target/native_tls_c_smoke_static
+          python3 c/tests/native/broker_fixture.py --omit-address-arguments --binary target/native_tls_c_smoke_static
+          cargo build --locked -p rumqttc-c-next
+
       - name: C ABI mutation corpus
         if: ${{ runner.os == 'Linux' }}
         run: |

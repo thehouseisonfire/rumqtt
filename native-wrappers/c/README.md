@@ -15,6 +15,77 @@ the shared and static libraries with:
 cargo build --release --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-next
 ```
 
+`rumqttc_library_capabilities()` reports the features compiled into the loaded
+library. Test bits with the `RUMQTTC_CAP_*` constants; ignore unknown bits for
+forward compatibility. C Cargo features forward to wrapper-core (`use-rustls`,
+`use-native-tls`, `websocket`, `http-proxy`, `socks-proxy`,
+`system-srv-resolver`, `auth-scram`, and `tracing`). The default build enables
+rustls and WebSocket. A capability bit describes the artifact, not a broker
+negotiation. `RUMQTTC_CAP_SESSION_STORE_CALLBACKS` remains clear until its C
+callback API ships.
+
+The existing `rumqttc_config_set_transport_tls()` and
+`rumqttc_config_set_transport_wss()` always select Rustls. For native TLS,
+initialize `rumqttc_tls_options_t` with `RUMQTTC_TLS_OPTIONS_INIT`, set
+`backend = RUMQTTC_TLS_BACKEND_NATIVE`, and call the matching
+`_with_options()` setter. The setter rejects a backend absent from the loaded
+library before connecting. For mutual TLS, attach a
+`rumqttc_tls_pkcs12_identity_t` initialized with
+`RUMQTTC_TLS_PKCS12_IDENTITY_INIT`; Rustls uses the separate PEM identity
+record. `RUMQTTC_TLS_ROOTS_PLATFORM` uses platform trust, while
+`RUMQTTC_TLS_ROOTS_PEM` replaces platform roots with the supplied CA PEM.
+ALPN identifiers are ordered byte views. All views are copied during the
+setter. Wrapper-owned private keys, PKCS#12 data, and passwords are wiped on
+release; caller, operating-system, and TLS-library copies have independent
+lifetimes. Configure the CMake/pkg-config package for a native-TLS build with
+`-DRUMQTTC_NATIVE_TLS=ON`; on Linux this adds OpenSSL to static-consumer
+dependencies. The package option must match the Cargo features used to build
+the library.
+
+```c
+rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
+tls.backend = RUMQTTC_TLS_BACKEND_NATIVE;
+if ((rumqttc_library_capabilities() & RUMQTTC_CAP_NATIVE_TLS) == 0)
+    return 1;
+rumqttc_error_t *error = NULL;
+rumqttc_status_t status =
+    rumqttc_config_set_transport_tls_with_options(config, &tls, &error);
+if (status != RUMQTTC_OK) {
+    rumqttc_error_destroy(error);
+    return 1;
+}
+```
+
+`rumqttc_error_context()` returns protocol, connection phase and generation,
+and delivery status as separate machine-readable outputs; absent values are
+zero with a separate presence flag for generation.
+
+For a copied Last Will, initialize `rumqttc_last_will_t` with
+`RUMQTTC_LAST_WILL_INIT`, fill topic, payload, QoS, and retain, then call
+`rumqttc_config_set_last_will()`. MQTT 5 properties use the separate
+`RUMQTTC_V5_WILL_PROPERTIES_INIT` record and the MQTT 5 selector. The setter
+copies all views, including ordered user properties. Clear or replace the will
+before client start. MQTT 5 CONNECT properties use
+`RUMQTTC_V5_CONNECT_PROPERTIES_INIT`; presence flags distinguish absent values
+from present empty values. The advertised MQTT 5 Maximum Packet Size is
+independent of the local decoder limit, while automatic outgoing topic aliases
+use a separate policy setter.
+
+Unix socket paths are native bytes on Unix and fail before start on other
+platforms. Declarative WebSocket header edits are copied in order for each
+handshake, including reconnects; add preserves duplicates, replace overwrites,
+and remove deletes a name. The core rejects protected handshake headers and
+redacts all header values in debug output. TCP network setters accept portable
+numeric buffer sizes, booleans, and a numeric local socket address. Bind-device
+and MPTCP settings fail on platforms that do not support them.
+
+For MQTT 5 graceful or immediate close with a reason and properties, use
+`RUMQTTC_V5_DISCONNECT_PROPERTIES_INIT` inside
+`RUMQTTC_DISCONNECT_OPTIONS_INIT`, select MQTT 5, and call the matching
+`_with_options_timeout_ms` function. A later close caller must supply matching
+options because the first admitted payload wins. The original close functions
+remain available for version-neutral close.
+
 Define `RUMQTTC_STATIC` before including the header when linking the static
 library on Windows. Static consumers must also link the platform libraries
 required by Rust, networking, and the bundled rustls/AWS-LC TLS provider:
@@ -198,6 +269,7 @@ The [`examples`](examples) directory contains warning-clean C11 programs for:
 - [polling and timed waiting for tracked completions](examples/tracked_completion.c);
 - [manual acknowledgement](examples/manual_acknowledgement.c); and
 - [graceful and immediate shutdown](examples/shutdown.c).
+- [resource-bounded MQTT 5 setup](examples/resource_limits.c).
 
 Each program accepts `HOST PORT`, owns every returned handle explicitly, and
 keeps resource lifetimes local to the operation that acquired them. The

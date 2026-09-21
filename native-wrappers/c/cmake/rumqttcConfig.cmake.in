@@ -1,6 +1,10 @@
 @PACKAGE_INIT@
 
 set(rumqttc_VERSION "@RUMQTTC_PACKAGE_VERSION@")
+if(@RUMQTTC_NATIVE_TLS@ AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(CMakeFindDependencyMacro)
+    find_dependency(OpenSSL COMPONENTS SSL Crypto)
+endif()
 
 if(NOT TARGET rumqttc::rumqttc_static)
     add_library(rumqttc::rumqttc_static STATIC IMPORTED)

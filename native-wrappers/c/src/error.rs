@@ -32,13 +32,17 @@ const ERROR_INTERNAL: u32 = 11;
 pub struct ErrorHandle {
     pub status: u32,
     pub kind: u32,
-    pub code: String,
-    pub message: String,
-    pub source_chain: String,
+    pub code: &'static str,
+    pub message: Box<str>,
+    pub source_chain: Box<str>,
     pub retryable: bool,
     pub ambiguous: bool,
     pub broker_reason: Option<u8>,
     pub operation_id: Option<u64>,
+    pub protocol: Option<u32>,
+    pub phase: Option<u32>,
+    pub generation: Option<u64>,
+    pub delivery_status: u32,
 }
 
 impl ErrorHandle {
@@ -60,7 +64,7 @@ impl ErrorHandle {
 
     pub fn panic(message: impl Into<String>) -> Self {
         let mut error = Self::internal(message);
-        error.code = "INTERNAL_PANIC".to_owned();
+        error.code = "INTERNAL_PANIC";
         error
     }
 
@@ -83,14 +87,17 @@ impl ErrorHandle {
                 INTERNAL_ERROR => "INTERNAL",
                 WOULD_BLOCK => "WOULD_BLOCK",
                 _ => "UNKNOWN",
-            }
-            .to_owned(),
-            source_chain: message.clone(),
-            message,
+            },
+            source_chain: message.clone().into_boxed_str(),
+            message: message.into_boxed_str(),
             retryable: false,
             ambiguous: status == AMBIGUOUS,
             broker_reason: None,
             operation_id: None,
+            protocol: None,
+            phase: None,
+            generation: None,
+            delivery_status: 0,
         }
     }
 
@@ -142,13 +149,28 @@ impl ErrorHandle {
         Self {
             status,
             kind,
-            code: error.code().as_str().to_owned(),
-            message: error.message().to_owned(),
-            source_chain,
+            code: error.code().as_str(),
+            message: error.message().into(),
+            source_chain: source_chain.into_boxed_str(),
             retryable: error.retryable(),
             ambiguous,
             broker_reason: error.broker_reason(),
             operation_id,
+            protocol: error.context().protocol.map(|value| match value {
+                rumqttc_wrapper_core::ProtocolVersion::V4 => 1,
+                rumqttc_wrapper_core::ProtocolVersion::V5 => 2,
+            }),
+            phase: error.context().phase.map(|value| match value {
+                rumqttc_wrapper_core::ConnectionPhase::Attempt => 1,
+                rumqttc_wrapper_core::ConnectionPhase::Established => 2,
+            }),
+            generation: error.context().generation,
+            delivery_status: match error.delivery_status() {
+                DeliveryStatus::NotApplicable => 0,
+                DeliveryStatus::NotAdmitted => 1,
+                DeliveryStatus::Rejected => 2,
+                DeliveryStatus::Ambiguous => 3,
+            },
         }
     }
 

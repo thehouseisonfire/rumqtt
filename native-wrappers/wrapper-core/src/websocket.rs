@@ -16,7 +16,7 @@ impl std::fmt::Debug for WebSocketHeader {
 }
 
 impl WebSocketHeader {
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if !cfg!(feature = "websocket") {
             return Err(Error::configuration("WebSocket feature is disabled"));
         }

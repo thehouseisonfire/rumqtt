@@ -3,7 +3,8 @@ use std::sync::{Mutex, TryLockError};
 use std::time::Duration;
 
 use rumqttc_wrapper_core::{
-    ClientHandle, Completion, EventConsumer, NativeClient, NativeClientCloser, WrapperEvent,
+    ClientHandle, Completion, DisconnectProtocolOptions, EventConsumer, NativeClient,
+    NativeClientCloser, ProtocolVersion, WrapperEvent,
 };
 
 pub enum ClientError {
@@ -13,6 +14,7 @@ pub enum ClientError {
 }
 
 pub struct ClientObject {
+    pub protocol: ProtocolVersion,
     pub handle: ClientHandle,
     pub events: Mutex<EventConsumer>,
     closer: NativeClientCloser,
@@ -24,6 +26,7 @@ impl ClientObject {
     pub fn start(
         config: rumqttc_wrapper_core::ClientConfig,
     ) -> Result<Self, rumqttc_wrapper_core::Error> {
+        let protocol = config.protocol_version();
         let mut native = NativeClient::start(config)?;
         let handle = native.handle();
         let closer = native.closer();
@@ -31,6 +34,7 @@ impl ClientObject {
             .take_events()
             .expect("a newly created native client owns its event consumer");
         Ok(Self {
+            protocol,
             handle,
             events: Mutex::new(events),
             closer,
@@ -79,6 +83,26 @@ impl ClientObject {
 
     pub fn close_now(&self, timeout: Duration) -> Result<(), ClientError> {
         self.closer.close_now(timeout).map_err(ClientError::Core)
+    }
+
+    pub fn close_with_options(
+        &self,
+        timeout: Duration,
+        options: DisconnectProtocolOptions,
+    ) -> Result<Completion, ClientError> {
+        self.closer
+            .close_with_options(timeout, options)
+            .map_err(ClientError::Core)
+    }
+
+    pub fn close_now_with_options(
+        &self,
+        timeout: Duration,
+        options: DisconnectProtocolOptions,
+    ) -> Result<(), ClientError> {
+        self.closer
+            .close_now_with_options(timeout, options)
+            .map_err(ClientError::Core)
     }
 
     /// Requests immediate shutdown and relinquishes join ownership without waiting.
