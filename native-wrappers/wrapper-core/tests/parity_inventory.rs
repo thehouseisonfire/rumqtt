@@ -41,10 +41,13 @@ fn inventory(root: &Path, protocol: &str) -> BTreeSet<String> {
                         let method_name = method.sig.ident.to_string();
                         let category = match name.as_str() {
                             "MqttOptions" | "NetworkOptions"
-                                if method
-                                    .sig
-                                    .receiver()
-                                    .is_some_and(|receiver| receiver.mutability.is_some()) =>
+                                if method.sig.receiver().is_some_and(|receiver| {
+                                    receiver.mutability.is_some()
+                                        || matches!(
+                                            &receiver.kind,
+                                            syn::ReceiverKind::Reference(_, _, Some(_))
+                                        )
+                                }) =>
                             {
                                 "option"
                             }
