@@ -108,14 +108,14 @@ fn restart_recovers_mixed_subscriptions_publishes_and_incoming_qos2() {
                         }
                         match kind {
                             3 if packet[0] & 6 == 4 => {
-                                socket.write_all(&[0x50, 2, id[0], id[1]]).unwrap()
+                                socket.write_all(&[0x50, 2, id[0], id[1]]).unwrap();
                             }
                             3 => socket.write_all(&[0x40, 2, id[0], id[1]]).unwrap(),
                             6 => socket.write_all(&[0x70, 2, id[0], id[1]]).unwrap(),
                             8 if mqtt5 => socket.write_all(&[0x90, 4, id[0], id[1], 0, 1]).unwrap(),
                             8 => socket.write_all(&[0x90, 3, id[0], id[1], 1]).unwrap(),
                             10 if mqtt5 => {
-                                socket.write_all(&[0xb0, 4, id[0], id[1], 0, 0]).unwrap()
+                                socket.write_all(&[0xb0, 4, id[0], id[1], 0, 0]).unwrap();
                             }
                             10 => socket.write_all(&[0xb0, 2, id[0], id[1]]).unwrap(),
                             _ => unreachable!(),
@@ -583,10 +583,10 @@ fn malformed_envelopes_are_rejected_without_network_io() {
             let mut config = config(mqtt5, store);
             match &mut config.protocol {
                 ProtocolConfig::V4(v4) => {
-                    v4.session_store.as_mut().unwrap().max_checkpoint_size = 64
+                    v4.session_store.as_mut().unwrap().max_checkpoint_size = 64;
                 }
                 ProtocolConfig::V5(v5) => {
-                    v5.session_store.as_mut().unwrap().max_checkpoint_size = 64
+                    v5.session_store.as_mut().unwrap().max_checkpoint_size = 64;
                 }
             }
             let mut client = NativeClient::start(config).unwrap();

@@ -74,12 +74,12 @@ mod enabled {
     }
 }
 
-pub fn start() {
+pub const fn start() {
     #[cfg(feature = "tracing")]
     let _ = enabled::output();
 }
 
-pub fn assert_activity() {
+pub const fn assert_activity() {
     #[cfg(feature = "tracing")]
     assert!(
         !enabled::output().lock().unwrap().is_empty(),
