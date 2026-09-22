@@ -80,6 +80,19 @@ pub type StoreFuture<T> =
 /// driver drops its adapter; cross-process exclusion remains the store's duty.
 pub trait SessionStore: Send + Sync + 'static {
     fn load(&self, key: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>>;
+
+    /// Load with the client's checkpoint limit. Implementations that copy an
+    /// external buffer can reject an oversized length before allocating it.
+    /// The adapter validates the returned checkpoint again after this call.
+    fn load_with_limit(
+        &self,
+        key: SessionStoreKey,
+        max_checkpoint_size: usize,
+    ) -> StoreFuture<Option<SessionCheckpoint>> {
+        let _ = max_checkpoint_size;
+        self.load(key)
+    }
+
     fn save(&self, key: SessionStoreKey, checkpoint: SessionCheckpoint) -> StoreFuture<()>;
     fn clear(&self, key: SessionStoreKey) -> StoreFuture<()>;
 }

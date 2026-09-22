@@ -103,6 +103,37 @@ native_start_client(rumqttc_protocol_t protocol, const char *client_id,
     REQUIRE(observed_protocol == protocol);
     CHECK(rumqttc_event_connected(connected, NULL, &session_present));
     REQUIRE(session_present <= 1);
+    {
+      uint8_t reason = 255;
+      uint8_t present = 255;
+      CHECK(rumqttc_event_connack_reason(connected, &reason));
+      REQUIRE(reason == 0);
+      if (protocol == RUMQTTC_PROTOCOL_V5) {
+        uint64_t scalar = UINT64_MAX;
+        size_t property_count = SIZE_MAX;
+        rumqttc_string_view_t text = {(const char *)(uintptr_t)1, 99};
+        rumqttc_bytes_view_t data = {(const uint8_t *)(uintptr_t)1, 99};
+        CHECK(rumqttc_event_connack_v5_scalar(
+            connected, RUMQTTC_CONNACK_SCALAR_RECEIVE_MAXIMUM, &present,
+            &scalar));
+        REQUIRE(present == 0 && scalar == 0);
+        CHECK(rumqttc_event_connack_v5_string(
+            connected, RUMQTTC_CONNACK_STRING_REASON, &present, &text));
+        REQUIRE(present == 0 && text.data == NULL && text.len == 0);
+        CHECK(rumqttc_event_connack_v5_authentication_data(connected, &present,
+                                                            &data));
+        REQUIRE(present == 0 && data.data == NULL && data.len == 0);
+        CHECK(rumqttc_event_user_property_count(
+            connected, RUMQTTC_EVENT_PROPERTIES_CONNACK, &property_count));
+        REQUIRE(property_count == 0);
+      } else {
+        uint64_t scalar = UINT64_MAX;
+        REQUIRE(rumqttc_event_connack_v5_scalar(
+                    connected, RUMQTTC_CONNACK_SCALAR_RECEIVE_MAXIMUM,
+                    &present, &scalar) == RUMQTTC_INVALID_STATE);
+        REQUIRE(present == 0 && scalar == 0);
+      }
+    }
     REQUIRE(rumqttc_event_connected(connected, NULL, NULL) ==
             RUMQTTC_INVALID_ARGUMENT);
     rumqttc_event_destroy(connected);

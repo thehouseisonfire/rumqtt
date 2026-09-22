@@ -12,19 +12,22 @@ use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
     Admission, Command, Completion, DiagnosticsSnapshot, DisconnectProtocolOptions,
     IncomingPublish, LastWillConfig, LastWillProtocolOptions, OutgoingActivity, ProtocolVersion,
-    PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, SecretBytes, SubscribeCommand,
-    SubscribeProtocolOptions, SubscribeResult, Subscription, SubscriptionProtocolOptions,
-    TlsBackend, TlsClientIdentity, TlsConfig, TlsRootPolicy, TopicAliasPolicy, UnsubscribeCommand,
-    UnsubscribeProtocolOptions, UnsubscribeResult, V5ConnectProperties, V5DisconnectOptions,
-    V5IncomingPublishProperties, V5OutgoingPublishProperties, V5RetainForwardRule,
-    V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties, V5WillProperties,
-    WebSocketHeader, WrapperEvent,
+    ProxyConfig, ProxyCredentials, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS,
+    SecretBytes, SessionCheckpoint, SessionStore, SessionStoreConfig, SessionStoreKey, SrvFailure,
+    SrvFuture, SrvRecord, SrvResolver, SrvResolverConfig, StoreFailure, StoreFuture,
+    SubscribeCommand, SubscribeProtocolOptions, SubscribeResult, Subscription,
+    SubscriptionProtocolOptions, TlsBackend, TlsClientIdentity, TlsConfig, TlsRootPolicy,
+    TopicAliasPolicy, UnsubscribeCommand, UnsubscribeProtocolOptions, UnsubscribeResult,
+    V5ConnectProperties, V5DisconnectOptions, V5IncomingPublishProperties,
+    V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
+    V5UnsubscribeProperties, V5WillProperties, WebSocketHeader, WrapperEvent,
 };
 
 use crate::client::{ClientError, ClientObject};
@@ -53,6 +56,8 @@ const CAP_UNIX: u64 = 1 << 7;
 const CAP_SYSTEM_SRV: u64 = 1 << 8;
 const CAP_SCRAM: u64 = 1 << 9;
 const CAP_TRACING: u64 = 1 << 10;
+const CAP_STORE_CALLBACKS: u64 = 1 << 11;
+const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
 pub struct rumqttc_v5_will_properties_t {
@@ -173,6 +178,92 @@ pub struct rumqttc_tls_options_t {
     pub alpn_protocols: *const rumqttc_bytes_view_t,
     pub alpn_protocol_count: usize,
     pub reserved_tail: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_proxy_options_t {
+    pub struct_size: u32,
+    pub protocol: u32,
+    pub dns_policy: u32,
+    pub reserved: u32,
+    pub host: rumqttc_string_view_t,
+    pub port: u32,
+    pub username: rumqttc_bytes_view_t,
+    pub password: rumqttc_bytes_view_t,
+    pub credentials_present: u8,
+    pub reserved_tail: [u8; 7],
+    pub tls: *const rumqttc_tls_options_t,
+}
+
+#[repr(C)]
+pub struct rumqttc_store_request_t {
+    pub struct_size: u32,
+    pub operation: u32,
+    pub protocol: u32,
+    pub checkpoint_format_version: u32,
+    pub scope: rumqttc_string_view_t,
+    pub client_id: rumqttc_string_view_t,
+    pub checkpoint: rumqttc_bytes_view_t,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct rumqttc_store_vtable_t {
+    pub struct_size: u32,
+    pub load: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const rumqttc_store_request_t,
+            *mut rumqttc_callback_completion,
+        ),
+    >,
+    pub save: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const rumqttc_store_request_t,
+            *mut rumqttc_callback_completion,
+        ),
+    >,
+    pub clear: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const rumqttc_store_request_t,
+            *mut rumqttc_callback_completion,
+        ),
+    >,
+    pub destroy: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub reserved: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_resolver_request_t {
+    pub struct_size: u32,
+    pub owner: rumqttc_string_view_t,
+}
+
+#[repr(C)]
+pub struct rumqttc_srv_record_t {
+    pub struct_size: u32,
+    pub priority: u32,
+    pub weight: u32,
+    pub port: u32,
+    pub reserved: u32,
+    pub target: rumqttc_string_view_t,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct rumqttc_resolver_vtable_t {
+    pub struct_size: u32,
+    pub resolve: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const rumqttc_resolver_request_t,
+            *mut rumqttc_callback_completion,
+        ),
+    >,
+    pub destroy: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub reserved: [u64; 2],
 }
 
 #[repr(C)]
@@ -313,6 +404,318 @@ pub struct rumqttc_event {
 /// Opaque C handle.
 pub struct rumqttc_error {
     inner: ErrorHandle,
+}
+
+pub struct rumqttc_store_registration {
+    store: Arc<CStore>,
+}
+
+pub struct rumqttc_resolver_registration {
+    resolver: Arc<CResolver>,
+}
+
+pub struct rumqttc_callback_completion {
+    inner: CallbackCompletion,
+}
+
+#[derive(Clone)]
+enum CallbackCompletion {
+    Store(Arc<StoreCompletion>),
+    Resolver(Arc<ResolverCompletion>),
+}
+
+struct StoreOwner {
+    vtable: rumqttc_store_vtable_t,
+    user_data: usize,
+}
+
+struct ResolverOwner {
+    vtable: rumqttc_resolver_vtable_t,
+    user_data: usize,
+}
+
+// SAFETY: As with store registration, the application promises that resolver
+// callbacks and user_data tolerate overlap across client driver threads.
+unsafe impl Send for ResolverOwner {}
+unsafe impl Sync for ResolverOwner {}
+
+impl Drop for ResolverOwner {
+    fn drop(&mut self) {
+        if let Some(destroy) = self.vtable.destroy {
+            unsafe { destroy(self.user_data as *mut c_void) };
+        }
+    }
+}
+
+enum ResolverCompletionState {
+    Pending(tokio::sync::oneshot::Sender<Result<Vec<SrvRecord>, SrvFailure>>),
+    Completed,
+    Cancelled,
+}
+
+struct ResolverCompletion {
+    _owner: Arc<ResolverOwner>,
+    state: Mutex<ResolverCompletionState>,
+}
+
+impl ResolverCompletion {
+    fn finish_with(
+        &self,
+        make_result: impl FnOnce() -> Result<Result<Vec<SrvRecord>, SrvFailure>, u32>,
+    ) -> u32 {
+        let (sender, result) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !matches!(&*state, ResolverCompletionState::Pending(sender) if !sender.is_closed()) {
+                return crate::error::INVALID_STATE;
+            }
+            let result = match make_result() {
+                Ok(result) => result,
+                Err(status) => return status,
+            };
+            let ResolverCompletionState::Pending(sender) =
+                std::mem::replace(&mut *state, ResolverCompletionState::Completed)
+            else {
+                unreachable!("pending state checked under lock")
+            };
+            (sender, result)
+        };
+        if sender.send(result).is_ok() {
+            OK
+        } else {
+            crate::error::INVALID_STATE
+        }
+    }
+
+    fn cancel(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(*state, ResolverCompletionState::Pending(_)) {
+            *state = ResolverCompletionState::Cancelled;
+        }
+    }
+}
+
+struct ResolverCancelGuard(Arc<ResolverCompletion>);
+
+impl Drop for ResolverCancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+struct CResolver {
+    owner: Arc<ResolverOwner>,
+}
+
+impl SrvResolver for CResolver {
+    fn resolve(&self, owner_name: String) -> SrvFuture {
+        let owner = self.owner.clone();
+        Box::pin(async move {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let inner = Arc::new(ResolverCompletion {
+                _owner: owner.clone(),
+                state: Mutex::new(ResolverCompletionState::Pending(sender)),
+            });
+            let guard = ResolverCancelGuard(inner.clone());
+            {
+                let completion = rumqttc_callback_completion {
+                    inner: CallbackCompletion::Resolver(inner),
+                };
+                let request = rumqttc_resolver_request_t {
+                    struct_size: struct_size::<rumqttc_resolver_request_t>(),
+                    owner: view_string(&owner_name),
+                };
+                let callback = owner.vtable.resolve.expect("validated resolver vtable");
+                unsafe {
+                    callback(
+                        owner.user_data as *mut c_void,
+                        &raw const request,
+                        &raw const completion as *mut _,
+                    )
+                };
+            }
+            let result = receiver.await.unwrap_or(Err(SrvFailure::Query));
+            drop(guard);
+            result
+        })
+    }
+}
+
+// SAFETY: Registration requires application callbacks and user_data to be safe
+// for calls from different client driver threads. The pointer is never read by
+// Rust; it is passed back unchanged and destroyed after all owner references.
+unsafe impl Send for StoreOwner {}
+unsafe impl Sync for StoreOwner {}
+
+impl Drop for StoreOwner {
+    fn drop(&mut self) {
+        if let Some(destroy) = self.vtable.destroy {
+            unsafe { destroy(self.user_data as *mut c_void) };
+        }
+    }
+}
+
+enum StoreCompletionState {
+    Pending(tokio::sync::oneshot::Sender<Result<Option<SessionCheckpoint>, StoreFailure>>),
+    Completed,
+    Cancelled,
+}
+
+struct StoreCompletion {
+    _owner: Arc<StoreOwner>,
+    operation: u32,
+    load_limit: usize,
+    state: Mutex<StoreCompletionState>,
+}
+
+impl StoreCompletion {
+    fn finish_with(
+        &self,
+        operation: u32,
+        make_result: impl FnOnce() -> Result<Result<Option<SessionCheckpoint>, StoreFailure>, u32>,
+    ) -> u32 {
+        if self.operation != operation {
+            return crate::error::INVALID_STATE;
+        }
+        let (sender, result) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !matches!(&*state, StoreCompletionState::Pending(sender) if !sender.is_closed()) {
+                return crate::error::INVALID_STATE;
+            }
+            let result = match make_result() {
+                Ok(result) => result,
+                Err(status) => return status,
+            };
+            let StoreCompletionState::Pending(sender) =
+                std::mem::replace(&mut *state, StoreCompletionState::Completed)
+            else {
+                unreachable!("pending state was checked under the same lock")
+            };
+            (sender, result)
+        };
+        if sender.send(result).is_ok() {
+            OK
+        } else {
+            crate::error::INVALID_STATE
+        }
+    }
+
+    fn cancel(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(*state, StoreCompletionState::Pending(_)) {
+            *state = StoreCompletionState::Cancelled;
+        }
+    }
+}
+
+struct StoreCancelGuard(Arc<StoreCompletion>);
+
+impl Drop for StoreCancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+struct CStore {
+    owner: Arc<StoreOwner>,
+}
+
+impl CStore {
+    fn invoke(
+        &self,
+        operation: u32,
+        key: SessionStoreKey,
+        checkpoint: Option<SessionCheckpoint>,
+        load_limit: usize,
+    ) -> StoreFuture<Option<SessionCheckpoint>> {
+        let owner = self.owner.clone();
+        Box::pin(async move {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let inner = Arc::new(StoreCompletion {
+                _owner: owner.clone(),
+                operation,
+                load_limit,
+                state: Mutex::new(StoreCompletionState::Pending(sender)),
+            });
+            let guard = StoreCancelGuard(inner.clone());
+            {
+                let completion = rumqttc_callback_completion {
+                    inner: CallbackCompletion::Store(inner),
+                };
+                let request = rumqttc_store_request_t {
+                    struct_size: struct_size::<rumqttc_store_request_t>(),
+                    operation,
+                    protocol: match key.protocol {
+                        ProtocolVersion::V4 => 1,
+                        ProtocolVersion::V5 => 2,
+                    },
+                    checkpoint_format_version: 1,
+                    scope: view_string(&key.scope),
+                    client_id: view_string(&key.client_id),
+                    checkpoint: checkpoint
+                        .as_ref()
+                        .map_or(view_bytes(&[]), |value| view_bytes(&value.0)),
+                };
+                let callback = match operation {
+                    1 => owner.vtable.load,
+                    2 => owner.vtable.save,
+                    _ => owner.vtable.clear,
+                }
+                .expect("validated store vtable");
+                unsafe {
+                    callback(
+                        owner.user_data as *mut c_void,
+                        &raw const request,
+                        &raw const completion as *mut _,
+                    );
+                }
+            }
+            let result = receiver.await.unwrap_or_else(|_| {
+                Err(match operation {
+                    1 => StoreFailure::Load,
+                    2 => StoreFailure::Save,
+                    _ => StoreFailure::Clear,
+                })
+            });
+            drop(guard);
+            result
+        })
+    }
+}
+
+impl SessionStore for CStore {
+    fn load(&self, key: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>> {
+        self.load_with_limit(key, MAX_CHECKPOINT_SIZE)
+    }
+
+    fn load_with_limit(
+        &self,
+        key: SessionStoreKey,
+        max_checkpoint_size: usize,
+    ) -> StoreFuture<Option<SessionCheckpoint>> {
+        self.invoke(1, key, None, max_checkpoint_size)
+    }
+
+    fn save(&self, key: SessionStoreKey, checkpoint: SessionCheckpoint) -> StoreFuture<()> {
+        let future = self.invoke(2, key, Some(checkpoint), 0);
+        Box::pin(async move { future.await.map(|_| ()) })
+    }
+
+    fn clear(&self, key: SessionStoreKey) -> StoreFuture<()> {
+        let future = self.invoke(3, key, None, 0);
+        Box::pin(async move { future.await.map(|_| ()) })
+    }
 }
 
 fn boundary(
@@ -496,6 +899,7 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 pub extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
         | CAP_V5
+        | CAP_STORE_CALLBACKS
         | if cfg!(feature = "use-rustls") {
             CAP_RUSTLS
         } else {
@@ -1003,6 +1407,645 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss_with_options(
             },
             || ErrorHandle::internal("configuration lock is poisoned"),
         )
+    })
+}
+
+unsafe fn parse_proxy_options(
+    options: *const rumqttc_proxy_options_t,
+) -> Result<ProxyConfig, ErrorHandle> {
+    if options.is_null() {
+        return Err(ErrorHandle::argument("proxy options are NULL"));
+    }
+    let options = unsafe { &*options };
+    if options.struct_size < struct_size::<rumqttc_proxy_options_t>()
+        || options.reserved != 0
+        || options.reserved_tail != [0; 7]
+    {
+        return Err(ErrorHandle::argument("invalid proxy options record"));
+    }
+    if options.dns_policy != 0 {
+        return Err(ErrorHandle::argument("unsupported proxy DNS policy"));
+    }
+    let host = unsafe { string_from_view(options.host) }?;
+    let port = u16::try_from(options.port)
+        .map_err(|_| ErrorHandle::argument("proxy port exceeds 65535"))?;
+    if port == 0 {
+        return Err(ErrorHandle::argument("proxy port must be nonzero"));
+    }
+    let credentials = if boolean(options.credentials_present, "credentials_present")? {
+        let username = unsafe { bytes_from_view(options.username) }?;
+        let password = unsafe { bytes_from_view(options.password) }?;
+        Some(ProxyCredentials {
+            username: std::str::from_utf8(username)
+                .map_err(|_| ErrorHandle::argument("proxy username must be UTF-8"))?
+                .to_owned(),
+            password: std::str::from_utf8(password)
+                .map_err(|_| ErrorHandle::argument("proxy password must be UTF-8"))?
+                .to_owned(),
+        })
+    } else {
+        if options.username.len != 0 || options.password.len != 0 {
+            return Err(ErrorHandle::argument(
+                "proxy credentials require presence flag",
+            ));
+        }
+        None
+    };
+    match options.protocol {
+        1 | 2 => {
+            if !cfg!(feature = "http-proxy") {
+                return Err(ErrorHandle::plain(
+                    crate::error::CONFIG_ERROR,
+                    1,
+                    "HTTP proxy is unavailable in this library",
+                ));
+            }
+            if options.protocol == 1 && !options.tls.is_null() {
+                return Err(ErrorHandle::argument(
+                    "plain HTTP proxy cannot have TLS options",
+                ));
+            }
+            let tls = if options.protocol == 2 {
+                Some(unsafe { parse_tls_options(options.tls) }?)
+            } else {
+                None
+            };
+            Ok(ProxyConfig::Http {
+                host,
+                port,
+                credentials,
+                tls,
+            })
+        }
+        3 => {
+            if !cfg!(feature = "socks-proxy") {
+                return Err(ErrorHandle::plain(
+                    crate::error::CONFIG_ERROR,
+                    1,
+                    "SOCKS5 proxy is unavailable in this library",
+                ));
+            }
+            if !options.tls.is_null() {
+                return Err(ErrorHandle::argument(
+                    "SOCKS5 proxy cannot have TLS options",
+                ));
+            }
+            Ok(ProxyConfig::Socks5 {
+                host,
+                port,
+                credentials,
+            })
+        }
+        _ => Err(ErrorHandle::argument("unknown proxy protocol")),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_proxy(
+    config: *mut rumqttc_config,
+    options: *const rumqttc_proxy_options_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        let proxy = unsafe { parse_proxy_options(options) }?;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                config.common.proxy = Some(proxy);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_proxy(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        config.common.proxy = None;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_store_registration_new(
+    vtable: *const rumqttc_store_vtable_t,
+    user_data: *mut c_void,
+    out: *mut *mut rumqttc_store_registration,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    if !out.is_null() {
+        unsafe { *out = ptr::null_mut() };
+    }
+    boundary(error_out, ptr::null_mut(), || {
+        if out.is_null() || vtable.is_null() {
+            return Err(ErrorHandle::argument(
+                "store registration output or vtable is NULL",
+            ));
+        }
+        let size = unsafe { (*vtable).struct_size };
+        if size < struct_size::<rumqttc_store_vtable_t>() {
+            return Err(ErrorHandle::argument("store vtable is too small"));
+        }
+        let vtable = unsafe { *vtable };
+        if vtable.reserved != [0; 2]
+            || vtable.load.is_none()
+            || vtable.save.is_none()
+            || vtable.clear.is_none()
+            || vtable.destroy.is_none()
+        {
+            return Err(ErrorHandle::argument("invalid store vtable"));
+        }
+        let handle = rumqttc_store_registration {
+            store: Arc::new(CStore {
+                owner: Arc::new(StoreOwner {
+                    vtable,
+                    user_data: user_data as usize,
+                }),
+            }),
+        };
+        unsafe {
+            *out = Box::into_raw(Box::new(handle));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_store_registration_destroy(
+    handle: *mut rumqttc_store_registration,
+) {
+    unsafe { destroy_box(handle) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_session_store(
+    config: *mut rumqttc_config,
+    registration: *const rumqttc_store_registration,
+    scope: rumqttc_string_view_t,
+    timeout_ms: u64,
+    max_checkpoint_size: usize,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if registration.is_null() {
+            return Err(ErrorHandle::argument("store registration is NULL"));
+        }
+        let scope = unsafe { string_from_view(scope) }?;
+        if scope.is_empty() || scope.contains('\0') {
+            return Err(ErrorHandle::argument(
+                "store scope must be nonempty and contain no NUL",
+            ));
+        }
+        if !(8..=MAX_CHECKPOINT_SIZE).contains(&max_checkpoint_size) {
+            return Err(ErrorHandle::argument(
+                "checkpoint limit must be 8 bytes to 256 MiB",
+            ));
+        }
+        if timeout_ms == 0
+            || std::time::Instant::now()
+                .checked_add(Duration::from_millis(timeout_ms))
+                .is_none()
+        {
+            return Err(ErrorHandle::argument("invalid store callback timeout"));
+        }
+        let store_owner = unsafe { &*registration }.store.clone();
+        let mut store = SessionStoreConfig::new(store_owner, scope);
+        store.timeout = Duration::from_millis(timeout_ms);
+        store.max_checkpoint_size = max_checkpoint_size;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                match &mut config.protocol {
+                    rumqttc_wrapper_core::ProtocolConfig::V4(v4) => v4.session_store = Some(store),
+                    rumqttc_wrapper_core::ProtocolConfig::V5(v5) => v5.session_store = Some(store),
+                }
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_session_store(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        match &mut config.protocol {
+            rumqttc_wrapper_core::ProtocolConfig::V4(v4) => v4.session_store = None,
+            rumqttc_wrapper_core::ProtocolConfig::V5(v5) => v5.session_store = None,
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_broker_session_resume_policy(
+    config: *mut rumqttc_config,
+    policy: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+            return Err(ErrorHandle::argument(
+                "broker session resume policy requires MQTT 5",
+            ));
+        };
+        v5.broker_session_resume_policy = match policy {
+            0 => rumqttc_wrapper_core::BrokerSessionResumePolicy::Strict,
+            1 => rumqttc_wrapper_core::BrokerSessionResumePolicy::AllowBrokerOnly,
+            _ => {
+                return Err(ErrorHandle::argument(
+                    "unknown broker session resume policy",
+                ));
+            }
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_redirect_policy(
+    config: *mut rumqttc_config,
+    policy: u32,
+    max_attempts: u32,
+    transport: u32,
+    tls: *const rumqttc_tls_options_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        let redirect = match policy {
+            0 if max_attempts == 0 && transport == 0 && tls.is_null() => {
+                rumqttc_wrapper_core::RedirectPolicy::Reject
+            }
+            1 if max_attempts > 0 => {
+                let transport = match transport {
+                    0 if tls.is_null() => rumqttc_wrapper_core::TransportConfig::Tcp,
+                    1 => rumqttc_wrapper_core::TransportConfig::Tls(unsafe {
+                        parse_tls_options(tls)
+                    }?),
+                    2 if tls.is_null() => rumqttc_wrapper_core::TransportConfig::WebSocket,
+                    3 => rumqttc_wrapper_core::TransportConfig::Wss(unsafe {
+                        parse_tls_options(tls)
+                    }?),
+                    _ => {
+                        return Err(ErrorHandle::argument(
+                            "invalid redirect transport or TLS options",
+                        ));
+                    }
+                };
+                rumqttc_wrapper_core::RedirectPolicy::Follow {
+                    max_attempts: max_attempts as usize,
+                    transport,
+                }
+            }
+            _ => return Err(ErrorHandle::argument("invalid redirect policy")),
+        };
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+                    return Err(ErrorHandle::argument("redirect policy requires MQTT 5"));
+                };
+                v5.redirect_policy = redirect;
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_scram(
+    config: *mut rumqttc_config,
+    username: rumqttc_string_view_t,
+    password: rumqttc_bytes_view_t,
+    timeout_ms: u64,
+    max_iterations: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if !cfg!(feature = "auth-scram") {
+            return Err(ErrorHandle::plain(
+                crate::error::CONFIG_ERROR,
+                1,
+                "SCRAM is unavailable in this library",
+            ));
+        }
+        let username = unsafe { string_from_view(username) }?;
+        let password = unsafe { bytes_from_view(password) }?;
+        if username.is_empty()
+            || std::str::from_utf8(password).is_err()
+            || !(4096..=100_000).contains(&max_iterations)
+            || timeout_ms == 0
+            || std::time::Instant::now()
+                .checked_add(Duration::from_millis(timeout_ms))
+                .is_none()
+        {
+            return Err(ErrorHandle::argument("invalid SCRAM settings"));
+        }
+        let mut scram =
+            rumqttc_wrapper_core::ScramConfig::new(username, SecretBytes::new(password.to_vec()));
+        scram.exchange_timeout = Duration::from_millis(timeout_ms);
+        scram.max_iterations = max_iterations;
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+                    return Err(ErrorHandle::argument("SCRAM requires MQTT 5"));
+                };
+                if v5.authenticator.is_some() {
+                    return Err(ErrorHandle::state("SCRAM conflicts with an authenticator"));
+                }
+                if v5
+                    .connect_properties
+                    .authentication_method
+                    .as_deref()
+                    .is_some_and(|method| method != "SCRAM-SHA-256")
+                    || v5.connect_properties.authentication_data.is_some()
+                {
+                    return Err(ErrorHandle::state(
+                        "SCRAM conflicts with CONNECT authentication properties",
+                    ));
+                }
+                v5.connect_properties.authentication_method = Some("SCRAM-SHA-256".into());
+                v5.scram = Some(scram);
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_v5_scram(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+            return Err(ErrorHandle::argument("SCRAM requires MQTT 5"));
+        };
+        if v5.scram.take().is_some()
+            && v5.connect_properties.authentication_method.as_deref() == Some("SCRAM-SHA-256")
+        {
+            v5.connect_properties.authentication_method = None;
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_callback_completion_retain(
+    completion: *const rumqttc_callback_completion,
+    out: *mut *mut rumqttc_callback_completion,
+) -> u32 {
+    if !out.is_null() {
+        unsafe { *out = ptr::null_mut() };
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if completion.is_null() || out.is_null() {
+            return Err(ErrorHandle::argument("completion or output is NULL"));
+        }
+        unsafe {
+            *out = Box::into_raw(Box::new(rumqttc_callback_completion {
+                inner: (*completion).inner.clone(),
+            }));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_callback_completion_destroy(
+    completion: *mut rumqttc_callback_completion,
+) {
+    unsafe { destroy_box(completion) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_callback_store_load_complete(
+    completion: *mut rumqttc_callback_completion,
+    result: u32,
+    checkpoint: rumqttc_bytes_view_t,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        callback_store_load_complete(completion, result, checkpoint)
+    }))
+    .unwrap_or(crate::error::INTERNAL_ERROR)
+}
+
+unsafe fn callback_store_load_complete(
+    completion: *mut rumqttc_callback_completion,
+    result: u32,
+    checkpoint: rumqttc_bytes_view_t,
+) -> u32 {
+    if completion.is_null() {
+        return crate::error::INVALID_ARGUMENT;
+    }
+    let CallbackCompletion::Store(inner) = (unsafe { &(*completion).inner }) else {
+        return crate::error::INVALID_STATE;
+    };
+    if inner.operation != 1 {
+        return crate::error::INVALID_STATE;
+    }
+    inner.finish_with(1, || match result {
+        0 if checkpoint.len > inner.load_limit => Ok(Err(StoreFailure::Oversized)),
+        0 => unsafe { bytes_from_view(checkpoint) }
+            .map(|bytes| Ok(Some(SessionCheckpoint(Bytes::copy_from_slice(bytes)))))
+            .map_err(|_| crate::error::INVALID_ARGUMENT),
+        1 if checkpoint.len == 0 => Ok(Ok(None)),
+        2 if checkpoint.len == 0 => Ok(Err(StoreFailure::Load)),
+        _ => Err(crate::error::INVALID_ARGUMENT),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_callback_store_write_complete(
+    completion: *mut rumqttc_callback_completion,
+    result: u32,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        callback_store_write_complete(completion, result)
+    }))
+    .unwrap_or(crate::error::INTERNAL_ERROR)
+}
+
+unsafe fn callback_store_write_complete(
+    completion: *mut rumqttc_callback_completion,
+    result: u32,
+) -> u32 {
+    if completion.is_null() {
+        return crate::error::INVALID_ARGUMENT;
+    }
+    let CallbackCompletion::Store(inner) = (unsafe { &(*completion).inner }) else {
+        return crate::error::INVALID_STATE;
+    };
+    let failure = match inner.operation {
+        2 => StoreFailure::Save,
+        3 => StoreFailure::Clear,
+        _ => return crate::error::INVALID_STATE,
+    };
+    inner.finish_with(inner.operation, || match result {
+        0 => Ok(Ok(None)),
+        2 => Ok(Err(failure)),
+        _ => Err(crate::error::INVALID_ARGUMENT),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_resolver_registration_new(
+    vtable: *const rumqttc_resolver_vtable_t,
+    user_data: *mut c_void,
+    out: *mut *mut rumqttc_resolver_registration,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    unsafe { write_optional(out, ptr::null_mut()) };
+    boundary(error_out, ptr::null_mut(), || {
+        if vtable.is_null() || out.is_null() {
+            return Err(ErrorHandle::argument("resolver vtable or output is NULL"));
+        }
+        if unsafe { (*vtable).struct_size } < struct_size::<rumqttc_resolver_vtable_t>() {
+            return Err(ErrorHandle::argument("resolver vtable is too small"));
+        }
+        let vtable = unsafe { *vtable };
+        if vtable.reserved != [0; 2] || vtable.resolve.is_none() || vtable.destroy.is_none() {
+            return Err(ErrorHandle::argument("invalid resolver vtable"));
+        }
+        let handle = rumqttc_resolver_registration {
+            resolver: Arc::new(CResolver {
+                owner: Arc::new(ResolverOwner {
+                    vtable,
+                    user_data: user_data as usize,
+                }),
+            }),
+        };
+        unsafe { *out = Box::into_raw(Box::new(handle)) };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_resolver_registration_destroy(
+    handle: *mut rumqttc_resolver_registration,
+) {
+    unsafe { destroy_box(handle) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_srv_resolver(
+    config: *mut rumqttc_config,
+    registration: *const rumqttc_resolver_registration,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        if registration.is_null() {
+            return Err(ErrorHandle::argument("resolver registration is NULL"));
+        }
+        let resolver = unsafe { &*registration }.resolver.clone();
+        let config = unsafe { config_ref(config) }?;
+        config.update_with_error(
+            |config| {
+                let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+                    return Err(ErrorHandle::argument("SRV resolver requires MQTT 5"));
+                };
+                v5.srv_resolver = Some(SrvResolverConfig(resolver));
+                Ok(())
+            },
+            || ErrorHandle::internal("configuration lock is poisoned"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_clear_v5_srv_resolver(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+            return Err(ErrorHandle::argument("SRV resolver requires MQTT 5"));
+        };
+        v5.srv_resolver = None;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_callback_srv_complete(
+    completion: *mut rumqttc_callback_completion,
+    result: u32,
+    records: *const rumqttc_srv_record_t,
+    record_count: usize,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        callback_srv_complete(completion, result, records, record_count)
+    }))
+    .unwrap_or(crate::error::INTERNAL_ERROR)
+}
+
+unsafe fn callback_srv_complete(
+    completion: *mut rumqttc_callback_completion,
+    result: u32,
+    records: *const rumqttc_srv_record_t,
+    record_count: usize,
+) -> u32 {
+    if completion.is_null() {
+        return crate::error::INVALID_ARGUMENT;
+    }
+    let CallbackCompletion::Resolver(inner) = (unsafe { &(*completion).inner }) else {
+        return crate::error::INVALID_STATE;
+    };
+    inner.finish_with(|| {
+        if result == 2 && record_count == 0 {
+            return Ok(Err(SrvFailure::Query));
+        }
+        if result != 0
+            || record_count > isize::MAX as usize / size_of::<rumqttc_srv_record_t>()
+            || (record_count != 0 && records.is_null())
+        {
+            return Err(crate::error::INVALID_ARGUMENT);
+        }
+        let inputs = if record_count == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(records, record_count) }
+        };
+        let mut output = Vec::with_capacity(inputs.len());
+        for record in inputs {
+            if record.struct_size < struct_size::<rumqttc_srv_record_t>() || record.reserved != 0 {
+                return Err(crate::error::INVALID_ARGUMENT);
+            }
+            let Ok(priority) = u16::try_from(record.priority) else {
+                return Err(crate::error::INVALID_ARGUMENT);
+            };
+            let Ok(weight) = u16::try_from(record.weight) else {
+                return Err(crate::error::INVALID_ARGUMENT);
+            };
+            let Ok(port) = u16::try_from(record.port) else {
+                return Err(crate::error::INVALID_ARGUMENT);
+            };
+            if port == 0 {
+                return Err(crate::error::INVALID_ARGUMENT);
+            }
+            let target = unsafe { string_from_view(record.target) }
+                .map_err(|_| crate::error::INVALID_ARGUMENT)?;
+            if target.is_empty() || target.contains(['\0', '\r', '\n']) {
+                return Err(crate::error::INVALID_ARGUMENT);
+            }
+            output.push(SrvRecord {
+                priority,
+                weight,
+                port,
+                target,
+            });
+        }
+        Ok(Ok(output))
     })
 }
 
@@ -2129,6 +3172,46 @@ fn admit(client: *mut rumqttc_client, command: Command) -> Result<Admission, Err
         .map_err(|error| core_error(&error, None))
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_try_reauthenticate(
+    client: *mut rumqttc_client,
+    operation_id_out: *mut u64,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    unsafe { write_optional(operation_id_out, 0) };
+    boundary(error_out, client, || {
+        if operation_id_out.is_null() {
+            return Err(ErrorHandle::argument("operation ID output is NULL"));
+        }
+        write_admission(
+            admit(client, Command::Reauthenticate(None))?,
+            operation_id_out,
+            ptr::null_mut(),
+        );
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_reauthenticate_tracked(
+    client: *mut rumqttc_client,
+    completion_out: *mut *mut rumqttc_completion,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    unsafe { write_optional(completion_out, ptr::null_mut()) };
+    boundary(error_out, client, || {
+        if completion_out.is_null() {
+            return Err(ErrorHandle::argument("completion output is NULL"));
+        }
+        write_admission(
+            admit(client, Command::Reauthenticate(None))?,
+            ptr::null_mut(),
+            completion_out,
+        );
+        Ok(())
+    })
+}
+
 fn write_admission(
     admission: Admission,
     operation_id_out: *mut u64,
@@ -2970,6 +4053,573 @@ pub unsafe extern "C" fn rumqttc_event_connected(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_connack_reason(
+    event: *const rumqttc_event,
+    reason_out: *mut u8,
+) -> u32 {
+    unsafe { write_optional(reason_out, 0) };
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if reason_out.is_null() {
+            return Err(ErrorHandle::argument("CONNACK reason output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let details = match &event.event {
+            WrapperEvent::Connected { details, .. } | WrapperEvent::ConnectionRejected(details) => {
+                details
+            }
+            _ => return Err(ErrorHandle::state("event has no CONNACK details")),
+        };
+        unsafe { *reason_out = details.reason_code };
+        Ok(())
+    })
+}
+
+fn connack_details(
+    event: &EventObject,
+) -> Result<&rumqttc_wrapper_core::ConnAckDetails, ErrorHandle> {
+    match &event.event {
+        WrapperEvent::Connected { details, .. } | WrapperEvent::ConnectionRejected(details) => {
+            Ok(details)
+        }
+        _ => Err(ErrorHandle::state("event has no CONNACK details")),
+    }
+}
+
+fn connack_v5(
+    event: &EventObject,
+) -> Result<&rumqttc_wrapper_core::V5ConnAckProperties, ErrorHandle> {
+    connack_details(event)?
+        .v5_properties
+        .as_deref()
+        .ok_or_else(|| ErrorHandle::state("event has no MQTT 5 CONNACK properties"))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_connack_v5_scalar(
+    event: *const rumqttc_event,
+    property: u32,
+    present_out: *mut u8,
+    value_out: *mut u64,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(value_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && value_out.is_null() {
+            return Err(ErrorHandle::argument("CONNACK scalar output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let p = connack_v5(event)?;
+        let value = match property {
+            1 => p.session_expiry_interval.map(u64::from),
+            2 => p.receive_maximum.map(u64::from),
+            3 => p.maximum_qos.map(u64::from),
+            4 => p.retain_available.map(u64::from),
+            5 => p.maximum_packet_size.map(u64::from),
+            6 => p.topic_alias_maximum.map(u64::from),
+            7 => p.wildcard_subscription_available.map(u64::from),
+            8 => p.subscription_identifiers_available.map(u64::from),
+            9 => p.shared_subscription_available.map(u64::from),
+            10 => p.server_keep_alive.map(u64::from),
+            _ => return Err(ErrorHandle::argument("unknown CONNACK scalar property")),
+        };
+        unsafe {
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(value_out, value.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_connack_v5_string(
+    event: *const rumqttc_event,
+    property: u32,
+    present_out: *mut u8,
+    value_out: *mut rumqttc_string_view_t,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(
+            value_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && value_out.is_null() {
+            return Err(ErrorHandle::argument("CONNACK string output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let p = connack_v5(event)?;
+        let value = match property {
+            1 => &p.assigned_client_identifier,
+            2 => &p.reason_string,
+            3 => &p.response_information,
+            4 => &p.server_reference,
+            5 => &p.authentication_method,
+            _ => return Err(ErrorHandle::argument("unknown CONNACK string property")),
+        };
+        unsafe {
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(
+                value_out,
+                value.as_deref().map_or(
+                    rumqttc_string_view_t {
+                        data: ptr::null(),
+                        len: 0,
+                    },
+                    view_string,
+                ),
+            );
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_connack_v5_authentication_data(
+    event: *const rumqttc_event,
+    present_out: *mut u8,
+    value_out: *mut rumqttc_bytes_view_t,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(
+            value_out,
+            rumqttc_bytes_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && value_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "CONNACK authentication data output is NULL",
+            ));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let value = &connack_v5(event)?.authentication_data;
+        unsafe {
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(
+                value_out,
+                value.as_deref().map_or(
+                    rumqttc_bytes_view_t {
+                        data: ptr::null(),
+                        len: 0,
+                    },
+                    view_bytes,
+                ),
+            );
+        }
+        Ok(())
+    })
+}
+
+fn event_user_properties(
+    event: &EventObject,
+    property_class: u32,
+) -> Result<&[(String, String)], ErrorHandle> {
+    match property_class {
+        1 => Ok(&connack_v5(event)?.user_properties),
+        2 => match &event.event {
+            WrapperEvent::BrokerDisconnect(disconnect) => Ok(&disconnect.user_properties),
+            _ => Err(ErrorHandle::state("event is not broker DISCONNECT")),
+        },
+        _ => Err(ErrorHandle::argument("unknown event property class")),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_user_property_count(
+    event: *const rumqttc_event,
+    property_class: u32,
+    count_out: *mut usize,
+) -> u32 {
+    unsafe { write_optional(count_out, 0) };
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if count_out.is_null() {
+            return Err(ErrorHandle::argument("property count output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        unsafe { *count_out = event_user_properties(event, property_class)?.len() };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_user_property_at(
+    event: *const rumqttc_event,
+    property_class: u32,
+    index: usize,
+    name_out: *mut rumqttc_string_view_t,
+    value_out: *mut rumqttc_string_view_t,
+) -> u32 {
+    unsafe {
+        write_optional(
+            name_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+        write_optional(
+            value_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if name_out.is_null() && value_out.is_null() {
+            return Err(ErrorHandle::argument("property output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let (name, value) = event_user_properties(event, property_class)?
+            .get(index)
+            .ok_or_else(|| ErrorHandle::argument("property index is out of bounds"))?;
+        unsafe {
+            write_optional(name_out, view_string(name));
+            write_optional(value_out, view_string(value));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_outgoing_packet_id(
+    event: *const rumqttc_event,
+    present_out: *mut u8,
+    packet_id_out: *mut u16,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(packet_id_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && packet_id_out.is_null() {
+            return Err(ErrorHandle::argument("packet ID output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let WrapperEvent::Outgoing(outgoing) = &event.event else {
+            return Err(ErrorHandle::state("event is not outgoing activity"));
+        };
+        unsafe {
+            write_optional(present_out, u8::from(outgoing.packet_id.is_some()));
+            write_optional(packet_id_out, outgoing.packet_id.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_authentication(
+    event: *const rumqttc_event,
+    exchange_out: *mut u32,
+    stage_out: *mut u32,
+    failure_present_out: *mut u8,
+    failure_out: *mut u32,
+    method_out: *mut rumqttc_string_view_t,
+) -> u32 {
+    unsafe {
+        write_optional(exchange_out, 0);
+        write_optional(stage_out, 0);
+        write_optional(failure_present_out, 0);
+        write_optional(failure_out, 0);
+        write_optional(
+            method_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if exchange_out.is_null()
+            && stage_out.is_null()
+            && failure_present_out.is_null()
+            && failure_out.is_null()
+            && method_out.is_null()
+        {
+            return Err(ErrorHandle::argument("authentication output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let WrapperEvent::Authentication(auth) = &event.event else {
+            return Err(ErrorHandle::state("event is not authentication"));
+        };
+        unsafe {
+            write_optional(
+                exchange_out,
+                match auth.exchange {
+                    rumqttc_wrapper_core::AuthExchange::Initial => 1,
+                    rumqttc_wrapper_core::AuthExchange::Reauthentication => 2,
+                },
+            );
+            write_optional(
+                stage_out,
+                match auth.stage {
+                    rumqttc_wrapper_core::AuthStage::Started => 1,
+                    rumqttc_wrapper_core::AuthStage::Continue => 2,
+                    rumqttc_wrapper_core::AuthStage::Succeeded => 3,
+                    rumqttc_wrapper_core::AuthStage::Failed => 4,
+                },
+            );
+            write_optional(failure_present_out, u8::from(auth.failure.is_some()));
+            write_optional(
+                failure_out,
+                auth.failure.map_or(0, |failure| match failure {
+                    rumqttc_wrapper_core::AuthFailure::Rejected => 1,
+                    rumqttc_wrapper_core::AuthFailure::Panic => 2,
+                    rumqttc_wrapper_core::AuthFailure::Timeout => 3,
+                    rumqttc_wrapper_core::AuthFailure::InvalidResponse => 4,
+                    rumqttc_wrapper_core::AuthFailure::Overlapping => 5,
+                    rumqttc_wrapper_core::AuthFailure::ConnectionClosed => 6,
+                    rumqttc_wrapper_core::AuthFailure::Method => 7,
+                    rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
+                }),
+            );
+            write_optional(method_out, view_string(&auth.method));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_broker_disconnect(
+    event: *const rumqttc_event,
+    reason_out: *mut u8,
+    expiry_present_out: *mut u8,
+    expiry_seconds_out: *mut u32,
+    reason_string_present_out: *mut u8,
+    reason_string_out: *mut rumqttc_string_view_t,
+    server_reference_present_out: *mut u8,
+    server_reference_out: *mut rumqttc_string_view_t,
+) -> u32 {
+    unsafe {
+        write_optional(reason_out, 0);
+        write_optional(expiry_present_out, 0);
+        write_optional(expiry_seconds_out, 0);
+        write_optional(reason_string_present_out, 0);
+        write_optional(
+            reason_string_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+        write_optional(server_reference_present_out, 0);
+        write_optional(
+            server_reference_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if reason_out.is_null()
+            && expiry_present_out.is_null()
+            && expiry_seconds_out.is_null()
+            && reason_string_present_out.is_null()
+            && reason_string_out.is_null()
+            && server_reference_present_out.is_null()
+            && server_reference_out.is_null()
+        {
+            return Err(ErrorHandle::argument("broker DISCONNECT output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let WrapperEvent::BrokerDisconnect(disconnect) = &event.event else {
+            return Err(ErrorHandle::state("event is not broker DISCONNECT"));
+        };
+        unsafe {
+            write_optional(reason_out, disconnect.reason_code);
+            write_optional(
+                expiry_present_out,
+                u8::from(disconnect.session_expiry_interval.is_some()),
+            );
+            write_optional(
+                expiry_seconds_out,
+                disconnect.session_expiry_interval.unwrap_or(0),
+            );
+            write_optional(
+                reason_string_present_out,
+                u8::from(disconnect.reason_string.is_some()),
+            );
+            write_optional(
+                reason_string_out,
+                disconnect.reason_string.as_deref().map_or(
+                    rumqttc_string_view_t {
+                        data: ptr::null(),
+                        len: 0,
+                    },
+                    view_string,
+                ),
+            );
+            write_optional(
+                server_reference_present_out,
+                u8::from(disconnect.server_reference.is_some()),
+            );
+            write_optional(
+                server_reference_out,
+                disconnect.server_reference.as_deref().map_or(
+                    rumqttc_string_view_t {
+                        data: ptr::null(),
+                        len: 0,
+                    },
+                    view_string,
+                ),
+            );
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_redirect(
+    event: *const rumqttc_event,
+    source_out: *mut u32,
+    reason_out: *mut u32,
+    failure_present_out: *mut u8,
+    failure_out: *mut u32,
+    reference_present_out: *mut u8,
+    reference_out: *mut rumqttc_string_view_t,
+) -> u32 {
+    unsafe {
+        write_optional(source_out, 0);
+        write_optional(reason_out, 0);
+        write_optional(failure_present_out, 0);
+        write_optional(failure_out, 0);
+        write_optional(reference_present_out, 0);
+        write_optional(
+            reference_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if source_out.is_null()
+            && reason_out.is_null()
+            && failure_present_out.is_null()
+            && failure_out.is_null()
+            && reference_present_out.is_null()
+            && reference_out.is_null()
+        {
+            return Err(ErrorHandle::argument("redirect output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let WrapperEvent::Redirect(redirect) = &event.event else {
+            return Err(ErrorHandle::state("event is not a redirect"));
+        };
+        unsafe {
+            write_optional(
+                source_out,
+                match redirect.source {
+                    rumqttc_wrapper_core::RedirectSource::ConnAck => 1,
+                    rumqttc_wrapper_core::RedirectSource::Disconnect => 2,
+                },
+            );
+            write_optional(
+                reason_out,
+                match redirect.reason {
+                    rumqttc_wrapper_core::RedirectReason::UseAnotherServer => 1,
+                    rumqttc_wrapper_core::RedirectReason::ServerMoved => 2,
+                },
+            );
+            write_optional(failure_present_out, u8::from(redirect.failure.is_some()));
+            write_optional(
+                failure_out,
+                redirect.failure.map_or(0, |failure| match failure {
+                    rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
+                    rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
+                    rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
+                    rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
+                    rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
+                    rumqttc_wrapper_core::RedirectFailure::Loop => 6,
+                    rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
+                    rumqttc_wrapper_core::RedirectFailure::Dns => 8,
+                    rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
+                    rumqttc_wrapper_core::RedirectFailure::Transport => 10,
+                }),
+            );
+            write_optional(
+                reference_present_out,
+                u8::from(redirect.server_reference.is_some()),
+            );
+            write_optional(
+                reference_out,
+                redirect.server_reference.as_deref().map_or(
+                    rumqttc_string_view_t {
+                        data: ptr::null(),
+                        len: 0,
+                    },
+                    view_string,
+                ),
+            );
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_redirect_target(
+    event: *const rumqttc_event,
+    present_out: *mut u8,
+    kind_out: *mut u32,
+    value_out: *mut rumqttc_string_view_t,
+    port_out: *mut u16,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(kind_out, 0);
+        write_optional(
+            value_out,
+            rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            },
+        );
+        write_optional(port_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && kind_out.is_null() && value_out.is_null() && port_out.is_null()
+        {
+            return Err(ErrorHandle::argument("redirect target output is NULL"));
+        }
+        let event = unsafe { event_ref(event) }?;
+        let WrapperEvent::Redirect(redirect) = &event.event else {
+            return Err(ErrorHandle::state("event is not a redirect"));
+        };
+        let Some(target) = &redirect.target else {
+            return Ok(());
+        };
+        let (kind, value, port) = match target {
+            rumqttc_wrapper_core::BrokerTarget::Tcp { host, port } => (1, view_string(host), *port),
+            rumqttc_wrapper_core::BrokerTarget::WebSocket { url } => (2, view_string(url), 0),
+            rumqttc_wrapper_core::BrokerTarget::Unix { .. } => {
+                return Err(ErrorHandle::internal(
+                    "redirect selected an unsupported Unix endpoint",
+                ));
+            }
+        };
+        unsafe {
+            write_optional(present_out, 1);
+            write_optional(kind_out, kind);
+            write_optional(value_out, value);
+            write_optional(port_out, port);
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_event_disconnected(
     event: *const rumqttc_event,
     phase_out: *mut u32,
@@ -3471,6 +5121,59 @@ pub unsafe extern "C" fn rumqttc_error_broker_reason(
     })
 }
 
+fn error_detail(
+    error: *const rumqttc_error,
+    present_out: *mut u8,
+    detail_out: *mut u32,
+    select: impl FnOnce(&ErrorHandle) -> Option<u32>,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(detail_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && detail_out.is_null() {
+            return Err(ErrorHandle::argument("error detail output is NULL"));
+        }
+        let error = unsafe { error_ref(error) }?;
+        let value = select(error);
+        unsafe {
+            write_optional(present_out, u8::from(value.is_some()));
+            write_optional(detail_out, value.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_store_failure(
+    error: *const rumqttc_error,
+    present_out: *mut u8,
+    failure_out: *mut u32,
+) -> u32 {
+    error_detail(error, present_out, failure_out, |error| error.store_failure)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_auth_failure(
+    error: *const rumqttc_error,
+    present_out: *mut u8,
+    failure_out: *mut u32,
+) -> u32 {
+    error_detail(error, present_out, failure_out, |error| error.auth_failure)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_redirect_failure(
+    error: *const rumqttc_error,
+    present_out: *mut u8,
+    failure_out: *mut u32,
+) -> u32 {
+    error_detail(error, present_out, failure_out, |error| {
+        error.redirect_failure
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_error_operation_id(
     error: *const rumqttc_error,
@@ -3614,6 +5317,414 @@ mod tests {
             len: 0,
         };
         assert_eq!(unsafe { bytes_from_view(view) }.unwrap(), &[]);
+    }
+
+    #[test]
+    fn proxy_options_preserve_endpoint_credentials_and_separate_tls() {
+        let tls = rumqttc_tls_options_t {
+            struct_size: struct_size::<rumqttc_tls_options_t>(),
+            backend: 0,
+            root_policy: 0,
+            reserved: 0,
+            ca_pem: view_bytes(&[]),
+            pem_identity: ptr::null(),
+            pkcs12_identity: ptr::null(),
+            alpn_protocols: ptr::null(),
+            alpn_protocol_count: 0,
+            reserved_tail: [0; 2],
+        };
+        let mut options = rumqttc_proxy_options_t {
+            struct_size: struct_size::<rumqttc_proxy_options_t>(),
+            protocol: 2,
+            dns_policy: 0,
+            reserved: 0,
+            host: view_string("proxy.local"),
+            port: 8443,
+            username: view_bytes(b"user"),
+            password: view_bytes(b"secret"),
+            credentials_present: 1,
+            reserved_tail: [0; 7],
+            tls: &raw const tls,
+        };
+        if cfg!(feature = "http-proxy") {
+            let parsed = unsafe { parse_proxy_options(&raw const options) }.unwrap();
+            assert!(
+                matches!(parsed, ProxyConfig::Http { host, port: 8443, credentials: Some(_), tls: Some(_) } if host == "proxy.local")
+            );
+        }
+        options.dns_policy = 1;
+        assert!(unsafe { parse_proxy_options(&raw const options) }.is_err());
+        options.dns_policy = 0;
+        options.protocol = 99;
+        assert!(unsafe { parse_proxy_options(&raw const options) }.is_err());
+        options.protocol = 3;
+        assert!(unsafe { parse_proxy_options(&raw const options) }.is_err());
+    }
+
+    #[tokio::test]
+    async fn store_callback_can_complete_later_and_reject_duplicates() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Context {
+            token: Mutex<Option<usize>>,
+            destroyed: Arc<AtomicUsize>,
+        }
+
+        unsafe extern "C" fn load(
+            user_data: *mut c_void,
+            request: *const rumqttc_store_request_t,
+            completion: *mut rumqttc_callback_completion,
+        ) {
+            let context = unsafe { &*(user_data as *const Context) };
+            let request = unsafe { &*request };
+            assert_eq!(request.operation, 1);
+            assert_eq!(request.checkpoint_format_version, 1);
+            let mut retained = ptr::null_mut();
+            assert_eq!(
+                unsafe { rumqttc_callback_completion_retain(completion, &mut retained) },
+                OK
+            );
+            *context.token.lock().unwrap() = Some(retained as usize);
+        }
+        unsafe extern "C" fn unused(
+            _: *mut c_void,
+            _: *const rumqttc_store_request_t,
+            _: *mut rumqttc_callback_completion,
+        ) {
+        }
+        unsafe extern "C" fn destroy(user_data: *mut c_void) {
+            let context = unsafe { Box::from_raw(user_data as *mut Context) };
+            context.destroyed.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let context = Box::into_raw(Box::new(Context {
+            token: Mutex::new(None),
+            destroyed: destroyed.clone(),
+        }));
+        let owner = Arc::new(StoreOwner {
+            vtable: rumqttc_store_vtable_t {
+                struct_size: struct_size::<rumqttc_store_vtable_t>(),
+                load: Some(load),
+                save: Some(unused),
+                clear: Some(unused),
+                destroy: Some(destroy),
+                reserved: [0; 2],
+            },
+            user_data: context as usize,
+        });
+        let store = CStore {
+            owner: owner.clone(),
+        };
+        let key = SessionStoreKey {
+            protocol: ProtocolVersion::V4,
+            scope: "tenant".into(),
+            client_id: "client".into(),
+        };
+        let checkpoint = view_bytes(b"RMWC\0\x01\x04\0payload");
+        let work = tokio::spawn(store.load_with_limit(key.clone(), checkpoint.len));
+        let token = loop {
+            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+                break token as *mut rumqttc_callback_completion;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(
+            unsafe { rumqttc_callback_store_load_complete(token, 0, checkpoint) },
+            OK
+        );
+        assert_eq!(
+            unsafe { rumqttc_callback_store_load_complete(token, 0, checkpoint) },
+            crate::error::INVALID_STATE
+        );
+        assert_eq!(
+            work.await.unwrap().unwrap().unwrap().0.as_ref(),
+            b"RMWC\0\x01\x04\0payload"
+        );
+        unsafe { rumqttc_callback_completion_destroy(token) };
+
+        let oversized_work = tokio::spawn(store.load_with_limit(key.clone(), checkpoint.len - 1));
+        let oversized_token = loop {
+            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+                break token as *mut rumqttc_callback_completion;
+            }
+            tokio::task::yield_now().await;
+        };
+        // This pointer cannot be read. The length check must win before a slice
+        // or allocation is made, even when the same registration has other limits.
+        let oversized = rumqttc_bytes_view_t {
+            data: 1 as *const u8,
+            len: checkpoint.len,
+        };
+        assert_eq!(
+            unsafe { rumqttc_callback_store_load_complete(oversized_token, 0, oversized) },
+            OK
+        );
+        assert_eq!(oversized_work.await.unwrap(), Err(StoreFailure::Oversized));
+        assert_eq!(
+            unsafe { rumqttc_callback_store_load_complete(oversized_token, 0, checkpoint) },
+            crate::error::INVALID_STATE
+        );
+        unsafe { rumqttc_callback_completion_destroy(oversized_token) };
+
+        let cancelled_work = tokio::spawn(store.load(key));
+        let late_token = loop {
+            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+                break token as *mut rumqttc_callback_completion;
+            }
+            tokio::task::yield_now().await;
+        };
+        cancelled_work.abort();
+        assert!(cancelled_work.await.is_err());
+        assert_eq!(
+            unsafe { rumqttc_callback_store_load_complete(late_token, 0, checkpoint) },
+            crate::error::INVALID_STATE
+        );
+        drop(store);
+        drop(owner);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        unsafe { rumqttc_callback_completion_destroy(late_token) };
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn connack_accessors_preserve_presence_order_and_wrong_kind_outputs() {
+        let mut properties = rumqttc_wrapper_core::V5ConnAckProperties::default();
+        properties.reason_string = Some(String::new());
+        properties.receive_maximum = Some(9);
+        properties.user_properties = vec![("a".into(), "1".into()), ("a".into(), "2".into())];
+        let event = rumqttc_event {
+            inner: EventObject::new(WrapperEvent::Connected {
+                protocol: ProtocolVersion::V5,
+                session_present: false,
+                details: rumqttc_wrapper_core::ConnAckDetails {
+                    reason_code: 0,
+                    v5_properties: Some(Box::new(properties)),
+                },
+            }),
+        };
+        let mut present = 99;
+        let mut scalar = 99;
+        assert_eq!(
+            unsafe { rumqttc_event_connack_v5_scalar(&event, 2, &mut present, &mut scalar) },
+            OK
+        );
+        assert_eq!((present, scalar), (1, 9));
+        let mut view = rumqttc_string_view_t {
+            data: ptr::null(),
+            len: 99,
+        };
+        assert_eq!(
+            unsafe { rumqttc_event_connack_v5_string(&event, 2, &mut present, &mut view) },
+            OK
+        );
+        assert_eq!((present, view.len), (1, 0));
+        let mut count = 0;
+        assert_eq!(
+            unsafe { rumqttc_event_user_property_count(&event, 1, &mut count) },
+            OK
+        );
+        assert_eq!(count, 2);
+        let mut name = rumqttc_string_view_t {
+            data: ptr::null(),
+            len: 0,
+        };
+        assert_eq!(
+            unsafe { rumqttc_event_user_property_at(&event, 1, 1, &mut name, &mut view) },
+            OK
+        );
+        assert_eq!(
+            unsafe {
+                std::str::from_utf8_unchecked(slice::from_raw_parts(view.data.cast(), view.len))
+            },
+            "2"
+        );
+
+        let wrong = rumqttc_event {
+            inner: EventObject::new(WrapperEvent::GracefulShutdownCompleted),
+        };
+        present = 99;
+        scalar = 99;
+        assert_eq!(
+            unsafe { rumqttc_event_connack_v5_scalar(&wrong, 2, &mut present, &mut scalar) },
+            crate::error::INVALID_STATE
+        );
+        assert_eq!((present, scalar), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn resolver_callback_preserves_records_and_rejects_late_completion() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Context {
+            token: Mutex<Option<usize>>,
+            destroyed: Arc<AtomicUsize>,
+        }
+        unsafe extern "C" fn resolve(
+            user_data: *mut c_void,
+            request: *const rumqttc_resolver_request_t,
+            completion: *mut rumqttc_callback_completion,
+        ) {
+            let context = unsafe { &*(user_data as *const Context) };
+            assert_eq!(
+                unsafe { (*request).struct_size },
+                struct_size::<rumqttc_resolver_request_t>()
+            );
+            let mut retained = ptr::null_mut();
+            assert_eq!(
+                unsafe { rumqttc_callback_completion_retain(completion, &mut retained) },
+                OK
+            );
+            *context.token.lock().unwrap() = Some(retained as usize);
+        }
+        unsafe extern "C" fn destroy(user_data: *mut c_void) {
+            let context = unsafe { Box::from_raw(user_data as *mut Context) };
+            context.destroyed.fetch_add(1, Ordering::SeqCst);
+        }
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let context = Box::into_raw(Box::new(Context {
+            token: Mutex::new(None),
+            destroyed: destroyed.clone(),
+        }));
+        let resolver = CResolver {
+            owner: Arc::new(ResolverOwner {
+                vtable: rumqttc_resolver_vtable_t {
+                    struct_size: struct_size::<rumqttc_resolver_vtable_t>(),
+                    resolve: Some(resolve),
+                    destroy: Some(destroy),
+                    reserved: [0; 2],
+                },
+                user_data: context as usize,
+            }),
+        };
+        let work = tokio::spawn(resolver.resolve("_mqtt._tcp.example".into()));
+        let token = loop {
+            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+                break token as *mut rumqttc_callback_completion;
+            }
+            tokio::task::yield_now().await;
+        };
+        let record = rumqttc_srv_record_t {
+            struct_size: struct_size::<rumqttc_srv_record_t>(),
+            priority: 10,
+            weight: 20,
+            port: 1883,
+            reserved: 0,
+            target: view_string("broker.example"),
+        };
+        assert_eq!(
+            unsafe { rumqttc_callback_srv_complete(token, 0, &record, 1) },
+            OK
+        );
+        assert_eq!(
+            unsafe { rumqttc_callback_srv_complete(token, 0, &record, 1) },
+            crate::error::INVALID_STATE
+        );
+        assert_eq!(work.await.unwrap().unwrap()[0].target, "broker.example");
+        unsafe { rumqttc_callback_completion_destroy(token) };
+
+        let cancelled = tokio::spawn(resolver.resolve("_mqtt._tcp.example".into()));
+        let late_token = loop {
+            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+                break token as *mut rumqttc_callback_completion;
+            }
+            tokio::task::yield_now().await;
+        };
+        cancelled.abort();
+        assert!(cancelled.await.is_err());
+        assert_eq!(
+            unsafe { rumqttc_callback_srv_complete(late_token, 0, &record, 1) },
+            crate::error::INVALID_STATE
+        );
+        drop(resolver);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        unsafe { rumqttc_callback_completion_destroy(late_token) };
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn store_registration_reuses_one_core_store_across_c_configs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        unsafe extern "C" fn noop(
+            _: *mut c_void,
+            _: *const rumqttc_store_request_t,
+            _: *mut rumqttc_callback_completion,
+        ) {
+        }
+        unsafe extern "C" fn destroy(user_data: *mut c_void) {
+            let counter = unsafe { Box::from_raw(user_data as *mut Arc<AtomicUsize>) };
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let user_data = Box::into_raw(Box::new(destroyed.clone())).cast();
+        let vtable = rumqttc_store_vtable_t {
+            struct_size: struct_size::<rumqttc_store_vtable_t>(),
+            load: Some(noop),
+            save: Some(noop),
+            clear: Some(noop),
+            destroy: Some(destroy),
+            reserved: [0; 2],
+        };
+        let mut registration = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                rumqttc_store_registration_new(
+                    &vtable,
+                    user_data,
+                    &mut registration,
+                    ptr::null_mut(),
+                )
+            },
+            OK
+        );
+        let mut first = ptr::null_mut();
+        let mut second = ptr::null_mut();
+        assert_eq!(
+            unsafe { rumqttc_config_new(1, &mut first, ptr::null_mut()) },
+            OK
+        );
+        assert_eq!(
+            unsafe { rumqttc_config_new(1, &mut second, ptr::null_mut()) },
+            OK
+        );
+        for config in [first, second] {
+            assert_eq!(
+                unsafe {
+                    rumqttc_config_set_session_store(
+                        config,
+                        registration,
+                        view_string("tenant"),
+                        100,
+                        1024,
+                        ptr::null_mut(),
+                    )
+                },
+                OK
+            );
+        }
+        let first_owned = unsafe { &*first }.inner.clone_config().unwrap();
+        let second_owned = unsafe { &*second }.inner.clone_config().unwrap();
+        let (
+            rumqttc_wrapper_core::ProtocolConfig::V4(a),
+            rumqttc_wrapper_core::ProtocolConfig::V4(b),
+        ) = (&first_owned.protocol, &second_owned.protocol)
+        else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(
+            &a.session_store.as_ref().unwrap().store,
+            &b.session_store.as_ref().unwrap().store
+        ));
+        unsafe {
+            rumqttc_store_registration_destroy(registration);
+            rumqttc_config_destroy(first);
+            rumqttc_config_destroy(second);
+        }
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        drop(first_owned);
+        drop(second_owned);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
     }
 
     #[test]

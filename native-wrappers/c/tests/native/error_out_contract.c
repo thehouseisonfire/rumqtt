@@ -4,6 +4,24 @@
 
 #define EXPECT_FAILURE(expression) REQUIRE((expression) != RUMQTTC_OK)
 
+static void coverage_store_callback(void *user_data,
+                                    const rumqttc_store_request_t *request,
+                                    rumqttc_callback_completion_t *completion) {
+  (void)user_data;
+  (void)request;
+  (void)completion;
+}
+
+static void coverage_resolver_callback(void *user_data,
+                                       const rumqttc_resolver_request_t *request,
+                                       rumqttc_callback_completion_t *completion) {
+  (void)user_data;
+  (void)request;
+  (void)completion;
+}
+
+static void coverage_destroy(void *user_data) { (void)user_data; }
+
 /*
  * Keep calls explicit: check_error_out_coverage.py derives the API list from
  * rumqttc.h and requires both markers whenever an optional error output is
@@ -253,6 +271,80 @@ void native_test_error_out_contract(void) {
 #endif
     /* ERROR_OUT_FAILURE: rumqttc_config_set_unix_broker */
     EXPECT_FAILURE(rumqttc_config_set_unix_broker(NULL, empty, NULL));
+  }
+  {
+    rumqttc_store_vtable_t store_vtable = RUMQTTC_STORE_VTABLE_INIT;
+    rumqttc_resolver_vtable_t resolver_vtable = RUMQTTC_RESOLVER_VTABLE_INIT;
+    rumqttc_store_registration_t *store = NULL;
+    rumqttc_store_registration_t *failed_store = NULL;
+    rumqttc_resolver_registration_t *resolver = NULL;
+    rumqttc_resolver_registration_t *failed_resolver = NULL;
+    rumqttc_proxy_options_t proxy = RUMQTTC_PROXY_OPTIONS_INIT;
+    store_vtable.load = coverage_store_callback;
+    store_vtable.save = coverage_store_callback;
+    store_vtable.clear = coverage_store_callback;
+    store_vtable.destroy = coverage_destroy;
+    resolver_vtable.resolve = coverage_resolver_callback;
+    resolver_vtable.destroy = coverage_destroy;
+    proxy.host = native_string("127.0.0.1");
+    proxy.port = 1883;
+
+    /* ERROR_OUT_SUCCESS: rumqttc_store_registration_new */
+    CHECK(rumqttc_store_registration_new(&store_vtable, NULL, &store, NULL));
+    store_vtable.struct_size = 0;
+    /* ERROR_OUT_FAILURE: rumqttc_store_registration_new */
+    EXPECT_FAILURE(rumqttc_store_registration_new(&store_vtable, NULL, &failed_store, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_session_store */
+    CHECK(rumqttc_config_set_session_store(v4, store, valid, 1000, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_session_store */
+    EXPECT_FAILURE(rumqttc_config_set_session_store(v4, store, invalid_string, 1000, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_session_store */
+    CHECK(rumqttc_config_clear_session_store(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_session_store */
+    EXPECT_FAILURE(rumqttc_config_clear_session_store(NULL, NULL));
+    rumqttc_store_registration_destroy(store);
+
+    /* ERROR_OUT_SUCCESS: rumqttc_resolver_registration_new */
+    CHECK(rumqttc_resolver_registration_new(&resolver_vtable, NULL, &resolver, NULL));
+    resolver_vtable.struct_size = 0;
+    /* ERROR_OUT_FAILURE: rumqttc_resolver_registration_new */
+    EXPECT_FAILURE(rumqttc_resolver_registration_new(&resolver_vtable, NULL, &failed_resolver, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_srv_resolver */
+    CHECK(rumqttc_config_set_v5_srv_resolver(v5, resolver, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_srv_resolver */
+    EXPECT_FAILURE(rumqttc_config_set_v5_srv_resolver(v4, resolver, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_v5_srv_resolver */
+    CHECK(rumqttc_config_clear_v5_srv_resolver(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_srv_resolver */
+    EXPECT_FAILURE(rumqttc_config_clear_v5_srv_resolver(v4, NULL));
+    rumqttc_resolver_registration_destroy(resolver);
+
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_broker_session_resume_policy */
+    CHECK(rumqttc_config_set_v5_broker_session_resume_policy(v5, RUMQTTC_BROKER_SESSION_STRICT, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_broker_session_resume_policy */
+    EXPECT_FAILURE(rumqttc_config_set_v5_broker_session_resume_policy(v4, 0, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_redirect_policy */
+    CHECK(rumqttc_config_set_v5_redirect_policy(v5, RUMQTTC_REDIRECT_REJECT, 0, 0, NULL, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_redirect_policy */
+    EXPECT_FAILURE(rumqttc_config_set_v5_redirect_policy(v4, RUMQTTC_REDIRECT_REJECT, 0, 0, NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_proxy */
+    CHECK(rumqttc_config_clear_proxy(v4, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_proxy */
+    EXPECT_FAILURE(rumqttc_config_clear_proxy(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_proxy */
+    if (rumqttc_library_capabilities() & RUMQTTC_CAP_HTTP_PROXY)
+      CHECK(rumqttc_config_set_proxy(v4, &proxy, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_proxy */
+    EXPECT_FAILURE(rumqttc_config_set_proxy(v4, NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_scram */
+    if (rumqttc_library_capabilities() & RUMQTTC_CAP_SCRAM)
+      CHECK(rumqttc_config_set_v5_scram(v5, valid, native_bytes((const uint8_t *)"password", 8), 1000, 4096, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_scram */
+    EXPECT_FAILURE(rumqttc_config_set_v5_scram(v4, valid, empty, 0, 0, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_v5_scram */
+    CHECK(rumqttc_config_clear_v5_scram(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_scram */
+    EXPECT_FAILURE(rumqttc_config_clear_v5_scram(v4, NULL));
   }
   rumqttc_config_destroy(v4);
   rumqttc_config_destroy(v5);
@@ -511,6 +603,35 @@ void native_test_error_out_contract(void) {
                                RUMQTTC_ACK_AUTOMATIC, 8, 8, 1000);
   rumqttc_client_abandon(client);
   rumqttc_client_abandon(NULL);
+
+  {
+    uint64_t operation_id = 0;
+    rumqttc_completion_t *auth_completion = NULL;
+    /* ERROR_OUT_FAILURE: rumqttc_client_try_reauthenticate */
+    EXPECT_FAILURE(rumqttc_client_try_reauthenticate(NULL, &operation_id, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_client_reauthenticate_tracked */
+    EXPECT_FAILURE(rumqttc_client_reauthenticate_tracked(NULL, &auth_completion, NULL));
+    if (rumqttc_library_capabilities() & RUMQTTC_CAP_SCRAM) {
+      rumqttc_config_t *auth_config = NULL;
+      rumqttc_client_t *auth_client = NULL;
+      CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &auth_config, NULL));
+      CHECK(rumqttc_config_set_broker(auth_config, native_string("127.0.0.1"),
+                                      native_test_port(), NULL));
+      CHECK(rumqttc_config_set_client_id(auth_config, native_string("error-auth"), NULL));
+      CHECK(rumqttc_config_set_v5_scram(
+          auth_config, native_string("user"),
+          native_bytes((const uint8_t *)"password", 8), 1000, 4096, NULL));
+      CHECK(rumqttc_client_start(auth_config, &auth_client, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_try_reauthenticate */
+      CHECK(rumqttc_client_try_reauthenticate(auth_client, &operation_id, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_reauthenticate_tracked */
+      CHECK(rumqttc_client_reauthenticate_tracked(auth_client, &auth_completion, NULL));
+      rumqttc_completion_destroy(auth_completion);
+      (void)rumqttc_client_close_now_timeout_ms(auth_client, 5000, NULL);
+      CHECK(rumqttc_client_destroy_timeout_ms(auth_client, 5000, NULL));
+      rumqttc_config_destroy(auth_config);
+    }
+  }
 
   (void)ignored_error;
 }

@@ -44,6 +44,11 @@ static void test_protocol_round_trip(rumqttc_protocol_t protocol) {
     native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
     rumqttc_completion_destroy(completion);
     event = native_wait_event(client, RUMQTTC_EVENT_INCOMING_PUBLISH);
+    {
+      uint8_t reason = 255;
+      REQUIRE(rumqttc_event_connack_reason(event, &reason) == RUMQTTC_INVALID_STATE);
+      REQUIRE(reason == 0);
+    }
     CHECK(rumqttc_event_publish(event, &topic, &payload, &qos_value, &retain,
                                 &duplicate, &ack_available));
     REQUIRE(topic.len == strlen("rumqttc/native/incoming"));

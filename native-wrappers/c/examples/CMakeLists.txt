@@ -34,6 +34,7 @@ set(RUMQTTC_C_EXAMPLES
     multithreaded_publishing
     tracked_completion
     manual_acknowledgement
+    session_store
     shutdown)
 list(APPEND RUMQTTC_C_EXAMPLES resource_limits)
 

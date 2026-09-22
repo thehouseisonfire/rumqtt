@@ -30,6 +30,10 @@ tracing = ["rumqttc-wrapper-core-next/tracing"]
 [dependencies]
 bytes = "1.5"
 rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha", default-features = false }
+tokio = { version = "1.40", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["rt", "macros"] }
 
 [build-dependencies]
 cbindgen = "0.29"

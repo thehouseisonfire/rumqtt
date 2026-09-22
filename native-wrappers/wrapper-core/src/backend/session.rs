@@ -149,7 +149,12 @@ macro_rules! implement_store {
             ) -> NativeFuture<'a, Option<$backend::PersistedSession>> {
                 Box::pin(async move {
                     let checkpoint = self
-                        .call(|| self.config.store.load(self.lease.1.clone()))
+                        .call(|| {
+                            self.config.store.load_with_limit(
+                                self.lease.1.clone(),
+                                self.config.max_checkpoint_size,
+                            )
+                        })
                         .await?;
                     checkpoint
                         .map(|checkpoint| {
@@ -222,6 +227,49 @@ mod tests {
             *self.0.lock().unwrap() = None;
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[tokio::test]
+    async fn load_receives_each_clients_checkpoint_limit() {
+        struct LimitAwareStore(Mutex<Vec<usize>>);
+
+        impl SessionStore for LimitAwareStore {
+            fn load(&self, _: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>> {
+                panic!("adapter must pass the checkpoint limit")
+            }
+
+            fn load_with_limit(
+                &self,
+                _: SessionStoreKey,
+                max_checkpoint_size: usize,
+            ) -> StoreFuture<Option<SessionCheckpoint>> {
+                self.0.lock().unwrap().push(max_checkpoint_size);
+                Box::pin(async { Ok(None) })
+            }
+
+            fn save(&self, _: SessionStoreKey, _: SessionCheckpoint) -> StoreFuture<()> {
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear(&self, _: SessionStoreKey) -> StoreFuture<()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let store = Arc::new(LimitAwareStore(Mutex::new(Vec::new())));
+        for limit in [8, 32] {
+            let mut config = SessionStoreConfig::new(store.clone(), "scope");
+            config.max_checkpoint_size = limit;
+            let adapter = Adapter::new(config, ProtocolVersion::V4, "client").unwrap();
+            let key = rumqttc_v4::SessionStoreKey::new("scope", "client");
+            assert_eq!(
+                rumqttc_v4::SessionStore::load(&adapter, &key)
+                    .await
+                    .unwrap(),
+                None
+            );
+        }
+        assert_eq!(*store.0.lock().unwrap(), [8, 32]);
     }
 
     #[tokio::test]

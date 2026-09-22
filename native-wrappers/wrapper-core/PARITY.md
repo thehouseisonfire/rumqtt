@@ -57,3 +57,17 @@ branches, including disabled ones, so API additions require an explicit review.
 | v5 | event | Packet.Auth | intentionally omitted | Raw AUTH challenges belong to the configured authority, lifecycle events stay observable | authentication |
 | v4, v5 | operation | disconnect_after_queued, disconnect_after_queued_with_timeout, try_disconnect_after_queued, try_disconnect_after_queued_with_timeout | intentionally omitted | Separate optional ordered-shutdown publish fence is not substituted for the existing protocol-drain close contract; requires a separately named native command/completion policy | shutdown, docs/recipes/ordered-shutdown.md |
 | v5 | operation | disconnect_after_queued_with_properties, disconnect_after_queued_with_properties_timeout, try_disconnect_after_queued_with_properties, try_disconnect_after_queued_with_properties_timeout | intentionally omitted | Same optional ordered-shutdown fence decision; ordinary WC-10 payloads are supported without changing ordering semantics | config_wire, shutdown |
+
+## C binding progress
+
+This section tracks the C surface separately from the wrapper-core inventory
+above. A row here does not change the wrapper-core support decision.
+
+| Slice | C status | C evidence / remaining contract |
+| --- | --- | --- |
+| WC-02 durable sessions | callback API added | Versioned store vtable, retained completion, scope, timeout, checkpoint limit, resume policy; Rust FFI cancellation/identity tests and native C example. Restart and corrupt-checkpoint native fixtures remain. |
+| WC-05 enhanced authentication | partial | SCRAM configuration, reauthentication admission, lifecycle accessors, typed failure codes. Deferred raw authenticator callbacks still require an asynchronous native MQTT 5 authority. |
+| WC-06 redirects and DNS SRV | partial | Fixed policy, async resolver vtable, target and failure accessors. Redirect attempt/loop metadata and native DNS fixtures remain. |
+| WC-07 proxies | partial | HTTP, HTTPS, SOCKS5 options with separate proxy TLS and remote DNS. Native C proxy transport fixtures remain. |
+| WC-11 rich events | partial | CONNACK, broker DISCONNECT, authentication lifecycle, redirect, outgoing packet ID, and ordered CONNACK/DISCONNECT User Properties. Full authentication properties and event fixture matrix remain. |
+| WC-01/03/04/08/09/10/12/13 verification | pending | Native C fixture, package feature matrix, and platform gates in TODO16.md remain. |

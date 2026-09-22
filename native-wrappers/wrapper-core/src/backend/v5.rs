@@ -665,8 +665,10 @@ const fn connack_reason(reason: rumqttc_v5::ConnectReturnCode) -> u8 {
 fn connack_details(connack: rumqttc_v5::ConnAck) -> crate::ConnAckDetails {
     crate::ConnAckDetails {
         reason_code: connack_reason(connack.code),
-        v5_properties: connack.properties.map(|p| {
-            Box::new(crate::V5ConnAckProperties {
+        // Keep an empty bag for MQTT 5 so consumers can distinguish it from v4.
+        v5_properties: Some(Box::new(connack.properties.map_or_else(
+            crate::V5ConnAckProperties::default,
+            |p| crate::V5ConnAckProperties {
                 session_expiry_interval: p.session_expiry_interval,
                 receive_maximum: p.receive_max,
                 maximum_qos: p.max_qos,
@@ -684,8 +686,8 @@ fn connack_details(connack: rumqttc_v5::ConnAck) -> crate::ConnAckDetails {
                 authentication_method: p.authentication_method,
                 authentication_data: p.authentication_data,
                 user_properties: p.user_properties,
-            })
-        }),
+            },
+        ))),
     }
 }
 
@@ -1144,6 +1146,19 @@ mod config_tests {
                 authentication_data: properties.authentication_data,
                 user_properties: properties.user_properties,
             }
+        );
+    }
+
+    #[test]
+    fn connack_without_properties_still_identifies_mqtt5() {
+        let details = connack_details(rumqttc_v5::ConnAck {
+            session_present: false,
+            code: rumqttc_v5::ConnectReturnCode::Success,
+            properties: None,
+        });
+        assert_eq!(
+            details.v5_properties.as_deref(),
+            Some(&crate::V5ConnAckProperties::default())
         );
     }
 

@@ -54,6 +54,14 @@
   synchronized while entering and leaving isolated redirect targets.
 
 ### Added
+- C wrapper: Add asynchronous durable-session store callbacks with retained
+  completion handles, copied scope, checkpoint limits, and MQTT 5 resume policy.
+- C wrapper: Reject oversized loaded checkpoints before copying callback memory.
+- C wrapper: Add fixed MQTT 5 redirect policy, reauthentication admission,
+  custom asynchronous DNS SRV callbacks, optional SCRAM configuration, selected rich-event accessors, and typed
+  store/authentication/redirect errors.
+- C wrapper: Add versioned HTTP, HTTPS, and SOCKS5 proxy configuration with
+  separate proxy TLS, remote broker DNS, copied credentials, and a clear setter.
 - C wrapper: Add a loaded-library capability query and structured error context;
   copied Last Will and MQTT 5
   CONNECT property records; packet, batching, inflight, and alias controls;

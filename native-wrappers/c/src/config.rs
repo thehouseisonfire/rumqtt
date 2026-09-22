@@ -8,6 +8,7 @@ pub struct ConfigHandle {
     inner: Mutex<ConfigState>,
 }
 
+#[derive(Clone)]
 struct ConfigState {
     config: ClientConfig,
     // The legacy C builder keeps its TCP address when selecting a WebSocket URL.
@@ -48,9 +49,14 @@ impl ConfigHandle {
         update: impl FnOnce(&mut ClientConfig) -> Result<(), E>,
         poisoned: impl FnOnce() -> E,
     ) -> Result<(), E> {
-        let mut state = self.inner.lock().map_err(|_| poisoned())?;
+        let mut locked = self.inner.lock().map_err(|_| poisoned())?;
+        let mut state = locked.clone();
         let previous = state.config.common.broker.clone();
-        update(&mut state.config)?;
+        if let Err(error) = update(&mut state.config) {
+            drop(locked);
+            drop(state);
+            return Err(error);
+        }
         if matches!(
             state.config.common.broker,
             rumqttc_wrapper_core::BrokerTarget::Tcp { .. }
@@ -71,6 +77,9 @@ impl ConfigHandle {
         ) {
             state.config.common.broker = state.tcp_broker.clone();
         }
+        let previous = std::mem::replace(&mut *locked, state);
+        drop(locked);
+        drop(previous);
         Ok(())
     }
 }

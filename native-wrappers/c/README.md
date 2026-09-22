@@ -21,8 +21,36 @@ forward compatibility. C Cargo features forward to wrapper-core (`use-rustls`,
 `use-native-tls`, `websocket`, `http-proxy`, `socks-proxy`,
 `system-srv-resolver`, `auth-scram`, and `tracing`). The default build enables
 rustls and WebSocket. A capability bit describes the artifact, not a broker
-negotiation. `RUMQTTC_CAP_SESSION_STORE_CALLBACKS` remains clear until its C
-callback API ships.
+negotiation. `RUMQTTC_CAP_SESSION_STORE_CALLBACKS` reports the available
+durable-session callback API.
+
+Durable sessions use a `rumqttc_store_vtable_t` registered with
+`rumqttc_store_registration_new()`, then attached with
+`rumqttc_config_set_session_store()`. The setter copies scope and retains the
+registration; destroying its handle does not detach existing configurations or
+clients. Load distinguishes found, not found, and failure. Save and clear must
+atomically replace or remove a whole checkpoint, including after cancellation.
+The request identifies protocol, scope, client ID, and checkpoint format
+version 1; its views are valid only during the callback. Copy values required
+by deferred work. The callback may complete immediately or retain its
+completion and finish later on any thread. Release every retained completion.
+Duplicate or cancelled completion returns `RUMQTTC_INVALID_STATE`. Calls are
+serialized per client and may overlap across clients. One active client per
+store identity, protocol, scope, and client ID is enforced in-process;
+cross-process exclusion belongs to the store. The configured timeout bounds
+each call, and checkpoint limits must be from 8 bytes through 256 MiB. On a
+found load, a length above that client's configured limit is rejected before
+the callback buffer is read or copied. A successful completion call means its
+result was accepted; an oversized checkpoint still fails the client with a
+typed persistence error. On a destroy timeout, retry or abandon the client;
+callback ownership remains until
+driver cleanup and retained completions finish. The vtable's `destroy`
+receives unchanged `user_data` once after all owners release it. Unload the
+shared library only after all clients, registrations, and retained completions
+are released. `destroy` runs on the thread that releases the last owner; it
+must not block or throw through the C ABI. Failed registration leaves
+`user_data` with the caller. A callback may admit nonblocking client work, but
+must not wait for progress on its own driver.
 
 The existing `rumqttc_config_set_transport_tls()` and
 `rumqttc_config_set_transport_wss()` always select Rustls. For native TLS,
@@ -79,12 +107,48 @@ redacts all header values in debug output. TCP network setters accept portable
 numeric buffer sizes, booleans, and a numeric local socket address. Bind-device
 and MPTCP settings fail on platforms that do not support them.
 
+Proxy connections use `rumqttc_proxy_options_t` with
+`RUMQTTC_PROXY_OPTIONS_INIT`. Select HTTP, HTTPS, or SOCKS5; the loaded library
+must have the corresponding proxy capability bit. `RUMQTTC_PROXY_DNS_REMOTE`
+resolves broker hostnames at the proxy; no local DNS policy is supported. Set
+`credentials_present` before supplying username/password byte views. The
+current core requires those bytes to be UTF-8. HTTPS proxies require their own
+`rumqttc_tls_options_t`, separate from broker TLS. The setter copies all inputs
+and `rumqttc_config_clear_proxy()` removes the proxy configuration. Unsupported
+proxy kinds and policies fail before connecting to the broker. Wrapper-owned
+credential copies are wiped on release; caller and proxy-library copies have
+independent lifetimes.
+
 For MQTT 5 graceful or immediate close with a reason and properties, use
 `RUMQTTC_V5_DISCONNECT_PROPERTIES_INIT` inside
 `RUMQTTC_DISCONNECT_OPTIONS_INIT`, select MQTT 5, and call the matching
 `_with_options_timeout_ms` function. A later close caller must supply matching
 options because the first admitted payload wins. The original close functions
 remain available for version-neutral close.
+
+`rumqttc_client_try_reauthenticate()` and
+`rumqttc_client_reauthenticate_tracked()` admit MQTT 5 reauthentication when
+the configured core mechanism supports it. A build with `RUMQTTC_CAP_SCRAM`
+can configure SCRAM-SHA-256 with `rumqttc_config_set_v5_scram()` and clear it
+before start. The password is a byte view and must contain UTF-8 for the
+underlying SCRAM mechanism; wrapper-owned copies are wiped on release. New
+event accessors expose CONNACK
+reason, outgoing packet identifier, authentication lifecycle, broker
+DISCONNECT fields, and redirect reason, source, reference, and selected target.
+Returned string views belong to the event; copy them before destroying it.
+Presence flags distinguish absent values from present empty strings. Typed
+store, authentication, and redirect failure codes and statuses are available
+on errors.
+`rumqttc_config_set_v5_redirect_policy()` selects a fixed reject or bounded
+follow policy and an explicit transport for isolated redirect targets. A custom
+DNS SRV callback uses `rumqttc_resolver_vtable_t` and
+`rumqttc_resolver_registration_new()`, then
+`rumqttc_config_set_v5_srv_resolver()`. The request owner name is borrowed for
+the callback call; the completion can be retained and completed later with
+owned priority, weight, port, and target records. Empty success and query
+failure have separate results. Cancellation, ownership, and shared-library
+unload follow the store callback rules above. With no custom resolver, the
+system resolver is selected only when `RUMQTTC_CAP_SYSTEM_SRV` is present.
 
 Define `RUMQTTC_STATIC` before including the header when linking the static
 library on Windows. Static consumers must also link the platform libraries

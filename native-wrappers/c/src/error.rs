@@ -14,6 +14,9 @@ pub const BROKER_REJECTED: u32 = 8;
 pub const AMBIGUOUS: u32 = 9;
 pub const INTERNAL_ERROR: u32 = 10;
 pub const WOULD_BLOCK: u32 = 11;
+pub const PERSISTENCE_ERROR: u32 = 12;
+pub const AUTHENTICATION_ERROR: u32 = 13;
+pub const REDIRECT_ERROR: u32 = 14;
 
 pub const ERROR_NONE: u32 = 0;
 const ERROR_CONFIGURATION: u32 = 1;
@@ -43,6 +46,9 @@ pub struct ErrorHandle {
     pub phase: Option<u32>,
     pub generation: Option<u64>,
     pub delivery_status: u32,
+    pub store_failure: Option<u32>,
+    pub auth_failure: Option<u32>,
+    pub redirect_failure: Option<u32>,
 }
 
 impl ErrorHandle {
@@ -86,6 +92,9 @@ impl ErrorHandle {
                 AMBIGUOUS => "AMBIGUOUS",
                 INTERNAL_ERROR => "INTERNAL",
                 WOULD_BLOCK => "WOULD_BLOCK",
+                PERSISTENCE_ERROR => "PERSISTENCE",
+                AUTHENTICATION_ERROR => "AUTHENTICATION",
+                REDIRECT_ERROR => "REDIRECT",
                 _ => "UNKNOWN",
             },
             source_chain: message.clone().into_boxed_str(),
@@ -98,6 +107,9 @@ impl ErrorHandle {
             phase: None,
             generation: None,
             delivery_status: 0,
+            store_failure: None,
+            auth_failure: None,
+            redirect_failure: None,
         }
     }
 
@@ -111,6 +123,12 @@ impl ErrorHandle {
             || error.delivery_status() == DeliveryStatus::Rejected
         {
             BROKER_REJECTED
+        } else if error.store_failure().is_some() {
+            PERSISTENCE_ERROR
+        } else if error.auth_failure().is_some() {
+            AUTHENTICATION_ERROR
+        } else if error.redirect_failure().is_some() {
+            REDIRECT_ERROR
         } else {
             match error.kind() {
                 ErrorKind::Configuration => CONFIG_ERROR,
@@ -121,9 +139,10 @@ impl ErrorHandle {
                 }
                 ErrorKind::Network | ErrorKind::Tls | ErrorKind::Shutdown => DISCONNECTED,
                 ErrorKind::Protocol => PROTOCOL_ERROR,
-                ErrorKind::Authentication => BROKER_REJECTED,
+                ErrorKind::Authentication => AUTHENTICATION_ERROR,
                 ErrorKind::Timeout => TIMEOUT,
-                ErrorKind::Persistence | ErrorKind::Internal => INTERNAL_ERROR,
+                ErrorKind::Persistence => PERSISTENCE_ERROR,
+                ErrorKind::Internal => INTERNAL_ERROR,
             }
         };
         let kind = match error.kind() {
@@ -171,6 +190,40 @@ impl ErrorHandle {
                 DeliveryStatus::Rejected => 2,
                 DeliveryStatus::Ambiguous => 3,
             },
+            store_failure: error.store_failure().map(|failure| match failure {
+                rumqttc_wrapper_core::StoreFailure::Load => 1,
+                rumqttc_wrapper_core::StoreFailure::Save => 2,
+                rumqttc_wrapper_core::StoreFailure::Clear => 3,
+                rumqttc_wrapper_core::StoreFailure::Corrupt => 4,
+                rumqttc_wrapper_core::StoreFailure::Version => 5,
+                rumqttc_wrapper_core::StoreFailure::Protocol => 6,
+                rumqttc_wrapper_core::StoreFailure::Oversized => 7,
+                rumqttc_wrapper_core::StoreFailure::Timeout => 8,
+                rumqttc_wrapper_core::StoreFailure::Panic => 9,
+                rumqttc_wrapper_core::StoreFailure::InUse => 10,
+            }),
+            auth_failure: error.auth_failure().map(|failure| match failure {
+                rumqttc_wrapper_core::AuthFailure::Rejected => 1,
+                rumqttc_wrapper_core::AuthFailure::Panic => 2,
+                rumqttc_wrapper_core::AuthFailure::Timeout => 3,
+                rumqttc_wrapper_core::AuthFailure::InvalidResponse => 4,
+                rumqttc_wrapper_core::AuthFailure::Overlapping => 5,
+                rumqttc_wrapper_core::AuthFailure::ConnectionClosed => 6,
+                rumqttc_wrapper_core::AuthFailure::Method => 7,
+                rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
+            }),
+            redirect_failure: error.redirect_failure().map(|failure| match failure {
+                rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
+                rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
+                rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
+                rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
+                rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
+                rumqttc_wrapper_core::RedirectFailure::Loop => 6,
+                rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
+                rumqttc_wrapper_core::RedirectFailure::Dns => 8,
+                rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
+                rumqttc_wrapper_core::RedirectFailure::Transport => 10,
+            }),
         }
     }
 
@@ -203,5 +256,13 @@ mod tests {
             ERROR_INTERNAL
         );
         assert_eq!(ErrorHandle::panic("panic").code, "INTERNAL_PANIC");
+        let persistence =
+            ErrorHandle::from_core(&Error::new(ErrorKind::Persistence, "store failed"), None);
+        assert_eq!(persistence.status, PERSISTENCE_ERROR);
+        let authentication = ErrorHandle::from_core(
+            &Error::new(ErrorKind::Authentication, "authentication failed"),
+            None,
+        );
+        assert_eq!(authentication.status, AUTHENTICATION_ERROR);
     }
 }

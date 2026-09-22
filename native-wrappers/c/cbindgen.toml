@@ -21,6 +21,15 @@ include = [
     "rumqttc_v5_unsubscribe_properties_t",
     "rumqttc_unsubscribe_options_t",
     "rumqttc_diagnostics_t",
+    "rumqttc_proxy_options_t",
+    "rumqttc_store_request_t",
+    "rumqttc_store_vtable_t",
+    "rumqttc_store_registration",
+    "rumqttc_callback_completion",
+    "rumqttc_resolver_request_t",
+    "rumqttc_srv_record_t",
+    "rumqttc_resolver_vtable_t",
+    "rumqttc_resolver_registration",
     "rumqttc_config",
     "rumqttc_client",
     "rumqttc_completion",
@@ -34,3 +43,6 @@ include = [
 "rumqttc_completion" = "rumqttc_completion_t"
 "rumqttc_event" = "rumqttc_event_t"
 "rumqttc_error" = "rumqttc_error_t"
+"rumqttc_store_registration" = "rumqttc_store_registration_t"
+"rumqttc_callback_completion" = "rumqttc_callback_completion_t"
+"rumqttc_resolver_registration" = "rumqttc_resolver_registration_t"

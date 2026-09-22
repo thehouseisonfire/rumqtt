@@ -16,4 +16,6 @@ item_types = ["functions"]
 "rumqttc_completion" = "rumqttc_completion_t"
 "rumqttc_event" = "rumqttc_event_t"
 "rumqttc_error" = "rumqttc_error_t"
-
+"rumqttc_store_registration" = "rumqttc_store_registration_t"
+"rumqttc_callback_completion" = "rumqttc_callback_completion_t"
+"rumqttc_resolver_registration" = "rumqttc_resolver_registration_t"
