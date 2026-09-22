@@ -142,7 +142,7 @@ pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
         return Error::store(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
     let kind = match error {
-        #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+        #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         rumqttc_v5::ConnectionError::Tls(_) => ErrorKind::Tls,
         rumqttc_v5::ConnectionError::ConnectionRefused(
             rumqttc_v5::ConnectReturnCode::BadUserNamePassword
@@ -214,7 +214,7 @@ fn build_options(
     common: &crate::CommonConfig,
     protocol: crate::V5Config,
 ) -> crate::Result<rumqttc_v5::MqttOptions> {
-    #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     let tls = match &common.transport {
         crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
             Some(super::build_tls(tls)?)
@@ -240,7 +240,7 @@ fn build_options(
         }
         #[cfg(all(
             feature = "websocket",
-            any(feature = "use-rustls", feature = "use-native-tls")
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls")
         ))]
         (crate::BrokerTarget::WebSocket { url }, crate::TransportConfig::Wss(_)) => {
             rumqttc_v5::MqttOptions::websocket_with_tls_config(
@@ -268,7 +268,7 @@ fn build_options(
             ));
         }
     };
-    #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     if matches!(common.transport, crate::TransportConfig::Tls(_)) {
         options.set_transport(rumqttc_v5::Transport::tls_with_config(
             tls.expect("TLS built"),

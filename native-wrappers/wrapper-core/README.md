@@ -169,8 +169,11 @@ properties preserve absent versus present zero/empty values and ordered repeated
 User Properties. `TopicAliasPolicy` selects the native automatic alias policy;
 the native negotiated-capability admission gate remains authoritative.
 
-Default features are `use-rustls` and `websocket`. Optional features are
-`use-native-tls`, `http-proxy`, `socks-proxy`, `proxy` (both proxy features),
+Default features are `use-rustls` (AWS-LC) and `websocket`. Select Ring with
+`--no-default-features --features use-rustls-ring`, or supply a process default
+Rustls crypto provider with `use-rustls-no-provider`. `use-rustls-aws-lc` selects
+AWS-LC explicitly; Ring and AWS-LC cannot be enabled together. Optional features
+are `use-native-tls`, `http-proxy`, `socks-proxy`, `proxy` (both proxy features),
 `system-srv-resolver`, `auth-scram`, `tracing`, and `tracing-log-compat`.
 Both TLS backends may be built together: `TlsBackend` always selects one
 explicitly. Without defaults, TCP and Unix remain available. Public value types

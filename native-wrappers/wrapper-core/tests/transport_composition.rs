@@ -175,7 +175,7 @@ fn proxy_tls_and_websocket_compositions_reconnect_for_both_protocols() {
     let proxy_tls = tls::Fixture::new();
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {
         let enabled = match backend {
-            TlsBackend::Rustls => cfg!(feature = "use-rustls"),
+            TlsBackend::Rustls => cfg!(feature = "use-rustls-no-provider"),
             TlsBackend::Native => cfg!(feature = "use-native-tls"),
         };
         for mqtt5 in [false, true] {
@@ -341,7 +341,7 @@ fn disabled_transports_fail_before_opening_a_socket() {
     for mqtt5 in [false, true] {
         for backend in [TlsBackend::Rustls, TlsBackend::Native] {
             let enabled = match backend {
-                TlsBackend::Rustls => cfg!(feature = "use-rustls"),
+                TlsBackend::Rustls => cfg!(feature = "use-rustls-no-provider"),
                 TlsBackend::Native => cfg!(feature = "use-native-tls"),
             };
             if enabled {
@@ -390,7 +390,7 @@ fn disabled_redirect_transports_fail_before_driver_start() {
                 backend: TlsBackend::Rustls,
                 ..Default::default()
             }),
-            cfg!(feature = "use-rustls"),
+            cfg!(feature = "use-rustls-no-provider"),
         ),
         (
             TransportConfig::Tls(TlsConfig {
@@ -401,7 +401,10 @@ fn disabled_redirect_transports_fail_before_driver_start() {
         ),
         (
             TransportConfig::Wss(TlsConfig::default()),
-            cfg!(all(feature = "websocket", feature = "use-rustls")),
+            cfg!(all(
+                feature = "websocket",
+                feature = "use-rustls-no-provider"
+            )),
         ),
     ] {
         if enabled {
@@ -429,7 +432,7 @@ fn disabled_redirect_transports_fail_before_driver_start() {
 
 #[cfg(all(
     feature = "http-proxy",
-    any(feature = "use-rustls", feature = "use-native-tls")
+    any(feature = "use-rustls-no-provider", feature = "use-native-tls")
 ))]
 #[test]
 fn proxy_and_broker_tls_trust_policies_are_independent() {
@@ -437,7 +440,7 @@ fn proxy_and_broker_tls_trust_policies_are_independent() {
     let proxy = tls::Fixture::new();
     let broker = tls::Fixture::new();
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {
-        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls-no-provider"))
             || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
         {
             continue;

@@ -17,7 +17,10 @@ name = "rumqttc_wrapper_core"
 
 [features]
 default = ["use-rustls", "websocket"]
-use-rustls = ["rumqttc_v4/use-rustls", "rumqttc_v5/use-rustls"]
+use-rustls = ["use-rustls-aws-lc"]
+use-rustls-no-provider = ["rumqttc_v4/use-rustls-no-provider", "rumqttc_v5/use-rustls-no-provider"]
+use-rustls-ring = ["use-rustls-no-provider", "rumqttc_v4/use-rustls-ring", "rumqttc_v5/use-rustls-ring"]
+use-rustls-aws-lc = ["use-rustls-no-provider", "rumqttc_v4/use-rustls-aws-lc", "rumqttc_v5/use-rustls-aws-lc"]
 use-native-tls = ["rumqttc_v4/use-native-tls", "rumqttc_v5/use-native-tls", "dep:native-tls"]
 websocket = ["rumqttc_v4/websocket", "rumqttc_v5/websocket", "dep:http"]
 http-proxy = ["rumqttc_v4/http-proxy", "rumqttc_v5/http-proxy"]

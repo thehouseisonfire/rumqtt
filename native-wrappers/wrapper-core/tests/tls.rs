@@ -1,4 +1,4 @@
-#![cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+#![cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -30,7 +30,7 @@ fn tls_input_ownership_is_released_on_every_driver_exit() {
     support::capture::start();
     let fixture = fixture::Fixture::new();
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {
-        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls-no-provider"))
             || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
         {
             continue;
@@ -215,7 +215,7 @@ fn malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure(
     let fixture = fixture::Fixture::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {
-        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls-no-provider"))
             || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
         {
             continue;
@@ -303,7 +303,7 @@ fn platform_roots_validate_an_isolated_process_trust_store() {
     let roots = directory.path().join("roots.pem");
     std::fs::write(&roots, &fixture.pem).unwrap();
     for backend in ["rustls", "native"] {
-        if (backend == "rustls" && !cfg!(feature = "use-rustls"))
+        if (backend == "rustls" && !cfg!(feature = "use-rustls-no-provider"))
             || (backend == "native" && !cfg!(feature = "use-native-tls"))
         {
             continue;
@@ -350,6 +350,7 @@ fn platform_roots_child() {
     let Ok(port) = std::env::var("RUMQTTC_ROOTS_PORT") else {
         return;
     };
+    fixture::install_provider_for_providerless_client();
     let mqtt5 = std::env::var("RUMQTTC_ROOTS_MQTT5").unwrap() == "true";
     let mut config = support::config(mqtt5, port.parse().unwrap());
     config.common.transport = TransportConfig::Tls(TlsConfig {
@@ -369,7 +370,7 @@ fn platform_roots_child() {
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_roots_return_startup_errors_inside_async_callers() {
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {
-        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls-no-provider"))
             || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
         {
             continue;
@@ -440,6 +441,7 @@ fn native_identity(certificate: &str, key: &str) -> TlsClientIdentity {
     reason = "tungstenite fixes the handshake callback's error type"
 )]
 fn tls_and_wss_enforce_roots_hostname_identity_and_alpn() {
+    fixture::install_provider_for_providerless_client();
     let now = SystemTime::now();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
     params
@@ -465,7 +467,7 @@ fn tls_and_wss_enforce_roots_hostname_identity_and_alpn() {
     let roots = Arc::new(roots);
 
     for backend in [TlsBackend::Rustls, TlsBackend::Native] {
-        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls"))
+        if (backend == TlsBackend::Rustls && !cfg!(feature = "use-rustls-no-provider"))
             || (backend == TlsBackend::Native && !cfg!(feature = "use-native-tls"))
         {
             continue;
@@ -480,10 +482,16 @@ fn tls_and_wss_enforce_roots_hostname_identity_and_alpn() {
                     let mutual = failure.is_none()
                         && (backend == TlsBackend::Rustls
                             || cfg!(all(target_os = "linux", feature = "use-native-tls")));
-                    let verifier = rustls::server::WebPkiClientVerifier::builder(roots.clone())
-                        .build()
+                    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+                    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                        roots.clone(),
+                        provider.clone(),
+                    )
+                    .build()
+                    .unwrap();
+                    let builder = rustls::ServerConfig::builder_with_provider(provider)
+                        .with_safe_default_protocol_versions()
                         .unwrap();
-                    let builder = rustls::ServerConfig::builder();
                     let builder = if mutual {
                         builder.with_client_cert_verifier(verifier)
                     } else {

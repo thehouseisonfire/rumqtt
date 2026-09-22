@@ -900,7 +900,10 @@ pub extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
         | CAP_V5
         | CAP_STORE_CALLBACKS
-        | if cfg!(feature = "use-rustls") {
+        | if cfg!(any(
+            feature = "use-rustls-ring",
+            feature = "use-rustls-aws-lc"
+        )) {
             CAP_RUSTLS
         } else {
             0
@@ -1163,7 +1166,10 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_tls(
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
     boundary(error_out, ptr::null_mut(), || {
-        if !cfg!(feature = "use-rustls") {
+        if !cfg!(any(
+            feature = "use-rustls-ring",
+            feature = "use-rustls-aws-lc"
+        )) {
             return Err(ErrorHandle::plain(
                 crate::error::CONFIG_ERROR,
                 1,
@@ -1212,7 +1218,10 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss(
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
     boundary(error_out, ptr::null_mut(), || {
-        if !cfg!(feature = "use-rustls") {
+        if !cfg!(any(
+            feature = "use-rustls-ring",
+            feature = "use-rustls-aws-lc"
+        )) {
             return Err(ErrorHandle::plain(
                 crate::error::CONFIG_ERROR,
                 1,
@@ -1250,7 +1259,13 @@ unsafe fn parse_tls_options(
         ));
     }
     let backend = match options.backend {
-        0 if cfg!(feature = "use-rustls") => TlsBackend::Rustls,
+        0 if cfg!(any(
+            feature = "use-rustls-ring",
+            feature = "use-rustls-aws-lc"
+        )) =>
+        {
+            TlsBackend::Rustls
+        }
         1 if cfg!(feature = "use-native-tls") => TlsBackend::Native,
         0 | 1 => {
             return Err(ErrorHandle::plain(

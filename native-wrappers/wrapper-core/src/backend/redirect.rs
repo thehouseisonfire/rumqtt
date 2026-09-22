@@ -20,7 +20,7 @@ pub(super) fn configure(
     {
         let transport = match transport {
             TransportConfig::Tcp => rumqttc_v5::Transport::Tcp,
-            #[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
             TransportConfig::Tls(tls) => {
                 rumqttc_v5::Transport::tls_with_config(super::build_tls(tls)?)
             }
@@ -28,7 +28,7 @@ pub(super) fn configure(
             TransportConfig::WebSocket => rumqttc_v5::Transport::Ws,
             #[cfg(all(
                 feature = "websocket",
-                any(feature = "use-rustls", feature = "use-native-tls")
+                any(feature = "use-rustls-no-provider", feature = "use-native-tls")
             ))]
             TransportConfig::Wss(tls) => {
                 rumqttc_v5::Transport::wss_with_config(super::build_tls(tls)?)

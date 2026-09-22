@@ -898,7 +898,7 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
     unsafe {
         let mut config = ptr::null_mut();
         assert_eq!(rumqttc_config_new(1, &mut config, ptr::null_mut()), 0);
-        let options = rumqttc_tls_options_t {
+        let mut options = rumqttc_tls_options_t {
             struct_size: std::mem::size_of::<rumqttc_tls_options_t>() as u32,
             backend: 1,
             root_policy: 0,
@@ -911,18 +911,22 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
             reserved_tail: [0; 2],
         };
         let capabilities = rumqttc_library_capabilities();
-        if capabilities & (1 << 2) == 0 {
-            assert_eq!(
-                rumqttc_config_set_transport_tls(
-                    config,
-                    bytes_view(&[]),
-                    bytes_view(&[]),
-                    bytes_view(&[]),
-                    ptr::null_mut()
-                ),
-                3
-            );
-        }
+        assert_eq!(
+            rumqttc_config_set_transport_tls(
+                config,
+                bytes_view(&[]),
+                bytes_view(&[]),
+                bytes_view(&[]),
+                ptr::null_mut()
+            ),
+            if capabilities & (1 << 2) == 0 { 3 } else { 0 }
+        );
+        options.backend = 0;
+        assert_eq!(
+            rumqttc_config_set_transport_tls_with_options(config, &options, ptr::null_mut()),
+            if capabilities & (1 << 2) == 0 { 3 } else { 0 }
+        );
+        options.backend = 1;
         let status =
             rumqttc_config_set_transport_tls_with_options(config, &options, ptr::null_mut());
         if capabilities & (1 << 3) == 0 {

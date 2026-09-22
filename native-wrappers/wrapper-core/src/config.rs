@@ -395,7 +395,7 @@ impl CommonConfig {
         };
         if let Some(tls) = tls {
             let enabled = match tls.backend {
-                TlsBackend::Rustls => cfg!(feature = "use-rustls"),
+                TlsBackend::Rustls => cfg!(feature = "use-rustls-no-provider"),
                 TlsBackend::Native => cfg!(feature = "use-native-tls"),
             };
             if !enabled {

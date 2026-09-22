@@ -88,7 +88,7 @@ fn rejects_unpaired_client_tls_material() {
 }
 
 #[test]
-#[cfg(feature = "use-rustls")]
+#[cfg(feature = "use-rustls-no-provider")]
 fn malformed_tls_material_fails_before_driver_start() {
     let mut config = ClientConfig::v5("client", "localhost", 8883);
     config.common.transport = TransportConfig::Tls(TlsConfig {

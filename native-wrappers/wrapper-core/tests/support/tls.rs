@@ -13,8 +13,17 @@ pub struct Fixture {
     pub key_pem: String,
 }
 
+pub fn install_provider_for_providerless_client() {
+    #[cfg(all(
+        feature = "use-rustls-no-provider",
+        not(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))
+    ))]
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 impl Fixture {
     pub fn new() -> Self {
+        install_provider_for_providerless_client();
         let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
             "localhost".into(),
             "broker.invalid".into(),
@@ -23,13 +32,17 @@ impl Fixture {
             "::1".into(),
         ])
         .unwrap();
-        let server = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![cert.der().clone()],
-                rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
-            )
-            .unwrap();
+        let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
+        .unwrap();
         Self {
             server: Arc::new(server),
             pem: cert.pem(),

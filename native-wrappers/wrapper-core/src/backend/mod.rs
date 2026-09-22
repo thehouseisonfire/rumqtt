@@ -343,10 +343,10 @@ pub fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
     }
 }
 
-#[cfg(any(feature = "use-rustls", feature = "use-native-tls"))]
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 fn build_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
     match config.backend {
-        #[cfg(feature = "use-rustls")]
+        #[cfg(feature = "use-rustls-no-provider")]
         crate::TlsBackend::Rustls => build_rustls(config),
         #[cfg(feature = "use-native-tls")]
         crate::TlsBackend::Native => build_native_tls(config),
@@ -355,7 +355,7 @@ fn build_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> 
     }
 }
 
-#[cfg(feature = "use-rustls")]
+#[cfg(feature = "use-rustls-no-provider")]
 fn build_rustls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
     let client_auth = match &config.identity {
         Some(crate::TlsClientIdentity::RustlsPem {
@@ -460,7 +460,7 @@ fn build_proxy(config: &crate::ProxyConfig) -> Result<rumqttc_v4::Proxy> {
         } => (rumqttc_v4::Proxy::http(host.clone(), *port), credentials),
         #[cfg(all(
             feature = "http-proxy",
-            any(feature = "use-rustls", feature = "use-native-tls")
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls")
         ))]
         crate::ProxyConfig::Http {
             host,

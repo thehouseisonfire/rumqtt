@@ -18,9 +18,16 @@ cargo build --release --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-ne
 `rumqttc_library_capabilities()` reports the features compiled into the loaded
 library. Test bits with the `RUMQTTC_CAP_*` constants; ignore unknown bits for
 forward compatibility. C Cargo features forward to wrapper-core (`use-rustls`,
-`use-native-tls`, `websocket`, `http-proxy`, `socks-proxy`,
-`system-srv-resolver`, `auth-scram`, and `tracing`). The default build enables
-rustls and WebSocket. A capability bit describes the artifact, not a broker
+`use-rustls-aws-lc`, `use-rustls-ring`,
+`use-native-tls`, `websocket`, `http-proxy`, `socks-proxy`, `proxy`,
+`system-srv-resolver`, `auth-scram`, `tracing`, and `tracing-log-compat`).
+`proxy` enables both HTTP and SOCKS5 proxy support; `tracing-log-compat`
+includes `tracing`. The default build enables AWS-LC Rustls and WebSocket.
+For Ring, build with `--no-default-features --features use-rustls-ring,websocket`.
+Ring and AWS-LC cannot be enabled together. The Rust-only wrapper core also
+supports `use-rustls-no-provider` for hosts that install a process default
+Rustls provider; the C library has no provider installation API. A capability
+bit describes the artifact, not a broker
 negotiation. `RUMQTTC_CAP_SESSION_STORE_CALLBACKS` reports the available
 durable-session callback API.
 

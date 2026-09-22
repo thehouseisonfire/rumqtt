@@ -45,7 +45,12 @@ fn redirect_reference_forms_select_isolated_endpoints_for_both_sources() {
         for scheme in ["authority", "mqtt", "mqtts", "ws", "wss"] {
             let encrypted = scheme == "mqtts" || scheme == "wss";
             let websocket = scheme == "ws" || scheme == "wss";
-            if encrypted && !cfg!(any(feature = "use-rustls", feature = "use-native-tls")) {
+            if encrypted
+                && !cfg!(any(
+                    feature = "use-rustls-no-provider",
+                    feature = "use-native-tls"
+                ))
+            {
                 continue;
             }
             if websocket && !cfg!(feature = "websocket") {
@@ -67,7 +72,7 @@ fn redirect_reference_forms_select_isolated_endpoints_for_both_sources() {
                 };
                 let advertised = reference.clone();
                 let mut config = config(true, origin.local_addr().unwrap().port());
-                let backend = if cfg!(feature = "use-rustls") {
+                let backend = if cfg!(feature = "use-rustls-no-provider") {
                     TlsBackend::Rustls
                 } else {
                     TlsBackend::Native
@@ -644,7 +649,12 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
     capture::start();
     let fixture = tls::Fixture::new();
     for encrypted in [false, true] {
-        if encrypted && !cfg!(any(feature = "use-rustls", feature = "use-native-tls")) {
+        if encrypted
+            && !cfg!(any(
+                feature = "use-rustls-no-provider",
+                feature = "use-native-tls"
+            ))
+        {
             continue;
         }
         let origin = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -655,7 +665,7 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
             target.local_addr().unwrap().port()
         );
         let advertised = reference.clone();
-        let backend = if cfg!(feature = "use-rustls") {
+        let backend = if cfg!(feature = "use-rustls-no-provider") {
             TlsBackend::Rustls
         } else {
             TlsBackend::Native

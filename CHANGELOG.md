@@ -54,6 +54,10 @@
   synchronized while entering and leaving isolated redirect targets.
 
 ### Added
+- Native wrappers: Expose AWS-LC and Ring choices through wrapper core and C
+  feature flags; wrapper core also supports an externally supplied Rustls
+  provider for Rust hosts. C forwards
+  `tracing-log-compat` and adds `proxy` as an alias for HTTP and SOCKS5 support.
 - C wrapper: Add asynchronous durable-session store callbacks with retained
   completion handles, copied scope, checkpoint limits, and MQTT 5 resume policy.
 - C wrapper: Reject oversized loaded checkpoints before copying callback memory.
