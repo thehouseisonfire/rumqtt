@@ -1,115 +1,132 @@
-# C Wrapper Feature Parity: Remaining Work
+# C Binding Parity: Remaining Work
 
-This file tracks open C-binding parity work. Fix any binding defects revealed by
-the remaining tests through wrapper-core, and update
-`native-wrappers/wrapper-core/PARITY.md` as each gap closes.
+## Callback concurrency and ownership
 
-## Callback lifecycle
+- Add native C stress fixtures for per-client callback serialization,
+  cross-client overlap, and ordered save/clear calls for a shared store key.
+- Test callback ownership during registration replacement, failed start,
+  destroy timeout, and driver failure, including shutdown while a callback
+  function is still executing. Assert that `destroy(user_data)` runs exactly
+  once, after active calls return and the final retained completion is released.
+- Race callback completion against cancellation for authentication, resolution,
+  and store operations. Assert that the losing completion cannot change client
+  state and returns `RUMQTTC_INVALID_STATE` when cancellation wins.
+- Exercise reentrant nonblocking client admission from callbacks and safe
+  shared-library unload after all callback owners and completions are released.
 
-- Stress per-client callback serialization, cross-client overlap, and store
-  operations on the same key. Verify that a second active client cannot use the
-  same store key and that save/clear calls remain ordered for each key.
-- Cover callback ownership during registration replacement, failed client
-  start, graceful and immediate close, destroy timeout, driver failure, and
-  abandonment. Verify that active calls finish before `destroy(user_data)`,
-  which must run exactly once after the final retained completion is released.
-- Race completion against cancellation for each callback type. Verify that a
-  late or duplicate completion returns `RUMQTTC_INVALID_STATE`, cannot change
-  client state, and permits safe shared-library unload after the last owner is
-  released. Exercise reentrant nonblocking client admission from callbacks.
-
-## Feature-specific gaps
-
-### C-WC-02: Durable client-session storage
+## C-WC-02: Durable client-session storage
 
 - Add native C restart fixtures for restored subscriptions and incoming QoS 2
-  state on both MQTT versions. Cover broker session loss and the MQTT 5
-  broker-session-resume policy.
-- Exercise save and clear callback failures, timeouts, and late completions.
-  Use a fault-injected atomic store to verify that an interrupted save leaves
-  the preceding complete checkpoint available to a subsequent load.
-- Verify C-level store identity, scope, and one-active-client-per-key behavior
-  across replacement, restart, and concurrent clients.
+  state on MQTT 3.1.1 and MQTT 5. Cover broker session loss and both MQTT 5
+  broker-session-resume policies.
+- Inject save and clear callback failures, timeouts, and late completions.
+  Assert that pending operations resolve and retained callback data is released.
+- Interrupt an atomic checkpoint save and verify that a subsequent load returns
+  the preceding complete checkpoint.
+- Test store identity and scope across registration replacement and restart.
+  Attempt concurrent client starts with the same key and assert that only one
+  client can acquire it; verify that distinct keys can operate independently.
 
-### C-WC-05: MQTT 5 enhanced authentication
+## C-WC-05: MQTT 5 enhanced authentication
 
-- Exercise overlapping client-initiated reauthentication requests and the
-  ordering of their tracked completions and lifecycle events.
-- Test invalid callback responses, method changes, malformed broker AUTH
-  properties, and callback failure. Verify typed errors, pending-operation
-  completion, output initialization, and redaction of credentials and proofs.
-- Add a native SCRAM failure fixture with an invalid server proof and verify
-  that the authentication failure is terminal and contains no secret data.
+- Submit overlapping client-initiated reauthentication requests and verify the
+  ordering of tracked completions and authentication lifecycle events.
+- Add native C fixtures for invalid callback responses, authentication-method
+  changes, and malformed broker AUTH properties. Check typed errors,
+  pending-operation completion, initialized outputs, and captured-output
+  redaction of credentials and proofs.
+- Supply an invalid SCRAM server proof and assert that authentication fails
+  terminally without exposing secret data.
 
-### C-WC-06: MQTT 5 redirects and DNS SRV
+## C-WC-06: MQTT 5 redirects and DNS SRV
 
-- Exercise supported Server Reference forms from both CONNACK and broker
-  DISCONNECT, including rejected targets and attempt exhaustion.
-- Verify SRV priority and weighted selection, unusable or exhausted targets,
-  and the reported candidate and attempt metadata with deterministic DNS
-  answers.
-- Verify borrowed redirect views during the event lifetime and owned copies
-  after event destruction. Cover behavior without optional resolver or
-  transport features and isolation of the original session-store scope after
-  a redirect.
+- Test Server Reference address and URI forms from CONNACK and broker
+  DISCONNECT, including malformed or disallowed targets and exhaustion of the
+  redirect attempt limit across distinct targets.
+- Supply deterministic multi-record DNS answers to test SRV priority, weighted
+  selection, unusable targets, target exhaustion, and candidate/attempt metadata.
+- Check borrowed redirect views while the event is retained and owned copies
+  after event destruction.
+- Test redirects with resolver or target transport features disabled and verify
+  that redirected clients never read or write the original session-store scope.
 
-### C-WC-07: Proxy transports
+## C-WC-07: Proxy transports
 
-- Add native C fixtures for broker TLS and WSS through each supported proxy
-  kind. Verify that broker and proxy trust policies stay independent.
-- Exercise proxy negotiation and connection timeouts, reconnect after a proxy
-  failure, unsupported-kind rejection before any direct broker connection,
-  and captured-output redaction of credentials and authorization headers.
-- Run static and shared CMake and pkg-config consumers for each supported
-  proxy and TLS feature combination on every supported CI platform.
+- Add native C broker TLS and WSS fixtures through HTTP CONNECT, HTTPS, and
+  SOCKS5 proxies. Vary broker and proxy trust independently and assert that a
+  valid trust policy for one endpoint cannot validate the other.
+- Inject proxy negotiation and connection timeouts and recoverable proxy
+  failures. Verify pending-operation results and reconnection after failure.
+- Reject unsupported proxy kinds before a direct broker connection can occur.
+  Capture process output and check credential and authorization-header redaction.
+- Cover static and shared CMake and pkg-config consumers for the proxy/TLS
+  feature combinations on Linux, macOS, and Windows.
 
-### C-WC-11: Rich events
+## C-WC-11: Rich events
 
-- Complete the accessor-kind matrix for CONNACK, broker DISCONNECT,
-  authentication, redirect, and outgoing packet events. Verify wrong-kind
-  errors, initialized outputs, optional outputs, and absent versus
+- Add native broker fixtures for the accessor-kind matrix of CONNACK, broker
+  DISCONNECT, authentication, redirect, and outgoing events. Check wrong-kind
+  errors, output initialization, optional outputs, and absent versus
   present-empty values.
-- Verify ordered MQTT 5 property count/at accessors, outgoing packet IDs in
-  events, operation IDs in completions and errors, borrowed-view lifetime,
-  and copy helpers against broker wire fixtures for every mapped event class.
-- Stress large event queues and backpressure while retaining and destroying
-  event owners.
+- Check ordered MQTT 5 property count/at accessors, outgoing packet IDs,
+  operation IDs in completions and errors, borrowed-view lifetimes, and copy
+  helpers against broker wire data for these event classes.
+- Stress large event queues while retaining event owners, applying backpressure,
+  and destroying owners during shutdown.
 
-## Other C verification gaps
+## C-WC-01, C-WC-03, C-WC-04: Will and connection options
 
-- **C-WC-01, C-WC-03, C-WC-04:** Verify exact v4/v5 Last Will and MQTT 5
-  CONNECT packets at a broker; graceful versus ungraceful Will behavior;
-  replacement and clear ownership; packet-limit and batching boundaries;
-  default and reset semantics; MQTT-version mismatches; and topic-alias
-  behavior across reconnects. Cover missing size prefixes, selectors,
-  reserved fields, count/pointer pairs, and integer overflow.
-- **C-WC-08, C-WC-09, C-WC-10:** Verify Unix paths and shutdown on supported
-  platforms and runtime rejection elsewhere; WebSocket header add, replace,
-  and remove order, protected-header rejection, reconnect behavior,
-  WSS/proxy composition, and disabled-feature errors; MQTT 5 close packets,
-  conflicting concurrent options, escalation, timeout, and repeated
-  completion.
-- **C-WC-12:** Verify portable socket settings and unsupported-platform
-  errors. Exercise capability bits across feature builds, unknown-bit forward
-  compatibility, network effects, and captured-output redaction.
-- **C-WC-13:** Add C fixtures for platform and custom trust, rustls PEM and
-  native PKCS#12 mutual TLS, ALPN, hostname and wrong-root rejection,
-  malformed credentials, replacement and clear, failed-start cleanup, and
-  redaction. Exercise Rustls-only, native-only, mixed, and disabled builds;
-  verify TLS and WSS behavior and unchanged legacy signatures. Complete
-  static and shared CMake and pkg-config consumer coverage for each supported
-  backend combination.
+- Verify exact MQTT 3.1.1 and MQTT 5 Will fields and MQTT 5 CONNECT properties
+  at a broker, including property order and absent versus present-empty values.
+- Test graceful and ungraceful Will behavior and ownership after replacing or
+  clearing Will and CONNECT configuration.
+- Exercise packet-size, inflight, and batching boundaries; default/reset
+  semantics; and topic-alias behavior across reconnects.
+- Add malformed-input cases for Will, CONNECT, and runtime-limit configuration:
+  missing size prefixes, invalid selectors, reserved fields, inconsistent
+  count/pointer pairs, and integer overflow.
 
-## Completion gates
+## C-WC-08, C-WC-09, C-WC-10: Unix, WebSocket, and close options
 
-- Add focused Rust FFI tests for defects exposed by these cases, including
-  malformed inputs, output initialization, error ownership, panic containment,
-  and C-to-core field preservation.
-- Run deterministic native C fixtures and package consumers on Linux, macOS,
-  and Windows. Use sanitizers for callback ownership where supported; add
-  fault injection for callbacks that never complete, interrupted checkpoints,
-  broker disconnects, DNS/proxy failures, and shutdown races.
-- Run the workspace and ABI checks after the remaining changes:
+- Add native C Unix-path and shutdown fixtures on supported platforms and
+  runtime-rejection fixtures elsewhere.
+- Verify WebSocket header add/replace/remove order, protected-header rejection,
+  header behavior across reconnects, WSS/proxy composition, and disabled-feature
+  errors.
+- Verify MQTT 5 close reason/properties on the wire. Race conflicting close
+  options and graceful-to-immediate escalation, checking the admitted payload
+  and each caller's deadline and completion.
+
+## C-WC-12: Socket settings and capabilities
+
+- Verify native C socket settings through observable network effects and test
+  unsupported-platform errors.
+- Check capability bits across feature builds, unknown-bit forward
+  compatibility, and captured-output redaction of network configuration errors.
+
+## C-WC-13: TLS
+
+- Add native C fixtures for platform trust, rustls PEM and native PKCS#12 mutual
+  TLS, ALPN, hostname mismatch, wrong roots, and malformed credentials.
+- Test TLS configuration replacement/clear, failed-start cleanup, and
+  captured-output redaction.
+- Cover TLS and WSS with Rustls-only and mixed backends, mutual TLS with the
+  native backend, and disabled-backend rejection.
+- Cover static and shared CMake and pkg-config consumers for the TLS backend
+  combinations on Linux, macOS, and Windows.
+
+## Validation of remaining changes
+
+- Fix binding defects exposed by these fixtures through wrapper-core and add
+  focused Rust FFI regression tests for the affected inputs, outputs, ownership,
+  and C-to-core field mapping.
+- Run the new deterministic native fixtures and package consumers on Linux,
+  macOS, and Windows. Include the callback ownership races in sanitizer runs
+  where supported.
+- Validate each closed parity gap against the header, documentation, examples,
+  package metadata, exports, and ABI contract, and update
+  `native-wrappers/wrapper-core/PARITY.md`.
+- Run the workspace and ABI checks after the changes:
 
 ```bash
 cargo fmt --manifest-path native-wrappers/Cargo.toml --all --check
@@ -119,7 +136,3 @@ native-wrappers/c/tests/abi/check.sh ffi-header
 native-wrappers/c/tests/abi/check.sh exports
 native-wrappers/c/tests/abi/compare-release.sh
 ```
-
-Close a parity row only when its C values reach wrapper-core intact, native
-tests cover success, failure, and shutdown, and the header, documentation,
-examples, package metadata, exports, and ABI contract agree with the library.
