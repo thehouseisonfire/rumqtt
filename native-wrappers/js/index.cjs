@@ -78,6 +78,12 @@ function normalizeConfig(options) {
   if (options.protocol === '5.0' && 'cleanSession' in options) {
     throw new TypeError('cleanSession is only valid for protocol 3.1.1')
   }
+  if (options.protocol === '5.0' && 'sessionPresentMismatchPolicy' in options) {
+    throw new TypeError('sessionPresentMismatchPolicy is only valid for protocol 3.1.1')
+  }
+  if (options.sessionPresentMismatchPolicy !== undefined && !['error', 'acceptAsClean'].includes(options.sessionPresentMismatchPolicy)) {
+    throw new TypeError('sessionPresentMismatchPolicy must be error or acceptAsClean')
+  }
   if (typeof options.brokerHost !== 'string' || typeof options.clientId !== 'string') {
     throw new TypeError('brokerHost and clientId must be strings')
   }
@@ -98,6 +104,7 @@ function normalizeConfig(options) {
     incomingPacketSizeLimit: finiteInteger(options.incomingPacketSizeLimit ?? 10 * 1024, 'incomingPacketSizeLimit', 1, 0xffffffff),
     emitOutgoingEvents: options.emitOutgoingEvents ?? false,
     cleanSession: options.protocol === '3.1.1' ? options.cleanSession : undefined,
+    sessionPresentMismatchPolicy: options.protocol === '3.1.1' ? options.sessionPresentMismatchPolicy : undefined,
     cleanStart: options.protocol === '5.0' ? options.cleanStart : undefined,
     sessionExpiryInterval: options.protocol === '5.0' && options.sessionExpiryInterval !== undefined ?
       finiteInteger(options.sessionExpiryInterval, 'sessionExpiryInterval', 0, 0xffffffff) : undefined,

@@ -358,8 +358,9 @@ for complete examples.
 
 - Applications that intentionally rely on broker-retained messages after local
   state loss can opt into non-strict MQTT 5 compatibility mode with
-  `MqttOptions::set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`
-  or `MqttOptions::builder(...).broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`.
+  `options.protocol_compatibility_mut().set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly)`.
+  The existing `MqttOptions` getter/setter and builder entry points remain
+  forwarding APIs to that same policy; no deprecation is introduced.
   This accepts broker-only session reuse for a stable `ClientID`, but the client
   cannot reconcile `QoS` 1/2 packets or other in-flight operations that were lost
   with the previous process or `EventLoop`.
@@ -514,3 +515,17 @@ connection failures remain structured redirect errors; a failed target retains
 the broker's original redirect outcome and does not commit the new endpoint.
 If graceful or immediate client shutdown is already queued, shutdown takes
 precedence and no redirect policy or target transition is applied.
+
+## Protocol compatibility and session observations
+
+`ProtocolCompatibility` owns the deliberate `BrokerSessionResumePolicy`
+exception, defaulting to `Strict`. Ordinary topic-alias, redirect, acknowledgement,
+and transport configuration remains independent. MQTT 3.1.1's `AcceptAsClean`
+policy is unavailable here; Clean Start with Session Present=true is rejected
+under every broker-session policy.
+
+`eventloop.diagnostics().session.connack` separates raw broker Session Present
+from effective `session_resumed` and reports `BrokerOnlySessionResume` when that
+explicit compatibility policy was used. It is committed only after all
+connection-establishment barriers succeed and is cleared on connection cleanup.
+Raw CONNACK packets remain unchanged.

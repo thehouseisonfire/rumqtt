@@ -163,3 +163,11 @@ pub enum BrokerSessionResumePolicy {
     Strict,
     AllowBrokerOnly,
 }
+
+/// Handling of the invalid Session Present flag on a clean MQTT 3.1.1 connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionPresentMismatchPolicy {
+    #[default]
+    Error,
+    AcceptAsClean,
+}

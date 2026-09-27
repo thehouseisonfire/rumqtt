@@ -339,11 +339,73 @@ pub struct QueueDiagnostics {
     pub immediate_disconnect_rx_len: usize,
 }
 
+/// Compatibility recovery observed on an accepted connection.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnAckDiagnostic {
+    /// The broker reported Session Present for a clean MQTT 3.1.1 connection; accepted as fresh.
+    SessionPresentMismatchAcceptedAsClean,
+}
+
+impl ConnAckDiagnostic {
+    #[cfg(feature = "tracing")]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionPresentMismatchAcceptedAsClean => {
+                "session_present_mismatch_accepted_as_clean"
+            }
+        }
+    }
+}
+
+/// Raw broker session evidence and effective client session semantics.
+///
+/// Published only once connection establishment, including required durable
+/// clearing, succeeds. Raw CONNACK events are never rewritten.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnAckSessionDiagnostics {
+    /// Session Present exactly as received in the CONNACK.
+    pub raw_session_present: bool,
+    /// Whether the accepted connection effectively resumed a session.
+    pub session_resumed: bool,
+    /// Explicit compatibility recovery taken, if any.
+    pub diagnostic: Option<ConnAckDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionDisposition {
+    Fresh,
+    Resumed,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SessionReconciliation {
+    disposition: SessionDisposition,
+    diagnostic: Option<ConnAckDiagnostic>,
+}
+
+impl SessionReconciliation {
+    const fn is_fresh(self) -> bool {
+        matches!(self.disposition, SessionDisposition::Fresh)
+    }
+
+    const fn diagnostics(self, raw_session_present: bool) -> ConnAckSessionDiagnostics {
+        ConnAckSessionDiagnostics {
+            raw_session_present,
+            session_resumed: !self.is_fresh(),
+            diagnostic: self.diagnostic,
+        }
+    }
+}
+
 /// Session-related event-loop diagnostics.
 #[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDiagnostics {
+    /// Session semantics of the current accepted connection; absent while disconnected.
+    pub connack: Option<ConnAckSessionDiagnostics>,
     /// Whether a durable session store is configured.
     pub session_store_configured: bool,
     /// Whether this event loop has loaded a session-store checkpoint.
@@ -405,6 +467,8 @@ pub struct EventLoop {
     session_store_key: Option<crate::SessionStoreKey>,
     /// Persistent session store lifecycle flags.
     session_store: SessionStoreState,
+    /// Committed session observation for the current accepted connection.
+    connack_session: Option<ConnAckSessionDiagnostics>,
     pub network_options: NetworkOptions,
     pending_disconnect: Option<PendingDisconnect>,
     #[cfg(feature = "ordered-shutdown")]
@@ -435,20 +499,44 @@ pub enum Event {
 }
 
 impl EventLoop {
-    fn reconcile_connack_session(&mut self, session_present: bool) -> Result<(), ConnectionError> {
+    fn reconcile_connack_session(
+        &mut self,
+        session_present: bool,
+    ) -> Result<SessionReconciliation, ConnectionError> {
         let clean_session = self.mqtt_options.clean_session();
-        if clean_session && session_present {
-            return Err(ConnectionError::SessionStateMismatch {
-                clean_session,
-                session_present,
-            });
-        }
+        let mismatch = clean_session && session_present;
+        let diagnostic = if mismatch {
+            match self
+                .mqtt_options
+                .protocol_compatibility()
+                .session_present_mismatch()
+            {
+                crate::SessionPresentMismatchPolicy::Error => {
+                    return Err(ConnectionError::SessionStateMismatch {
+                        clean_session,
+                        session_present,
+                    });
+                }
+                crate::SessionPresentMismatchPolicy::AcceptAsClean => {
+                    Some(ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean)
+                }
+            }
+        } else {
+            None
+        };
 
-        if !session_present {
+        let reconciliation = SessionReconciliation {
+            disposition: if clean_session || !session_present {
+                SessionDisposition::Fresh
+            } else {
+                SessionDisposition::Resumed
+            },
+            diagnostic,
+        };
+        if reconciliation.is_fresh() {
             self.reset_session_state_without_store_invalidation();
         }
-
-        Ok(())
+        Ok(reconciliation)
     }
 
     /// New MQTT `EventLoop`
@@ -580,6 +668,7 @@ impl EventLoop {
             session_client_id: None,
             session_store_key: None,
             session_store: SessionStoreState::new(),
+            connack_session: None,
             network_options: NetworkOptions::new(),
             pending_disconnect: None,
             #[cfg(feature = "ordered-shutdown")]
@@ -615,6 +704,7 @@ impl EventLoop {
         #[cfg(feature = "tracing")]
         self.telemetry.finish_established_connection();
         self.network = None;
+        self.connack_session = None;
         self.keepalive_timeout = None;
         self.pending_disconnect = None;
         #[cfg(feature = "ordered-shutdown")]
@@ -783,6 +873,7 @@ impl EventLoop {
             },
             outbound: self.state.outbound_diagnostics(),
             session: SessionDiagnostics {
+                connack: self.connack_session,
                 session_store_configured: self.mqtt_options.session_store.is_some(),
                 session_store_loaded: self.session_store.loaded,
                 session_store_clear_pending: self.session_store.clear_pending,
@@ -888,7 +979,10 @@ impl EventLoop {
     fn reset_session_state_internal(&mut self, store_reset: SessionStoreResetAction) {
         #[cfg(feature = "ordered-shutdown")]
         if self.requests_rx.gate().has_fence()
-            && (!self.pending.is_empty() || self.ordered_packet.is_some())
+            && (!self.pending.is_empty()
+                || !self.queued.is_empty()
+                || !self.state.outbound_requests_drained()
+                || self.ordered_packet.is_some())
         {
             self.finish_ordered(Err(crate::DisconnectNoticeError::SessionReset));
             self.requests_rx.gate().terminate();
@@ -898,6 +992,7 @@ impl EventLoop {
 
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.reset_session_state();
+        self.connack_session = None;
         self.session_client_id = None;
         self.session_store_key = None;
         self.session_store.loaded = false;
@@ -1137,7 +1232,8 @@ impl EventLoop {
         };
 
         #[cfg(feature = "tracing")]
-        self.reconcile_connack_session(connack.session_present)
+        let reconciliation = self
+            .reconcile_connack_session(connack.session_present)
             .inspect_err(|error| {
                 crate::instrumentation::connection_attempt_failed(
                     attempt,
@@ -1146,9 +1242,9 @@ impl EventLoop {
                 );
             })?;
         #[cfg(not(feature = "tracing"))]
-        self.reconcile_connack_session(connack.session_present)?;
+        let reconciliation = self.reconcile_connack_session(connack.session_present)?;
 
-        if !connack.session_present {
+        if reconciliation.is_fresh() {
             #[cfg(feature = "tracing")]
             self.clear_persisted_session_or_block_reload()
                 .await
@@ -1166,11 +1262,23 @@ impl EventLoop {
         self.session_client_id = Some(self.mqtt_options.client_id());
         self.session_store_key = Some(self.mqtt_options.session_store_key());
         self.network = Some(network);
+        let session_diagnostics = reconciliation.diagnostics(connack.session_present);
+        self.connack_session = Some(session_diagnostics);
 
         #[cfg(feature = "tracing")]
         {
             self.telemetry.mark_connection_established();
-            crate::instrumentation::connection_established(attempt, connack.session_present);
+            crate::instrumentation::connection_established(attempt, &session_diagnostics);
+        }
+
+        if session_diagnostics.diagnostic.is_some() {
+            #[cfg(feature = "tracing")]
+            crate::instrumentation::session_present_mismatch_accepted(attempt);
+            #[cfg(not(feature = "tracing"))]
+            warn!(
+                "Accepted MQTT 3.1.1 Session Present mismatch as fresh: raw_session_present={}, session_resumed={}",
+                session_diagnostics.raw_session_present, session_diagnostics.session_resumed
+            );
         }
 
         if self.keepalive_timeout.is_none() && !self.mqtt_options.keep_alive.is_zero() {
@@ -1209,6 +1317,7 @@ impl EventLoop {
                     self.control_requests_rx.len()
                 );
                 self.network = None;
+                self.connack_session = None;
                 self.keepalive_timeout = None;
                 self.pending_disconnect = None;
                 self.drop_unprocessed_requests();
@@ -1258,6 +1367,7 @@ impl EventLoop {
                     self.control_requests_rx.len()
                 );
                 self.network = None;
+                self.connack_session = None;
                 self.keepalive_timeout = None;
                 self.pending_disconnect = None;
                 self.drop_unprocessed_requests();
@@ -4485,6 +4595,282 @@ mod tests {
             notice.wait_async().await.unwrap_err(),
             PublishNoticeError::SessionReset
         );
+    }
+
+    #[test]
+    fn connack_reconcile_uses_effective_session_decision_matrix() {
+        use crate::SessionPresentMismatchPolicy::{AcceptAsClean, Error};
+        for policy in [Error, AcceptAsClean] {
+            for clean_session in [false, true] {
+                for raw_session_present in [false, true] {
+                    let mut eventloop = build_eventloop_with_pending(clean_session);
+                    eventloop
+                        .mqtt_options
+                        .protocol_compatibility_mut()
+                        .set_session_present_mismatch(policy);
+                    let result = eventloop.reconcile_connack_session(raw_session_present);
+                    if clean_session && raw_session_present && policy == Error {
+                        assert!(matches!(
+                            result,
+                            Err(ConnectionError::SessionStateMismatch { .. })
+                        ));
+                        assert_eq!(eventloop.pending_len(), 1);
+                    } else {
+                        let result = result.unwrap();
+                        let fresh = clean_session || !raw_session_present;
+                        assert_eq!(result.is_fresh(), fresh);
+                        assert_eq!(eventloop.pending_is_empty(), fresh);
+                        let diagnostics = result.diagnostics(raw_session_present);
+                        assert_eq!(diagnostics.raw_session_present, raw_session_present);
+                        assert_eq!(diagnostics.session_resumed, !fresh);
+                        assert_eq!(
+                            diagnostics.diagnostic.is_some(),
+                            clean_session && raw_session_present
+                        );
+                    }
+                    // Reconciliation is not connection establishment.
+                    assert!(eventloop.diagnostics().session.connack.is_none());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_session_present_mismatch_uses_complete_fresh_session_reset() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .set_clean_session(false)
+            .set_ack_mode(crate::AckMode::Manual);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 10);
+        mark_local_session(&mut eventloop);
+        let mut publish_notices = Vec::new();
+        for qos in [QoS::AtLeastOnce, QoS::ExactlyOnce, QoS::ExactlyOnce] {
+            let (tx, notice) = PublishNoticeTx::new();
+            publish_notices.push(notice);
+            eventloop
+                .state
+                .handle_outgoing_packet_with_notice(
+                    Request::Publish(Publish::new("old/publish", qos, "payload")),
+                    Some(TrackedNoticeTx::Publish(tx)),
+                )
+                .unwrap();
+        }
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::PubRec(PubRec::new(3)))
+            .unwrap();
+        let (subscribe_tx, subscribe_notice) = SubscribeNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Subscribe(Subscribe::new("old/subscribe", QoS::AtLeastOnce)),
+                Some(TrackedNoticeTx::Subscribe(subscribe_tx)),
+            )
+            .unwrap();
+        let (unsubscribe_tx, unsubscribe_notice) = UnsubscribeNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Unsubscribe(Unsubscribe::new("old/unsubscribe")),
+                Some(TrackedNoticeTx::Unsubscribe(unsubscribe_tx)),
+            )
+            .unwrap();
+        for (pkid, qos) in [
+            (50, QoS::AtLeastOnce),
+            (51, QoS::ExactlyOnce),
+            (52, QoS::ExactlyOnce),
+        ] {
+            let mut publish = Publish::new("incoming", qos, "payload");
+            publish.pkid = pkid;
+            eventloop
+                .state
+                .handle_incoming_packet(Incoming::Publish(publish))
+                .unwrap();
+        }
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::PubRec(PubRec::new(51)))
+            .unwrap();
+        // Produce the real reconnect PUBREL/replay state, including notices.
+        eventloop.clean();
+        assert!(!eventloop.pending.is_empty());
+        assert!(eventloop.state.outgoing_rel_replay.contains(3));
+        let (live_tx, live_notice) = PublishNoticeTx::new();
+        publish_notices.push(live_notice);
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Publish(Publish::new("live", QoS::AtLeastOnce, "payload")),
+                Some(TrackedNoticeTx::Publish(live_tx)),
+            )
+            .unwrap();
+        for release in [false, true] {
+            let (tx, notice) = PublishNoticeTx::new();
+            publish_notices.push(notice);
+            let (packet, _) = eventloop
+                .state
+                .handle_outgoing_packet_with_notice(
+                    Request::Publish(Publish::new("live/qos2", QoS::ExactlyOnce, "payload")),
+                    Some(TrackedNoticeTx::Publish(tx)),
+                )
+                .unwrap();
+            if release {
+                let Some(Packet::Publish(publish)) = packet else {
+                    panic!("expected publish")
+                };
+                eventloop
+                    .state
+                    .handle_incoming_packet(Incoming::PubRec(PubRec::new(publish.pkid)))
+                    .unwrap();
+            }
+        }
+        let (live_subscribe_tx, live_subscribe_notice) = SubscribeNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Subscribe(Subscribe::new("live/subscribe", QoS::AtLeastOnce)),
+                Some(TrackedNoticeTx::Subscribe(live_subscribe_tx)),
+            )
+            .unwrap();
+        let (live_unsubscribe_tx, live_unsubscribe_notice) = UnsubscribeNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Unsubscribe(Unsubscribe::new("live/unsubscribe")),
+                Some(TrackedNoticeTx::Unsubscribe(live_unsubscribe_tx)),
+            )
+            .unwrap();
+        let mut manual_qos1 = Publish::new("incoming/manual", QoS::AtLeastOnce, "payload");
+        manual_qos1.pkid = 53;
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::Publish(manual_qos1))
+            .unwrap();
+        assert!(eventloop.state.incoming_puback.contains(53));
+        assert!(!eventloop.state.pending_subscribe.is_empty());
+        assert!(!eventloop.state.pending_unsubscribe.is_empty());
+        assert!(eventloop.state.outgoing_rel.ones().count() > 0);
+        let (collision_tx, collision_notice) = PublishNoticeTx::new();
+        publish_notices.push(collision_notice);
+        eventloop.state.collision = Some(Publish::new("collision", QoS::AtLeastOnce, "payload"));
+        eventloop.state.collision_notice = Some(collision_tx);
+        let (queued_tx, queued_notice) = UnsubscribeNoticeTx::new();
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::tracked_unsubscribe(
+                Unsubscribe::new("queued"),
+                queued_tx,
+            ));
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::PingReq)
+            .unwrap();
+        assert!(!eventloop.state.events.is_empty());
+
+        eventloop.mqtt_options.set_clean_session(true);
+        eventloop
+            .mqtt_options
+            .protocol_compatibility_mut()
+            .set_session_present_mismatch(crate::SessionPresentMismatchPolicy::AcceptAsClean);
+        assert!(
+            eventloop
+                .reconcile_connack_session(true)
+                .unwrap()
+                .is_fresh()
+        );
+        assert!(eventloop.pending_is_empty());
+        assert!(eventloop.state.events.is_empty());
+        assert!(eventloop.state.collision.is_none());
+        assert_eq!(eventloop.state.outbound_pkid_count, 0);
+        assert_eq!(eventloop.state.outbound_pkid_in_use.ones().count(), 0);
+        assert_eq!(eventloop.state.last_pkid, 0);
+        assert_eq!(eventloop.state.outgoing_rel.ones().count(), 0);
+        assert_eq!(eventloop.state.outgoing_rel_replay.ones().count(), 0);
+        assert_eq!(eventloop.state.incoming_puback.ones().count(), 0);
+        assert_eq!(eventloop.state.incoming_pub.ones().count(), 0);
+        assert_eq!(eventloop.state.incoming_pubrec.ones().count(), 0);
+        assert!(eventloop.state.outgoing_pub.iter().all(Option::is_none));
+        assert!(eventloop.state.pending_subscribe.is_empty());
+        assert!(eventloop.state.pending_unsubscribe.is_empty());
+        assert!(eventloop.session_client_id.is_none());
+        assert!(eventloop.session_store_key.is_none());
+        assert_eq!(eventloop.state.ack_mode, crate::AckMode::Manual);
+        for notice in publish_notices {
+            assert_eq!(
+                notice.wait_async().await.unwrap_err(),
+                PublishNoticeError::SessionReset
+            );
+        }
+        assert_eq!(
+            subscribe_notice.wait_async().await.unwrap_err(),
+            crate::SubscribeNoticeError::SessionReset
+        );
+        assert_eq!(
+            unsubscribe_notice.wait_async().await.unwrap_err(),
+            crate::UnsubscribeNoticeError::SessionReset
+        );
+        assert_eq!(
+            queued_notice.wait_async().await.unwrap_err(),
+            crate::UnsubscribeNoticeError::SessionReset
+        );
+        assert_eq!(
+            live_subscribe_notice.wait_async().await.unwrap_err(),
+            crate::SubscribeNoticeError::SessionReset
+        );
+        assert_eq!(
+            live_unsubscribe_notice.wait_async().await.unwrap_err(),
+            crate::UnsubscribeNoticeError::SessionReset
+        );
+        // A fresh allocator and ping state are immediately usable.
+        let fresh_publish = eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(Publish::new(
+                "new",
+                QoS::AtLeastOnce,
+                "payload",
+            )))
+            .unwrap();
+        assert!(matches!(fresh_publish, Some(Packet::Publish(p)) if p.pkid == 1));
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::PingReq)
+            .unwrap();
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[tokio::test]
+    async fn accepted_session_present_mismatch_fails_fence_covering_scheduled_work() {
+        let mut options = MqttOptions::new("compatibility", "localhost");
+        options
+            .protocol_compatibility_mut()
+            .set_session_present_mismatch(crate::SessionPresentMismatchPolicy::AcceptAsClean);
+        let (client, mut eventloop) = crate::AsyncClient::builder(options).capacity(10).build();
+        let (tx, publish_notice) = PublishNoticeTx::new();
+        eventloop.queued.push_back(RequestEnvelope::tracked_publish(
+            Publish::new("scheduled", QoS::AtLeastOnce, "payload"),
+            tx,
+        ));
+        let fence = client.try_disconnect_after_queued().unwrap();
+        assert!(eventloop.pending.is_empty());
+        assert!(
+            eventloop
+                .reconcile_connack_session(true)
+                .unwrap()
+                .is_fresh()
+        );
+        assert!(matches!(
+            fence.wait_async().await,
+            Err(crate::DisconnectNoticeError::SessionReset)
+        ));
+        assert_eq!(
+            publish_notice.wait_async().await.unwrap_err(),
+            PublishNoticeError::SessionReset
+        );
+        assert_eq!(
+            eventloop.diagnostics().shutdown_phase,
+            crate::ShutdownPhase::Failed
+        );
+        assert!(eventloop.disconnect_complete);
     }
 
     #[test]

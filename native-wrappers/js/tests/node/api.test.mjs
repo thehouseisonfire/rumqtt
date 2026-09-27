@@ -67,3 +67,50 @@ test('native startup failures reject with structured MqttError', async () => {
   })
   await assert.rejects(client.connect(), error => error.name === 'MqttError' && error.code === 'CONFIGURATION_INVALID')
 })
+
+test('v4 Session Present compatibility is explicit and protocol checked', async () => {
+  const base = { protocol: '3.1.1', brokerHost: 'localhost', brokerPort: 1883, clientId: 'compatibility' }
+  for (const policy of ['error', 'acceptAsClean']) {
+    const client = new MqttClient({ ...base, sessionPresentMismatchPolicy: policy })
+    await client.closeNow()
+    assert.throws(() => new MqttClient({ ...base, protocol: '5.0', sessionPresentMismatchPolicy: policy }), /only valid for protocol 3.1.1/)
+  }
+  assert.throws(() => new MqttClient({ ...base, sessionPresentMismatchPolicy: 'ignore' }), /must be error or acceptAsClean/)
+})
+
+test('accepted clean CONNACK exposes raw and effective session state separately', { timeout: 5000 }, async () => {
+  const { createServer } = await import('node:net')
+  const sockets = new Set()
+  const server = createServer(socket => {
+    sockets.add(socket)
+    socket.once('data', connect => {
+      assert.equal(connect[0], 0x10)
+      socket.write(Buffer.from([0x20, 2, 1, 0]))
+      socket.once('data', disconnect => {
+        assert.equal(disconnect[0], 0xe0)
+        socket.end()
+      })
+    })
+    socket.on('close', () => sockets.delete(socket))
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const client = new MqttClient({
+    protocol: '3.1.1', brokerHost: '127.0.0.1', brokerPort: server.address().port,
+    clientId: 'compatibility-host', sessionPresentMismatchPolicy: 'acceptAsClean',
+  })
+  try {
+    const connection = await client.connect()
+    assert.equal(connection.sessionPresent, true)
+    const diagnostics = await client.diagnostics()
+    assert.deepEqual(diagnostics.connack, {
+      rawSessionPresent: true,
+      sessionResumed: false,
+      diagnostic: 'sessionPresentMismatchAcceptedAsClean',
+    })
+    await client.close()
+  } finally {
+    await client.closeNow()
+    for (const socket of sockets) socket.destroy()
+    await new Promise(resolve => server.close(resolve))
+  }
+})

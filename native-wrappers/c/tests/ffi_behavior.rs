@@ -1034,3 +1034,120 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
         }
     }
 }
+
+#[test]
+fn v4_session_present_compatibility_is_additive_and_observed_separately() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        assert_eq!(read_frame(&mut stream).unwrap().0, 0x10);
+        stream.write_all(&[0x20, 2, 1, 0]).unwrap();
+        assert_eq!(read_frame(&mut stream).unwrap().0, 0xe0);
+    });
+    // SAFETY: This test owns all handles and every output points to live storage.
+    unsafe {
+        let mut config = ptr::null_mut();
+        assert_eq!(rumqttc_config_new(1, &mut config, ptr::null_mut()), 0);
+        assert_eq!(
+            rumqttc_config_set_v4_session_present_mismatch_policy(config, 1, ptr::null_mut()),
+            0
+        );
+        assert_ne!(
+            rumqttc_config_set_v4_session_present_mismatch_policy(config, 99, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_config_set_broker(config, string_view("127.0.0.1"), port, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_config_set_client_id(config, string_view("compatibility"), ptr::null_mut()),
+            0
+        );
+        let mut client = ptr::null_mut();
+        assert_eq!(
+            rumqttc_client_start(config, &mut client, ptr::null_mut()),
+            0
+        );
+        rumqttc_config_destroy(config);
+        let mut event = ptr::null_mut();
+        assert_eq!(
+            rumqttc_client_event_recv_timeout_ms(client, 3_000, &mut event, ptr::null_mut()),
+            0
+        );
+        let mut raw = 0;
+        assert_eq!(rumqttc_event_connected(event, ptr::null_mut(), &mut raw), 0);
+        assert_eq!(raw, 1);
+        rumqttc_event_destroy(event);
+        let mut completion = ptr::null_mut();
+        assert_eq!(
+            rumqttc_client_diagnostics_tracked(client, &mut completion, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_completion_wait_timeout_ms(completion, 3_000, ptr::null_mut()),
+            0
+        );
+        let (mut present, mut resumed, mut diagnostic) = (0, 1, 0);
+        assert_eq!(
+            rumqttc_completion_connack_session_diagnostics(
+                completion,
+                &mut present,
+                &mut raw,
+                &mut resumed,
+                &mut diagnostic,
+                ptr::null_mut()
+            ),
+            0
+        );
+        assert_eq!((present, raw, resumed, diagnostic), (1, 1, 0, 1));
+        assert_ne!(
+            rumqttc_completion_connack_session_diagnostics(
+                completion,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut()
+            ),
+            0
+        );
+        assert_ne!(
+            rumqttc_completion_connack_session_diagnostics(
+                ptr::null(),
+                &mut present,
+                &mut raw,
+                &mut resumed,
+                &mut diagnostic,
+                ptr::null_mut()
+            ),
+            0
+        );
+        assert_eq!((present, raw, resumed, diagnostic), (0, 0, 0, 0));
+        rumqttc_completion_destroy(completion);
+        assert_eq!(
+            rumqttc_client_close_timeout_ms(client, 3_000, ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            rumqttc_client_destroy_timeout_ms(client, 3_000, ptr::null_mut()),
+            0
+        );
+        let mut v5 = ptr::null_mut();
+        assert_eq!(rumqttc_config_new(2, &mut v5, ptr::null_mut()), 0);
+        assert_ne!(
+            rumqttc_config_set_v4_session_present_mismatch_policy(v5, 0, ptr::null_mut()),
+            0
+        );
+        assert_ne!(
+            rumqttc_config_set_v4_session_present_mismatch_policy(v5, 1, ptr::null_mut()),
+            0
+        );
+        rumqttc_config_destroy(v5);
+    }
+    broker.join().unwrap();
+}

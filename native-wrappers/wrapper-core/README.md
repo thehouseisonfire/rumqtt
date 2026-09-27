@@ -264,3 +264,25 @@ events still consume bounded queue slots and require continuous consumption;
 large properties increase memory per slot, bounded by the local packet limit
 unless callers explicitly select `Unlimited`. Debug/error/tracing output omits
 credential material; applications must likewise avoid logging raw property data.
+
+## Session Present compatibility
+
+The MQTT 3.1.1 default rejects a successful clean-session CONNACK with invalid
+Session Present=true. The opt-in `AcceptAsClean` policy resolves only this case
+as fresh, resets old local protocol state and replay work, and clears the
+current scope/client-ID checkpoint before reporting success. Failed or cancelled
+clearing remains pending for retry before checkpoint loading. The broker remains
+non-conforming and raw connected-event/connection-result flags remain true.
+
+Existing diagnostics expose an optional `connack` observation containing raw
+Session Present, effective session resume, and a compatibility reason. Use the
+effective session for resubscription decisions. No MQTT 5 clean-start recovery
+is introduced; the existing broker-only resume policy retains its restrictions.
+
+Configure `V4Config::session_present_mismatch_policy` with
+`SessionPresentMismatchPolicy::{Error, AcceptAsClean}`. `Error` is the default.
+`DiagnosticsSnapshot::connack` includes `raw_session_present`, `session_resumed`,
+and `ConnAckDiagnostic`. Existing `V5Config::broker_session_resume_policy`
+remains flat and maps into the native client's `ProtocolCompatibility`.
+The added defaulted Rust fields require updates to exhaustive struct literals;
+wrapper-core is private infrastructure and has no stable Rust API promise.

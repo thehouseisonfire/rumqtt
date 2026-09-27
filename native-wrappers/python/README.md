@@ -131,3 +131,25 @@ See `examples/application.py` for a dedicated event consumer, manual
 acknowledgement, and cancellation-safe cleanup. See
 `examples/mqtt5_properties.py` for PUBLISH, packet-level SUBSCRIBE, per-filter
 subscription, and UNSUBSCRIBE properties.
+
+## Session Present compatibility
+
+The MQTT 3.1.1 default rejects a successful clean-session CONNACK with invalid
+Session Present=true. The opt-in `AcceptAsClean` policy resolves only this case
+as fresh, resets old local protocol state and replay work, and clears the
+current scope/client-ID checkpoint before reporting success. Failed or cancelled
+clearing remains pending for retry before checkpoint loading. The broker remains
+non-conforming and raw connected-event/connection-result flags remain true.
+
+Existing diagnostics expose an optional `connack` observation containing raw
+Session Present, effective session resume, and a compatibility reason. Use the
+effective session for resubscription decisions. No MQTT 5 clean-start recovery
+is introduced; the existing broker-only resume policy retains its restrictions.
+
+For `ProtocolVersion.MQTT_3_1_1`, set
+`MqttClientOptions.session_present_mismatch_policy` to
+`SessionPresentMismatchPolicy.ACCEPT_AS_CLEAN`. Omit the option or use `ERROR`
+to retain strict rejection. Any explicit policy is rejected on MQTT 5.
+`await client.diagnostics()` returns an optional `ConnAckSessionDiagnostics`
+in `connack`, with `raw_session_present`, `session_resumed`, and the typed
+`ConnAckDiagnostic` reason. Raw `Connected.session_present` is unchanged.

@@ -99,3 +99,9 @@ error.code satisfies string
 // @ts-expect-error MQTT 5 session settings are rejected for MQTT 3.1.1.
 const invalid: MqttClientOptions = { protocol: '3.1.1', brokerHost: 'x', brokerPort: 1, clientId: 'x', cleanStart: true }
 void invalid
+
+const compatibleV4: MqttClientOptions<'3.1.1'> = { protocol: '3.1.1', brokerHost: 'x', brokerPort: 1, clientId: 'x', sessionPresentMismatchPolicy: 'acceptAsClean' }
+// @ts-expect-error v4-only compatibility cannot be configured for MQTT 5.
+const incompatibleV5: MqttClientOptions<'5.0'> = { protocol: '5.0', brokerHost: 'x', brokerPort: 1, clientId: 'x', sessionPresentMismatchPolicy: 'error' }
+void compatibleV4
+void incompatibleV5

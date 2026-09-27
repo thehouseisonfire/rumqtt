@@ -145,6 +145,11 @@ void native_test_error_out_contract(void) {
   CHECK(rumqttc_config_set_emit_outgoing_events(v4, 0, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_emit_outgoing_events */
   EXPECT_FAILURE(rumqttc_config_set_emit_outgoing_events(v4, 2, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_config_set_v4_session_present_mismatch_policy */
+  CHECK(rumqttc_config_set_v4_session_present_mismatch_policy(v4, RUMQTTC_SESSION_PRESENT_MISMATCH_ERROR, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_set_v4_session_present_mismatch_policy */
+  EXPECT_FAILURE(rumqttc_config_set_v4_session_present_mismatch_policy(v5, RUMQTTC_SESSION_PRESENT_MISMATCH_ERROR, NULL));
+  EXPECT_FAILURE(rumqttc_config_set_v4_session_present_mismatch_policy(v4, 99, NULL));
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_v4_clean_session */
   CHECK(rumqttc_config_set_v4_clean_session(v4, 1, NULL));
   /* ERROR_OUT_FAILURE: rumqttc_config_set_v4_clean_session */
@@ -504,6 +509,16 @@ void native_test_error_out_contract(void) {
                                          NULL));
     /* ERROR_OUT_FAILURE: rumqttc_completion_diagnostics */
     EXPECT_FAILURE(rumqttc_completion_diagnostics(NULL, &diagnostics, NULL));
+    {
+      uint8_t present = 99, raw = 99, resumed = 99;
+      uint32_t diagnostic = 99;
+      /* ERROR_OUT_SUCCESS: rumqttc_completion_connack_session_diagnostics */
+      CHECK(rumqttc_completion_connack_session_diagnostics(diagnostics_completion, &present, &raw, &resumed, &diagnostic, NULL));
+      REQUIRE(present == 1 && raw == 0 && resumed == 0 && diagnostic == 0);
+      /* ERROR_OUT_FAILURE: rumqttc_completion_connack_session_diagnostics */
+      EXPECT_FAILURE(rumqttc_completion_connack_session_diagnostics(NULL, &present, &raw, &resumed, &diagnostic, NULL));
+      REQUIRE(present == 0 && raw == 0 && resumed == 0 && diagnostic == 0);
+    }
     rumqttc_completion_destroy(diagnostics_completion);
 
     /* ERROR_OUT_SUCCESS: rumqttc_client_event_try_recv */

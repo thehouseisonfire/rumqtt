@@ -1646,6 +1646,7 @@ async fn clean_start_false_rejects_session_present_without_local_state() {
             session_present: true
         }
     );
+    assert!(eventloop.diagnostics().session.connack.is_none());
     broker.await.unwrap();
 }
 
@@ -1683,6 +1684,15 @@ async fn broker_only_session_resume_compatibility_mode_accepts_session_present()
             properties: None,
         }))
     );
+    let session = eventloop.diagnostics().session.connack.unwrap();
+    assert!(session.raw_session_present);
+    assert!(session.session_resumed);
+    assert_eq!(
+        session.diagnostic,
+        Some(rumqttc::ConnAckDiagnostic::BrokerOnlySessionResume)
+    );
+    eventloop.clean();
+    assert!(eventloop.diagnostics().session.connack.is_none());
     broker.await.unwrap();
 }
 

@@ -65,6 +65,7 @@ fn success(operation_id: u64, completion: Completion) -> Value {
             "pendingSubscribes": diagnostics.pending_subscribes,
             "pendingUnsubscribes": diagnostics.pending_unsubscribes,
             "outboundDrained": diagnostics.outbound_drained,
+            "connack": connack_session(diagnostics.connack),
         }),
         Completion::GracefulShutdown => json!({ "type": "gracefulShutdown" }),
         Completion::ImmediateShutdown => json!({ "type": "immediateShutdown" }),
@@ -97,4 +98,34 @@ mod tests {
         );
         assert_eq!(value["result"]["results"], json!([]));
     }
+}
+
+fn connack_session(
+    session: Option<rumqttc_wrapper_core::ConnAckSessionDiagnostics>,
+) -> serde_json::Value {
+    session.map_or(serde_json::Value::Null, |session| {
+        serde_json::json!({
+            "rawSessionPresent": session.raw_session_present,
+            "sessionResumed": session.session_resumed,
+            "diagnostic": session.diagnostic.map(rumqttc_wrapper_core::ConnAckDiagnostic::as_str),
+        })
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn connack_diagnostics_preserve_raw_and_effective_state() {
+    use rumqttc_wrapper_core::{ConnAckDiagnostic, ConnAckSessionDiagnostics};
+    let value = connack_session(Some(ConnAckSessionDiagnostics {
+        raw_session_present: true,
+        session_resumed: false,
+        diagnostic: Some(ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean),
+    }));
+    assert_eq!(value["rawSessionPresent"], serde_json::json!(true));
+    assert_eq!(value["sessionResumed"], serde_json::json!(false));
+    assert_eq!(
+        value["diagnostic"],
+        serde_json::json!("sessionPresentMismatchAcceptedAsClean")
+    );
+    assert!(connack_session(None).is_null());
 }

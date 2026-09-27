@@ -1,3 +1,12 @@
+> **Repository compliance note (not OASIS specification text):** MQTT 3.1.1
+> MQTT-3.2.2-1 obliges the server to send Session Present=0 after CleanSession=1.
+> Section 3.2.2.2 gives the client discretion on unexpected Session Present.
+> rumqttc defaults to rejection; its v4-only `AcceptAsClean` opt-in resolves a
+> successful clean-session mismatch as fresh, preserving raw CONNACK evidence.
+> Local state reset and durable clearing satisfy the client discard/no-reuse
+> obligations of MQTT-3.1.2-6 before connection success. See the canonical
+> requirement index and [session recipe](../recipes/sessions.md).
+
 ## **MQTT Version 3.1.1** 
 
 ## **OASIS Standard** 

@@ -342,12 +342,16 @@ fn build_options(
         &protocol.redirect_policy,
         protocol.srv_resolver,
     )?;
-    options.set_broker_session_resume_policy(match protocol.broker_session_resume_policy {
-        crate::BrokerSessionResumePolicy::Strict => rumqttc_v5::BrokerSessionResumePolicy::Strict,
-        crate::BrokerSessionResumePolicy::AllowBrokerOnly => {
-            rumqttc_v5::BrokerSessionResumePolicy::AllowBrokerOnly
-        }
-    });
+    options
+        .protocol_compatibility_mut()
+        .set_broker_session_resume_policy(match protocol.broker_session_resume_policy {
+            crate::BrokerSessionResumePolicy::Strict => {
+                rumqttc_v5::BrokerSessionResumePolicy::Strict
+            }
+            crate::BrokerSessionResumePolicy::AllowBrokerOnly => {
+                rumqttc_v5::BrokerSessionResumePolicy::AllowBrokerOnly
+            }
+        });
     let p = protocol.connect_properties;
     options.set_connect_properties(rumqttc_v5::ConnectProperties {
         session_expiry_interval: p.session_expiry_interval,
@@ -1011,6 +1015,19 @@ fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Share
 fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
     let diagnostics = eventloop.diagnostics();
     DiagnosticsSnapshot {
+        connack: diagnostics
+            .session
+            .connack
+            .map(|session| crate::ConnAckSessionDiagnostics {
+                raw_session_present: session.raw_session_present,
+                session_resumed: session.session_resumed,
+                diagnostic: session.diagnostic.and_then(|diagnostic| match diagnostic {
+                    rumqttc_v5::ConnAckDiagnostic::BrokerOnlySessionResume => {
+                        Some(crate::ConnAckDiagnostic::BrokerOnlySessionResume)
+                    }
+                    _ => None,
+                }),
+            }),
         connected: diagnostics.connected,
         disconnecting: diagnostics.disconnecting,
         pending_requests: diagnostics.queues.pending_len,

@@ -1928,6 +1928,32 @@ pub unsafe extern "C" fn rumqttc_config_clear_session_store(
     })
 }
 
+/// Sets the v4-only policy: 0 rejects, 1 accepts as a fresh session.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v4_session_present_mismatch_policy(
+    config: *mut rumqttc_config,
+    policy: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let rumqttc_wrapper_core::ProtocolConfig::V4(v4) = &mut config.protocol else {
+            return Err(ErrorHandle::argument(
+                "session present mismatch policy requires MQTT 3.1.1",
+            ));
+        };
+        v4.session_present_mismatch_policy = match policy {
+            0 => rumqttc_wrapper_core::SessionPresentMismatchPolicy::Error,
+            1 => rumqttc_wrapper_core::SessionPresentMismatchPolicy::AcceptAsClean,
+            _ => {
+                return Err(ErrorHandle::argument(
+                    "unknown session present mismatch policy",
+                ));
+            }
+        };
+        Ok(())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_config_set_v5_broker_session_resume_policy(
     config: *mut rumqttc_config,
@@ -4439,6 +4465,63 @@ pub unsafe extern "C" fn rumqttc_completion_diagnostics(
             return Err(ErrorHandle::state("completion is not a diagnostics result"));
         };
         fill_diagnostics(&value, unsafe { &mut *out })
+    })
+}
+
+/// Observes raw and effective CONNACK semantics from a diagnostics completion.
+/// Diagnostic codes: 0 none, 1 v4 accepted as clean, 2 v5 broker-only resume.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_completion_connack_session_diagnostics(
+    completion: *const rumqttc_completion,
+    present_out: *mut u8,
+    raw_session_present_out: *mut u8,
+    session_resumed_out: *mut u8,
+    diagnostic_out: *mut u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, ptr::null_mut(), || {
+        // SAFETY: optional outputs follow the caller's writable-pointer contract.
+        unsafe {
+            write_optional(present_out, 0);
+            write_optional(raw_session_present_out, 0);
+            write_optional(session_resumed_out, 0);
+            write_optional(diagnostic_out, 0);
+        }
+        if present_out.is_null()
+            && raw_session_present_out.is_null()
+            && session_resumed_out.is_null()
+            && diagnostic_out.is_null()
+        {
+            return Err(ErrorHandle::argument(
+                "CONNACK diagnostics outputs are NULL",
+            ));
+        }
+        let completion = unsafe { completion_ref(completion) }?;
+        let terminal = observe_completion(completion, None)?
+            .ok_or_else(|| ErrorHandle::would_block("completion is not ready"))?;
+        let Completion::Diagnostics(value) = terminal else {
+            return Err(ErrorHandle::state("completion is not a diagnostics result"));
+        };
+        if let Some(session) = value.connack {
+            let diagnostic = match session.diagnostic {
+                None => 0,
+                Some(
+                    rumqttc_wrapper_core::ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean,
+                ) => 1,
+                Some(rumqttc_wrapper_core::ConnAckDiagnostic::BrokerOnlySessionResume) => 2,
+            };
+            // SAFETY: optional outputs follow the caller's writable-pointer contract.
+            unsafe {
+                write_optional(present_out, 1);
+                write_optional(
+                    raw_session_present_out,
+                    u8::from(session.raw_session_present),
+                );
+                write_optional(session_resumed_out, u8::from(session.session_resumed));
+                write_optional(diagnostic_out, diagnostic);
+            }
+        }
+        Ok(())
     })
 }
 

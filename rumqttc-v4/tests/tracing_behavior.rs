@@ -22,11 +22,11 @@ use tracing_subscriber::prelude::*;
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
-struct MemorySessionStore(Arc<Mutex<Option<PersistedSession>>>);
+struct MemorySessionStore(Arc<Mutex<Option<PersistedSession>>>, bool);
 
 impl MemorySessionStore {
     fn new(session: PersistedSession) -> Self {
-        Self(Arc::new(Mutex::new(Some(session))))
+        Self(Arc::new(Mutex::new(Some(session))), false)
     }
 }
 
@@ -56,6 +56,9 @@ impl SessionStore for MemorySessionStore {
         _key: &'a SessionStoreKey,
     ) -> Pin<Box<dyn Future<Output = Result<(), SessionStoreError>> + Send + 'a>> {
         Box::pin(async {
+            if self.1 {
+                return Err(Box::new(io::Error::other("clear failed")) as SessionStoreError);
+            }
             *self.0.lock().unwrap() = None;
             Ok(())
         })
@@ -276,4 +279,67 @@ fn assert_lifecycle_events(events: &[tracing_capture::CapturedEvent], protocol: 
             .windows(2)
             .all(|positions| positions[0] < positions[1])
     );
+}
+
+#[tokio::test]
+async fn compatibility_diagnostics_are_emitted_only_after_durable_establishment() {
+    for fail_clear in [false, true] {
+        let capture = Capture::default();
+        let mut store = MemorySessionStore::new(persisted_qos1_session("trace-compatibility"));
+        store.1 = fail_clear;
+        let mut options = MqttOptions::new("trace-compatibility", "localhost");
+        options.set_session_store(store);
+        options
+            .protocol_compatibility_mut()
+            .set_session_present_mismatch(rumqttc::SessionPresentMismatchPolicy::AcceptAsClean);
+        let (peer_tx, peer_rx) = flume::bounded(1);
+        options.set_socket_connector(move |_, _| {
+            let peer_tx = peer_tx.clone();
+            async move {
+                let (client, peer) = tokio::io::duplex(4096);
+                peer_tx.send(peer).unwrap();
+                Ok(client)
+            }
+        });
+        let broker = tokio::spawn(async move {
+            let mut peer = peer_rx.recv_async().await.unwrap();
+            assert!(matches!(read_packet(&mut peer).await, Packet::Connect(_)));
+            peer.write_all(&[0x20, 2, 1, 0]).await.unwrap();
+            peer.read_to_end(&mut Vec::new()).await.unwrap();
+        });
+        let mut eventloop = EventLoop::new(options, 10);
+        let result = tokio::time::timeout(
+            TEST_TIMEOUT,
+            eventloop
+                .poll()
+                .with_subscriber(subscriber(capture.clone())),
+        )
+        .await
+        .unwrap();
+        let events = capture.events();
+        if fail_clear {
+            assert!(matches!(result, Err(ConnectionError::SessionStore(_))));
+            assert_no_event(&events, "mqtt.connection_established");
+            assert_no_event(&events, "mqtt.protocol_compatibility");
+            assert!(eventloop.diagnostics().session.connack.is_none());
+        } else {
+            assert!(matches!(result, Ok(Event::Incoming(Packet::ConnAck(c))) if c.session_present));
+            let established = only_event(&events, "mqtt.connection_established");
+            assert_eq!(established.field("session_present"), &Value::Bool(true));
+            assert_eq!(established.field("session_resumed"), &Value::Bool(false));
+            assert_eq!(
+                established.field("compatibility"),
+                &Value::Str("session_present_mismatch_accepted_as_clean".into())
+            );
+            let recovery = only_event(&events, "mqtt.protocol_compatibility");
+            recovery.assert_metadata("mqtt.protocol_compatibility", Level::WARN);
+            assert_eq!(recovery.field("raw_session_present"), &Value::Bool(true));
+            assert_eq!(recovery.field("session_resumed"), &Value::Bool(false));
+        }
+        drop(eventloop);
+        tokio::time::timeout(TEST_TIMEOUT, broker)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

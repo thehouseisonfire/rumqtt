@@ -1102,10 +1102,10 @@
             ],
             "mapping_status": "reviewed",
             "compliance_status": "compliant",
-            "mapping_reason": "This requirement has both client-side and server-side session lifecycle obligations when CleanSession=1. The client-side obligation is met by encoding CleanSession=1 when requested, rejecting an invalid successful CONNACK that reports session_present=true for a clean session, and discarding local pending session state when the server reports a new session with session_present=false. The server's own discard/start-new-session obligation remains outside this client crate.",
+            "mapping_reason": "MQTT-3.2.2-1 is a server obligation; MQTT 3.1.1 section 3.2.2.2 permits the client to proceed or disconnect on unexpected Session Present. rumqttc defaults to rejection. The v4-only AcceptAsClean policy accepts only a successful clean-session mismatch and resolves it as Fresh, resetting local session state and clearing the current durable checkpoint before success. Raw CONNACK evidence remains unchanged; the client discard/no-reuse obligation under MQTT-3.1.2-6 is preserved.",
             "evidence": [
                 {
-                    "path": "rumqttc-v4/src/mqttbytes/v4/connect.rs",
+                    "path": "mqttbytes-v4/src/v4/connect.rs",
                     "symbols": [
                         "Connect::write",
                         "Connect::read"
@@ -1116,19 +1116,32 @@
                     "path": "rumqttc-v4/src/eventloop.rs",
                     "symbols": [
                         "reconcile_connack_session",
-                        "reset_session_state",
-                        "mqtt_connect"
+                        "reset_session_state_without_store_invalidation",
+                        "clear_persisted_session_or_block_reload",
+                        "establish_connection"
                     ],
-                    "reason": "mqtt_connect() sets connect.clean_session from MqttOptions. reconcile_connack_session() rejects clean_session=true with session_present=true and calls reset_session_state() when the server reports session_present=false, discarding local pending session state for the new clean session."
+                    "reason": "reconcile_connack_session() resolves raw Session Present and compatibility policy once into effective Fresh/Resumed semantics. The complete fresh-session reset and clear_persisted_session_or_block_reload() run before establishment, with clear_pending preserved on failure/cancellation."
+                },
+                {
+                    "path": "rumqttc-v4/src/lib.rs",
+                    "symbols": [
+                        "ProtocolCompatibility",
+                        "SessionPresentMismatchPolicy"
+                    ],
+                    "reason": "Strict Error default and narrowly scoped opt-in AcceptAsClean, with no generic validation downgrade."
                 }
             ],
             "test_coverage": {
                 "status": "covered",
                 "tests": [
-                    "connack_reconcile_rejects_clean_session_with_session_present",
-                    "connack_reconcile_resets_pending_when_clean_session_gets_new_session"
+                    "rumqttc-v4/src/eventloop.rs::connack_reconcile_uses_effective_session_decision_matrix",
+                    "rumqttc-v4/src/eventloop.rs::accepted_session_present_mismatch_uses_complete_fresh_session_reset",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::accepted_connection_is_published_only_after_checkpoint_clear_succeeds",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::failed_clear_blocks_checkpoint_reload_and_retries_before_next_connect",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::cancelled_clear_keeps_obligation_and_candidate_connection_is_discarded",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::persistent_then_invalid_clean_then_persistent_connections_do_not_resurrect_old_work"
                 ],
-                "notes": "These client tests cover CONNACK validation and local pending-state discard for CleanSession=1. The server discard/start-new-session obligation itself is not testable in this client crate."
+                "notes": "Server conformity remains outside the client role. Tests prove client discretion preserves Fresh semantics, raw evidence, durability, and no state resurrection."
             },
             "follow_up": null
         },
@@ -2606,33 +2619,46 @@
                 "rumqttc-v4/src/mqttbytes/v4/connack.rs"
             ],
             "mapping_status": "reviewed",
-            "mapping_reason": "Primarily a server obligation, but client-side validation is applicable because this v4 client defensively rejects an accepted CONNACK that reports session_present=1 after connecting with clean_session=true.",
-            "compliance_status": "compliant",
+            "mapping_reason": "MQTT-3.2.2-1 is a server obligation; MQTT 3.1.1 section 3.2.2.2 permits the client to proceed or disconnect on unexpected Session Present. rumqttc defaults to rejection. The v4-only AcceptAsClean policy accepts only a successful clean-session mismatch and resolves it as Fresh, resetting local session state and clearing the current durable checkpoint before success. Raw CONNACK evidence remains unchanged; the client discard/no-reuse obligation under MQTT-3.1.2-6 is preserved.",
+            "compliance_status": "not_applicable",
             "evidence": [
                 {
                     "path": "rumqttc-v4/src/eventloop.rs",
                     "symbols": [
-                        "EventLoop::reconcile_connack_session",
-                        "EventLoop::poll"
+                        "reconcile_connack_session",
+                        "reset_session_state_without_store_invalidation",
+                        "clear_persisted_session_or_block_reload",
+                        "establish_connection"
                     ],
-                    "reason": "On successful connection establishment, the event loop compares the received ConnAck.session_present bit against the client's clean_session setting and fails with SessionStateMismatch when clean_session=true and session_present=true."
+                    "reason": "reconcile_connack_session() resolves raw Session Present and compatibility policy once into effective Fresh/Resumed semantics. The complete fresh-session reset and clear_persisted_session_or_block_reload() run before establishment, with clear_pending preserved on failure/cancellation."
                 },
                 {
-                    "path": "rumqttc-v4/src/mqttbytes/v4/connack.rs",
+                    "path": "mqttbytes-v4/src/v4/connack.rs",
                     "symbols": [
                         "ConnAck::read"
                     ],
                     "reason": "The CONNACK decoder rejects any non-success return code combined with session_present=true, enforcing the related MQTT-3.2.2-4 packet-format constraint on error responses."
+                },
+                {
+                    "path": "rumqttc-v4/src/lib.rs",
+                    "symbols": [
+                        "ProtocolCompatibility",
+                        "SessionPresentMismatchPolicy"
+                    ],
+                    "reason": "Strict Error default and narrowly scoped opt-in AcceptAsClean, with no generic validation downgrade."
                 }
             ],
             "test_coverage": {
                 "status": "covered",
                 "tests": [
-                    "rumqttc-v4/src/eventloop.rs:connack_reconcile_rejects_clean_session_with_session_present",
-                    "rumqttc-v4/src/eventloop.rs:poll_rejects_clean_session_with_session_present_connack",
-                    "rumqttc-v4/src/mqttbytes/v4/connack.rs:connack_parsing_rejects_session_present_on_error"
+                    "rumqttc-v4/src/eventloop.rs::connack_reconcile_uses_effective_session_decision_matrix",
+                    "rumqttc-v4/src/eventloop.rs::accepted_session_present_mismatch_uses_complete_fresh_session_reset",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::accepted_connection_is_published_only_after_checkpoint_clear_succeeds",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::failed_clear_blocks_checkpoint_reload_and_retries_before_next_connect",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::cancelled_clear_keeps_obligation_and_candidate_connection_is_discarded",
+                    "rumqttc-v4/tests/protocol_compatibility.rs::persistent_then_invalid_clean_then_persistent_connections_do_not_resurrect_old_work"
                 ],
-                "notes": "Tests cover both the session reconciliation helper and the full EventLoop::poll connection path for clean_session=true with session_present=true. They also cover the related parser rejection for session_present=true on non-success return codes."
+                "notes": "Server conformity remains outside the client role. Tests prove client discretion preserves Fresh semantics, raw evidence, durability, and no state resurrection."
             },
             "follow_up": null
         },

@@ -5,9 +5,14 @@ rumqttc reconnects automatically when the application keeps polling
 
 ## Resubscribe After Reconnect
 
-After every successful connection, the event loop yields an incoming CONNACK. If
-`session_present` is false, the broker has no retained subscription state for
-the client, so reissue the desired subscriptions.
+After every successful connection, the event loop yields an incoming CONNACK.
+Reissue desired subscriptions when the effective session is fresh:
+`!eventloop.diagnostics().session.connack.unwrap().session_resumed`.
+The raw `connack.session_present` reports what the broker sent. For MQTT 3.1.1,
+`eventloop.mqtt_options.clean_session() || !connack.session_present` is the
+equivalent condition when evaluated with the options used for that connection.
+A clean connection must resubscribe even if a broken broker reports Session
+Present and the connection was accepted through `AcceptAsClean`.
 
 Compile-checked examples:
 
@@ -86,3 +91,36 @@ MQTT 5 strict mode rejects a broker response that reports `Session Present = 1`
 when the local client did not restore matching session state. Applications that
 intentionally accept broker-only subscription resume can opt into the documented
 compatibility policy, but cannot recover lost local in-flight QoS state.
+
+## MQTT 3.1.1 Session Present Interoperability
+
+The default `SessionPresentMismatchPolicy::Error` rejects a successful CONNACK
+with both `clean_session=true` and raw `session_present=true`. A broker returning
+this combination violates its obligation under MQTT-3.2.2-1. MQTT 3.1.1 section
+3.2.2.2 permits clients to continue or disconnect when Session Present is
+unexpected.
+
+To handle this specific broker defect, configure
+`options.protocol_compatibility_mut().set_session_present_mismatch(SessionPresentMismatchPolicy::AcceptAsClean)`.
+This applies only to a successful MQTT 3.1.1 CONNACK on a clean connection.
+rumqttc resolves it as fresh, discards old local protocol/replay state, fails
+old tracked notices with `SessionReset`, and clears the current scope/client-ID
+checkpoint before reporting success. Clean sessions do not ordinarily load or
+save checkpoints, but a checkpoint from an earlier persistent connection must
+still be cleared. Failed or cancelled clearing leaves the clear obligation
+pending; subsequent polling retries it before any checkpoint can load.
+
+The broker remains non-conforming. The incoming CONNACK still exposes raw
+Session Present=true; `diagnostics().session.connack` separately reports
+`raw_session_present=true`, `session_resumed=false`, and
+`SessionPresentMismatchAcceptedAsClean`. Resubscribe for this fresh session.
+This option does not relax malformed packets, refused connections, or other
+validation.
+
+MQTT 5 has no `AcceptAsClean` option. Its MQTT-3.2.2-4 client requirement mandates
+closing when local Session State is absent and Session Present=1. The existing
+explicitly non-strict `BrokerSessionResumePolicy::AllowBrokerOnly` retains its
+restrictions and is now configured canonically through
+`options.protocol_compatibility_mut().set_broker_session_resume_policy(...)`.
+Existing getter, setter, and builder APIs continue forwarding to the same value.
+Clean Start with Session Present=1 is always rejected.

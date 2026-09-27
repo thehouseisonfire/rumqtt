@@ -561,3 +561,26 @@ The compile-checked migration examples live in:
 
 - `rumqttc-v4/examples/migration_v4.rs`
 - `rumqttc-v5/examples/migration_v5.rs`
+
+## Protocol compatibility configuration
+
+Both explicit client crates now expose `ProtocolCompatibility` through
+`MqttOptions::protocol_compatibility()`, `protocol_compatibility_mut()`,
+`set_protocol_compatibility()`, and the builder's `protocol_compatibility()`.
+MQTT 5's existing `broker_session_resume_policy()` getter, setter, and builder
+method continue forwarding to the value owned by that object. Existing callers
+need no change.
+
+MQTT 3.1.1 adds `SessionPresentMismatchPolicy::{Error, AcceptAsClean}`. The default
+remains rejection. The opt-in accepts only a successful clean-session CONNACK
+with invalid Session Present=true, resets local state, and clears its checkpoint
+before establishment. Raw CONNACK evidence remains unchanged. Use
+`diagnostics().session.connack.session_resumed` (after accessing the optional
+connection observation) to decide whether to resubscribe, or use the clean-session
+option together with the raw flag.
+
+Native wrapper-core adds a defaulted `V4Config::session_present_mismatch_policy`
+field and `DiagnosticsSnapshot::connack`. Exhaustive Rust struct literals must
+supply the new fields or use `..Default::default()`. Wrapper-core is private
+infrastructure with no stable Rust API promise. C support is additive and keeps
+existing public record layouts and the ABI line unchanged.

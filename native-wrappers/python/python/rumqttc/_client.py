@@ -38,6 +38,8 @@ from ._types import (
     AckMode,
     AdmissionResult,
     ClientDiagnostics,
+    ConnAckDiagnostic,
+    ConnAckSessionDiagnostics,
     ConnectionPhase,
     ConnectResult,
     MqttClientOptions,
@@ -48,6 +50,7 @@ from ._types import (
     PublishOptions,
     QoS,
     RetainForwardRule,
+    SessionPresentMismatchPolicy,
     SubscribeCompletion,
     SubscribeOptions,
     SubscribeResult,
@@ -305,6 +308,12 @@ def _config(options: MqttClientOptions) -> str:
             raise ValueError("clean_session is only valid for MQTT 3.1.1")
     else:
         raise TypeError("protocol must be ProtocolVersion")
+    mismatch_policy = options.session_present_mismatch_policy
+    if mismatch_policy is not None:
+        if options.protocol is not ProtocolVersion.MQTT_3_1_1:
+            raise ValueError("session_present_mismatch_policy is only valid for MQTT 3.1.1")
+        if not isinstance(mismatch_policy, SessionPresentMismatchPolicy):
+            raise TypeError("session_present_mismatch_policy must be SessionPresentMismatchPolicy")
     expiry = options.session_expiry_interval
     if expiry is not None:
         expiry = _integer(expiry, "session_expiry_interval", 2**32 - 1)
@@ -332,6 +341,7 @@ def _config(options: MqttClientOptions) -> str:
             "incomingPacketSizeLimit": incoming_limit,
             "emitOutgoingEvents": emit_outgoing,
             "cleanSession": options.clean_session,
+            "sessionPresentMismatchPolicy": None if mismatch_policy is None else mismatch_policy.value,
             "cleanStart": options.clean_start,
             "sessionExpiryInterval": expiry,
         }
@@ -656,6 +666,16 @@ class MqttClient:
     async def diagnostics(self) -> ClientDiagnostics:
         self._require_connected()
         response = _response(await self._native.diagnostics())["result"]
+        session = response.get("connack")
+        connack = (
+            None
+            if session is None
+            else ConnAckSessionDiagnostics(
+                session["rawSessionPresent"],
+                session["sessionResumed"],
+                None if session["diagnostic"] is None else ConnAckDiagnostic(session["diagnostic"]),
+            )
+        )
         return ClientDiagnostics(
             response["connected"],
             response["disconnecting"],
@@ -666,6 +686,7 @@ class MqttClient:
             response["pendingSubscribes"],
             response["pendingUnsubscribes"],
             response["outboundDrained"],
+            connack,
         )
 
     async def close(self, *, timeout: float | None = None) -> None:

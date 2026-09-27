@@ -99,8 +99,33 @@ pub struct ConnAckDetails {
     pub v5_properties: Option<Box<V5ConnAckProperties>>,
 }
 
+/// Compatibility recovery committed by the underlying MQTT client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnAckDiagnostic {
+    SessionPresentMismatchAcceptedAsClean,
+    BrokerOnlySessionResume,
+}
+
+impl ConnAckDiagnostic {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionPresentMismatchAcceptedAsClean => "sessionPresentMismatchAcceptedAsClean",
+            Self::BrokerOnlySessionResume => "brokerOnlySessionResume",
+        }
+    }
+}
+
+/// Raw CONNACK evidence and effective session semantics, observed separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnAckSessionDiagnostics {
+    pub raw_session_present: bool,
+    pub session_resumed: bool,
+    pub diagnostic: Option<ConnAckDiagnostic>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticsSnapshot {
+    pub connack: Option<ConnAckSessionDiagnostics>,
     pub connected: bool,
     pub disconnecting: bool,
     pub pending_requests: usize,

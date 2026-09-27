@@ -65,3 +65,23 @@ Constructing the nested outbound snapshot scans protocol tracking structures,
 so sample at an interval appropriate for observability rather than on every
 high-volume application operation. Export selected fields as gauges and keep
 counters or history in the application's metrics system.
+
+## Raw and Effective CONNACK Session State
+
+`session.connack` is `None` before establishment and after connection cleanup.
+For an accepted connection it contains `raw_session_present`, `session_resumed`,
+and an optional `ConnAckDiagnostic`. This observation is committed after required
+checkpoint clearing and, for MQTT 5, final authentication verification succeed.
+A failed or cancelled clear does not publish a connection observation.
+
+MQTT 3.1.1 `AcceptAsClean` can produce raw Session Present=true with effective
+`session_resumed=false` and `SessionPresentMismatchAcceptedAsClean`. Use effective
+semantics for resubscription and local recovery decisions. MQTT 5 broker-only
+resume is observed as `BrokerOnlySessionResume` and retains the existing
+`session.broker_only_session_resume` observation.
+
+Lifecycle tracing retains its raw `session_present` field and adds
+`session_resumed` and `compatibility`. A committed MQTT 3.1.1 workaround also
+emits `mqtt.protocol_compatibility` at WARN; without tracing it uses the existing
+log path. Diagnostics and logs report the policy decision; severity does not
+control recovery.

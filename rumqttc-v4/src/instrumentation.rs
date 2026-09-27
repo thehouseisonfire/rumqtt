@@ -96,7 +96,7 @@ pub fn connection_attempt_failed(
     );
 }
 
-pub fn connection_established(context: AttemptContext, session_present: bool) {
+pub fn connection_established(context: AttemptContext, session: &crate::ConnAckSessionDiagnostics) {
     tracing::event!(
         name: "mqtt.connection_established",
         target: TARGET,
@@ -106,7 +106,9 @@ pub fn connection_established(context: AttemptContext, session_present: bool) {
         connection_generation = context.connection_generation,
         attempt_in_generation = context.attempt_in_generation,
         reconnect = context.reconnect(),
-        session_present,
+        session_present = session.raw_session_present,
+        session_resumed = session.session_resumed,
+        compatibility = session.diagnostic.map_or("none", crate::ConnAckDiagnostic::as_str),
     );
 }
 
@@ -246,6 +248,21 @@ const fn protocol_violation_kind(violation: &ProtocolViolation) -> &'static str 
     }
 }
 
+/// Reports committed recovery after all establishment barriers have succeeded.
+pub fn session_present_mismatch_accepted(context: AttemptContext) {
+    tracing::event!(
+        name: "mqtt.protocol_compatibility",
+        target: TARGET,
+        tracing::Level::WARN,
+        protocol = PROTOCOL,
+        attempt_id = context.attempt_id,
+        connection_generation = context.connection_generation,
+        raw_session_present = true,
+        session_resumed = false,
+        compatibility = "session_present_mismatch_accepted_as_clean",
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,7 +365,14 @@ mod tests {
             "target_setup",
             &ConnectionError::BrokerTransportMismatch,
         );
-        connection_established(attempt, true);
+        connection_established(
+            attempt,
+            &crate::ConnAckSessionDiagnostics {
+                raw_session_present: true,
+                session_resumed: true,
+                diagnostic: None,
+            },
+        );
         session_restored(0, 3);
 
         let eventloop = EventLoop::new(MqttOptions::new("schema", "localhost"), 1);

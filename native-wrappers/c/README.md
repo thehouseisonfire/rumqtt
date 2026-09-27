@@ -418,3 +418,27 @@ including MQTT 3.1.1 and MQTT 5 behavior, overload, reconnect, shutdown,
 native-thread concurrency, and repeated teardown. Every network wait and join
 has a deadline. Set `RUMQTTC_C_STRESS_ITERATIONS` to increase the stress run;
 CI uses a short run while leak-analysis jobs use a longer one.
+
+## Session Present compatibility
+
+The MQTT 3.1.1 default rejects a successful clean-session CONNACK with invalid
+Session Present=true. The opt-in `AcceptAsClean` policy resolves only this case
+as fresh, resets old local protocol state and replay work, and clears the
+current scope/client-ID checkpoint before reporting success. Failed or cancelled
+clearing remains pending for retry before checkpoint loading. The broker remains
+non-conforming and raw connected-event/connection-result flags remain true.
+
+Existing diagnostics expose an optional `connack` observation containing raw
+Session Present, effective session resume, and a compatibility reason. Use the
+effective session for resubscription decisions. No MQTT 5 clean-start recovery
+is introduced; the existing broker-only resume policy retains its restrictions.
+
+Use `rumqttc_config_set_v4_session_present_mismatch_policy` with
+`RUMQTTC_SESSION_PRESENT_MISMATCH_ERROR` (0, default) or
+`RUMQTTC_SESSION_PRESENT_MISMATCH_ACCEPT_AS_CLEAN` (1). Wrong-protocol handles
+and unknown values are rejected without updating the configuration.
+`rumqttc_completion_connack_session_diagnostics` reads the existing diagnostics
+completion using separate presence, raw flag, effective resume, and diagnostic
+outputs. Diagnostic codes are 0=none, 1=v4 accepted as clean, and 2=v5 broker-only
+resume. Optional outputs are zeroed on error; at least one output is required.
+Existing public event and diagnostics records and the ABI line are unchanged.

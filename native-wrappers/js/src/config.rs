@@ -24,6 +24,7 @@ pub struct ConfigInput {
     incoming_packet_size_limit: u32,
     emit_outgoing_events: bool,
     clean_session: Option<bool>,
+    session_present_mismatch_policy: Option<String>,
     clean_start: Option<bool>,
     session_expiry_interval: Option<u32>,
 }
@@ -115,8 +116,28 @@ pub fn parse(input: &str) -> Result<ClientConfig, String> {
                 return Err("MQTT 5 session options require protocol '5.0'".to_owned());
             }
             protocol.clean_session = input.clean_session.unwrap_or(true);
+            protocol.session_present_mismatch_policy = match input
+                .session_present_mismatch_policy
+                .as_deref()
+            {
+                None | Some("error") => rumqttc_wrapper_core::SessionPresentMismatchPolicy::Error,
+                Some("acceptAsClean") => {
+                    rumqttc_wrapper_core::SessionPresentMismatchPolicy::AcceptAsClean
+                }
+                _ => {
+                    return Err(
+                        "sessionPresentMismatchPolicy must be 'error' or 'acceptAsClean'"
+                            .to_owned(),
+                    );
+                }
+            };
         }
         ProtocolConfig::V5(protocol) => {
+            if input.session_present_mismatch_policy.is_some() {
+                return Err(
+                    "sessionPresentMismatchPolicy is only valid for protocol '3.1.1'".to_owned(),
+                );
+            }
             if input.clean_session.is_some() {
                 return Err("cleanSession is only valid for protocol '3.1.1'".to_owned());
             }
@@ -152,4 +173,45 @@ fn decode(value: &str, name: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(value)
         .map_err(|error| format!("invalid base64 {name}: {error}"))
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    fn input(protocol: &str, policy: Option<&str>) -> serde_json::Value {
+        let mut input = serde_json::json!({
+            "protocol": protocol, "brokerHost": "localhost", "brokerPort": 1883,
+            "clientId": "compatibility", "transport": { "kind": "tcp" },
+            "keepAliveSeconds": 60, "connectionTimeoutSeconds": 5,
+            "requestCapacity": 10, "eventCapacity": 256, "eventDeliveryTimeoutMs": 5000,
+            "ackMode": "automatic", "incomingPacketSizeLimit": 10240,
+            "emitOutgoingEvents": false,
+        });
+        if let Some(policy) = policy {
+            input["sessionPresentMismatchPolicy"] = serde_json::json!(policy);
+        }
+        input
+    }
+
+    #[test]
+    fn session_present_policy_defaults_and_protocol_validation() {
+        use rumqttc_wrapper_core::SessionPresentMismatchPolicy::{AcceptAsClean, Error};
+        for (policy, expected) in [
+            (None, Error),
+            (Some("error"), Error),
+            (Some("acceptAsClean"), AcceptAsClean),
+        ] {
+            let config = parse(&input("3.1.1", policy).to_string()).unwrap();
+            let ProtocolConfig::V4(v4) = config.protocol else {
+                panic!("expected v4")
+            };
+            assert_eq!(v4.session_present_mismatch_policy, expected);
+        }
+        assert!(parse(&input("3.1.1", Some("ignore")).to_string()).is_err());
+        for policy in ["error", "acceptAsClean"] {
+            assert!(parse(&input("5.0", Some(policy)).to_string()).is_err());
+        }
+        assert!(parse(&input("5.0", None).to_string()).is_ok());
+    }
 }

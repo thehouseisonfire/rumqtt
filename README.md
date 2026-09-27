@@ -149,3 +149,11 @@ package's crates.io page for current download and reverse-dependency data.
 ## License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE).
+
+Deliberate protocol interoperability exceptions are configured through each
+client's `ProtocolCompatibility`. MQTT 3.1.1 optionally accepts a broken clean
+Session Present response as a fresh session, preserving raw packet evidence and
+clearing old durable state before success. Defaults remain strict; MQTT 5 retains
+its existing broker-only session policy and restrictions. See the
+[session recipes](docs/recipes/sessions.md) and
+[diagnostics recipes](docs/recipes/diagnostics.md).

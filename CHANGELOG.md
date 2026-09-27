@@ -1,6 +1,22 @@
 ## [Unreleased]
 
+### Added
+- Rust v4/v5 clients: Add `ProtocolCompatibility` as the home for deliberate
+  interoperability exceptions. MQTT 3.1.1 gains opt-in
+  `SessionPresentMismatchPolicy::AcceptAsClean` for successful clean-session
+  CONNACK with invalid Session Present=true. Reset local session state and clear
+  the current durable checkpoint before success while preserving the raw packet.
+  Strict rejection remains the default. MQTT 5's existing broker-only policy
+  moves under the same boundary with its original APIs and restrictions retained.
+- Client and native-wrapper diagnostics: Expose raw CONNACK Session Present,
+  effective session resume, and committed compatibility recovery separately.
+  Add v4 configuration support to wrapper-core, C, JavaScript, and Python without
+  changing existing C event or diagnostics record layouts. Wrapper-core adds
+  defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
+
 ### Fixed
+- MQTT 3.1.1 ordered shutdown: Fail fences with `SessionReset` when fresh-session
+  recovery discards scheduled or live protocol work, as well as pending replay.
 - MQTT 5 authentication: Fail and reset the initial exchange when a synchronous
   or asynchronous Start callback returns a mismatched authentication method.
   Record native exchange timeouts before cancelling a pending session-store save

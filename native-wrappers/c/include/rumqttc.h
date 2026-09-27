@@ -673,6 +673,13 @@ typedef struct rumqttc_diagnostics_t {
 #define RUMQTTC_DIAGNOSTICS_INIT \
     { sizeof(rumqttc_diagnostics_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 
+/* v4-only Session Present mismatch policy and committed CONNACK diagnostics. */
+#define RUMQTTC_SESSION_PRESENT_MISMATCH_ERROR 0
+#define RUMQTTC_SESSION_PRESENT_MISMATCH_ACCEPT_AS_CLEAN 1
+#define RUMQTTC_CONNACK_DIAGNOSTIC_NONE 0
+#define RUMQTTC_CONNACK_DIAGNOSTIC_SESSION_PRESENT_MISMATCH_ACCEPTED_AS_CLEAN 1
+#define RUMQTTC_CONNACK_DIAGNOSTIC_BROKER_ONLY_SESSION_RESUME 2
+
 RUMQTTC_API uint32_t rumqttc_abi_version(void);
 RUMQTTC_API const char *rumqttc_library_version(void);
 RUMQTTC_API uint64_t rumqttc_library_capabilities(void);
@@ -701,6 +708,7 @@ RUMQTTC_API rumqttc_status_t rumqttc_store_registration_new(const rumqttc_store_
 RUMQTTC_API void rumqttc_store_registration_destroy(rumqttc_store_registration_t *registration);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_session_store(rumqttc_config_t *config, const rumqttc_store_registration_t *registration, rumqttc_string_view_t scope, uint64_t timeout_ms, size_t max_checkpoint_size, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_clear_session_store(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v4_session_present_mismatch_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_broker_session_resume_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_redirect_policy(rumqttc_config_t *config, uint32_t policy, uint32_t max_attempts, uint32_t transport, const rumqttc_tls_options_t *tls, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_scram(rumqttc_config_t *config, rumqttc_string_view_t username, rumqttc_bytes_view_t password, uint64_t timeout_ms, uint32_t max_iterations, rumqttc_error_t **error_out);
@@ -795,6 +803,10 @@ RUMQTTC_API rumqttc_status_t rumqttc_completion_operation_id(const rumqttc_compl
 RUMQTTC_API rumqttc_status_t rumqttc_completion_kind(const rumqttc_completion_t *completion, rumqttc_completion_kind_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_completion_result_count(const rumqttc_completion_t *completion, size_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_completion_result_at(const rumqttc_completion_t *completion, size_t index, uint8_t *success_out, rumqttc_qos_t *qos_out, uint8_t *reason_present_out, uint8_t *reason_out, rumqttc_error_t **error_out);
+/* Optional scalar outputs; at least one must be non-NULL. Values are zeroed on error.
+ * present_out=0 means no current accepted connection. The ordinary diagnostics
+ * record and Connected event retain their existing layout and raw semantics. */
+RUMQTTC_API rumqttc_status_t rumqttc_completion_connack_session_diagnostics(const rumqttc_completion_t *completion, uint8_t *present_out, uint8_t *raw_session_present_out, uint8_t *session_resumed_out, uint32_t *diagnostic_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_completion_diagnostics(const rumqttc_completion_t *completion, rumqttc_diagnostics_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_completion_destroy(rumqttc_completion_t *completion);
 

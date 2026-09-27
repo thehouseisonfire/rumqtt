@@ -21,6 +21,16 @@ class AckMode(str, Enum):
     MANUAL = "manual"
 
 
+class SessionPresentMismatchPolicy(str, Enum):
+    ERROR = "error"
+    ACCEPT_AS_CLEAN = "acceptAsClean"
+
+
+class ConnAckDiagnostic(str, Enum):
+    SESSION_PRESENT_MISMATCH_ACCEPTED_AS_CLEAN = "sessionPresentMismatchAcceptedAsClean"
+    BROKER_ONLY_SESSION_RESUME = "brokerOnlySessionResume"
+
+
 class ConnectionPhase(str, Enum):
     ATTEMPT = "attempt"
     ESTABLISHED = "established"
@@ -100,6 +110,7 @@ class MqttClientOptions:
     clean_session: bool | None = None
     clean_start: bool | None = None
     session_expiry_interval: int | None = None
+    session_present_mismatch_policy: SessionPresentMismatchPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +196,13 @@ class UnsubscribeCompletion(AdmissionResult):
 
 
 @dataclass(frozen=True, slots=True)
+class ConnAckSessionDiagnostics:
+    raw_session_present: bool
+    session_resumed: bool
+    diagnostic: ConnAckDiagnostic | None
+
+
+@dataclass(frozen=True, slots=True)
 class ClientDiagnostics:
     connected: bool
     disconnecting: bool
@@ -195,6 +213,7 @@ class ClientDiagnostics:
     pending_subscribes: int
     pending_unsubscribes: int
     outbound_drained: bool
+    connack: ConnAckSessionDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)

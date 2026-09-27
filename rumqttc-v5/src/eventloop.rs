@@ -374,11 +374,71 @@ pub struct QueueDiagnostics {
     pub immediate_disconnect_rx_len: usize,
 }
 
+/// Compatibility recovery observed on an accepted connection.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnAckDiagnostic {
+    /// Broker state was resumed without matching local client state under the explicit compatibility policy.
+    BrokerOnlySessionResume,
+}
+
+impl ConnAckDiagnostic {
+    #[cfg(feature = "tracing")]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::BrokerOnlySessionResume => "broker_only_session_resume",
+        }
+    }
+}
+
+/// Raw broker session evidence and effective client session semantics.
+///
+/// Published only once connection establishment, including required durable
+/// clearing, succeeds. Raw CONNACK events are never rewritten.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnAckSessionDiagnostics {
+    /// Session Present exactly as received in the CONNACK.
+    pub raw_session_present: bool,
+    /// Whether the accepted connection effectively resumed a session.
+    pub session_resumed: bool,
+    /// Explicit compatibility recovery taken, if any.
+    pub diagnostic: Option<ConnAckDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionDisposition {
+    Fresh,
+    Resumed,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SessionReconciliation {
+    disposition: SessionDisposition,
+    diagnostic: Option<ConnAckDiagnostic>,
+}
+
+impl SessionReconciliation {
+    const fn is_fresh(self) -> bool {
+        matches!(self.disposition, SessionDisposition::Fresh)
+    }
+
+    const fn diagnostics(self, raw_session_present: bool) -> ConnAckSessionDiagnostics {
+        ConnAckSessionDiagnostics {
+            raw_session_present,
+            session_resumed: !self.is_fresh(),
+            diagnostic: self.diagnostic,
+        }
+    }
+}
+
 /// Session-related event-loop diagnostics.
 #[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDiagnostics {
+    /// Session semantics of the current accepted connection; absent while disconnected.
+    pub connack: Option<ConnAckSessionDiagnostics>,
     /// Whether a durable session store is configured.
     pub session_store_configured: bool,
     /// Whether this event loop has loaded a session-store checkpoint.
@@ -513,6 +573,8 @@ pub struct EventLoop {
     broker_only_session_resume: bool,
     /// Persistent session store lifecycle flags.
     session_store: SessionStoreState,
+    /// Committed session observation for the current accepted connection.
+    connack_session: Option<ConnAckSessionDiagnostics>,
     pending_disconnect: Option<PendingDisconnect>,
     #[cfg(feature = "ordered-shutdown")]
     ordered_completion: Option<Arc<crate::disconnect::Completion>>,
@@ -561,6 +623,7 @@ impl Drop for AuthenticationPollGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
             self.eventloop.network = None;
+            self.eventloop.connack_session = None;
             self.eventloop.pending_connection_error =
                 Some(ConnectionError::MqttState(StateError::ConnectionAborted));
             self.eventloop
@@ -613,11 +676,16 @@ impl EventLoop {
         self.session_store_key.as_ref() == Some(&self.options.session_store_key())
     }
 
-    fn reconcile_connack_session(&mut self, session_present: bool) -> Result<(), ConnectionError> {
+    fn reconcile_connack_session(
+        &mut self,
+        session_present: bool,
+    ) -> Result<SessionReconciliation, ConnectionError> {
         let clean_start = self.options.clean_start();
-        let has_local_state = self.has_local_session_state();
-        let missing_local_state = !has_local_state;
-        let allow_broker_only_resume = self.options.broker_session_resume_policy()
+        let missing_local_state = !self.has_local_session_state();
+        let allow_broker_only_resume = self
+            .options
+            .protocol_compatibility()
+            .broker_session_resume_policy()
             == crate::BrokerSessionResumePolicy::AllowBrokerOnly;
         if session_present && (clean_start || (missing_local_state && !allow_broker_only_resume)) {
             return Err(ConnectionError::SessionStateMismatch {
@@ -626,14 +694,20 @@ impl EventLoop {
             });
         }
 
-        if !session_present {
+        let broker_only = session_present && missing_local_state && allow_broker_only_resume;
+        let reconciliation = SessionReconciliation {
+            disposition: if session_present {
+                SessionDisposition::Resumed
+            } else {
+                SessionDisposition::Fresh
+            },
+            diagnostic: broker_only.then_some(ConnAckDiagnostic::BrokerOnlySessionResume),
+        };
+        if reconciliation.is_fresh() {
             self.reset_session_state_without_store_invalidation();
         }
-
-        self.broker_only_session_resume =
-            session_present && missing_local_state && allow_broker_only_resume;
-
-        Ok(())
+        self.broker_only_session_resume = broker_only;
+        Ok(reconciliation)
     }
 
     /// New MQTT `EventLoop`
@@ -849,6 +923,7 @@ impl EventLoop {
             effective_session_expiry_interval,
             broker_only_session_resume: false,
             session_store: SessionStoreState::new(),
+            connack_session: None,
             pending_disconnect: None,
             #[cfg(feature = "ordered-shutdown")]
             ordered_completion: None,
@@ -993,6 +1068,7 @@ impl EventLoop {
         #[cfg(feature = "tracing")]
         self.telemetry.finish_established_connection();
         self.network = None;
+        self.connack_session = None;
         self.keepalive_timeout = None;
         self.pending_disconnect = None;
         #[cfg(feature = "ordered-shutdown")]
@@ -1178,6 +1254,7 @@ impl EventLoop {
             },
             outbound: self.state.outbound_diagnostics(),
             session: SessionDiagnostics {
+                connack: self.connack_session,
                 session_store_configured: self.options.session_store.is_some(),
                 session_store_loaded: self.session_store.loaded,
                 session_store_clear_pending: self.session_store.clear_pending,
@@ -1349,6 +1426,7 @@ impl EventLoop {
     }
 
     fn reset_session_state_for_redirect(&mut self) {
+        self.connack_session = None;
         self.drain_pending_as_failed(NoticeFailureReason::Redirected);
         self.drain_request_channels_as_failed(NoticeFailureReason::Redirected);
         self.state.fail_reauth_exchange_due_to_redirect();
@@ -1374,6 +1452,7 @@ impl EventLoop {
         self.drain_pending_as_failed(NoticeFailureReason::SessionReset);
         self.state.fail_reauth_exchange_due_to_session_reset();
         self.state.reset_session_state();
+        self.connack_session = None;
         self.session_client_id = None;
         self.session_store_key = None;
         self.broker_only_session_resume = false;
@@ -2218,7 +2297,8 @@ impl EventLoop {
         self.apply_connack_session_expiry_interval(&connack);
 
         #[cfg(feature = "tracing")]
-        self.reconcile_connack_session_and_persisted_state(connack.session_present)
+        let reconciliation = self
+            .reconcile_connack_session_and_persisted_state(connack.session_present)
             .await
             .inspect_err(|error| {
                 crate::instrumentation::connection_attempt_failed(
@@ -2228,7 +2308,8 @@ impl EventLoop {
                 );
             })?;
         #[cfg(not(feature = "tracing"))]
-        self.reconcile_connack_session_and_persisted_state(connack.session_present)
+        let reconciliation = self
+            .reconcile_connack_session_and_persisted_state(connack.session_present)
             .await?;
 
         let verification = time::timeout_at(connect_deadline, async {
@@ -2275,6 +2356,8 @@ impl EventLoop {
             self.session_store_key = Some(self.options.session_store_key());
         }
         self.network = Some(network);
+        let session_diagnostics = reconciliation.diagnostics(connack.session_present);
+        self.connack_session = Some(session_diagnostics);
 
         if let Some(active) = self.active_redirect.as_mut() {
             active.established = true;
@@ -2299,7 +2382,7 @@ impl EventLoop {
         #[cfg(feature = "tracing")]
         {
             self.telemetry.mark_connection_established();
-            crate::instrumentation::connection_established(attempt, connack.session_present);
+            crate::instrumentation::connection_established(attempt, &session_diagnostics);
         }
 
         self.last_connect_failure_phase = None;
@@ -2309,12 +2392,12 @@ impl EventLoop {
     async fn reconcile_connack_session_and_persisted_state(
         &mut self,
         session_present: bool,
-    ) -> Result<(), ConnectionError> {
-        self.reconcile_connack_session(session_present)?;
-        if !session_present {
+    ) -> Result<SessionReconciliation, ConnectionError> {
+        let reconciliation = self.reconcile_connack_session(session_present)?;
+        if reconciliation.is_fresh() {
             self.clear_persisted_session_or_block_reload().await?;
         }
-        Ok(())
+        Ok(reconciliation)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -8579,6 +8662,24 @@ mod tests {
                 })
             )
         }));
+    }
+
+    #[test]
+    fn connack_reconcile_rejects_clean_start_even_with_allow_broker_only_policy() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options
+            .protocol_compatibility_mut()
+            .set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        assert!(matches!(
+            eventloop.reconcile_connack_session(true),
+            Err(ConnectionError::SessionStateMismatch {
+                clean_start: true,
+                session_present: true
+            })
+        ));
+        assert!(eventloop.diagnostics().session.connack.is_none());
+        assert!(!eventloop.broker_only_session_resume);
     }
 
     #[test]

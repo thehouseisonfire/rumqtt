@@ -202,3 +202,55 @@ async fn v5_fallible_request_modifier_error_propagates() {
         Ok(()) | Err(_) => {}
     }
 }
+
+#[test]
+fn protocol_compatibility_and_forwarding_apis_share_one_policy() {
+    use rumqttc::{
+        BrokerSessionResumePolicy::{AllowBrokerOnly, Strict},
+        MqttOptions, ProtocolCompatibility,
+    };
+    let mut options = MqttOptions::new("compatibility", "localhost");
+    assert_eq!(
+        options
+            .protocol_compatibility()
+            .broker_session_resume_policy(),
+        Strict
+    );
+    options.set_broker_session_resume_policy(AllowBrokerOnly);
+    assert_eq!(
+        options
+            .protocol_compatibility()
+            .broker_session_resume_policy(),
+        AllowBrokerOnly
+    );
+    options
+        .protocol_compatibility_mut()
+        .set_broker_session_resume_policy(Strict);
+    assert_eq!(options.broker_session_resume_policy(), Strict);
+    let mut compatibility = ProtocolCompatibility::default();
+    compatibility.set_broker_session_resume_policy(AllowBrokerOnly);
+    options.set_protocol_compatibility(compatibility.clone());
+    assert_eq!(options.clone().protocol_compatibility(), &compatibility);
+    let built = MqttOptions::builder("compatibility", "localhost")
+        .protocol_compatibility(compatibility)
+        .broker_session_resume_policy(Strict)
+        .build();
+    assert_eq!(
+        built
+            .protocol_compatibility()
+            .broker_session_resume_policy(),
+        Strict
+    );
+    let built = MqttOptions::builder("compatibility", "localhost")
+        .broker_session_resume_policy(AllowBrokerOnly)
+        .build();
+    assert_eq!(
+        built
+            .protocol_compatibility()
+            .broker_session_resume_policy(),
+        AllowBrokerOnly
+    );
+    let debug = format!("{built:?}");
+    assert!(debug.contains("protocol_compatibility"));
+    assert!(debug.contains("AllowBrokerOnly"));
+}

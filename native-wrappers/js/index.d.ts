@@ -31,9 +31,27 @@ export interface CommonMqttClientOptions {
   incomingPacketSizeLimit?: number
   emitOutgoingEvents?: boolean
 }
+export type SessionPresentMismatchPolicy = 'error' | 'acceptAsClean'
+export interface ConnAckSessionDiagnostics {
+  rawSessionPresent: boolean
+  sessionResumed: boolean
+  diagnostic: 'sessionPresentMismatchAcceptedAsClean' | 'brokerOnlySessionResume' | null
+}
 export type ProtocolOptions<P extends ProtocolVersion = ProtocolVersion> = P extends '3.1.1'
-  ? { protocol: P; cleanSession?: boolean; cleanStart?: never; sessionExpiryInterval?: never }
-  : { protocol: P; cleanStart?: boolean; sessionExpiryInterval?: number; cleanSession?: never }
+  ? {
+      protocol: P
+      cleanSession?: boolean
+      sessionPresentMismatchPolicy?: SessionPresentMismatchPolicy
+      cleanStart?: never
+      sessionExpiryInterval?: never
+    }
+  : {
+      protocol: P
+      cleanStart?: boolean
+      sessionExpiryInterval?: number
+      cleanSession?: never
+      sessionPresentMismatchPolicy?: never
+    }
 export type MqttClientOptions<P extends ProtocolVersion = ProtocolVersion> = CommonMqttClientOptions & ProtocolOptions<P>
 
 export interface UserProperty { 0: string; 1: string }
@@ -133,6 +151,7 @@ export type MqttEvent =
   | { type: 'driverError'; error: MqttError }
 
 export interface ClientDiagnostics {
+  connack: ConnAckSessionDiagnostics | null
   connected: boolean
   disconnecting: boolean
   pendingRequests: number

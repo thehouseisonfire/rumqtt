@@ -163,3 +163,32 @@ async fn v4_fallible_request_modifier_error_propagates() {
         Ok(()) | Err(_) => {}
     }
 }
+
+#[test]
+fn protocol_compatibility_defaults_and_configuration_are_preserved() {
+    use rumqttc::{MqttOptions, ProtocolCompatibility, SessionPresentMismatchPolicy};
+    let mut options = MqttOptions::new("compatibility", "localhost");
+    assert_eq!(
+        options.protocol_compatibility().session_present_mismatch(),
+        SessionPresentMismatchPolicy::Error
+    );
+    let mut compatibility = ProtocolCompatibility::default();
+    compatibility.set_session_present_mismatch(SessionPresentMismatchPolicy::AcceptAsClean);
+    options.set_protocol_compatibility(compatibility.clone());
+    let built = MqttOptions::builder("compatibility", "localhost")
+        .clean_session(true)
+        .protocol_compatibility(compatibility.clone())
+        .build();
+    assert_eq!(options.clone().protocol_compatibility(), &compatibility);
+    assert_eq!(built.protocol_compatibility(), &compatibility);
+    let debug = format!("{built:?}");
+    assert!(debug.contains("protocol_compatibility"));
+    assert!(debug.contains("AcceptAsClean"));
+    options
+        .protocol_compatibility_mut()
+        .set_session_present_mismatch(SessionPresentMismatchPolicy::Error);
+    assert_eq!(
+        options.protocol_compatibility().session_present_mismatch(),
+        SessionPresentMismatchPolicy::Error
+    );
+}

@@ -85,8 +85,8 @@ pub use client::{
     TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
 pub use eventloop::{
-    ConnectionError, Event, EventLoop, EventLoopDiagnostics, QueueDiagnostics,
-    RuntimeConfigDiagnostics, SessionDiagnostics,
+    ConnAckDiagnostic, ConnAckSessionDiagnostics, ConnectionError, Event, EventLoop,
+    EventLoopDiagnostics, QueueDiagnostics, RuntimeConfigDiagnostics, SessionDiagnostics,
 };
 pub use mqttbytes::v4::*;
 pub use mqttbytes::*;
@@ -585,6 +585,49 @@ impl<S: Into<String>> From<(S, u16)> for Broker {
     }
 }
 
+/// Deliberate MQTT protocol interoperability exceptions.
+///
+/// Defaults retain strict session reconciliation. Ordinary protocol configuration
+/// is independent of this object.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProtocolCompatibility {
+    session_present_mismatch: SessionPresentMismatchPolicy,
+}
+
+impl ProtocolCompatibility {
+    /// Returns the configured session compatibility policy.
+    pub const fn session_present_mismatch(&self) -> SessionPresentMismatchPolicy {
+        self.session_present_mismatch
+    }
+
+    /// Sets the narrowly scoped session compatibility policy.
+    pub const fn set_session_present_mismatch(
+        &mut self,
+        policy: SessionPresentMismatchPolicy,
+    ) -> &mut Self {
+        self.session_present_mismatch = policy;
+        self
+    }
+}
+
+/// Handling of successful MQTT 3.1.1 CONNACK with Clean Session and Session Present both set.
+///
+/// The server violates MQTT-3.2.2-1. Section 3.2.2.2 permits the client to
+/// continue or disconnect after unexpected Session Present; this policy does
+/// not relax any other packet validation and is unavailable in MQTT 5.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionPresentMismatchPolicy {
+    /// Reject the connection with [`ConnectionError::SessionStateMismatch`].
+    #[default]
+    Error,
+    /// Accept the raw CONNACK while treating the connection as a fresh session.
+    ///
+    /// Discard old local state and clear its durable checkpoint before reporting
+    /// success. The incoming CONNACK retains the broker's raw Session Present flag.
+    AcceptAsClean,
+}
+
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
 pub struct MqttOptions {
@@ -595,6 +638,8 @@ pub struct MqttOptions {
     keep_alive: Duration,
     /// clean (or) persistent session
     clean_session: bool,
+    /// Deliberate protocol interoperability exceptions.
+    protocol_compatibility: ProtocolCompatibility,
     /// client identifier
     client_id: String,
     /// CONNECT authentication fields
@@ -645,6 +690,25 @@ pub fn is_mqtt_minimum_client_id(client_id: &str) -> bool {
 }
 
 impl MqttOptions {
+    /// Returns the configured deliberate protocol interoperability exceptions.
+    pub const fn protocol_compatibility(&self) -> &ProtocolCompatibility {
+        &self.protocol_compatibility
+    }
+
+    /// Mutably accesses the deliberate protocol interoperability exceptions.
+    pub const fn protocol_compatibility_mut(&mut self) -> &mut ProtocolCompatibility {
+        &mut self.protocol_compatibility
+    }
+
+    /// Replaces the deliberate protocol interoperability exceptions.
+    pub fn set_protocol_compatibility(
+        &mut self,
+        compatibility: ProtocolCompatibility,
+    ) -> &mut Self {
+        self.protocol_compatibility = compatibility;
+        self
+    }
+
     /// Create an [`MqttOptions`] object that contains default values for all settings other than
     /// - id: A string to identify the device connecting to a broker
     /// - broker: The broker target to connect to
@@ -660,6 +724,7 @@ impl MqttOptions {
             broker,
             keep_alive: Duration::from_secs(60),
             clean_session: true,
+            protocol_compatibility: ProtocolCompatibility::default(),
             client_id: id.into(),
             auth: ConnectAuth::None,
             max_incoming_packet_size: 10 * 1024,
@@ -1362,6 +1427,13 @@ pub struct MqttOptionsBuilder {
 }
 
 impl MqttOptionsBuilder {
+    /// Sets deliberate protocol interoperability exceptions.
+    #[must_use]
+    pub fn protocol_compatibility(mut self, compatibility: ProtocolCompatibility) -> Self {
+        self.options.set_protocol_compatibility(compatibility);
+        self
+    }
+
     /// Create a new [`MqttOptions`] builder.
     #[must_use]
     pub fn new<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> Self {
@@ -1874,6 +1946,7 @@ impl Debug for MqttOptions {
             .field("broker", &self.broker)
             .field("keep_alive", &self.keep_alive)
             .field("clean_session", &self.clean_session)
+            .field("protocol_compatibility", &self.protocol_compatibility)
             .field("client_id", &self.client_id)
             .field("auth", &self.auth)
             .field("max_packet_size", &self.max_incoming_packet_size)

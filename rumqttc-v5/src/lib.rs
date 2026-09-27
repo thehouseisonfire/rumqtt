@@ -68,8 +68,9 @@ pub use client::{
     TryRecvError, ValidatedTopic, ValidatedTopicFilter,
 };
 pub use eventloop::{
-    ConnectionError, Event, EventLoop, EventLoopDiagnostics, QueueDiagnostics, RedirectDiagnostics,
-    RuntimeConfigDiagnostics, SessionDiagnostics,
+    ConnAckDiagnostic, ConnAckSessionDiagnostics, ConnectionError, Event, EventLoop,
+    EventLoopDiagnostics, QueueDiagnostics, RedirectDiagnostics, RuntimeConfigDiagnostics,
+    SessionDiagnostics,
 };
 pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
@@ -804,6 +805,31 @@ type FallibleRequestModifierFn = Arc<
         + Sync,
 >;
 
+/// Deliberate MQTT protocol interoperability exceptions.
+///
+/// Defaults retain strict session reconciliation. Ordinary protocol configuration
+/// is independent of this object.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProtocolCompatibility {
+    broker_session_resume_policy: BrokerSessionResumePolicy,
+}
+
+impl ProtocolCompatibility {
+    /// Returns the configured session compatibility policy.
+    pub const fn broker_session_resume_policy(&self) -> BrokerSessionResumePolicy {
+        self.broker_session_resume_policy
+    }
+
+    /// Sets the narrowly scoped session compatibility policy.
+    pub const fn set_broker_session_resume_policy(
+        &mut self,
+        policy: BrokerSessionResumePolicy,
+    ) -> &mut Self {
+        self.broker_session_resume_policy = policy;
+        self
+    }
+}
+
 /// Options to configure the behaviour of MQTT connection
 #[derive(Clone)]
 pub struct MqttOptions {
@@ -814,8 +840,8 @@ pub struct MqttOptions {
     keep_alive: Duration,
     /// clean (or) persistent session
     clean_start: bool,
-    /// Policy for broker-retained session state when local session state is missing.
-    broker_session_resume_policy: BrokerSessionResumePolicy,
+    /// Deliberate protocol interoperability exceptions.
+    protocol_compatibility: ProtocolCompatibility,
     /// client identifier
     client_id: String,
     /// CONNECT authentication fields
@@ -870,6 +896,25 @@ pub struct MqttOptions {
 }
 
 impl MqttOptions {
+    /// Returns the configured deliberate protocol interoperability exceptions.
+    pub const fn protocol_compatibility(&self) -> &ProtocolCompatibility {
+        &self.protocol_compatibility
+    }
+
+    /// Mutably accesses the deliberate protocol interoperability exceptions.
+    pub const fn protocol_compatibility_mut(&mut self) -> &mut ProtocolCompatibility {
+        &mut self.protocol_compatibility
+    }
+
+    /// Replaces the deliberate protocol interoperability exceptions.
+    pub fn set_protocol_compatibility(
+        &mut self,
+        compatibility: ProtocolCompatibility,
+    ) -> &mut Self {
+        self.protocol_compatibility = compatibility;
+        self
+    }
+
     /// Create an [`MqttOptions`] object that contains default values for all settings other than
     /// - id: A string to identify the device connecting to a broker
     /// - broker: The broker target to connect to
@@ -885,7 +930,7 @@ impl MqttOptions {
             broker,
             keep_alive: Duration::from_secs(60),
             clean_start: true,
-            broker_session_resume_policy: BrokerSessionResumePolicy::Strict,
+            protocol_compatibility: ProtocolCompatibility::default(),
             client_id: id.into(),
             auth: ConnectAuth::None,
             request_channel_capacity: 10,
@@ -1341,18 +1386,19 @@ impl MqttOptions {
         self.clean_start
     }
 
-    /// Set how broker-retained session state is handled when local session state is missing.
+    /// Forwarding API for [`ProtocolCompatibility::set_broker_session_resume_policy`].
     pub const fn set_broker_session_resume_policy(
         &mut self,
         policy: BrokerSessionResumePolicy,
     ) -> &mut Self {
-        self.broker_session_resume_policy = policy;
+        self.protocol_compatibility
+            .set_broker_session_resume_policy(policy);
         self
     }
 
     /// Returns how broker-retained session state is handled when local session state is missing.
     pub const fn broker_session_resume_policy(&self) -> BrokerSessionResumePolicy {
-        self.broker_session_resume_policy
+        self.protocol_compatibility.broker_session_resume_policy()
     }
 
     /// Set durable storage for MQTT 5 persistent client session state.
@@ -2017,6 +2063,13 @@ pub struct MqttOptionsBuilder {
 }
 
 impl MqttOptionsBuilder {
+    /// Sets deliberate protocol interoperability exceptions.
+    #[must_use]
+    pub fn protocol_compatibility(mut self, compatibility: ProtocolCompatibility) -> Self {
+        self.options.set_protocol_compatibility(compatibility);
+        self
+    }
+
     /// Create a new [`MqttOptions`] builder.
     #[must_use]
     pub fn new<S: Into<String>, B: Into<Broker>>(id: S, broker: B) -> Self {
@@ -2673,10 +2726,7 @@ impl Debug for MqttOptions {
             .field("broker", &self.broker)
             .field("keep_alive", &self.keep_alive)
             .field("clean_start", &self.clean_start)
-            .field(
-                "broker_session_resume_policy",
-                &self.broker_session_resume_policy,
-            )
+            .field("protocol_compatibility", &self.protocol_compatibility)
             .field("client_id", &self.client_id)
             .field("auth", &self.auth)
             .field("request_channel_capacity", &self.request_channel_capacity)

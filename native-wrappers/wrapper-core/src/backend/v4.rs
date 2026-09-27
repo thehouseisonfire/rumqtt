@@ -179,6 +179,16 @@ fn build_options(
         },
         protocol.max_outgoing_packet_size,
     );
+    options
+        .protocol_compatibility_mut()
+        .set_session_present_mismatch(match protocol.session_present_mismatch_policy {
+            crate::SessionPresentMismatchPolicy::Error => {
+                rumqttc_v4::SessionPresentMismatchPolicy::Error
+            }
+            crate::SessionPresentMismatchPolicy::AcceptAsClean => {
+                rumqttc_v4::SessionPresentMismatchPolicy::AcceptAsClean
+            }
+        });
     options.set_inflight(protocol.inflight_limit);
     options.set_max_request_batch(common.max_request_batch);
     options.set_read_batch_size(common.read_batch_size);
@@ -472,6 +482,19 @@ fn map_v4_event(
 fn snapshot_v4(eventloop: &rumqttc_v4::EventLoop) -> DiagnosticsSnapshot {
     let diagnostics = eventloop.diagnostics();
     DiagnosticsSnapshot {
+        connack: diagnostics
+            .session
+            .connack
+            .map(|session| crate::ConnAckSessionDiagnostics {
+                raw_session_present: session.raw_session_present,
+                session_resumed: session.session_resumed,
+                diagnostic: session.diagnostic.and_then(|diagnostic| match diagnostic {
+                    rumqttc_v4::ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean => {
+                        Some(crate::ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean)
+                    }
+                    _ => None,
+                }),
+            }),
         connected: diagnostics.connected,
         disconnecting: diagnostics.disconnecting,
         pending_requests: diagnostics.queues.pending_len,
@@ -575,6 +598,7 @@ mod config_tests {
         let options = build_options(
             &common,
             crate::V4Config {
+                session_present_mismatch_policy: crate::SessionPresentMismatchPolicy::AcceptAsClean,
                 inflight_limit: 7,
                 max_outgoing_packet_size: 121,
                 ..Default::default()
@@ -586,6 +610,10 @@ mod config_tests {
         assert_eq!(options.pending_throttle(), common.pending_throttle);
         assert_eq!(options.max_packet_size(), 65537);
         assert_eq!(options.inflight(), 7);
+        assert_eq!(
+            options.protocol_compatibility().session_present_mismatch(),
+            rumqttc_v4::SessionPresentMismatchPolicy::AcceptAsClean
+        );
         let will = options.last_will().unwrap();
         assert_eq!(will.topic, "will");
         assert_eq!(will.message.as_ref(), b"\0\xff");

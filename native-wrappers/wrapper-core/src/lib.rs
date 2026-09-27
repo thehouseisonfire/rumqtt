@@ -33,8 +33,8 @@ pub use redirect::{
     SrvFuture, SrvRecord, SrvResolver, SrvResolverConfig,
 };
 pub use session::{
-    BrokerSessionResumePolicy, SessionCheckpoint, SessionStore, SessionStoreConfig,
-    SessionStoreKey, StoreFailure, StoreFuture,
+    BrokerSessionResumePolicy, SessionCheckpoint, SessionPresentMismatchPolicy, SessionStore,
+    SessionStoreConfig, SessionStoreKey, StoreFailure, StoreFuture,
 };
 mod validation;
 mod websocket;
@@ -61,9 +61,9 @@ pub use config::{
 pub use connection::{ConnectionHandle, ConnectionResult};
 pub use error::{DeliveryStatus, Error, ErrorCode, ErrorContext, ErrorKind, Result};
 pub use event::{
-    AckToken, ConnAckDetails, ConnectionPhase, DiagnosticsSnapshot, IncomingPublish,
-    OutgoingActivity, OutgoingEvent, V5ConnAckProperties, V5IncomingPublishProperties,
-    WrapperEvent,
+    AckToken, ConnAckDetails, ConnAckDiagnostic, ConnAckSessionDiagnostics, ConnectionPhase,
+    DiagnosticsSnapshot, IncomingPublish, OutgoingActivity, OutgoingEvent, V5ConnAckProperties,
+    V5IncomingPublishProperties, WrapperEvent,
 };
 pub use handle::ClientHandle;
 pub use protocol::{OperationId, ProtocolVersion, QoS};

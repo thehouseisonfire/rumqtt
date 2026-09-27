@@ -448,6 +448,7 @@ impl CommonConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V4Config {
+    pub session_present_mismatch_policy: crate::SessionPresentMismatchPolicy,
     pub clean_session: bool,
     pub max_outgoing_packet_size: usize,
     pub inflight_limit: u16,
@@ -458,6 +459,7 @@ impl Default for V4Config {
     fn default() -> Self {
         Self {
             clean_session: true,
+            session_present_mismatch_policy: crate::SessionPresentMismatchPolicy::Error,
             max_outgoing_packet_size: usize::MAX,
             inflight_limit: 100,
             session_store: None,

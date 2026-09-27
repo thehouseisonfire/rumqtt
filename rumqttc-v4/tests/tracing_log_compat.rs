@@ -40,23 +40,73 @@ async fn tracing_events_fall_back_to_one_log_record_each() {
 
     assert!(eventloop.poll().await.is_err());
 
-    let records = LOGGER.records.lock().unwrap();
-    assert_eq!(
-        records.len(),
-        2,
-        "expected attempt and attempt-failed records"
-    );
-    assert!(
-        records
-            .iter()
-            .all(|(target, _)| target == "rumqttc::lifecycle")
-    );
-    assert!(
-        records
-            .iter()
-            .any(|(_, message)| message.contains("attempt_id=1"))
-    );
-    assert!(records.iter().any(|(_, message)| {
-        message.contains("phase=\"connection\"") && message.contains("error_kind=\"timeout\"")
-    }));
+    {
+        let records = LOGGER.records.lock().unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "expected attempt and attempt-failed records"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|(target, _)| target == "rumqttc::lifecycle")
+        );
+        assert!(
+            records
+                .iter()
+                .any(|(_, message)| message.contains("attempt_id=1"))
+        );
+        assert!(records.iter().any(|(_, message)| {
+            message.contains("phase=\"connection\"") && message.contains("error_kind=\"timeout\"")
+        }));
+    }
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (peer_tx, peer_rx) = flume::bounded(1);
+    let mut options = MqttOptions::new("compatibility-log", "localhost");
+    options
+        .protocol_compatibility_mut()
+        .set_session_present_mismatch(rumqttc::SessionPresentMismatchPolicy::AcceptAsClean);
+    options.set_socket_connector(move |_, _| {
+        let peer_tx = peer_tx.clone();
+        async move {
+            let (client, peer) = tokio::io::duplex(4096);
+            peer_tx.send(peer).unwrap();
+            Ok(client)
+        }
+    });
+    let broker = tokio::spawn(async move {
+        let mut peer = peer_rx.recv_async().await.unwrap();
+        let mut connect = [0; 4096];
+        assert!(peer.read(&mut connect).await.unwrap() > 0);
+        peer.write_all(&[0x20, 2, 1, 0]).await.unwrap();
+        peer.read_to_end(&mut Vec::new()).await.unwrap();
+    });
+    let mut eventloop = EventLoop::new(options, 1);
+    tokio::time::timeout(std::time::Duration::from_secs(3), eventloop.poll())
+        .await
+        .unwrap()
+        .unwrap();
+    {
+        let records = LOGGER.records.lock().unwrap();
+        assert_eq!(
+            records.len(),
+            5,
+            "one attempt, establishment, and compatibility record"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(
+                    |(_, message)| message.contains("session_present_mismatch_accepted_as_clean")
+                )
+                .count(),
+            2
+        );
+    }
+    drop(eventloop);
+    tokio::time::timeout(std::time::Duration::from_secs(3), broker)
+        .await
+        .unwrap()
+        .unwrap();
 }

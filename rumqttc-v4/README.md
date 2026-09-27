@@ -356,3 +356,27 @@ for complete examples.
   `MqttOptions::new(..., Broker::unix(...))`. When the `url` feature is enabled,
   `MqttOptions::parse_url("unix:///tmp/mqtt.sock?client_id=...")` is also
   supported.
+
+## Protocol compatibility
+
+Session reconciliation is strict by default. For brokers that incorrectly return
+Session Present=true on a successful clean-session CONNACK, MQTT 3.1.1 permits
+an explicit client decision to continue:
+
+```rust
+use rumqttc::{MqttOptions, SessionPresentMismatchPolicy};
+
+let mut options = MqttOptions::new("client", "localhost");
+options.protocol_compatibility_mut()
+    .set_session_present_mismatch(SessionPresentMismatchPolicy::AcceptAsClean);
+```
+
+`AcceptAsClean` treats the accepted connection exactly as fresh: old local
+protocol state and replay work are reset, and any checkpoint for the current
+scope/client ID must be cleared before connection success. Failed or cancelled
+clearing remains pending and is retried before loading a checkpoint.
+The broker remains non-conforming; the raw CONNACK still reports Session
+Present=true. Use `eventloop.diagnostics().session.connack` to observe raw state,
+effective `session_resumed`, and `SessionPresentMismatchAcceptedAsClean`.
+Resubscribe whenever the effective session is fresh. This policy applies only
+to this successful MQTT 3.1.1 clean-session case, and defaults to `Error`.

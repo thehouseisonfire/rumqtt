@@ -810,3 +810,62 @@ def test_manually_created_loop_and_threadsafe_scheduling_use_the_owner_loop() ->
     thread.join(timeout=1)
     loop.close()
     assert result == [None]
+
+
+def test_session_present_compatibility_policy_is_explicit_and_protocol_checked() -> None:
+    from rumqttc import SessionPresentMismatchPolicy
+    from rumqttc._client import _config
+
+    for policy in SessionPresentMismatchPolicy:
+        value = options(protocol=ProtocolVersion.MQTT_3_1_1, session_present_mismatch_policy=policy)
+        assert json.loads(_config(value))["sessionPresentMismatchPolicy"] == policy.value
+        with pytest.raises(ValueError, match=r"only valid for MQTT 3\.1\.1"):
+            MqttClient(options(session_present_mismatch_policy=policy))
+    with pytest.raises(TypeError, match="must be SessionPresentMismatchPolicy"):
+        MqttClient(options(protocol=ProtocolVersion.MQTT_3_1_1, session_present_mismatch_policy="acceptAsClean"))
+
+
+@pytest.mark.asyncio
+async def test_accepted_clean_connack_keeps_raw_flag_and_decodes_effective_diagnostics() -> None:
+    from rumqttc import ConnAckDiagnostic, SessionPresentMismatchPolicy
+
+    done = asyncio.get_running_loop().create_future()
+
+    async def broker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            header = await reader.readexactly(2)
+            assert header[0] == 0x10 and header[1] < 128
+            await reader.readexactly(header[1])
+            writer.write(bytes([0x20, 2, 1, 0]))
+            await writer.drain()
+            assert await reader.readexactly(2) == bytes([0xE0, 0])
+            done.set_result(None)
+        except Exception as error:
+            done.set_exception(error)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(broker, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = MqttClient(
+        options(
+            protocol=ProtocolVersion.MQTT_3_1_1,
+            broker_port=port,
+            session_present_mismatch_policy=SessionPresentMismatchPolicy.ACCEPT_AS_CLEAN,
+        )
+    )
+    try:
+        connected = await asyncio.wait_for(client.connect(), 3)
+        assert connected.session_present
+        diagnostics = await asyncio.wait_for(client.diagnostics(), 3)
+        assert diagnostics.connack is not None
+        assert diagnostics.connack.raw_session_present
+        assert not diagnostics.connack.session_resumed
+        assert diagnostics.connack.diagnostic is ConnAckDiagnostic.SESSION_PRESENT_MISMATCH_ACCEPTED_AS_CLEAN
+        await asyncio.wait_for(client.close(), 3)
+        await asyncio.wait_for(done, 3)
+    finally:
+        await client.close_now()
+        server.close()
+        await server.wait_closed()

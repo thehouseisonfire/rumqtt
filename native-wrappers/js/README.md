@@ -59,3 +59,24 @@ native-addon path, and environment variables used by the application.
 ## Native-addon security
 
 The platform package contains executable native code with the permissions of the hosting process. Use package-lock integrity checks and the published checksums/provenance, and apply the same supply-chain review used for other native dependencies.
+
+## Session Present compatibility
+
+The MQTT 3.1.1 default rejects a successful clean-session CONNACK with invalid
+Session Present=true. The opt-in `AcceptAsClean` policy resolves only this case
+as fresh, resets old local protocol state and replay work, and clears the
+current scope/client-ID checkpoint before reporting success. Failed or cancelled
+clearing remains pending for retry before checkpoint loading. The broker remains
+non-conforming and raw connected-event/connection-result flags remain true.
+
+Existing diagnostics expose an optional `connack` observation containing raw
+Session Present, effective session resume, and a compatibility reason. Use the
+effective session for resubscription decisions. No MQTT 5 clean-start recovery
+is introduced; the existing broker-only resume policy retains its restrictions.
+
+On `protocol: '3.1.1'`, use `sessionPresentMismatchPolicy: 'acceptAsClean'`
+(or `'error'`, the default). Supplying this option on MQTT 5 is rejected, even
+when its value is `'error'`. `await client.diagnostics()` returns `connack`
+with `rawSessionPresent`, `sessionResumed`, and `diagnostic`, or `null` while
+no connection observation is current. A v4 recovery reason is
+`'sessionPresentMismatchAcceptedAsClean'`.

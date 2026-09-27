@@ -1,3 +1,13 @@
+> **Repository compliance note (not OASIS specification text):** MQTT 5
+> MQTT-3.2.2-2 is the server obligation for Clean Start and Session Present;
+> MQTT-3.2.2-4 requires a client lacking Session State to close on Session
+> Present=1. rumqttc retains strict default rejection and its pre-existing,
+> explicitly non-strict `BrokerSessionResumePolicy::AllowBrokerOnly` exception
+> under `ProtocolCompatibility`, with packet-ID allocation restrictions intact.
+> Clean Start plus Session Present=1 is always rejected. No MQTT 3.1.1
+> `AcceptAsClean` recovery is available in v5. See the canonical requirement
+> index and [session recipe](../recipes/sessions.md).
+
 ## **MQTT Version 5.0** 
 
 ## **OASIS Standard** 

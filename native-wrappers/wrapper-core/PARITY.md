@@ -11,6 +11,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | --- | --- | --- | --- | --- | --- |
 | v4, v5 | option | set_last_will | supported | WC-01 CommonConfig.last_will with explicit protocol properties | config_wire, value_config |
 | v4, v5 | option | set_client_id, set_transport, set_keep_alive | supported | CommonConfig owns immutable connection inputs; WC-13 independent TLS backends and ownership | config, tls::tls_input_ownership_is_released_on_every_driver_exit, tls::malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure, tls::valid_pkcs12_with_wrong_password_fails_without_disclosing_identity, tls::platform_roots_validate_an_isolated_process_trust_store, tls::tls_failure_panic_output_is_redacted, transport_composition::disabled_transports_fail_before_opening_a_socket |
+| v4, v5 | option | protocol_compatibility_mut, set_protocol_compatibility | supported | Protocol-specific flat V4Config.session_present_mismatch_policy and V5Config.broker_session_resume_policy map into native ProtocolCompatibility without duplicated policy storage; raw/effective state is mapped through existing diagnostics | backend config_tests, protocol_compatibility, session_store, parity_inventory |
 | v4 | option | try_set_client_id | supported | Fallible validation before start | config |
 | v4, v5 | option | set_auth, clear_auth, set_username, set_credentials | supported | Optional owned username/password | config |
 | v5 | option | set_password | supported | Password-only CONNECT is legal only in v5 | config |

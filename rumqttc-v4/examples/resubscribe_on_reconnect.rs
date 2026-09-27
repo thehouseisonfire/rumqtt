@@ -19,13 +19,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(Event::Incoming(Packet::ConnAck(connack))) => {
                 println!("Connected. session_present = {}", connack.session_present);
 
-                if !connack.session_present {
+                // Raw Session Present is broker evidence. Effective session semantics
+                // also account for an opted-in AcceptAsClean compatibility recovery.
+                let fresh_session = !eventloop
+                    .diagnostics()
+                    .session
+                    .connack
+                    .expect("accepted CONNACK has committed session diagnostics")
+                    .session_resumed;
+                if fresh_session {
                     for (topic, qos) in subscriptions {
                         client.try_subscribe(topic, qos)?;
                     }
                 }
 
-                if connected_once && !connack.session_present {
+                if connected_once && fresh_session {
                     println!(
                         "Reconnected with a fresh broker session; subscriptions were reissued"
                     );
