@@ -11,10 +11,12 @@ extern crate log;
 
 use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::{TcpStream, lookup_host};
@@ -27,10 +29,7 @@ use percent_encoding::percent_decode_str;
 use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
 #[cfg(feature = "websocket")]
-use std::{
-    future::{Future, IntoFuture},
-    pin::Pin,
-};
+use std::future::IntoFuture;
 
 mod auth;
 mod client;
@@ -614,10 +613,45 @@ pub enum AuthAction {
     Fail(String),
 }
 
-/// Errors returned by MQTT 5 enhanced-authentication callbacks.
+/// Owned context for an asynchronous MQTT 5 authentication exchange.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsyncAuthContext {
+    pub kind: AuthExchangeKind,
+    pub method: String,
+}
+
+/// A challenge whose contents remain owned while an asynchronous response is pending.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AsyncAuthChallenge {
+    Start,
+    Continue {
+        reason_code: u8,
+        properties: Option<AuthProperties>,
+    },
+    Success {
+        reason_code: u8,
+        properties: Option<AuthProperties>,
+    },
+}
+
+pub type AuthFuture = Pin<Box<dyn Future<Output = Result<AuthAction, AuthError>> + Send + 'static>>;
+
+/// Asynchronous authority for MQTT 5 AUTH exchanges. Dropping the returned
+/// future cancels the pending challenge; implementations must release its work.
+pub trait AsyncAuthenticator: Debug + Send + Sync + 'static {
+    fn respond(&self, context: AsyncAuthContext, challenge: AsyncAuthChallenge) -> AuthFuture;
+
+    fn failure(&self, _context: AsyncAuthContext, _error: AuthError) {}
+}
+
+/// Errors from MQTT 5 enhanced-authentication callbacks and failure notifications.
 #[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AuthError {
+    #[error("broker rejected authentication with CONNACK reason {0:?}")]
+    BrokerRejected(ConnectReturnCode),
+    #[error("broker disconnected during authentication with reason {0:?}")]
+    BrokerDisconnected(DisconnectReasonCode),
     #[error("authentication failed: {0}")]
     Failed(String),
 }
@@ -637,6 +671,7 @@ impl From<&str> for AuthError {
 /// Structured reason emitted when an authentication exchange fails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthFailureReason {
+    BrokerRejected(ConnectReturnCode),
     BrokerDisconnected(DisconnectReasonCode),
     SessionReset,
     Redirected,
@@ -824,6 +859,7 @@ pub struct MqttOptions {
     socket_connector: Option<SocketConnector>,
 
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
+    async_authenticator: Option<Arc<dyn AsyncAuthenticator>>,
     session_store: Option<Arc<dyn SessionStore>>,
     /// Application-defined scope for durable session storage keys.
     session_store_scope: String,
@@ -873,6 +909,7 @@ impl MqttOptions {
             fallible_request_modifier: None,
             socket_connector: None,
             authenticator: None,
+            async_authenticator: None,
             session_store: None,
             session_store_scope: String::new(),
             redirect_policy: None,
@@ -1942,7 +1979,21 @@ impl MqttOptions {
 
     pub fn set_authenticator(&mut self, authenticator: Arc<Mutex<dyn Authenticator>>) -> &mut Self {
         self.authenticator = Some(authenticator);
+        self.async_authenticator = None;
         self
+    }
+
+    pub fn set_async_authenticator(
+        &mut self,
+        authenticator: Arc<dyn AsyncAuthenticator>,
+    ) -> &mut Self {
+        self.async_authenticator = Some(authenticator);
+        self.authenticator = None;
+        self
+    }
+
+    pub fn async_authenticator(&self) -> Option<Arc<dyn AsyncAuthenticator>> {
+        self.async_authenticator.clone()
     }
 
     pub fn authenticator(&self) -> Option<Arc<Mutex<dyn Authenticator>>> {

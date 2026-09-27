@@ -35,6 +35,7 @@ set(RUMQTTC_C_EXAMPLES
     tracked_completion
     manual_acknowledgement
     session_store
+    authenticator
     shutdown)
 list(APPEND RUMQTTC_C_EXAMPLES resource_limits)
 
@@ -45,7 +46,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     target_link_libraries(${target} PRIVATE rumqttc_example_common)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
-        if(example STREQUAL "multithreaded_publishing")
+        if(example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator")
             target_compile_options(${target} PRIVATE /experimental:c11atomics)
         endif()
     else()

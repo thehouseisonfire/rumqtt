@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::{future::Future, pin::Pin};
 
 use bytes::Bytes;
 
@@ -40,6 +41,10 @@ pub struct AuthEvent {
     pub method: String,
     pub stage: AuthStage,
     pub failure: Option<AuthFailure>,
+    /// MQTT AUTH reason code when this stage came from a broker AUTH packet.
+    pub reason_code: Option<u8>,
+    /// Owned broker AUTH properties, preserving optional values and property order.
+    pub properties: Option<AuthProperties>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,6 +102,68 @@ pub enum AuthChallenge {
     Success(Option<AuthProperties>),
     Failed,
 }
+
+/// Packet details for a deferred authentication response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AsyncAuthChallenge {
+    Start,
+    Continue {
+        reason_code: u8,
+        properties: Option<AuthProperties>,
+    },
+    Success {
+        reason_code: u8,
+        properties: Option<AuthProperties>,
+    },
+}
+
+pub type AuthFuture =
+    Pin<Box<dyn Future<Output = Result<AuthAction, AuthFailure>> + Send + 'static>>;
+
+/// An owned, cancellable authentication authority. Dropping the future must
+/// release pending work; one client invokes at most one response at a time.
+/// Panics during construction, polling, or destruction of a response future
+/// are contained and reported as [`AuthFailure::Panic`] without logging the payload.
+pub trait AsyncAuthenticator: Send + Sync + 'static {
+    fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture;
+    fn failure(&self, _context: AuthContext, _failure: AuthFailure) {}
+}
+
+#[derive(Clone)]
+pub struct AsyncAuthenticatorConfig {
+    pub authenticator: Arc<dyn AsyncAuthenticator>,
+    /// Deadline for the whole exchange, including callbacks and waits for the broker.
+    pub exchange_timeout: Duration,
+    /// CONNECT method installed by a foreign wrapper, if any.
+    pub configured_method: Option<String>,
+}
+
+impl AsyncAuthenticatorConfig {
+    pub fn new(authenticator: Arc<dyn AsyncAuthenticator>) -> Self {
+        Self {
+            authenticator,
+            exchange_timeout: Duration::from_secs(30),
+            configured_method: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for AsyncAuthenticatorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncAuthenticatorConfig")
+            .field("exchange_timeout", &self.exchange_timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for AsyncAuthenticatorConfig {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.authenticator, &other.authenticator)
+            && self.exchange_timeout == other.exchange_timeout
+            && self.configured_method == other.configured_method
+    }
+}
+impl Eq for AsyncAuthenticatorConfig {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthAction {

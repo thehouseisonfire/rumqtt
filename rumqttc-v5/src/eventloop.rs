@@ -532,10 +532,12 @@ pub struct EventLoop {
     disconnect_complete: bool,
     active_redirect: Option<ActiveRedirect>,
     pending_server_redirect: Option<PendingServerRedirect>,
-    pending_server_disconnect: Option<ConnectionError>,
+    /// Connection error retained until queued broker and authentication events are delivered.
+    pending_connection_error: Option<ConnectionError>,
     pending_redirect_shutdown: bool,
     redirect_attempts: usize,
     redirect_visited: Vec<String>,
+    last_redirect_diagnostics: Option<RedirectDiagnostics>,
     last_connect_failure_phase: Option<ConnectFailurePhase>,
     #[cfg(feature = "tracing")]
     telemetry: crate::instrumentation::ConnectionTelemetry,
@@ -546,6 +548,26 @@ struct RetainedRequestSenders {
     requests: Option<Sender<RequestEnvelope>>,
     control: Option<Sender<RequestEnvelope>>,
     immediate_disconnect: Option<Sender<RequestEnvelope>>,
+}
+
+/// A cancelled AUTH transition cannot be replayed after consuming its packet or request.
+/// Fail the exchange and close its transport while preserving events for subsequent polls.
+struct AuthenticationPollGuard<'a> {
+    eventloop: &'a mut EventLoop,
+    armed: bool,
+}
+
+impl Drop for AuthenticationPollGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.eventloop.network = None;
+            self.eventloop.pending_connection_error =
+                Some(ConnectionError::MqttState(StateError::ConnectionAborted));
+            self.eventloop
+                .state
+                .fail_auth_exchange_due_to_connection_closed();
+        }
+    }
 }
 
 /// Events which can be yielded by the event loop
@@ -579,6 +601,12 @@ impl EventLoop {
     /// data and server-supplied text must not be logged indiscriminately.
     pub const fn take_connection_failure_packet(&mut self) -> Option<Packet> {
         self.state.connection_failure_packet.take()
+    }
+
+    /// Takes diagnostics captured when a followed connection succeeds or before
+    /// a failed redirect restores the origin, including the selected SRV candidate.
+    pub fn take_last_redirect_diagnostics(&mut self) -> Option<RedirectDiagnostics> {
+        self.last_redirect_diagnostics.take()
     }
 
     fn has_local_session_state(&self) -> bool {
@@ -788,18 +816,20 @@ impl EventLoop {
 
         let authenticator = options.authenticator();
         let authentication_method = options.authentication_method();
+        let mut state = MqttState::new_internal(
+            inflight_limit,
+            ack_mode,
+            topic_alias_policy,
+            client_topic_alias_max,
+            client_receive_maximum,
+            authentication_method,
+            authenticator,
+        );
+        state.set_async_authenticator(options.async_authenticator());
 
         Self {
             options,
-            state: MqttState::new_internal(
-                inflight_limit,
-                ack_mode,
-                topic_alias_policy,
-                client_topic_alias_max,
-                client_receive_maximum,
-                authentication_method,
-                authenticator,
-            ),
+            state,
             requests_rx,
             control_requests_rx,
             immediate_disconnect_rx,
@@ -838,10 +868,11 @@ impl EventLoop {
             disconnect_complete: false,
             active_redirect: None,
             pending_server_redirect: None,
-            pending_server_disconnect: None,
+            pending_connection_error: None,
             pending_redirect_shutdown: false,
             redirect_attempts: 0,
             redirect_visited: Vec::new(),
+            last_redirect_diagnostics: None,
             last_connect_failure_phase: None,
             #[cfg(feature = "tracing")]
             telemetry: crate::instrumentation::ConnectionTelemetry::default(),
@@ -1536,7 +1567,25 @@ impl EventLoop {
         &mut self,
         batch: ReadBatch,
     ) -> Result<ReadBatchOutcome, ConnectionError> {
-        let ReadBatch { outcome, notices } = batch;
+        let armed = batch.authentication.is_some();
+        let mut guard = AuthenticationPollGuard {
+            eventloop: self,
+            armed,
+        };
+        let result = guard.eventloop.complete_read_batch_inner(batch).await;
+        guard.armed = false;
+        result
+    }
+
+    async fn complete_read_batch_inner(
+        &mut self,
+        batch: ReadBatch,
+    ) -> Result<ReadBatchOutcome, ConnectionError> {
+        let ReadBatch {
+            mut outcome,
+            notices,
+            authentication,
+        } = batch;
         if let Err(err) = self.save_persisted_session().await {
             let error = err.to_string();
             for notice in notices {
@@ -1555,6 +1604,35 @@ impl EventLoop {
             notice.complete();
         }
         flush_result?;
+        if let Some(auth) = authentication {
+            let response = self
+                .state
+                .handle_incoming_packet_with_effects_async(Incoming::Auth(auth))
+                .await;
+            let outgoing = match response {
+                Ok(effects) => effects.complete_notices(),
+                Err(error) => {
+                    if matches!(
+                        error,
+                        StateError::Deserialization(super::mqttbytes::Error::ProtocolError)
+                            | StateError::ProtocolViolation(_)
+                    ) {
+                        self.network
+                            .as_mut()
+                            .expect("connected network")
+                            .send_protocol_error_disconnect()
+                            .await;
+                    }
+                    return Err(error.into());
+                }
+            };
+            if let Some(outgoing) = outgoing {
+                let network = self.network.as_mut().expect("connected network");
+                network.write(outgoing).await?;
+                network.flush().await?;
+                outcome = ReadBatchOutcome::ResponseWritten;
+            }
+        }
         Ok(outcome)
     }
 
@@ -1687,6 +1765,8 @@ impl EventLoop {
             return;
         };
         self.options = active.previous_options;
+        self.state
+            .set_async_authenticator(self.options.async_authenticator());
         if let Some(origin) = active.origin_session {
             self.reset_session_state_for_redirect();
             let replay = self
@@ -1714,6 +1794,7 @@ impl EventLoop {
         let old_client_id = self.options.client_id();
         let old_scope = self.options.session_store_scope().to_owned();
         let old_authenticator = self.options.authenticator();
+        let old_async_authenticator = self.options.async_authenticator();
 
         if let Some(broker) = profile.broker() {
             self.options.broker = broker.clone();
@@ -1724,14 +1805,17 @@ impl EventLoop {
             self.options.set_auth(authentication.clone());
             if profile.reuses_authenticator() {
                 self.options.authenticator = old_authenticator;
+                self.options.async_authenticator = old_async_authenticator;
             } else {
                 self.options.authenticator = None;
+                self.options.async_authenticator = None;
                 self.options.set_authentication_method(None);
                 self.options.set_authentication_data(None);
             }
         } else {
             self.options.clear_auth();
             self.options.authenticator = None;
+            self.options.async_authenticator = None;
             self.options.set_authentication_method(None);
             self.options.set_authentication_data(None);
         }
@@ -1778,6 +1862,8 @@ impl EventLoop {
         } else {
             self.reset_session_state_for_redirect();
         }
+        self.state
+            .set_async_authenticator(self.options.async_authenticator());
         preserve_session
     }
 
@@ -1786,6 +1872,7 @@ impl EventLoop {
         outcome: RedirectOutcome,
         failure: RedirectFailure,
     ) -> ConnectionError {
+        self.last_redirect_diagnostics = Some(self.diagnostics().redirect);
         if self.active_redirect.is_some() {
             self.restore_redirect_origin();
         }
@@ -1796,6 +1883,7 @@ impl EventLoop {
         &mut self,
         outcome: RedirectOutcome,
     ) -> Result<Event, ConnectionError> {
+        self.last_redirect_diagnostics = None;
         #[cfg(feature = "ordered-shutdown")]
         if self.requests_rx.gate().has_fence() {
             return Err(crate::DisconnectNoticeError::Redirected.into());
@@ -2085,8 +2173,7 @@ impl EventLoop {
             } else {
                 RedirectFailure::FollowFailed(Box::new(error))
             };
-            self.restore_redirect_origin();
-            return Err(RedirectError { outcome, failure }.into());
+            return Err(self.redirect_failure(outcome, failure));
         }
     }
 
@@ -2103,9 +2190,9 @@ impl EventLoop {
         };
 
         self.effective_keep_alive = self.options.keep_alive;
-        let connect_timeout = self.options.connect_timeout();
+        let connect_deadline = Instant::now() + self.options.connect_timeout();
         let (network, connack) =
-            match connect(&mut self.options, &mut self.state, connect_timeout).await {
+            match connect(&mut self.options, &mut self.state, connect_deadline).await {
                 Ok(connection) => connection,
                 Err(failure) => {
                     self.last_connect_failure_phase = Some(failure.phase);
@@ -2144,15 +2231,39 @@ impl EventLoop {
         self.reconcile_connack_session_and_persisted_state(connack.session_present)
             .await?;
 
-        if let Err(source) = self
-            .state
-            .handle_incoming_packet(Incoming::ConnAck(connack.clone()))
-        {
-            let error = ConnectionError::MqttState(source);
-            #[cfg(feature = "tracing")]
-            crate::instrumentation::connection_attempt_failed(attempt, "mqtt_handshake", &error);
-            return Err(error);
-        }
+        let verification = time::timeout_at(connect_deadline, async {
+            if Instant::now() >= connect_deadline {
+                std::future::pending::<()>().await;
+            }
+            let result = self
+                .state
+                .verify_connack_authentication_async(&connack)
+                .await;
+            if result.is_ok() && Instant::now() >= connect_deadline {
+                // Tokio polls the inner future first. Keep an expired result pending
+                // so the enclosing timer reports Timeout before any success is committed.
+                std::future::pending::<()>().await;
+            }
+            result
+        })
+        .await;
+        let verification = match verification {
+            Ok(result) => result.map_err(ConnectionError::MqttState),
+            Err(elapsed) => {
+                self.state.fail_auth_exchange_due_to_connection_closed();
+                Err(ConnectionError::Timeout(elapsed))
+            }
+        };
+        let verification = verification.and_then(|()| {
+            self.state
+                .handle_incoming_packet_with_effects(Incoming::ConnAck(connack.clone()))
+                .map_err(ConnectionError::MqttState)
+        });
+        #[cfg(feature = "tracing")]
+        let verification = verification.inspect_err(|error| {
+            crate::instrumentation::connection_attempt_failed(attempt, "mqtt_handshake", error);
+        });
+        verification?;
         if let Some(admission) = &self.publish_admission {
             admission.install_connack(&connack);
         }
@@ -2167,11 +2278,18 @@ impl EventLoop {
 
         if let Some(active) = self.active_redirect.as_mut() {
             active.established = true;
-            if active.outcome.reason == RedirectReason::ServerMoved {
-                self.active_redirect = None;
-                self.redirect_attempts = 0;
-                self.redirect_visited.clear();
-            }
+        }
+        if self.active_redirect.is_some() {
+            self.last_redirect_diagnostics = Some(self.diagnostics().redirect);
+        }
+        if self
+            .active_redirect
+            .as_ref()
+            .is_some_and(|active| active.outcome.reason == RedirectReason::ServerMoved)
+        {
+            self.active_redirect = None;
+            self.redirect_attempts = 0;
+            self.redirect_visited.clear();
         }
 
         if self.keepalive_timeout.is_none() && !self.effective_keep_alive.is_zero() {
@@ -2204,17 +2322,24 @@ impl EventLoop {
         &mut self,
         result: Result<Event, ConnectionError>,
     ) -> Result<Event, ConnectionError> {
-        if matches!(
+        // Broker DISCONNECT and local authentication failures queue terminal events.
+        // Deliver the queued packet details and lifecycle events before cleanup clears them.
+        let drain_events = matches!(
             &result,
             Err(ConnectionError::MqttState(
                 StateError::ServerDisconnect { .. }
             ))
-        ) && let Some(event) = self.state.events.pop_front()
-        {
+        ) || (result.is_err()
+            && self
+                .state
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Auth(AuthEvent::Failed { .. }))));
+        if drain_events && let Some(event) = self.state.events.pop_front() {
             let Err(error) = result else {
-                unreachable!("server disconnect result must be an error")
+                unreachable!("deferred connection result must be an error")
             };
-            self.pending_server_disconnect = Some(error);
+            self.pending_connection_error = Some(error);
             return Ok(event);
         }
 
@@ -2431,14 +2556,14 @@ impl EventLoop {
             return Err(ConnectionError::RequestsDone);
         }
 
-        if self.pending_server_disconnect.is_some() {
+        if self.pending_connection_error.is_some() {
             if let Some(event) = self.state.events.pop_front() {
                 return Ok(event);
             }
             let error = self
-                .pending_server_disconnect
+                .pending_connection_error
                 .take()
-                .expect("pending server disconnect must be present");
+                .expect("pending connection error must be present");
             return self.handle_network_result(Err(error)).await;
         }
 
@@ -2881,8 +3006,29 @@ impl EventLoop {
 
     // Keeping request validation and dispatch together makes the ordering of state updates,
     // persistence, network writes, and completion notices explicit.
-    #[allow(clippy::too_many_lines)]
     async fn handle_request_internal(
+        &mut self,
+        envelope: RequestEnvelope,
+        should_flush: &mut bool,
+        qos0_notices: &mut Vec<PublishNoticeTx>,
+        checkpoint_action: &mut SessionCheckpointAction,
+    ) -> Result<BatchControl, ConnectionError> {
+        let armed =
+            matches!(envelope.request, Request::Auth(_)) && self.state.uses_async_authentication();
+        let mut guard = AuthenticationPollGuard {
+            eventloop: self,
+            armed,
+        };
+        let result = guard
+            .eventloop
+            .handle_request_internal_inner(envelope, should_flush, qos0_notices, checkpoint_action)
+            .await;
+        guard.armed = false;
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn handle_request_internal_inner(
         &mut self,
         envelope: RequestEnvelope,
         should_flush: &mut bool,
@@ -3001,13 +3147,10 @@ impl EventLoop {
                 Ok(BatchControl::Stop)
             }
             request => {
-                let (outgoing, flush_notice) = if replay {
-                    self.state
-                        .handle_replayed_outgoing_packet_with_notice(request, notice)?
-                } else {
-                    self.state
-                        .handle_outgoing_packet_with_notice(request, notice)?
-                };
+                let (outgoing, flush_notice) = self
+                    .state
+                    .handle_outgoing_packet_with_notice_async(request, notice, replay)
+                    .await?;
                 if let Some(Packet::Publish(publish)) = &outgoing
                     && let Some(admission) = &self.publish_admission
                 {
@@ -3096,13 +3239,10 @@ impl EventLoop {
                 Ok(BatchControl::Stop)
             }
             request => {
-                let (outgoing, flush_notice) = if replay {
-                    self.state
-                        .handle_replayed_outgoing_packet_with_notice(request, notice)?
-                } else {
-                    self.state
-                        .handle_outgoing_packet_with_notice(request, notice)?
-                };
+                let (outgoing, flush_notice) = self
+                    .state
+                    .handle_outgoing_packet_with_notice_async(request, notice, replay)
+                    .await?;
                 if let Some(Packet::Publish(publish)) = &outgoing
                     && let Some(admission) = &self.publish_admission
                 {
@@ -3666,9 +3806,8 @@ impl ConnectFailure {
 async fn connect(
     options: &mut MqttOptions,
     state: &mut MqttState,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<(Network, ConnAck), ConnectFailure> {
-    let deadline = Instant::now() + timeout;
     // connect to the broker
     let mut network = time::timeout_at(deadline, network_connect(options))
         .await
@@ -3691,9 +3830,10 @@ async fn connect(
         })?;
 
     // make MQTT connection request (which internally awaits for ack)
-    let connack = time::timeout_at(deadline, mqtt_connect(options, &mut network, state))
-        .await
+    let handshake = time::timeout_at(deadline, mqtt_connect(options, &mut network, state)).await;
+    let connack = handshake
         .map_err(|elapsed| {
+            state.fail_auth_exchange_due_to_connection_closed();
             ConnectFailure::new(
                 ConnectionError::Timeout(elapsed),
                 ConnectFailurePhase::MqttHandshake,
@@ -3865,18 +4005,25 @@ async fn mqtt_connect(
     state.set_client_receive_maximum(options.receive_maximum());
     let authentication_method = options.authentication_method();
     let auth_exchange_started = authentication_method.is_some();
-    let start_auth_properties = state.begin_authentication_connect(authentication_method)?;
+    let start_auth_properties = state
+        .begin_authentication_connect_async(authentication_method)
+        .await?;
     let mut connect_properties = options.connect_properties();
     if let Some(auth_properties) = start_auth_properties {
         let properties = connect_properties.get_or_insert_with(ConnectProperties::new);
         properties.authentication_method = auth_properties.method;
         properties.authentication_data = auth_properties.data;
+        properties
+            .user_properties
+            .extend(auth_properties.user_properties);
     }
 
     let result = mqtt_connect_inner(options, network, state, connect_properties).await;
     if result.is_err() && auth_exchange_started {
         if matches!(&result, Err(ConnectionError::Redirect(_))) {
             state.fail_auth_exchange_due_to_redirect();
+        } else if let Err(ConnectionError::ConnectionRefused(reason)) = &result {
+            state.fail_auth_exchange_due_to_broker_rejection(*reason);
         } else {
             state.fail_auth_exchange_due_to_connection_closed();
         }
@@ -3984,12 +4131,19 @@ async fn mqtt_connect_inner(
                 }
                 return Ok(connack);
             }
-            Incoming::Auth(auth) => match state.handle_incoming_packet(Incoming::Auth(auth)) {
+            Incoming::Auth(auth) if auth.code != super::AuthReasonCode::Continue => {
+                return Err(ConnectionError::AuthProcessingError);
+            }
+            Incoming::Auth(auth) => match state
+                .handle_incoming_packet_with_effects_async(Incoming::Auth(auth))
+                .await
+                .map(|effects| effects.complete_notices())
+            {
                 Ok(Some(outgoing)) => {
                     network.write(outgoing).await?;
                     network.flush().await?;
                 }
-                Ok(None) => return Err(ConnectionError::AuthProcessingError),
+                Ok(None) => continue,
                 Err(err @ StateError::Deserialization(super::mqttbytes::Error::ProtocolError)) => {
                     send_protocol_error_disconnect(network).await;
                     return Err(err.into());
@@ -4864,6 +5018,7 @@ mod tests {
                     .unwrap();
                 eventloop
                     .complete_read_batch(ReadBatch {
+                        authentication: None,
                         outcome: ReadBatchOutcome::NoResponseWritten,
                         notices: effects.notices,
                     })
@@ -4884,6 +5039,7 @@ mod tests {
                     .unwrap();
                 eventloop
                     .complete_read_batch(ReadBatch {
+                        authentication: None,
                         outcome: ReadBatchOutcome::ResponseWritten,
                         notices: effects.notices,
                     })
@@ -4903,6 +5059,7 @@ mod tests {
                     .unwrap();
                 eventloop
                     .complete_read_batch(ReadBatch {
+                        authentication: None,
                         outcome: ReadBatchOutcome::NoResponseWritten,
                         notices: effects.notices,
                     })
@@ -4970,6 +5127,7 @@ mod tests {
                     .unwrap();
                 eventloop
                     .complete_read_batch(ReadBatch {
+                        authentication: None,
                         outcome: ReadBatchOutcome::ResponseWritten,
                         notices: effects.notices,
                     })
@@ -4992,6 +5150,7 @@ mod tests {
             assert!(
                 eventloop
                     .complete_read_batch(ReadBatch {
+                        authentication: None,
                         outcome: ReadBatchOutcome::NoResponseWritten,
                         notices: effects.notices,
                     })
@@ -5312,6 +5471,7 @@ mod tests {
         let (notice_tx, notice) = PublishNoticeTx::new();
         let puback = PubAck::new(1, None);
         let batch = ReadBatch {
+            authentication: None,
             outcome: ReadBatchOutcome::NoResponseWritten,
             notices: vec![DeferredNotice::Publish(
                 notice_tx,
@@ -5362,6 +5522,7 @@ mod tests {
         let error = ReadBatchError {
             source: StateError::ServerRedirect(outcome.clone()),
             batch: ReadBatch {
+                authentication: None,
                 outcome: ReadBatchOutcome::NoResponseWritten,
                 notices: vec![DeferredNotice::Publish(
                     notice_tx,
@@ -5408,6 +5569,7 @@ mod tests {
             properties: None,
         };
         let batch = ReadBatch {
+            authentication: None,
             outcome: ReadBatchOutcome::NoResponseWritten,
             notices: vec![DeferredNotice::Subscribe(notice_tx, suback)],
         };
@@ -5433,6 +5595,7 @@ mod tests {
             properties: None,
         };
         let batch = ReadBatch {
+            authentication: None,
             outcome: ReadBatchOutcome::NoResponseWritten,
             notices: vec![DeferredNotice::Unsubscribe(notice_tx, unsuback)],
         };
@@ -5489,6 +5652,7 @@ mod tests {
         let (notice_tx, notice) = PublishNoticeTx::new();
         let puback = PubAck::new(1, None);
         let batch = ReadBatch {
+            authentication: None,
             outcome: ReadBatchOutcome::NoResponseWritten,
             notices: vec![DeferredNotice::Publish(
                 notice_tx,
@@ -6175,7 +6339,9 @@ mod tests {
                 event,
                 Event::Auth(crate::AuthEvent::Failed {
                     kind: crate::AuthExchangeKind::InitialConnect,
-                    reason: crate::AuthFailureReason::ConnectionClosed,
+                    reason: crate::AuthFailureReason::BrokerRejected(
+                        ConnectReturnCode::BadAuthenticationMethod
+                    ),
                     ..
                 })
             )
@@ -7076,6 +7242,93 @@ mod tests {
         ));
         assert!(eventloop.network.is_none());
         assert!(eventloop.state.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejected_async_reauthentication_delivers_events_before_connection_cleanup() {
+        #[derive(Debug)]
+        struct RejectContinuation;
+        impl crate::AsyncAuthenticator for RejectContinuation {
+            fn respond(
+                &self,
+                _: crate::AsyncAuthContext,
+                challenge: crate::AsyncAuthChallenge,
+            ) -> crate::AuthFuture {
+                Box::pin(async move {
+                    if matches!(challenge, crate::AsyncAuthChallenge::Continue { .. }) {
+                        Err(crate::AuthError::Failed("rejected".into()))
+                    } else {
+                        Ok(crate::AuthAction::Complete)
+                    }
+                })
+            }
+        }
+
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        options.set_async_authenticator(Arc::new(RejectContinuation));
+        let mut eventloop = EventLoop::new(options, 1);
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice_async(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(TrackedNoticeTx::Auth(notice_tx)),
+                false,
+            )
+            .await
+            .unwrap();
+        eventloop.state.events.clear();
+
+        let (client, mut peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        let auth = Auth::new(
+            AuthReasonCode::Continue,
+            Some(AuthProperties {
+                method: Some("test-method".into()),
+                data: Some(Bytes::from_static(b"broker challenge")),
+                reason: Some("broker reason".into()),
+                user_properties: vec![("broker".into(), "value".into())],
+            }),
+        );
+        let mut packet = BytesMut::new();
+        auth.write(&mut packet).unwrap();
+        peer.write_all(&packet).await.unwrap();
+
+        assert_eq!(
+            eventloop.poll().await.unwrap(),
+            Event::Incoming(Incoming::Auth(auth))
+        );
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Auth(AuthEvent::Continue {
+                kind: crate::AuthExchangeKind::Reauthentication,
+                ..
+            })
+        ));
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Auth(AuthEvent::Failed {
+                kind: crate::AuthExchangeKind::Reauthentication,
+                reason: crate::AuthFailureReason::AuthenticationFailed(_),
+                ..
+            })
+        ));
+        assert!(eventloop.network.is_some());
+        assert!(eventloop.pending_connection_error.is_some());
+        assert!(matches!(
+            notice.wait_async().await.unwrap_err(),
+            crate::AuthNoticeError::AuthenticationFailed(_)
+        ));
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap_err(),
+            ConnectionError::MqttState(StateError::AuthError(_))
+        ));
+        assert!(eventloop.network.is_none());
+        assert!(eventloop.pending_connection_error.is_none());
+        assert!(eventloop.state.events.is_empty());
+        assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -11149,6 +11402,9 @@ mod tests {
                 failure: RedirectFailure::FollowFailed(source),
             }) if outcome == temporary && matches!(*source, ConnectionError::Io(_))
         ));
+        let diagnostics = eventloop.take_last_redirect_diagnostics().unwrap();
+        assert_eq!(diagnostics.attempts, 2);
+        assert_eq!(diagnostics.visited_endpoints, 3);
         assert_eq!(
             eventloop.options.broker().tcp_address(),
             Some(("primary.example", 1883))
@@ -11358,6 +11614,11 @@ mod tests {
                 failure: RedirectFailure::SrvTargetsExhausted { attempted: 2, .. },
             }) if actual == outcome
         ));
+        let diagnostics = eventloop.take_last_redirect_diagnostics().unwrap();
+        assert_eq!(diagnostics.attempts, 1);
+        assert_eq!(diagnostics.visited_endpoints, 3);
+        assert_eq!(diagnostics.srv_candidate_index, Some(2));
+        assert_eq!(diagnostics.srv_candidate_count, Some(2));
         assert_eq!(
             *lookups.lock().unwrap(),
             vec!["_mqtt._tcp.example.com.".to_owned()]
@@ -13119,6 +13380,9 @@ mod tests {
 #[cfg(not(feature = "ordered-shutdown"))]
 impl EventLoop {
     /// Poll the event loop for the next MQTT event.
+    ///
+    /// Cancelling a pending asynchronous reauthentication transition fails the exchange and closes
+    /// the connection. Subsequent polls deliver its queued events before the connection error.
     ///
     /// # Errors
     ///

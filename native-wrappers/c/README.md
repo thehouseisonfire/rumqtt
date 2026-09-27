@@ -23,6 +23,11 @@ forward compatibility. C Cargo features forward to wrapper-core (`use-rustls`,
 `system-srv-resolver`, `auth-scram`, `tracing`, and `tracing-log-compat`).
 `proxy` enables both HTTP and SOCKS5 proxy support; `tracing-log-compat`
 includes `tracing`. The default build enables AWS-LC Rustls and WebSocket.
+The library does not install a process-global tracing subscriber or logger.
+An embedding Rust host can install its own subscriber before creating clients.
+A C-only host that wants Rust trace output can link a small Rust integration
+shim that installs the host's chosen subscriber or logger at process startup;
+the C ABI does not currently configure or own that process-global sink.
 For Ring, build with `--no-default-features --features use-rustls-ring,websocket`.
 Ring and AWS-LC cannot be enabled together. The Rust-only wrapper core also
 supports `use-rustls-no-provider` for hosts that install a process default
@@ -30,6 +35,8 @@ Rustls provider; the C library has no provider installation API. A capability
 bit describes the artifact, not a broker
 negotiation. `RUMQTTC_CAP_SESSION_STORE_CALLBACKS` reports the available
 durable-session callback API.
+`RUMQTTC_CAP_AUTH_CALLBACKS` reports the raw MQTT 5 asynchronous
+authenticator callback API.
 
 Durable sessions use a `rumqttc_store_vtable_t` registered with
 `rumqttc_store_registration_new()`, then attached with
@@ -125,6 +132,7 @@ and `rumqttc_config_clear_proxy()` removes the proxy configuration. Unsupported
 proxy kinds and policies fail before connecting to the broker. Wrapper-owned
 credential copies are wiped on release; caller and proxy-library copies have
 independent lifetimes.
+Proxy credential byte views must contain UTF-8 for the supported core clients.
 
 For MQTT 5 graceful or immediate close with a reason and properties, use
 `RUMQTTC_V5_DISCONNECT_PROPERTIES_INIT` inside
@@ -146,6 +154,32 @@ Returned string views belong to the event; copy them before destroying it.
 Presence flags distinguish absent values from present empty strings. Typed
 store, authentication, and redirect failure codes and statuses are available
 on errors.
+For a raw MQTT 5 mechanism, register `rumqttc_auth_vtable_t` with
+`rumqttc_auth_registration_new()` and attach it with
+`rumqttc_config_set_v5_authenticator()`. The setter copies the method and
+retains the registration. One authority owns the exchange; SCRAM and a raw
+callback cannot be configured together. `respond` runs on the client driver
+thread with an owned exchange generation, stage, reason code, and borrowed
+views of optional broker properties and ordered User Properties. These views
+expire when `respond` returns. Complete before returning or retain the opaque
+completion and finish on another thread with `rumqttc_callback_auth_complete()`.
+The response record can complete, send owned properties, or reject. Exactly one
+completion wins; a duplicate, cancelled, or late call returns
+`RUMQTTC_INVALID_STATE`. Calls are serialized per client and may overlap across
+clients. A callback may admit nonblocking client work but must not wait for
+progress from its own driver. The exchange timeout includes deferred work;
+close and abandonment cancel pending completions. The optional `failed`
+notification has no completion and must return promptly. `destroy(user_data)`
+runs once after all clients, registration handles, calls, and retained
+completions release the owner. Failed registration leaves `user_data` with the
+caller. Unload a shared library only after releasing every retained completion
+and owner. Authentication data is never included in wrapper errors or traces.
+`rumqttc_event_authentication_details()` and
+`RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION` expose broker AUTH reason and
+properties as event-owned views; copy values needed after event destruction.
+[`examples/authenticator.c`](examples/authenticator.c) shows registration,
+shutdown, and exactly-once context cleanup with a local broker fixture.
+
 `rumqttc_config_set_v5_redirect_policy()` selects a fixed reject or bounded
 follow policy and an explicit transport for isolated redirect targets. A custom
 DNS SRV callback uses `rumqttc_resolver_vtable_t` and
@@ -156,6 +190,10 @@ owned priority, weight, port, and target records. Empty success and query
 failure have separate results. Cancellation, ownership, and shared-library
 unload follow the store callback rules above. With no custom resolver, the
 system resolver is selected only when `RUMQTTC_CAP_SYSTEM_SRV` is present.
+`rumqttc_event_redirect_diagnostics()` exposes follow/reject decision, attempt
+count and limit, visited endpoints, loop flag, and SRV candidate position. A
+fixed reject policy reports `RUMQTTC_REDIRECT_FAILURE_DISABLED`; a detected
+loop reports `RUMQTTC_REDIRECT_FAILURE_LOOP` and a reject decision.
 
 Define `RUMQTTC_STATIC` before including the header when linking the static
 library on Windows. Static consumers must also link the platform libraries

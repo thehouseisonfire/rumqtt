@@ -53,6 +53,12 @@ pub struct RedirectEvent {
     /// a second event supplies it immediately before the redirected `Connected`.
     pub target: Option<BrokerTarget>,
     pub failure: Option<RedirectFailure>,
+    pub followed: bool,
+    pub attempts: usize,
+    pub attempt_limit: Option<usize>,
+    pub visited_endpoints: usize,
+    pub srv_candidate_index: Option<usize>,
+    pub srv_candidate_count: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

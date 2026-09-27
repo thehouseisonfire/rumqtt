@@ -71,6 +71,11 @@ impl BackendClient {
                 .await
                 .map(|_| crate::Completion::Authenticated)
                 .map_err(|error| {
+                    if let rumqttc_v5::AuthNoticeError::BrokerRejected(reason) = error {
+                        return Error::auth(crate::AuthFailure::BrokerRejected)
+                            .with_broker_reason(v5::connack_reason(reason))
+                            .with_delivery(crate::DeliveryStatus::Rejected);
+                    }
                     if let rumqttc_v5::AuthNoticeError::BrokerDisconnected(reason) = error {
                         return Error::auth(crate::AuthFailure::BrokerRejected)
                             .with_broker_reason(reason as u8)

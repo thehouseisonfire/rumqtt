@@ -436,6 +436,8 @@ impl UnsubscribeNotice {
 #[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AuthNoticeError {
+    #[error("broker rejected authentication with CONNACK reason {0:?}")]
+    BrokerRejected(crate::ConnectReturnCode),
     #[error("broker disconnected during authentication with reason {0:?}")]
     BrokerDisconnected(crate::DisconnectReasonCode),
     #[cfg(feature = "ordered-shutdown")]
@@ -478,6 +480,7 @@ impl AuthFailureReason {
     pub(crate) fn from_notice_error(error: AuthNoticeError) -> Self {
         #[cfg(not(feature = "ordered-shutdown"))]
         match error {
+            AuthNoticeError::BrokerRejected(reason) => Self::BrokerRejected(reason),
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
             AuthNoticeError::Recv => Self::NoticeDropped,
             AuthNoticeError::SessionReset => Self::SessionReset,
@@ -491,6 +494,7 @@ impl AuthFailureReason {
 
         #[cfg(feature = "ordered-shutdown")]
         match error {
+            AuthNoticeError::BrokerRejected(reason) => Self::BrokerRejected(reason),
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
             AuthNoticeError::DiscardedAfterDisconnectBarrier
             | AuthNoticeError::ShutdownInterrupted

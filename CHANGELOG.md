@@ -1,6 +1,39 @@
 ## [Unreleased]
 
 ### Fixed
+- MQTT 5 authentication: Fail and reset the initial exchange when a synchronous
+  or asynchronous Start callback returns a mismatched authentication method.
+  Record native exchange timeouts before cancelling a pending session-store save
+  so failure callbacks receive `Timeout` consistently with events and notices.
+- Native MQTT 5 authentication: Notify the authority once with `ConnectionClosed`
+  when immediate close cancels initial authentication, including pending Start,
+  Continue, and final verification callbacks. Preserve typed authentication panic
+  failures if cancellation or its failure notification panics.
+- MQTT 5 authentication: Fail the exchange and close the connection when a poll
+  is cancelled during asynchronous reauthentication, resolving tracked notices
+  and preserving queued events before cleanup. Pass structured CONNACK refusal
+  and broker DISCONNECT reasons to authentication failure callbacks so native
+  hosts distinguish broker rejection from transport loss.
+- MQTT 5 asynchronous authentication: Keep final CONNACK verification within the
+  original connection deadline, including callbacks that return immediately ready
+  after the budget expires, before committing authentication success. Reject
+  native callback results that arrive after the exchange deadline, including
+  immediately ready responses, and contain host future destruction panics on
+  completion, timeout, and cancellation as redacted authentication failures.
+- MQTT 5 asynchronous reauthentication: Preserve broker AUTH details and queued
+  Continue/Failed events when a callback rejects, panics, or times out. Deliver
+  these events and preceding broker packets before native-driver termination,
+  with Rust connection cleanup deferred until the queued events are consumed.
+- MQTT 5 redirects: Preserve attempt, visited-endpoint, and SRV candidate
+  diagnostics when a followed connection fails and when a resolved SRV target
+  connects, including ServerMoved redirects that reset their connection state.
+- MQTT 5 asynchronous authentication: Cancel a pending callback during immediate
+  native-wrapper close, retain broker AUTH details when a continuation fails,
+  forward callback-supplied CONNECT User Properties, and validate CONNACK
+  capabilities before reporting authentication success.
+- MQTT 5 asynchronous authentication: Preserve consumed AUTH challenges across
+  request and keepalive arbitration, reject initial AUTH Success before CONNACK,
+  and contain panics during future polling without printing authentication data.
 - C wrapper: Restore TCP transport when a TCP broker replaces a Unix broker,
   so the resulting configuration can connect without an extra transport setter.
 - C wrapper: Make the advertised native TLS backend selectable through new
@@ -52,8 +85,14 @@
   sanitizer setup against scheduler latency and host process limits.
 - Native wrapper core: Keep reauthentication and MQTT 5 session-expiry admission
   synchronized while entering and leaving isolated redirect targets.
+- Native wrapper core: Enforce the authentication exchange deadline across
+  asynchronous callbacks and waits for broker packets. Timeout cancels retained
+  C completions and delivers authentication failure events before driver termination.
 
 ### Added
+- C wrapper: Add deferred raw MQTT 5 authentication callbacks with retained
+  completions, repeated reauthentication, owned broker AUTH event properties,
+  and redirect decision and attempt metadata through additive accessors.
 - Native wrappers: Expose AWS-LC and Ring choices through wrapper core and C
   feature flags; wrapper core also supports an externally supplied Rustls
   provider for Rust hosts. C forwards

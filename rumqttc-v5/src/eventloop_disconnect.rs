@@ -40,6 +40,9 @@ impl EventLoop {
     /// Drive protocol progress and the total post-admission ordered deadline.
     /// Poll the event loop while applying the ordered-shutdown fence.
     ///
+    /// Cancelling a pending asynchronous reauthentication transition fails the exchange and closes
+    /// the connection. Subsequent polls deliver its queued events before the connection error.
+    ///
     /// # Errors
     ///
     /// Returns connection, protocol, request-processing, or ordered-shutdown errors.

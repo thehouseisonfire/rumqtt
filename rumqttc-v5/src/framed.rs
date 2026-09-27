@@ -84,6 +84,9 @@ pub enum ReadBatchOutcome {
 pub struct ReadBatch {
     pub(crate) outcome: ReadBatchOutcome,
     pub(crate) notices: Vec<DeferredNotice>,
+    /// AUTH is processed after the network branch wins arbitration, so a host
+    /// response future cannot be cancelled by unrelated requests or keepalive.
+    pub(crate) authentication: Option<super::mqttbytes::v5::Auth>,
 }
 
 #[derive(Debug)]
@@ -100,7 +103,11 @@ impl ReadBatchError {
     ) -> Self {
         Self {
             source,
-            batch: ReadBatch { outcome, notices },
+            batch: ReadBatch {
+                outcome,
+                notices,
+                authentication: None,
+            },
         }
     }
 }
@@ -153,6 +160,13 @@ impl Network {
         .await;
     }
 
+    pub(crate) async fn send_protocol_error_disconnect(&mut self) {
+        self.try_send_inbound_disconnect(InboundDisconnect {
+            reason: DisconnectReasonCode::ProtocolError,
+        })
+        .await;
+    }
+
     async fn handle_incoming_decode_error(&mut self, error: mqttbytes::Error) -> StateError {
         if let Some(disconnect) = InboundDisconnect::classify(&error) {
             self.try_send_inbound_disconnect(disconnect).await;
@@ -186,6 +200,13 @@ impl Network {
         let mut notices = Vec::new();
         loop {
             match res {
+                Some(Ok(Packet::Auth(auth))) if state.uses_async_authentication() => {
+                    return Ok(ReadBatch {
+                        outcome,
+                        notices,
+                        authentication: Some(auth),
+                    });
+                }
                 Some(Ok(packet)) => {
                     match state.handle_incoming_packet_with_effects(packet) {
                         Ok(super::state::IncomingPacketEffects {
@@ -277,7 +298,11 @@ impl Network {
             }
         }
 
-        Ok(ReadBatch { outcome, notices })
+        Ok(ReadBatch {
+            outcome,
+            notices,
+            authentication: None,
+        })
     }
 
     /// Serializes packet into write buffer

@@ -30,6 +30,10 @@ include = [
     "rumqttc_srv_record_t",
     "rumqttc_resolver_vtable_t",
     "rumqttc_resolver_registration",
+    "rumqttc_auth_request_t",
+    "rumqttc_auth_response_t",
+    "rumqttc_auth_vtable_t",
+    "rumqttc_auth_registration",
     "rumqttc_config",
     "rumqttc_client",
     "rumqttc_completion",
@@ -46,3 +50,4 @@ include = [
 "rumqttc_store_registration" = "rumqttc_store_registration_t"
 "rumqttc_callback_completion" = "rumqttc_callback_completion_t"
 "rumqttc_resolver_registration" = "rumqttc_resolver_registration_t"
+"rumqttc_auth_registration" = "rumqttc_auth_registration_t"

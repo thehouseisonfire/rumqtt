@@ -308,6 +308,1218 @@ fn config(port: u16, mechanism: Arc<dyn Authenticator>) -> ClientConfig {
     config
 }
 
+fn async_config(
+    port: u16,
+    authority: Arc<dyn AsyncAuthenticator>,
+    timeout: Duration,
+) -> ClientConfig {
+    let mut config = ClientConfig::v5("auth", "127.0.0.1", port);
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.connect_properties.authentication_method = Some("test".into());
+    let mut authority = AsyncAuthenticatorConfig::new(authority);
+    authority.exchange_timeout = timeout;
+    v5.async_authenticator = Some(authority);
+    config
+}
+
+#[test]
+fn ready_async_callbacks_cannot_accept_responses_after_the_exchange_deadline() {
+    #[derive(Clone, Copy)]
+    enum Stage {
+        Start,
+        Continue,
+        Success,
+    }
+    struct Authority {
+        stage: Stage,
+        construction: bool,
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, _: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            let slow = matches!(
+                (self.stage, challenge),
+                (Stage::Start, AsyncAuthChallenge::Start)
+                    | (Stage::Continue, AsyncAuthChallenge::Continue { .. })
+                    | (Stage::Success, AsyncAuthChallenge::Success { .. })
+            );
+            if slow && self.construction {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            let slow_poll = slow && !self.construction;
+            Box::pin(async move {
+                if slow_poll {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Ok(AuthAction::Complete)
+            })
+        }
+    }
+    for stage in [Stage::Start, Stage::Continue, Stage::Success] {
+        for construction in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let broker = support::Broker::spawn(move || {
+                let mut socket = support::accept(&listener);
+                if !matches!(stage, Stage::Start) {
+                    read_packet(&mut socket);
+                    if matches!(stage, Stage::Continue) {
+                        send_auth(
+                            &mut socket,
+                            rumqttc_v5::AuthReasonCode::Continue,
+                            b"challenge",
+                        );
+                    } else {
+                        socket
+                            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                            .unwrap();
+                    }
+                }
+                assert_eq!(
+                    socket.read(&mut [0]).unwrap(),
+                    0,
+                    "late response reached the broker"
+                );
+            });
+            let mut client = NativeClient::start(async_config(
+                port,
+                Arc::new(Authority {
+                    stage,
+                    construction,
+                }),
+                Duration::from_millis(50),
+            ))
+            .unwrap();
+            let mut events = client.take_events().unwrap();
+            loop {
+                match events.recv_timeout(support::DEADLINE).unwrap().unwrap() {
+                    WrapperEvent::Connected { .. } => panic!("late authentication succeeded"),
+                    WrapperEvent::Authentication(auth) => {
+                        assert_ne!(auth.stage, AuthStage::Succeeded)
+                    }
+                    WrapperEvent::DriverTerminated(error) => {
+                        assert_eq!(error.auth_failure(), Some(AuthFailure::Timeout));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            client.join(support::DEADLINE).unwrap();
+            broker.join();
+        }
+    }
+}
+
+#[test]
+fn authentication_future_destruction_panics_do_not_print_private_payloads() {
+    let output = support::process_output(
+        std::process::Command::new(std::env::current_exe().unwrap()).args([
+            "--exact",
+            "authentication_future_destruction_panics_are_typed_on_completion_timeout_and_close",
+            "--nocapture",
+        ]),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.contains("private-authentication-future-destructor"));
+    assert!(!output.contains("panicked at"));
+}
+
+#[test]
+fn authentication_future_destruction_panics_are_typed_on_completion_timeout_and_close() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Clone, Copy)]
+    enum Mode {
+        Completion,
+        Timeout,
+        ConstructionTimeout,
+        Close,
+    }
+    struct PanickingFuture {
+        ready: bool,
+        entered: Option<std::sync::mpsc::Sender<()>>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl std::future::Future for PanickingFuture {
+        type Output = std::result::Result<AuthAction, AuthFailure>;
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).unwrap();
+            }
+            if self.ready {
+                std::task::Poll::Ready(Ok(AuthAction::Complete))
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+    }
+    impl Drop for PanickingFuture {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            panic!("private-authentication-future-destructor");
+        }
+    }
+    struct Authority {
+        mode: Mode,
+        entered: std::sync::mpsc::Sender<()>,
+        failed: std::sync::mpsc::Sender<AuthFailure>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            if matches!(
+                (self.mode, context.exchange, challenge),
+                (
+                    Mode::Completion,
+                    AuthExchange::Initial,
+                    AsyncAuthChallenge::Success { .. }
+                ) | (
+                    Mode::Timeout | Mode::ConstructionTimeout,
+                    AuthExchange::Initial,
+                    AsyncAuthChallenge::Start
+                ) | (
+                    Mode::Close,
+                    AuthExchange::Reauthentication,
+                    AsyncAuthChallenge::Start
+                )
+            ) {
+                if matches!(self.mode, Mode::ConstructionTimeout) {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Box::pin(PanickingFuture {
+                    ready: matches!(self.mode, Mode::Completion),
+                    entered: Some(self.entered.clone()),
+                    dropped: self.dropped.clone(),
+                })
+            } else {
+                Box::pin(async { Ok(AuthAction::Complete) })
+            }
+        }
+        fn failure(&self, _: AuthContext, failure: AuthFailure) {
+            self.failed.send(failure).unwrap();
+        }
+    }
+    for mode in [
+        Mode::Completion,
+        Mode::Timeout,
+        Mode::ConstructionTimeout,
+        Mode::Close,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let broker = support::Broker::spawn(move || {
+            let mut socket = support::accept(&listener);
+            if !matches!(mode, Mode::Timeout | Mode::ConstructionTimeout) {
+                read_packet(&mut socket);
+                socket
+                    .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                    .unwrap();
+            }
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        });
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut client = NativeClient::start(async_config(
+            port,
+            Arc::new(Authority {
+                mode,
+                entered: entered_tx,
+                failed: failed_tx,
+                dropped: dropped.clone(),
+            }),
+            if matches!(mode, Mode::Timeout | Mode::ConstructionTimeout) {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(30)
+            },
+        ))
+        .unwrap();
+        let mut events = client.take_events().unwrap();
+        let operation = if matches!(mode, Mode::Close) {
+            support::until(&mut events, |event| {
+                matches!(event, WrapperEvent::Connected { .. })
+            });
+            let operation = client
+                .handle()
+                .try_admit(Command::Reauthenticate(None))
+                .unwrap();
+            entered_rx.recv_timeout(support::DEADLINE).unwrap();
+            client.closer().close_now(support::DEADLINE).unwrap();
+            Some(operation)
+        } else {
+            None
+        };
+        let event = support::until(&mut events, |event| {
+            matches!(event, WrapperEvent::DriverTerminated(_))
+        });
+        let WrapperEvent::DriverTerminated(error) = event else {
+            unreachable!()
+        };
+        assert_eq!(error.auth_failure(), Some(AuthFailure::Panic));
+        assert_ne!(error.code(), ErrorCode::InternalPanic);
+        client.join(support::DEADLINE).unwrap();
+        assert_eq!(
+            failed_rx.recv_timeout(support::DEADLINE).unwrap(),
+            AuthFailure::Panic
+        );
+        assert!(failed_rx.try_recv().is_err());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        if let Some(operation) = operation {
+            assert_eq!(
+                support::terminal(&operation).unwrap_err().auth_failure(),
+                Some(AuthFailure::Panic)
+            );
+        }
+        broker.join();
+    }
+}
+
+#[test]
+fn deferred_reauthentication_survives_publish_and_keepalive_read_arbitration() {
+    struct Deferred {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+    impl AsyncAuthenticator for Deferred {
+        fn respond(&self, _: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            match challenge {
+                AsyncAuthChallenge::Continue { .. } => {
+                    let entered = self.entered.clone();
+                    let release = self.release.lock().unwrap().take().unwrap();
+                    Box::pin(async move {
+                        entered.send(()).unwrap();
+                        release.await.unwrap();
+                        Ok(AuthAction::Send(AuthProperties {
+                            data: Some(Bytes::from_static(b"reply")),
+                            ..Default::default()
+                        }))
+                    })
+                }
+                _ => Box::pin(async { Ok(AuthAction::Complete) }),
+            }
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        socket
+            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+            .unwrap();
+        assert!(matches!(
+            read_packet(&mut socket),
+            rumqttc_v5::Packet::Auth(_)
+        ));
+        send_auth(
+            &mut socket,
+            rumqttc_v5::AuthReasonCode::Continue,
+            b"challenge",
+        );
+        let rumqttc_v5::Packet::Auth(response) = read_packet(&mut socket) else {
+            panic!("deferred AUTH response expected before queued requests")
+        };
+        assert_eq!(response.code, rumqttc_v5::AuthReasonCode::Continue);
+        assert_eq!(
+            response.properties.unwrap().data.as_deref(),
+            Some(b"reply".as_slice())
+        );
+        send_auth(&mut socket, rumqttc_v5::AuthReasonCode::Success, b"proof");
+        let mut published = false;
+        loop {
+            match read_packet(&mut socket) {
+                rumqttc_v5::Packet::PingReq => socket.write_all(b"\xd0\x00").unwrap(),
+                rumqttc_v5::Packet::Publish(publish) => {
+                    assert_eq!(publish.topic.as_ref(), b"queued");
+                    published = true;
+                }
+                rumqttc_v5::Packet::Disconnect(_) => {
+                    assert!(published);
+                    break;
+                }
+                packet => panic!("unexpected packet {packet:?}"),
+            }
+        }
+    });
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let mut config = async_config(
+        port,
+        Arc::new(Deferred {
+            entered: entered_tx,
+            release: Mutex::new(Some(release_rx)),
+        }),
+        support::DEADLINE,
+    );
+    config.common.keep_alive = Duration::from_secs(1);
+    let mut client = NativeClient::start(config).unwrap();
+    let _events = support::connected(&mut client);
+    let reauthentication = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    entered_rx.recv_timeout(support::DEADLINE).unwrap();
+    let publish = client
+        .handle()
+        .try_admit(Command::Publish(PublishCommand {
+            topic: "queued".into(),
+            payload: Bytes::from_static(b"payload"),
+            qos: QoS::AtMostOnce,
+            retain: false,
+            protocol: PublishProtocolOptions::VersionNeutral,
+        }))
+        .unwrap();
+    // Both a ready request and a due keepalive must leave the consumed challenge intact.
+    std::thread::sleep(Duration::from_millis(1100));
+    release_tx
+        .send(())
+        .expect("authentication response was cancelled");
+    assert!(matches!(
+        support::terminal(&reauthentication).unwrap(),
+        Completion::Authenticated
+    ));
+    assert!(matches!(
+        support::terminal(&publish).unwrap(),
+        Completion::Publish(_)
+    ));
+    client.closer().close(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn async_exchange_deadline_expires_while_waiting_for_initial_or_reauthentication_broker_packets() {
+    struct Authority(std::sync::mpsc::Sender<AuthFailure>);
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, _: AuthContext, _: AsyncAuthChallenge) -> AuthFuture {
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+        fn failure(&self, _: AuthContext, failure: AuthFailure) {
+            self.0.send(failure).unwrap();
+        }
+    }
+    for (reauthenticate, continue_exchange) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let broker = support::Broker::spawn(move || {
+            let mut socket = support::accept(&listener);
+            read_packet(&mut socket);
+            if reauthenticate {
+                socket
+                    .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                    .unwrap();
+                assert!(matches!(
+                    read_packet(&mut socket),
+                    rumqttc_v5::Packet::Auth(_)
+                ));
+            }
+            if continue_exchange {
+                send_auth(
+                    &mut socket,
+                    rumqttc_v5::AuthReasonCode::Continue,
+                    b"challenge",
+                );
+                let rumqttc_v5::Packet::Auth(response) = read_packet(&mut socket) else {
+                    panic!("AUTH continuation expected")
+                };
+                assert_eq!(response.code, rumqttc_v5::AuthReasonCode::Continue);
+            }
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        });
+        let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+        let mut client = NativeClient::start(async_config(
+            port,
+            Arc::new(Authority(failed_tx)),
+            Duration::from_millis(100),
+        ))
+        .unwrap();
+        let mut events = client.take_events().unwrap();
+        let operation = reauthenticate.then(|| {
+            support::until(&mut events, |event| {
+                matches!(event, WrapperEvent::Connected { .. })
+            });
+            client
+                .handle()
+                .try_admit(Command::Reauthenticate(None))
+                .unwrap()
+        });
+        assert_eq!(
+            failed_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            AuthFailure::Timeout
+        );
+        let mut saw_failure = false;
+        loop {
+            match events.recv_timeout(support::DEADLINE).unwrap().unwrap() {
+                WrapperEvent::Authentication(event) if event.stage == AuthStage::Failed => {
+                    assert_eq!(event.failure, Some(AuthFailure::Timeout));
+                    saw_failure = true;
+                }
+                WrapperEvent::DriverTerminated(error) => {
+                    assert_eq!(error.auth_failure(), Some(AuthFailure::Timeout));
+                    assert!(saw_failure);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        client.join(support::DEADLINE).unwrap();
+        if let Some(operation) = operation {
+            assert_eq!(
+                support::terminal(&operation).unwrap_err().auth_failure(),
+                Some(AuthFailure::Timeout)
+            );
+        }
+        assert!(failed_rx.try_recv().is_err());
+        broker.join();
+    }
+}
+
+#[test]
+fn async_authentication_panic_payload_is_not_printed_by_the_host_hook() {
+    let output = support::process_output(
+        std::process::Command::new(std::env::current_exe().unwrap()).args([
+            "--exact",
+            "async_authentication_panics_are_typed_and_release_the_authority",
+            "--nocapture",
+        ]),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.contains("secret-async-authentication-value"));
+    assert!(!output.contains("panicked at"));
+}
+
+#[test]
+fn initial_auth_success_is_rejected_before_notifying_the_async_authority() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Authority(AtomicUsize);
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, _: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            if matches!(challenge, AsyncAuthChallenge::Success { .. }) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        let mut packets = BytesMut::new();
+        rumqttc_v5::Auth::new(
+            rumqttc_v5::AuthReasonCode::Success,
+            Some(rumqttc_v5::AuthProperties {
+                method: Some("test".into()),
+                ..Default::default()
+            }),
+        )
+        .write(&mut packets)
+        .unwrap();
+        rumqttc_v5::ConnAck {
+            session_present: false,
+            code: rumqttc_v5::ConnectReturnCode::Success,
+            properties: Some(connack_properties(
+                Some("test".into()),
+                Some(Bytes::from_static(b"proof")),
+            )),
+        }
+        .write(&mut packets)
+        .unwrap();
+        socket.write_all(&packets).unwrap();
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+    let authority = Arc::new(Authority(AtomicUsize::new(0)));
+    let mut client =
+        NativeClient::start(async_config(port, authority.clone(), support::DEADLINE)).unwrap();
+    let mut events = client.take_events().unwrap();
+    loop {
+        match events.recv_timeout(support::DEADLINE).unwrap().unwrap() {
+            WrapperEvent::Connected { .. } => panic!("invalid initial AUTH sequence was accepted"),
+            WrapperEvent::Authentication(event) => assert_ne!(event.stage, AuthStage::Succeeded),
+            WrapperEvent::Disconnected { error, .. } => {
+                assert_eq!(error.kind(), ErrorKind::Protocol);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(authority.0.load(Ordering::Relaxed), 0);
+    client.closer().close_now(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn async_authentication_panics_are_typed_and_release_the_authority() {
+    struct Panicking;
+    impl AsyncAuthenticator for Panicking {
+        fn respond(&self, _: AuthContext, _: AsyncAuthChallenge) -> AuthFuture {
+            Box::pin(async {
+                tokio::task::yield_now().await;
+                panic!("secret-async-authentication-value");
+            })
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+    let owner = Arc::new(Panicking);
+    let mut client =
+        NativeClient::start(async_config(port, owner.clone(), support::DEADLINE)).unwrap();
+    let mut events = client.take_events().unwrap();
+    let event = support::until(&mut events, |event| {
+        matches!(event, WrapperEvent::DriverTerminated(_))
+    });
+    let WrapperEvent::DriverTerminated(error) = event else {
+        unreachable!()
+    };
+    assert_eq!(error.auth_failure(), Some(AuthFailure::Panic));
+    client.join(support::DEADLINE).unwrap();
+    assert_eq!(Arc::strong_count(&owner), 1);
+    broker.join();
+}
+
+#[test]
+fn authentication_timeout_during_session_save_notifies_the_authority_with_timeout() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct PendingSave {
+        reauth_started: Arc<AtomicBool>,
+        entered: std::sync::mpsc::Sender<()>,
+        cancelled: Arc<AtomicUsize>,
+    }
+    struct CancelledSave(Arc<AtomicUsize>);
+    impl Drop for CancelledSave {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    impl SessionStore for PendingSave {
+        fn load(&self, _: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn save(&self, _: SessionStoreKey, _: SessionCheckpoint) -> StoreFuture<()> {
+            if self.reauth_started.load(Ordering::Relaxed) {
+                let entered = self.entered.clone();
+                let cancelled = CancelledSave(self.cancelled.clone());
+                Box::pin(async move {
+                    let _cancelled = cancelled;
+                    entered.send(()).unwrap();
+                    std::future::pending().await
+                })
+            } else {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        fn clear(&self, _: SessionStoreKey) -> StoreFuture<()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    struct Authority {
+        reauth_started: Arc<AtomicBool>,
+        failed: std::sync::mpsc::Sender<AuthFailure>,
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            if context.exchange == AuthExchange::Reauthentication {
+                assert!(matches!(challenge, AsyncAuthChallenge::Start));
+                self.reauth_started.store(true, Ordering::Relaxed);
+            }
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+        fn failure(&self, context: AuthContext, failure: AuthFailure) {
+            assert_eq!(context.exchange, AuthExchange::Reauthentication);
+            self.failed.send(failure).unwrap();
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        socket
+            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+            .unwrap();
+        // Persistence blocks before the reauthentication packet is written.
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+    let reauth_started = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+    let mut config = async_config(
+        port,
+        Arc::new(Authority {
+            reauth_started: reauth_started.clone(),
+            failed: failed_tx,
+        }),
+        Duration::from_millis(200),
+    );
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.clean_start = false;
+    v5.connect_properties.session_expiry_interval = Some(60);
+    let mut store = SessionStoreConfig::new(
+        Arc::new(PendingSave {
+            reauth_started,
+            entered: entered_tx,
+            cancelled: cancelled.clone(),
+        }),
+        "auth-timeout",
+    );
+    store.timeout = Duration::from_secs(30);
+    v5.session_store = Some(store);
+    let mut client = NativeClient::start(config).unwrap();
+    let mut events = support::connected(&mut client);
+    let operation = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    entered_rx.recv_timeout(support::DEADLINE).unwrap();
+    let mut stages = vec![];
+    loop {
+        let event = events.recv_timeout(support::DEADLINE).unwrap().unwrap();
+        match event {
+            WrapperEvent::Authentication(event)
+                if event.exchange == AuthExchange::Reauthentication =>
+            {
+                stages.push(event.stage);
+                if event.stage == AuthStage::Failed {
+                    assert_eq!(event.failure, Some(AuthFailure::Timeout));
+                }
+            }
+            WrapperEvent::DriverTerminated(error) => {
+                assert_eq!(error.auth_failure(), Some(AuthFailure::Timeout));
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(stages, [AuthStage::Started, AuthStage::Failed]);
+    client.join(support::DEADLINE).unwrap();
+    assert_eq!(
+        failed_rx.recv_timeout(support::DEADLINE).unwrap(),
+        AuthFailure::Timeout
+    );
+    assert!(failed_rx.try_recv().is_err());
+    assert_eq!(cancelled.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        support::terminal(&operation).unwrap_err().auth_failure(),
+        Some(AuthFailure::Timeout)
+    );
+    broker.join();
+}
+
+#[test]
+fn immediate_close_notifies_pending_initial_authentication_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Stage {
+        Start,
+        Continue,
+        Success,
+    }
+    struct DropSignal(Arc<AtomicUsize>);
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    struct Authority {
+        stage: Stage,
+        panic_on_failure: bool,
+        entered: std::sync::mpsc::Sender<()>,
+        failed: std::sync::mpsc::Sender<(AuthContext, AuthFailure)>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            assert_eq!(context.exchange, AuthExchange::Initial);
+            let defer = matches!(
+                (self.stage, challenge),
+                (Stage::Start, AsyncAuthChallenge::Start)
+                    | (Stage::Continue, AsyncAuthChallenge::Continue { .. })
+                    | (Stage::Success, AsyncAuthChallenge::Success { .. })
+            );
+            if defer {
+                let entered = self.entered.clone();
+                let drop_signal = DropSignal(self.dropped.clone());
+                Box::pin(async move {
+                    let _drop_signal = drop_signal;
+                    entered.send(()).unwrap();
+                    std::future::pending().await
+                })
+            } else {
+                Box::pin(async { Ok(AuthAction::Complete) })
+            }
+        }
+        fn failure(&self, context: AuthContext, failure: AuthFailure) {
+            // The pending host future must be cancelled before notifying its owner.
+            assert_eq!(self.dropped.load(Ordering::Relaxed), 1);
+            self.failed.send((context, failure)).unwrap();
+            if self.panic_on_failure {
+                panic!("private-authentication-cancellation-notification");
+            }
+        }
+    }
+
+    for stage in [Stage::Start, Stage::Continue, Stage::Success] {
+        for panic_on_failure in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let broker = support::Broker::spawn(move || {
+                let mut socket = support::accept(&listener);
+                if !matches!(stage, Stage::Start) {
+                    assert!(matches!(
+                        read_packet(&mut socket),
+                        rumqttc_v5::Packet::Connect(..)
+                    ));
+                    if matches!(stage, Stage::Continue) {
+                        send_auth(
+                            &mut socket,
+                            rumqttc_v5::AuthReasonCode::Continue,
+                            b"challenge",
+                        );
+                    } else {
+                        socket
+                            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                            .unwrap();
+                    }
+                }
+                assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            });
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let mut client = NativeClient::start(async_config(
+                port,
+                Arc::new(Authority {
+                    stage,
+                    panic_on_failure,
+                    entered: entered_tx,
+                    failed: failed_tx,
+                    dropped: dropped.clone(),
+                }),
+                Duration::from_secs(30),
+            ))
+            .unwrap();
+            let mut events = client.take_events().unwrap();
+            entered_rx.recv_timeout(support::DEADLINE).unwrap();
+            client.closer().close_now(support::DEADLINE).unwrap();
+            let (context, failure) = failed_rx.recv_timeout(support::DEADLINE).unwrap();
+            assert_eq!(failure, AuthFailure::ConnectionClosed, "{stage:?}");
+            assert_eq!(context.exchange, AuthExchange::Initial);
+            assert_eq!(context.method, "test");
+            assert_eq!(context.generation, 1);
+            assert!(failed_rx.try_recv().is_err());
+            assert_eq!(dropped.load(Ordering::Relaxed), 1);
+            loop {
+                let event = events.recv_timeout(support::DEADLINE).unwrap().unwrap();
+                match event {
+                    WrapperEvent::Connected { .. } => panic!("cancelled handshake connected"),
+                    WrapperEvent::Authentication(event) => {
+                        assert_ne!(event.stage, AuthStage::Succeeded);
+                    }
+                    WrapperEvent::ImmediateShutdownCompleted => {
+                        assert!(!panic_on_failure);
+                        break;
+                    }
+                    WrapperEvent::DriverTerminated(error) => {
+                        assert!(panic_on_failure);
+                        assert_eq!(error.auth_failure(), Some(AuthFailure::Panic));
+                        assert_ne!(error.code(), ErrorCode::InternalPanic);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            client.join(support::DEADLINE).unwrap();
+            broker.join();
+        }
+    }
+}
+
+#[test]
+fn immediate_close_cancels_pending_async_reauthentication_and_forwards_connect_user_properties() {
+    use std::sync::mpsc::{Sender, channel};
+
+    struct DropSignal(Sender<()>);
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.send(()).unwrap();
+        }
+    }
+
+    struct DeferredReauth {
+        started: Sender<()>,
+        dropped: Sender<()>,
+    }
+    impl AsyncAuthenticator for DeferredReauth {
+        fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            match (context.exchange, challenge) {
+                (AuthExchange::Initial, AsyncAuthChallenge::Start) => Box::pin(async {
+                    Ok(AuthAction::Send(AuthProperties {
+                        data: Some(Bytes::from_static(b"initial")),
+                        user_properties: vec![("callback".into(), "second".into())],
+                        ..Default::default()
+                    }))
+                }),
+                (AuthExchange::Initial, AsyncAuthChallenge::Success { .. }) => {
+                    Box::pin(async { Ok(AuthAction::Complete) })
+                }
+                (AuthExchange::Reauthentication, AsyncAuthChallenge::Start) => {
+                    let started = self.started.clone();
+                    let dropped = self.dropped.clone();
+                    Box::pin(async move {
+                        let _drop_signal = DropSignal(dropped);
+                        started.send(()).unwrap();
+                        std::future::pending().await
+                    })
+                }
+                _ => panic!("unexpected authentication challenge"),
+            }
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        let rumqttc_v5::Packet::Connect(connect, _, _) = read_packet(&mut socket) else {
+            panic!("CONNECT expected")
+        };
+        let properties = connect.properties.unwrap();
+        assert_eq!(
+            properties.authentication_data.as_deref(),
+            Some(b"initial".as_slice())
+        );
+        assert_eq!(
+            properties.user_properties,
+            [
+                ("configured".into(), "first".into()),
+                ("callback".into(), "second".into())
+            ]
+        );
+        socket
+            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+            .unwrap();
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+
+    let (started_tx, started_rx) = channel();
+    let (dropped_tx, dropped_rx) = channel();
+    let mut config = ClientConfig::v5("auth", "127.0.0.1", port);
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.connect_properties.authentication_method = Some("test".into());
+    v5.connect_properties.user_properties = vec![("configured".into(), "first".into())];
+    let mut authority = AsyncAuthenticatorConfig::new(Arc::new(DeferredReauth {
+        started: started_tx,
+        dropped: dropped_tx,
+    }));
+    authority.exchange_timeout = Duration::from_secs(30);
+    v5.async_authenticator = Some(authority);
+
+    let mut client = NativeClient::start(config).unwrap();
+    let _events = support::connected(&mut client);
+    let operation = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    started_rx.recv_timeout(support::DEADLINE).unwrap();
+    client.closer().close_now(Duration::from_secs(2)).unwrap();
+    dropped_rx.recv_timeout(support::DEADLINE).unwrap();
+    assert!(support::terminal(&operation).is_err());
+    broker.join();
+}
+
+#[test]
+fn immediate_close_with_idle_async_authenticator_sends_disconnect() {
+    struct IdleAuthority;
+    impl AsyncAuthenticator for IdleAuthority {
+        fn respond(&self, _: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            assert!(matches!(
+                challenge,
+                AsyncAuthChallenge::Start | AsyncAuthChallenge::Success { .. }
+            ));
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        assert!(matches!(
+            read_packet(&mut socket),
+            rumqttc_v5::Packet::Connect(..)
+        ));
+        socket
+            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+            .unwrap();
+        assert!(matches!(
+            read_packet(&mut socket),
+            rumqttc_v5::Packet::Disconnect(_)
+        ));
+    });
+
+    let mut config = ClientConfig::v5("auth", "127.0.0.1", port);
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.connect_properties.authentication_method = Some("test".into());
+    v5.async_authenticator = Some(AsyncAuthenticatorConfig::new(Arc::new(IdleAuthority)));
+    let mut client = NativeClient::start(config).unwrap();
+    let _events = support::connected(&mut client);
+    client.closer().close_now(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn failed_async_continuation_retains_broker_auth_details() {
+    struct RejectContinuation;
+    impl AsyncAuthenticator for RejectContinuation {
+        fn respond(&self, _: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            match challenge {
+                AsyncAuthChallenge::Start => Box::pin(async { Ok(AuthAction::Complete) }),
+                AsyncAuthChallenge::Continue { .. } => {
+                    Box::pin(async { Err(AuthFailure::Rejected) })
+                }
+                AsyncAuthChallenge::Success { .. } => Box::pin(async { Ok(AuthAction::Complete) }),
+            }
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        let mut packet = BytesMut::new();
+        rumqttc_v5::Auth::new(
+            rumqttc_v5::AuthReasonCode::Continue,
+            Some(rumqttc_v5::AuthProperties {
+                method: Some("test".into()),
+                data: Some(Bytes::from_static(b"challenge")),
+                reason: Some("broker reason".into()),
+                user_properties: vec![("broker".into(), "value".into())],
+            }),
+        )
+        .write(&mut packet)
+        .unwrap();
+        socket.write_all(&packet).unwrap();
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+
+    let mut config = ClientConfig::v5("auth", "127.0.0.1", port);
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.connect_properties.authentication_method = Some("test".into());
+    v5.async_authenticator = Some(AsyncAuthenticatorConfig::new(Arc::new(RejectContinuation)));
+    let mut client = NativeClient::start(config).unwrap();
+    let mut events = client.take_events().unwrap();
+    let event = support::until(
+        &mut events,
+        |event| matches!(event, WrapperEvent::Authentication(auth) if auth.stage == AuthStage::Continue),
+    );
+    let WrapperEvent::Authentication(auth) = event else {
+        unreachable!()
+    };
+    assert_eq!(auth.reason_code, Some(0x18));
+    let properties = auth.properties.unwrap();
+    assert_eq!(properties.data.as_deref(), Some(b"challenge".as_slice()));
+    assert_eq!(properties.reason_string.as_deref(), Some("broker reason"));
+    assert_eq!(
+        properties.user_properties,
+        [("broker".into(), "value".into())]
+    );
+    support::until(&mut events, |event| {
+        matches!(event, WrapperEvent::DriverTerminated(_))
+    });
+    client.join(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn failed_async_reauthentication_delivers_broker_details_and_lifecycle_before_termination() {
+    struct Authority {
+        failure: AuthFailure,
+        failed: std::sync::mpsc::Sender<AuthFailure>,
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+            if matches!(challenge, AsyncAuthChallenge::Continue { .. }) {
+                assert_eq!(context.exchange, AuthExchange::Reauthentication);
+                let failure = self.failure;
+                Box::pin(async move {
+                    tokio::task::yield_now().await;
+                    match failure {
+                        AuthFailure::Rejected => Err(failure),
+                        AuthFailure::Panic => panic!("private authentication response"),
+                        AuthFailure::Timeout => std::future::pending().await,
+                        _ => unreachable!(),
+                    }
+                })
+            } else {
+                Box::pin(async { Ok(AuthAction::Complete) })
+            }
+        }
+
+        fn failure(&self, _: AuthContext, failure: AuthFailure) {
+            self.failed.send(failure).unwrap();
+        }
+    }
+
+    for failure in [
+        AuthFailure::Rejected,
+        AuthFailure::Panic,
+        AuthFailure::Timeout,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let broker = support::Broker::spawn(move || {
+            let mut socket = support::accept(&listener);
+            read_packet(&mut socket);
+            socket
+                .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                .unwrap();
+            let rumqttc_v5::Packet::Auth(reauthenticate) = read_packet(&mut socket) else {
+                panic!("reauthentication request expected")
+            };
+            assert_eq!(
+                reauthenticate.code,
+                rumqttc_v5::AuthReasonCode::ReAuthenticate
+            );
+            let mut packet = BytesMut::new();
+            rumqttc_v5::Publish::new(
+                "before-auth",
+                rumqttc_v5::mqttbytes::QoS::AtMostOnce,
+                b"message".to_vec(),
+                None,
+            )
+            .write(&mut packet)
+            .unwrap();
+            rumqttc_v5::Auth::new(
+                rumqttc_v5::AuthReasonCode::Continue,
+                Some(rumqttc_v5::AuthProperties {
+                    method: Some("test".into()),
+                    data: Some(Bytes::from_static(b"challenge")),
+                    reason: Some("broker reason".into()),
+                    user_properties: vec![
+                        ("broker".into(), "first".into()),
+                        ("broker".into(), "second".into()),
+                    ],
+                }),
+            )
+            .write(&mut packet)
+            .unwrap();
+            socket.write_all(&packet).unwrap();
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        });
+        let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+        let mut client = NativeClient::start(async_config(
+            port,
+            Arc::new(Authority {
+                failure,
+                failed: failed_tx,
+            }),
+            Duration::from_millis(500),
+        ))
+        .unwrap();
+        let mut events = support::connected(&mut client);
+        let operation = client
+            .handle()
+            .try_admit(Command::Reauthenticate(None))
+            .unwrap();
+        let mut stages = Vec::new();
+        let mut published = false;
+        loop {
+            match events.recv_timeout(support::DEADLINE).unwrap().unwrap() {
+                WrapperEvent::Authentication(auth)
+                    if auth.exchange == AuthExchange::Reauthentication =>
+                {
+                    stages.push(auth.stage);
+                    match auth.stage {
+                        AuthStage::Continue => {
+                            assert!(published, "a preceding broker packet was lost or reordered");
+                            assert_eq!(auth.reason_code, Some(0x18));
+                            let properties = auth.properties.unwrap();
+                            assert_eq!(properties.method.as_deref(), Some("test"));
+                            assert_eq!(properties.data.as_deref(), Some(b"challenge".as_slice()));
+                            assert_eq!(properties.reason_string.as_deref(), Some("broker reason"));
+                            assert_eq!(
+                                properties.user_properties,
+                                [
+                                    ("broker".into(), "first".into()),
+                                    ("broker".into(), "second".into()),
+                                ]
+                            );
+                        }
+                        AuthStage::Failed => assert_eq!(auth.failure, Some(failure)),
+                        AuthStage::Started => {}
+                        AuthStage::Succeeded => panic!("failed exchange reported success"),
+                    }
+                }
+                WrapperEvent::IncomingPublish(publish) => {
+                    assert!(!published);
+                    assert_eq!(publish.topic.as_ref(), b"before-auth");
+                    assert_eq!(publish.payload.as_ref(), b"message");
+                    published = true;
+                }
+                WrapperEvent::DriverTerminated(error) => {
+                    assert_eq!(error.auth_failure(), Some(failure));
+                    assert_eq!(
+                        stages,
+                        [AuthStage::Started, AuthStage::Continue, AuthStage::Failed]
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        client.join(support::DEADLINE).unwrap();
+        assert_eq!(
+            support::terminal(&operation).unwrap_err().auth_failure(),
+            Some(failure)
+        );
+        assert_eq!(failed_rx.recv_timeout(support::DEADLINE).unwrap(), failure);
+        assert!(failed_rx.try_recv().is_err());
+        broker.join();
+    }
+}
+
 #[test]
 fn owned_authentication_rejects_caller_properties_and_handles_tracked_reauthentication() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1221,5 +2433,92 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
             &secrets.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         support::capture::assert_activity();
+    }
+}
+
+#[test]
+fn async_failure_callback_distinguishes_broker_refusal_from_transport_loss() {
+    struct Authority(std::sync::mpsc::Sender<AuthFailure>);
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, _: AuthContext, _: AsyncAuthChallenge) -> AuthFuture {
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+        fn failure(&self, _: AuthContext, failure: AuthFailure) {
+            self.0.send(failure).unwrap();
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    enum Outcome {
+        TransportLoss,
+        Connack(u8),
+        Disconnect,
+    }
+    for outcome in [
+        Outcome::TransportLoss,
+        Outcome::Connack(0x86),
+        Outcome::Connack(0x87),
+        Outcome::Connack(0x8c),
+        Outcome::Disconnect,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let broker = support::Broker::spawn(move || {
+            let mut socket = support::accept(&listener);
+            read_packet(&mut socket);
+            match outcome {
+                Outcome::TransportLoss => return,
+                Outcome::Connack(reason) => {
+                    socket.write_all(&[0x20, 3, 0, reason, 0]).unwrap();
+                }
+                Outcome::Disconnect => {
+                    socket
+                        .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                        .unwrap();
+                    assert!(matches!(
+                        read_packet(&mut socket),
+                        rumqttc_v5::Packet::Auth(_)
+                    ));
+                    socket.write_all(b"\xe0\x02\x87\x00").unwrap();
+                }
+            }
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        });
+        let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+        let mut client = NativeClient::start(async_config(
+            port,
+            Arc::new(Authority(failed_tx)),
+            Duration::from_secs(30),
+        ))
+        .unwrap();
+        let mut events = client.take_events().unwrap();
+        let operation = if matches!(outcome, Outcome::Disconnect) {
+            support::until(&mut events, |event| {
+                matches!(event, WrapperEvent::Connected { .. })
+            });
+            Some(
+                client
+                    .handle()
+                    .try_admit(Command::Reauthenticate(None))
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        assert_eq!(
+            failed_rx.recv_timeout(support::DEADLINE).unwrap(),
+            if matches!(outcome, Outcome::TransportLoss) {
+                AuthFailure::ConnectionClosed
+            } else {
+                AuthFailure::BrokerRejected
+            },
+            "outcome={outcome:?}"
+        );
+        if let Some(operation) = operation {
+            let error = support::terminal(&operation).unwrap_err();
+            assert_eq!(error.auth_failure(), Some(AuthFailure::BrokerRejected));
+            assert_eq!(error.broker_reason(), Some(0x87));
+        }
+        client.closer().close_now(support::DEADLINE).unwrap();
+        broker.join();
     }
 }

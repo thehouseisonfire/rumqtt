@@ -395,6 +395,7 @@ pub fn build(
     protocol: crate::V5Config,
 ) -> crate::Result<(rumqttc_v5::AsyncClient, Box<Driver>)> {
     let authenticator = protocol.authenticator.clone();
+    let async_authenticator = protocol.async_authenticator.clone();
     #[cfg(feature = "auth-scram")]
     let authenticator = match &protocol.scram {
         Some(scram) => Some(crate::scram::build(scram.clone())),
@@ -411,6 +412,14 @@ pub fn build(
                 generation: 0,
             },
         )));
+    }
+    if let Some(config) = async_authenticator {
+        options.set_async_authenticator(std::sync::Arc::new(super::auth::AsyncAdapter {
+            client_id: common.client_id.clone(),
+            config,
+            monitor: auth.clone(),
+            generation: std::sync::atomic::AtomicU64::new(0),
+        }));
     }
     let (client, eventloop) = rumqttc_v5::AsyncClient::builder(options)
         .capacity(common.request_channel_capacity)
@@ -430,6 +439,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         mut eventloop,
         auth,
     } = *driver;
+    let async_authentication = eventloop.options.async_authenticator().is_some();
     let DriverContext {
         shared,
         completion_rx,
@@ -446,6 +456,13 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     let mut senders = HashMap::<OperationId, PendingSender>::new();
     let mut connected = false;
     let mut unresolved_redirect: Option<crate::RedirectEvent> = None;
+    let mut pending_auth: Option<(u8, Option<crate::AuthProperties>)> = None;
+    let mapping = EventMappingOptions {
+        emit_outgoing,
+        manual_ack,
+        protocol,
+        auth_failure: None,
+    };
     let mut diagnostics = snapshot_v5(&eventloop);
     let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
     let delivery = EventDelivery {
@@ -458,12 +475,32 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     loop {
         // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
         // registrations, cached diagnostics, and completed notices remain responsive.
+        let mut authentication_timed_out = false;
         let polled = {
             let poll = eventloop.poll();
             tokio::pin!(poll);
             loop {
+                if connected
+                    && async_authentication
+                    && shared.immediate_shutdown_requested()
+                    && auth.callback_active()
+                {
+                    // The event loop cannot process its queued DISCONNECT while awaiting the
+                    // authority. Dropping the poll cancels the retained response future.
+                    break None;
+                }
                 let (failure, deadline) = auth.snapshot();
-                if let Some(failure) = failure.or_else(|| {
+                if async_authentication {
+                    if deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now())
+                        && !auth.callback_active()
+                    {
+                        // Dropping the poll can notify the authority through its AUTH
+                        // guard. Record the cause before cancellation invokes that callback.
+                        auth.fail(crate::AuthFailure::Timeout);
+                        authentication_timed_out = true;
+                        break None;
+                    }
+                } else if let Some(failure) = failure.or_else(|| {
                     deadline
                         .filter(|deadline| *deadline <= tokio::time::Instant::now())
                         .map(|_| crate::AuthFailure::Timeout)
@@ -476,9 +513,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 // Keep parity with the fair and cooperative v4 arbitration above.
                 tokio::select! {
                     () = auth.changed.notified() => {},
-                    () = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await; } else { std::future::pending::<()>().await; } } => {},
+                    () = auth.callback_changed.notified(), if async_authentication => {},
+                    () = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await; } else { std::future::pending::<()>().await; } },
+                        if !async_authentication || !auth.callback_active() => {},
                     _ = panic_rx.recv_async() => crate::runtime::terminate_driver_for_boundary_panic(),
-                    _ = immediate_shutdown_rx.recv_async(), if !connected => break None,
+                    _ = immediate_shutdown_rx.recv_async(), if !connected || async_authentication => {
+                        if !connected {
+                            break None;
+                        }
+                    },
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
                         accept_registration(registration, &pending, &mut senders);
                         tokio::task::yield_now().await;
@@ -495,8 +538,38 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
             }
         };
+        let polled = if authentication_timed_out {
+            let message = "authentication exchange timed out".to_owned();
+            eventloop
+                .state
+                .abort_authentication(rumqttc_v5::AuthError::Failed(message.clone()));
+            Some(Err(rumqttc_v5::ConnectionError::MqttState(
+                rumqttc_v5::StateError::AuthError(message),
+            )))
+        } else {
+            polled
+        };
+        let polled = if polled.is_none() {
+            // The poll has been dropped, cancelling any pending host future. Initial
+            // connection establishment has no poll guard, so notify its authority here.
+            eventloop
+                .state
+                .abort_authentication(rumqttc_v5::AuthError::Failed(
+                    "connection closed during authentication".into(),
+                ));
+            // Destruction or the failure notification can panic. Preserve the typed
+            // authentication failure instead of reporting a successful close.
+            auth.snapshot().0.map(|_| {
+                Err(rumqttc_v5::ConnectionError::MqttState(
+                    rumqttc_v5::StateError::AuthError(
+                        "wrapper authentication callback failed".into(),
+                    ),
+                ))
+            })
+        } else {
+            polled
+        };
         let Some(polled) = polled else {
-            // Keep MQTT 5 connection-establishment cancellation identical to the v4 path.
             return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
         };
         shared.notify_progress();
@@ -519,9 +592,8 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     rumqttc_v5::Event::Incoming(packet),
                     &shared,
                     &mut connected,
-                    emit_outgoing,
-                    manual_ack,
-                    protocol,
+                    mapping,
+                    &mut pending_auth,
                 )
             };
             if let Some(event) = event
@@ -531,6 +603,26 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             }
         }
         if let Some(failure) = auth.snapshot().0 {
+            // Poll defers connection cleanup until these events are delivered. Preserve
+            // their order, including ordinary packets consumed before the failed AUTH.
+            let mut pending_events: Vec<_> = polled.as_ref().ok().cloned().into_iter().collect();
+            pending_events.extend(eventloop.state.events.drain(..));
+            for event in pending_events {
+                if let Some(event) = map_v5_event(
+                    &mut eventloop,
+                    event,
+                    &shared,
+                    &mut connected,
+                    EventMappingOptions {
+                        auth_failure: Some(failure),
+                        ..mapping
+                    },
+                    &mut pending_auth,
+                ) && !deliver(&delivery, event).await
+                {
+                    return TerminalStatus::Failed(overflow_error());
+                }
+            }
             let error = Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous);
             shared.fail_acknowledgements(&error);
             fail_pending(&mut senders, &error);
@@ -544,17 +636,27 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     event,
                     &shared,
                     &mut connected,
-                    emit_outgoing,
-                    manual_ack,
-                    protocol,
+                    mapping,
+                    &mut pending_auth,
                 ) {
                     if let WrapperEvent::Redirect(redirect) = &event {
                         unresolved_redirect = redirect.target.is_none().then(|| redirect.clone());
                     }
                     if matches!(&event, WrapperEvent::Connected { .. })
-                        && let Some(mut redirect) = unresolved_redirect.take()
+                        && let Some(redirect) = unresolved_redirect.take()
                     {
-                        redirect.target = super::redirect::broker(eventloop.options.broker());
+                        let resolved = eventloop
+                            .take_last_redirect_diagnostics()
+                            .unwrap_or_else(|| eventloop.diagnostics().redirect);
+                        let redirect = crate::RedirectEvent {
+                            target: super::redirect::broker(eventloop.options.broker()),
+                            attempts: resolved.attempts,
+                            attempt_limit: resolved.attempt_limit,
+                            visited_endpoints: resolved.visited_endpoints,
+                            srv_candidate_index: resolved.srv_candidate_index,
+                            srv_candidate_count: resolved.srv_candidate_count,
+                            ..redirect
+                        };
                         if !deliver(&delivery, WrapperEvent::Redirect(redirect)).await {
                             let error = overflow_error();
                             shared.fail_acknowledgements(&error);
@@ -578,8 +680,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             Err(error) => {
                 if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
                     let failure = super::redirect::failure(&redirect.failure);
-                    let event =
-                        super::redirect::event(redirect.outcome.clone(), None, Some(failure));
+                    let redirect_diagnostics = eventloop
+                        .take_last_redirect_diagnostics()
+                        .unwrap_or_else(|| eventloop.diagnostics().redirect);
+                    let event = super::redirect::event(
+                        redirect.outcome.clone(),
+                        None,
+                        Some(failure),
+                        &redirect_diagnostics,
+                    );
                     let terminal =
                         Error::redirect(failure).with_delivery(DeliveryStatus::Ambiguous);
                     shared.fail_acknowledgements(&terminal);
@@ -631,7 +740,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     }
 }
 
-const fn connack_reason(reason: rumqttc_v5::ConnectReturnCode) -> u8 {
+pub(super) const fn connack_reason(reason: rumqttc_v5::ConnectReturnCode) -> u8 {
     use rumqttc_v5::ConnectReturnCode as C;
     match reason {
         C::Success => 0,
@@ -691,16 +800,32 @@ fn connack_details(connack: rumqttc_v5::ConnAck) -> crate::ConnAckDetails {
     }
 }
 
+#[derive(Clone, Copy)]
+struct EventMappingOptions {
+    emit_outgoing: bool,
+    manual_ack: bool,
+    protocol: ProtocolVersion,
+    auth_failure: Option<crate::AuthFailure>,
+}
+
 fn map_v5_event(
     eventloop: &mut rumqttc_v5::EventLoop,
     event: rumqttc_v5::Event,
     shared: &Shared,
     connected: &mut bool,
-    emit_outgoing: bool,
-    manual_ack: bool,
-    protocol: ProtocolVersion,
+    mapping: EventMappingOptions,
+    pending_auth: &mut Option<(u8, Option<crate::AuthProperties>)>,
 ) -> Option<WrapperEvent> {
     match event {
+        rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Auth(auth)) => {
+            let reason = match auth.code {
+                rumqttc_v5::AuthReasonCode::Success => 0,
+                rumqttc_v5::AuthReasonCode::Continue => 0x18,
+                rumqttc_v5::AuthReasonCode::ReAuthenticate => 0x19,
+            };
+            *pending_auth = Some((reason, auth.properties.map(super::auth::from_properties)));
+            None
+        }
         rumqttc_v5::Event::Redirect(outcome) => {
             shared.invalidate_connection(&Error::new(ErrorKind::Network, "connection redirected"));
             *connected = false;
@@ -711,7 +836,7 @@ fn map_v5_event(
                 super::redirect::broker(eventloop.options.broker())
             };
             Some(WrapperEvent::Redirect(super::redirect::event(
-                outcome, target, None,
+                outcome, target, None, &redirect,
             )))
         }
         rumqttc_v5::Event::Auth(event) => {
@@ -725,8 +850,9 @@ fn map_v5_event(
                     method,
                     reason,
                 } => {
-                    let failure = match reason {
-                        rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
+                    let failure = mapping.auth_failure.unwrap_or(match reason {
+                        rumqttc_v5::AuthFailureReason::BrokerRejected(_)
+                        | rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
                             crate::AuthFailure::BrokerRejected
                         }
                         rumqttc_v5::AuthFailureReason::OverlappingReauth => {
@@ -742,9 +868,24 @@ fn map_v5_event(
                             crate::AuthFailure::InvalidResponse
                         }
                         _ => crate::AuthFailure::ConnectionClosed,
-                    };
+                    });
                     (kind, method, crate::AuthStage::Failed, Some(failure))
                 }
+            };
+            if matches!(stage, crate::AuthStage::Started | crate::AuthStage::Failed) {
+                *pending_auth = None;
+            }
+            let (reason_code, properties) = if matches!(
+                stage,
+                crate::AuthStage::Continue | crate::AuthStage::Succeeded
+            ) {
+                pending_auth
+                    .take()
+                    .map_or((None, None), |(reason, properties)| {
+                        (Some(reason), properties)
+                    })
+            } else {
+                (None, None)
             };
             Some(WrapperEvent::Authentication(crate::AuthEvent {
                 exchange: match kind {
@@ -756,18 +897,34 @@ fn map_v5_event(
                 method,
                 stage,
                 failure,
+                reason_code,
+                properties,
             }))
         }
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::ConnAck(connack)) => {
             if connack.code != rumqttc_v5::ConnectReturnCode::Success {
                 return Some(WrapperEvent::ConnectionRejected(connack_details(connack)));
             }
-            shared.begin_connection(protocol, connack.session_present, || {
+            *pending_auth = None;
+            if let Some(properties) = connack.properties.as_ref()
+                && properties.authentication_method.is_some()
+            {
+                *pending_auth = Some((
+                    0,
+                    Some(crate::AuthProperties {
+                        method: properties.authentication_method.clone(),
+                        data: properties.authentication_data.clone(),
+                        reason_string: properties.reason_string.clone(),
+                        user_properties: properties.user_properties.clone(),
+                    }),
+                ));
+            }
+            shared.begin_connection(mapping.protocol, connack.session_present, || {
                 eventloop.discard_pending_manual_acknowledgements();
             });
             *connected = true;
             Some(WrapperEvent::Connected {
-                protocol,
+                protocol: mapping.protocol,
                 session_present: connack.session_present,
                 details: connack_details(connack),
             })
@@ -790,7 +947,7 @@ fn map_v5_event(
             }))
         }
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Publish(publish)) => {
-            let ack_token = if manual_ack {
+            let ack_token = if mapping.manual_ack {
                 match publish.qos {
                     rumqttc_v5::QoS::AtLeastOnce | rumqttc_v5::QoS::ExactlyOnce => shared
                         .backend()
@@ -821,7 +978,7 @@ fn map_v5_event(
                 }
                 _ => {}
             }
-            emit_outgoing.then(|| {
+            mapping.emit_outgoing.then(|| {
                 let packet_id = match outgoing {
                     rumqttc_v5::Outgoing::Publish(id)
                     | rumqttc_v5::Outgoing::Subscribe(id)
@@ -847,7 +1004,7 @@ fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Share
     let options = &eventloop.options;
     shared.set_protocol_admission_state(
         options.session_expiry_interval().unwrap_or(0) == 0,
-        options.authenticator().is_some(),
+        options.authenticator().is_some() || options.async_authenticator().is_some(),
     );
 }
 

@@ -25,6 +25,12 @@ int main() {
   rumqttc_tls_options_t tls_options = RUMQTTC_TLS_OPTIONS_INIT;
   rumqttc_tls_pem_identity_t pem_identity = RUMQTTC_TLS_PEM_IDENTITY_INIT;
   rumqttc_tls_pkcs12_identity_t pkcs12_identity = RUMQTTC_TLS_PKCS12_IDENTITY_INIT;
+  rumqttc_proxy_options_t proxy_options = RUMQTTC_PROXY_OPTIONS_INIT;
+  rumqttc_store_vtable_t store_vtable = RUMQTTC_STORE_VTABLE_INIT;
+  rumqttc_resolver_vtable_t resolver_vtable = RUMQTTC_RESOLVER_VTABLE_INIT;
+  rumqttc_auth_vtable_t auth_vtable = RUMQTTC_AUTH_VTABLE_INIT;
+  rumqttc_auth_response_t auth_response = RUMQTTC_AUTH_RESPONSE_INIT;
+  rumqttc_srv_record_t srv_record = RUMQTTC_SRV_RECORD_INIT;
   rumqttc_config_t *config = nullptr;
   if (user_property.struct_size != sizeof(user_property) ||
       properties.struct_size != sizeof(properties) ||
@@ -40,6 +46,14 @@ int main() {
       tls_options.struct_size != sizeof(tls_options) ||
       pem_identity.struct_size != sizeof(pem_identity) ||
       pkcs12_identity.struct_size != sizeof(pkcs12_identity)) {
+    return 1;
+  }
+  if (proxy_options.struct_size != sizeof(proxy_options) ||
+      store_vtable.struct_size != sizeof(store_vtable) ||
+      resolver_vtable.struct_size != sizeof(resolver_vtable) ||
+      auth_vtable.struct_size != sizeof(auth_vtable) ||
+      auth_response.struct_size != sizeof(auth_response) ||
+      srv_record.struct_size != sizeof(srv_record)) {
     return 1;
   }
   const auto status = rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &config, nullptr);

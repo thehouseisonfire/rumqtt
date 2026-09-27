@@ -72,6 +72,35 @@ if(WIN32)
             "${RUMQTTC_SHARED_LIBRARY}" "$<TARGET_FILE_DIR:rumqttc-native-integration>")
 endif()
 rumqttc_native_target(rumqttc-native-stress native_stress.c)
+rumqttc_native_target(rumqttc-native-auth native_auth.c)
+rumqttc_native_target(rumqttc-native-auth-timeout native_auth_timeout.c)
+rumqttc_native_target(rumqttc-native-auth-reject native_auth_reject.c)
+rumqttc_native_target(rumqttc-native-auth-cancel native_auth_cancel.c)
+rumqttc_native_target(rumqttc-native-auth-abandon native_auth_abandon.c)
+rumqttc_native_target(rumqttc-native-auth-reconnect native_auth_reconnect.c)
+rumqttc_native_target(rumqttc-native-scram native_scram.c)
+rumqttc_native_target(rumqttc-native-srv-redirect native_srv_redirect.c)
+rumqttc_native_target(rumqttc-native-srv-failure native_srv_failure.c)
+rumqttc_native_target(rumqttc-native-srv-cancel native_srv_cancel.c)
+rumqttc_native_target(rumqttc-native-redirect-reject-loop native_redirect_reject_loop.c)
+rumqttc_native_target(rumqttc-native-proxy native_proxy.c)
+rumqttc_native_target(rumqttc-native-store-corrupt native_store_corrupt.c)
+rumqttc_native_target(rumqttc-native-store-cancel native_store_cancel.c)
+rumqttc_native_target(rumqttc-native-store-restart native_store_restart.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-auth PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-timeout PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-reject PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-cancel PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-abandon PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-reconnect PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-srv-redirect PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-srv-failure PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-srv-cancel PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-store-corrupt PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-store-cancel PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-store-restart PRIVATE /experimental:c11atomics)
+endif()
 
 set(BROKER_RUNNER "${CMAKE_CURRENT_LIST_DIR}/broker_fixture.py")
 add_test(NAME rumqttc-native-integration
@@ -85,5 +114,65 @@ set_tests_properties(rumqttc-error-out-coverage PROPERTIES LABELS "native;compil
 add_test(NAME rumqttc-native-stress
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-stress>)
 set_tests_properties(rumqttc-native-stress PROPERTIES LABELS "native;stress" TIMEOUT 180)
+
+add_test(NAME rumqttc-native-auth
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth>)
+set_tests_properties(rumqttc-native-auth PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-timeout
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-timeout>)
+set_tests_properties(rumqttc-native-auth-timeout PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-reject
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-reject>)
+set_tests_properties(rumqttc-native-auth-reject PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-cancel
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-cancel>)
+set_tests_properties(rumqttc-native-auth-cancel PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-abandon
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-abandon>)
+set_tests_properties(rumqttc-native-auth-abandon PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-reconnect
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-reconnect>)
+set_tests_properties(rumqttc-native-auth-reconnect PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-scram
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-scram>)
+set_tests_properties(rumqttc-native-scram PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-srv-redirect
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-srv-redirect>)
+set_tests_properties(rumqttc-native-srv-redirect PROPERTIES LABELS "native;redirect" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-srv-failure
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-srv-failure>)
+set_tests_properties(rumqttc-native-srv-failure PROPERTIES LABELS "native;redirect" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-srv-cancel
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-srv-cancel>)
+set_tests_properties(rumqttc-native-srv-cancel PROPERTIES LABELS "native;redirect" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-redirect-reject-loop
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-redirect-reject-loop>)
+set_tests_properties(rumqttc-native-redirect-reject-loop PROPERTIES LABELS "native;redirect" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-proxy
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-proxy>)
+set_tests_properties(rumqttc-native-proxy PROPERTIES LABELS "native;proxy" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-store-corrupt
+    COMMAND $<TARGET_FILE:rumqttc-native-store-corrupt>)
+set_tests_properties(rumqttc-native-store-corrupt PROPERTIES LABELS "native;persistence" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-store-cancel
+    COMMAND $<TARGET_FILE:rumqttc-native-store-cancel>)
+set_tests_properties(rumqttc-native-store-cancel PROPERTIES LABELS "native;persistence" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-store-restart
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-store-restart>)
+set_tests_properties(rumqttc-native-store-restart PROPERTIES LABELS "native;persistence" TIMEOUT 90)
 
 add_subdirectory("${RUMQTTC_ROOT}/examples" examples)

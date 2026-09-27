@@ -101,6 +101,7 @@ pub(super) fn event(
     outcome: rumqttc_v5::RedirectOutcome,
     target: Option<BrokerTarget>,
     failure: Option<RedirectFailure>,
+    diagnostics: &rumqttc_v5::RedirectDiagnostics,
 ) -> RedirectEvent {
     RedirectEvent {
         source: match outcome.source {
@@ -114,6 +115,20 @@ pub(super) fn event(
         server_reference: outcome.server_reference,
         target,
         failure,
+        followed: matches!(
+            failure,
+            None | Some(
+                RedirectFailure::Callback(_)
+                    | RedirectFailure::Dns
+                    | RedirectFailure::Timeout
+                    | RedirectFailure::Transport
+            )
+        ),
+        attempts: diagnostics.attempts,
+        attempt_limit: diagnostics.attempt_limit,
+        visited_endpoints: diagnostics.visited_endpoints,
+        srv_candidate_index: diagnostics.srv_candidate_index,
+        srv_candidate_count: diagnostics.srv_candidate_count,
     }
 }
 

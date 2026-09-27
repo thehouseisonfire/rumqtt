@@ -7,6 +7,7 @@ import argparse
 import base64
 import contextlib
 import hashlib
+import hmac
 import os
 import shlex
 import socket
@@ -185,6 +186,73 @@ def skip_properties(body: bytes, offset: int) -> int:
     return properties_at(body, offset)[1]
 
 
+def scram_auth_data(properties: bytes) -> bytes:
+    offset = 0
+    method = None
+    data = None
+    while offset < len(properties):
+        property_id = properties[offset]
+        offset += 1
+        if property_id in (0x15, 0x16):
+            value, offset = string_at(properties, offset)
+            if property_id == 0x15:
+                method = value
+            else:
+                data = value
+        elif property_id in (0x11, 0x27):
+            offset += 4
+        elif property_id in (0x21, 0x22):
+            offset += 2
+        elif property_id in (0x17, 0x19):
+            offset += 1
+        elif property_id == 0x26:
+            _, offset = string_at(properties, offset)
+            _, offset = string_at(properties, offset)
+        else:
+            raise AssertionError(f"unexpected SCRAM property 0x{property_id:02x}")
+    if method != b"SCRAM-SHA-256" or data is None:
+        raise AssertionError("SCRAM method or data missing")
+    return data
+
+
+def scram_exchange(stream: socket.socket, first: bytes, initial: bool) -> None:
+    if not first.startswith(b"n,,n=scram-private-username,r="):
+        raise AssertionError("unexpected SCRAM client first message")
+    first_bare = first[3:]
+    nonce = first_bare.split(b"r=", 1)[1]
+    if not nonce:
+        raise AssertionError("empty SCRAM nonce")
+    server_nonce = nonce + b"fixedServerNonce"
+    salt = b"fixed-salt"
+    server_first = b"r=" + server_nonce + b",s=" + base64.b64encode(salt) + b",i=4096"
+    method = b"\x15\x00\x0dSCRAM-SHA-256"
+    challenge = method + b"\x16" + struct.pack("!H", len(server_first)) + server_first
+    stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
+    answer = read_frame(stream)
+    if answer is None or answer[0] != 15 or answer[2][0] != 0x18:
+        raise AssertionError("SCRAM client final message missing")
+    answer_properties, _ = properties_at(answer[2], 1)
+    final = scram_auth_data(answer_properties)
+    without_proof, marker, encoded_proof = final.rpartition(b",p=")
+    if not marker or b"r=" + server_nonce not in without_proof:
+        raise AssertionError("SCRAM client final nonce changed")
+    auth_message = b",".join((first_bare, server_first, without_proof))
+    salted = hashlib.pbkdf2_hmac("sha256", b"scram-private-password", salt, 4096)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    signature = hmac.new(stored_key, auth_message, hashlib.sha256).digest()
+    expected_proof = bytes(left ^ right for left, right in zip(client_key, signature))
+    if not hmac.compare_digest(base64.b64decode(encoded_proof), expected_proof):
+        raise AssertionError("SCRAM client proof failed")
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    server_proof = b"v=" + base64.b64encode(hmac.new(server_key, auth_message, hashlib.sha256).digest())
+    success_properties = method + b"\x16" + struct.pack("!H", len(server_proof)) + server_proof
+    if initial:
+        stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(success_properties)) + success_properties))
+    else:
+        stream.sendall(frame(15, 0, b"\x00" + encode_remaining(len(success_properties)) + success_properties))
+
+
 @dataclass
 class Connection:
     stream: socket.socket
@@ -217,7 +285,8 @@ class Connection:
 
 
 class Broker:
-    def __init__(self, tls_context: ssl.SSLContext | None = None, *, websocket: bool = False) -> None:
+    def __init__(self, tls_context: ssl.SSLContext | None = None, *, websocket: bool = False,
+                 tls_proxy: bool = False) -> None:
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -226,12 +295,14 @@ class Broker:
         self.port = self.listener.getsockname()[1]
         self.tls_context = tls_context
         self.websocket = websocket
+        self.tls_proxy = tls_proxy
         self.stopping = threading.Event()
         self.threads: list[threading.Thread] = []
         self.failures: list[str] = []
         self.client_ids: set[bytes] = set()
         self.observations: dict[bytes, set[str]] = {}
         self.connection_attempts: dict[bytes, int] = {}
+        self.restart_packet_ids: dict[tuple[bytes, bytes], bytes] = {}
         self.tls_disconnects_before_connect = 0
         self.failure_lock = threading.Lock()
         self.accept_thread = threading.Thread(target=self.accept, name="mqtt-fixture", daemon=True)
@@ -256,6 +327,9 @@ class Broker:
                 self.failures.append(
                     f"JavaScript wire observations were incomplete for {client_id!r}: {sorted(observed)}"
                 )
+        for client_id in {b"native-store-restart-v4", b"native-store-restart-v5"}.intersection(self.client_ids):
+            if not {"replayed-qos1", "replayed-qos2"}.issubset(self.observations.get(client_id, set())):
+                self.failures.append(f"stored mixed-QoS publishes were not replayed for {client_id!r}")
         if (
             self.tls_context is not None
             and b"js-tls-valid" in self.client_ids
@@ -295,6 +369,67 @@ class Broker:
     def serve(self, stream: socket.socket) -> None:
         connection: Connection | None = None
         try:
+            proxy_kind: str | None = None
+            if self.tls_proxy:
+                request = bytearray()
+                while b"\r\n\r\n" not in request:
+                    byte = stream.recv(1)
+                    if not byte or len(request) > 4096:
+                        raise AssertionError("incomplete HTTPS CONNECT request")
+                    request.extend(byte)
+                if not request.startswith(b"CONNECT broker.invalid:1883 HTTP/1.1\r\n"):
+                    raise AssertionError("HTTPS proxy target was changed")
+                if b"Proxy-Authorization: Basic dXNlcjpwYXNz\r\n" not in request:
+                    raise AssertionError("HTTPS proxy credentials were not preserved")
+                stream.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                proxy_kind = "http"
+            if not self.websocket and not self.tls_context:
+                prefix = stream.recv(1, socket.MSG_PEEK)
+                if prefix == b"C":
+                    while len(prefix) < 7:
+                        prefix = stream.recv(7, socket.MSG_PEEK)
+                        if not prefix:
+                            raise AssertionError("connection closed during proxy preface")
+                if prefix.startswith(b"CONNECT"):
+                    request = bytearray()
+                    while b"\r\n\r\n" not in request:
+                        byte = stream.recv(1)
+                        if not byte or len(request) > 4096:
+                            raise AssertionError("incomplete HTTP CONNECT request")
+                        request.extend(byte)
+                    if not request.startswith(b"CONNECT broker.invalid:1883 HTTP/1.1\r\n"):
+                        raise AssertionError("proxy target was changed")
+                    if b"Proxy-Authorization: Basic dXNlcjpwYXNz\r\n" not in request:
+                        raise AssertionError("HTTP proxy credentials were not preserved")
+                    stream.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    proxy_kind = "http"
+                elif prefix[:1] == b"\x05":
+                    greeting = read_exact(stream, 2)
+                    if greeting is None or greeting[0] != 5:
+                        raise AssertionError("incomplete SOCKS greeting")
+                    methods = read_exact(stream, greeting[1])
+                    if methods is None or 2 not in methods:
+                        raise AssertionError("SOCKS username/password method missing")
+                    stream.sendall(b"\x05\x02")
+                    auth_header = read_exact(stream, 2)
+                    if auth_header is None or auth_header[0] != 1:
+                        raise AssertionError("incomplete SOCKS authentication")
+                    username = read_exact(stream, auth_header[1])
+                    password_length = read_exact(stream, 1)
+                    password = read_exact(stream, password_length[0]) if password_length else None
+                    if username != b"user" or password != b"pass":
+                        raise AssertionError("SOCKS credentials were changed")
+                    stream.sendall(b"\x01\x00")
+                    address_header = read_exact(stream, 4)
+                    if address_header is None or address_header[:3] != b"\x05\x01\x00" or address_header[3] != 3:
+                        raise AssertionError("SOCKS remote DNS policy was not used")
+                    host_length = read_exact(stream, 1)
+                    host = read_exact(stream, host_length[0]) if host_length else None
+                    port = read_exact(stream, 2)
+                    if host != b"broker.invalid" or port != b"\x07\x5b":
+                        raise AssertionError("SOCKS proxy target was changed")
+                    stream.sendall(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
+                    proxy_kind = "socks5"
             connected = read_frame(stream)
             if connected is None or connected[0] != 1:
                 if self.tls_context is not None:
@@ -309,27 +444,134 @@ class Broker:
             offset += 1  # CONNECT flags
             offset += 2  # Keep Alive
             if protocol == 4:
-                pass
+                connect_properties = b""
             elif protocol == 5:
-                offset = skip_properties(body, offset)
+                connect_properties, offset = properties_at(body, offset)
             else:
                 return
             client_id, _ = string_at(body, offset)
+            if client_id.startswith(b"native-proxy-"):
+                expected_proxy = "http" if b"http" in client_id else "socks5"
+                if proxy_kind != expected_proxy:
+                    raise AssertionError("MQTT connection bypassed the configured proxy")
             with self.failure_lock:
                 attempt = self.connection_attempts.get(client_id, 0) + 1
                 self.connection_attempts[client_id] = attempt
+            if client_id.startswith(b"native-proxy-") and b"-reconnect-" in client_id and attempt == 1:
+                return
             if client_id.startswith(b"python-attempt-recovery-") and attempt == 1:
                 return
             if client_id.startswith(b"python-capability-") and attempt > 1:
                 time.sleep(0.3)
-            if protocol == 4:
-                stream.sendall(b"\x20\x02\x00\x00")
-            elif client_id.startswith(b"python-capability-"):
-                stream.sendall(b"\x20\x06\x00\x00\x03\x22\x00\x0a")
+            if client_id in {b"native-v5-redirect-reject", b"native-v5-redirect-loop"} and attempt == 1:
+                reference = f"127.0.0.1:{self.port}".encode("ascii")
+                properties = b"\x1c" + struct.pack("!H", len(reference)) + reference
+                stream.sendall(frame(2, 0, b"\x00\x9c" + encode_remaining(len(properties)) + properties))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id in {
+                b"native-v5-srv-redirect",
+                b"native-v5-srv-empty",
+                b"native-v5-srv-failed",
+                b"native-v5-srv-cancel",
+            } and attempt == 1:
+                reference = b"_mqtt._tcp.service.invalid"
+                properties = b"\x1c" + struct.pack("!H", len(reference)) + reference
+                stream.sendall(frame(2, 0, b"\x00\x9c" + encode_remaining(len(properties)) + properties))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id == b"" and self.connection_attempts.get(b"native-v5-srv-redirect", 0):
+                assigned = b"native-v5-srv-target"
+                properties = b"\x12" + struct.pack("!H", len(assigned)) + assigned
+                stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(properties)) + properties))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id in {b"native-v5-auth-timeout", b"native-v5-auth-cancel", b"native-v5-auth-abandon"}:
+                method = b"\x15\x00\x06custom"
+                if protocol != 5 or method not in body:
+                    raise AssertionError("timeout fixture did not receive authenticated CONNECT")
+                challenge = method + b"\x16\x00\x06server"
+                stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id == b"native-v5-auth-reject":
+                method = b"\x15\x00\x06custom"
+                if protocol != 5 or method not in body:
+                    raise AssertionError("rejection fixture did not receive authenticated CONNECT")
+                stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(method)) + method))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id == b"native-v5-auth-reconnect":
+                method = b"\x15\x00\x06custom"
+                if protocol != 5 or method not in body:
+                    raise AssertionError("reconnect fixture did not receive authenticated CONNECT")
+                stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(method)) + method))
+                answer = read_frame(stream)
+                if answer is None or answer[0] != 15 or answer[2][0] != 0x18:
+                    raise AssertionError("reconnect AUTH response missing")
+                answer_properties, _ = properties_at(answer[2], 1)
+                if method not in answer_properties:
+                    raise AssertionError("reconnect AUTH method changed")
+                stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(method)) + method))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+                if attempt == 1:
+                    return
+            elif client_id == b"native-v5-auth-async":
+                if protocol != 5 or b"\x15\x00\x06custom" not in body or b"\x16\x00\x07initial" not in body:
+                    raise AssertionError("deferred AUTH start did not reach CONNECT intact")
+                method = b"\x15\x00\x06custom"
+                challenge = method + b"\x16\x00\x06server" + b"\x1f\x00\x00" + b"\x26\x00\x01k\x00\x011" + b"\x26\x00\x01k\x00\x012"
+                stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
+                answer = read_frame(stream)
+                if answer is None or answer[0] != 15 or answer[2][0] != 0x18:
+                    raise AssertionError("deferred AUTH response was not sent")
+                answer_properties, _ = properties_at(answer[2], 1)
+                if b"\x16\x00\x05reply" not in answer_properties or not answer_properties.endswith(b"\x26\x00\x01p\x00\x012"):
+                    raise AssertionError("deferred AUTH response fields changed on the wire")
+                success = method + b"\x16\x00\x0cserver-proof"
+                stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(success)) + success))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id == b"native-v5-scram":
+                if protocol != 5:
+                    raise AssertionError("SCRAM fixture did not use MQTT 5")
+                scram_exchange(stream, scram_auth_data(connect_properties), True)
+                reauth = read_frame(stream)
+                if reauth is None or reauth[0] != 15 or reauth[2][0] != 0x19:
+                    raise AssertionError("SCRAM reauthentication start missing")
+                reauth_properties, _ = properties_at(reauth[2], 1)
+                scram_exchange(stream, scram_auth_data(reauth_properties), False)
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id == b"c-auth-example":
+                method = b"\x15\x00\x04demo"
+                if protocol != 5 or method not in body or b"\x16\x00\x05hello" not in body:
+                    raise AssertionError("C authenticator example did not send CONNECT authentication")
+                stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(method)) + method))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id.startswith(b"native-store-restart-"):
+                if (client_id.endswith(b"v4") and protocol != 4) or (client_id.endswith(b"v5") and protocol != 5):
+                    raise AssertionError("restart fixture protocol changed")
+                if attempt > 2:
+                    raise AssertionError("restart fixture connected more than twice")
+                present = 1 if attempt == 2 else 0
+                if protocol == 4:
+                    stream.sendall(frame(2, 0, bytes((present, 0))))
+                else:
+                    stream.sendall(frame(2, 0, bytes((present, 0, 0))))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
             else:
-                stream.sendall(b"\x20\x03\x00\x00\x00")
-            connection = Connection(stream, protocol, client_id)
-            self.client_ids.add(client_id)
+                if protocol == 4:
+                    stream.sendall(b"\x20\x02\x00\x00")
+                elif client_id.startswith(b"python-capability-"):
+                    stream.sendall(b"\x20\x06\x00\x00\x03\x22\x00\x0a")
+                else:
+                    stream.sendall(b"\x20\x03\x00\x00\x00")
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
             while not self.stopping.is_set():
                 packet = read_frame(stream)
                 if packet is None:
@@ -362,6 +604,20 @@ class Broker:
                     connection.send(frame(13, 0, b""))
                 elif packet_type == 14:
                     return
+                elif packet_type == 15 and connection.client_id == b"native-v5-auth-async":
+                    if body[0] != 0x19 or b"\x15\x00\x06custom" not in body or b"\x16\x00\x07initial" not in body:
+                        raise AssertionError("client reauthentication packet differed")
+                    method = b"\x15\x00\x06custom"
+                    challenge = method + b"\x16\x00\x06server" + b"\x1f\x00\x00" + b"\x26\x00\x01k\x00\x011" + b"\x26\x00\x01k\x00\x012"
+                    stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
+                    answer = read_frame(stream)
+                    if answer is None or answer[0] != 15 or answer[2][0] != 0x18:
+                        raise AssertionError("deferred reauthentication response was not sent")
+                    answer_properties, _ = properties_at(answer[2], 1)
+                    if b"\x16\x00\x05reply" not in answer_properties:
+                        raise AssertionError("deferred reauthentication data changed")
+                    success = method + b"\x16\x00\x0cserver-proof"
+                    stream.sendall(frame(15, 0, b"\x00" + encode_remaining(len(success)) + success))
         except Exception as error:
             # Fixture failures must reach the runner.
             with self.failure_lock:
@@ -398,6 +654,24 @@ class Broker:
         if connection.protocol == 5:
             offset = skip_properties(body, offset)
         payload = body[offset:]
+        if connection.client_id.startswith(b"native-store-restart-"):
+            expected_qos = {
+                b"rumqttc/native/restart/qos1": 1,
+                b"rumqttc/native/restart/qos2": 2,
+            }.get(topic)
+            if expected_qos is None or payload != b"persist" or qos != expected_qos:
+                raise AssertionError("restart publish changed on the wire")
+            attempt = self.connection_attempts[connection.client_id]
+            key = (connection.client_id, topic)
+            if attempt == 1:
+                self.restart_packet_ids[key] = packet_id
+                return True
+            if packet_id != self.restart_packet_ids.get(key) or not (flags & 8):
+                raise AssertionError("restored publish lost its packet id or DUP bit")
+            self.observations.setdefault(connection.client_id, set()).add(f"replayed-qos{qos}")
+            suffix = b"" if connection.protocol == 4 else b"\x00\x00"
+            connection.send(frame(4 if qos == 1 else 5, 0, packet_id + suffix))
+            return True
         if topic == b"rumqttc/native/binary" and payload != b"\x00\x01\x00\x02\xff\x00":
             raise AssertionError(f"binary payload changed at the C boundary: {payload!r}")
         if topic == b"rumqttc/native/sliced" and payload != b"\x00\x07\x00\x08":
@@ -672,11 +946,13 @@ def main() -> int:
         tls_context, mtls_context, ca_cert, wrong_cert, client_cert, client_key = make_tls_fixture(directory)
         broker = Broker()
         tls_broker = Broker(tls_context)
+        tls_proxy_broker = Broker(tls_context, tls_proxy=True)
         websocket_broker = Broker(websocket=True)
         wss_broker = Broker(tls_context, websocket=True)
         mtls_broker = Broker(mtls_context)
         broker.start()
         tls_broker.start()
+        tls_proxy_broker.start()
         websocket_broker.start()
         wss_broker.start()
         mtls_broker.start()
@@ -684,6 +960,7 @@ def main() -> int:
         environment["RUMQTTC_TEST_HOST"] = "127.0.0.1"
         environment["RUMQTTC_TEST_PORT"] = str(broker.port)
         environment["RUMQTTC_TEST_TLS_PORT"] = str(tls_broker.port)
+        environment["RUMQTTC_TEST_HTTPS_PROXY_PORT"] = str(tls_proxy_broker.port)
         environment["RUMQTTC_TEST_WS_PORT"] = str(websocket_broker.port)
         environment["RUMQTTC_TEST_WSS_PORT"] = str(wss_broker.port)
         environment["RUMQTTC_TEST_MTLS_PORT"] = str(mtls_broker.port)
@@ -708,6 +985,7 @@ def main() -> int:
         finally:
             broker.stop()
             tls_broker.stop()
+            tls_proxy_broker.stop()
             websocket_broker.stop()
             wss_broker.stop()
             mtls_broker.stop()

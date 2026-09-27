@@ -17,8 +17,9 @@ use crate::session::{
     PersistedUnsubscribeProperties, SessionRestoreError,
 };
 use crate::{
-    AckMode, AuthContext, AuthError, AuthExchangeKind, Authenticator, MqttOptions,
-    NoticeFailureReason, PublishNoticeError, TopicAliasPolicy,
+    AckMode, AsyncAuthChallenge, AsyncAuthContext, AsyncAuthenticator, AuthAction, AuthContext,
+    AuthError, AuthExchangeKind, Authenticator, MqttOptions, NoticeFailureReason,
+    PublishNoticeError, TopicAliasPolicy,
 };
 
 use super::{Event, Incoming, Outgoing, Request};
@@ -395,7 +396,7 @@ impl IncomingPacketEffects {
         self
     }
 
-    fn complete_notices(self) -> Option<Packet> {
+    pub(crate) fn complete_notices(self) -> Option<Packet> {
         for notice in self.notices {
             notice.complete();
         }
@@ -502,6 +503,7 @@ pub struct MqttState {
     max_outgoing_inflight_upper_limit: u16,
     /// Authentication callback
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
+    async_authenticator: Option<Arc<dyn AsyncAuthenticator>>,
     /// Authentication lifecycle state.
     auth: AuthLifecycle,
 }
@@ -781,7 +783,46 @@ impl MqttState {
             max_outgoing_inflight: max_inflight,
             max_outgoing_inflight_upper_limit: max_inflight,
             authenticator,
+            async_authenticator: None,
             auth: AuthLifecycle::new(authentication_method),
+        }
+    }
+
+    pub(crate) fn set_async_authenticator(
+        &mut self,
+        authenticator: Option<Arc<dyn AsyncAuthenticator>>,
+    ) {
+        self.async_authenticator = authenticator;
+    }
+
+    pub(crate) fn uses_async_authentication(&self) -> bool {
+        self.async_authenticator.is_some()
+    }
+
+    pub(crate) async fn begin_authentication_connect_async(
+        &mut self,
+        method: Option<String>,
+    ) -> Result<Option<crate::AuthProperties>, StateError> {
+        let result = self.begin_authentication_connect(method.clone())?;
+        let (Some(authenticator), Some(method)) = (self.async_authenticator.clone(), method) else {
+            return Ok(result);
+        };
+        let context = AsyncAuthContext {
+            kind: AuthExchangeKind::InitialConnect,
+            method: method.clone(),
+        };
+        let action = authenticator
+            .respond(context, AsyncAuthChallenge::Start)
+            .await
+            .map_err(|error| self.fail_authenticator(&error))?;
+        match action {
+            AuthAction::Send(properties) => {
+                crate::auth::normalize_auth_properties(&method, Some(properties))
+                    .map(Some)
+                    .map_err(|error| self.fail_authenticator(&AuthError::Failed(error.to_string())))
+            }
+            AuthAction::Complete => Ok(None),
+            AuthAction::Fail(message) => Err(self.fail_authenticator(&AuthError::Failed(message))),
         }
     }
 
@@ -866,6 +907,7 @@ impl MqttState {
         properties
             .map(|properties| crate::auth::normalize_auth_properties(&method, Some(properties)))
             .transpose()
+            .map_err(|error| self.fail_authenticator(&AuthError::Failed(error.to_string())))
     }
 
     pub(crate) fn validate_successful_connack_authentication_method(
@@ -1338,6 +1380,7 @@ impl MqttState {
         let client_receive_maximum = self.max_incoming_inflight;
         let authentication_method = auth.method().map(str::to_owned);
         let authenticator = self.authenticator.clone();
+        let async_authenticator = self.async_authenticator.clone();
         let max_outgoing_inflight = self.max_outgoing_inflight_upper_limit;
 
         let mut reset = Self::new_internal(
@@ -1349,6 +1392,7 @@ impl MqttState {
             authentication_method,
             authenticator,
         );
+        reset.async_authenticator = async_authenticator;
         reset.events = events;
         reset.auth = auth;
         *self = reset;
@@ -1397,12 +1441,28 @@ impl MqttState {
                 ),
             }
         }
+        if let Some(authenticator) = &self.async_authenticator {
+            authenticator.failure(
+                AsyncAuthContext {
+                    kind: AuthExchangeKind::Reauthentication,
+                    method,
+                },
+                AuthError::Failed(notice_error.to_string()),
+            );
+        }
     }
 
     pub(crate) fn fail_auth_exchange_due_to_connection_closed(&mut self) {
         self.fail_auth_exchange(
             AuthNoticeError::ConnectionClosed,
             AuthError::Failed("connection closed before authentication completed".to_owned()),
+        );
+    }
+
+    pub(crate) fn fail_auth_exchange_due_to_broker_rejection(&mut self, reason: ConnectReturnCode) {
+        self.fail_auth_exchange(
+            AuthNoticeError::BrokerRejected(reason),
+            AuthError::BrokerRejected(reason),
         );
     }
 
@@ -1447,6 +1507,69 @@ impl MqttState {
         self.handle_outgoing_packet_with_notice_internal(request, notice, false)
     }
 
+    pub(crate) async fn handle_outgoing_packet_with_notice_async(
+        &mut self,
+        request: Request,
+        notice: Option<TrackedNoticeTx>,
+        replay: bool,
+    ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
+        let Some(authenticator) = self.async_authenticator.clone() else {
+            return self.handle_outgoing_packet_with_notice_internal(request, notice, replay);
+        };
+        let Request::Auth(auth) = request else {
+            return self.handle_outgoing_packet_with_notice_internal(request, notice, replay);
+        };
+        let supplied_properties = auth.properties.is_some();
+        let notice = match notice {
+            Some(TrackedNoticeTx::Auth(notice)) => Some(notice),
+            _ => None,
+        };
+        // Register the exchange and its notice before invoking cancellable host code.
+        // A driver cancelling Start must still be able to fail both participants.
+        let mut auth = self
+            .auth
+            .begin_reauth(auth.properties, notice, &mut self.events)?;
+        let method = auth
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.method.clone())
+            .expect("reauthentication has a normalized method");
+        let context = AsyncAuthContext {
+            kind: AuthExchangeKind::Reauthentication,
+            method: method.clone(),
+        };
+        match authenticator
+            .respond(context, AsyncAuthChallenge::Start)
+            .await
+        {
+            Ok(AuthAction::Send(properties)) if !supplied_properties => {
+                auth.properties = Some(
+                    crate::auth::normalize_auth_properties(&method, Some(properties)).map_err(
+                        |error| self.fail_authenticator(&AuthError::Failed(error.to_string())),
+                    )?,
+                );
+            }
+            Ok(AuthAction::Send(_)) => {
+                return Err(self.fail_authenticator(&AuthError::Failed(
+                    "reauthentication properties are owned by the configured authenticator"
+                        .to_owned(),
+                )));
+            }
+            Ok(AuthAction::Complete) => {}
+            Ok(AuthAction::Fail(message)) | Err(AuthError::Failed(message)) => {
+                self.fail_auth_exchange(
+                    AuthNoticeError::AuthenticationFailed(message.clone()),
+                    AuthError::Failed(message.clone()),
+                );
+                return Err(StateError::AuthError(message));
+            }
+            Err(error) => return Err(self.fail_authenticator(&error)),
+        }
+        self.last_outgoing = Instant::now();
+        Ok((Some(self.outgoing_auth_packet(auth)), None))
+    }
+
+    #[cfg(test)]
     pub(crate) fn handle_replayed_outgoing_packet_with_notice(
         &mut self,
         request: Request,
@@ -1678,6 +1801,130 @@ impl MqttState {
         }
     }
 
+    /// Verify final asynchronous authentication without committing CONNACK state or success events.
+    /// The event loop checks its connection deadline before accepting the packet.
+    pub(crate) async fn verify_connack_authentication_async(
+        &mut self,
+        connack: &ConnAck,
+    ) -> Result<(), StateError> {
+        if let Some(authenticator) = self.async_authenticator.clone()
+            && let Some((AuthExchangeKind::InitialConnect, method)) = self.auth.active_exchange()
+        {
+            self.validate_incoming_connack(connack)?;
+            let properties = connack
+                .properties
+                .as_ref()
+                .map(|properties| crate::AuthProperties {
+                    method: properties.authentication_method.clone(),
+                    data: properties.authentication_data.clone(),
+                    reason: properties.reason_string.clone(),
+                    user_properties: properties.user_properties.clone(),
+                });
+            let action = authenticator
+                .respond(
+                    AsyncAuthContext {
+                        kind: AuthExchangeKind::InitialConnect,
+                        method,
+                    },
+                    AsyncAuthChallenge::Success {
+                        reason_code: 0,
+                        properties,
+                    },
+                )
+                .await
+                .map_err(|error| self.fail_authenticator(&error))?;
+            if !matches!(action, AuthAction::Complete) {
+                return Err(self.fail_authenticator(&AuthError::Failed(
+                    "invalid CONNACK authentication response".to_owned(),
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn handle_incoming_packet_with_effects_async(
+        &mut self,
+        packet: Incoming,
+    ) -> Result<IncomingPacketEffects, StateError> {
+        if let Incoming::ConnAck(connack) = &packet {
+            self.verify_connack_authentication_async(connack).await?;
+        }
+        let Incoming::Auth(auth) = packet else {
+            return self.handle_incoming_packet_with_effects(packet);
+        };
+        if self.async_authenticator.is_none() {
+            return self.handle_incoming_packet_with_effects(Incoming::Auth(auth));
+        }
+        let events_len_before = self.events.len();
+        let effect = self.validate_incoming_auth(&auth)?;
+        self.events.insert(
+            events_len_before,
+            Event::Incoming(Incoming::Auth(auth.clone())),
+        );
+        let outgoing = self.handle_incoming_auth_async(&auth, effect).await?;
+        self.last_incoming = Instant::now();
+        Ok(IncomingPacketEffects::outgoing(outgoing))
+    }
+
+    async fn handle_incoming_auth_async(
+        &mut self,
+        auth: &Auth,
+        effect: IncomingAuthEffect,
+    ) -> Result<Option<Packet>, StateError> {
+        let authenticator = self
+            .async_authenticator
+            .clone()
+            .expect("checked async authority");
+        match effect {
+            IncomingAuthEffect::Success { kind, method } => {
+                let context = AsyncAuthContext {
+                    kind,
+                    method: method.clone(),
+                };
+                let action = authenticator
+                    .respond(
+                        context,
+                        AsyncAuthChallenge::Success {
+                            reason_code: 0,
+                            properties: auth.properties.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| self.fail_authenticator(&error))?;
+                if !matches!(action, AuthAction::Complete) {
+                    return Err(self.fail_authenticator(&AuthError::Failed(
+                        "invalid success response".to_owned(),
+                    )));
+                }
+                self.auth.complete_success(kind, method, &mut self.events);
+                Ok(None)
+            }
+            IncomingAuthEffect::Continue { kind } => {
+                let method = self
+                    .auth
+                    .active_exchange()
+                    .expect("validated AUTH continuation has an active exchange")
+                    .1;
+                let context = AsyncAuthContext { kind, method };
+                let action = authenticator
+                    .respond(
+                        context,
+                        AsyncAuthChallenge::Continue {
+                            reason_code: 0x18,
+                            properties: auth.properties.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| self.fail_authenticator(&error))?;
+                let properties = action
+                    .into_continue_properties()
+                    .map_err(|error| self.fail_authenticator(&error))?;
+                let response = self.auth.outgoing_continue(properties)?;
+                Ok(Some(self.outgoing_auth_packet(response)))
+            }
+        }
+    }
+
     fn is_duplicate_incoming_qos2_publish(&self, packet: &Incoming) -> bool {
         matches!(
             packet,
@@ -1788,7 +2035,7 @@ impl MqttState {
         Ok(effects)
     }
 
-    fn handle_incoming_connack(&mut self, connack: &ConnAck) -> Result<Option<Packet>, StateError> {
+    fn validate_incoming_connack(&self, connack: &ConnAck) -> Result<(), StateError> {
         if self.connack_received {
             return Err(StateError::ProtocolViolation(
                 ProtocolViolation::DuplicateConnAck,
@@ -1818,7 +2065,11 @@ impl MqttState {
             }
         }
 
-        self.auth.validate_successful_connack(connack)?;
+        self.auth.validate_successful_connack(connack)
+    }
+
+    fn handle_incoming_connack(&mut self, connack: &ConnAck) -> Result<Option<Packet>, StateError> {
+        self.validate_incoming_connack(connack)?;
         if let Some((AuthExchangeKind::InitialConnect, method)) = self.auth.active_exchange() {
             let properties = connack
                 .properties
@@ -1890,7 +2141,7 @@ impl MqttState {
         }
         self.fail_auth_exchange(
             AuthNoticeError::BrokerDisconnected(reason_code),
-            AuthError::Failed("broker disconnected during authentication".into()),
+            AuthError::BrokerDisconnected(reason_code),
         );
         let reason_string = disconn
             .properties
@@ -2199,7 +2450,7 @@ impl MqttState {
         Ok(())
     }
 
-    fn handle_incoming_auth(&mut self, auth: &Auth) -> Result<Option<Packet>, StateError> {
+    fn validate_incoming_auth(&mut self, auth: &Auth) -> Result<IncomingAuthEffect, StateError> {
         let effect = match self.auth.incoming_auth(auth, &mut self.events) {
             Ok(effect) => effect,
             Err(err @ StateError::Deserialization(mqttbytes::Error::ProtocolError)) => {
@@ -2211,7 +2462,11 @@ impl MqttState {
             }
             Err(err) => return Err(err),
         };
+        Ok(effect)
+    }
 
+    fn handle_incoming_auth(&mut self, auth: &Auth) -> Result<Option<Packet>, StateError> {
+        let effect = self.validate_incoming_auth(auth)?;
         match effect {
             IncomingAuthEffect::Success { kind, method } => {
                 self.authenticate_success(kind, &method, auth.properties.clone())?;
@@ -2253,14 +2508,33 @@ impl MqttState {
     }
 
     fn fail_authenticator(&mut self, error: &AuthError) -> StateError {
-        self.fail_auth_exchange(
-            AuthNoticeError::AuthenticationFailed(error.to_string()),
-            error.clone(),
-        );
+        let notice_error = match error {
+            AuthError::BrokerRejected(reason) => AuthNoticeError::BrokerRejected(*reason),
+            AuthError::BrokerDisconnected(reason) => AuthNoticeError::BrokerDisconnected(*reason),
+            AuthError::Failed(_) => AuthNoticeError::AuthenticationFailed(error.to_string()),
+        };
+        self.fail_auth_exchange(notice_error, error.clone());
         StateError::AuthError(error.to_string())
     }
 
+    /// Aborts an active authentication exchange and resolves its tracked notice.
+    ///
+    /// External drivers can use this after cancelling a poll to enforce an
+    /// exchange deadline while waiting for the broker. The authority receives
+    /// the failure once and the lifecycle failure remains queued for observation.
+    pub fn abort_authentication(&mut self, error: AuthError) {
+        self.fail_auth_exchange(
+            AuthNoticeError::AuthenticationFailed(error.to_string()),
+            error,
+        );
+    }
+
     fn fail_auth_exchange(&mut self, notice_error: AuthNoticeError, callback_error: AuthError) {
+        if let Some((kind, method)) = self.auth.active_exchange()
+            && let Some(authenticator) = &self.async_authenticator
+        {
+            authenticator.failure(AsyncAuthContext { kind, method }, callback_error.clone());
+        }
         if let Some((kind, method)) = self.auth.active_exchange()
             && let Some(authenticator) = self.authenticator.clone()
         {
@@ -3706,6 +3980,7 @@ impl Clone for MqttState {
             max_outgoing_inflight: self.max_outgoing_inflight,
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
             authenticator: self.authenticator.clone(),
+            async_authenticator: self.async_authenticator.clone(),
             auth: self.auth.clone(),
         }
     }
@@ -5837,6 +6112,45 @@ mod test {
         }
     }
 
+    #[tokio::test]
+    async fn invalid_connack_capability_does_not_notify_async_authentication_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct SuccessObserver(Arc<AtomicUsize>);
+
+        impl crate::AsyncAuthenticator for SuccessObserver {
+            fn respond(
+                &self,
+                _: crate::AsyncAuthContext,
+                challenge: crate::AsyncAuthChallenge,
+            ) -> crate::AuthFuture {
+                assert!(matches!(
+                    challenge,
+                    crate::AsyncAuthChallenge::Success { .. }
+                ));
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(crate::AuthAction::Complete) })
+            }
+        }
+
+        let success_calls = Arc::new(AtomicUsize::new(0));
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
+        mqtt.set_async_authenticator(Some(Arc::new(SuccessObserver(success_calls.clone()))));
+        let mut connack = build_capability_connack(Some(2), None, None, None, None);
+        connack.properties.as_mut().unwrap().authentication_method = Some(AUTH_METHOD.to_owned());
+
+        assert!(matches!(
+            mqtt.handle_incoming_packet_with_effects_async(Incoming::ConnAck(connack))
+                .await,
+            Err(StateError::Deserialization(super::MqttError::ProtocolError))
+        ));
+        assert_eq!(success_calls.load(Ordering::SeqCst), 0);
+        assert!(!mqtt.connack_received);
+    }
+
     #[test]
     fn connack_receive_max_preserves_allocator_cursor() {
         let mut mqtt = MqttState::builder(10).build();
@@ -7371,6 +7685,104 @@ mod test {
         assert!(matches!(err, StateError::AuthError(_)));
     }
 
+    #[tokio::test]
+    async fn async_reauth_start_failure_notifies_authority_and_tracked_caller() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct RejectingAuthority(Arc<AtomicUsize>);
+
+        impl crate::AsyncAuthenticator for RejectingAuthority {
+            fn respond(
+                &self,
+                context: crate::AsyncAuthContext,
+                challenge: crate::AsyncAuthChallenge,
+            ) -> crate::AuthFuture {
+                assert_eq!(context.kind, crate::AuthExchangeKind::Reauthentication);
+                assert!(matches!(challenge, crate::AsyncAuthChallenge::Start));
+                Box::pin(async { Err(crate::AuthError::Failed("rejected".to_owned())) })
+            }
+
+            fn failure(&self, context: crate::AsyncAuthContext, error: crate::AuthError) {
+                assert_eq!(context.kind, crate::AuthExchangeKind::Reauthentication);
+                assert_eq!(error, crate::AuthError::Failed("rejected".to_owned()));
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let failures = Arc::new(AtomicUsize::new(0));
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.set_async_authenticator(Some(Arc::new(RejectingAuthority(failures.clone()))));
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        let error = mqtt
+            .handle_outgoing_packet_with_notice_async(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(TrackedNoticeTx::Auth(notice_tx)),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, StateError::AuthError(_)));
+        assert!(matches!(
+            notice.wait_async().await,
+            Err(AuthNoticeError::AuthenticationFailed(message)) if message == "rejected"
+        ));
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_async_auth_continuation_preserves_incoming_packet_before_lifecycle_events() {
+        #[derive(Debug)]
+        struct RejectingAuthority;
+
+        impl crate::AsyncAuthenticator for RejectingAuthority {
+            fn respond(
+                &self,
+                _: crate::AsyncAuthContext,
+                challenge: crate::AsyncAuthChallenge,
+            ) -> crate::AuthFuture {
+                assert!(matches!(
+                    challenge,
+                    crate::AsyncAuthChallenge::Continue { .. }
+                ));
+                Box::pin(async { Err(crate::AuthError::Failed("rejected".to_owned())) })
+            }
+        }
+
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
+            .unwrap();
+        mqtt.events.clear();
+        mqtt.set_async_authenticator(Some(Arc::new(RejectingAuthority)));
+        let auth = Auth::new(
+            AuthReasonCode::Continue,
+            Some(AuthProperties {
+                method: Some(AUTH_METHOD.to_owned()),
+                data: Some(Bytes::from_static(b"broker-challenge")),
+                reason: Some("challenge".to_owned()),
+                user_properties: vec![("source".to_owned(), "broker".to_owned())],
+            }),
+        );
+
+        assert!(matches!(
+            mqtt.handle_incoming_packet_with_effects_async(Incoming::Auth(auth.clone()))
+                .await,
+            Err(StateError::AuthError(_))
+        ));
+        assert_eq!(
+            mqtt.events.pop_front(),
+            Some(Event::Incoming(Incoming::Auth(auth)))
+        );
+        assert!(matches!(
+            mqtt.events.pop_front(),
+            Some(Event::Auth(crate::AuthEvent::Continue { .. }))
+        ));
+        assert!(matches!(
+            mqtt.events.pop_front(),
+            Some(Event::Auth(crate::AuthEvent::Failed { .. }))
+        ));
+    }
+
     #[test]
     fn tracked_reauth_notice_completes_on_matching_auth_success() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
@@ -7465,10 +7877,32 @@ mod test {
     }
 
     #[test]
-    fn incoming_auth_success_accepts_matching_authentication_method() {
+    fn incoming_auth_success_during_initial_exchange_is_protocol_error() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
         mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
             .unwrap();
+        let auth = Auth::new(
+            AuthReasonCode::Success,
+            Some(auth_properties(Some(AUTH_METHOD))),
+        );
+        let error = mqtt
+            .handle_incoming_packet(Incoming::Auth(auth))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StateError::Deserialization(Error::ProtocolError)
+        ));
+        assert!(mqtt.auth.active_exchange().is_none());
+    }
+
+    #[test]
+    fn incoming_auth_success_accepts_matching_authentication_method() {
+        let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
+        mqtt.handle_outgoing_packet(Request::Auth(Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            None,
+        )))
+        .unwrap();
         let auth = Auth::new(
             AuthReasonCode::Success,
             Some(auth_properties(Some(AUTH_METHOD))),
@@ -7514,8 +7948,11 @@ mod test {
     #[test]
     fn incoming_auth_success_rejects_missing_authentication_method() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
-        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
-            .unwrap();
+        mqtt.handle_outgoing_packet(Request::Auth(Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            None,
+        )))
+        .unwrap();
         let auth = Auth::new(AuthReasonCode::Success, None);
 
         let err = mqtt
@@ -7531,8 +7968,11 @@ mod test {
     #[test]
     fn incoming_auth_success_rejects_mismatched_authentication_method() {
         let mut mqtt = build_auth_mqttstate(Some(AUTH_METHOD));
-        mqtt.begin_authentication_connect(Some(AUTH_METHOD.to_owned()))
-            .unwrap();
+        mqtt.handle_outgoing_packet(Request::Auth(Auth::new(
+            AuthReasonCode::ReAuthenticate,
+            None,
+        )))
+        .unwrap();
         let auth = Auth::new(
             AuthReasonCode::Success,
             Some(auth_properties(Some("other-method"))),

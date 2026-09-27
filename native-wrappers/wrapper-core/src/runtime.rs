@@ -443,7 +443,7 @@ impl NativeClient {
         let runtime = StartupRuntime(Some(runtime));
         let protocol = config.protocol_version();
         let reauthentication_enabled = matches!(&config.protocol, crate::ProtocolConfig::V5(v5)
-            if v5.authenticator.is_some() || v5.scram.is_some());
+            if v5.authenticator.is_some() || v5.async_authenticator.is_some() || v5.scram.is_some());
         let event_capacity = config.common.event_buffer_capacity;
         let delivery_timeout = config.common.event_delivery_timeout;
         let request_capacity = config.common.request_channel_capacity;

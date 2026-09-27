@@ -7,8 +7,9 @@ mod acknowledgement;
 mod auth;
 mod scram;
 pub use auth::{
-    AuthAction, AuthChallenge, AuthContext, AuthEvent, AuthExchange, AuthFailure, AuthOutcome,
-    AuthProperties, AuthStage, Authenticator, AuthenticatorConfig,
+    AsyncAuthChallenge, AsyncAuthenticator, AsyncAuthenticatorConfig, AuthAction, AuthChallenge,
+    AuthContext, AuthEvent, AuthExchange, AuthFailure, AuthFuture, AuthOutcome, AuthProperties,
+    AuthStage, Authenticator, AuthenticatorConfig,
 };
 pub use scram::ScramConfig;
 mod backend;

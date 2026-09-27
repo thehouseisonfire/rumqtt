@@ -474,6 +474,7 @@ pub struct V5Config {
     pub session_store: Option<crate::SessionStoreConfig>,
     pub broker_session_resume_policy: crate::BrokerSessionResumePolicy,
     pub authenticator: Option<crate::AuthenticatorConfig>,
+    pub async_authenticator: Option<crate::AsyncAuthenticatorConfig>,
     /// Built-in SCRAM-SHA-256, mutually exclusive with a host authenticator.
     pub scram: Option<crate::ScramConfig>,
     pub redirect_policy: crate::RedirectPolicy,
@@ -578,6 +579,7 @@ impl Default for V5Config {
             session_store: None,
             broker_session_resume_policy: crate::BrokerSessionResumePolicy::Strict,
             authenticator: None,
+            async_authenticator: None,
             scram: None,
             redirect_policy: crate::RedirectPolicy::Reject,
             srv_resolver: None,
@@ -696,6 +698,7 @@ impl ClientConfig {
                 if let Some(scram) = &v5.scram {
                     scram.validate()?;
                     if v5.authenticator.is_some()
+                        || v5.async_authenticator.is_some()
                         || v5.connect_properties.authentication_method.as_deref()
                             != Some("SCRAM-SHA-256")
                         || v5.connect_properties.authentication_data.is_some()
@@ -706,6 +709,11 @@ impl ClientConfig {
                     }
                 }
                 if let Some(auth) = &v5.authenticator {
+                    if v5.async_authenticator.is_some() {
+                        return Err(Error::configuration(
+                            "only one authentication authority is allowed",
+                        ));
+                    }
                     if v5.connect_properties.authentication_method.is_none() {
                         return Err(Error::configuration(
                             "an authenticator requires a CONNECT authentication method",
@@ -714,6 +722,31 @@ impl ClientConfig {
                     if v5.connect_properties.authentication_data.is_some() {
                         return Err(Error::configuration(
                             "initial authentication data must come from the configured authenticator",
+                        ));
+                    }
+                    if auth.exchange_timeout.is_zero()
+                        || std::time::Instant::now()
+                            .checked_add(auth.exchange_timeout)
+                            .is_none()
+                    {
+                        return Err(Error::configuration(
+                            "invalid authentication exchange timeout",
+                        ));
+                    }
+                }
+                if let Some(auth) = &v5.async_authenticator {
+                    if auth.configured_method.as_deref().is_some_and(|method| {
+                        v5.connect_properties.authentication_method.as_deref() != Some(method)
+                    }) {
+                        return Err(Error::configuration(
+                            "CONNECT authentication method differs from the deferred authority",
+                        ));
+                    }
+                    if v5.connect_properties.authentication_method.is_none()
+                        || v5.connect_properties.authentication_data.is_some()
+                    {
+                        return Err(Error::configuration(
+                            "a deferred authenticator requires a CONNECT method and owns initial authentication data",
                         ));
                     }
                     if auth.exchange_timeout.is_zero()

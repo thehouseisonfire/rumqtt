@@ -11,13 +11,31 @@ use rumqttc_wrapper_core::*;
 use support::*;
 
 fn redirect(socket: &mut impl Write, reference: &str, disconnect: bool) {
+    redirect_with_reason(
+        socket,
+        reference,
+        disconnect,
+        RedirectReason::UseAnotherServer,
+    );
+}
+
+fn redirect_with_reason(
+    socket: &mut impl Write,
+    reference: &str,
+    disconnect: bool,
+    reason: RedirectReason,
+) {
+    let reason = match reason {
+        RedirectReason::UseAnotherServer => 0x9c,
+        RedirectReason::ServerMoved => 0x9d,
+    };
     let mut properties = vec![0x1c];
     properties.extend_from_slice(&u16::try_from(reference.len()).unwrap().to_be_bytes());
     properties.extend_from_slice(reference.as_bytes());
     let mut body = if disconnect {
-        vec![0x9c]
+        vec![reason]
     } else {
-        vec![0, 0x9c]
+        vec![0, reason]
     };
     body.push(u8::try_from(properties.len()).unwrap());
     body.extend(properties);
@@ -336,6 +354,73 @@ impl SrvResolver for Resolver {
 }
 
 #[test]
+fn failed_followed_srv_connection_retains_terminal_redirect_diagnostics() {
+    struct OneTargetResolver(u16);
+    impl SrvResolver for OneTargetResolver {
+        fn resolve(&self, owner: String) -> SrvFuture {
+            assert_eq!(owner.trim_end_matches('.'), "_mqtt._tcp.service.invalid");
+            let port = self.0;
+            Box::pin(async move {
+                Ok(vec![SrvRecord {
+                    priority: 0,
+                    weight: 0,
+                    port,
+                    target: "localhost.".into(),
+                }])
+            })
+        }
+    }
+
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = config(true, origin.local_addr().unwrap().port());
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.redirect_policy = RedirectPolicy::Follow {
+        max_attempts: 2,
+        transport: TransportConfig::Tcp,
+    };
+    v5.srv_resolver = Some(SrvResolverConfig(Arc::new(OneTargetResolver(
+        target.local_addr().unwrap().port(),
+    ))));
+    let broker = Broker::spawn(move || {
+        let mut socket = accept(&origin);
+        frame(&mut socket);
+        redirect(&mut socket, "_mqtt._tcp.service.invalid", false);
+        let mut socket = accept(&target);
+        frame(&mut socket);
+    });
+
+    let mut client = NativeClient::start(config).unwrap();
+    let mut events = client.take_events().unwrap();
+    let initial = until(&mut events, |event| {
+        matches!(event, WrapperEvent::Redirect(_))
+    });
+    let WrapperEvent::Redirect(initial) = initial else {
+        unreachable!()
+    };
+    assert_eq!(initial.failure, None);
+
+    let terminal = until(
+        &mut events,
+        |event| matches!(event, WrapperEvent::Redirect(redirect) if redirect.failure.is_some()),
+    );
+    let WrapperEvent::Redirect(terminal) = terminal else {
+        unreachable!()
+    };
+    assert_eq!(terminal.failure, Some(RedirectFailure::Transport));
+    assert!(terminal.followed);
+    assert_eq!(terminal.attempts, 1);
+    assert_eq!(terminal.attempt_limit, Some(2));
+    assert_eq!(terminal.visited_endpoints, 2);
+    assert_eq!(terminal.srv_candidate_index, Some(1));
+    assert_eq!(terminal.srv_candidate_count, Some(1));
+    client.join(DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
 fn srv_lookup_failure_empty_answers_and_cancellation_release_owner() {
     for mode in ["failure", "empty", "cancel"] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -485,6 +570,15 @@ fn redirect_loops_and_attempt_exhaustion_are_terminal() {
 
 #[test]
 fn srv_priority_precedes_weight_and_selected_endpoint_is_reported() {
+    assert_resolved_srv_diagnostics(RedirectReason::UseAnotherServer);
+}
+
+#[test]
+fn server_moved_reports_resolved_srv_diagnostics_before_resetting_redirect_state() {
+    assert_resolved_srv_diagnostics(RedirectReason::ServerMoved);
+}
+
+fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let preferred = TcpListener::bind("127.0.0.1:0").unwrap();
     let backup = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -506,7 +600,7 @@ fn srv_priority_precedes_weight_and_selected_endpoint_is_reported() {
     let broker = Broker::spawn(move || {
         let mut socket = accept(&origin);
         frame(&mut socket);
-        redirect(&mut socket, "_mqtt._tcp.service.invalid", false);
+        redirect_with_reason(&mut socket, "_mqtt._tcp.service.invalid", false, reason);
         let mut socket = accept(&preferred);
         frame(&mut socket);
         socket.write_all(TARGET_CONNACK).unwrap();
@@ -521,7 +615,7 @@ fn srv_priority_precedes_weight_and_selected_endpoint_is_reported() {
                 priority: 20,
                 weight: u16::MAX,
                 port: backup.local_addr().unwrap().port(),
-                target: "127.0.0.1".into(),
+                target: "localhost.".into(),
             },
             SrvRecord {
                 priority: 10,
@@ -551,12 +645,17 @@ fn srv_priority_precedes_weight_and_selected_endpoint_is_reported() {
         })
     );
     assert_eq!(event.source, RedirectSource::ConnAck);
-    assert_eq!(event.reason, RedirectReason::UseAnotherServer);
+    assert_eq!(event.reason, reason);
     assert_eq!(
         event.server_reference.as_deref(),
         Some("_mqtt._tcp.service.invalid")
     );
     assert_eq!(event.failure, None);
+    assert_eq!(event.attempts, 1);
+    assert_eq!(event.attempt_limit, Some(2));
+    assert_eq!(event.visited_endpoints, 2);
+    assert_eq!(event.srv_candidate_index, Some(1));
+    assert_eq!(event.srv_candidate_count, Some(2));
     until(&mut events, |event| {
         matches!(event, WrapperEvent::Connected { .. })
     });

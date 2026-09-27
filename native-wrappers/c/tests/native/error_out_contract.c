@@ -20,6 +20,14 @@ static void coverage_resolver_callback(void *user_data,
   (void)completion;
 }
 
+static void coverage_auth_callback(void *user_data,
+                                   const rumqttc_auth_request_t *request,
+                                   rumqttc_callback_completion_t *completion) {
+  (void)user_data;
+  (void)request;
+  (void)completion;
+}
+
 static void coverage_destroy(void *user_data) { (void)user_data; }
 
 /*
@@ -275,10 +283,13 @@ void native_test_error_out_contract(void) {
   {
     rumqttc_store_vtable_t store_vtable = RUMQTTC_STORE_VTABLE_INIT;
     rumqttc_resolver_vtable_t resolver_vtable = RUMQTTC_RESOLVER_VTABLE_INIT;
+    rumqttc_auth_vtable_t auth_vtable = RUMQTTC_AUTH_VTABLE_INIT;
     rumqttc_store_registration_t *store = NULL;
     rumqttc_store_registration_t *failed_store = NULL;
     rumqttc_resolver_registration_t *resolver = NULL;
     rumqttc_resolver_registration_t *failed_resolver = NULL;
+    rumqttc_auth_registration_t *auth = NULL;
+    rumqttc_auth_registration_t *failed_auth = NULL;
     rumqttc_proxy_options_t proxy = RUMQTTC_PROXY_OPTIONS_INIT;
     store_vtable.load = coverage_store_callback;
     store_vtable.save = coverage_store_callback;
@@ -286,6 +297,8 @@ void native_test_error_out_contract(void) {
     store_vtable.destroy = coverage_destroy;
     resolver_vtable.resolve = coverage_resolver_callback;
     resolver_vtable.destroy = coverage_destroy;
+    auth_vtable.respond = coverage_auth_callback;
+    auth_vtable.destroy = coverage_destroy;
     proxy.host = native_string("127.0.0.1");
     proxy.port = 1883;
 
@@ -318,6 +331,21 @@ void native_test_error_out_contract(void) {
     /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_srv_resolver */
     EXPECT_FAILURE(rumqttc_config_clear_v5_srv_resolver(v4, NULL));
     rumqttc_resolver_registration_destroy(resolver);
+
+    /* ERROR_OUT_SUCCESS: rumqttc_auth_registration_new */
+    CHECK(rumqttc_auth_registration_new(&auth_vtable, NULL, &auth, NULL));
+    auth_vtable.struct_size = 0;
+    /* ERROR_OUT_FAILURE: rumqttc_auth_registration_new */
+    EXPECT_FAILURE(rumqttc_auth_registration_new(&auth_vtable, NULL, &failed_auth, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_authenticator */
+    CHECK(rumqttc_config_set_v5_authenticator(v5, auth, native_string("custom"), 1000, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_authenticator */
+    EXPECT_FAILURE(rumqttc_config_set_v5_authenticator(v4, auth, native_string("custom"), 1000, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_v5_authenticator */
+    CHECK(rumqttc_config_clear_v5_authenticator(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_authenticator */
+    EXPECT_FAILURE(rumqttc_config_clear_v5_authenticator(v4, NULL));
+    rumqttc_auth_registration_destroy(auth);
 
     /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_broker_session_resume_policy */
     CHECK(rumqttc_config_set_v5_broker_session_resume_policy(v5, RUMQTTC_BROKER_SESSION_STRICT, NULL));

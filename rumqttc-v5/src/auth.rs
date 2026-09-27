@@ -238,6 +238,9 @@ impl AuthLifecycle {
         let Some(kind) = self.state.kind() else {
             return Err(protocol_error());
         };
+        if kind != AuthExchangeKind::Reauthentication {
+            return Err(protocol_error());
+        }
         let method = self.active_method()?.to_owned();
         validate_incoming_auth_method(&method, auth.properties.as_ref())?;
         Ok(IncomingAuthEffect::Success { kind, method })
