@@ -24,6 +24,10 @@ static void auth_respond(void *user_data, const rumqttc_auth_request_t *request,
     ++context->challenges;
     REQUIRE(request->reason_code_present == 1 && request->reason_code == 0x18);
     response.action = RUMQTTC_AUTH_ACTION_REJECT;
+    response.struct_size--;
+    REQUIRE(rumqttc_callback_auth_complete(completion, &response) ==
+            RUMQTTC_INVALID_ARGUMENT);
+    response.struct_size++;
   } else {
     REQUIRE(0);
   }

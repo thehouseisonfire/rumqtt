@@ -112,6 +112,7 @@ int main(void) {
   auth_context *context = calloc(1, sizeof(*context));
   native_thread_t *worker;
   rumqttc_event_t *event;
+  unsigned saw_started = 0;
   unsigned saw_continue = 0;
   unsigned saw_success = 0;
   unsigned saw_connected = 0;
@@ -133,6 +134,7 @@ int main(void) {
     CHECK(rumqttc_client_event_recv_timeout_ms(client, NATIVE_DEADLINE_MS,
                                                &event, NULL));
     CHECK(rumqttc_event_kind(event, &kind));
+    native_check_event_accessors(event);
     if (kind == RUMQTTC_EVENT_AUTHENTICATION) {
       uint32_t stage = 0;
       uint8_t reason_present = 0;
@@ -145,7 +147,11 @@ int main(void) {
       CHECK(rumqttc_event_authentication_details(
           event, &reason_present, &reason, &properties_present, NULL, NULL,
           &data_present, &data, NULL, NULL));
-      if (stage == RUMQTTC_AUTH_STAGE_CONTINUE) {
+      if (stage == RUMQTTC_AUTH_STAGE_STARTED) {
+        REQUIRE(saw_started == 0 && saw_continue == 0 && saw_success == 0);
+        ++saw_started;
+      } else if (stage == RUMQTTC_AUTH_STAGE_CONTINUE) {
+        REQUIRE(saw_started == 1 && saw_continue == 0 && saw_success == 0);
         size_t count = 0;
         REQUIRE(reason_present == 1 && reason == 0x18 &&
                 properties_present == 1 && data_present == 1 && data.len == 6 &&
@@ -155,13 +161,17 @@ int main(void) {
         REQUIRE(count == 2);
         saw_continue++;
       } else if (stage == RUMQTTC_AUTH_STAGE_SUCCEEDED) {
+        REQUIRE(saw_started == 1 && saw_continue == 1 && saw_success == 0);
         REQUIRE(reason_present == 1 && reason == 0 &&
                 properties_present == 1 && data_present == 1 && data.len == 12 &&
                 memcmp(data.data, "server-proof", 12) == 0);
         saw_success++;
+      } else {
+        REQUIRE(0);
       }
     }
     if (kind == RUMQTTC_EVENT_CONNECTED) {
+      REQUIRE(saw_started == 1 && saw_continue == 1 && !saw_connected);
       saw_connected = 1;
     }
     rumqttc_event_destroy(event);
@@ -179,6 +189,14 @@ int main(void) {
   for (unsigned index = 0; index < 2; ++index) {
     rumqttc_completion_t *completion = NULL;
     CHECK(rumqttc_client_reauthenticate_tracked(client, &completion, NULL));
+    const uint32_t stages[] = {RUMQTTC_AUTH_STAGE_STARTED, RUMQTTC_AUTH_STAGE_CONTINUE, RUMQTTC_AUTH_STAGE_SUCCEEDED};
+    for (unsigned position = 0; position < 3; ++position) {
+      uint32_t exchange = 0, stage = 0;
+      event = native_wait_event(client, RUMQTTC_EVENT_AUTHENTICATION);
+      CHECK(rumqttc_event_authentication(event, &exchange, &stage, NULL, NULL, NULL));
+      REQUIRE(exchange == RUMQTTC_AUTH_EXCHANGE_REAUTHENTICATION && stage == stages[position]);
+      rumqttc_event_destroy(event);
+    }
     native_wait_completion(completion, RUMQTTC_COMPLETION_AUTHENTICATED);
     rumqttc_completion_destroy(completion);
     worker = (native_thread_t *)atomic_exchange(&context->worker, 0);

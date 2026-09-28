@@ -69,10 +69,20 @@ c++ -std=c++17 -Wall -Wextra -Werror -I"${crate_dir}/include" \
 fi
 
 if [[ "${check}" == all || "${check}" == ffi-header ]]; then
-generated_header="$(find "${target_dir}/build" -path '*rumqttc-c-next*/out/rumqttc.generated.h' -print0 \
-    | xargs -0 ls -t | head -1)"
-generated_functions="$(find "${target_dir}/build" -path '*rumqttc-c-next*/out/rumqttc.generated-functions.h' -print0 \
-    | xargs -0 ls -t | head -1)"
+latest_generated_file() {
+    python3 - "${target_dir}/build" "$1" <<'PY'
+import glob
+import os
+import sys
+
+paths = glob.glob(os.path.join(sys.argv[1], "*rumqttc-c-next*", "out", sys.argv[2]))
+if not paths:
+    raise SystemExit(f"generated C header not found: {sys.argv[2]}")
+print(max(paths, key=os.path.getmtime))
+PY
+}
+generated_header="$(latest_generated_file rumqttc.generated.h)"
+generated_functions="$(latest_generated_file rumqttc.generated-functions.h)"
 python3 "${crate_dir}/tests/abi/contract.py" generate \
     --header "${crate_dir}/include/rumqttc.h" --output "${target_dir}/rumqttc-checked-contract.json"
 python3 "${crate_dir}/tests/abi/contract.py" generate \

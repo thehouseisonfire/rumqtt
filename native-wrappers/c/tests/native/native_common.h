@@ -42,6 +42,7 @@ void native_wait_completion(rumqttc_completion_t *completion,
                             rumqttc_completion_kind_t expected);
 void native_close_destroy(rumqttc_client_t *client);
 void native_sleep_ms(uint32_t milliseconds);
+void native_check_event_accessors(const rumqttc_event_t *event);
 size_t native_process_thread_count(void);
 
 typedef int (*native_thread_fn)(void *argument);

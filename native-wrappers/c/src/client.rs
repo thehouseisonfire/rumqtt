@@ -18,7 +18,7 @@ pub struct ClientObject {
     pub handle: ClientHandle,
     pub events: Mutex<EventConsumer>,
     closer: NativeClientCloser,
-    _native: NativeClient,
+    native: NativeClient,
     abandoned: bool,
     failed: AtomicBool,
 }
@@ -38,7 +38,7 @@ impl ClientObject {
             handle,
             events: Mutex::new(events),
             closer,
-            _native: native,
+            native,
             abandoned: false,
             failed: AtomicBool::new(false),
         })
@@ -85,6 +85,12 @@ impl ClientObject {
         self.closer.close_now(timeout).map_err(ClientError::Core)
     }
 
+    /// Cleanup preserves any admitted disconnect payload and waits for all host callbacks.
+    pub fn shutdown_and_join(&self, timeout: Duration) -> Result<(), ClientError> {
+        self.handle.close_now_idempotent();
+        self.native.join(timeout).map_err(ClientError::Core)
+    }
+
     pub fn close_with_options(
         &self,
         timeout: Duration,
@@ -115,7 +121,7 @@ impl ClientObject {
 impl Drop for ClientObject {
     fn drop(&mut self) {
         if !self.abandoned {
-            let _ = self.closer.close_now(Duration::from_secs(2));
+            let _ = self.shutdown_and_join(Duration::from_secs(2));
         }
     }
 }

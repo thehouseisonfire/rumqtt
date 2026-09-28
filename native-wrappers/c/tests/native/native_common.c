@@ -149,6 +149,7 @@ rumqttc_event_t *native_wait_event(rumqttc_client_t *client,
     CHECK(rumqttc_client_event_recv_timeout_ms(client, NATIVE_DEADLINE_MS,
                                                &event, NULL));
     CHECK(rumqttc_event_kind(event, &kind));
+    native_check_event_accessors(event);
     if (kind == expected) {
       return event;
     }

@@ -78,6 +78,9 @@ impl Auth {
 
         let code = AuthReasonCode::read(&mut bytes)?;
         let properties = AuthProperties::read(&mut bytes)?;
+        if bytes.has_remaining() {
+            return Err(Error::MalformedPacket);
+        }
         let auth = Self { code, properties };
 
         Ok(auth)
@@ -142,38 +145,41 @@ impl AuthProperties {
     pub fn read(bytes: &mut Bytes) -> Result<Option<Self>, Error> {
         let (properties_len_len, properties_len) = length(bytes.iter())?;
         bytes.advance(properties_len_len);
+        if properties_len > bytes.remaining() {
+            return Err(Error::MalformedPacket);
+        }
         if properties_len == 0 {
             return Ok(None);
         }
 
+        let mut bytes = bytes.split_to(properties_len);
         let mut props = Self::default();
 
-        let mut cursor = 0;
-        // read until cursor reaches property length. properties_len = 0 will skip this loop
-        while cursor < properties_len {
-            let prop = read_u8(bytes)?;
-            cursor += 1;
+        while bytes.has_remaining() {
+            let prop = read_u8(&mut bytes)?;
 
             match property(prop)? {
                 PropertyType::AuthenticationMethod => {
-                    let method = read_mqtt_string(bytes)?;
-                    cursor += 2 + method.len();
-                    props.method = Some(method);
+                    if props.method.is_some() {
+                        return Err(Error::MalformedPacket);
+                    }
+                    props.method = Some(read_mqtt_string(&mut bytes)?);
                 }
                 PropertyType::AuthenticationData => {
-                    let data = read_mqtt_bytes(bytes)?;
-                    cursor += 2 + data.len();
-                    props.data = Some(data);
+                    if props.data.is_some() {
+                        return Err(Error::MalformedPacket);
+                    }
+                    props.data = Some(read_mqtt_bytes(&mut bytes)?);
                 }
                 PropertyType::ReasonString => {
-                    let reason = read_mqtt_string(bytes)?;
-                    cursor += 2 + reason.len();
-                    props.reason = Some(reason);
+                    if props.reason.is_some() {
+                        return Err(Error::MalformedPacket);
+                    }
+                    props.reason = Some(read_mqtt_string(&mut bytes)?);
                 }
                 PropertyType::UserProperty => {
-                    let key = read_mqtt_string(bytes)?;
-                    let value = read_mqtt_string(bytes)?;
-                    cursor += 2 + key.len() + 2 + value.len();
+                    let key = read_mqtt_string(&mut bytes)?;
+                    let value = read_mqtt_string(&mut bytes)?;
                     props.user_properties.push((key, value));
                 }
                 _ => return Err(Error::InvalidPropertyType(prop)),
@@ -223,6 +229,48 @@ mod test {
     use alloc::vec;
     use bytes::BytesMut;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn rejects_duplicate_singleton_properties_including_empty_values() {
+        for identifier in [0x15, 0x16, 0x1f] {
+            let mut properties = Bytes::from(vec![6, identifier, 0, 0, identifier, 0, 0]);
+            assert!(matches!(
+                AuthProperties::read(&mut properties),
+                Err(Error::MalformedPacket)
+            ));
+        }
+    }
+
+    #[test]
+    fn property_values_cannot_cross_the_declared_length() {
+        let mut properties = Bytes::from_static(b"\x03\x15\x00\x01x");
+        assert!(AuthProperties::read(&mut properties).is_err());
+        let mut properties = Bytes::from_static(b"\x04\x15\x00\x00");
+        assert!(matches!(
+            AuthProperties::read(&mut properties),
+            Err(Error::MalformedPacket)
+        ));
+    }
+
+    #[test]
+    fn rejects_trailing_auth_bytes() {
+        let mut packet = BytesMut::from(&b"\xf0\x03\x18\x00\x00"[..]);
+        assert!(matches!(
+            super::super::Packet::read(&mut packet, None),
+            Err(Error::MalformedPacket)
+        ));
+    }
+
+    #[test]
+    fn repeated_user_properties_preserve_order_and_empty_values() {
+        let mut properties = Bytes::from_static(b"\x0c\x26\x00\x01k\x00\x00\x26\x00\x01k\x00\x00");
+        let decoded = AuthProperties::read(&mut properties).unwrap().unwrap();
+        assert_eq!(
+            decoded.user_properties,
+            vec![("k".into(), "".into()), ("k".into(), "".into())]
+        );
+        assert!(!properties.has_remaining());
+    }
 
     #[test]
     fn length_calculation() {

@@ -24,7 +24,7 @@ if(WIN32)
     set_target_properties(rumqttc_native_shared PROPERTIES IMPORTED_IMPLIB "${RUMQTTC_IMPORT_LIBRARY}")
 endif()
 
-add_library(native_common STATIC native_common.c)
+add_library(native_common STATIC native_common.c event_contract.c)
 target_include_directories(native_common PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(native_common PUBLIC rumqttc_native_shared)
 if(MSVC)
@@ -72,7 +72,11 @@ if(WIN32)
             "${RUMQTTC_SHARED_LIBRARY}" "$<TARGET_FILE_DIR:rumqttc-native-integration>")
 endif()
 rumqttc_native_target(rumqttc-native-stress native_stress.c)
+rumqttc_native_target(rumqttc-native-event-queue native_event_queue.c)
+rumqttc_native_target(rumqttc-native-event-properties native_event_properties.c)
 rumqttc_native_target(rumqttc-native-auth native_auth.c)
+rumqttc_native_target(rumqttc-native-auth-overlap native_auth_overlap.c)
+rumqttc_native_target(rumqttc-native-auth-invalid native_auth_invalid.c)
 rumqttc_native_target(rumqttc-native-auth-timeout native_auth_timeout.c)
 rumqttc_native_target(rumqttc-native-auth-reject native_auth_reject.c)
 rumqttc_native_target(rumqttc-native-auth-cancel native_auth_cancel.c)
@@ -80,26 +84,58 @@ rumqttc_native_target(rumqttc-native-auth-abandon native_auth_abandon.c)
 rumqttc_native_target(rumqttc-native-auth-reconnect native_auth_reconnect.c)
 rumqttc_native_target(rumqttc-native-scram native_scram.c)
 rumqttc_native_target(rumqttc-native-srv-redirect native_srv_redirect.c)
+rumqttc_native_target(rumqttc-native-srv-candidates native_srv_candidates.c)
+rumqttc_native_target(rumqttc-native-redirect-matrix native_redirect_matrix.c)
 rumqttc_native_target(rumqttc-native-srv-failure native_srv_failure.c)
 rumqttc_native_target(rumqttc-native-srv-cancel native_srv_cancel.c)
 rumqttc_native_target(rumqttc-native-redirect-reject-loop native_redirect_reject_loop.c)
 rumqttc_native_target(rumqttc-native-proxy native_proxy.c)
+rumqttc_native_target(rumqttc-native-proxy-matrix native_proxy_matrix.c)
 rumqttc_native_target(rumqttc-native-store-corrupt native_store_corrupt.c)
 rumqttc_native_target(rumqttc-native-store-cancel native_store_cancel.c)
 rumqttc_native_target(rumqttc-native-store-restart native_store_restart.c)
+rumqttc_native_target(rumqttc-native-store-ownership native_store_ownership.c)
+rumqttc_native_target(rumqttc-native-store-atomic native_store_atomic.c)
+rumqttc_native_target(rumqttc-native-store-write-failure native_store_write_failure.c)
+rumqttc_native_target(rumqttc-native-wire-options native_wire_options.c)
+rumqttc_native_target(rumqttc-native-runtime-limits native_runtime_limits.c)
+rumqttc_native_target(rumqttc-native-tls-matrix native_tls_matrix.c)
+rumqttc_native_target(rumqttc-native-callback-races native_callback_races.c)
+rumqttc_native_target(rumqttc-native-network-options native_network_options.c)
+rumqttc_native_target(rumqttc-native-close-options native_close_options.c)
+rumqttc_native_target(rumqttc-native-will-process native_will_process.c)
+
+# This executable must not link the imported library or native_common: the
+# final FreeLibrary/dlclose is part of its ownership assertion.
+add_executable(rumqttc-native-unload native_unload.c)
+target_compile_features(rumqttc-native-unload PRIVATE c_std_11)
+target_include_directories(rumqttc-native-unload PRIVATE "${RUMQTTC_ROOT}/include")
+target_link_libraries(rumqttc-native-unload PRIVATE ${CMAKE_DL_LIBS})
+if(MSVC)
+    target_compile_options(rumqttc-native-unload PRIVATE /W4 /WX /experimental:c11atomics)
+else()
+    target_compile_options(rumqttc-native-unload PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 if(MSVC)
     target_compile_options(rumqttc-native-auth PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-overlap PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-invalid PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-auth-timeout PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-auth-reject PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-auth-cancel PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-auth-abandon PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-auth-reconnect PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-srv-redirect PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-redirect-matrix PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-srv-failure PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-srv-cancel PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-store-corrupt PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-store-cancel PRIVATE /experimental:c11atomics)
     target_compile_options(rumqttc-native-store-restart PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-store-ownership PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-store-write-failure PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-callback-races PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-close-options PRIVATE /experimental:c11atomics)
 endif()
 
 set(BROKER_RUNNER "${CMAKE_CURRENT_LIST_DIR}/broker_fixture.py")
@@ -118,6 +154,14 @@ set_tests_properties(rumqttc-native-stress PROPERTIES LABELS "native;stress" TIM
 add_test(NAME rumqttc-native-auth
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth>)
 set_tests_properties(rumqttc-native-auth PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-overlap
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-overlap>)
+set_tests_properties(rumqttc-native-auth-overlap PROPERTIES LABELS "native;authentication" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-auth-invalid
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --binary $<TARGET_FILE:rumqttc-native-auth-invalid>)
+set_tests_properties(rumqttc-native-auth-invalid PROPERTIES LABELS "native;authentication" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-auth-timeout
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-timeout>)
@@ -140,12 +184,16 @@ add_test(NAME rumqttc-native-auth-reconnect
 set_tests_properties(rumqttc-native-auth-reconnect PROPERTIES LABELS "native;authentication" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-scram
-    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-scram>)
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --binary $<TARGET_FILE:rumqttc-native-scram>)
 set_tests_properties(rumqttc-native-scram PROPERTIES LABELS "native;authentication" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-srv-redirect
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-srv-redirect>)
 set_tests_properties(rumqttc-native-srv-redirect PROPERTIES LABELS "native;redirect" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-redirect-matrix
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-redirect-matrix>)
+set_tests_properties(rumqttc-native-redirect-matrix PROPERTIES LABELS "native;redirect;persistence" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-srv-failure
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-srv-failure>)
@@ -160,8 +208,13 @@ add_test(NAME rumqttc-native-redirect-reject-loop
 set_tests_properties(rumqttc-native-redirect-reject-loop PROPERTIES LABELS "native;redirect" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-proxy
-    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-proxy>)
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --binary $<TARGET_FILE:rumqttc-native-proxy>)
 set_tests_properties(rumqttc-native-proxy PROPERTIES LABELS "native;proxy" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-proxy-matrix
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --proxy-matrix
+        --binary $<TARGET_FILE:rumqttc-native-proxy-matrix>)
+set_tests_properties(rumqttc-native-proxy-matrix PROPERTIES LABELS "native;proxy;tls" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-store-corrupt
     COMMAND $<TARGET_FILE:rumqttc-native-store-corrupt>)
@@ -174,5 +227,64 @@ set_tests_properties(rumqttc-native-store-cancel PROPERTIES LABELS "native;persi
 add_test(NAME rumqttc-native-store-restart
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-store-restart>)
 set_tests_properties(rumqttc-native-store-restart PROPERTIES LABELS "native;persistence" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-store-ownership
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-store-ownership>)
+set_tests_properties(rumqttc-native-store-ownership PROPERTIES LABELS "native;persistence;ownership" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-store-atomic
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --atomic-restart --binary $<TARGET_FILE:rumqttc-native-store-atomic>)
+set_tests_properties(rumqttc-native-store-atomic PROPERTIES LABELS "native;persistence" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-store-write-failure
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-store-write-failure>)
+set_tests_properties(rumqttc-native-store-write-failure PROPERTIES LABELS "native;persistence" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-unload
+    COMMAND $<TARGET_FILE:rumqttc-native-unload> "${RUMQTTC_SHARED_LIBRARY}")
+set_tests_properties(rumqttc-native-unload PROPERTIES LABELS "native;ownership" TIMEOUT 30)
+
+add_test(NAME rumqttc-native-wire-options
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-wire-options>)
+set_tests_properties(rumqttc-native-wire-options PROPERTIES LABELS "native;wire" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-tls-matrix
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --tls-matrix
+        --binary $<TARGET_FILE:rumqttc-native-tls-matrix>)
+set_tests_properties(rumqttc-native-tls-matrix PROPERTIES LABELS "native;tls" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-callback-races
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-callback-races>)
+set_tests_properties(rumqttc-native-callback-races PROPERTIES LABELS "native;ownership;stress" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-network-options
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --network-matrix
+        --binary $<TARGET_FILE:rumqttc-native-network-options>)
+set_tests_properties(rumqttc-native-network-options PROPERTIES LABELS "native;network;websocket;unix" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-close-options
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-close-options>)
+set_tests_properties(rumqttc-native-close-options PROPERTIES LABELS "native;shutdown;stress" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-will-process
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/will_fixture.py"
+        --binary $<TARGET_FILE:rumqttc-native-will-process>)
+set_tests_properties(rumqttc-native-will-process PROPERTIES LABELS "native;will" TIMEOUT 90 SKIP_RETURN_CODE 77)
+
+add_test(NAME rumqttc-native-runtime-limits
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-runtime-limits>)
+set_tests_properties(rumqttc-native-runtime-limits PROPERTIES LABELS "native;wire" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-srv-candidates
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-srv-candidates>)
+set_tests_properties(rumqttc-native-srv-candidates PROPERTIES LABELS "native;redirect" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-event-queue
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-event-queue>)
+set_tests_properties(rumqttc-native-event-queue PROPERTIES LABELS "native;events;stress" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-event-properties
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-event-properties>)
+set_tests_properties(rumqttc-native-event-properties PROPERTIES LABELS "native;events" TIMEOUT 90)
 
 add_subdirectory("${RUMQTTC_ROOT}/examples" examples)

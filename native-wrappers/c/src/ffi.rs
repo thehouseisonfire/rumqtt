@@ -1277,7 +1277,7 @@ pub unsafe extern "C" fn rumqttc_client_destroy_timeout_ms(
         }
         let inner = unsafe { client_ref_for_shutdown(client) }?;
         inner
-            .close_now(Duration::from_millis(timeout_ms))
+            .shutdown_and_join(Duration::from_millis(timeout_ms))
             .map_err(client_error)?;
         drop(unsafe { Box::from_raw(client) });
         Ok(())
@@ -6087,6 +6087,101 @@ pub unsafe extern "C" fn rumqttc_string_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "requires a real TCP broker and driver runtime")]
+    fn destroy_after_custom_disconnect_preserves_payload_and_consumes_handle() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        fn packet(stream: &mut TcpStream) -> (u8, Vec<u8>) {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            let header = byte[0];
+            let mut length = 0;
+            let mut multiplier = 1;
+            loop {
+                stream.read_exact(&mut byte).unwrap();
+                length += usize::from(byte[0] & 0x7f) * multiplier;
+                assert!(length <= 10240);
+                if byte[0] & 0x80 == 0 {
+                    break;
+                }
+                multiplier *= 128;
+                assert!(multiplier <= 128 * 128 * 128);
+            }
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            (header, body)
+        }
+
+        for immediate in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let broker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                assert_eq!(packet(&mut stream).0, 0x10);
+                stream.write_all(b"\x20\x03\x00\x00\x00").unwrap();
+                assert_eq!(
+                    packet(&mut stream),
+                    (0xe0, b"\x00\x0b\x1f\x00\x08selected".to_vec())
+                );
+                assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+            });
+            let config = rumqttc_wrapper_core::ClientConfig::v5("ffi-destroy", "127.0.0.1", port);
+            let inner = ClientObject::start(config).unwrap();
+            assert!(matches!(
+                inner.recv(Some(Duration::from_secs(5))),
+                Ok(Some(WrapperEvent::Connected { .. }))
+            ));
+            let client = Box::into_raw(Box::new(rumqttc_client { inner }));
+            let properties = rumqttc_v5_disconnect_properties_t {
+                struct_size: struct_size::<rumqttc_v5_disconnect_properties_t>(),
+                reason_code: 0,
+                session_expiry_present: 0,
+                reason_string_present: 1,
+                server_reference_present: 0,
+                reserved: [0; 5],
+                session_expiry_interval: 0,
+                reason_string: view_string("selected"),
+                server_reference: view_string(""),
+                user_properties: ptr::null(),
+                user_property_count: 0,
+            };
+            let options = rumqttc_disconnect_options_t {
+                struct_size: struct_size::<rumqttc_disconnect_options_t>(),
+                protocol_options: PROTOCOL_OPTIONS_V5,
+                v5_properties: &raw const properties,
+                reserved: [0; 2],
+            };
+            let status = unsafe {
+                if immediate {
+                    rumqttc_client_close_now_with_options_timeout_ms(
+                        client,
+                        5000,
+                        &raw const options,
+                        ptr::null_mut(),
+                    )
+                } else {
+                    rumqttc_client_close_with_options_timeout_ms(
+                        client,
+                        5000,
+                        &raw const options,
+                        ptr::null_mut(),
+                    )
+                }
+            };
+            assert_eq!(status, OK);
+            assert_eq!(
+                unsafe { rumqttc_client_destroy_timeout_ms(client, 5000, ptr::null_mut()) },
+                OK
+            );
+            broker.join().unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn async_authenticator_preserves_fields_and_rejects_duplicate_or_late_completion() {

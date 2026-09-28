@@ -64,11 +64,35 @@ branches, including disabled ones, so API additions require an explicit review.
 This section tracks the C surface separately from the wrapper-core inventory
 above. A row here does not change the wrapper-core support decision.
 
-| Slice | C status | C evidence / remaining contract |
+Callback ownership has a standalone native dynamic-loading fixture: it closes
+the client, releases the registration and final retained completion, observes
+exactly one owner destruction, and only then unloads the shared library.
+The native callback race fixture exercises store, authenticator, and resolver
+registration replacement, failed construction, and concurrent completion/close.
+It forces cancellation to win once for each authority and verifies late and
+duplicate completion rejection, plus final retained-owner destruction.
+
+| Slice | C status | Native C evidence |
 | --- | --- | --- |
-| WC-02 durable sessions | partial | Versioned store vtable, retained completion, scope, timeout, checkpoint limit, resume policy; Rust FFI cancellation/identity tests, native C v4/v5 mixed QoS1/QoS2 publish restart, pending-load cancellation/timeout, and load-failure/corrupt/version/protocol/oversize fixtures, and C example. Subscription/incoming QoS2 recovery and full callback lifecycle matrix remain. |
-| WC-05 enhanced authentication | partial | Asynchronous raw authenticator vtable and native MQTT 5 authority, SCRAM configuration, repeated reauthentication, broker AUTH property accessors, typed failure codes, and native rejection, timeout, late-completion, close-cancellation, abandonment, reconnect, and initial/repeated SCRAM fixtures. Overlap and invalid-response native matrices remain. |
-| WC-06 redirects and DNS SRV | partial | Fixed policy, async resolver vtable, target, failure, and attempt/loop accessors, plus native deferred SRV follow, empty/failing DNS, shutdown cancellation, rejected policy, and loop fixtures. Reference-form, weighted-answer, and session-store scope matrices remain. |
-| WC-07 proxies | partial | HTTP, HTTPS, SOCKS5 options with separate proxy TLS and remote DNS. Native C HTTP/SOCKS5 credential, remote-DNS, and reconnect fixtures and an HTTPS proxy trust fixture cover both MQTT versions; broker TLS composition, timeout, and package feature variants remain. |
-| WC-11 rich events | partial | CONNACK, broker DISCONNECT, authentication lifecycle and AUTH properties, redirect, outgoing packet ID, and ordered CONNACK/DISCONNECT/AUTH User Properties. Full event fixture matrix remains. |
-| WC-01/03/04/08/09/10/12/13 verification | pending | Native C fixture, package feature matrix, and platform gates in TODO16.md remain. |
+| WC-02 durable sessions | covered | `native_store_restart` restores v4/v5 pending subscriptions, outgoing QoS1/QoS2 packet IDs and incoming QoS2 without redelivery; it checks session loss and strict/broker-only resume policies. `native_store_write_failure` covers save/clear errors, timeout and late completion. `native_store_atomic` interrupts staged replacement and reloads the preceding complete checkpoint. `native_store_ownership` and `native_callback_races` check callback serialization/order, key exclusion, scope independence, replacement identity, overlap across clients, reentrant admission, destroy timeout and final owner release. |
+| WC-05 enhanced authentication | covered | `native_auth` checks ordered initial and repeated reauthentication lifecycle events and owned challenge properties. `native_auth_overlap` checks overlapping tracked requests, increasing operation IDs and typed completion failures. Rejection, timeout, cancellation, abandonment, reconnect, structural response retry, method changes, malformed AUTH and invalid SCRAM proof have native fixtures; errors and captured output are checked for secret redaction. |
+| WC-06 redirects and DNS SRV | covered | `native_redirect_matrix` checks address/MQTT/TLS/WS/WSS references from both sources, malformed/disallowed references, distinct-target attempt exhaustion, retained/copied views, disabled transports and origin store isolation. `native_srv_redirect`, `native_srv_candidates`, `native_srv_failure` and `native_srv_cancel` cover priority, C weight mapping and selection bias, unusable records, refused-target fallback/exhaustion, candidate metadata, missing/empty/failing resolvers, cancellation and owner release. Seeded native Rust SRV tests check the inclusive zero-weight draw deterministically. |
+| WC-07 proxies | covered | `native_proxy_matrix` exercises HTTP CONNECT, HTTPS and SOCKS5 broker TLS/WSS for both MQTT versions and enabled TLS backends. Independent proxy/broker roots, authenticated negotiation, recoverable HTTP/SOCKS failures, timeout, pending-operation results, disabled/unknown protocols and captured-output redaction are checked. Seven feature profiles exercise installed static/shared CMake and pkg-config consumers. |
+| WC-11 rich events | covered | `event_contract` checks accessor kinds, initialized failure outputs, optional outputs and ordered count/at views. `native_event_properties` verifies every CONNACK scalar/string selector, broker DISCONNECT properties, absence/present-empty distinctions, outgoing packet IDs and retained/copied views against wire data. Authentication, redirect and tracked operation IDs are checked in their native fixtures. `native_event_queue` retains 512 owners and closes through queue backpressure before releasing them. |
+| WC-01/03/04 Will, connection and runtime options | covered | `native_wire_options` verifies exact Will/CONNECT fields, order, owned configuration, clear/default semantics and malformed sizes/selectors/reserved fields/counts/overflow. `native_will_process` verifies graceful suppression and abrupt-exit delivery with Mosquitto for both protocols. `native_runtime_limits` checks exact packet-size boundaries, independent local/advertised limits, local/broker inflight limits, batching/reset modes and explicit/automatic alias replay under changed reconnect limits. |
+| WC-08/09/10 Unix, WebSocket and close options | covered | `native_network_options` checks Unix reconnect, missing-path/connection timeout, both shutdown modes, unsupported-platform rejection, WS/WSS header order/replacement/removal/clear, protected headers and disabled builds. `native_close_options` verifies exact MQTT5 DISCONNECT properties, independent caller deadlines, conflicting options and escalation. A Rust FFI regression checks destruction after a custom close. |
+| WC-12 sockets and capabilities | covered | `native_network_options` verifies the broker-observed bind port and POSIX socket buffer/nodelay values, invalid device network failure, error redaction, observable Linux MPTCP (or kernel-unavailable TCP fallback), and unsupported device/MPTCP errors. Feature consumers check exact known capability bits and ignore an unknown future bit across all package profiles. |
+| WC-13 TLS | covered | `native_tls_matrix` verifies PEM and PKCS12 mutual TLS, ALPN, wrong roots/hostname, malformed credentials, failed-start cleanup, owned configuration, transport replacement, disabled backends, TLS/WSS and isolated Linux platform roots. The seven package profiles cover Rustls-only, native-only and mixed backends with/without proxies. |
+
+The complete native suite, examples and feature-package consumers are wired into
+Linux, macOS and Windows CI. Callback ownership/cancellation, retained events and
+close races run in native sanitizer jobs; lifecycle leak jobs include those races.
+Local validation is Linux-only; macOS/Windows execution requires the corresponding
+CI runners. The Mosquitto process fixture reports an explicit skip when the broker
+is unavailable. Historical ABI comparison likewise reports when no published
+baseline exists; current header/export checks remain mandatory.
+
+The fixtures exposed fixes for malformed AUTH decoding, C destruction after an
+admitted custom DISCONNECT, and operation-registry ownership cycles on driver
+failure. Codec, Rust FFI and registry teardown regressions accompany those fixes.
+No public C declarations, exported symbols or ABI record layouts changed.

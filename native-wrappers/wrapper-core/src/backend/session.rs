@@ -132,11 +132,15 @@ pub fn payload(
 
 impl Drop for Adapter {
     fn drop(&mut self) {
-        LEASES
+        let mut leases = LEASES
             .get_or_init(Default::default)
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.lease);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        leases.remove(&self.lease);
+        if leases.is_empty() {
+            // Release process-wide bookkeeping when the final store client exits.
+            leases.shrink_to_fit();
+        }
     }
 }
 

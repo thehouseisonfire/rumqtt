@@ -180,7 +180,7 @@ jobs:
       - name: C proxy and SCRAM consumers
         run: |
           cargo build --locked -p rumqttc-c-next --features proxy,auth-scram
-          cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-proxy rumqttc-native-scram --clean-first
+          cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-proxy rumqttc-native-proxy-matrix rumqttc-native-scram
           ctest --test-dir target/rumqttc-c-native -C Debug -R 'rumqttc-native-(proxy|scram)' --output-on-failure
           cargo build --locked -p rumqttc-c-next
 
@@ -192,7 +192,13 @@ jobs:
           cmake --install target/rumqttc-c-proxy-package --config Release
           cmake -S c/tests/cmake -B target/rumqttc-c-proxy-consumer \
             -DCMAKE_PREFIX_PATH="$PWD/target/rumqttc-c-proxy-install" \
-            -DRUMQTTC_EXPECT_PROXY=ON
+            -DRUMQTTC_EXPECT_PROXY=ON \
+            -DRUMQTTC_CHECK_FEATURES=ON \
+            -DRUMQTTC_EXPECT_RUSTLS=ON \
+            -DRUMQTTC_EXPECT_NATIVE_TLS=OFF \
+            -DRUMQTTC_EXPECT_WEBSOCKET=ON \
+            -DRUMQTTC_EXPECT_HTTP_PROXY=ON \
+            -DRUMQTTC_EXPECT_SOCKS5_PROXY=ON
           cmake --build target/rumqttc-c-proxy-consumer --config Release
           ctest --test-dir target/rumqttc-c-proxy-consumer -C Release --output-on-failure
           if [[ "$RUNNER_OS" != "Windows" ]]; then
@@ -209,11 +215,24 @@ jobs:
               c/tests/c/proxy_capability_smoke.c "${proxy_pc_args[@]}" \
               -o target/rumqttc-c-proxy-pkgconfig
             target/rumqttc-c-proxy-pkgconfig
+            cc -std=c11 -Wall -Wextra -Werror -DRUMQTTC_STATIC \
+              -DRUMQTTC_EXPECT_RUSTLS=1 -DRUMQTTC_EXPECT_WEBSOCKET=1 \
+              -DRUMQTTC_EXPECT_HTTP_PROXY=1 -DRUMQTTC_EXPECT_SOCKS5_PROXY=1 \
+              c/tests/c/feature_capability_smoke.c "${proxy_pc_args[@]}" \
+              -o target/rumqttc-c-feature-pkgconfig
+            target/rumqttc-c-feature-pkgconfig
           fi
 
       - name: C package consumers
         if: ${{ runner.os != 'Windows' }}
         run: c/tests/abi/check.sh package
+
+      - name: Install Windows pkg-config
+        if: ${{ runner.os == 'Windows' }}
+        run: choco install pkgconfiglite --yes --no-progress
+
+      - name: C TLS/proxy feature packages and transport fixtures
+        run: python c/tests/package_feature_matrix.py --native
 
       - name: C package consumers (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -306,8 +325,9 @@ jobs:
         run: |
           cmake -S c/tests/native -B target/rumqttc-c-native-valgrind
           cmake --build target/rumqttc-c-native-valgrind
-          ctest --test-dir target/rumqttc-c-native-valgrind \
-            -R 'rumqttc-native-(integration|stress)' --output-on-failure
+          leak_tests='rumqttc-native-(integration|stress|store-ownership|auth-overlap|'
+          leak_tests+='callback-races|event-queue|close-options|store-write-failure)'
+          ctest --test-dir target/rumqttc-c-native-valgrind -R "$leak_tests" --output-on-failure
 
   c-abi-platform-sanitizers:
     name: C native sanitizers (${{ matrix.os }})
@@ -347,8 +367,9 @@ jobs:
         run: |
           cmake -S c/tests/native -B target/rumqttc-c-native-leaks
           cmake --build target/rumqttc-c-native-leaks
-          ctest --test-dir target/rumqttc-c-native-leaks \
-            -R 'rumqttc-native-(integration|stress)' --output-on-failure
+          leak_tests='rumqttc-native-(integration|stress|store-ownership|auth-overlap|'
+          leak_tests+='callback-races|event-queue|close-options|store-write-failure)'
+          ctest --test-dir target/rumqttc-c-native-leaks -R "$leak_tests" --output-on-failure
 
       - name: Build and run sanitized native suite (Windows)
         if: ${{ runner.os == 'Windows' }}

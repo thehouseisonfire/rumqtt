@@ -3,7 +3,7 @@ use std::future::Future;
 use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use flume::{Receiver, Sender};
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -19,19 +19,21 @@ pub type PendingFuture = Pin<Box<dyn Future<Output = (OperationId, Result<Comple
 
 pub struct CompletionRegistration {
     operation_id: OperationId,
-    registry: OperationRegistry,
+    registry: Weak<Inner>,
     future: CompletionFuture,
 }
 
 pub struct DiagnosticsRequest {
     operation_id: OperationId,
-    registry: OperationRegistry,
+    registry: Weak<Inner>,
 }
 
 impl DiagnosticsRequest {
     pub(crate) fn resolve(self, snapshot: DiagnosticsSnapshot) {
-        self.registry
-            .complete(self.operation_id, Ok(Completion::Diagnostics(snapshot)));
+        if let Some(inner) = self.registry.upgrade() {
+            OperationRegistry { inner }
+                .complete(self.operation_id, Ok(Completion::Diagnostics(snapshot)));
+        }
     }
 }
 
@@ -122,7 +124,8 @@ impl OperationRegistry {
             .completion_tx
             .send(CompletionRegistration {
                 operation_id,
-                registry: self.clone(),
+                // The registry owns the sender, so queued work must not own it back.
+                registry: Arc::downgrade(&self.inner),
                 future,
             })
             .map_err(|_| {
@@ -141,7 +144,7 @@ impl OperationRegistry {
             .diagnostics_tx
             .try_send(DiagnosticsRequest {
                 operation_id,
-                registry: self.clone(),
+                registry: Arc::downgrade(&self.inner),
             })
             .map_err(|error| {
                 let error = match error {
@@ -205,6 +208,10 @@ pub fn accept_registration(
         registry,
         future,
     } = registration;
+    let Some(inner) = registry.upgrade() else {
+        return;
+    };
+    let registry = OperationRegistry { inner };
     senders.insert(operation_id, PendingSender { registry });
     pending.push(Box::pin(async move { (operation_id, future.await) }));
 }
@@ -273,5 +280,42 @@ mod tests {
             admission.completion.wait().unwrap(),
             Completion::Acknowledged
         );
+    }
+
+    #[test]
+    fn queued_completion_does_not_keep_its_registry_or_future_alive_after_teardown() {
+        struct DropGuard(Arc<AtomicU64>);
+        impl Drop for DropGuard {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let (registry, receivers) = OperationRegistry::new(1);
+        let weak = Arc::downgrade(&registry.inner);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let guard = DropGuard(Arc::clone(&dropped));
+        let admission = registry
+            .register(Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            }))
+            .unwrap();
+        drop(receivers);
+        drop(registry);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        drop(admission);
+    }
+
+    #[test]
+    fn queued_diagnostics_does_not_keep_its_registry_alive_after_teardown() {
+        let (registry, receivers) = OperationRegistry::new(1);
+        let weak = Arc::downgrade(&registry.inner);
+        let admission = registry.register_diagnostics().unwrap();
+        drop(receivers);
+        drop(registry);
+        assert!(weak.upgrade().is_none());
+        drop(admission);
     }
 }

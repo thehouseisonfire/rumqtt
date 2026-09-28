@@ -15,6 +15,15 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native-wrapper teardown: Release queued completion futures and diagnostics
+  after driver failure by avoiding ownership cycles in the operation registry.
+  Release empty session-store lease bookkeeping after the final client exits.
+- C client destruction: Preserve an admitted MQTT 5 DISCONNECT payload during
+  cleanup, including after graceful close and immediate escalation. Join the
+  driver before consuming the handle; timeouts still leave it valid for retry.
+- MQTT 5 AUTH codec: Reject repeated Authentication Method, Authentication Data,
+  and Reason String properties, values crossing the declared property length,
+  and trailing packet bytes. Preserve repeated User Properties in wire order.
 - MQTT 3.1.1 ordered shutdown: Fail fences with `SessionReset` when fresh-session
   recovery discards scheduled or live protocol work, as well as pending replay.
 - MQTT 5 authentication: Fail and reset the initial exchange when a synchronous

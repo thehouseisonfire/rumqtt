@@ -19,16 +19,28 @@ static atomic_uint destroyed;
 
 static int finish_resolution(void *argument) {
   resolve_work *work = (resolve_work *)argument;
-  rumqttc_srv_record_t record = RUMQTTC_SRV_RECORD_INIT;
+  rumqttc_srv_record_t records[] = {
+      RUMQTTC_SRV_RECORD_INIT,
+      RUMQTTC_SRV_RECORD_INIT,
+      RUMQTTC_SRV_RECORD_INIT,
+  };
   native_sleep_ms(20);
-  record.priority = 10;
-  record.weight = 5;
-  record.port = work->port;
-  record.target = native_string("localhost");
+  records[0].priority = 10;
+  records[0].weight = 5;
+  records[0].port = work->port;
+  records[0].target = native_string("localhost");
+  records[1].priority = 10;
+  records[1].weight = 25;
+  records[1].port = work->port;
+  records[1].target = native_string("localhost");
+  records[2].priority = 20;
+  records[2].weight = 1;
+  records[2].port = work->port;
+  records[2].target = native_string("later.invalid");
   REQUIRE(rumqttc_callback_srv_complete(work->completion, RUMQTTC_SRV_SUCCESS,
-                                        &record, 1) == RUMQTTC_OK);
+                                        records, 3) == RUMQTTC_OK);
   REQUIRE(rumqttc_callback_srv_complete(work->completion, RUMQTTC_SRV_SUCCESS,
-                                        &record, 1) == RUMQTTC_INVALID_STATE);
+                                        records, 3) == RUMQTTC_INVALID_STATE);
   rumqttc_callback_completion_destroy(work->completion);
   free(work);
   return 0;
@@ -121,7 +133,7 @@ int main(void) {
       if (target_present) {
         REQUIRE(attempts == 1);
         REQUIRE(visited == 2);
-        REQUIRE(candidate_present == 1 && candidate_index == 1 && candidate_count == 1);
+        REQUIRE(candidate_present == 1 && candidate_index == 1 && candidate_count == 3);
         REQUIRE(target_kind == RUMQTTC_REDIRECT_TARGET_TCP);
         REQUIRE(target.len == 9 && memcmp(target.data, "localhost", 9) == 0);
         REQUIRE(port == context->port);

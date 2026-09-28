@@ -51,7 +51,8 @@ static void run_case(const char *client_id, uint32_t response,
   CHECK(rumqttc_config_set_v5_redirect_policy(config, RUMQTTC_REDIRECT_FOLLOW,
                                                3, RUMQTTC_REDIRECT_TRANSPORT_TCP,
                                                NULL, NULL));
-  CHECK(rumqttc_config_set_v5_srv_resolver(config, registration, NULL));
+  if (response != UINT32_MAX)
+    CHECK(rumqttc_config_set_v5_srv_resolver(config, registration, NULL));
   CHECK(rumqttc_client_start(config, &client, NULL));
   while (!saw_terminal) {
     rumqttc_event_t *event = NULL;
@@ -93,7 +94,7 @@ static void run_case(const char *client_id, uint32_t response,
     }
     rumqttc_event_destroy(event);
   }
-  REQUIRE(context->calls == 1);
+  REQUIRE(context->calls == (response == UINT32_MAX ? 0u : 1u));
   native_close_destroy(client);
   rumqttc_config_destroy(config);
   rumqttc_resolver_registration_destroy(registration);
@@ -104,6 +105,11 @@ int main(void) {
            RUMQTTC_REDIRECT_FAILURE_DNS);
   run_case("native-v5-srv-failed", RUMQTTC_SRV_FAILED,
            RUMQTTC_REDIRECT_FAILURE_CALLBACK);
-  REQUIRE(atomic_load(&destroyed) == 2);
+  unsigned expected_destroyed = 2;
+  if (!(rumqttc_library_capabilities() & RUMQTTC_CAP_SYSTEM_SRV)) {
+    run_case("native-v5-srv-missing", UINT32_MAX, RUMQTTC_REDIRECT_FAILURE_DNS);
+    ++expected_destroyed;
+  }
+  REQUIRE(atomic_load(&destroyed) == expected_destroyed);
   return 0;
 }

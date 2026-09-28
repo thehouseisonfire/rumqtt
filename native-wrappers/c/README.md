@@ -299,6 +299,10 @@ Single-output accessors require their output pointer. Completion observation
 functions accept `const rumqttc_completion_t *`; their internal result cache is
 synchronized and does not change the caller-visible handle identity.
 
+Client destruction preserves any previously admitted DISCONNECT options while
+requesting immediate cleanup and joining the driver. A timeout leaves the handle
+valid for retry, including when a host callback is still executing.
+
 Admission means a request entered the bounded local MQTT queue; it does not mean
 the broker received it. Tracked completion distinguishes QoS 0 local flush,
 QoS 1 acknowledgement, and QoS 2 completion. Destroying or timing out a
@@ -417,7 +421,32 @@ from the fast header and ABI checks. It exercises the C surface from C,
 including MQTT 3.1.1 and MQTT 5 behavior, overload, reconnect, shutdown,
 native-thread concurrency, and repeated teardown. Every network wait and join
 has a deadline. Set `RUMQTTC_C_STRESS_ITERATIONS` to increase the stress run;
-CI uses a short run while leak-analysis jobs use a longer one.
+CI uses a short run while leak-analysis jobs use a longer one. The callback
+stress fixtures cover registration replacement, retained completions, cancellation
+races, per-client serialization, shared store-key exclusion, and safe dynamic
+library unload. The persistence fixtures restore subscriptions and incoming QoS 2
+state, inject callback failures, and interrupt an atomic checkpoint replacement.
+Wire fixtures cover rich event properties, runtime limits, topic-alias reconnects,
+redirects and SRV fallback, close races, and Unix/socket/WebSocket configuration.
+
+TLS and proxy fixtures generate temporary certificate authorities and test broker
+and proxy trust independently, mutual TLS, ALPN, failed construction, and output
+redaction. OpenSSL and Python are required by the broker runner. The process Will
+fixture uses a local `mosquitto` executable and reports a CTest skip if it is absent.
+Platform trust is tested in an isolated Linux child process without changing the
+host trust store.
+
+Run all seven installed feature profiles, including static/shared CMake and
+pkg-config consumers and the corresponding native transport fixtures, with:
+
+```bash
+python3 native-wrappers/c/tests/package_feature_matrix.py --native
+```
+
+Use `--profile minimal`, `--profile rustls`, `--profile native`, `--profile mixed`,
+or one of their `-proxy` variants to select a profile. The CI matrix runs these
+consumers and the native suite on Linux, macOS, and Windows; sanitizer jobs include
+the callback cancellation and ownership races.
 
 ## Session Present compatibility
 
