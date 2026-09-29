@@ -6656,7 +6656,14 @@ mod tests {
         let mut present = 99;
         let mut scalar = 99;
         assert_eq!(
-            unsafe { rumqttc_event_connack_v5_scalar(&raw const event, 2, &raw mut present, &raw mut scalar) },
+            unsafe {
+                rumqttc_event_connack_v5_scalar(
+                    &raw const event,
+                    2,
+                    &raw mut present,
+                    &raw mut scalar,
+                )
+            },
             OK
         );
         assert_eq!((present, scalar), (1, 9));
@@ -6665,7 +6672,14 @@ mod tests {
             len: 99,
         };
         assert_eq!(
-            unsafe { rumqttc_event_connack_v5_string(&raw const event, 2, &raw mut present, &raw mut view) },
+            unsafe {
+                rumqttc_event_connack_v5_string(
+                    &raw const event,
+                    2,
+                    &raw mut present,
+                    &raw mut view,
+                )
+            },
             OK
         );
         assert_eq!((present, view.len), (1, 0));
@@ -6680,7 +6694,9 @@ mod tests {
             len: 0,
         };
         assert_eq!(
-            unsafe { rumqttc_event_user_property_at(&raw const event, 1, 1, &raw mut name, &raw mut view) },
+            unsafe {
+                rumqttc_event_user_property_at(&raw const event, 1, 1, &raw mut name, &raw mut view)
+            },
             OK
         );
         assert_eq!(
@@ -6696,7 +6712,14 @@ mod tests {
         present = 99;
         scalar = 99;
         assert_eq!(
-            unsafe { rumqttc_event_connack_v5_scalar(&raw const wrong, 2, &raw mut present, &raw mut scalar) },
+            unsafe {
+                rumqttc_event_connack_v5_scalar(
+                    &raw const wrong,
+                    2,
+                    &raw mut present,
+                    &raw mut scalar,
+                )
+            },
             crate::error::INVALID_STATE
         );
         assert_eq!((present, scalar), (0, 0));

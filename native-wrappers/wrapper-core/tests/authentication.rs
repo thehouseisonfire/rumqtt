@@ -1087,7 +1087,10 @@ fn immediate_close_notifies_pending_initial_authentication_once() {
             // The pending host future must be cancelled before notifying its owner.
             assert_eq!(self.dropped.load(Ordering::Relaxed), 1);
             self.failed.send((context, failure)).unwrap();
-            assert!(!self.panic_on_failure, "private-authentication-cancellation-notification")
+            assert!(
+                !self.panic_on_failure,
+                "private-authentication-cancellation-notification"
+            );
         }
     }
 
