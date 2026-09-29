@@ -31,6 +31,8 @@ auth-scram = ["rumqttc_v5/auth-scram", "dep:scram"]
 tracing = ["rumqttc_v4/tracing", "rumqttc_v5/tracing", "dep:tracing"]
 tracing-log-compat = ["tracing", "rumqttc_v4/tracing-log-compat", "rumqttc_v5/tracing-log-compat", "tracing/log"]
 panic-testing = []
+# Private unit-test fixture; no wrapper configuration or public C ABI.
+transport-proof = ["dep:cc", "tokio/io-util"]
 
 [dependencies]
 bytes = "1.5"
@@ -55,3 +57,6 @@ tempfile = "3"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+
+[build-dependencies]
+cc = { version = "1", optional = true }

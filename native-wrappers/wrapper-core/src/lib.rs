@@ -28,6 +28,8 @@ mod runtime;
 pub mod rust_session_store;
 mod session;
 mod shutdown;
+#[cfg(all(test, feature = "transport-proof"))]
+mod transport;
 pub use redirect::{
     RedirectEvent, RedirectFailure, RedirectPolicy, RedirectReason, RedirectSource, SrvFailure,
     SrvFuture, SrvRecord, SrvResolver, SrvResolverConfig,

@@ -20,6 +20,47 @@ publish the C interface before partial I/O, wakeups, cancellation, and owner
 release have explicit implementations. No dependency on a portable client
 rewrite or the browser wrapper is required.
 
+## Private adapter proof
+
+The `transport-proof` feature runs a private wrapper-core adapter with real C
+callbacks compiled into unit tests. Run it from the repository root:
+
+```sh
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next --lib \
+  --features transport-proof transport::
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next --lib \
+  --no-default-features --features transport-proof transport::
+```
+
+The adapter owns each read result and write input, accepts at most 16 KiB of
+buffered writes, and permits one read to overlap one serialized write, flush,
+or shutdown. A buffered write reports acceptance immediately; the next write
+or flush observes foreign I/O errors. Deferred C writes retain their owned
+input until completion. Shutdown drains writes and flushes before closing.
+
+The proof exercises short transfers, EOF, invalid results, immediate and
+deferred completion, completion from another thread, wakeups, cancellation
+including unpolled futures, concurrent stream drop, and exactly-once release
+after retained completions. Deterministic concurrent-read regressions verify
+that automatic completion claims its operation and captures its bytes under
+the readiness lock before delivering the callback outside that lock. A delayed
+completion cannot drain or signal EOF on a later read. Abandoned host work
+wakes its observer with an error. Both native MQTT clients perform CONNECT
+and acknowledged QoS 1 PUBLISH exchanges, reject late handshake results after
+timeout, and reconnect using fresh C streams.
+
+Linux verification covers 19 proof tests in both feature configurations,
+ASan/LSan for Rust and C, and UBSan for C. CI is configured to run the regular
+proof on Linux, macOS, and Windows, plus the sanitizer proof on Linux.
+
+The adapter and C fixture are test-only. There is no new wrapper configuration
+field or public C ABI. Per-stream bounds do not limit host-retained cancelled
+operations across connections: the host must release them. Exact attempt
+metadata and deadlines, network-setting policy, a custom tunnel,
+TLS/proxy/WebSocket composition, and wrapper `NativeClient` lifecycle
+integration remain to be designed and verified. The implementation checklist
+and the `PARITY.md` omission remain open.
+
 ## Implementation requirements
 
 - [ ] Add owned connector and stream abstractions in wrapper-core, with one

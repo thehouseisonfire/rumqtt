@@ -1719,6 +1719,7 @@ name = "rumqttc-wrapper-core-next"
 version = "0.34.0-alpha"
 dependencies = [
  "bytes",
+ "cc",
  "flume",
  "futures-executor",
  "futures-util",

@@ -115,6 +115,11 @@ jobs:
       - name: Audit native API parity
         run: cargo test --locked -p rumqttc-wrapper-core-next --test parity_inventory
 
+      - name: Private C stream adapter proof
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next --lib --features transport-proof transport::
+          cargo test --locked -p rumqttc-wrapper-core-next --lib --no-default-features --features transport-proof transport::
+
       - name: TLS backends and transport composition
         run: cargo test --locked -p rumqttc-wrapper-core-next --features use-native-tls,websocket,proxy
 
@@ -339,6 +344,19 @@ jobs:
 
       - name: Run raw conversion tests under Miri
         run: cargo miri test -p rumqttc-c-next --lib
+
+      - name: Check private C stream ownership under sanitizers
+        env:
+          CARGO_TARGET_DIR: target/transport-proof-asan
+          CC: clang
+          CFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+          RUSTFLAGS: -D warnings -Zsanitizer=address -C linker=clang
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: >-
+          cargo test --locked -p rumqttc-wrapper-core-next --lib
+          --no-default-features --features transport-proof
+          --target x86_64-unknown-linux-gnu transport::
 
       - name: Build C library and sanitized native suite
         id: native_validation
