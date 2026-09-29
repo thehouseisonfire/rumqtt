@@ -272,6 +272,9 @@ the current user's Root store. Cleanup restores the keychain search list and
 removes only the fixture's own root, including after child-process failure.
 An interrupted run leaves a cleanup manifest; CI unconditionally runs
 `python3 native-wrappers/c/tests/native/platform_trust.py --cleanup`.
+If macOS certificate removal stalls, cleanup exports the current administrator
+trust settings and imports them with only the fixture's entry removed. It verifies
+removal before deleting the manifest, preserving it if cleanup still fails.
 The latest verified platform results and pending execution are recorded in
 [`../wrapper-core/PARITY.md`](../wrapper-core/PARITY.md).
 

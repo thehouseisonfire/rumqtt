@@ -9,7 +9,8 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y mosquitto
-        mosquitto -h
+        # Mosquitto 2.0 reports its help/version successfully with exit code 3.
+        mosquitto -h || test "$?" -eq 3
     - name: Install Mosquitto on macOS
       if: runner.os == 'macOS'
       shell: bash
@@ -17,7 +18,7 @@ runs:
         brew install mosquitto
         broker="$(brew --prefix mosquitto)/sbin/mosquitto"
         test -x "$broker"
-        "$broker" -h
+        "$broker" -h || test "$?" -eq 3
         echo "MOSQUITTO_BIN=$broker" >> "$GITHUB_ENV"
     - name: Install Mosquitto on Windows
       if: runner.os == 'Windows'
@@ -30,5 +31,7 @@ runs:
         $broker = Join-Path $env:ProgramFiles mosquitto/mosquitto.exe
         if (-not (Test-Path $broker -PathType Leaf)) { throw "Mosquitto executable was not installed" }
         & $broker -h
-        if ($LASTEXITCODE -ne 0) { throw "Mosquitto executable did not run" }
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) { throw "Mosquitto executable did not run" }
+        # GitHub's PowerShell wrapper exits with the last native process status.
+        $global:LASTEXITCODE = 0
         "MOSQUITTO_BIN=$broker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

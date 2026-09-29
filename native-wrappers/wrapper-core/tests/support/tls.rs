@@ -13,7 +13,10 @@ pub struct Fixture {
     pub key_pem: String,
 }
 
-pub const fn install_provider_for_providerless_client() {
+// This is a runtime operation in providerless builds, even though other
+// configurations compile an empty body that Clippy could auto-fix to `const`.
+#[allow(clippy::missing_const_for_fn)]
+pub fn install_provider_for_providerless_client() {
     #[cfg(all(
         feature = "use-rustls-no-provider",
         not(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))

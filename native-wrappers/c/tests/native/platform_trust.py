@@ -39,18 +39,41 @@ def powershell(script: str, state: dict[str, object]) -> str:
     )
 
 
-def mac_trusted(thumbprint: str) -> bool:
+def mac_trust_settings() -> dict:
     with tempfile.TemporaryDirectory(prefix="rumqttc-trust-inspect-") as directory:
         export = Path(directory) / "trust.plist"
         result = subprocess.run(
             ["security", "trust-settings-export", "-d", str(export)], capture_output=True, text=True, timeout=30
         )
         if result.returncode and "No Trust Settings were found" in result.stdout + result.stderr:
-            return False
+            return {"trustList": {}}
         result.check_returncode()
         with export.open("rb") as source:
-            trust = plistlib.load(source)
-        return thumbprint in {str(key).upper() for key in trust.get("trustList", {})}
+            return plistlib.load(source)
+
+
+def mac_trusted(thumbprint: str) -> bool:
+    return thumbprint in {str(key).upper() for key in mac_trust_settings().get("trustList", {})}
+
+
+def mac_remove_trust_with_import(thumbprint: str) -> None:
+    """Bypass stalled per-certificate removal on disposable macOS CI runners."""
+    if os.environ.get("RUMQTTC_DISPOSABLE_TRUST_RUNNER") != "1":
+        raise RuntimeError("platform trust requires RUMQTTC_DISPOSABLE_TRUST_RUNNER=1 on a disposable runner")
+    # Export current settings, preserving unrelated entries and metadata. Do not
+    # restore an old snapshot that could discard changes made during the fixture.
+    trust = mac_trust_settings()
+    entries = trust.get("trustList", {})
+    matching = [key for key in entries if str(key).upper() == thumbprint]
+    if not matching:
+        return
+    for key in matching:
+        del entries[key]
+    with tempfile.TemporaryDirectory(prefix="rumqttc-trust-remove-") as directory:
+        settings = Path(directory) / "trust.plist"
+        with settings.open("wb") as destination:
+            plistlib.dump(trust, destination)
+        command(["sudo", "-n", "security", "trust-settings-import", "-d", str(settings)])
 
 
 def save_state(path: Path, state: dict[str, object]) -> None:
@@ -73,18 +96,15 @@ def cleanup(path: Path) -> None:
             )
     elif state["platform"] == "darwin":
         if state["owned"] and mac_trusted(thumbprint):
-            # macOS trust services can stall while updating the admin store.
-            # Keep the manifest until a removal succeeds so CI can retry cleanup.
-            for attempt in range(3):
-                try:
-                    command(["sudo", "-n", "security", "remove-trusted-cert", "-d", str(state["root"])])
-                    break
-                except subprocess.TimeoutExpired:
-                    if not mac_trusted(thumbprint):
-                        break
-                    if attempt == 2:
-                        raise
-                    print("macOS trust removal timed out; retrying", file=sys.stderr)
+            try:
+                command(["sudo", "-n", "security", "remove-trusted-cert", "-d", str(state["root"])])
+            except subprocess.TimeoutExpired:
+                if mac_trusted(thumbprint):
+                    print(
+                        "macOS trust removal timed out; removing fixture entry with trust-settings-import",
+                        file=sys.stderr,
+                    )
+                    mac_remove_trust_with_import(thumbprint)
         if state["owned"] and mac_trusted(thumbprint):
             raise RuntimeError("test root survived macOS trust cleanup")
         if state.get("search_changed"):

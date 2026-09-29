@@ -74,12 +74,16 @@ mod enabled {
     }
 }
 
-pub const fn start() {
+// Without tracing these helpers are no-ops. Keep Clippy's default-feature
+// auto-fix from adding `const`, which is invalid for their tracing bodies.
+#[cfg_attr(not(feature = "tracing"), allow(clippy::missing_const_for_fn))]
+pub fn start() {
     #[cfg(feature = "tracing")]
     let _ = enabled::output();
 }
 
-pub const fn assert_activity() {
+#[cfg_attr(not(feature = "tracing"), allow(clippy::missing_const_for_fn))]
+pub fn assert_activity() {
     #[cfg(feature = "tracing")]
     assert!(
         !enabled::output().lock().unwrap().is_empty(),

@@ -78,7 +78,11 @@ uint64_t native_fixture_read(const char *name) {
     FILE *file = fopen(path, "r");
     if (file != NULL) {
       unsigned long long value = 0;
+#if defined(_MSC_VER)
+      REQUIRE(fscanf_s(file, "%llu", &value) == 1 && fclose(file) == 0);
+#else
       REQUIRE(fscanf(file, "%llu", &value) == 1 && fclose(file) == 0);
+#endif
       return (uint64_t)value;
     }
     native_sleep_ms(1);

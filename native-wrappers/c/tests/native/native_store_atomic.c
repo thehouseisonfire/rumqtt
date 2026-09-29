@@ -54,7 +54,11 @@ static void load_checkpoint(void *user_data, const rumqttc_store_request_t *requ
     sibling_path(expected_path, sizeof(expected_path), ".expected");
     file = fopen(expected_path, "r");
     REQUIRE(file != NULL);
+#if defined(_MSC_VER)
+    REQUIRE(fscanf_s(file, "%llu %llx", &expected_length, &expected_checksum) == 2);
+#else
     REQUIRE(fscanf(file, "%llu %llx", &expected_length, &expected_checksum) == 2);
+#endif
     REQUIRE(fclose(file) == 0);
     REQUIRE((size_t)expected_length == (size_t)length);
     REQUIRE((uint64_t)expected_checksum == checksum(bytes, (size_t)length));

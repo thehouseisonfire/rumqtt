@@ -15,6 +15,8 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native C examples: Enable MSVC C11 atomics when building the session-store
+  example, matching its callback ownership checks.
 - Native-wrapper MQTT 5 reauthentication: Reject an overlapping request with
   `Overlapping` and delivery status `NotAdmitted` without sending another AUTH
   or interrupting the active exchange. The tracked request retains its own

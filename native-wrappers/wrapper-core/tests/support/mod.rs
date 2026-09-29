@@ -38,6 +38,9 @@ pub fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
+                // Accepted sockets can inherit the listener's nonblocking mode.
+                // The broker fixtures use blocking reads with bounded timeouts.
+                socket.set_nonblocking(false).unwrap();
                 socket.set_read_timeout(Some(DEADLINE)).unwrap();
                 socket.set_write_timeout(Some(DEADLINE)).unwrap();
                 return socket;

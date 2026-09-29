@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import plistlib
 import subprocess
 import tempfile
 import unittest
@@ -193,47 +194,77 @@ class PlatformTrustTests(unittest.TestCase):
         self.assertTrue(any("remove-trusted-cert" in arguments for arguments in commands))
         self.assert_clean()
 
-    def test_macos_retries_timed_out_trust_removal(self):
-        command, commands, original, current = self.mac_commands()
-        removal_attempts = 0
-
-        def timeout_once(arguments, environment=None):
-            nonlocal removal_attempts
-            if "remove-trusted-cert" in arguments:
-                removal_attempts += 1
-                if removal_attempts == 1:
-                    raise subprocess.TimeoutExpired(arguments, 30)
-            return command(arguments, environment)
-
-        with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=timeout_once),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, False]),
-            platform_trust.trusted_root(self.root, self.environment),
-        ):
-            pass
-        self.assertEqual(removal_attempts, 2)
-        self.assertEqual(current, original)
-        self.assertEqual(sum("remove-trusted-cert" in arguments for arguments in commands), 1)
-        self.assert_clean()
-
-    def test_macos_timeout_keeps_cleanup_manifest_for_later_retry(self):
+    def test_macos_timed_out_removal_uses_verified_import_fallback(self):
         command, _, original, current = self.mac_commands()
 
-        def always_timeout(arguments, environment=None):
+        def timeout_removal(arguments, environment=None):
             if "remove-trusted-cert" in arguments:
                 raise subprocess.TimeoutExpired(arguments, 30)
             return command(arguments, environment)
 
         with (
             patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=always_timeout),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, True, True]),
-            self.assertRaises(subprocess.TimeoutExpired),
+            patch.object(platform_trust, "command", side_effect=timeout_removal),
+            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, False]),
+            patch.object(platform_trust, "mac_remove_trust_with_import") as fallback,
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            pass
+        fallback.assert_called_once()
+        self.assertEqual(current, original)
+        self.assert_clean()
+
+    def test_macos_import_preserves_unrelated_current_trust(self):
+        trust = {
+            "trustVersion": 1,
+            "trustList": {
+                "fixture": {"issuerName": b"test root", "trustSettings": []},
+                "OTHER": {"issuerName": b"other root", "trustSettings": [{"result": 1}]},
+            },
+        }
+        expected = {"trustVersion": 1, "trustList": {"OTHER": trust["trustList"]["OTHER"]}}
+
+        def import_settings(arguments, environment=None):
+            self.assertEqual(arguments[:-1], ["sudo", "-n", "security", "trust-settings-import", "-d"])
+            with Path(arguments[-1]).open("rb") as source:
+                self.assertEqual(plistlib.load(source), expected)
+            return ""
+
+        with (
+            patch.object(platform_trust, "mac_trust_settings", return_value=trust),
+            patch.object(platform_trust, "command", side_effect=import_settings) as command,
+        ):
+            platform_trust.mac_remove_trust_with_import("FIXTURE")
+        command.assert_called_once()
+
+    def test_macos_import_requires_disposable_runner(self):
+        with (
+            patch.dict(os.environ, {"RUMQTTC_DISPOSABLE_TRUST_RUNNER": "0"}),
+            patch.object(platform_trust, "command") as command,
+            self.assertRaisesRegex(RuntimeError, "disposable"),
+        ):
+            platform_trust.mac_remove_trust_with_import("FIXTURE")
+        command.assert_not_called()
+
+    def test_macos_import_failure_keeps_cleanup_manifest_for_later_retry(self):
+        command, _, original, current = self.mac_commands()
+
+        def timeout_removal(arguments, environment=None):
+            if "remove-trusted-cert" in arguments:
+                raise subprocess.TimeoutExpired(arguments, 30)
+            return command(arguments, environment)
+
+        with (
+            patch.object(platform_trust.sys, "platform", "darwin"),
+            patch.object(platform_trust, "command", side_effect=timeout_removal),
+            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True]),
+            patch.object(platform_trust, "mac_remove_trust_with_import", side_effect=RuntimeError("import failed")),
+            self.assertRaisesRegex(RuntimeError, "import failed"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
             pass
         self.assertEqual(len(list(self.state.glob("*.json"))), 1)
+        self.assertEqual(len(list(self.state.glob("*.cer"))), 1)
         with (
             patch.object(platform_trust, "command", side_effect=command),
             patch.object(platform_trust, "mac_trusted", side_effect=[True, False]),
@@ -241,6 +272,25 @@ class PlatformTrustTests(unittest.TestCase):
             platform_trust.cleanup_all()
         self.assertEqual(current, original)
         self.assert_clean()
+
+    def test_macos_import_does_not_claim_success_if_root_survives(self):
+        command, _, _, _ = self.mac_commands()
+
+        def timeout_removal(arguments, environment=None):
+            if "remove-trusted-cert" in arguments:
+                raise subprocess.TimeoutExpired(arguments, 30)
+            return command(arguments, environment)
+
+        with (
+            patch.object(platform_trust.sys, "platform", "darwin"),
+            patch.object(platform_trust, "command", side_effect=timeout_removal),
+            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, True]),
+            patch.object(platform_trust, "mac_remove_trust_with_import"),
+            self.assertRaisesRegex(RuntimeError, "survived"),
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            pass
+        self.assertEqual(len(list(self.state.glob("*.json"))), 1)
 
     def test_macos_does_not_remove_preexisting_trust(self):
         command, commands, original, current = self.mac_commands()
