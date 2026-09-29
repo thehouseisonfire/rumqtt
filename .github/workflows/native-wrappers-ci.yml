@@ -178,6 +178,7 @@ jobs:
         run: python -m unittest discover -s c/tests/native -p 'test_*.py'
 
       - name: C native integration, stress, and examples
+        id: native_validation
         run: |
           cmake -S c/tests/native -B target/rumqttc-c-native -DCMAKE_BUILD_TYPE=Debug
           cmake --build target/rumqttc-c-native --config Debug
@@ -300,7 +301,14 @@ jobs:
         run: python c/tests/native/platform_trust.py --cleanup
 
       - name: Preserve native C validation evidence
-        if: ${{ always() }}
+        if: >-
+          ${{ always() && (steps.native_validation.outcome == 'success' ||
+          (steps.native_validation.outcome == 'failure' &&
+          hashFiles('native-wrappers/target/rumqttc-c-native*/Testing/**',
+          'native-wrappers/target/rumqttc-c-native*/results.xml',
+          'native-wrappers/target/c-feature-matrix/**/Testing/**',
+          'native-wrappers/target/c-feature-matrix/**/results.xml',
+          'native-wrappers/target/c-feature-matrix/**/validation.*') != '')) }}
         uses: actions/upload-artifact@v7
         with:
           name: native-c-validation-${{ runner.os }}-${{ github.job }}
@@ -333,6 +341,7 @@ jobs:
         run: cargo miri test -p rumqttc-c-next --lib
 
       - name: Build C library and sanitized native suite
+        id: native_validation
         run: |
           cargo build -p rumqttc-c-next
           cmake -S c/tests/native -B target/rumqttc-c-native-sanitized \
@@ -360,7 +369,14 @@ jobs:
         run: python c/tests/native/platform_trust.py --cleanup
 
       - name: Preserve native C validation evidence
-        if: ${{ always() }}
+        if: >-
+          ${{ always() && (steps.native_validation.outcome == 'success' ||
+          (steps.native_validation.outcome == 'failure' &&
+          hashFiles('native-wrappers/target/rumqttc-c-native*/Testing/**',
+          'native-wrappers/target/rumqttc-c-native*/results.xml',
+          'native-wrappers/target/c-feature-matrix/**/Testing/**',
+          'native-wrappers/target/c-feature-matrix/**/results.xml',
+          'native-wrappers/target/c-feature-matrix/**/validation.*') != '')) }}
         uses: actions/upload-artifact@v7
         with:
           name: native-c-validation-${{ runner.os }}-${{ github.job }}
@@ -394,6 +410,7 @@ jobs:
         run: cargo build -p rumqttc-c-next
 
       - name: Build and run sanitized native suite (macOS)
+        id: mac_native_validation
         if: ${{ runner.os == 'macOS' }}
         run: |
           cmake -S c/tests/native -B target/rumqttc-c-native-platform-sanitized \
@@ -418,6 +435,7 @@ jobs:
           ctest --test-dir target/rumqttc-c-native-leaks -R "$leak_tests" --output-on-failure
 
       - name: Build and run sanitized native suite (Windows)
+        id: windows_native_validation
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: |
@@ -450,7 +468,16 @@ jobs:
         run: python c/tests/native/platform_trust.py --cleanup
 
       - name: Preserve native C validation evidence
-        if: ${{ always() }}
+        if: >-
+          ${{ always() && (steps.mac_native_validation.outcome == 'success' ||
+          steps.windows_native_validation.outcome == 'success' ||
+          ((steps.mac_native_validation.outcome == 'failure' ||
+          steps.windows_native_validation.outcome == 'failure') &&
+          hashFiles('native-wrappers/target/rumqttc-c-native*/Testing/**',
+          'native-wrappers/target/rumqttc-c-native*/results.xml',
+          'native-wrappers/target/c-feature-matrix/**/Testing/**',
+          'native-wrappers/target/c-feature-matrix/**/results.xml',
+          'native-wrappers/target/c-feature-matrix/**/validation.*') != '')) }}
         uses: actions/upload-artifact@v7
         with:
           name: native-c-validation-${{ runner.os }}-${{ github.job }}

@@ -193,6 +193,55 @@ class PlatformTrustTests(unittest.TestCase):
         self.assertTrue(any("remove-trusted-cert" in arguments for arguments in commands))
         self.assert_clean()
 
+    def test_macos_retries_timed_out_trust_removal(self):
+        command, commands, original, current = self.mac_commands()
+        removal_attempts = 0
+
+        def timeout_once(arguments, environment=None):
+            nonlocal removal_attempts
+            if "remove-trusted-cert" in arguments:
+                removal_attempts += 1
+                if removal_attempts == 1:
+                    raise subprocess.TimeoutExpired(arguments, 30)
+            return command(arguments, environment)
+
+        with (
+            patch.object(platform_trust.sys, "platform", "darwin"),
+            patch.object(platform_trust, "command", side_effect=timeout_once),
+            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, False]),
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            pass
+        self.assertEqual(removal_attempts, 2)
+        self.assertEqual(current, original)
+        self.assertEqual(sum("remove-trusted-cert" in arguments for arguments in commands), 1)
+        self.assert_clean()
+
+    def test_macos_timeout_keeps_cleanup_manifest_for_later_retry(self):
+        command, _, original, current = self.mac_commands()
+
+        def always_timeout(arguments, environment=None):
+            if "remove-trusted-cert" in arguments:
+                raise subprocess.TimeoutExpired(arguments, 30)
+            return command(arguments, environment)
+
+        with (
+            patch.object(platform_trust.sys, "platform", "darwin"),
+            patch.object(platform_trust, "command", side_effect=always_timeout),
+            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, True, True]),
+            self.assertRaises(subprocess.TimeoutExpired),
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            pass
+        self.assertEqual(len(list(self.state.glob("*.json"))), 1)
+        with (
+            patch.object(platform_trust, "command", side_effect=command),
+            patch.object(platform_trust, "mac_trusted", side_effect=[True, False]),
+        ):
+            platform_trust.cleanup_all()
+        self.assertEqual(current, original)
+        self.assert_clean()
+
     def test_macos_does_not_remove_preexisting_trust(self):
         command, commands, original, current = self.mac_commands()
         with (

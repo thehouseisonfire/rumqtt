@@ -73,7 +73,18 @@ def cleanup(path: Path) -> None:
             )
     elif state["platform"] == "darwin":
         if state["owned"] and mac_trusted(thumbprint):
-            command(["sudo", "-n", "security", "remove-trusted-cert", "-d", str(state["root"])])
+            # macOS trust services can stall while updating the admin store.
+            # Keep the manifest until a removal succeeds so CI can retry cleanup.
+            for attempt in range(3):
+                try:
+                    command(["sudo", "-n", "security", "remove-trusted-cert", "-d", str(state["root"])])
+                    break
+                except subprocess.TimeoutExpired:
+                    if not mac_trusted(thumbprint):
+                        break
+                    if attempt == 2:
+                        raise
+                    print("macOS trust removal timed out; retrying", file=sys.stderr)
         if state["owned"] and mac_trusted(thumbprint):
             raise RuntimeError("test root survived macOS trust cleanup")
         if state.get("search_changed"):
