@@ -13,7 +13,7 @@ pub struct Fixture {
     pub key_pem: String,
 }
 
-pub fn install_provider_for_providerless_client() {
+pub const fn install_provider_for_providerless_client() {
     #[cfg(all(
         feature = "use-rustls-no-provider",
         not(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))

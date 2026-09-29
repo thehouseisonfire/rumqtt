@@ -396,7 +396,7 @@ fn ready_async_callbacks_cannot_accept_responses_after_the_exchange_deadline() {
                 match events.recv_timeout(support::DEADLINE).unwrap().unwrap() {
                     WrapperEvent::Connected { .. } => panic!("late authentication succeeded"),
                     WrapperEvent::Authentication(auth) => {
-                        assert_ne!(auth.stage, AuthStage::Succeeded)
+                        assert_ne!(auth.stage, AuthStage::Succeeded);
                     }
                     WrapperEvent::DriverTerminated(error) => {
                         assert_eq!(error.auth_failure(), Some(AuthFailure::Timeout));
@@ -1087,9 +1087,7 @@ fn immediate_close_notifies_pending_initial_authentication_once() {
             // The pending host future must be cancelled before notifying its owner.
             assert_eq!(self.dropped.load(Ordering::Relaxed), 1);
             self.failed.send((context, failure)).unwrap();
-            if self.panic_on_failure {
-                panic!("private-authentication-cancellation-notification");
-            }
+            assert!(!self.panic_on_failure, "private-authentication-cancellation-notification")
         }
     }
 

@@ -611,8 +611,8 @@ impl AsyncAuthenticator for CAuthenticator {
             callback(
                 owner.user_data as *mut c_void,
                 &raw const request,
-                &raw const completion as *mut _,
-            )
+                (&raw const completion).cast_mut(),
+            );
         };
         Box::pin(async move {
             let _guard = guard;
@@ -630,12 +630,12 @@ impl AsyncAuthenticator for CAuthenticator {
                 self.owner.user_data as *mut c_void,
                 &raw const request,
                 auth_failure_code(failure),
-            )
+            );
         };
     }
 }
 
-fn auth_failure_code(failure: AuthFailure) -> u32 {
+const fn auth_failure_code(failure: AuthFailure) -> u32 {
     match failure {
         AuthFailure::Rejected => 1,
         AuthFailure::Panic => 2,
@@ -803,8 +803,8 @@ impl SrvResolver for CResolver {
                     callback(
                         owner.user_data as *mut c_void,
                         &raw const request,
-                        &raw const completion as *mut _,
-                    )
+                        (&raw const completion).cast_mut(),
+                    );
                 };
             }
             let result = receiver.await.unwrap_or(Err(SrvFailure::Query));
@@ -945,7 +945,7 @@ impl CStore {
                     callback(
                         owner.user_data as *mut c_void,
                         &raw const request,
-                        &raw const completion as *mut _,
+                        (&raw const completion).cast_mut(),
                     );
                 }
             }
@@ -1164,7 +1164,7 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rumqttc_library_capabilities() -> u64 {
+pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
         | CAP_V5
         | CAP_STORE_CALLBACKS
@@ -2956,7 +2956,7 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_advertised_max_packet_size_bytes(
         }
         match &mut config.protocol {
             rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
-                v5.connect_properties.maximum_packet_size = Some(bytes)
+                v5.connect_properties.maximum_packet_size = Some(bytes);
             }
             _ => {
                 return Err(ErrorHandle::argument(
@@ -2998,7 +2998,7 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_outgoing_inflight_upper_limit(
         }
         match &mut config.protocol {
             rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
-                v5.outgoing_inflight_upper_limit = Some(limit)
+                v5.outgoing_inflight_upper_limit = Some(limit);
             }
             _ => {
                 return Err(ErrorHandle::argument(
@@ -6207,13 +6207,13 @@ mod tests {
             assert_eq!(request.user_property_count, 2);
             let mut token = ptr::null_mut();
             assert_eq!(
-                unsafe { rumqttc_callback_completion_retain(completion, &mut token) },
+                unsafe { rumqttc_callback_completion_retain(completion, &raw mut token) },
                 OK
             );
             *context.token.lock().unwrap() = Some(token as usize);
         }
         unsafe extern "C" fn destroy(user_data: *mut c_void) {
-            let context = unsafe { Box::from_raw(user_data as *mut Context) };
+            let context = unsafe { Box::from_raw(user_data.cast::<Context>()) };
             context.destroyed.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -6280,11 +6280,11 @@ mod tests {
             reserved_tail: [0; 2],
         };
         assert_eq!(
-            unsafe { rumqttc_callback_auth_complete(token, &response) },
+            unsafe { rumqttc_callback_auth_complete(token, &raw const response) },
             OK
         );
         assert_eq!(
-            unsafe { rumqttc_callback_auth_complete(token, &response) },
+            unsafe { rumqttc_callback_auth_complete(token, &raw const response) },
             crate::error::INVALID_STATE
         );
         let result = pending.await.unwrap();
@@ -6303,7 +6303,7 @@ mod tests {
             as *mut rumqttc_callback_completion;
         drop(pending);
         assert_eq!(
-            unsafe { rumqttc_callback_auth_complete(late_token, &response) },
+            unsafe { rumqttc_callback_auth_complete(late_token, &raw const response) },
             crate::error::INVALID_STATE
         );
         drop(authenticator);
@@ -6332,7 +6332,7 @@ mod tests {
             user_property_count: 0,
             reserved_tail: [0; 2],
         };
-        let error = unsafe { parse_auth_response(&response) }.unwrap_err();
+        let error = unsafe { parse_auth_response(&raw const response) }.unwrap_err();
         assert_eq!(error.status, crate::error::INVALID_ARGUMENT);
         let error = unsafe {
             parse_user_properties(ptr::dangling::<rumqttc_user_property_t>(), usize::MAX)
@@ -6363,20 +6363,20 @@ mod tests {
         let mut present = 99;
         let mut reason = 99;
         let mut data = rumqttc_bytes_view_t {
-            data: 1 as *const u8,
+            data: std::ptr::dangling::<u8>(),
             len: 99,
         };
         assert_eq!(
             unsafe {
                 rumqttc_event_authentication_details(
-                    &auth,
-                    &mut present,
-                    &mut reason,
+                    &raw const auth,
+                    &raw mut present,
+                    &raw mut reason,
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null_mut(),
-                    &mut data,
+                    &raw mut data,
                     ptr::null_mut(),
                     ptr::null_mut(),
                 )
@@ -6386,7 +6386,7 @@ mod tests {
         assert_eq!((present, reason, data.len), (1, 0x18, 0));
         let mut count = 99;
         assert_eq!(
-            unsafe { rumqttc_event_user_property_count(&auth, 3, &mut count) },
+            unsafe { rumqttc_event_user_property_count(&raw const auth, 3, &raw mut count) },
             OK
         );
         assert_eq!(count, 2);
@@ -6414,13 +6414,13 @@ mod tests {
         assert_eq!(
             unsafe {
                 rumqttc_event_redirect_diagnostics(
-                    &redirect,
-                    &mut decision,
-                    &mut attempts,
+                    &raw const redirect,
+                    &raw mut decision,
+                    &raw mut attempts,
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null_mut(),
-                    &mut looped,
+                    &raw mut looped,
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null_mut(),
@@ -6434,9 +6434,9 @@ mod tests {
         assert_eq!(
             unsafe {
                 rumqttc_event_redirect_diagnostics(
-                    &auth,
-                    &mut decision,
-                    &mut attempts,
+                    &raw const auth,
+                    &raw mut decision,
+                    &raw mut attempts,
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null_mut(),
@@ -6531,7 +6531,7 @@ mod tests {
             assert_eq!(request.checkpoint_format_version, 1);
             let mut retained = ptr::null_mut();
             assert_eq!(
-                unsafe { rumqttc_callback_completion_retain(completion, &mut retained) },
+                unsafe { rumqttc_callback_completion_retain(completion, &raw mut retained) },
                 OK
             );
             *context.token.lock().unwrap() = Some(retained as usize);
@@ -6543,7 +6543,7 @@ mod tests {
         ) {
         }
         unsafe extern "C" fn destroy(user_data: *mut c_void) {
-            let context = unsafe { Box::from_raw(user_data as *mut Context) };
+            let context = unsafe { Box::from_raw(user_data.cast::<Context>()) };
             context.destroyed.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -6603,7 +6603,7 @@ mod tests {
         // This pointer cannot be read. The length check must win before a slice
         // or allocation is made, even when the same registration has other limits.
         let oversized = rumqttc_bytes_view_t {
-            data: 1 as *const u8,
+            data: std::ptr::dangling::<u8>(),
             len: checkpoint.len,
         };
         assert_eq!(
@@ -6656,7 +6656,7 @@ mod tests {
         let mut present = 99;
         let mut scalar = 99;
         assert_eq!(
-            unsafe { rumqttc_event_connack_v5_scalar(&event, 2, &mut present, &mut scalar) },
+            unsafe { rumqttc_event_connack_v5_scalar(&raw const event, 2, &raw mut present, &raw mut scalar) },
             OK
         );
         assert_eq!((present, scalar), (1, 9));
@@ -6665,13 +6665,13 @@ mod tests {
             len: 99,
         };
         assert_eq!(
-            unsafe { rumqttc_event_connack_v5_string(&event, 2, &mut present, &mut view) },
+            unsafe { rumqttc_event_connack_v5_string(&raw const event, 2, &raw mut present, &raw mut view) },
             OK
         );
         assert_eq!((present, view.len), (1, 0));
         let mut count = 0;
         assert_eq!(
-            unsafe { rumqttc_event_user_property_count(&event, 1, &mut count) },
+            unsafe { rumqttc_event_user_property_count(&raw const event, 1, &raw mut count) },
             OK
         );
         assert_eq!(count, 2);
@@ -6680,7 +6680,7 @@ mod tests {
             len: 0,
         };
         assert_eq!(
-            unsafe { rumqttc_event_user_property_at(&event, 1, 1, &mut name, &mut view) },
+            unsafe { rumqttc_event_user_property_at(&raw const event, 1, 1, &raw mut name, &raw mut view) },
             OK
         );
         assert_eq!(
@@ -6696,7 +6696,7 @@ mod tests {
         present = 99;
         scalar = 99;
         assert_eq!(
-            unsafe { rumqttc_event_connack_v5_scalar(&wrong, 2, &mut present, &mut scalar) },
+            unsafe { rumqttc_event_connack_v5_scalar(&raw const wrong, 2, &raw mut present, &raw mut scalar) },
             crate::error::INVALID_STATE
         );
         assert_eq!((present, scalar), (0, 0));
@@ -6722,13 +6722,13 @@ mod tests {
             );
             let mut retained = ptr::null_mut();
             assert_eq!(
-                unsafe { rumqttc_callback_completion_retain(completion, &mut retained) },
+                unsafe { rumqttc_callback_completion_retain(completion, &raw mut retained) },
                 OK
             );
             *context.token.lock().unwrap() = Some(retained as usize);
         }
         unsafe extern "C" fn destroy(user_data: *mut c_void) {
-            let context = unsafe { Box::from_raw(user_data as *mut Context) };
+            let context = unsafe { Box::from_raw(user_data.cast::<Context>()) };
             context.destroyed.fetch_add(1, Ordering::SeqCst);
         }
         let destroyed = Arc::new(AtomicUsize::new(0));
@@ -6763,11 +6763,11 @@ mod tests {
             target: view_string("broker.example"),
         };
         assert_eq!(
-            unsafe { rumqttc_callback_srv_complete(token, 0, &record, 1) },
+            unsafe { rumqttc_callback_srv_complete(token, 0, &raw const record, 1) },
             OK
         );
         assert_eq!(
-            unsafe { rumqttc_callback_srv_complete(token, 0, &record, 1) },
+            unsafe { rumqttc_callback_srv_complete(token, 0, &raw const record, 1) },
             crate::error::INVALID_STATE
         );
         assert_eq!(work.await.unwrap().unwrap()[0].target, "broker.example");
@@ -6783,7 +6783,7 @@ mod tests {
         cancelled.abort();
         assert!(cancelled.await.is_err());
         assert_eq!(
-            unsafe { rumqttc_callback_srv_complete(late_token, 0, &record, 1) },
+            unsafe { rumqttc_callback_srv_complete(late_token, 0, &raw const record, 1) },
             crate::error::INVALID_STATE
         );
         drop(resolver);
@@ -6803,7 +6803,7 @@ mod tests {
         ) {
         }
         unsafe extern "C" fn destroy(user_data: *mut c_void) {
-            let counter = unsafe { Box::from_raw(user_data as *mut Arc<AtomicUsize>) };
+            let counter = unsafe { Box::from_raw(user_data.cast::<Arc<AtomicUsize>>()) };
             counter.fetch_add(1, Ordering::SeqCst);
         }
         let destroyed = Arc::new(AtomicUsize::new(0));
@@ -6820,9 +6820,9 @@ mod tests {
         assert_eq!(
             unsafe {
                 rumqttc_store_registration_new(
-                    &vtable,
+                    &raw const vtable,
                     user_data,
-                    &mut registration,
+                    &raw mut registration,
                     ptr::null_mut(),
                 )
             },
@@ -6831,11 +6831,11 @@ mod tests {
         let mut first = ptr::null_mut();
         let mut second = ptr::null_mut();
         assert_eq!(
-            unsafe { rumqttc_config_new(1, &mut first, ptr::null_mut()) },
+            unsafe { rumqttc_config_new(1, &raw mut first, ptr::null_mut()) },
             OK
         );
         assert_eq!(
-            unsafe { rumqttc_config_new(1, &mut second, ptr::null_mut()) },
+            unsafe { rumqttc_config_new(1, &raw mut second, ptr::null_mut()) },
             OK
         );
         for config in [first, second] {

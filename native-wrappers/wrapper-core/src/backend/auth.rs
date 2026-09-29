@@ -49,7 +49,7 @@ impl rumqttc_v5::AsyncAuthenticator for AsyncAdapter {
             ));
         }
         let deadline = self.monitor.snapshot().1;
-        let method = context.method.clone();
+        let method = context.method;
         let challenge = match challenge {
             rumqttc_v5::AsyncAuthChallenge::Start => crate::AsyncAuthChallenge::Start,
             rumqttc_v5::AsyncAuthChallenge::Continue {
@@ -167,7 +167,7 @@ impl rumqttc_v5::AsyncAuthenticator for AsyncAdapter {
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
             crate::runtime::with_host_callback(|| {
-                self.config.authenticator.failure(context, failure)
+                self.config.authenticator.failure(context, failure);
             });
         }));
         if let Err(payload) = result {

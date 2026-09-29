@@ -596,6 +596,7 @@ pub struct ProtocolCompatibility {
 
 impl ProtocolCompatibility {
     /// Returns the configured session compatibility policy.
+    #[must_use]
     pub const fn session_present_mismatch(&self) -> SessionPresentMismatchPolicy {
         self.session_present_mismatch
     }
@@ -701,7 +702,7 @@ impl MqttOptions {
     }
 
     /// Replaces the deliberate protocol interoperability exceptions.
-    pub fn set_protocol_compatibility(
+    pub const fn set_protocol_compatibility(
         &mut self,
         compatibility: ProtocolCompatibility,
     ) -> &mut Self {
@@ -1429,7 +1430,7 @@ pub struct MqttOptionsBuilder {
 impl MqttOptionsBuilder {
     /// Sets deliberate protocol interoperability exceptions.
     #[must_use]
-    pub fn protocol_compatibility(mut self, compatibility: ProtocolCompatibility) -> Self {
+    pub const fn protocol_compatibility(mut self, compatibility: ProtocolCompatibility) -> Self {
         self.options.set_protocol_compatibility(compatibility);
         self
     }

@@ -668,7 +668,7 @@ impl EventLoop {
 
     /// Takes diagnostics captured when a followed connection succeeds or before
     /// a failed redirect restores the origin, including the selected SRV candidate.
-    pub fn take_last_redirect_diagnostics(&mut self) -> Option<RedirectDiagnostics> {
+    pub const fn take_last_redirect_diagnostics(&mut self) -> Option<RedirectDiagnostics> {
         self.last_redirect_diagnostics.take()
     }
 
@@ -4220,7 +4220,7 @@ async fn mqtt_connect_inner(
             Incoming::Auth(auth) => match state
                 .handle_incoming_packet_with_effects_async(Incoming::Auth(auth))
                 .await
-                .map(|effects| effects.complete_notices())
+                .map(super::state::IncomingPacketEffects::complete_notices)
             {
                 Ok(Some(outgoing)) => {
                     network.write(outgoing).await?;
