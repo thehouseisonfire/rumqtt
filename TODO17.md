@@ -5,8 +5,7 @@
 Expose the supported `rumqttc-wrapper-core` capabilities through the typed
 `rumqttc-next` CPython `asyncio` package. Use
 `native-wrappers/wrapper-core/PARITY.md` for the current supported and
-intentionally omitted decisions. `TODO15.md` records completed core work;
-`TODO16.md` is the separate C ABI plan. This plan concerns the Python API, its
+intentionally omitted decisions. This plan concerns the Python API, its
 private PyO3 extension, and its packaging. It does not require a C ABI.
 
 Keep the existing `MqttClient`, `MqttClientOptions`, `events()` iterator,

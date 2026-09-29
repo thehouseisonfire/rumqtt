@@ -5,8 +5,7 @@
 Expose the supported `rumqttc-wrapper-core` capabilities through the
 `@rumqtt-next/rumqttc` Node-API JavaScript/TypeScript package. Use
 `native-wrappers/wrapper-core/PARITY.md` for current support and intentionally
-omitted decisions. `TODO15.md` records completed core work; `TODO16.md` covers
-the C ABI. `TODO9.md` is the separate browser/Wasm plan, not this native addon.
+omitted decisions.
 
 Keep the current `MqttClient`, promise-based operations, single-consumer
 `events()` iterator, and Node.js/local Deno/Bun package contract. Add
