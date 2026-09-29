@@ -92,23 +92,12 @@ pub struct ReadBatch {
 #[derive(Debug)]
 pub struct ReadBatchError {
     pub(crate) source: StateError,
-    pub(crate) batch: ReadBatch,
+    pub(crate) notices: Vec<DeferredNotice>,
 }
 
 impl ReadBatchError {
-    const fn new(
-        source: StateError,
-        outcome: ReadBatchOutcome,
-        notices: Vec<DeferredNotice>,
-    ) -> Self {
-        Self {
-            source,
-            batch: ReadBatch {
-                outcome,
-                notices,
-                authentication: None,
-            },
-        }
+    const fn new(source: StateError, notices: Vec<DeferredNotice>) -> Self {
+        Self { source, notices }
     }
 }
 
@@ -221,7 +210,6 @@ impl Network {
                                 self.try_send_inbound_disconnect(disconnect).await;
                                 return Err(ReadBatchError::new(
                                     StateError::Deserialization(disconnect.error()),
-                                    outcome,
                                     notices,
                                 ));
                             }
@@ -229,7 +217,7 @@ impl Network {
                             let has_deferred_notices = !packet_notices.is_empty();
                             notices.extend(packet_notices);
                             if let Err(err) = self.write(Packet::Disconnect(disconnect)).await {
-                                return Err(ReadBatchError::new(err, outcome, notices));
+                                return Err(ReadBatchError::new(err, notices));
                             }
                             outcome = ReadBatchOutcome::ResponseWritten;
                             if has_deferred_notices {
@@ -243,7 +231,7 @@ impl Network {
                             let has_deferred_notices = !packet_notices.is_empty();
                             notices.extend(packet_notices);
                             if let Err(err) = self.write(outgoing).await {
-                                return Err(ReadBatchError::new(err, outcome, notices));
+                                return Err(ReadBatchError::new(err, notices));
                             }
                             outcome = ReadBatchOutcome::ResponseWritten;
                             if has_deferred_notices {
@@ -268,9 +256,9 @@ impl Network {
                                 reason: DisconnectReasonCode::ProtocolError,
                             })
                             .await;
-                            return Err(ReadBatchError::new(err, outcome, notices));
+                            return Err(ReadBatchError::new(err, notices));
                         }
-                        Err(err) => return Err(ReadBatchError::new(err, outcome, notices)),
+                        Err(err) => return Err(ReadBatchError::new(err, notices)),
                     }
 
                     count += 1;
@@ -281,14 +269,10 @@ impl Network {
                 Some(Err(mqttbytes::Error::InsufficientBytes(_))) => unreachable!(),
                 Some(Err(e)) => {
                     let err = self.handle_incoming_decode_error(e).await;
-                    return Err(ReadBatchError::new(err, outcome, notices));
+                    return Err(ReadBatchError::new(err, notices));
                 }
                 None => {
-                    return Err(ReadBatchError::new(
-                        StateError::ConnectionAborted,
-                        outcome,
-                        notices,
-                    ));
+                    return Err(ReadBatchError::new(StateError::ConnectionAborted, notices));
                 }
             }
             // do not wait for subsequent reads
@@ -510,7 +494,7 @@ mod tests {
             err.source,
             StateError::Deserialization(mqttbytes::Error::OutgoingPacketTooLarge { .. })
         ));
-        assert_eq!(err.batch.notices.len(), 1);
+        assert_eq!(err.notices.len(), 1);
     }
 
     #[tokio::test]

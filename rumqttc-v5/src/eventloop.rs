@@ -1716,8 +1716,7 @@ impl EventLoop {
     }
 
     async fn complete_failed_read_batch(&mut self, error: ReadBatchError) -> ConnectionError {
-        let ReadBatchError { source, batch } = error;
-        let ReadBatch { notices, .. } = batch;
+        let ReadBatchError { source, notices } = error;
         if notices.is_empty() {
             return ConnectionError::MqttState(source);
         }
@@ -5617,14 +5616,10 @@ mod tests {
         let (notice_tx, notice) = PublishNoticeTx::new();
         let error = ReadBatchError {
             source: StateError::ServerRedirect(outcome.clone()),
-            batch: ReadBatch {
-                authentication: None,
-                outcome: ReadBatchOutcome::NoResponseWritten,
-                notices: vec![DeferredNotice::Publish(
-                    notice_tx,
-                    PublishResult::Qos1(PubAck::new(1, None)),
-                )],
-            },
+            notices: vec![DeferredNotice::Publish(
+                notice_tx,
+                PublishResult::Qos1(PubAck::new(1, None)),
+            )],
         };
         let preceding_publish = Publish::new("before/redirect", QoS::AtMostOnce, vec![1], None);
         let preceding_event = Event::Incoming(Incoming::Publish(preceding_publish));
