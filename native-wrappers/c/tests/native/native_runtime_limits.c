@@ -146,6 +146,42 @@ static void incoming(rumqttc_protocol_t protocol, unsigned mode) {
   rumqttc_config_destroy(config);
 }
 
+static void removed_limits(rumqttc_protocol_t protocol) {
+  char id[64];
+  uint8_t payload[256];
+  rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_1);
+  rumqttc_completion_t *pending[5];
+  REQUIRE(snprintf(id, sizeof(id), "native-cleared-limits-%u", protocol) > 0);
+  rumqttc_config_t *config = configuration(protocol, id);
+  if (protocol == RUMQTTC_PROTOCOL_V4) {
+    CHECK(rumqttc_config_set_v4_outgoing_packet_limit_bytes(config, 32, NULL));
+    CHECK(rumqttc_config_reset_v4_outgoing_packet_limit(config, NULL));
+  } else {
+    CHECK(rumqttc_config_set_v5_outgoing_inflight_upper_limit(config, 1, NULL));
+    CHECK(rumqttc_config_clear_v5_outgoing_inflight_upper_limit(config, NULL));
+    CHECK(rumqttc_config_set_v5_advertised_max_packet_size_bytes(config, 32, NULL));
+    CHECK(rumqttc_config_clear_v5_advertised_max_packet_size(config, NULL));
+  }
+  rumqttc_client_t *client = start(config);
+  memset(payload, 0xff, sizeof(payload));
+  unsigned count = protocol == RUMQTTC_PROTOCOL_V4 ? 1 : 5;
+  for (unsigned i = 0; i < count; ++i)
+    pending[i] = publish(client, "native/cleared", payload, sizeof(payload), &options);
+  for (unsigned i = 0; i < count; ++i)
+    finish(pending[i], RUMQTTC_COMPLETION_QOS1_ACKNOWLEDGED);
+  if (protocol == RUMQTTC_PROTOCOL_V5) {
+    rumqttc_event_t *event = native_wait_event(client, RUMQTTC_EVENT_INCOMING_PUBLISH);
+    rumqttc_bytes_view_t bytes = {NULL, 0};
+    CHECK(rumqttc_event_publish(event, NULL, &bytes, NULL, NULL, NULL, NULL));
+    REQUIRE(bytes.len == 512);
+    for (size_t i = 0; i < bytes.len; ++i)
+      REQUIRE(bytes.data[i] == 0x80);
+    rumqttc_event_destroy(event);
+  }
+  native_close_destroy(client);
+  rumqttc_config_destroy(config);
+}
+
 static void alias(unsigned policy) {
   char id[64];
   rumqttc_config_t *config;
@@ -188,6 +224,7 @@ int main(void) {
   inflight(RUMQTTC_PROTOCOL_V5, 2, "local", 1);
   inflight(RUMQTTC_PROTOCOL_V5, 5, "remote", 8);
   for (rumqttc_protocol_t protocol = RUMQTTC_PROTOCOL_V4; protocol <= RUMQTTC_PROTOCOL_V5; ++protocol) {
+    removed_limits(protocol);
     outgoing(protocol);
     for (unsigned mode = 0; mode < 3; ++mode)
       incoming(protocol, mode);

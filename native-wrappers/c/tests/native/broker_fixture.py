@@ -19,6 +19,9 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from platform_trust import trusted_root
 
 PRIVATE_VALUES: list[bytes] = [b"private-device", b"rumqttc-missing-device"]
 
@@ -227,8 +230,7 @@ def scram_auth_data(properties: bytes) -> bytes:
     return data
 
 
-def scram_exchange(stream: socket.socket, first: bytes, initial: bool,
-                   invalid_proof: bool = False) -> None:
+def scram_exchange(stream: socket.socket, first: bytes, initial: bool, invalid_proof: bool = False) -> None:
     if not first.startswith(b"n,,n=scram-private-username,r="):
         raise AssertionError("unexpected SCRAM client first message")
     first_bare = first[3:]
@@ -303,8 +305,14 @@ class Connection:
 
 
 class Broker:
-    def __init__(self, tls_context: ssl.SSLContext | None = None, *, websocket: bool = False,
-                 tls_proxy: bool = False, unix_path: str | None = None) -> None:
+    def __init__(
+        self,
+        tls_context: ssl.SSLContext | None = None,
+        *,
+        websocket: bool = False,
+        tls_proxy: bool = False,
+        unix_path: str | None = None,
+    ) -> None:
         self.listener = socket.socket(socket.AF_UNIX if unix_path else socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(unix_path if unix_path else ("127.0.0.1", 0))
@@ -330,9 +338,26 @@ class Broker:
         self.limit_connections: dict[bytes, Connection] = {}
         self.alias_packet_ids: dict[bytes, bytes] = {}
         self.alias_packets_seen: dict[bytes, int] = {}
+        self.control: Path | None = None
         self.tls_disconnects_before_connect = 0
         self.failure_lock = threading.Lock()
         self.accept_thread = threading.Thread(target=self.accept, name="mqtt-fixture", daemon=True)
+
+    def signal(self, name: str, value: int = 1) -> None:
+        assert self.control is not None
+        temporary = self.control / (name + ".tmp")
+        temporary.write_text(f"{value}\n", encoding="ascii")
+        temporary.replace(self.control / name)
+
+    def barrier(self, name: str) -> int:
+        assert self.control is not None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not self.stopping.is_set():
+            path = self.control / name
+            if path.exists():
+                return int(path.read_text(encoding="ascii"))
+            time.sleep(0.001)
+        raise AssertionError(f"fixture barrier timed out: {name}")
 
     def start(self) -> None:
         self.accept_thread.start()
@@ -355,8 +380,13 @@ class Broker:
                     f"JavaScript wire observations were incomplete for {client_id!r}: {sorted(observed)}"
                 )
         for client_id in {b"native-store-restart-v4", b"native-store-restart-v5"}.intersection(self.client_ids):
-            required = {"replayed-qos1", "replayed-qos2", "replayed-subscribe",
-                        "incoming-qos2-recorded", "incoming-qos2-completed"}
+            required = {
+                "replayed-qos1",
+                "replayed-qos2",
+                "replayed-subscribe",
+                "incoming-qos2-recorded",
+                "incoming-qos2-completed",
+            }
             if not required.issubset(self.observations.get(client_id, set())):
                 self.failures.append(f"stored restart state was not recovered: {client_id!r}")
         lost_clients = {b"native-store-restart-lost-v4", b"native-store-restart-lost-v5"}
@@ -364,8 +394,9 @@ class Broker:
             required = {"incoming-qos2-recorded", "fresh-barrier"}
             if not required.issubset(self.observations.get(client_id, set())):
                 self.failures.append(f"lost-session restart did not finish: {client_id!r}")
-        if (b"native-v5-auth-overlap" in self.client_ids
-                and "reauth-start" not in self.observations.get(b"native-v5-auth-overlap", set())):
+        if b"native-v5-auth-overlap" in self.client_ids and "reauth-start" not in self.observations.get(
+            b"native-v5-auth-overlap", set()
+        ):
             self.failures.append("overlapping reauthentication did not reach the broker")
         if (
             self.tls_context is not None
@@ -402,6 +433,52 @@ class Broker:
             thread = threading.Thread(target=self.serve, args=(stream,), daemon=True)
             self.threads.append(thread)
             thread.start()
+
+    def batching(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
+        name = client_id.decode("ascii")
+        reads = b"-read-" in client_id
+        batch = int(client_id.rsplit(b"-", 1)[1])
+        expected = batch or (8 if reads else 1)
+        self.barrier(name + "-admitted")
+        connack = frame(2, 0, b"\x00\x00" + (b"\x03\x21\x00\x10" if protocol == 5 else b""))
+        packets = b""
+        if reads:
+            # Preload the entire burst together with CONNACK, before the first connected poll.
+            for index in range(12):
+                body = b"\x00\x05batch" + struct.pack("!H", 100 + index)
+                packets += frame(3, 2, body + (b"\x00" if protocol == 5 else b"") + bytes((index,)))
+        stream.sendall(connack + packets)
+
+        def observe(index: int) -> None:
+            packet = read_frame(stream)
+            if packet is None:
+                raise AssertionError(f"batch packet {index} missing for {name}")
+            kind, flags, body = packet
+            if reads:
+                expected_body = struct.pack("!H", 100 + index)
+                # MQTT 5 PUBACK may omit default success and empty properties.
+                if kind != 4 or flags or body not in (expected_body, expected_body + b"\x00\x00"):
+                    raise AssertionError(f"batch acknowledgement changed for {name}: {packet!r}")
+            else:
+                expected_body = b"\x00\x05batch" + (b"\x00" if protocol == 5 else b"") + bytes((index,))
+                if kind != 3 or flags or body != expected_body:
+                    raise AssertionError(f"batch publish changed for {name}: {packet!r}")
+
+        for index in range(expected):
+            observe(index)
+        stream.settimeout(0.15)
+        extra = read_frame(stream)
+        stream.settimeout(5)
+        if extra is not None:
+            raise AssertionError(f"configured batch boundary exceeded for {name}: {extra!r}")
+        self.signal(name + "-measured", expected)
+        self.barrier(name + "-released")
+        for index in range(expected, 12):
+            observe(index)
+        self.signal(name, 12)
+        closed = read_frame(stream)
+        if closed is None or closed[0] != 14:
+            raise AssertionError(f"batch client did not close gracefully: {name}")
 
     def serve(self, stream: socket.socket) -> None:
         connection: Connection | None = None
@@ -490,6 +567,8 @@ class Broker:
             client_id, offset = string_at(body, offset)
             if client_id == b"native-socket-options" and stream.getpeername()[1] not in self.expected_bind_ports:
                 raise AssertionError("configured local bind port did not reach the broker")
+            if client_id == b"native-socket-cleared" and stream.getpeername()[1] in self.expected_bind_ports:
+                raise AssertionError("cleared bind address still reached the broker")
             if client_id.startswith(b"native-tls-matrix-positive"):
                 tls_stream = stream.stream if isinstance(stream, WebSocketStream) else stream
                 if not isinstance(tls_stream, ssl.SSLSocket) or tls_stream.selected_alpn_protocol() != "mqtt":
@@ -509,35 +588,32 @@ class Broker:
                 attempt = self.connection_attempts.get(client_id, 0) + 1
                 self.connection_attempts[client_id] = attempt
             if client_id in {b"native-wire-options-v4", b"native-wire-options-v5"}:
-                user_properties = (b"\x26\x00\x01a\x00\x011"
-                                   b"\x26\x00\x01a\x00\x012")
-                if attempt == 1:
-                    if not (connect_flags & 0x04) or (connect_flags >> 3) & 3 != 1 or not (connect_flags & 0x20):
-                        raise AssertionError("Will flags, QoS or retain changed")
+                user_properties = b"\x26\x00\x01b\x00\x013\x26\x00\x01b\x00\x00"
+                if attempt <= 2:
+                    if not (connect_flags & 0x04) or (connect_flags >> 3) & 3 != 2 or connect_flags & 0x20:
+                        raise AssertionError("replacement Will flags, QoS or retain changed")
                     if protocol == 5:
-                        if connect_properties != b"\x21\x00\x07\x19\x01" + user_properties:
-                            raise AssertionError(f"CONNECT properties or order changed: {connect_properties!r}")
+                        if connect_properties != b"\x21\x00\x09\x19\x01" + user_properties:
+                            raise AssertionError(f"replacement CONNECT properties changed: {connect_properties!r}")
                         will_properties, offset = properties_at(body, offset)
-                        expected_will = b"\x18\x00\x00\x00\x00\x03\x00\x00\x09\x00\x00" + user_properties
+                        expected_will = b"\x18\x00\x00\x00\x02\x03\x00\x06binary\x09\x00\x02\xff\x00" + user_properties
                         if will_properties != expected_will:
-                            raise AssertionError(f"Will properties or presence changed: {will_properties!r}")
-                    elif connect_properties:
-                        raise AssertionError("MQTT 3.1.1 CONNECT carried properties")
+                            raise AssertionError(f"replacement Will properties changed: {will_properties!r}")
                     will_topic, offset = string_at(body, offset)
                     will_payload, offset = string_at(body, offset)
-                    if will_topic != b"native/will" or will_payload != b"\x00\xff\x00":
-                        raise AssertionError("owned Will topic or payload changed")
-                elif attempt == 2:
+                    if will_topic != b"native/replacement" or will_payload != b"\xff\x00\x80\x01":
+                        raise AssertionError("replacement Will topic or payload changed")
+                elif attempt == 3:
                     default_connect = b"\x27\x00\x00\x28\x00" if protocol == 5 else b""
                     if connect_flags & 0x04 or connect_properties != default_connect:
-                        raise AssertionError(
-                            f"cleared Will or CONNECT properties survived: "
-                            f"flags={connect_flags:#x} properties={connect_properties!r}"
-                        )
+                        raise AssertionError("cleared Will or CONNECT properties survived")
                 else:
-                    raise AssertionError("wire-options fixture connected more than twice")
+                    raise AssertionError("wire-options fixture connected more than three times")
                 if offset != len(body):
                     raise AssertionError("unexpected CONNECT payload fields")
+            if client_id.startswith(b"native-batch-"):
+                self.batching(stream, protocol, client_id)
+                return
             if client_id.startswith(b"native-proxy-") and b"-reconnect-" in client_id and attempt == 1:
                 return
             if client_id.startswith((b"native-unix-reconnect-", b"native-websocket-reconnect-")) and attempt == 1:
@@ -546,35 +622,58 @@ class Broker:
                 return
             if client_id.startswith(b"python-capability-") and attempt > 1:
                 time.sleep(0.3)
-            if (client_id.startswith(b"native-runtime-incoming-") and protocol == 5
-                    and connect_properties != b"\x27\x00\x00\x04\x00"):
+            if (
+                client_id.startswith(b"native-runtime-incoming-")
+                and protocol == 5
+                and connect_properties != b"\x27\x00\x00\x04\x00"
+            ):
                 raise AssertionError("local input decoder limit changed the advertised maximum")
-            if client_id.startswith(b"native-runtime-inflight-"):
+            if client_id.startswith(b"native-cleared-limits-"):
+                if protocol == 5 and connect_properties:
+                    raise AssertionError("cleared advertised maximum survived CONNECT")
+                properties = b"\x21\x00\x04" if protocol == 5 else b""
+                stream.sendall(
+                    frame(
+                        2, 0, b"\x00\x00" + (encode_remaining(len(properties)) + properties if protocol == 5 else b"")
+                    )
+                )
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id.startswith(b"native-runtime-inflight-"):
                 remote = 2 if client_id.endswith(b"remote") else 5
                 properties = b"\x21\x00" + bytes((remote,)) if protocol == 5 else b""
-                stream.sendall(frame(2, 0, b"\x00\x00" +
-                                     (encode_remaining(len(properties)) + properties if protocol == 5 else b"")))
+                stream.sendall(
+                    frame(
+                        2, 0, b"\x00\x00" + (encode_remaining(len(properties)) + properties if protocol == 5 else b"")
+                    )
+                )
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
                 self.limit_connections[client_id] = connection
             elif client_id.startswith(b"native-outgoing-"):
                 properties = b"\x27\x00\x00\x00\x20" if protocol == 5 else b""
-                stream.sendall(frame(2, 0, b"\x00\x00" +
-                                     (encode_remaining(len(properties)) + properties if protocol == 5 else b"")))
+                stream.sendall(
+                    frame(
+                        2, 0, b"\x00\x00" + (encode_remaining(len(properties)) + properties if protocol == 5 else b"")
+                    )
+                )
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
             elif client_id == b"" and b"\x19\x01" in connect_properties:
-                properties = (b"\x11\x00\x00\x00\x00\x21\x00\x07\x24\x01\x25\x00"
-                              b"\x27\x00\x00\x04\x00\x22\x00\x02\x28\x00\x29\x01\x2a\x00"
-                              b"\x13\x00\x1e\x12\x00\x0fassigned-native\x1f\x00\x00\x1a\x00\x00"
-                              b"\x1c\x00\x0elocalhost:1883\x26\x00\x01k\x00\x01v\x26\x00\x01k\x00\x00")
+                properties = (
+                    b"\x11\x00\x00\x00\x00\x21\x00\x07\x24\x01\x25\x00"
+                    b"\x27\x00\x00\x04\x00\x22\x00\x02\x28\x00\x29\x01\x2a\x00"
+                    b"\x13\x00\x1e\x12\x00\x0fassigned-native\x1f\x00\x00\x1a\x00\x00"
+                    b"\x1c\x00\x0elocalhost:1883\x26\x00\x01k\x00\x01v\x26\x00\x01k\x00\x00"
+                )
                 stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(properties)) + properties))
                 connection = Connection(stream, protocol, b"native-rich-properties")
                 self.client_ids.add(client_id)
             elif client_id.startswith(b"native-alias-"):
                 properties = b"\x22\x00" + bytes((2 if attempt == 1 else 0,))
-                stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0))
-                                     + encode_remaining(len(properties)) + properties))
+                stream.sendall(
+                    frame(2, 0, bytes((int(attempt > 1), 0)) + encode_remaining(len(properties)) + properties)
+                )
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
             elif client_id.startswith(b"native-unix-timeout-"):
@@ -589,9 +688,12 @@ class Broker:
                 else:
                     target = self.redirect_targets[form if form != "exhausted" else "mqtt"]
                     target.expected_isolated = form
-                    reference = (f"localhost:{target.port}" if form == "authority" else
-                                 f"{form if form != 'exhausted' else 'mqtt'}://localhost:{target.port}"
-                                 + ("/mqtt?redirect=one" if form in {"ws", "wss"} else "")).encode()
+                    reference = (
+                        f"localhost:{target.port}"
+                        if form == "authority"
+                        else f"{form if form != 'exhausted' else 'mqtt'}://localhost:{target.port}"
+                        + ("/mqtt?redirect=one" if form in {"ws", "wss"} else "")
+                    ).encode()
                 properties = b"\x1c" + struct.pack("!H", len(reference)) + reference
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
@@ -639,8 +741,10 @@ class Broker:
                 stream.sendall(frame(2, 0, b"\x00\x9c" + encode_remaining(len(properties)) + properties))
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
-            elif client_id == b"" and (self.connection_attempts.get(b"native-v5-srv-redirect", 0)
-                                      or self.connection_attempts.get(b"native-v5-srv-fallback", 0)):
+            elif client_id == b"" and (
+                self.connection_attempts.get(b"native-v5-srv-redirect", 0)
+                or self.connection_attempts.get(b"native-v5-srv-fallback", 0)
+            ):
                 assigned = b"native-v5-srv-target"
                 properties = b"\x12" + struct.pack("!H", len(assigned)) + assigned
                 stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(properties)) + properties))
@@ -681,6 +785,11 @@ class Broker:
                 method = b"\x15\x00\x06custom"
                 if protocol != 5 or method not in body:
                     raise AssertionError("overlap fixture did not receive authenticated CONNECT")
+                if client_id == b"native-v5-auth-overlap" and attempt == 2:
+                    self.signal("auth-reconnected")
+                    self.barrier("auth-reconnect-release")
+                elif client_id == b"native-v5-auth-overlap" and attempt != 1:
+                    raise AssertionError("unexpected overlap reconnect")
                 stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(method)) + method))
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
@@ -688,15 +797,18 @@ class Broker:
                 if protocol != 5 or b"\x15\x00\x06custom" not in body or b"\x16\x00\x07initial" not in body:
                     raise AssertionError("deferred AUTH start did not reach CONNECT intact")
                 method = b"\x15\x00\x06custom"
-                challenge = (method + b"\x16\x00\x06server" + b"\x1f\x00\x00"
-                             + b"\x26\x00\x01k\x00\x011" + b"\x26\x00\x01k\x00\x012")
+                challenge = (
+                    method
+                    + b"\x16\x00\x08server\x00\xff"
+                    + b"\x1f\x00\x09auth-step"
+                    + b"\x26\x00\x01k\x00\x011\x26\x00\x01k\x00\x00\x26\x00\x01k\x00\x012"
+                )
                 stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
                 answer = read_frame(stream)
                 if answer is None or answer[0] != 15 or answer[2][0] != 0x18:
                     raise AssertionError("deferred AUTH response was not sent")
                 answer_properties, _ = properties_at(answer[2], 1)
-                if (b"\x16\x00\x05reply" not in answer_properties
-                        or not answer_properties.endswith(b"\x26\x00\x01p\x00\x012")):
+                if answer_properties != (method + b"\x16\x00\x05reply\x26\x00\x01p\x00\x011\x26\x00\x01p\x00\x012"):
                     raise AssertionError("deferred AUTH response fields changed on the wire")
                 success = method + b"\x16\x00\x0cserver-proof"
                 stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(success)) + success))
@@ -716,8 +828,7 @@ class Broker:
             elif client_id == b"native-v5-scram-invalid":
                 if protocol != 5:
                     raise AssertionError("invalid SCRAM proof fixture did not use MQTT 5")
-                scram_exchange(stream, scram_auth_data(connect_properties), True,
-                               invalid_proof=True)
+                scram_exchange(stream, scram_auth_data(connect_properties), True, invalid_proof=True)
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
             elif client_id == b"c-auth-example":
@@ -808,8 +919,9 @@ class Broker:
                     connection.send(frame(13, 0, b""))
                 elif packet_type == 14:
                     if client_id.startswith(b"native-close-options-"):
-                        expected = (b"\x11\x00\x00\x00\x00\x1f\x00\x08selected"
-                                    b"\x26\x00\x01k\x00\x011\x26\x00\x01k\x00\x012")
+                        expected = (
+                            b"\x11\x00\x00\x00\x00\x1f\x00\x08selected\x26\x00\x01k\x00\x011\x26\x00\x01k\x00\x012"
+                        )
                         if body != b"\x00" + encode_remaining(len(expected)) + expected:
                             raise AssertionError("admitted DISCONNECT options changed")
                         self.observations.setdefault(client_id, set()).add("close-wire")
@@ -818,21 +930,38 @@ class Broker:
                     if body[0] != 0x19 or b"\x15\x00\x06custom" not in body or b"\x16\x00\x07initial" not in body:
                         raise AssertionError("client reauthentication packet differed")
                     method = b"\x15\x00\x06custom"
-                    challenge = (method + b"\x16\x00\x06server" + b"\x1f\x00\x00"
-                                 + b"\x26\x00\x01k\x00\x011" + b"\x26\x00\x01k\x00\x012")
+                    challenge = (
+                        method
+                        + b"\x16\x00\x08server\x00\xff"
+                        + b"\x1f\x00\x09auth-step"
+                        + b"\x26\x00\x01k\x00\x011\x26\x00\x01k\x00\x00\x26\x00\x01k\x00\x012"
+                    )
                     stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
                     answer = read_frame(stream)
                     if answer is None or answer[0] != 15 or answer[2][0] != 0x18:
                         raise AssertionError("deferred reauthentication response was not sent")
                     answer_properties, _ = properties_at(answer[2], 1)
-                    if b"\x16\x00\x05reply" not in answer_properties:
-                        raise AssertionError("deferred reauthentication data changed")
+                    expected = method + b"\x16\x00\x05reply" + b"\x26\x00\x01p\x00\x011\x26\x00\x01p\x00\x012"
+                    if answer_properties != expected:
+                        raise AssertionError("deferred reauthentication properties changed")
                     success = method + b"\x16\x00\x0cserver-proof"
                     stream.sendall(frame(15, 0, b"\x00" + encode_remaining(len(success)) + success))
                 elif packet_type == 15 and connection.client_id == b"native-v5-auth-overlap":
                     if body[0] != 0x19 or b"\x15\x00\x06custom" not in body:
                         raise AssertionError("overlap fixture did not send reauthentication start")
                     self.observations.setdefault(client_id, set()).add("reauth-start")
+                    method = b"\x15\x00\x06custom"
+                    challenge = method + b"\x16\x00\x04hold"
+                    stream.sendall(frame(15, 0, b"\x18" + encode_remaining(len(challenge)) + challenge))
+                    answer = read_frame(stream)
+                    if answer != (15, 0, b"\x18" + encode_remaining(len(method)) + method):
+                        raise AssertionError("overlap AUTH continuation changed")
+                    self.signal("auth-held")
+                    self.barrier("auth-abort")
+                    stream.settimeout(0.05)
+                    if read_frame(stream) is not None:
+                        raise AssertionError("overlapping AUTH reached the broker")
+                    return  # Broker closes only after the host proves second-terminal/first-pending.
                 elif packet_type == 15 and client_id.startswith(b"native-v5-auth-invalid-"):
                     if body[0] != 0x19 or b"\x15\x00\x06custom" not in body:
                         raise AssertionError("invalid-auth fixture did not send reauthentication start")
@@ -890,8 +1019,12 @@ class Broker:
         payload = body[offset:]
         if connection.client_id == b"native-rich-properties":
             connection.send(frame(4, 0, packet_id + b"\x00\x00"))
-            properties = (b"\x11\x00\x00\x00\x00\x1f\x00\x00\x1c\x00\x00"
-                          b"\x26\x00\x01k\x00\x01v\x26\x00\x01k\x00\x00")
+            self.signal("event-publish-id", int.from_bytes(packet_id, "big"))
+            properties = (
+                b"\x11\x00\x00\x00\x00\x1f\x00\x0cbroker-error"
+                b"\x1c\x00\x13broker.invalid:1883"
+                b"\x26\x00\x01k\x00\x01v\x26\x00\x01k\x00\x00"
+            )
             connection.send(frame(14, 0, b"\x80" + encode_remaining(len(properties)) + properties))
             return True
         if topic == b"native/events/burst":
@@ -903,6 +1036,24 @@ class Broker:
             if target is None:
                 raise AssertionError("runtime admission barrier had no target")
             target.limit_admitted.set()
+            return True
+        if connection.client_id.startswith(b"native-cleared-limits-"):
+            if topic != b"native/cleared" or payload != b"\xff" * 256:
+                raise AssertionError("publish beyond removed limit changed on wire")
+            connection.limit_packet_ids.append(packet_id)
+            suffix = b"" if connection.protocol == 4 else b"\x00\x00"
+            count = len(connection.limit_packet_ids)
+            if connection.protocol == 4 or count == 5:
+                connection.send(frame(4, 0, packet_id + suffix))
+            elif count == 4:
+                connection.stream.settimeout(0.15)
+                extra = read_frame(connection.stream)
+                connection.stream.settimeout(5)
+                if extra is not None:
+                    raise AssertionError("cleared local limit ignored broker receive maximum")
+                for identifier in connection.limit_packet_ids:
+                    connection.send(frame(4, 0, identifier + suffix))
+                connection.publish(b"native/cleared", b"\x80" * 512, qos=0)
             return True
         if connection.client_id.startswith(b"native-runtime-inflight-"):
             connection.limit_packet_ids.append(packet_id)
@@ -1033,6 +1184,8 @@ class Broker:
 
     def handle_subscribe(self, connection: Connection, body: bytes) -> None:
         packet_id = body[:2]
+        if connection.client_id == b"native-rich-properties":
+            self.signal("event-subscribe-id", int.from_bytes(packet_id, "big"))
         offset = 2
         properties = b""
         if connection.protocol == 5:
@@ -1110,6 +1263,8 @@ class Broker:
 
     def handle_unsubscribe(self, connection: Connection, body: bytes) -> None:
         packet_id = body[:2]
+        if connection.client_id == b"native-rich-properties":
+            self.signal("event-unsubscribe-id", int.from_bytes(packet_id, "big"))
         offset = 2
         properties = b""
         if connection.protocol == 5:
@@ -1304,6 +1459,12 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="rumqttc-native-tls-") as directory:
         tls_context, mtls_context, ca_cert, wrong_cert, client_cert, client_key = make_tls_fixture(directory)
         broker = Broker()
+        untrusted_broker = None
+        if args.tls_matrix:
+            untrusted_directory = os.path.join(directory, "untrusted")
+            os.mkdir(untrusted_directory)
+            untrusted_context, _, _, _, _, _ = make_tls_fixture(untrusted_directory)
+            untrusted_broker = Broker(untrusted_context)
         tls_broker = Broker(tls_context)
         tls_proxy_broker = Broker(tls_context, tls_proxy=True)
         websocket_broker = Broker(websocket=True)
@@ -1311,10 +1472,16 @@ def main() -> int:
         mtls_broker = Broker(mtls_context)
         mtls_wss_broker = Broker(mtls_context, websocket=True)
         broker.redirect_targets = {
-            "authority": broker, "mqtt": broker, "mqtts": tls_broker,
-            "ws": websocket_broker, "wss": wss_broker,
+            "authority": broker,
+            "mqtt": broker,
+            "mqtts": tls_broker,
+            "ws": websocket_broker,
+            "wss": wss_broker,
         }
+        broker.control = Path(directory)
         broker.start()
+        if untrusted_broker is not None:
+            untrusted_broker.start()
         tls_broker.start()
         tls_proxy_broker.start()
         websocket_broker.start()
@@ -1322,6 +1489,7 @@ def main() -> int:
         mtls_broker.start()
         mtls_wss_broker.start()
         environment = os.environ.copy()
+        environment["RUMQTTC_TEST_CONTROL_DIR"] = directory
         environment["RUMQTTC_TEST_HOST"] = "127.0.0.1"
         environment["RUMQTTC_TEST_PORT"] = str(broker.port)
         # Bound sockets without listen keep these local refusal endpoints deterministic.
@@ -1329,6 +1497,8 @@ def main() -> int:
         for index, reservation in enumerate(refused, 1):
             reservation.bind(("127.0.0.1", 0))
             environment[f"RUMQTTC_TEST_REFUSED_PORT_{index}"] = str(reservation.getsockname()[1])
+        if untrusted_broker is not None:
+            environment["RUMQTTC_TEST_UNTRUSTED_TLS_PORT"] = str(untrusted_broker.port)
         environment["RUMQTTC_TEST_TLS_PORT"] = str(tls_broker.port)
         environment["RUMQTTC_TEST_HTTPS_PROXY_PORT"] = str(tls_proxy_broker.port)
         environment["RUMQTTC_TEST_WS_PORT"] = str(websocket_broker.port)
@@ -1360,15 +1530,27 @@ def main() -> int:
             environment["RUMQTTC_TEST_CLIENT_KEY_PEM"] = source.read()
         if args.tls_matrix:
             archive = os.path.join(directory, "client.p12")
-            subprocess.run(["openssl", "pkcs12", "-export", "-out", archive,
-                            "-inkey", client_key, "-in", client_cert, "-certfile", ca_cert,
-                            "-passout", "pass:private-pkcs12-password"],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                [
+                    "openssl",
+                    "pkcs12",
+                    "-export",
+                    "-out",
+                    archive,
+                    "-inkey",
+                    client_key,
+                    "-in",
+                    client_cert,
+                    "-certfile",
+                    ca_cert,
+                    "-passout",
+                    "pass:private-pkcs12-password",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             environment["RUMQTTC_TEST_PKCS12_FILE"] = archive
-            # Roots are loaded in the child; never alter the host trust store.
-            if sys.platform.startswith("linux"):
-                environment["SSL_CERT_FILE"] = ca_cert
-                environment["SSL_CERT_DIR"] = directory
             PRIVATE_VALUES.append(environment["RUMQTTC_TEST_CLIENT_KEY_PEM"].encode())
         proxies = []
         if args.proxy_matrix:
@@ -1384,13 +1566,14 @@ def main() -> int:
                 target = tunnel_brokers[target_port]
                 with target.failure_lock:
                     target.tunnel_peers[peer_port] = kind
-            for name, options in (
-                ("TUNNEL", {}),
-                ("TLS_TUNNEL", {"tls": proxy_context}),
-                ("RECOVER_TUNNEL", {"failure": "recover"}),
-                ("TIMEOUT_TUNNEL", {"failure": "timeout"}),
+
+            for name, proxy_tls, failure in (
+                ("TUNNEL", None, None),
+                ("TLS_TUNNEL", proxy_context, None),
+                ("RECOVER_TUNNEL", None, "recover"),
+                ("TIMEOUT_TUNNEL", None, "timeout"),
             ):
-                proxy = Proxy(ports, observe_tunnel=observe_tunnel, **options)
+                proxy = Proxy(ports, tls=proxy_tls, failure=failure, observe_tunnel=observe_tunnel)
                 proxy.start()
                 proxies.append(proxy)
                 environment[f"RUMQTTC_TEST_{name}_PORT"] = str(proxy.port)
@@ -1411,11 +1594,20 @@ def main() -> int:
                     if status:
                         return status
                 return 0
-            return run_native(
-                [*launcher, args.binary, *child_arguments, *address_arguments],
-                environment,
-                args.redact,
+            platform_roots = args.tls_matrix and (
+                sys.platform.startswith("linux") or environment.get("RUMQTTC_DISPOSABLE_TRUST_RUNNER") == "1"
             )
+            if args.tls_matrix and not platform_roots:
+                if environment.get("CI"):
+                    raise RuntimeError("CI must execute the disposable platform trust fixture")
+                print("platform trust: pending; requires an explicitly disposable runner")
+            trust = trusted_root(Path(ca_cert), environment) if platform_roots else contextlib.nullcontext()
+            with trust:
+                return run_native(
+                    [*launcher, args.binary, *child_arguments, *address_arguments],
+                    environment,
+                    args.redact,
+                )
         finally:
             for reservation in refused:
                 reservation.close()
@@ -1424,6 +1616,8 @@ def main() -> int:
             for proxy in proxies:
                 proxy.stop()
             broker.stop()
+            if untrusted_broker is not None:
+                untrusted_broker.stop()
             tls_broker.stop()
             tls_proxy_broker.stop()
             websocket_broker.stop()

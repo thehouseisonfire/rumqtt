@@ -16,6 +16,17 @@ static void properties(const rumqttc_event_t *event, uint32_t property_class) {
   }
 }
 
+static void outgoing_id(rumqttc_client_t *client, uint32_t expected, const char *barrier) {
+  rumqttc_event_t *event = native_wait_event(client, RUMQTTC_EVENT_OUTGOING);
+  uint32_t activity = 0;
+  uint8_t present = 0;
+  uint16_t packet_id = 0;
+  CHECK(rumqttc_event_outgoing_kind(event, &activity));
+  CHECK(rumqttc_event_outgoing_packet_id(event, &present, &packet_id));
+  REQUIRE(activity == expected && present && packet_id == native_fixture_read(barrier));
+  rumqttc_event_destroy(event);
+}
+
 int main(void) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
@@ -66,6 +77,18 @@ int main(void) {
     REQUIRE(present == 0 && data.data == NULL && data.len == 0);
   }
   properties(connected, RUMQTTC_EVENT_PROPERTIES_CONNACK);
+  rumqttc_subscription_t subscription = RUMQTTC_SUBSCRIPTION_INIT;
+  subscription.filter = native_string("native/rich");
+  subscription.qos = RUMQTTC_QOS_1;
+  CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL, &completion, NULL));
+  outgoing_id(client, RUMQTTC_OUTGOING_SUBSCRIBE, "event-subscribe-id");
+  native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
+  rumqttc_completion_destroy(completion);
+  rumqttc_string_view_t filter = subscription.filter;
+  CHECK(rumqttc_client_unsubscribe_tracked(client, &filter, 1, NULL, &completion, NULL));
+  outgoing_id(client, RUMQTTC_OUTGOING_UNSUBSCRIBE, "event-unsubscribe-id");
+  native_wait_completion(completion, RUMQTTC_COMPLETION_UNSUBSCRIBE);
+  rumqttc_completion_destroy(completion);
   CHECK(rumqttc_client_publish_tracked(client, native_string("a"), native_bytes(NULL, 0), &options, &completion, NULL));
   unsigned saw_outgoing = 0;
   for (unsigned i = 0; i < 12 && disconnected == NULL; ++i) {
@@ -81,7 +104,7 @@ int main(void) {
       CHECK(rumqttc_event_outgoing_kind(event, &activity));
       CHECK(rumqttc_event_outgoing_packet_id(event, &present, &packet_id));
       if (activity == RUMQTTC_OUTGOING_PUBLISH) {
-        REQUIRE(present && packet_id != 0);
+        REQUIRE(present && packet_id == native_fixture_read("event-publish-id"));
         ++saw_outgoing;
       }
     } else if (kind == RUMQTTC_EVENT_BROKER_DISCONNECT) {
@@ -98,16 +121,25 @@ int main(void) {
   rumqttc_string_view_t reason_text = {NULL, 0}, reference = {NULL, 0};
   CHECK(rumqttc_event_broker_disconnect(disconnected, &reason, &expiry_present, &expiry, &reason_present, &reason_text,
                                         &reference_present, &reference));
-  REQUIRE(reason == 0x80 && expiry_present && expiry == 0 && reason_present && reason_text.len == 0);
-  REQUIRE(reference_present && reference.len == 0);
+  REQUIRE(reason == 0x80 && expiry_present && expiry == 0 && reason_present && reason_text.len == 12);
+  REQUIRE(memcmp(reason_text.data, "broker-error", 12) == 0);
+  REQUIRE(reference_present && reference.len == 19 && memcmp(reference.data, "broker.invalid:1883", 19) == 0);
   properties(disconnected, RUMQTTC_EVENT_PROPERTIES_BROKER_DISCONNECT);
   native_close_destroy(client);
   rumqttc_config_destroy(config);
   REQUIRE(borrowed.len == written && memcmp(borrowed.data, copy, written) == 0);
   properties(connected, RUMQTTC_EVENT_PROPERTIES_CONNACK);
   properties(disconnected, RUMQTTC_EVENT_PROPERTIES_BROKER_DISCONNECT);
+  REQUIRE(memcmp(reason_text.data, "broker-error", reason_text.len) == 0);
+  REQUIRE(memcmp(reference.data, "broker.invalid:1883", reference.len) == 0);
+  char reason_copy[32], reference_copy[32];
+  size_t reason_written = 0, reference_written = 0;
+  CHECK(rumqttc_string_copy(reason_text, reason_copy, sizeof(reason_copy), &reason_written));
+  CHECK(rumqttc_string_copy(reference, reference_copy, sizeof(reference_copy), &reference_written));
   rumqttc_event_destroy(connected);
   rumqttc_event_destroy(disconnected);
+  REQUIRE(reason_written == 12 && memcmp(reason_copy, "broker-error", reason_written) == 0);
+  REQUIRE(reference_written == 19 && memcmp(reference_copy, "broker.invalid:1883", reference_written) == 0);
   REQUIRE(written == strlen("localhost:1883") && memcmp(copy, "localhost:1883", written) == 0);
   return 0;
 }

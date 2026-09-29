@@ -42,6 +42,10 @@ void native_wait_completion(rumqttc_completion_t *completion,
                             rumqttc_completion_kind_t expected);
 void native_close_destroy(rumqttc_client_t *client);
 void native_sleep_ms(uint32_t milliseconds);
+uint64_t native_monotonic_ms(void);
+/* Per-run, broker-controlled barriers. Names must be unique within a fixture. */
+void native_fixture_write(const char *name, uint64_t value);
+uint64_t native_fixture_read(const char *name);
 void native_check_event_accessors(const rumqttc_event_t *event);
 size_t native_process_thread_count(void);
 

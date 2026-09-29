@@ -111,7 +111,18 @@ before client start. MQTT 5 CONNECT properties use
 `RUMQTTC_V5_CONNECT_PROPERTIES_INIT`; presence flags distinguish absent values
 from present empty values. The advertised MQTT 5 Maximum Packet Size is
 independent of the local decoder limit, while automatic outgoing topic aliases
-use a separate policy setter.
+use a separate policy setter. Replacing either configuration copies the new
+values immediately, so caller buffers can be released before start or restart.
+
+Request batching uses one request per poll when
+`rumqttc_config_set_max_request_batch()` is zero. A nonzero value sets the
+maximum requests processed together. `rumqttc_config_set_read_batch_size()`
+uses adaptive batching at zero, based on the outgoing inflight window; one
+limits reads to a single packet per poll. Resetting the MQTT 3.1.1 outgoing
+packet limit restores the native default. Clearing the MQTT 5 outgoing
+inflight upper limit leaves the broker's Receive Maximum authoritative;
+clearing its advertised Maximum Packet Size omits that CONNECT property and
+does not replace the separate local decoder limit.
 
 Unix socket paths are native bytes on Unix and fail before start on other
 platforms. Declarative WebSocket header edits are copied in order for each
@@ -119,7 +130,11 @@ handshake, including reconnects; add preserves duplicates, replace overwrites,
 and remove deletes a name. The core rejects protected handshake headers and
 redacts all header values in debug output. TCP network setters accept portable
 numeric buffer sizes, booleans, and a numeric local socket address. Bind-device
-and MPTCP settings fail on platforms that do not support them.
+and MPTCP settings fail on platforms that do not support them. Clearing the
+local bind address restores automatic local address/port selection; clearing
+TCP buffer overrides restores operating-system defaults. TCP_NODELAY can be
+disabled independently. The operating system may adjust buffer sizes or tune
+default buffers while the connection is active.
 
 Proxy connections use `rumqttc_proxy_options_t` with
 `RUMQTTC_PROXY_OPTIONS_INIT`. Select HTTP, HTTPS, or SOCKS5; the loaded library
@@ -143,7 +158,13 @@ remain available for version-neutral close.
 
 `rumqttc_client_try_reauthenticate()` and
 `rumqttc_client_reauthenticate_tracked()` admit MQTT 5 reauthentication when
-the configured core mechanism supports it. A build with `RUMQTTC_CAP_SCRAM`
+the configured core mechanism supports it. An overlapping request receives a
+separate operation ID and completes with `RUMQTTC_AUTH_FAILURE_OVERLAPPING`,
+`RUMQTTC_AUTHENTICATION_ERROR`, and `RUMQTTC_DELIVERY_NOT_ADMITTED`. It sends no
+AUTH and leaves the active exchange running. Transport loss resolves that
+exchange with `ConnectionClosed`; its Failed lifecycle event precedes
+Disconnected and the next connection's authentication events.
+A build with `RUMQTTC_CAP_SCRAM`
 can configure SCRAM-SHA-256 with `rumqttc_config_set_v5_scram()` and clear it
 before start. The password is a byte view and must contain UTF-8 for the
 underlying SCRAM mechanism; wrapper-owned copies are wiped on release. New
@@ -222,6 +243,37 @@ Release archives use an ABI-line-specific loader identity:
 | Linux x86_64 | `librumqttc.so.0.1` |
 | macOS arm64 | `@rpath/librumqttc.0.1.dylib` |
 | Windows x86_64 | `rumqttc-0_1.dll` |
+
+## Native validation
+
+From the repository root, run the native suite and the seven installed-package
+profiles with a required Mosquitto broker:
+
+```sh
+cargo build --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-next
+cmake -S native-wrappers/c/tests/native -B native-wrappers/target/rumqttc-c-native
+cmake --build native-wrappers/target/rumqttc-c-native --config Release
+RUMQTTC_REQUIRE_MOSQUITTO=1 ctest --test-dir native-wrappers/target/rumqttc-c-native -C Release --output-on-failure
+RUMQTTC_REQUIRE_MOSQUITTO=1 python3 native-wrappers/c/tests/package_feature_matrix.py --native
+```
+
+Set `MOSQUITTO_BIN` if the executable is outside PATH. CI installs Mosquitto on
+all three platforms and fails if a supported Will case cannot run. Local runs
+without a broker report a skip unless `RUMQTTC_REQUIRE_MOSQUITTO=1` is set.
+Package profiles retain command logs, platform/feature metadata, and CTest
+results under `native-wrappers/target/c-feature-matrix/`.
+
+The TLS matrix checks platform-root acceptance and untrusted-root rejection
+for each enabled backend and both MQTT versions. Linux uses isolated
+`SSL_CERT_FILE`/`SSL_CERT_DIR` inputs. macOS and Windows execution requires
+`RUMQTTC_DISPOSABLE_TRUST_RUNNER=1` on a disposable runner: macOS temporarily
+adds a dedicated keychain and an administrator trust entry, while Windows uses
+the current user's Root store. Cleanup restores the keychain search list and
+removes only the fixture's own root, including after child-process failure.
+An interrupted run leaves a cleanup manifest; CI unconditionally runs
+`python3 native-wrappers/c/tests/native/platform_trust.py --cleanup`.
+The latest verified platform results and pending execution are recorded in
+[`../wrapper-core/PARITY.md`](../wrapper-core/PARITY.md).
 
 ## Compatibility policy
 

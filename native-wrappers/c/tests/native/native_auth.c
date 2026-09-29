@@ -65,15 +65,18 @@ static void auth_respond(void *user_data, const rumqttc_auth_request_t *request,
     rumqttc_callback_completion_t *retained = NULL;
     native_thread_t *worker;
     REQUIRE(request->reason_code_present == 1 && request->reason_code == 0x18);
-    REQUIRE(request->data_present == 1 && request->data.len == 6 &&
-            memcmp(request->data.data, "server", 6) == 0);
+    REQUIRE(request->data_present == 1 && request->data.len == 8 &&
+            memcmp(request->data.data, "server\0\xff", 8) == 0);
     REQUIRE(request->reason_string_present == 1 &&
-            request->reason_string.len == 0);
-    REQUIRE(request->user_property_count == 2);
+            request->reason_string.len == 9 && memcmp(request->reason_string.data, "auth-step", 9) == 0);
+    REQUIRE(request->user_property_count == 3);
+    for (size_t index = 0; index < 3; ++index)
+      REQUIRE(request->user_properties[index].name.len == 1 && request->user_properties[index].name.data[0] == 'k');
     REQUIRE(request->user_properties[0].value.len == 1 &&
             request->user_properties[0].value.data[0] == '1');
-    REQUIRE(request->user_properties[1].value.len == 1 &&
-            request->user_properties[1].value.data[0] == '2');
+    REQUIRE(request->user_properties[1].value.len == 0);
+    REQUIRE(request->user_properties[2].value.len == 1 &&
+            request->user_properties[2].value.data[0] == '2');
     atomic_fetch_add(&context->continues, 1);
     CHECK(rumqttc_callback_completion_retain(completion, &retained));
     worker = native_thread_start(complete_challenge, retained);
@@ -104,6 +107,57 @@ static void auth_destroy(void *user_data) {
   atomic_fetch_add(&destroyed, 1);
 }
 
+static void check_challenge(const rumqttc_event_t *event) {
+  rumqttc_string_view_t method = {NULL, 0}, text = {NULL, 0};
+  rumqttc_bytes_view_t data = {NULL, 0};
+  uint8_t method_present = 0, data_present = 0, text_present = 0;
+  CHECK(rumqttc_event_authentication_details(event, NULL, NULL, NULL, &method_present, &method,
+                                            &data_present, &data, &text_present, &text));
+  REQUIRE(method_present && method.len == 6 && memcmp(method.data, "custom", 6) == 0);
+  REQUIRE(data_present && data.len == 8 && memcmp(data.data, "server\0\xff", 8) == 0);
+  REQUIRE(text_present && text.len == 9 && memcmp(text.data, "auth-step", 9) == 0);
+  size_t count = 0;
+  CHECK(rumqttc_event_user_property_count(event, RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION, &count));
+  REQUIRE(count == 3);
+  for (size_t index = 0; index < count; ++index) {
+    rumqttc_string_view_t name = {NULL, 0}, value = {NULL, 0};
+    CHECK(rumqttc_event_user_property_at(event, RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION, index, &name, &value));
+    REQUIRE(name.len == 1 && name.data[0] == 'k');
+    REQUIRE(value.len == (index == 1 ? 0 : 1));
+    if (value.len)
+      REQUIRE(value.data[0] == (index == 0 ? '1' : '2'));
+  }
+}
+
+static void check_retained_challenge(rumqttc_event_t *event) {
+  check_challenge(event);
+  rumqttc_string_view_t method = {NULL, 0}, text = {NULL, 0};
+  rumqttc_bytes_view_t data = {NULL, 0};
+  CHECK(rumqttc_event_authentication_details(event, NULL, NULL, NULL, NULL, &method, NULL, &data, NULL, &text));
+  char method_copy[16], text_copy[16], names[3][4], values[3][4];
+  uint8_t data_copy[16];
+  size_t method_len = 0, text_len = 0, data_len = 0, name_lens[3], value_lens[3];
+  CHECK(rumqttc_string_copy(method, method_copy, sizeof(method_copy), &method_len));
+  CHECK(rumqttc_string_copy(text, text_copy, sizeof(text_copy), &text_len));
+  CHECK(rumqttc_bytes_copy(data, data_copy, sizeof(data_copy), &data_len));
+  for (size_t index = 0; index < 3; ++index) {
+    rumqttc_string_view_t name = {NULL, 0}, value = {NULL, 0};
+    CHECK(rumqttc_event_user_property_at(event, RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION, index, &name, &value));
+    CHECK(rumqttc_string_copy(name, names[index], sizeof(names[index]), &name_lens[index]));
+    CHECK(rumqttc_string_copy(value, values[index], sizeof(values[index]), &value_lens[index]));
+  }
+  rumqttc_event_destroy(event);
+  REQUIRE(method_len == 6 && memcmp(method_copy, "custom", method_len) == 0);
+  REQUIRE(text_len == 9 && memcmp(text_copy, "auth-step", text_len) == 0);
+  REQUIRE(data_len == 8 && memcmp(data_copy, "server\0\xff", data_len) == 0);
+  for (size_t index = 0; index < 3; ++index) {
+    REQUIRE(name_lens[index] == 1 && names[index][0] == 'k');
+    REQUIRE(value_lens[index] == (index == 1 ? 0 : 1));
+    if (value_lens[index])
+      REQUIRE(values[index][0] == (index == 0 ? '1' : '2'));
+  }
+}
+
 int main(void) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
@@ -111,7 +165,7 @@ int main(void) {
   rumqttc_auth_vtable_t vtable = RUMQTTC_AUTH_VTABLE_INIT;
   auth_context *context = calloc(1, sizeof(*context));
   native_thread_t *worker;
-  rumqttc_event_t *event;
+  rumqttc_event_t *event, *retained = NULL;
   unsigned saw_started = 0;
   unsigned saw_continue = 0;
   unsigned saw_success = 0;
@@ -154,11 +208,13 @@ int main(void) {
         REQUIRE(saw_started == 1 && saw_continue == 0 && saw_success == 0);
         size_t count = 0;
         REQUIRE(reason_present == 1 && reason == 0x18 &&
-                properties_present == 1 && data_present == 1 && data.len == 6 &&
-                memcmp(data.data, "server", 6) == 0);
+                properties_present == 1 && data_present == 1 && data.len == 8 &&
+                memcmp(data.data, "server\0\xff", 8) == 0);
         CHECK(rumqttc_event_user_property_count(
             event, RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION, &count));
-        REQUIRE(count == 2);
+        REQUIRE(count == 3);
+        check_challenge(event);
+        retained = event;
         saw_continue++;
       } else if (stage == RUMQTTC_AUTH_STAGE_SUCCEEDED) {
         REQUIRE(saw_started == 1 && saw_continue == 1 && saw_success == 0);
@@ -174,7 +230,8 @@ int main(void) {
       REQUIRE(saw_started == 1 && saw_continue == 1 && !saw_connected);
       saw_connected = 1;
     }
-    rumqttc_event_destroy(event);
+    if (event != retained)
+      rumqttc_event_destroy(event);
     if (saw_connected && saw_success)
       break;
   }
@@ -195,6 +252,9 @@ int main(void) {
       event = native_wait_event(client, RUMQTTC_EVENT_AUTHENTICATION);
       CHECK(rumqttc_event_authentication(event, &exchange, &stage, NULL, NULL, NULL));
       REQUIRE(exchange == RUMQTTC_AUTH_EXCHANGE_REAUTHENTICATION && stage == stages[position]);
+      native_check_event_accessors(event);
+      if (stage == RUMQTTC_AUTH_STAGE_CONTINUE)
+        check_challenge(event);
       rumqttc_event_destroy(event);
     }
     native_wait_completion(completion, RUMQTTC_COMPLETION_AUTHENTICATED);
@@ -209,5 +269,7 @@ int main(void) {
   rumqttc_config_destroy(config);
   rumqttc_auth_registration_destroy(registration);
   REQUIRE(atomic_load(&destroyed) == 1);
+  REQUIRE(retained != NULL);
+  check_retained_challenge(retained);
   return 0;
 }

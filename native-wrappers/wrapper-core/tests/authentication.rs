@@ -86,7 +86,7 @@ fn broker_authentication_method_change_retains_typed_failure() {
 }
 
 #[test]
-fn overlapping_reauthentication_resolves_both_requests() {
+fn overlapping_reauthentication_is_rejected_before_the_active_exchange_closes() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -103,7 +103,7 @@ fn overlapping_reauthentication_resolves_both_requests() {
         ));
         ready_tx.send(()).unwrap();
         release_rx.recv_timeout(support::DEADLINE).unwrap();
-        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        drop(socket);
     });
     let mut client = NativeClient::start(config(
         port,
@@ -124,12 +124,80 @@ fn overlapping_reauthentication_resolves_both_requests() {
         .unwrap();
     let error = support::terminal(&second).unwrap_err();
     assert_eq!(error.auth_failure(), Some(AuthFailure::Overlapping));
+    assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+    assert!(first.completion.try_wait().unwrap().is_none());
     release_tx.send(()).unwrap();
     assert_eq!(
         support::terminal(&first).unwrap_err().auth_failure(),
         Some(AuthFailure::ConnectionClosed)
     );
     client.closer().close_now(support::DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn rejected_overlap_preserves_success_and_releases_admission_for_the_next_exchange() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let broker = support::Broker::spawn(move || {
+        let mut socket = support::accept(&listener);
+        read_packet(&mut socket);
+        socket
+            .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+            .unwrap();
+        for exchange in 0..2 {
+            let rumqttc_v5::Packet::Auth(auth) = read_packet(&mut socket) else {
+                panic!("AUTH start expected")
+            };
+            assert_eq!(auth.code, rumqttc_v5::AuthReasonCode::ReAuthenticate);
+            if exchange == 0 {
+                ready_tx.send(()).unwrap();
+                release_rx.recv_timeout(support::DEADLINE).unwrap();
+            }
+            send_auth(&mut socket, rumqttc_v5::AuthReasonCode::Success, b"proof");
+        }
+        assert!(matches!(
+            read_packet(&mut socket),
+            rumqttc_v5::Packet::Disconnect(_)
+        ));
+    });
+    let mut client = NativeClient::start(config(
+        port,
+        Arc::new(Mechanism {
+            contexts: Mutex::new(vec![]),
+        }),
+    ))
+    .unwrap();
+    let _events = support::connected(&mut client);
+    let first = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    ready_rx.recv_timeout(support::DEADLINE).unwrap();
+    let second = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    let error = support::terminal(&second).unwrap_err();
+    assert_eq!(error.auth_failure(), Some(AuthFailure::Overlapping));
+    assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+    assert!(first.completion.try_wait().unwrap().is_none());
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        support::terminal(&first).unwrap(),
+        Completion::Authenticated
+    );
+    let third = client
+        .handle()
+        .try_admit(Command::Reauthenticate(None))
+        .unwrap();
+    assert_eq!(
+        support::terminal(&third).unwrap(),
+        Completion::Authenticated
+    );
+    client.closer().close(support::DEADLINE).unwrap();
     broker.join();
 }
 

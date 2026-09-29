@@ -1,87 +1,94 @@
-# C Binding Parity: Remaining Work
+# C Binding Parity: Implementation and Validation
 
-## C-WC-05: Overlapping reauthentication ordering
+The requested fixtures, fixes, documentation, and CI changes are implemented.
+Linux execution is recorded below. macOS and Windows execution remains pending
+on their CI runners; CI configuration is not execution evidence.
 
-- Add a deterministic native C fixture that controls broker AUTH progress and
-  observes tracked completions and authentication lifecycle events together.
-  Assert the required completion and event ordering for overlapping requests;
-  waiting for the completions sequentially must not serve as proof of their
-  resolution order.
-- Assert the complete failed-exchange lifecycle through disconnection, including
-  any reconnect boundary. Use bounded waits and reject missing, duplicated,
-  reordered, or unexpected success events.
+## Completed implementation
 
-## C-WC-01, C-WC-03, C-WC-04: Configuration ownership and runtime boundaries
+- [x] **C-WC-05:** `native_auth_overlap` uses broker barriers and bounded polling
+  to observe the overlap completing while the active request remains pending.
+  It rejects missing/duplicate/reordered events through Failed, Disconnected,
+  and reconnect authentication, checks operation IDs and stable typed results,
+  verifies no extra AUTH reaches the broker, and counts exactly-once callbacks.
+  Wrapper-core rejects an overlap without interrupting the active exchange;
+  MQTT 5 preserves the ConnectionClosed lifecycle event before cleanup. Focused
+  Rust regressions cover transport loss, preserved success, and later admission.
+- [x] **C-WC-01/03/04:** `native_wire_options` replaces nonempty Will inputs for
+  both protocols and MQTT 5 CONNECT properties, overwrites both sets of caller
+  buffers, starts/restarts with exact replacement wire assertions, and clears
+  the configuration. `native_runtime_batching` observes request/read batches at
+  zero, one, and eight using admitted requests, a broker burst, and bounded
+  event-queue backpressure. `native_runtime_limits` checks standalone reset/
+  clear defaults through wire data and successful operations beyond old limits.
+- [x] **C-WC-11:** `native_auth` verifies AUTH property names, values, order,
+  duplicates, and present-empty values, retains nonempty string/binary views
+  across client destruction, and validates public-helper copies after event
+  destruction. `native_event_properties` does the same for nonempty broker
+  DISCONNECT strings and compares PUBLISH/SUBSCRIBE/UNSUBSCRIBE outgoing IDs
+  against broker-observed IDs. `event_contract` covers CONNACK scalar/string
+  selectors, authentication/DISCONNECT optional outputs, wrong kinds, invalid
+  selectors, NULL events, and initialized failure outputs, including rejected
+  CONNACK property events.
+- [x] **C-WC-12:** `native_network_options` starts after clearing bind/buffer
+  overrides and disabling TCP_NODELAY, checks broker-observed ports and actual
+  socket values, and compares equivalent reference sockets to account for OS
+  buffer adjustments. Windows process-snapshot socket inspection is implemented.
+- [x] **C-WC-13:** `native_tls_matrix` accepts a trusted platform-root broker
+  and rejects an untrusted broker for both protocols and each enabled backend.
+  `platform_trust.py` uses disposable macOS keychain/admin trust and Windows
+  current-user Root stores, preserves cleanup intent before side effects,
+  cleans up partial installation/child failure, protects preexisting trust,
+  verifies restoration, and retains manifests for unconditional CI cleanup.
+  Linux uses isolated certificate-file/directory inputs. Harness regressions
+  simulate platform-store cleanup without changing the local host's stores.
+- [x] **CI and evidence:** All seven package profiles retain platform/feature
+  metadata, command logs, and CTest JUnit results. Linux/macOS/Windows jobs
+  provision Mosquitto and require all four supported Will cases. ASan/UBSan,
+  Valgrind, macOS leaks, and Windows ASan jobs include ownership, cancellation,
+  and retained-event coverage as supported. CI retains platform-specific logs
+  and always attempts outstanding trust cleanup. `CHANGELOG.md`, the C README,
+  and `wrapper-core/PARITY.md` describe behavior and execution limits.
 
-- Test nonempty-to-nonempty replacement of Will configuration for MQTT 3.1.1 and
-  MQTT 5, and CONNECT properties for MQTT 5. Mutate or release both sets of
-  caller-owned buffers after their setters return, then start and restart the
-  client. Assert that only the replacement values reach the broker, including
-  binary payloads and ordered properties.
-- Add observable assertions for request and read batching boundaries at zero,
-  one, and a larger configured value. Use controlled request admission and
-  broker traffic to distinguish the configured behavior and its documented
-  default semantics.
-- Test the MQTT 3.1.1 outgoing packet-limit reset, MQTT 5 outgoing inflight-limit
-  clear, and MQTT 5 advertised maximum-packet-size clear without setting another
-  value before starting the client. Verify effective defaults through broker
-  wire data and operation results, including behavior beyond each removed limit.
+## Local validation (Linux x86_64)
 
-## C-WC-11: Event properties and view lifetimes
+- [x] Native C suite and examples: 46/46 passed.
+- [x] Native C AddressSanitizer/UndefinedBehaviorSanitizer: 46/46 passed;
+  the Rust library is not sanitizer-instrumented in this C harness run.
+- [x] Valgrind ownership/cancellation/event-lifetime selection: 11/11 passed.
+- [x] Harness cleanup and required-Will execution regressions: 11/11 passed.
+- [x] Main and native-wrapper workspace checks; native-wrapper workspace tests;
+  MQTT 5 crate tests; focused overlap/transport-loss regressions; wrapper-core
+  native TLS/WebSocket/proxy combination tests and the explicit real-broker
+  Rust Will test.
+- [x] MQTT 5 feature matrix: all 19 cargo-hack configurations passed.
+- [x] All seven installed package profiles: 49 consumer and 161 native
+  transport/disabled-feature checks passed with zero skips; Rustls and native
+  TLS platform trust passed for both protocols.
+- [x] Current FFI/header and export checks.
+- [x] Historical ABI resolver ran: no applicable published 0.1.0-alpha baseline.
+  Historical compatibility remains **unverified**, not passed.
+- [x] Both workspace format checks, Python Ruff checks/formatting, project-wide
+  Pyrefly (zero errors), actionlint, standard wrapper-core Clippy with warnings
+  denied, and source-diff checks.
+  The additional pedantic/nursery Clippy run still reports existing errors in
+  unchanged wrapper-core code; it is not recorded as passed.
 
-- Verify authentication user-property names, values, and order against broker
-  wire data, including duplicate names and present-empty values.
-- Retain authentication events with nonempty string and byte properties and
-  broker DISCONNECT events with nonempty string properties across client
-  destruction. Verify borrowed views while their event owner remains alive,
-  copy the views with the public helpers, and verify the copies after event
-  destruction.
-- Compare outgoing-event packet IDs with broker-observed packet IDs rather than
-  asserting only that an ID is present and nonzero.
-- Complete the native accessor matrix for CONNACK scalar/string selectors and
-  authentication/DISCONNECT outputs. Cover wrong event kinds, invalid selectors,
-  independently omitted optional outputs, and initialized outputs on failure.
+Local logs and JUnit results are under `native-wrappers/target/`; per-profile
+logs and metadata are under `target/c-feature-matrix/` in that workspace.
 
-## C-WC-12: Socket settings after clearing
+## Pending external execution
 
-- Start a client after clearing its local bind address and TCP buffer overrides
-  and disabling TCP_NODELAY. Verify the resulting socket settings and
-  broker-observed connection using platform-appropriate assertions; do not
-  overwrite the cleared configuration before starting the client.
-- Add Windows socket inspection for configured buffer sizes and TCP_NODELAY.
-  Account for operating-system buffer adjustments without accepting unapplied
-  options.
+- [ ] Run the native suite, seven package profiles, installed static/shared
+  CMake/pkg-config consumers, disabled-feature and TLS/proxy cases, required
+  Mosquitto Will cases, socket inspection, and platform trust on macOS/Windows.
+- [ ] Run supported macOS/Windows sanitizer/leak jobs and retain their evidence.
+  Windows UBSan and Valgrind/macOS leaks are unsupported.
+- [ ] Compare with an applicable published release ABI baseline when available.
+  The historical comparator supports Linux x86_64 and macOS arm64; Windows
+  current header/export/contract checks use its platform-specific scripts.
 
-## C-WC-13: macOS and Windows platform trust
-
-- Add native C platform-trust fixtures for macOS and Windows with isolated trust
-  stores or disposable runners. Exercise each supported TLS backend for both
-  MQTT versions, verify acceptance of a trusted broker and rejection of an
-  untrusted broker, and clean up trust-store changes on success and failure.
-
-## Cross-platform validation and parity evidence
-
-- Run the native fixtures and all seven feature-package profiles on macOS and
-  Windows. Validate installed static/shared CMake and pkg-config consumers,
-  including disabled-feature rejection and TLS/proxy combinations.
-- Provision Mosquitto on macOS and Windows runners and execute the graceful and
-  abrupt-exit Will fixtures. Require execution of the supported cases rather
-  than treating a missing broker as completed validation.
-- Run the fixtures added or changed for these tasks on Linux, macOS, and Windows.
-  Include the ownership, cancellation, and event-lifetime cases in sanitizer
-  runs where supported; resolve failures and retain platform-specific evidence.
-- Fix defects exposed by the remaining assertions and add focused Rust FFI or
-  wrapper-core regressions for the affected behavior. Update user-facing
-  documentation and `CHANGELOG.md` for any resulting behavior changes.
-- Update `native-wrappers/wrapper-core/PARITY.md` so coverage claims match the
-  actual assertions and platform results. Distinguish pending execution,
-  unsupported cases, and unavailable ABI baselines from verified coverage.
-- Compare the ABI contract with an applicable published release baseline when
-  one is available. Report historical compatibility as unverified while no
-  applicable baseline exists; a skipped comparison is not compatibility proof.
-- Run the workspace, header, and export checks after the remaining changes, and
-  the historical ABI comparison on supported hosts. Use the platform-specific
-  header and export scripts on Windows:
+Required workspace/header/export commands remain:
 
 ```bash
 cargo fmt --manifest-path native-wrappers/Cargo.toml --all --check

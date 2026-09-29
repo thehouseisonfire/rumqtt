@@ -19,6 +19,7 @@ on:
       - 'scripts/publish-crates-alpha.sh'
       - '.github/workflows/c-api-release.yml'
       - '.github/workflows/native-wrappers-ci.yml'
+      - '.github/actions/native-c-test-tools/**'
   push:
     branches:
       - main
@@ -32,6 +33,9 @@ permissions:
 env:
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: "-D warnings"
+  RUMQTTC_REQUIRE_MOSQUITTO: '1'
+  RUMQTTC_DISPOSABLE_TRUST_RUNNER: '1'
+  RUMQTTC_PLATFORM_TRUST_STATE_DIR: ${{ github.workspace }}/native-wrappers/target/platform-trust-state
 
 defaults:
   run:
@@ -122,12 +126,11 @@ jobs:
           cargo test --locked --manifest-path ../Cargo.toml -p rumqttc-core-next network_controls_are_applied_to_the_created_socket
           cargo test --locked --manifest-path ../Cargo.toml -p rumqttc-v5-next srv::tests
 
+      - uses: ./.github/actions/native-c-test-tools
+
       - name: Real-broker will behavior
         if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mosquitto
-          cargo test --locked -p rumqttc-wrapper-core-next --test will_broker -- --ignored
+        run: cargo test --locked -p rumqttc-wrapper-core-next --test will_broker -- --ignored
 
       - name: Wrapper feature matrix
         if: ${{ runner.os == 'Linux' }}
@@ -171,11 +174,14 @@ jobs:
         shell: pwsh
         run: c/tests/abi/check.ps1 native
 
+      - name: Check native fixture harness cleanup
+        run: python -m unittest discover -s c/tests/native -p 'test_*.py'
+
       - name: C native integration, stress, and examples
         run: |
           cmake -S c/tests/native -B target/rumqttc-c-native -DCMAKE_BUILD_TYPE=Debug
           cmake --build target/rumqttc-c-native --config Debug
-          ctest --test-dir target/rumqttc-c-native -C Debug --output-on-failure
+          ctest --test-dir target/rumqttc-c-native -C Debug --output-on-failure --output-junit results.xml
 
       - name: C proxy and SCRAM consumers
         run: |
@@ -289,6 +295,23 @@ jobs:
             native-wrappers/target/abi-reports
           if-no-files-found: ignore
 
+      - name: Clean up platform trust after interrupted fixtures
+        if: ${{ always() }}
+        run: python c/tests/native/platform_trust.py --cleanup
+
+      - name: Preserve native C validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-c-validation-${{ runner.os }}-${{ github.job }}
+          path: |
+            native-wrappers/target/rumqttc-c-native*/Testing
+            native-wrappers/target/rumqttc-c-native*/results.xml
+            native-wrappers/target/c-feature-matrix/**/Testing
+            native-wrappers/target/c-feature-matrix/**/results.xml
+            native-wrappers/target/c-feature-matrix/**/validation.*
+          if-no-files-found: error
+
   c-abi-sanitizers:
     name: C ABI sanitizers and leak checks
     runs-on: ubuntu-latest
@@ -298,6 +321,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri,rust-src
+
+      - uses: ./.github/actions/native-c-test-tools
 
       - name: Install native analysis tools
         run: |
@@ -326,8 +351,26 @@ jobs:
           cmake -S c/tests/native -B target/rumqttc-c-native-valgrind
           cmake --build target/rumqttc-c-native-valgrind
           leak_tests='rumqttc-native-(integration|stress|store-ownership|auth-overlap|'
-          leak_tests+='callback-races|event-queue|close-options|store-write-failure)'
+          leak_tests+='callback-races|event-queue|event-properties|wire-options|auth$|'
+          leak_tests+='close-options|store-write-failure)'
           ctest --test-dir target/rumqttc-c-native-valgrind -R "$leak_tests" --output-on-failure
+
+      - name: Clean up platform trust after interrupted fixtures
+        if: ${{ always() }}
+        run: python c/tests/native/platform_trust.py --cleanup
+
+      - name: Preserve native C validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-c-validation-${{ runner.os }}-${{ github.job }}
+          path: |
+            native-wrappers/target/rumqttc-c-native*/Testing
+            native-wrappers/target/rumqttc-c-native*/results.xml
+            native-wrappers/target/c-feature-matrix/**/Testing
+            native-wrappers/target/c-feature-matrix/**/results.xml
+            native-wrappers/target/c-feature-matrix/**/validation.*
+          if-no-files-found: error
 
   c-abi-platform-sanitizers:
     name: C native sanitizers (${{ matrix.os }})
@@ -344,6 +387,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/native-c-test-tools
 
       - name: Build C library
         run: cargo build -p rumqttc-c-next
@@ -368,7 +413,8 @@ jobs:
           cmake -S c/tests/native -B target/rumqttc-c-native-leaks
           cmake --build target/rumqttc-c-native-leaks
           leak_tests='rumqttc-native-(integration|stress|store-ownership|auth-overlap|'
-          leak_tests+='callback-races|event-queue|close-options|store-write-failure)'
+          leak_tests+='callback-races|event-queue|event-properties|wire-options|auth$|'
+          leak_tests+='close-options|store-write-failure)'
           ctest --test-dir target/rumqttc-c-native-leaks -R "$leak_tests" --output-on-failure
 
       - name: Build and run sanitized native suite (Windows)
@@ -398,6 +444,23 @@ jobs:
           $env:PATH = "$compilerDirectory;$env:PATH"
           ctest --test-dir target/rumqttc-c-native-platform-sanitized -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "sanitized native suite failed" }
+
+      - name: Clean up platform trust after interrupted fixtures
+        if: ${{ always() }}
+        run: python c/tests/native/platform_trust.py --cleanup
+
+      - name: Preserve native C validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-c-validation-${{ runner.os }}-${{ github.job }}
+          path: |
+            native-wrappers/target/rumqttc-c-native*/Testing
+            native-wrappers/target/rumqttc-c-native*/results.xml
+            native-wrappers/target/c-feature-matrix/**/Testing
+            native-wrappers/target/c-feature-matrix/**/results.xml
+            native-wrappers/target/c-feature-matrix/**/validation.*
+          if-no-files-found: error
 
   javascript:
     name: JavaScript wrapper (${{ matrix.os }})

@@ -43,6 +43,50 @@ void native_fail(const char *file, int line, const char *expression,
   abort();
 }
 
+uint64_t native_monotonic_ms(void) {
+#if defined(_WIN32)
+  return GetTickCount64();
+#else
+  struct timespec now;
+  REQUIRE(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+  return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+#endif
+}
+
+static void fixture_path(char *path, size_t capacity, const char *name, const char *suffix) {
+  const char *directory = getenv("RUMQTTC_TEST_CONTROL_DIR");
+  REQUIRE(directory != NULL && strchr(name, '/') == NULL && strchr(name, '\\') == NULL);
+  int length = snprintf(path, capacity, "%s/%s%s", directory, name, suffix);
+  REQUIRE(length > 0 && (size_t)length < capacity);
+}
+
+void native_fixture_write(const char *name, uint64_t value) {
+  char path[1024], temporary[1024];
+  fixture_path(path, sizeof(path), name, "");
+  fixture_path(temporary, sizeof(temporary), name, ".tmp");
+  FILE *file = fopen(temporary, "w");
+  REQUIRE(file != NULL);
+  REQUIRE(fprintf(file, "%llu\n", (unsigned long long)value) > 0 && fclose(file) == 0);
+  REQUIRE(rename(temporary, path) == 0);
+}
+
+uint64_t native_fixture_read(const char *name) {
+  char path[1024];
+  fixture_path(path, sizeof(path), name, "");
+  uint64_t deadline = native_monotonic_ms() + NATIVE_DEADLINE_MS;
+  do {
+    FILE *file = fopen(path, "r");
+    if (file != NULL) {
+      unsigned long long value = 0;
+      REQUIRE(fscanf(file, "%llu", &value) == 1 && fclose(file) == 0);
+      return (uint64_t)value;
+    }
+    native_sleep_ms(1);
+  } while (native_monotonic_ms() < deadline);
+  native_fail(__FILE__, __LINE__, name, RUMQTTC_TIMEOUT);
+  return 0;
+}
+
 rumqttc_string_view_t native_string(const char *value) {
   rumqttc_string_view_t view = {value, strlen(value)};
   return view;

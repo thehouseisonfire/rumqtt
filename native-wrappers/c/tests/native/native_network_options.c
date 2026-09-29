@@ -4,13 +4,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <windows.h>
+#include <processsnapshot.h>
+typedef SOCKET inspected_socket_t;
+typedef int inspected_length_t;
+#define INVALID_INSPECTED_SOCKET INVALID_SOCKET
+#define close_inspected_socket closesocket
+#else
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
-#if defined(__linux__)
 #include <unistd.h>
-#endif
+typedef int inspected_socket_t;
+typedef socklen_t inspected_length_t;
+#define INVALID_INSPECTED_SOCKET (-1)
+#define close_inspected_socket close
 #endif
 
 static uint16_t env_port(const char *name) {
@@ -167,44 +177,136 @@ static void websocket_options(rumqttc_protocol_t protocol, int encrypted) {
   rumqttc_config_destroy(config);
 }
 
+typedef struct socket_settings {
+  int send_buffer;
+  int receive_buffer;
+  int nodelay;
+} socket_settings;
+
+static int socket_setting(inspected_socket_t socket, int level, int option) {
+  int value = -1;
+  inspected_length_t length = sizeof(value);
+  REQUIRE(getsockopt(socket, level, option, (char *)&value, &length) == 0);
+  REQUIRE(length == sizeof(value));
+  return value;
+}
+
+static socket_settings settings(inspected_socket_t socket) {
+  socket_settings result = {socket_setting(socket, SOL_SOCKET, SO_SNDBUF),
+                            socket_setting(socket, SOL_SOCKET, SO_RCVBUF),
+                            socket_setting(socket, IPPROTO_TCP, TCP_NODELAY)};
+  return result;
+}
+
+static socket_settings reference_settings(int buffers) {
+  inspected_socket_t socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  REQUIRE(socket_handle != INVALID_INSPECTED_SOCKET);
+  if (buffers) {
+    REQUIRE(setsockopt(socket_handle, SOL_SOCKET, SO_SNDBUF, (const char *)&buffers, sizeof(buffers)) == 0);
+    REQUIRE(setsockopt(socket_handle, SOL_SOCKET, SO_RCVBUF, (const char *)&buffers, sizeof(buffers)) == 0);
+  }
+  struct sockaddr_in broker;
+  memset(&broker, 0, sizeof(broker));
+  broker.sin_family = AF_INET;
+  broker.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  broker.sin_port = htons(native_test_port());
+  REQUIRE(connect(socket_handle, (struct sockaddr *)&broker, sizeof(broker)) == 0);
+  socket_settings result = settings(socket_handle);
+  REQUIRE(close_inspected_socket(socket_handle) == 0);
+  return result;
+}
+
+static int check_socket(inspected_socket_t socket_handle, uint16_t bind_port, int cleared,
+                        socket_settings expected, socket_settings defaults) {
+  struct sockaddr_in peer, local;
+  inspected_length_t length = sizeof(peer);
+  if (getpeername(socket_handle, (struct sockaddr *)&peer, &length) != 0 || peer.sin_family != AF_INET ||
+      peer.sin_addr.s_addr != htonl(INADDR_LOOPBACK) || ntohs(peer.sin_port) != native_test_port())
+    return 0;
+  length = sizeof(local);
+  REQUIRE(getsockname(socket_handle, (struct sockaddr *)&local, &length) == 0);
+  REQUIRE(local.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+  REQUIRE(cleared ? ntohs(local.sin_port) != bind_port : ntohs(local.sin_port) == bind_port);
+  socket_settings actual = settings(socket_handle);
+  REQUIRE(actual.nodelay == !cleared);
+  /* Linux can grow an unconfigured send buffer after CONNECT is flushed. Explicit
+     overrides disable that autotuning; an unchanged override cannot satisfy this check. */
+#if defined(__linux__)
+  if (cleared) {
+    /* Autotuning can grow either connection first. Its default range must remain
+       strictly above the kernel-adjusted 32768-byte override (65536 on Linux). */
+    REQUIRE(expected.send_buffer / 2 > 65536);
+    REQUIRE(actual.send_buffer >= expected.send_buffer / 2);
+  } else {
+    REQUIRE(actual.send_buffer == expected.send_buffer);
+  }
+#else
+  REQUIRE(actual.send_buffer == expected.send_buffer);
+#endif
+  REQUIRE(actual.receive_buffer == expected.receive_buffer);
+  if (!cleared) {
+    /* Equivalent reference sockets account for kernel adjustment without allowing ignored overrides. */
+    REQUIRE(actual.send_buffer != defaults.send_buffer && actual.receive_buffer != defaults.receive_buffer);
+  }
+  return 1;
+}
+
+static void inspect_socket(uint16_t bind_port, int cleared, socket_settings expected, socket_settings defaults) {
+  unsigned observed = 0;
+#if defined(_WIN32)
+  HPSS snapshot = NULL;
+  HPSSWALK marker = NULL;
+  REQUIRE(PssCaptureSnapshot(GetCurrentProcess(), PSS_CAPTURE_HANDLES, 0, &snapshot) == ERROR_SUCCESS);
+  REQUIRE(PssWalkMarkerCreate(NULL, &marker) == ERROR_SUCCESS);
+  PSS_HANDLE_ENTRY entry;
+  DWORD status;
+  while ((status = PssWalkSnapshot(snapshot, PSS_WALK_HANDLES, marker, &entry, sizeof(entry))) == ERROR_SUCCESS)
+    observed += (unsigned)check_socket((SOCKET)(uintptr_t)entry.Handle, bind_port, cleared, expected, defaults);
+  REQUIRE(status == ERROR_NO_MORE_ITEMS);
+  REQUIRE(PssWalkMarkerFree(marker) == ERROR_SUCCESS);
+  REQUIRE(PssFreeSnapshot(GetCurrentProcess(), snapshot) == ERROR_SUCCESS);
+#else
+  for (int descriptor = 0; descriptor < 1024; ++descriptor)
+    observed += (unsigned)check_socket(descriptor, bind_port, cleared, expected, defaults);
+#endif
+  REQUIRE(observed == 1);
+}
+
 static void socket_options(rumqttc_protocol_t protocol) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
   char address[64];
   uint16_t bind_port =
       env_port(protocol == RUMQTTC_PROTOCOL_V4 ? "RUMQTTC_TEST_BIND_PORT_V4" : "RUMQTTC_TEST_BIND_PORT_V5");
+#if defined(_WIN32)
+  WSADATA data;
+  REQUIRE(WSAStartup(MAKEWORD(2, 2), &data) == 0);
+#endif
+  socket_settings defaults = reference_settings(0), configured = reference_settings(32768);
   CHECK(rumqttc_config_new(protocol, &config, NULL));
   CHECK(rumqttc_config_set_broker(config, native_string("127.0.0.1"), native_test_port(), NULL));
   CHECK(rumqttc_config_set_client_id(config, native_string("native-socket-options"), NULL));
   REQUIRE(snprintf(address, sizeof(address), "127.0.0.1:%u", bind_port) > 0);
   CHECK(rumqttc_config_set_local_bind_address(config, native_string(address), NULL));
-  CHECK(rumqttc_config_set_tcp_send_buffer_size_bytes(config, 65536, NULL));
-  CHECK(rumqttc_config_set_tcp_receive_buffer_size_bytes(config, 65536, NULL));
+  CHECK(rumqttc_config_set_tcp_send_buffer_size_bytes(config, 32768, NULL));
+  CHECK(rumqttc_config_set_tcp_receive_buffer_size_bytes(config, 32768, NULL));
   CHECK(rumqttc_config_set_tcp_nodelay(config, 1, NULL));
   CHECK(rumqttc_client_start(config, &client, NULL));
   wait_connected(client, 0);
-#if !defined(_WIN32)
-  unsigned observed = 0;
-  for (int descriptor = 0; descriptor < 1024; ++descriptor) {
-    struct sockaddr_in local;
-    socklen_t length = sizeof(local);
-    if (getsockname(descriptor, (struct sockaddr *)&local, &length) != 0 || local.sin_family != AF_INET ||
-        ntohs(local.sin_port) != bind_port)
-      continue;
-    int setting = 0;
-    length = sizeof(setting);
-    REQUIRE(getsockopt(descriptor, IPPROTO_TCP, TCP_NODELAY, &setting, &length) == 0 && setting == 1);
-    REQUIRE(getsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &setting, &length) == 0 && setting >= 65536);
-    REQUIRE(getsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &setting, &length) == 0 && setting >= 65536);
-    ++observed;
-  }
-  REQUIRE(observed == 1);
-#endif
+  inspect_socket(bind_port, 0, configured, defaults);
   close_client(client, 0);
   CHECK(rumqttc_config_clear_local_bind_address(config, NULL));
   CHECK(rumqttc_config_clear_tcp_buffer_sizes(config, NULL));
   CHECK(rumqttc_config_set_tcp_nodelay(config, 0, NULL));
+  CHECK(rumqttc_config_set_client_id(config, native_string("native-socket-cleared"), NULL));
+  CHECK(rumqttc_client_start(config, &client, NULL));
+  wait_connected(client, 0);
+  inspect_socket(bind_port, 1, defaults, defaults);
+  close_client(client, 0);
   rumqttc_config_destroy(config);
+#if defined(_WIN32)
+  REQUIRE(WSACleanup() == 0);
+#endif
 }
 
 static void check_network_redaction(const rumqttc_error_t *error) {

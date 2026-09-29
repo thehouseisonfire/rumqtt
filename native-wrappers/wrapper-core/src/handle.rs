@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +18,17 @@ use crate::{
 /// Serializes admission with connection invalidation and shutdown commitment.
 #[derive(Default)]
 struct AdmissionGate(Mutex<()>);
+
+/// Keeps at most one admitted reauthentication outstanding, including before its
+/// first AUTH reaches the driver. Dropping an unpolled/cancelled completion also
+/// releases admission without retaining the client or its operation registry.
+struct ReauthenticationAdmission(Arc<AtomicBool>);
+
+impl Drop for ReauthenticationAdmission {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl AdmissionGate {
     fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
@@ -39,6 +50,7 @@ pub struct Shared {
     panic_tx: Sender<()>,
     session_expiry_zero: std::sync::atomic::AtomicBool,
     reauthentication_enabled: std::sync::atomic::AtomicBool,
+    reauthentication_pending: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -70,6 +82,7 @@ impl Shared {
             panic_tx,
             session_expiry_zero: std::sync::atomic::AtomicBool::new(true),
             reauthentication_enabled: std::sync::atomic::AtomicBool::new(false),
+            reauthentication_pending: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -382,7 +395,7 @@ impl ClientHandle {
             Command::Subscribe(command) => self.try_subscribe(command),
             Command::Unsubscribe(filters) => self.try_unsubscribe(filters),
             Command::Acknowledge(token) => self.try_acknowledge(token),
-            Command::Reauthenticate(properties) => self.try_reauthenticate(properties),
+            Command::Reauthenticate(properties) => self.try_reauthenticate(properties.as_ref()),
             Command::GracefulDisconnect { timeout } => {
                 self.try_close(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
             }
@@ -415,7 +428,7 @@ impl ClientHandle {
             Command::Unsubscribe(filters) => self.unsubscribe(filters).await,
             Command::Acknowledge(token) => self.acknowledge(token).await,
             Command::Reauthenticate(properties) => {
-                self.retry_on_backpressure(|| self.try_reauthenticate(properties.clone()))
+                self.retry_on_backpressure(|| self.try_reauthenticate(properties.as_ref()))
                     .await
             }
             // Shutdown and diagnostics use priority/control paths and never wait for the publish queue.
@@ -468,7 +481,7 @@ impl ClientHandle {
         self.shared.admission(completion)
     }
 
-    fn try_reauthenticate(&self, properties: Option<crate::AuthProperties>) -> Result<Admission> {
+    fn try_reauthenticate(&self, properties: Option<&crate::AuthProperties>) -> Result<Admission> {
         let _guard = self
             .shared
             .admission_gate
@@ -483,8 +496,27 @@ impl ClientHandle {
                 Error::auth(crate::AuthFailure::Method).with_delivery(DeliveryStatus::NotAdmitted)
             );
         }
-        let completion = self.shared.backend.try_reauthenticate(properties)?;
-        self.shared.admission(completion)
+        if properties.is_some() {
+            return Err(protocol_option_error(
+                "reauthentication properties must come from the configured authenticator",
+            ));
+        }
+        if self
+            .shared
+            .reauthentication_pending
+            .swap(true, Ordering::AcqRel)
+        {
+            return self.shared.admission(Box::pin(async {
+                Err(Error::auth(crate::AuthFailure::Overlapping)
+                    .with_delivery(DeliveryStatus::NotAdmitted))
+            }));
+        }
+        let guard = ReauthenticationAdmission(Arc::clone(&self.shared.reauthentication_pending));
+        let completion = self.shared.backend.try_reauthenticate(None)?;
+        self.shared.admission(Box::pin(async move {
+            let _guard = guard;
+            completion.await
+        }))
     }
 
     async fn publish(&self, command: PublishCommand) -> Result<Admission> {

@@ -1,0 +1,34 @@
+name: Native C broker tools
+description: Provision a required Mosquitto broker for native C Will fixtures.
+runs:
+  using: composite
+  steps:
+    - name: Install Mosquitto on Linux
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mosquitto
+        mosquitto -h
+    - name: Install Mosquitto on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install mosquitto
+        broker="$(brew --prefix mosquitto)/sbin/mosquitto"
+        test -x "$broker"
+        "$broker" -h
+        echo "MOSQUITTO_BIN=$broker" >> "$GITHUB_ENV"
+    - name: Install Mosquitto on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $installer = Join-Path $env:RUNNER_TEMP mosquitto-installer.exe
+        Invoke-WebRequest -Uri https://mosquitto.org/files/binary/win64/mosquitto-2.1.2-install-windows-x64.exe -OutFile $installer
+        $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+        if ($install.ExitCode -ne 0) { throw "Mosquitto installation failed: $($install.ExitCode)" }
+        $broker = Join-Path $env:ProgramFiles mosquitto/mosquitto.exe
+        if (-not (Test-Path $broker -PathType Leaf)) { throw "Mosquitto executable was not installed" }
+        & $broker -h
+        if ($LASTEXITCODE -ne 0) { throw "Mosquitto executable did not run" }
+        "MOSQUITTO_BIN=$broker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

@@ -16,6 +16,48 @@ static void expect_connected(rumqttc_client_t *client) {
   REQUIRE(0);
 }
 
+static void replace_configuration(rumqttc_config_t *config, rumqttc_protocol_t protocol) {
+  rumqttc_last_will_t will = RUMQTTC_LAST_WILL_INIT;
+  rumqttc_v5_will_properties_t properties = RUMQTTC_V5_WILL_PROPERTIES_INIT;
+  rumqttc_v5_connect_properties_t connect = RUMQTTC_V5_CONNECT_PROPERTIES_INIT;
+  char topic[] = "native/replacement", content[] = "binary", key[] = "b", value[] = "3";
+  uint8_t payload[] = {0xff, 0, 0x80, 1}, correlation[] = {0xff, 0};
+  rumqttc_user_property_t users[] = {RUMQTTC_USER_PROPERTY_INIT, RUMQTTC_USER_PROPERTY_INIT};
+  users[0].name = users[1].name = native_string(key);
+  users[0].value = native_string(value);
+  users[1].value = native_string("");
+  will.topic = native_string(topic);
+  will.payload = native_bytes(payload, sizeof(payload));
+  will.qos = RUMQTTC_QOS_2;
+  if (protocol == RUMQTTC_PROTOCOL_V5) {
+    will.protocol_options = RUMQTTC_PROTOCOL_OPTIONS_V5;
+    will.v5_properties = &properties;
+    properties.will_delay_present = 1;
+    properties.will_delay_interval = 2;
+    properties.content_type_present = 1;
+    properties.content_type = native_string(content);
+    properties.correlation_data_present = 1;
+    properties.correlation_data = native_bytes(correlation, sizeof(correlation));
+    properties.user_properties = users;
+    properties.user_property_count = 2;
+    connect.receive_maximum_present = 1;
+    connect.receive_maximum = 9;
+    connect.request_response_info_present = 1;
+    connect.request_response_information = 1;
+    connect.user_properties = users;
+    connect.user_property_count = 2;
+  }
+  CHECK(rumqttc_config_set_last_will(config, &will, NULL));
+  if (protocol == RUMQTTC_PROTOCOL_V5)
+    CHECK(rumqttc_config_set_v5_connect_properties(config, &connect, NULL));
+  /* Neither retained configuration may borrow this second set of inputs. */
+  memset(topic, 'x', sizeof(topic));
+  memset(content, 'x', sizeof(content));
+  memset(payload, 'x', sizeof(payload));
+  memset(correlation, 'x', sizeof(correlation));
+  key[0] = value[0] = 'x';
+}
+
 static void run_case(rumqttc_protocol_t protocol, const char *client_id) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
@@ -119,9 +161,12 @@ static void run_case(rumqttc_protocol_t protocol, const char *client_id) {
   first_key[0] = 'x';
   first_value[0] = 'x';
   second_value[0] = 'x';
-  CHECK(rumqttc_client_start(config, &client, NULL));
-  expect_connected(client);
-  native_close_destroy(client);
+  replace_configuration(config, protocol);
+  for (unsigned restart = 0; restart < 2; ++restart) {
+    CHECK(rumqttc_client_start(config, &client, NULL));
+    expect_connected(client);
+    native_close_destroy(client);
+  }
   CHECK(rumqttc_config_clear_last_will(config, NULL));
   if (protocol == RUMQTTC_PROTOCOL_V5)
     CHECK(rumqttc_config_clear_v5_connect_properties(config, NULL));

@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum tls_scenario { POSITIVE, WRONG_ROOT, WRONG_HOST, MALFORMED_IDENTITY, WRONG_PASSWORD, PLATFORM_ROOTS };
+enum tls_scenario {
+  POSITIVE, WRONG_ROOT, WRONG_HOST, MALFORMED_IDENTITY, WRONG_PASSWORD, PLATFORM_ROOTS, PLATFORM_UNTRUSTED
+};
 
 static uint16_t fixture_port(const char *name) {
   const char *text = getenv(name);
@@ -59,6 +61,8 @@ static void run_case(rumqttc_protocol_t protocol, uint32_t backend, int websocke
   const char *host = scenario == WRONG_HOST ? "127.0.0.1" : "localhost";
   uint16_t port = fixture_port(mutual ? (websocket ? "RUMQTTC_TEST_MTLS_WSS_PORT" : "RUMQTTC_TEST_MTLS_PORT")
                                       : (websocket ? "RUMQTTC_TEST_WSS_PORT" : "RUMQTTC_TEST_TLS_PORT"));
+  if (scenario == PLATFORM_UNTRUSTED)
+    port = fixture_port("RUMQTTC_TEST_UNTRUSTED_TLS_PORT");
   REQUIRE(snprintf(client_id, sizeof(client_id), "native-tls-matrix-%s-%u-%u-%d-%d-%d",
                    scenario == POSITIVE || scenario == PLATFORM_ROOTS ? "positive" : "failure", protocol, backend,
                    websocket, mutual, scenario) > 0);
@@ -66,8 +70,9 @@ static void run_case(rumqttc_protocol_t protocol, uint32_t backend, int websocke
   CHECK(rumqttc_config_set_broker(config, native_string(host), port, NULL));
   CHECK(rumqttc_config_set_client_id(config, native_string(client_id), NULL));
   tls.backend = backend;
-  tls.root_policy = scenario == PLATFORM_ROOTS ? RUMQTTC_TLS_ROOTS_PLATFORM : RUMQTTC_TLS_ROOTS_PEM;
-  if (scenario != PLATFORM_ROOTS)
+  tls.root_policy = scenario == PLATFORM_ROOTS || scenario == PLATFORM_UNTRUSTED
+                        ? RUMQTTC_TLS_ROOTS_PLATFORM : RUMQTTC_TLS_ROOTS_PEM;
+  if (scenario != PLATFORM_ROOTS && scenario != PLATFORM_UNTRUSTED)
     tls.ca_pem = ca;
   tls.alpn_protocols = &alpn;
   tls.alpn_protocol_count = 1;
@@ -115,7 +120,7 @@ static void run_case(rumqttc_protocol_t protocol, uint32_t backend, int websocke
     rumqttc_event_kind_t kind = 0;
     CHECK(rumqttc_client_event_recv_timeout_ms(client, NATIVE_DEADLINE_MS, &event, NULL));
     CHECK(rumqttc_event_kind(event, &kind));
-    if (scenario == WRONG_ROOT || scenario == WRONG_HOST) {
+    if (scenario == WRONG_ROOT || scenario == WRONG_HOST || scenario == PLATFORM_UNTRUSTED) {
       rumqttc_error_kind_t error_kind = 0;
       REQUIRE(kind == RUMQTTC_EVENT_DISCONNECTED);
       CHECK(rumqttc_event_disconnected(event, NULL, &error));
@@ -165,9 +170,11 @@ int main(void) {
       run_case(protocol, backend, 0, 1, MALFORMED_IDENTITY);
       if (backend == RUMQTTC_TLS_BACKEND_NATIVE)
         run_case(protocol, backend, 0, 1, WRONG_PASSWORD);
-#if defined(__linux__)
-      run_case(protocol, backend, 0, 0, PLATFORM_ROOTS);
-#endif
+      if (getenv("RUMQTTC_TEST_PLATFORM_TRUST") != NULL) {
+        run_case(protocol, backend, 0, 0, PLATFORM_ROOTS);
+        run_case(protocol, backend, 0, 0, PLATFORM_UNTRUSTED);
+        printf("platform trust: protocol=%u backend=%u trusted accepted, untrusted rejected\n", protocol, backend);
+      }
     }
   }
   return 0;

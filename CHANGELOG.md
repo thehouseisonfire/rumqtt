@@ -15,6 +15,14 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native-wrapper MQTT 5 reauthentication: Reject an overlapping request with
+  `Overlapping` and delivery status `NotAdmitted` without sending another AUTH
+  or interrupting the active exchange. The tracked request retains its own
+  operation ID and terminal result; admission becomes available again when the
+  active exchange completes or is cancelled.
+- MQTT 5 authentication: Deliver the active reauthentication's `Failed` event
+  with `ConnectionClosed` before reporting transport loss and reconnecting.
+  Preserve the tracked failure and notify the authenticator exactly once.
 - Native-wrapper teardown: Release queued completion futures and diagnostics
   after driver failure by avoiding ownership cycles in the operation registry.
   Release empty session-store lease bookkeeping after the final client exits.

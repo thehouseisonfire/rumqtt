@@ -21,7 +21,7 @@ def main() -> int:
     broker_binary = os.environ.get("MOSQUITTO_BIN") or shutil.which("mosquitto")
     if broker_binary is None:
         print("Will process fixture requires mosquitto or MOSQUITTO_BIN")
-        return 77
+        return 1 if os.environ.get("RUMQTTC_REQUIRE_MOSQUITTO") == "1" else 77
     with tempfile.TemporaryDirectory(prefix="rumqttc-c-will-") as directory:
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -68,13 +68,18 @@ def main() -> int:
                         release.touch()
                         if observer.wait(timeout=10):
                             raise RuntimeError("Will observer failed")
+                        print(f"Will verified: {protocol} {shutdown}", flush=True)
                     finally:
                         if observer.poll() is None:
                             observer.kill()
                             observer.wait(timeout=5)
         finally:
             broker.terminate()
-            broker.wait(timeout=5)
+            try:
+                broker.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                broker.kill()
+                broker.wait(timeout=5)
     return 0
 
 

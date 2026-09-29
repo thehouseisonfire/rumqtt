@@ -2405,6 +2405,19 @@ impl EventLoop {
         &mut self,
         result: Result<Event, ConnectionError>,
     ) -> Result<Event, ConnectionError> {
+        // A transport failure can arrive while waiting for the next AUTH packet.
+        // Fail that exchange before reconnect cleanup clears its lifecycle event.
+        // Redirect transitions retain their own failure reason and cleanup path.
+        if let Err(error) = &result
+            && !matches!(
+                error,
+                ConnectionError::RequestsDone
+                    | ConnectionError::Redirect(_)
+                    | ConnectionError::MqttState(StateError::ServerRedirect(_))
+            )
+        {
+            self.state.fail_auth_exchange_due_to_connection_closed();
+        }
         // Broker DISCONNECT and local authentication failures queue terminal events.
         // Deliver the queued packet details and lifecycle events before cleanup clears them.
         let drain_events = matches!(
@@ -7325,6 +7338,46 @@ mod tests {
         ));
         assert!(eventloop.network.is_none());
         assert!(eventloop.state.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn transport_loss_delivers_reauthentication_failure_before_connection_cleanup() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_authentication_method(Some("test-method".to_owned()));
+        let mut eventloop = EventLoop::new(options, 1);
+        let (notice_tx, notice) = AuthNoticeTx::new();
+        eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Auth(Auth::new(AuthReasonCode::ReAuthenticate, None)),
+                Some(TrackedNoticeTx::Auth(notice_tx)),
+            )
+            .unwrap();
+        eventloop.state.events.clear();
+        let (client, peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(client, Some(1024)));
+        drop(peer);
+
+        assert!(matches!(
+            eventloop.poll().await.unwrap(),
+            Event::Auth(AuthEvent::Failed {
+                kind: crate::AuthExchangeKind::Reauthentication,
+                reason: crate::AuthFailureReason::ConnectionClosed,
+                ..
+            })
+        ));
+        assert_eq!(
+            notice.wait_async().await.unwrap_err(),
+            crate::notice::AuthNoticeError::ConnectionClosed
+        );
+        assert!(eventloop.pending_connection_error.is_some());
+        assert!(matches!(
+            eventloop.poll().await.unwrap_err(),
+            ConnectionError::MqttState(StateError::ConnectionAborted)
+        ));
+        assert!(eventloop.state.events.is_empty());
+        assert!(eventloop.pending_connection_error.is_none());
+        assert!(eventloop.network.is_none());
     }
 
     #[tokio::test]

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import platform
 import subprocess
+import sys
 from pathlib import Path
 
 PROFILES = {
@@ -20,7 +23,27 @@ PROFILES = {
 
 
 def run(command: list[str], workspace: Path, environment: dict[str, str]) -> None:
-    subprocess.run(command, cwd=workspace, env=environment, check=True)
+    log = Path(environment["RUMQTTC_PROFILE_LOG"])
+    with log.open("a", encoding="utf-8") as output:
+        output.write(f"command: {command!r}\n")
+        with subprocess.Popen(
+            command,
+            cwd=workspace,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ) as process:
+            assert process.stdout is not None
+            for line in process.stdout:
+                sys.stdout.write(line)
+                output.write(line)
+            status = process.wait()
+        output.write(f"exit status: {status}\n")
+    if status:
+        raise subprocess.CalledProcessError(status, command)
 
 
 def main() -> None:
@@ -32,8 +55,21 @@ def main() -> None:
     for profile in args.profile or PROFILES:
         features = PROFILES[profile]
         environment = os.environ.copy()
+        print(f"C feature profile: {profile} ({','.join(features) or 'minimal'})", flush=True)
         build = workspace / "target" / "c-feature-matrix" / profile
         install = build / "install"
+        build.mkdir(parents=True, exist_ok=True)
+        environment["RUMQTTC_PROFILE_LOG"] = str(build / "validation.log")
+        Path(environment["RUMQTTC_PROFILE_LOG"]).write_text("", encoding="utf-8")
+        evidence = {
+            "profile": profile,
+            "features": features,
+            "platform": platform.platform(),
+            "native": args.native,
+            "status": "incomplete",
+        }
+        report = build / "validation.json"
+        report.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
         command = ["cargo", "build", "--locked", "--release", "-p", "rumqttc-c-next", "--no-default-features"]
         if features:
             command += ["--features", ",".join(features)]
@@ -81,7 +117,16 @@ def main() -> None:
         )
         run(["cmake", "--build", str(build / "consumer"), "--config", "Release"], workspace, environment)
         run(
-            ["ctest", "--test-dir", str(build / "consumer"), "-C", "Release", "--output-on-failure"],
+            [
+                "ctest",
+                "--test-dir",
+                str(build / "consumer"),
+                "-C",
+                "Release",
+                "--output-on-failure",
+                "--output-junit",
+                "results.xml",
+            ],
             workspace,
             environment,
         )
@@ -107,12 +152,18 @@ def main() -> None:
                     "-C",
                     "Release",
                     "--output-on-failure",
+                    "--output-junit",
+                    "results.xml",
                     "-R",
-                    "rumqttc-native-(proxy|redirect|srv|wire|runtime|tls|network|websocket|unix|socket)",
+                    "rumqttc-native-(proxy|redirect|srv|wire|runtime|tls|network|websocket|unix|socket|auth|"
+                    "event-properties|will-process)",
                 ],
                 workspace,
                 environment,
             )
+
+        evidence["status"] = "passed"
+        report.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
