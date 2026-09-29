@@ -12,8 +12,14 @@ from collections.abc import Callable
 
 
 class Proxy:
-    def __init__(self, ports: set[int], *, tls: ssl.SSLContext | None = None, failure: str | None = None,
-                 observe_tunnel: Callable[[int, int, str], None] | None = None) -> None:
+    def __init__(
+        self,
+        ports: set[int],
+        *,
+        tls: ssl.SSLContext | None = None,
+        failure: str | None = None,
+        observe_tunnel: Callable[[int, int, str], None] | None = None,
+    ) -> None:
         self.ports = ports
         self.tls = tls
         self.failure = failure
