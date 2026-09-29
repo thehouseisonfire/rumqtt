@@ -96,7 +96,7 @@ pub fn connection_attempt_failed(
     );
 }
 
-pub fn connection_established(context: AttemptContext, session: &crate::ConnAckSessionDiagnostics) {
+pub fn connection_established(context: AttemptContext, session: crate::ConnAckSessionDiagnostics) {
     tracing::event!(
         name: "mqtt.connection_established",
         target: TARGET,
@@ -367,7 +367,7 @@ mod tests {
         );
         connection_established(
             attempt,
-            &crate::ConnAckSessionDiagnostics {
+            crate::ConnAckSessionDiagnostics {
                 raw_session_present: true,
                 session_resumed: true,
                 diagnostic: None,

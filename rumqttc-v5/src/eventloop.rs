@@ -2381,7 +2381,7 @@ impl EventLoop {
         #[cfg(feature = "tracing")]
         {
             self.telemetry.mark_connection_established();
-            crate::instrumentation::connection_established(attempt, &session_diagnostics);
+            crate::instrumentation::connection_established(attempt, session_diagnostics);
         }
 
         self.last_connect_failure_phase = None;
