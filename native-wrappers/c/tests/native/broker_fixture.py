@@ -1585,8 +1585,16 @@ def main() -> int:
                 environment["RUMQTTC_TEST_PROXY_CA_PEM"] = source.read()
         if args.custom_transport:
             from byte_tunnel_fixture import ByteTunnel
-            tunnel = ByteTunnel({broker.port, tls_broker.port, websocket_broker.port, wss_broker.port,
-                                 *(proxy.port for proxy in proxies)})
+
+            tunnel = ByteTunnel(
+                {
+                    broker.port,
+                    tls_broker.port,
+                    websocket_broker.port,
+                    wss_broker.port,
+                    *(proxy.port for proxy in proxies),
+                }
+            )
             tunnel.start()
             proxies.append(tunnel)
             environment["RUMQTTC_TEST_BYTE_TUNNEL_PORT"] = str(tunnel.port)

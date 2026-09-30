@@ -882,7 +882,24 @@ def run_matched_once(
     }
     result["ok"] = bool(payload["quality"]["valid"])
     if not result["ok"]:
-        result["error"] = "benchmark quality.valid is false"
+        diagnostic_metrics = (
+            "expected_deliveries",
+            "unique_deliveries",
+            "lost",
+            "duplicates",
+            "malformed",
+            "rejected",
+            "publish_failures",
+            "publish_timeouts",
+            "common_publish_outstanding_after_drain",
+            "achieved_rate",
+            "offered_rate",
+        )
+        diagnostics = {
+            "quality": payload["quality"],
+            "metrics": {key: payload["metrics"][key] for key in diagnostic_metrics if key in payload["metrics"]},
+        }
+        result["error"] = f"benchmark quality.valid is false: {json.dumps(diagnostics, sort_keys=True)}"
     return result
 
 
@@ -1848,7 +1865,8 @@ def command_compare_libraries(args: argparse.Namespace) -> None:
     write_report(output_dir, summary)
     failed = [run for client_runs in measured.values() for run in client_runs if not run.get("ok")]
     if failed:
-        raise RuntimeError(f"{len(failed)} measured run(s) invalid; report written to {output_dir}")
+        details = "\n".join(f"{run['client']} ({run['run_id']}): {run.get('error', 'unknown error')}" for run in failed)
+        raise RuntimeError(f"{len(failed)} measured run(s) invalid; report written to {output_dir}\n{details}")
     print(f"Matched library comparison complete: {output_dir}")
 
 

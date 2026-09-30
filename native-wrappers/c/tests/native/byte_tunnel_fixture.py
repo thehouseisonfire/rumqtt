@@ -1,7 +1,9 @@
 """A custom byte tunnel, independent of HTTP/SOCKS/TLS/MQTT framing."""
+
 import contextlib
 import socket
 import threading
+
 from proxy_fixture import Proxy
 
 
@@ -17,7 +19,7 @@ class ByteTunnel(Proxy):
                     raise AssertionError("custom tunnel request exceeded its bound")
             if not request.startswith(b"RUMQTTC-TUNNEL "):
                 raise AssertionError("custom tunnel prefix missing")
-            host, port = request[len(b"RUMQTTC-TUNNEL "):-1].rsplit(b":", 1)
+            host, port = request[len(b"RUMQTTC-TUNNEL ") : -1].rsplit(b":", 1)
             if host not in (b"localhost", b"127.0.0.1") or int(port) not in self.ports:
                 raise AssertionError("custom tunnel target is outside the fixture")
             upstream = socket.create_connection(("127.0.0.1", int(port)), timeout=5)

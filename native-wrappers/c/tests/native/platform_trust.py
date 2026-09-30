@@ -15,8 +15,9 @@ import ssl
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import cast
 
 
 def state_directory() -> Path:
@@ -197,13 +198,13 @@ def mac_cleanup(state: dict[str, object], path: Path) -> None:
         # A trust failure must not leave a legacy fixture keychain in the search
         # list. Keep the certificate/manifest on failure so CI can retry cleanup.
         if state.get("search_changed"):
-            command(["security", "list-keychains", "-d", "user", "-s", *state["search_list"]])
+            command(["security", "list-keychains", "-d", "user", "-s", *cast(list[str], state["search_list"])])
             actual = shlex.split(command(["security", "list-keychains", "-d", "user"]))
             if actual != state["search_list"]:
                 raise RuntimeError("keychain search list was not restored")
 
 
-def save_state(path: Path, state: dict[str, object]) -> None:
+def save_state(path: Path, state: Mapping[str, object]) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(state), encoding="utf-8")
     temporary.replace(path)

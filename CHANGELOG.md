@@ -28,6 +28,9 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Benchmark validation: Include the failing matched client's validity flags and
+  delivery/completion counters in CI errors, and retain synthetic/WebSocket
+  validation reports as artifacts. Keep invalid runs failing validation.
 - MQTT 5 custom transports: Stop SRV fallback immediately on terminal failures,
   including failures during composed TLS setup. Preserve both redirect and typed
   transport failure details in wrapper terminal events, pending operations and

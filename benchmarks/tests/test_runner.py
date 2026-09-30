@@ -768,6 +768,40 @@ running benchmark...
 
         runner.validate_benchmark_payload(payload, scenario)
 
+    def test_invalid_matched_run_retains_validity_failure_and_reports_counters(self):
+        scenario = self.scenario(
+            name="matched",
+            group="matched",
+            command="throughput",
+            requires_broker=True,
+            primary_metric="throughput_msg_sec",
+            args={"qos": 1},
+        )
+        payload = self.payload({"throughput_msg_sec": 10.0, "lost": 1.0, "publish_timeouts": 2.0})
+        payload.update(
+            schema_version=2,
+            client="rumqttc",
+            effective_config={"publish_completion": "puback"},
+            quality={"valid": False, "complete_drain": False},
+        )
+        process = mock.Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(runner, "run_process", return_value=process):
+            result = runner.run_matched_once(
+                root=REPO_ROOT,
+                scenario=scenario,
+                client="rumqttc",
+                run_id="invalid-run",
+                broker_url="mqtt://127.0.0.1:1883",
+                ca_cert=None,
+                cargo_profile="dev",
+                timeout=30,
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["payload"], payload)
+        self.assertIn('"complete_drain": false', result["error"])
+        self.assertIn('"lost": 1.0', result["error"])
+        self.assertIn('"publish_timeouts": 2.0', result["error"])
+
     def test_equivalence_band_requires_the_whole_interval_inside_band(self):
         equivalent = runner.bootstrap_delta(
             [100.0] * 12,

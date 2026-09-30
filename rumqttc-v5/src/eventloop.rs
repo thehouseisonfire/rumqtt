@@ -2312,29 +2312,9 @@ impl EventLoop {
             .reconcile_connack_session_and_persisted_state(connack.session_present)
             .await?;
 
-        let verification = time::timeout_at(connect_deadline, async {
-            if Instant::now() >= connect_deadline {
-                std::future::pending::<()>().await;
-            }
-            let result = self
-                .state
-                .verify_connack_authentication_async(&connack)
-                .await;
-            if result.is_ok() && Instant::now() >= connect_deadline {
-                // Tokio polls the inner future first. Keep an expired result pending
-                // so the enclosing timer reports Timeout before any success is committed.
-                std::future::pending::<()>().await;
-            }
-            result
-        })
-        .await;
-        let verification = match verification {
-            Ok(result) => result.map_err(ConnectionError::MqttState),
-            Err(elapsed) => {
-                self.state.fail_auth_exchange_due_to_connection_closed();
-                Err(ConnectionError::Timeout(elapsed))
-            }
-        };
+        let verification = self
+            .verify_connack_authentication(&connack, connect_deadline)
+            .await;
         let verification = verification.and_then(|()| {
             self.state
                 .handle_incoming_packet_with_effects(Incoming::ConnAck(connack.clone()))
@@ -2359,6 +2339,23 @@ impl EventLoop {
         let session_diagnostics = reconciliation.diagnostics(connack.session_present);
         self.connack_session = Some(session_diagnostics);
 
+        self.record_established_redirect();
+
+        if self.keepalive_timeout.is_none() && !self.effective_keep_alive.is_zero() {
+            self.keepalive_timeout = Some(Box::pin(time::sleep(self.effective_keep_alive)));
+        }
+
+        #[cfg(feature = "tracing")]
+        {
+            self.telemetry.mark_connection_established();
+            crate::instrumentation::connection_established(attempt, session_diagnostics);
+        }
+
+        self.last_connect_failure_phase = None;
+        Ok(None)
+    }
+
+    fn record_established_redirect(&mut self) {
         if let Some(active) = self.active_redirect.as_mut() {
             active.established = true;
         }
@@ -2374,19 +2371,36 @@ impl EventLoop {
             self.redirect_attempts = 0;
             self.redirect_visited.clear();
         }
+    }
 
-        if self.keepalive_timeout.is_none() && !self.effective_keep_alive.is_zero() {
-            self.keepalive_timeout = Some(Box::pin(time::sleep(self.effective_keep_alive)));
+    async fn verify_connack_authentication(
+        &mut self,
+        connack: &ConnAck,
+        connect_deadline: Instant,
+    ) -> Result<(), ConnectionError> {
+        let verification = time::timeout_at(connect_deadline, async {
+            if Instant::now() >= connect_deadline {
+                std::future::pending::<()>().await;
+            }
+            let result = self
+                .state
+                .verify_connack_authentication_async(connack)
+                .await;
+            if result.is_ok() && Instant::now() >= connect_deadline {
+                // Tokio polls the inner future first. Keep an expired result pending
+                // so the enclosing timer reports Timeout before any success is committed.
+                std::future::pending::<()>().await;
+            }
+            result
+        })
+        .await;
+        match verification {
+            Ok(result) => result.map_err(ConnectionError::MqttState),
+            Err(elapsed) => {
+                self.state.fail_auth_exchange_due_to_connection_closed();
+                Err(ConnectionError::Timeout(elapsed))
+            }
         }
-
-        #[cfg(feature = "tracing")]
-        {
-            self.telemetry.mark_connection_established();
-            crate::instrumentation::connection_established(attempt, session_diagnostics);
-        }
-
-        self.last_connect_failure_phase = None;
-        Ok(None)
     }
 
     async fn reconcile_connack_session_and_persisted_state(
@@ -4244,7 +4258,7 @@ async fn mqtt_connect_inner(
                     network.write(outgoing).await?;
                     network.flush().await?;
                 }
-                Ok(None) => continue,
+                Ok(None) => {}
                 Err(err @ StateError::Deserialization(super::mqttbytes::Error::ProtocolError)) => {
                     send_protocol_error_disconnect(network).await;
                     return Err(err.into());

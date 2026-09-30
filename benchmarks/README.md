@@ -287,7 +287,10 @@ starts Mosquitto, runs selected scenarios through `benchmarks/runner.py`, writes
 failure. The summary records the backend, Docker image, listener ports,
 completed/failed/skipped scenarios, and each scenario's runner output
 directory. Mosquitto validation retains the exact effective configuration as
-`broker-config/mosquitto.conf` with its SHA-256 digest. Common broker metadata
+`broker-config/mosquitto.conf` with its SHA-256 digest. Invalid matched runs report
+the client, run ID, validity flags, and delivery/completion counters in stderr;
+CI retains the raw reports as the `benchmark-broker-validation` artifact.
+Common broker metadata
 records normalized listeners, transports, persistence, anonymous access, TLS
 certificate mode, image tag/digest, and sorted EMQX environment overrides
 without retaining private keys or credentials.

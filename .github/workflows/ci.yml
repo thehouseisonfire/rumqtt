@@ -185,12 +185,8 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
         run: |
-            fix_args=()
-            if [[ "${{ runner.os }}" == 'Linux' ]]; then
-              fix_args=(--fix --allow-dirty)
-            fi
-            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next
-            cargo hack clippy "${fix_args[@]}" --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v5-next
+            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v4-next
+            cargo hack clippy --verbose --each-feature --exclude-all-features --no-dev-deps -p rumqttc-v5-next
 
       - name: Check standalone crates
         env:
@@ -352,6 +348,16 @@ jobs:
         run: |
             cargo test --locked -p benchmarks --test matched_fault_contract
             cargo test --locked -p benchmarks --test matched_connection_contract
+
+      - name: Preserve benchmark validation reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-broker-validation
+          path: |
+            /tmp/rumqtt-bench-synthetic-fixture
+            /tmp/rumqtt-bench-websocket-fixture
+          if-no-files-found: ignore
 
   coverage:
     name: Test coverage

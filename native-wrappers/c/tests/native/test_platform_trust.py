@@ -190,7 +190,7 @@ class PlatformTrustTests(unittest.TestCase):
             return ""
 
         self.stack.enter_context(patch.object(platform_trust.sys, "platform", "darwin"))
-        self.stack.enter_context(patch.object(platform_trust, "command", side_effect=command))
+        self.command = self.stack.enter_context(patch.object(platform_trust, "command", side_effect=command))
         self.stack.enter_context(
             patch.object(platform_trust, "mac_trust_settings", side_effect=lambda: copy.deepcopy(trust))
         )
@@ -344,7 +344,7 @@ class PlatformTrustTests(unittest.TestCase):
 
     def test_macos_deny_is_verified_before_deleting_certificate(self):
         thumbprint, trust, certificates, commands, _ = self.mac_store(unrelated=False)
-        original_command = platform_trust.command.side_effect
+        original_command = self.command.side_effect
 
         def no_effect(arguments, environment=None):
             if "deny" in arguments:
@@ -355,7 +355,7 @@ class PlatformTrustTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "not explicitly distrusted"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
-            platform_trust.command.side_effect = no_effect
+            self.command.side_effect = no_effect
         self.assertTrue(certificates)
         self.assertEqual(trust["trustList"][thumbprint]["trustSettings"], [{"kSecTrustSettingsResult": 1}])
         self.assertFalse(any("delete-certificate" in args for args in commands))
@@ -363,7 +363,7 @@ class PlatformTrustTests(unittest.TestCase):
 
     def test_macos_certificate_deletion_is_verified_and_retryable(self):
         _, _, certificates, _, _ = self.mac_store()
-        original_command = platform_trust.command.side_effect
+        original_command = self.command.side_effect
 
         def no_effect(arguments, environment=None):
             if "delete-certificate" in arguments:
@@ -374,10 +374,10 @@ class PlatformTrustTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "certificate survived"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
-            platform_trust.command.side_effect = no_effect
+            self.command.side_effect = no_effect
         self.assertTrue(certificates)
         self.assertEqual(len(list(self.state.glob("*.json"))), 1)
-        platform_trust.command.side_effect = original_command
+        self.command.side_effect = original_command
         platform_trust.cleanup_all()
         self.assertFalse(certificates)
         self.assert_clean()

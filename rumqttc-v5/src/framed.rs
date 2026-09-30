@@ -197,57 +197,8 @@ impl Network {
                     });
                 }
                 Some(Ok(packet)) => {
-                    match state.handle_incoming_packet_with_effects(packet) {
-                        Ok(super::state::IncomingPacketEffects {
-                            outgoing: Some(Packet::Disconnect(disconnect)),
-                            notices: packet_notices,
-                        }) => {
-                            if disconnect.reason_code as u8 >= 0x80 {
-                                let disconnect = InboundDisconnect {
-                                    reason: disconnect.reason_code,
-                                };
-                                state.discard_last_outgoing_disconnect_event();
-                                self.try_send_inbound_disconnect(disconnect).await;
-                                return Err(ReadBatchError::new(
-                                    StateError::Deserialization(disconnect.error()),
-                                    notices,
-                                ));
-                            }
-
-                            let has_deferred_notices = !packet_notices.is_empty();
-                            notices.extend(packet_notices);
-                            if let Err(err) = self.write(Packet::Disconnect(disconnect)).await {
-                                return Err(ReadBatchError::new(err, notices));
-                            }
-                            outcome = ReadBatchOutcome::ResponseWritten;
-                            if has_deferred_notices {
-                                break;
-                            }
-                        }
-                        Ok(super::state::IncomingPacketEffects {
-                            outgoing: Some(outgoing),
-                            notices: packet_notices,
-                        }) => {
-                            let has_deferred_notices = !packet_notices.is_empty();
-                            notices.extend(packet_notices);
-                            if let Err(err) = self.write(outgoing).await {
-                                return Err(ReadBatchError::new(err, notices));
-                            }
-                            outcome = ReadBatchOutcome::ResponseWritten;
-                            if has_deferred_notices {
-                                break;
-                            }
-                        }
-                        Ok(super::state::IncomingPacketEffects {
-                            outgoing: None,
-                            notices: packet_notices,
-                        }) => {
-                            let has_deferred_notices = !packet_notices.is_empty();
-                            notices.extend(packet_notices);
-                            if has_deferred_notices {
-                                break;
-                            }
-                        }
+                    let effects = match state.handle_incoming_packet_with_effects(packet) {
+                        Ok(effects) => effects,
                         Err(
                             err @ (StateError::Deserialization(mqttbytes::Error::ProtocolError)
                             | StateError::ProtocolViolation(_)),
@@ -259,6 +210,31 @@ impl Network {
                             return Err(ReadBatchError::new(err, notices));
                         }
                         Err(err) => return Err(ReadBatchError::new(err, notices)),
+                    };
+                    if let Some(Packet::Disconnect(disconnect)) = &effects.outgoing
+                        && disconnect.reason_code as u8 >= 0x80
+                    {
+                        let disconnect = InboundDisconnect {
+                            reason: disconnect.reason_code,
+                        };
+                        state.discard_last_outgoing_disconnect_event();
+                        self.try_send_inbound_disconnect(disconnect).await;
+                        return Err(ReadBatchError::new(
+                            StateError::Deserialization(disconnect.error()),
+                            notices,
+                        ));
+                    }
+
+                    let has_deferred_notices = !effects.notices.is_empty();
+                    notices.extend(effects.notices);
+                    if let Some(outgoing) = effects.outgoing {
+                        if let Err(err) = self.write(outgoing).await {
+                            return Err(ReadBatchError::new(err, notices));
+                        }
+                        outcome = ReadBatchOutcome::ResponseWritten;
+                    }
+                    if has_deferred_notices {
+                        break;
                     }
 
                     count += 1;

@@ -1,5 +1,5 @@
 //! Native TLS BIOs cannot represent an asynchronous flush on every platform
-//! (OpenSSL's BIO_CTRL_FLUSH turns WouldBlock into a fatal handshake error).
+//! (OpenSSL's `BIO_CTRL_FLUSH` turns `WouldBlock` into a fatal handshake error).
 //! Defer BIO flushes to the next read/handshake boundary, and expose truthful
 //! asynchronous flush and shutdown through the outer stream.
 use std::io;
