@@ -326,6 +326,7 @@ jobs:
             native-wrappers/target/c-feature-matrix/**/Testing
             native-wrappers/target/c-feature-matrix/**/results.xml
             native-wrappers/target/c-feature-matrix/**/validation.*
+            native-wrappers/target/platform-trust-state
           if-no-files-found: error
 
   c-abi-sanitizers:
@@ -409,6 +410,7 @@ jobs:
             native-wrappers/target/c-feature-matrix/**/Testing
             native-wrappers/target/c-feature-matrix/**/results.xml
             native-wrappers/target/c-feature-matrix/**/validation.*
+            native-wrappers/target/platform-trust-state
           if-no-files-found: error
 
   c-abi-platform-sanitizers:
@@ -510,6 +512,7 @@ jobs:
             native-wrappers/target/c-feature-matrix/**/Testing
             native-wrappers/target/c-feature-matrix/**/results.xml
             native-wrappers/target/c-feature-matrix/**/validation.*
+            native-wrappers/target/platform-trust-state
           if-no-files-found: error
 
   javascript:

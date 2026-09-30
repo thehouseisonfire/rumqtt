@@ -367,14 +367,20 @@ The TLS matrix checks platform-root acceptance and untrusted-root rejection
 for each enabled backend and both MQTT versions. Linux uses isolated
 `SSL_CERT_FILE`/`SSL_CERT_DIR` inputs. macOS and Windows execution requires
 `RUMQTTC_DISPOSABLE_TRUST_RUNNER=1` on a disposable runner: macOS temporarily
-adds a dedicated keychain and an administrator trust entry, while Windows uses
-the current user's Root store. Cleanup restores the keychain search list and
-removes only the fixture's own root, including after child-process failure.
+adds its root certificate to `System.keychain` and an administrator trust entry,
+while Windows uses the current user's Root store. Cleanup removes only the
+fixture's own certificate, including after child-process failure; it does not
+change the macOS keychain search list.
 An interrupted run leaves a cleanup manifest; CI unconditionally runs
 `python3 native-wrappers/c/tests/native/platform_trust.py --cleanup`.
-If macOS certificate removal stalls, cleanup exports the current administrator
-trust settings and imports them with only the fixture's entry removed. It verifies
-removal before deleting the manifest, preserving it if cleanup still fails.
+If macOS trust removal stalls, cleanup imports the current administrator trust
+settings with only the fixture's entry removed, preserving unrelated entries.
+Removing the final administrator entry can require interactive authorization,
+including through an empty import. On disposable runners, cleanup instead
+replaces that entry with an unconditional deny, verifies it, and deletes the
+certificate. A `.cleanup` audit records the deny metadata retained until the
+runner is discarded. Failed verification preserves the cleanup manifest for
+retry. CI uploads these records with the native validation evidence.
 The latest verified platform results and pending execution are recorded in
 [`../wrapper-core/PARITY.md`](../wrapper-core/PARITY.md).
 

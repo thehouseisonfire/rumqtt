@@ -1,14 +1,17 @@
 """Exercise trust cleanup without modifying the host's actual certificate stores."""
 
 import contextlib
+import copy
+import hashlib
 import json
 import os
 import plistlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import platform_trust
 
@@ -142,100 +145,129 @@ class PlatformTrustTests(unittest.TestCase):
             self.assertEqual(powershell.call_count, 1)
         self.assert_clean()
 
-    def mac_commands(self, fail_install=False):
-        original = ["/original/login.keychain-db", "/original/System.keychain"]
-        current = original.copy()
+    def mac_store(self, *, unrelated=True):
+        """Model the public security commands, without touching the host store."""
+        thumbprint = hashlib.sha1(b"root").hexdigest().upper()
+        trust = {"trustVersion": 1, "trustList": {}}
+        if unrelated:
+            trust["trustList"]["OTHER"] = {"issuerName": b"other root", "trustSettings": []}
+        certificates = set()
         commands = []
+        failures = {}
 
         def command(arguments, environment=None):
             commands.append(arguments)
-            if arguments[1] == "create-keychain":
-                Path(arguments[-1]).touch()
-            elif arguments[1] == "delete-keychain":
-                Path(arguments[-1]).unlink()
-            elif arguments[1] == "list-keychains":
-                if "-s" in arguments:
-                    current[:] = arguments[arguments.index("-s") + 1 :]
-                else:
-                    return "\n".join(f'"{entry}"' for entry in current)
-            elif "add-trusted-cert" in arguments and fail_install:
-                raise RuntimeError("partial trust installation")
+            action = arguments[3] if arguments[0] == "sudo" else arguments[1]
+            failure = failures.get(action)
+            if failure:
+                failure(arguments)
+            if action == "find-certificate":
+                return "\n".join(f"SHA-1 hash: {value}" for value in certificates)
+            if action == "add-trusted-cert":
+                self.assertEqual(arguments[arguments.index("-k") + 1], "/Library/Keychains/System.keychain")
+                result = arguments[arguments.index("-r") + 1]
+                if result == "trustRoot":
+                    persisted = json.loads(next(self.state.glob("*.json")).read_text())
+                    self.assertTrue(persisted["owned"])
+                    self.assertTrue(persisted["certificate_owned"])
+                certificates.add(thumbprint)
+                trust["trustList"][thumbprint] = {
+                    "issuerName": b"fixture root",
+                    "trustSettings": [{"kSecTrustSettingsResult": 3 if result == "deny" else 1}],
+                }
+            elif action == "remove-trusted-cert":
+                trust["trustList"].pop(thumbprint, None)
+            elif action == "trust-settings-import":
+                with Path(arguments[-1]).open("rb") as source:
+                    trust.clear()
+                    trust.update(plistlib.load(source))
+            elif action == "delete-certificate":
+                self.assertEqual(arguments[-1], "/Library/Keychains/System.keychain")
+                self.assertEqual(arguments[-2], thumbprint)
+                certificates.discard(thumbprint)
+            else:
+                self.fail(f"unexpected macOS command: {arguments}")
             return ""
 
-        return command, commands, original, current
+        self.stack.enter_context(patch.object(platform_trust.sys, "platform", "darwin"))
+        self.stack.enter_context(patch.object(platform_trust, "command", side_effect=command))
+        self.stack.enter_context(
+            patch.object(platform_trust, "mac_trust_settings", side_effect=lambda: copy.deepcopy(trust))
+        )
+        return thumbprint, trust, certificates, commands, failures
 
-    def test_macos_restores_search_list_and_removes_root_after_child_failure(self):
-        command, commands, original, current = self.mac_commands()
+    def test_macos_system_keychain_install_and_cleanup_preserve_unrelated_trust(self):
+        thumbprint, trust, certificates, commands, _ = self.mac_store()
+        original = copy.deepcopy(trust)
+        with platform_trust.trusted_root(self.root, self.environment):
+            self.assertIn(thumbprint, certificates)
+            self.assertIn(thumbprint, trust["trustList"])
+            self.assertNotIn("SSL_CERT_FILE", self.environment)
+            self.assertNotIn("SSL_CERT_DIR", self.environment)
+            self.assertEqual(self.environment["RUMQTTC_TEST_PLATFORM_TRUST"], "1")
+        self.assertEqual(trust, original)
+        self.assertFalse(certificates)
+        self.assertFalse(any("delete-keychain" in args or "list-keychains" in args for args in commands))
+        self.assert_clean()
+
+    def test_macos_final_entry_is_denied_and_certificate_deleted_after_child_failure(self):
+        thumbprint, trust, certificates, commands, _ = self.mac_store(unrelated=False)
         with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=command),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, False]),
             self.assertRaisesRegex(RuntimeError, "child failed"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
-            self.assertEqual(len(current), len(original) + 1)
             raise RuntimeError("child failed")
-        self.assertEqual(current, original)
-        self.assertTrue(any("remove-trusted-cert" in arguments for arguments in commands))
-        self.assertTrue(any("delete-keychain" in arguments for arguments in commands))
-        self.assert_clean()
+        self.assertEqual(trust["trustList"][thumbprint]["trustSettings"], [{"kSecTrustSettingsResult": 3}])
+        self.assertFalse(certificates)
+        self.assertFalse(any("remove-trusted-cert" in args or "trust-settings-import" in args for args in commands))
+        self.assertFalse(list(self.state.glob("*.json")))
+        self.assertFalse(list(self.state.glob("*.cer")))
+        audit = json.loads(next(self.state.glob("*.cleanup")).read_text())
+        self.assertTrue(audit["certificate_removed"])
+        self.assertIn("unconditional deny", audit["retained_metadata"])
+        before = len(commands)
+        platform_trust.cleanup_all()
+        self.assertEqual(len(commands), before)
 
-    def test_macos_partial_installation_restores_search_list(self):
-        command, commands, original, current = self.mac_commands(fail_install=True)
+    def test_macos_partial_installation_removes_owned_certificate(self):
+        thumbprint, _, certificates, _, failures = self.mac_store()
+
+        def partial_install(arguments):
+            persisted = json.loads(next(self.state.glob("*.json")).read_text())
+            self.assertTrue(persisted["certificate_owned"])
+            certificates.add(thumbprint)
+            raise RuntimeError("partial installation")
+
+        failures["add-trusted-cert"] = partial_install
         with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=command),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, False]),
-            self.assertRaisesRegex(RuntimeError, "partial trust"),
+            self.assertRaisesRegex(RuntimeError, "partial installation"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
             self.fail("partial installation must not reach child")
-        self.assertEqual(current, original)
-        self.assertTrue(any("remove-trusted-cert" in arguments for arguments in commands))
+        self.assertFalse(certificates)
         self.assert_clean()
 
-    def test_macos_timed_out_removal_uses_verified_import_fallback(self):
-        command, _, original, current = self.mac_commands()
+    def test_macos_timeout_import_preserves_unrelated_current_trust(self):
+        _, trust, certificates, commands, failures = self.mac_store()
+        original = copy.deepcopy(trust)
 
-        def timeout_removal(arguments, environment=None):
-            if "remove-trusted-cert" in arguments:
-                raise subprocess.TimeoutExpired(arguments, 30)
-            return command(arguments, environment)
+        def timeout(arguments):
+            raise subprocess.TimeoutExpired(arguments, 30)
 
-        with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=timeout_removal),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, False]),
-            patch.object(platform_trust, "mac_remove_trust_with_import") as fallback,
-            platform_trust.trusted_root(self.root, self.environment),
-        ):
+        failures["remove-trusted-cert"] = timeout
+        with platform_trust.trusted_root(self.root, self.environment):
             pass
-        fallback.assert_called_once()
-        self.assertEqual(current, original)
+        self.assertTrue(any("trust-settings-import" in args for args in commands))
+        self.assertEqual(trust, original)
+        self.assertFalse(certificates)
         self.assert_clean()
 
-    def test_macos_import_preserves_unrelated_current_trust(self):
-        trust = {
-            "trustVersion": 1,
-            "trustList": {
-                "fixture": {"issuerName": b"test root", "trustSettings": []},
-                "OTHER": {"issuerName": b"other root", "trustSettings": [{"result": 1}]},
-            },
-        }
-        expected = {"trustVersion": 1, "trustList": {"OTHER": trust["trustList"]["OTHER"]}}
-
-        def import_settings(arguments, environment=None):
-            self.assertEqual(arguments[:-1], ["sudo", "-n", "security", "trust-settings-import", "-d"])
-            with Path(arguments[-1]).open("rb") as source:
-                self.assertEqual(plistlib.load(source), expected)
-            return ""
-
-        with (
-            patch.object(platform_trust, "mac_trust_settings", return_value=trust),
-            patch.object(platform_trust, "command", side_effect=import_settings) as command,
-        ):
-            platform_trust.mac_remove_trust_with_import("FIXTURE")
-        command.assert_called_once()
+    def test_macos_empty_import_is_avoided(self):
+        thumbprint, trust, _, commands, _ = self.mac_store(unrelated=False)
+        trust["trustList"][thumbprint.lower()] = {"trustSettings": []}
+        self.assertFalse(platform_trust.mac_remove_trust_with_import(thumbprint))
+        self.assertFalse(commands)
+        self.assertIn(thumbprint.lower(), trust["trustList"])
 
     def test_macos_import_requires_disposable_runner(self):
         with (
@@ -246,65 +278,212 @@ class PlatformTrustTests(unittest.TestCase):
             platform_trust.mac_remove_trust_with_import("FIXTURE")
         command.assert_not_called()
 
-    def test_macos_import_failure_keeps_cleanup_manifest_for_later_retry(self):
-        command, _, original, current = self.mac_commands()
-
-        def timeout_removal(arguments, environment=None):
-            if "remove-trusted-cert" in arguments:
-                raise subprocess.TimeoutExpired(arguments, 30)
-            return command(arguments, environment)
-
+    def test_macos_deny_requires_disposable_runner(self):
         with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=timeout_removal),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True]),
-            patch.object(platform_trust, "mac_remove_trust_with_import", side_effect=RuntimeError("import failed")),
+            patch.dict(os.environ, {"RUMQTTC_DISPOSABLE_TRUST_RUNNER": "0"}),
+            patch.object(platform_trust, "command") as command,
+            self.assertRaisesRegex(RuntimeError, "disposable"),
+        ):
+            platform_trust.mac_distrust_fixture({})
+        command.assert_not_called()
+
+    def test_macos_import_failure_keeps_manifest_for_retry(self):
+        _, trust, certificates, _, failures = self.mac_store()
+        original = copy.deepcopy(trust)
+
+        def timeout(arguments):
+            raise subprocess.TimeoutExpired(arguments, 30)
+
+        def failed_import(arguments):
+            raise RuntimeError("import failed")
+
+        failures.update({"remove-trusted-cert": timeout, "trust-settings-import": failed_import})
+        with (
             self.assertRaisesRegex(RuntimeError, "import failed"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
             pass
         self.assertEqual(len(list(self.state.glob("*.json"))), 1)
         self.assertEqual(len(list(self.state.glob("*.cer"))), 1)
-        with (
-            patch.object(platform_trust, "command", side_effect=command),
-            patch.object(platform_trust, "mac_trusted", side_effect=[True, False]),
-        ):
-            platform_trust.cleanup_all()
-        self.assertEqual(current, original)
+        self.assertTrue(certificates)
+        failures.clear()
+        platform_trust.cleanup_all()
+        self.assertFalse(certificates)
+        self.assertEqual(trust, original)
         self.assert_clean()
 
-    def test_macos_import_does_not_claim_success_if_root_survives(self):
-        command, _, _, _ = self.mac_commands()
+    def test_macos_rechecks_empty_store_after_removal_timeout(self):
+        thumbprint, trust, certificates, commands, failures = self.mac_store()
 
-        def timeout_removal(arguments, environment=None):
-            if "remove-trusted-cert" in arguments:
-                raise subprocess.TimeoutExpired(arguments, 30)
-            return command(arguments, environment)
+        def timeout(arguments):
+            trust["trustList"].pop("OTHER")
+            raise subprocess.TimeoutExpired(arguments, 30)
 
+        failures["remove-trusted-cert"] = timeout
+        with platform_trust.trusted_root(self.root, self.environment):
+            pass
+        self.assertEqual(trust["trustList"][thumbprint]["trustSettings"], [{"kSecTrustSettingsResult": 3}])
+        self.assertFalse(certificates)
+        self.assertFalse(any("trust-settings-import" in args for args in commands))
+
+    def test_macos_failed_deny_retains_certificate_and_cleanup_manifest(self):
+        _, _, certificates, commands, failures = self.mac_store(unrelated=False)
         with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=timeout_removal),
-            patch.object(platform_trust, "mac_trusted", side_effect=[False, True, True, True, True]),
-            patch.object(platform_trust, "mac_remove_trust_with_import"),
-            self.assertRaisesRegex(RuntimeError, "survived"),
+            self.assertRaisesRegex(RuntimeError, "deny failed"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
-            pass
+
+            def fail_deny(arguments):
+                raise RuntimeError("deny failed")
+
+            failures["add-trusted-cert"] = fail_deny
+        self.assertTrue(certificates)
+        self.assertEqual(len(list(self.state.glob("*.json"))), 1)
+        self.assertFalse(list(self.state.glob("*.cleanup")))
+        self.assertFalse(any("delete-certificate" in args for args in commands))
+
+    def test_macos_deny_is_verified_before_deleting_certificate(self):
+        thumbprint, trust, certificates, commands, _ = self.mac_store(unrelated=False)
+        original_command = platform_trust.command.side_effect
+
+        def no_effect(arguments, environment=None):
+            if "deny" in arguments:
+                return ""
+            return original_command(arguments, environment)
+
+        with (
+            self.assertRaisesRegex(RuntimeError, "not explicitly distrusted"),
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            platform_trust.command.side_effect = no_effect
+        self.assertTrue(certificates)
+        self.assertEqual(trust["trustList"][thumbprint]["trustSettings"], [{"kSecTrustSettingsResult": 1}])
+        self.assertFalse(any("delete-certificate" in args for args in commands))
         self.assertEqual(len(list(self.state.glob("*.json"))), 1)
 
-    def test_macos_does_not_remove_preexisting_trust(self):
-        command, commands, original, current = self.mac_commands()
+    def test_macos_certificate_deletion_is_verified_and_retryable(self):
+        _, _, certificates, _, _ = self.mac_store()
+        original_command = platform_trust.command.side_effect
+
+        def no_effect(arguments, environment=None):
+            if "delete-certificate" in arguments:
+                return ""
+            return original_command(arguments, environment)
+
         with (
-            patch.object(platform_trust.sys, "platform", "darwin"),
-            patch.object(platform_trust, "command", side_effect=command),
-            patch.object(platform_trust, "mac_trusted", return_value=True),
+            self.assertRaisesRegex(RuntimeError, "certificate survived"),
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            platform_trust.command.side_effect = no_effect
+        self.assertTrue(certificates)
+        self.assertEqual(len(list(self.state.glob("*.json"))), 1)
+        platform_trust.command.side_effect = original_command
+        platform_trust.cleanup_all()
+        self.assertFalse(certificates)
+        self.assert_clean()
+
+    def test_macos_does_not_remove_preexisting_trust(self):
+        thumbprint, trust, _, commands, _ = self.mac_store()
+        trust["trustList"][thumbprint] = {"trustSettings": []}
+        original = copy.deepcopy(trust)
+        with (
             self.assertRaisesRegex(RuntimeError, "already exists"),
             platform_trust.trusted_root(self.root, self.environment),
         ):
             self.fail("fixture must not run")
-        self.assertEqual(current, original)
-        self.assertFalse(any("remove-trusted-cert" in arguments for arguments in commands))
+        self.assertEqual(trust, original)
+        self.assertFalse(commands)
         self.assert_clean()
+
+    def test_macos_does_not_remove_preexisting_certificate(self):
+        thumbprint, _, certificates, commands, _ = self.mac_store()
+        certificates.add(thumbprint)
+        with (
+            self.assertRaisesRegex(RuntimeError, "already exists"),
+            platform_trust.trusted_root(self.root, self.environment),
+        ):
+            self.fail("fixture must not run")
+        self.assertEqual(certificates, {thumbprint})
+        self.assertEqual(len(commands), 1)
+        self.assert_clean()
+
+    def test_legacy_search_list_is_restored_even_if_trust_cleanup_fails(self):
+        self.state.mkdir()
+        root = self.state / "fixture.cer"
+        root.touch()
+        keychain = self.state / "fixture.keychain-db"
+        keychain.touch()
+        manifest = self.state / "fixture.json"
+        state = {
+            "platform": "darwin",
+            "thumbprint": "FIXTURE",
+            "owned": True,
+            "root": str(root),
+            "keychain": str(keychain),
+            "keychain_owned": True,
+            "search_changed": True,
+            "search_list": ["/original/login.keychain-db"],
+        }
+        platform_trust.save_state(manifest, state)
+        commands = []
+
+        def command(arguments, environment=None):
+            commands.append(arguments)
+            if "add-trusted-cert" in arguments:
+                raise RuntimeError("deny failed")
+            if "list-keychains" in arguments and "-s" not in arguments:
+                return '"/original/login.keychain-db"'
+            return ""
+
+        with (
+            patch.object(platform_trust, "mac_trust_settings", return_value={"trustList": {"FIXTURE": {}}}),
+            patch.object(platform_trust, "command", side_effect=command),
+            self.assertRaisesRegex(RuntimeError, "deny failed"),
+        ):
+            platform_trust.cleanup(manifest)
+        self.assertIn(["security", "list-keychains", "-d", "user", "-s", "/original/login.keychain-db"], commands)
+        self.assertTrue(manifest.exists())
+        self.assertTrue(root.exists())
+        self.assertTrue(keychain.exists())
+
+
+class CommandTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_sudo_timeout_kills_privileged_group_before_returning(self):
+        arguments = ["sudo", "-n", "security", "remove-trusted-cert"]
+        process = MagicMock(pid=123)
+        process.communicate.side_effect = [subprocess.TimeoutExpired(arguments, 30), ("out", "err")]
+        with (
+            patch.object(platform_trust.subprocess, "Popen", return_value=process) as popen,
+            patch.object(platform_trust.subprocess, "run") as run,
+            self.assertRaises(subprocess.TimeoutExpired) as failure,
+        ):
+            platform_trust.command(arguments)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertEqual(run.call_args.args[0], ["sudo", "-n", "/bin/kill", "-KILL", "--", "-123"])
+        self.assertEqual(process.communicate.call_count, 2)
+        self.assertEqual(failure.exception.stdout, "out")
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_timeout_terminates_child_process_group(self):
+        # A sleeping descendant inherits the pipe. Killing only its parent would
+        # leave communicate() blocked and prevent the cleanup retry from running.
+        script = (
+            "import subprocess,sys,time; "
+            "subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); time.sleep(60)"
+        )
+        with self.assertRaises(subprocess.TimeoutExpired):
+            platform_trust.command([sys.executable, "-c", script], timeout=0.3)
+
+    @unittest.skipIf(os.name == "nt", "POSIX command implementation")
+    def test_command_preserves_failure_status_and_output(self):
+        with self.assertRaises(subprocess.CalledProcessError) as failure:
+            platform_trust.command(
+                [sys.executable, "-c", "import sys; print('out'); print('err',file=sys.stderr); sys.exit(7)"]
+            )
+        self.assertEqual(failure.exception.returncode, 7)
+        self.assertEqual(failure.exception.stdout.strip(), "out")
+        self.assertEqual(failure.exception.stderr.strip(), "err")
 
 
 if __name__ == "__main__":

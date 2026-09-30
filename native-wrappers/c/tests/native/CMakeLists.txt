@@ -153,6 +153,11 @@ add_test(NAME rumqttc-error-out-coverage
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/check_error_out_coverage.py")
 set_tests_properties(rumqttc-error-out-coverage PROPERTIES LABELS "native;compile" TIMEOUT 10)
 
+add_test(NAME rumqttc-platform-trust-fixture
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_LIST_DIR}" -p test_platform_trust.py)
+set_tests_properties(rumqttc-platform-trust-fixture PROPERTIES LABELS "native;tls;fixture" TIMEOUT 15)
+
 add_test(NAME rumqttc-native-stress
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-stress>)
 set_tests_properties(rumqttc-native-stress PROPERTIES LABELS "native;stress" TIMEOUT 180)
