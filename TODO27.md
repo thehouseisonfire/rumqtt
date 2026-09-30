@@ -48,8 +48,8 @@ set, not an unsafe pointer cast or a promise to represent every Rustls field.
 - [ ] Apply profiles consistently to broker TLS, WSS, HTTPS proxies, and
   explicitly approved redirect targets, without merging their trust policies.
 - [ ] Keep every unrepresentable backend customization listed as unsupported.
-  A fully external TLS stream may use [TODO25.md](TODO25.md); it must not be
-  described as native backend configuration parity.
+  A fully external TLS stream may use the C wrapper custom transport
+  connectors; it must not be described as native backend configuration parity.
 
 ## Verification and completion
 
