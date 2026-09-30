@@ -1,6 +1,11 @@
 //! C transport owners and deferred operations. Included under the FFI module
 //! so every exported entry point uses the existing validation/panic boundary.
-use super::{c_void, rumqttc_callback_completion, rumqttc_string_view_t, rumqttc_bytes_view_t, Arc, Bytes, Mutex, OK, struct_size, ProtocolVersion, view_string, CallbackCompletion, ErrorHandle, rumqttc_error, ptr, boundary, destroy_box, rumqttc_config, config_ref, config_update, catch_unwind, AssertUnwindSafe, bytes_from_view, error_detail};
+use super::{
+    Arc, AssertUnwindSafe, Bytes, CallbackCompletion, ErrorHandle, Mutex, OK, ProtocolVersion,
+    boundary, bytes_from_view, c_void, catch_unwind, config_ref, config_update, destroy_box,
+    error_detail, ptr, rumqttc_bytes_view_t, rumqttc_callback_completion, rumqttc_config,
+    rumqttc_error, rumqttc_string_view_t, struct_size, view_string,
+};
 use rumqttc_wrapper_core::{
     NetworkHandling, TransportConnection, TransportConnector, TransportConnectorConfig,
     TransportFailure, TransportFuture, TransportIo, TransportIoFuture, TransportMode,
