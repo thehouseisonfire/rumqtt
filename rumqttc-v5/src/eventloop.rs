@@ -2224,13 +2224,14 @@ impl EventLoop {
             }
 
             let error = result.expect_err("an unsuccessful redirect attempt has an error");
+            let terminal_transport = crate::TerminalTransportError::find(&error).is_some();
             let phase = self.last_connect_failure_phase.take();
             let srv_failure = active.srv.is_some()
                 && matches!(
                     phase,
                     Some(ConnectFailurePhase::TargetSetup | ConnectFailurePhase::Transport)
                 );
-            if srv_failure && self.install_next_srv_candidate() {
+            if srv_failure && !terminal_transport && self.install_next_srv_candidate() {
                 continue;
             }
 
@@ -2239,7 +2240,7 @@ impl EventLoop {
                 .as_ref()
                 .expect("the redirect remains active until failure restoration");
             let outcome = active.outcome.clone();
-            let failure = if srv_failure {
+            let failure = if srv_failure && !terminal_transport {
                 let Some(SrvRedirectState::Resolved(plan)) = active.srv.as_ref() else {
                     unreachable!("an SRV connection failure requires a resolved plan");
                 };
@@ -3904,7 +3905,9 @@ async fn connect(
     deadline: Instant,
 ) -> Result<(Network, ConnAck), ConnectFailure> {
     // connect to the broker
-    let mut network = time::timeout_at(deadline, network_connect(options))
+    let mut network_options = options.network_options();
+    network_options.set_connection_deadline(deadline.into_std());
+    let mut network = time::timeout_at(deadline, network_connect(options, network_options))
         .await
         .map_err(|elapsed| {
             ConnectFailure::new(
@@ -3952,7 +3955,10 @@ fn socket_address(host: &str, port: u16) -> String {
 }
 
 #[expect(clippy::too_many_lines)]
-async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionError> {
+async fn network_connect(
+    options: &MqttOptions,
+    network_options: crate::NetworkOptions,
+) -> Result<Network, ConnectionError> {
     let max_incoming_pkt_size = options.max_incoming_packet_size();
     let transport = options.transport();
 
@@ -4002,21 +4008,21 @@ async fn network_connect(options: &MqttOptions) -> Result<Network, ConnectionErr
                 .connect(
                     &domain,
                     port,
-                    options.network_options(),
+                    network_options.clone(),
                     Some(options.effective_socket_connector()),
                 )
                 .await?
         } else {
             let addr = socket_address(&domain, port);
             options
-                .socket_connect(addr, options.network_options())
+                .socket_connect(addr, network_options.clone())
                 .await?
         }
         #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
         {
             let addr = socket_address(&domain, port);
             options
-                .socket_connect(addr, options.network_options())
+                .socket_connect(addr, network_options.clone())
                 .await?
         }
     };
@@ -7967,7 +7973,7 @@ mod tests {
         let mut options = MqttOptions::new("test-client", crate::Broker::unix("/tmp/mqtt.sock"));
         options.set_transport(Transport::tcp());
 
-        match network_connect(&options).await {
+        match network_connect(&options, options.network_options()).await {
             Err(ConnectionError::BrokerTransportMismatch) => {}
             Err(err) => panic!("unexpected error: {err:?}"),
             Ok(_) => panic!("mismatched broker and transport should fail"),
@@ -7980,7 +7986,7 @@ mod tests {
         let mut options = MqttOptions::new("test-client", "localhost");
         options.set_transport(Transport::Ws);
 
-        match network_connect(&options).await {
+        match network_connect(&options, options.network_options()).await {
             Err(ConnectionError::BrokerTransportMismatch) => {}
             Err(err) => panic!("unexpected error: {err:?}"),
             Ok(_) => panic!("mismatched broker and transport should fail"),
@@ -7994,7 +8000,7 @@ mod tests {
         let mut options = MqttOptions::new("test-client", broker);
         options.set_transport(Transport::tcp());
 
-        match network_connect(&options).await {
+        match network_connect(&options, options.network_options()).await {
             Err(ConnectionError::BrokerTransportMismatch) => {}
             Err(err) => panic!("unexpected error: {err:?}"),
             Ok(_) => panic!("mismatched broker and transport should fail"),
@@ -11779,6 +11785,79 @@ mod tests {
                 "second.example:2222".to_owned()
             ]
         );
+        assert_eq!(
+            eventloop.options.broker().tcp_address(),
+            Some(("primary.example", 1883))
+        );
+    }
+
+    #[tokio::test]
+    async fn srv_redirect_stops_on_terminal_transport_failure_and_preserves_its_source() {
+        let dials = Arc::new(Mutex::new(Vec::new()));
+        let dial_log = dials.clone();
+        let policy =
+            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(1).unwrap(), |context| {
+                RedirectDecision::follow(
+                    RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .unwrap(),
+                )
+            });
+        let mut options = MqttOptions::new("client", "primary.example");
+        options
+            .set_redirect_policy(policy)
+            .set_srv_resolver(crate::SrvResolver::new(|_| async {
+                Ok(vec![
+                    crate::SrvRecord {
+                        priority: 0,
+                        weight: 0,
+                        port: 1883,
+                        target: "first.example".into(),
+                    },
+                    crate::SrvRecord {
+                        priority: 1,
+                        weight: 0,
+                        port: 1883,
+                        target: "backup.example".into(),
+                    },
+                ])
+            }))
+            .set_socket_connector(move |endpoint, _| {
+                dial_log.lock().unwrap().push(endpoint);
+                async {
+                    Err::<tokio::io::DuplexStream, _>(
+                        crate::TerminalTransportError::new(io::Error::from_raw_os_error(12))
+                            .into_io(),
+                    )
+                }
+            });
+        let mut eventloop = EventLoop::new(options, 1);
+        let outcome = redirect_outcome(
+            RedirectReason::UseAnotherServer,
+            RedirectSource::ConnAck,
+            Some("_mqtt._tcp.example.com"),
+        );
+        eventloop.handle_redirect_outcome(outcome.clone()).unwrap();
+        let error = eventloop.establish_connection().await.unwrap_err();
+        assert!(matches!(
+            &error,
+            ConnectionError::Redirect(RedirectError { outcome: actual, failure: RedirectFailure::FollowFailed(_), })
+                if *actual == outcome
+        ));
+        assert_eq!(
+            crate::TerminalTransportError::find(&error)
+                .unwrap()
+                .get_ref()
+                .raw_os_error(),
+            Some(12)
+        );
+        assert_eq!(*dials.lock().unwrap(), ["first.example:1883"]);
+        let diagnostics = eventloop.take_last_redirect_diagnostics().unwrap();
+        assert_eq!(diagnostics.srv_candidate_index, Some(1));
+        assert_eq!(diagnostics.srv_candidate_count, Some(2));
+        assert_eq!(diagnostics.visited_endpoints, 2);
         assert_eq!(
             eventloop.options.broker().tcp_address(),
             Some(("primary.example", 1883))

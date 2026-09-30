@@ -38,6 +38,106 @@ durable-session callback API.
 `RUMQTTC_CAP_AUTH_CALLBACKS` reports the raw MQTT 5 asynchronous
 authenticator callback API.
 
+## Custom transports
+
+`RUMQTTC_CAP_TRANSPORT_CALLBACKS` reports the custom stream API, available
+independently of optional TLS/proxy/WebSocket features. Initialize a
+`rumqttc_transport_vtable_t` with `RUMQTTC_TRANSPORT_VTABLE_INIT`, provide
+`connect`, `cancel`, and `destroy`, register it with
+`rumqttc_transport_registration_new()`, and attach it with
+`rumqttc_config_set_transport_connector()`. The setter retains the owner;
+destroy the registration handle when finished configuring. Clear the connector
+to restore native socket creation for future clients.
+
+The connect callback receives the protocol, configured client ID, actual dial
+target (the proxy endpoint when configured), client-local socket-attempt
+generation, registration-wide unique operation ID, requested socket settings,
+and remaining native deadline in nanoseconds. This is the remaining budget for
+the whole connection attempt, including native negotiation, not a fresh timeout.
+Copy request strings needed after the callback. A host owns socket creation and
+must apply **all** requested settings or return
+`RUMQTTC_TRANSPORT_FAILURE_NETWORK_OPTIONS`. On success report
+`RUMQTTC_TRANSPORT_NETWORK_APPLIED`, or `..._NOT_APPLICABLE` only when settings
+are default. Buffer presence flags distinguish absent values from explicit zero.
+
+Create a stream with `rumqttc_transport_stream_new()` using that connect
+completion and `RUMQTTC_TRANSPORT_STREAM_VTABLE_INIT`. This binds it to the
+registration and attempt; it can succeed in one connect response only. Complete
+with `RUMQTTC_TRANSPORT_RESPONSE_INIT`, the stream handle, and network handling.
+The result retains the stream; destroy its handle when no longer needed.
+Failure to register/create a stream leaves its userdata owned by the caller.
+Reconnect requires a new stream, including after timeout or cancellation.
+
+`RUMQTTC_TRANSPORT_BASE` supplies bytes before native proxy, TLS, and WebSocket
+layers. `RUMQTTC_TRANSPORT_ESTABLISHED` supplies MQTT-ready bytes, including any
+host-managed tunnel/security/framing, and requires TCP with no native proxy or
+layered redirect profile. The stream mode must match the registration. Custom
+connectors cannot use Unix broker targets.
+
+The stream's `perform` callback receives READ, WRITE, FLUSH or SHUTDOWN.
+One read may overlap the serialized writer family; read and write buffers are
+at most `RUMQTTC_TRANSPORT_MAX_TRANSFER` (16 KiB). A successful read copies
+`response.bytes` before returning; empty success is permanent EOF. A successful
+write reports `response.count` from 1 through input length. Short transfers are
+supported. FLUSH drains host-buffered output; SHUTDOWN closes writing after the
+wrapper drains writes and flushes. Return a typed failure for errors. Pending
+work retains its completion instead of reporting empty success. A wrapper write
+may accept bytes into its bounded buffer before host completion; later writes,
+reads or flushes advance pending output and report errors.
+
+The callback completion is borrowed during the callback. For deferred work call
+`rumqttc_callback_completion_retain()` and release every retained handle with
+`rumqttc_callback_completion_destroy()`. Completion can occur on any thread via
+`rumqttc_callback_transport_complete()`. WRITE input remains valid until that
+operation's retained tokens are released; all other request views require a
+copy. Duplicate, cancelled, and stale results return `RUMQTTC_INVALID_STATE`
+before examining response buffers. Malformed transfers are accepted as a
+terminal `INVALID_RESULT` failure without reading an oversized read buffer.
+Dropping the last host token without completing wakes the observer with
+`ABANDONED`.
+
+`cancel(user_data, operation_id)` runs after observation is invalidated, without
+wrapper locks. It must promptly stop/wake host work; the connection is discarded.
+Cancellation never frees host-retained buffers or owners. Connect/perform/cancel
+callbacks must return promptly and be thread safe. A timeout cannot preempt a
+blocking callback. Avoid waiting for progress on that callback's driver.
+`max_retained_operations` (1–65536, default 256) bounds all live operations across
+clients sharing a registration, including cancelled operations retained by the
+host. Multiple token clones count as one operation. Exhaustion produces the
+terminal `RESOURCE_LIMIT` failure; hosts must release cancelled tokens.
+
+`CONNECT`, `IO`, `TIMEOUT` and `ABANDONED` failures allow reconnection. All other
+transport failures stop the driver with `RUMQTTC_EVENT_DRIVER_TERMINATED`, fail
+pending operations and first-connection observers with the typed error, and reject
+further admission. `rumqttc_event_disconnected()` also extracts this terminal error.
+Terminal failures stop MQTT 5 SRV fallback before another candidate is attempted.
+Retryable candidate failures can advance to the next endpoint. Failed redirects
+are terminal; their errors expose both `rumqttc_error_redirect_failure()` and
+the underlying `rumqttc_error_transport_failure()` when present.
+
+Stream userdata and registration userdata each receive exactly one `destroy`
+after their last independent owner releases. Destruction can run on any thread
+and must not block or throw. A retained completion keeps its stream/registration
+alive after client destruction. Unload the library only after all clients,
+configs, streams, registrations, and completion tokens have been released.
+`rumqttc_error_transport_failure()` returns fixed classifications without host
+error strings or credentials.
+
+The [custom transport example](examples/custom_transport.c) uses a portable
+worker/socket provider in [transport_socket.c](examples/transport_socket.c).
+Run it against a broker as `rumqttc-example-custom_transport HOST PORT`, or
+set `RUMQTTC_TEST_BYTE_TUNNEL_PORT` to route through the test byte tunnel. DNS
+resolution runs in a worker; cancellation signals its result for discard but
+cannot interrupt a platform resolver. A production provider can use its own
+asynchronous reactor/resolver instead. Join host workers after destroying
+clients/configs, then release remaining stream handles. The native C memory
+fixture exercises short deferred I/O, tracked QoS1, reconnect, cancellation,
+late-result rejection, timeout/failed construction and final owner release.
+The tunnel matrix covers both
+protocols with enabled proxy/TLS/WS/WSS combinations and broker trust rejection.
+
+## Durable sessions
+
 Durable sessions use a `rumqttc_store_vtable_t` registered with
 `rumqttc_store_registration_new()`, then attached with
 `rumqttc_config_set_session_store()`. The setter copies scope and retains the

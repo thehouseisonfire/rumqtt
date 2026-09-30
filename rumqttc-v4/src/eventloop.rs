@@ -1207,29 +1207,33 @@ impl EventLoop {
             attempt
         };
 
-        let (network, connack) = match time::timeout(
-            Duration::from_secs(self.network_options.connection_timeout()),
-            connect(&self.mqtt_options, self.network_options.clone()),
-        )
-        .await
-        {
-            Ok(Ok(connection)) => connection,
-            Ok(Err(failure)) => {
-                #[cfg(feature = "tracing")]
-                crate::instrumentation::connection_attempt_failed(
-                    attempt,
-                    failure.phase,
-                    &failure.error,
-                );
-                return Err(failure.error);
-            }
-            Err(_) => {
-                let error = ConnectionError::NetworkTimeout;
-                #[cfg(feature = "tracing")]
-                crate::instrumentation::connection_attempt_failed(attempt, "connection", &error);
-                return Err(error);
-            }
-        };
+        let deadline =
+            Instant::now() + Duration::from_secs(self.network_options.connection_timeout());
+        let mut network_options = self.network_options.clone();
+        network_options.set_connection_deadline(deadline.into_std());
+        let (network, connack) =
+            match time::timeout_at(deadline, connect(&self.mqtt_options, network_options)).await {
+                Ok(Ok(connection)) => connection,
+                Ok(Err(failure)) => {
+                    #[cfg(feature = "tracing")]
+                    crate::instrumentation::connection_attempt_failed(
+                        attempt,
+                        failure.phase,
+                        &failure.error,
+                    );
+                    return Err(failure.error);
+                }
+                Err(_) => {
+                    let error = ConnectionError::NetworkTimeout;
+                    #[cfg(feature = "tracing")]
+                    crate::instrumentation::connection_attempt_failed(
+                        attempt,
+                        "connection",
+                        &error,
+                    );
+                    return Err(error);
+                }
+            };
 
         #[cfg(feature = "tracing")]
         let reconciliation = self

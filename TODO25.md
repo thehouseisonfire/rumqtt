@@ -1,109 +1,153 @@
 # C Wrapper Custom Transport Connectors
 
-## Goal
+## Goal and implementation status
 
 Expose application-provided asynchronous connections and byte streams through
-the native wrapper core and C API for both MQTT versions. Support custom
-tunnels, supplied connections, and simulated transports while retaining native
-MQTT scheduling, framing, tracking, and recovery.
+wrapper-core and C for both MQTT versions. The public implementation is now in
+place: a native C consumer supplies byte operations while native MQTT performs
+CONNECT, framing, tracked publication, recovery and shutdown. The host does not
+implement MQTT or depend on Rust layouts.
 
-## Current foundation and feasibility
+Real socket/tunnel execution remains pending in this session: the sandbox
+rejects local socket creation with `EPERM`. Those fixtures compile and are
+required in CI. This is an execution limitation, not a missing implementation;
+do not treat compilation or CI wiring as evidence of a passing network test.
 
-Both client crates implement `MqttOptions::set_socket_connector` in
-`rumqttc-v4/src/lib.rs` and `rumqttc-v5/src/lib.rs`. The connector supplies the
-base stream before configured proxy, TLS, and WebSocket layers. The omission in
-`native-wrappers/wrapper-core/PARITY.md` concerns the foreign I/O contract, not
-an inability of the clients to accept custom streams.
+## Public contract
 
-This is feasible after a sound stream adapter has been demonstrated. Do not
-publish the C interface before partial I/O, wakeups, cancellation, and owner
-release have explicit implementations. No dependency on a portable client
-rewrite or the browser wrapper is required.
+- `CommonConfig::connector` owns a `TransportConnectorConfig` with a
+  `TransportConnector` and declared mode. Both protocol adapters delegate to
+  the existing native `set_socket_connector`.
+- `TransportMode::Base` supplies bytes before native proxy/TLS/WebSocket layers.
+  `Established` supplies MQTT-ready bytes and requires TCP without native proxy
+  or layered redirect profiles. Custom connectors cannot use Unix targets.
+- Every connect receives protocol, configured client ID, actual dial target
+  (proxy endpoint when configured), client-local socket-attempt generation,
+  applicable network settings and the exact native absolute deadline. C gets
+  the remaining budget in nanoseconds. Native negotiation shares this budget.
+- Hosts must explicitly report all network settings applied, or not applicable
+  only for defaults. Unsupported settings fail; foreign streams are never
+  reported as socket-configured by the wrapper.
+- Owned `TransportIo` read/write/flush/shutdown futures yield promptly. Reads
+  own their results; writes own their inputs. Transfers and buffered write
+  acceptance are bounded at 16 KiB. One read may overlap the serialized writer
+  family. Short I/O is normal; an empty successful read is permanent EOF.
+  Reading advances pending buffered writes. Flush waits for accepted output;
+  shutdown drains writes and flushes before closing writing.
+- Native TLS has a private asynchronous-flush bridge: BIO flushes are deferred
+  to a read boundary, where Pending can be represented correctly. Handshake
+  completion and outer flush/shutdown still wait for real underlying output.
+- C registrations and streams are opaque independent owners. Size-versioned
+  vtables/requests/responses use fixed-width selectors, reserved fields, and
+  the existing retained `rumqttc_callback_completion_t`. Stream creation uses
+  the originating connect completion, binding the stream to that attempt.
+  Each stream is single-use; reconnect obtains a fresh one.
+- Connect metadata is borrowed during the callback. Copy it for deferred work.
+  Retain a completion before returning with pending work; write input stays
+  valid until its retained tokens are released. Read completion copies bytes
+  during the call. Duplicate/cancelled/stale results are rejected before reading
+  response views. Dropping the last host token wakes the observer as abandoned.
+- Cancellation invalidates observation before calling
+  `cancel(user_data, operation_id)` outside wrapper locks. The host must stop
+  and wake work promptly; cancelled connections are discarded. Retained buffers
+  and owners survive until released. Registration-wide unique operation IDs
+  prevent cross-client cancellation collisions.
+- Each registration limits live operations, including host-retained cancelled
+  work: 1–65536, initialized to 256. Token clones share an operation slot.
+  Exhaustion is a terminal typed failure, preventing unbounded retained work
+  across connections. Hosts remain responsible for releasing tokens.
+- Callbacks must be thread safe and return promptly. A timeout cannot preempt a
+  blocking C callback. Destructors run once on final release, on any thread,
+  and must neither block nor unwind. Release all owners before library unload.
+- `RUMQTTC_CAP_TRANSPORT_CALLBACKS` reports the C API. Fixed transport failure
+  details never expose arbitrary host strings or credentials.
 
-## Private adapter proof
+See [wrapper-core](native-wrappers/wrapper-core/README.md#custom-transports),
+[the C contract](native-wrappers/c/README.md#custom-transports), and
+[the runnable C example](native-wrappers/c/examples/custom_transport.c).
 
-The `transport-proof` feature runs a private wrapper-core adapter with real C
-callbacks compiled into unit tests. Run it from the repository root:
+## Implementation checklist
+
+- [x] Owned connector/stream abstractions and adapters for both protocols.
+- [x] Opaque retained C registration, stream and deferred-operation handles;
+  versioned records, selectors and ABI generation/exports.
+- [x] Exact attempt metadata/deadlines and explicit socket-setting policy.
+- [x] Short I/O, EOF, pending work, errors, wakeups and direction serialization.
+- [x] Owned/copying buffers, per-transfer bounds and retained-operation limits.
+- [x] Prompt callbacks outside lifecycle/admission locks; documented blocking
+  and cancellation obligations.
+- [x] Duplicate/late/stale rejection, cancellation and connection discard.
+- [x] Independent owner lifetimes and exactly-once destruction.
+- [x] Native layering and established-stream validation; fresh reconnects.
+- [x] Capability reporting and typed redacted failures.
+- [x] In-memory and byte-tunnel C demonstrations for both protocols.
+- [x] Lifecycle, race, partial-I/O and TLS/proxy/WebSocket regression fixtures.
+- [x] Header generation, exports, READMEs, examples, PARITY, changelog and CI.
+
+## Verification
+
+The private `transport-proof` feature compiles real C callbacks into adapter
+unit tests. The fixture's automatic-read readiness claim and byte capture happen
+under the same lock; callback delivery happens outside it. Delayed completion
+cannot drain or signal EOF on a later read.
 
 ```sh
 cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next --lib \
   --features transport-proof transport::
 cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next --lib \
   --no-default-features --features transport-proof transport::
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-next --lib ffi::transport::tests::
+cargo test --manifest-path native-wrappers/Cargo.toml -p rumqttc-wrapper-core-next \
+  --no-default-features --features use-rustls-ring,use-native-tls,websocket,proxy \
+  --test custom_transport_memory
+cmake -S native-wrappers/c/tests/native -B native-wrappers/target/rumqttc-c-native
+cmake --build native-wrappers/target/rumqttc-c-native
+ctest --test-dir native-wrappers/target/rumqttc-c-native -R custom-transport --output-on-failure
 ```
 
-The adapter owns each read result and write input, accepts at most 16 KiB of
-buffered writes, and permits one read to overlap one serialized write, flush,
-or shutdown. A buffered write reports acceptance immediately; the next write
-or flush observes foreign I/O errors. Deferred C writes retain their owned
-input until completion. Shutdown drains writes and flushes before closing.
+Current Linux session evidence:
 
-The proof exercises short transfers, EOF, invalid results, immediate and
-deferred completion, completion from another thread, wakeups, cancellation
-including unpolled futures, concurrent stream drop, and exactly-once release
-after retained completions. Deterministic concurrent-read regressions verify
-that automatic completion claims its operation and captures its bytes under
-the readiness lock before delivering the callback outside that lock. A delayed
-completion cannot drain or signal EOF on a later read. Abandoned host work
-wakes its observer with an error. Both native MQTT clients perform CONNECT
-and acknowledged QoS 1 PUBLISH exchanges, reject late handshake results after
-timeout, and reconnect using fresh C streams.
+- 20 C adapter proof tests plus exact-deadline and future-destruction panic
+  regressions pass with defaults and without them. All 52 wrapper-core unit
+  tests with the proof pass.
+- Five public C bridge tests pass: abandonment, cancellation/unpolled drop,
+  retained cancelled-operation budget, stale-stream rejection, owned deferred
+  write buffers, oversized reads and socket-setting rejection.
+- The public native C memory consumer passes for both protocols: tracked QoS1,
+  short deferred I/O, EOF/reconnect, graceful/immediate close, retained late
+  result rejection and exactly-once final owner release, plus failed construction
+  and managed connect timeout with retained late work.
+- The in-memory composition matrix passes with defaults and with Ring/native
+  TLS/proxies/WebSockets together (48 profiles, each connecting and reconnecting),
+  and rejects untrusted brokers over TLS/WSS for both protocols/backends.
+  Managed-client timeout cancellation, failed construction, automatic termination
+  on terminal connector/stream failures, pending-operation failure and retryable
+  reconnects pass without sockets for both protocols. Public C tests verify all
+  terminal failure selectors stop after one connect callback, and a timeout
+  retries before a terminal failure stops the driver. The native TLS BIO flush
+  regression passes.
+- Native TLS handshake regressions cover typed read/write/flush failures,
+  automatic termination, pending-operation failure and retryable I/O reconnection
+  for both protocols (24 cases).
+  The bridge also preserves custom error payloads and OS codes when a TLS backend
+  discards its source chain. Linux execution and Windows cross-compilation pass;
+  Wine execution is blocked by the sandbox's socket permissions, and actual
+  Windows execution remains a CI requirement.
+- Header/FFI equality, exports, C11/C++17 and relocated static pkg-config
+  consumers pass. All native C fixtures/examples compile with strict warnings;
+  the optional error-output audit covers 97 APIs. Wrapper workspace checks and
+  targeted strict Clippy and the Rust 1.88 native-TLS profile check pass. Native
+  feature Clippy passes all 35 configurations
+  excluding SCRAM: its unrelated build script writes into the sandbox's read-only
+  Cargo registry cache.
+- Rust/C ASan and C UBSan pass for the adapter and C bridge with leak scanning
+  disabled. LSan runs all assertions successfully but cannot perform its final
+  ptrace-based leak scan in this sandbox. CI retains mandatory LSan and native
+  Valgrind/macOS leaks checks, including the new transport fixtures.
+- Real sockets and the transparent byte-tunnel trust/composition matrix await
+  execution on a permitted host. macOS/Windows execution also awaits CI.
 
-Linux verification covers 19 proof tests in both feature configurations,
-ASan/LSan for Rust and C, and UBSan for C. CI is configured to run the regular
-proof on Linux, macOS, and Windows, plus the sanitizer proof on Linux.
-
-The adapter and C fixture are test-only. There is no new wrapper configuration
-field or public C ABI. Per-stream bounds do not limit host-retained cancelled
-operations across connections: the host must release them. Exact attempt
-metadata and deadlines, network-setting policy, a custom tunnel,
-TLS/proxy/WebSocket composition, and wrapper `NativeClient` lifecycle
-integration remain to be designed and verified. The implementation checklist
-and the `PARITY.md` omission remain open.
-
-## Implementation requirements
-
-- [ ] Add owned connector and stream abstractions in wrapper-core, with one
-  backend adapter per protocol delegating to the existing native connector.
-- [ ] Add opaque retained C registration, stream, and deferred-operation
-  handles. Use size-versioned records and fixed-width selectors consistent
-  with the existing callback registrations and C ABI policy.
-- [ ] Pass the target, applicable network settings, connection generation, and
-  deadline to connection callbacks. A connector owns socket creation and must
-  explicitly apply or reject network settings; the wrapper must not pretend
-  that it configured a foreign stream after creation.
-- [ ] Define read, write, flush, and shutdown operations, including short
-  transfers, EOF, recoverable pending work, permanent errors, and wakeups.
-  Define whether read and write may overlap and prohibit accidental concurrent
-  reads or writes on the same stream.
-- [ ] Keep all memory alive across deferred I/O. Prefer library-owned operation
-  buffers and copied completion results; never lend a Rust stack buffer to
-  work that may outlive the callback. Bound buffer sizes and outstanding work.
-- [ ] Make callbacks return promptly and permit completion on another thread.
-  Run them without lifecycle or admission locks. A timeout cannot preempt a
-  blocking C callback; document that obligation instead of claiming it can.
-- [ ] Reject duplicate, late, and stale-generation completions. Cancellation
-  must stop observation without creating another active operation on an
-  incompletely cancelled stream; discard that connection when necessary.
-- [ ] Specify retained operation, stream, registration, and client ownership
-  independently. Destruction occurs exactly once after the last owner, and
-  shutdown cannot call foreign code after its registration is released.
-- [ ] Preserve transport composition. Explicitly distinguish an unencrypted
-  base stream from one already providing TLS or proxy negotiation to prevent
-  accidental double layering. Reconnect obtains a new stream.
-- [ ] Add capability reporting and typed connector failures without exposing
-  arbitrary callback error text or credentials.
-
-## Verification and completion
-
-- [ ] Demonstrate both protocols with an in-memory stream and a custom tunnel.
-- [ ] Exercise short reads/writes, synchronous and deferred completion, EOF,
-  missed-wakeup races, concurrent close, timeout, reconnect, and abandonment.
-- [ ] Verify TLS/WebSocket composition and exactly-once destruction after
-  failed construction and retained late completions.
-- [ ] Update the C header generation, exports, README, examples, `PARITY.md`,
-  and root `CHANGELOG.md` under `docs/c-abi-compatibility.md`.
-
-Complete this TODO only when a native C consumer can supply its transport
-without implementing MQTT or depending on Rust layouts. Exposing raw socket
-descriptors alone does not complete custom stream support.
+Historical private-proof ASan/LSan evidence predates this public implementation;
+[PARITY.md](native-wrappers/wrapper-core/PARITY.md) records execution separately
+from coverage. The ABI additions preserve existing declarations/records and the
+unpublished ABI line under [the C policy](docs/c-abi-compatibility.md).

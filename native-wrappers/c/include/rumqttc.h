@@ -208,6 +208,28 @@ typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_CAP_TRACING (UINT64_C(1) << 10)
 #define RUMQTTC_CAP_SESSION_STORE_CALLBACKS (UINT64_C(1) << 11)
 #define RUMQTTC_CAP_AUTH_CALLBACKS (UINT64_C(1) << 12)
+#define RUMQTTC_CAP_TRANSPORT_CALLBACKS (UINT64_C(1) << 13)
+
+#define RUMQTTC_TRANSPORT_MAX_TRANSFER 16384u
+#define RUMQTTC_TRANSPORT_BASE 1u
+#define RUMQTTC_TRANSPORT_ESTABLISHED 2u
+#define RUMQTTC_TRANSPORT_NETWORK_APPLIED 1u
+#define RUMQTTC_TRANSPORT_NETWORK_NOT_APPLICABLE 2u
+#define RUMQTTC_TRANSPORT_READ 1u
+#define RUMQTTC_TRANSPORT_WRITE 2u
+#define RUMQTTC_TRANSPORT_FLUSH 3u
+#define RUMQTTC_TRANSPORT_SHUTDOWN 4u
+#define RUMQTTC_TRANSPORT_SUCCESS 0u
+#define RUMQTTC_TRANSPORT_FAILURE_CONNECT 1u
+#define RUMQTTC_TRANSPORT_FAILURE_NETWORK_OPTIONS 2u
+#define RUMQTTC_TRANSPORT_FAILURE_COMPOSITION 3u
+#define RUMQTTC_TRANSPORT_FAILURE_INVALID_RESULT 4u
+#define RUMQTTC_TRANSPORT_FAILURE_ABANDONED 5u
+#define RUMQTTC_TRANSPORT_FAILURE_IO 6u
+#define RUMQTTC_TRANSPORT_FAILURE_TIMEOUT 7u
+#define RUMQTTC_TRANSPORT_FAILURE_PANIC 8u
+#define RUMQTTC_TRANSPORT_FAILURE_RESOURCE_LIMIT 9u
+
 
 typedef uint32_t rumqttc_tls_backend_t;
 #define RUMQTTC_TLS_BACKEND_RUSTLS 0u
@@ -254,6 +276,8 @@ typedef struct rumqttc_store_registration_t rumqttc_store_registration_t;
 typedef struct rumqttc_callback_completion_t rumqttc_callback_completion_t;
 typedef struct rumqttc_resolver_registration_t rumqttc_resolver_registration_t;
 typedef struct rumqttc_auth_registration_t rumqttc_auth_registration_t;
+typedef struct rumqttc_transport_registration_t rumqttc_transport_registration_t;
+typedef struct rumqttc_transport_stream_t rumqttc_transport_stream_t;
 
 /*
  * Input views are borrowed only for the duration of a call and are copied
@@ -704,6 +728,142 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss(rumqttc_config_t *
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss_with_options(rumqttc_config_t *config, rumqttc_string_view_t url, const rumqttc_tls_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_proxy(rumqttc_config_t *config, const rumqttc_proxy_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_clear_proxy(rumqttc_config_t *config, rumqttc_error_t **error_out);
+/* Custom transport contract. All records are size-versioned; initialize
+ * reserved fields to zero. Registration creation copies the vtable and takes
+ * user_data ownership only on success. Configurations, streams, and retained
+ * completions independently keep their registration alive.
+ *
+ * BASE supplies raw bytes before native proxy/TLS/WebSocket negotiation.
+ * ESTABLISHED supplies MQTT-ready bytes and requires TCP with no native proxy,
+ * TLS or WebSocket layers (including redirect profiles). A successful connect
+ * must acknowledge socket settings as APPLIED or, only when no settings were
+ * requested, NOT_APPLICABLE. Native code never configures a foreign socket.
+ *
+ * Connect receives the actual dial target (a proxy endpoint when applicable),
+ * a client-local attempt generation, a registration-wide operation_id, and the
+ * remaining native connection deadline in nanoseconds at callback entry.
+ * Deadline budget includes subsequent negotiation; callbacks must not block.
+ *
+ * Each stream permits one read and one serialized write/flush/shutdown.
+ * Read requests and buffered writes are bounded to 16384 bytes. A successful
+ * zero-length read means EOF. A write must report 1..input.len bytes; short
+ * transfers are legal. Write acceptance is buffered; flush or the next write
+ * observes host errors. Shutdown drains and flushes writes before closing.
+ *
+ * Request records and metadata views are borrowed only during the callback.
+ * Retain the borrowed completion before returning to finish on another thread.
+ * Retaining a write completion also retains its input bytes. All read results
+ * are copied during completion. Never destroy the callback's borrowed handle.
+ * Destroy each retained completion after work finishes. Dropping the last host
+ * token without completing wakes the observer with ABANDONED.
+ *
+ * cancel(user_data, operation_id) runs after cancellation outside locks. It
+ * must promptly stop/wake host work; retained tokens and buffers remain valid
+ * until the host releases them. Late/duplicate completions return INVALID_STATE
+ * before inspecting response views. Streams are single-use, even after failed
+ * construction. Each registration bounds live operations (including cancelled
+ * retained work) with max_retained_operations, from 1 to 65536. Retain clones
+ * refer to the same operation and do not consume another slot.
+ *
+ * Callbacks may overlap across clients and read/write directions and must be
+ * thread-safe, return promptly, and permit reentrant nonblocking admission.
+ * Never wait for MQTT completion on the driver thread. Destructors must not
+ * block or unwind. Release all foreign owners before unloading the library.
+ */
+typedef struct rumqttc_transport_connect_request_t {
+  uint32_t struct_size;
+  uint32_t protocol;
+  uint64_t generation;
+  uint64_t operation_id;
+  uint64_t remaining_timeout_ns;
+  struct rumqttc_string_view_t target;
+  struct rumqttc_string_view_t client_id;
+  uint8_t send_buffer_present;
+  uint8_t receive_buffer_present;
+  uint8_t tcp_nodelay;
+  uint8_t mptcp;
+  uint8_t reserved_flags[4];
+  uint32_t send_buffer_size;
+  uint32_t receive_buffer_size;
+  struct rumqttc_string_view_t local_address;
+  struct rumqttc_string_view_t bind_device;
+  uint64_t reserved[2];
+} rumqttc_transport_connect_request_t;
+
+typedef struct rumqttc_transport_io_request_t {
+  uint32_t struct_size;
+  uint32_t operation;
+  uint64_t generation;
+  uint64_t operation_id;
+  size_t read_limit;
+  struct rumqttc_bytes_view_t input;
+  uint64_t reserved[2];
+} rumqttc_transport_io_request_t;
+
+typedef struct rumqttc_transport_vtable_t {
+  uint32_t struct_size;
+  uint32_t mode;
+  uint32_t max_retained_operations;
+  uint32_t reserved_flags;
+  void (*connect)(void*,
+                  const struct rumqttc_transport_connect_request_t*,
+                  struct rumqttc_callback_completion_t*);
+  void (*cancel)(void*, uint64_t);
+  void (*destroy)(void*);
+  uint64_t reserved[2];
+} rumqttc_transport_vtable_t;
+
+typedef struct rumqttc_transport_stream_vtable_t {
+  uint32_t struct_size;
+  uint32_t mode;
+  void (*perform)(void*,
+                  const struct rumqttc_transport_io_request_t*,
+                  struct rumqttc_callback_completion_t*);
+  void (*cancel)(void*, uint64_t);
+  void (*destroy)(void*);
+  uint64_t reserved[2];
+} rumqttc_transport_stream_vtable_t;
+
+typedef struct rumqttc_transport_response_t {
+  uint32_t struct_size;
+  uint32_t result;
+  const struct rumqttc_transport_stream_t *stream;
+  uint32_t network_handling;
+  uint32_t reserved_flags;
+  struct rumqttc_bytes_view_t bytes;
+  size_t count;
+  uint64_t reserved[2];
+} rumqttc_transport_response_t;
+
+#define RUMQTTC_TRANSPORT_VTABLE_INIT \
+    { sizeof(rumqttc_transport_vtable_t), RUMQTTC_TRANSPORT_BASE, 256u, 0u, NULL, NULL, NULL, {0, 0} }
+#define RUMQTTC_TRANSPORT_STREAM_VTABLE_INIT \
+    { sizeof(rumqttc_transport_stream_vtable_t), RUMQTTC_TRANSPORT_BASE, NULL, NULL, NULL, {0, 0} }
+#define RUMQTTC_TRANSPORT_RESPONSE_INIT \
+    { sizeof(rumqttc_transport_response_t), RUMQTTC_TRANSPORT_SUCCESS, NULL, 0u, 0u, {NULL, 0}, 0, {0, 0} }
+
+RUMQTTC_API rumqttc_status_t rumqttc_transport_registration_new(const struct rumqttc_transport_vtable_t *vtable,
+                                            void *user_data,
+                                            struct rumqttc_transport_registration_t **out,
+                                            struct rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_transport_registration_destroy(struct rumqttc_transport_registration_t *registration);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_connector(struct rumqttc_config_t *config,
+                                                const struct rumqttc_transport_registration_t *registration,
+                                                struct rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_transport_connector(struct rumqttc_config_t *config,
+                                                  struct rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_transport_stream_new(const struct rumqttc_callback_completion_t *completion,
+                                      const struct rumqttc_transport_stream_vtable_t *vtable,
+                                      void *user_data,
+                                      struct rumqttc_transport_stream_t **out,
+                                      struct rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_transport_stream_destroy(struct rumqttc_transport_stream_t *stream);
+RUMQTTC_API rumqttc_status_t rumqttc_callback_transport_complete(struct rumqttc_callback_completion_t *completion,
+                                             const struct rumqttc_transport_response_t *response);
+RUMQTTC_API rumqttc_status_t rumqttc_error_transport_failure(const struct rumqttc_error_t *error,
+                                         uint8_t *present_out,
+                                         uint32_t *failure_out);
+
 RUMQTTC_API rumqttc_status_t rumqttc_store_registration_new(const rumqttc_store_vtable_t *vtable, void *user_data, rumqttc_store_registration_t **out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_store_registration_destroy(rumqttc_store_registration_t *registration);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_session_store(rumqttc_config_t *config, const rumqttc_store_registration_t *registration, rumqttc_string_view_t scope, uint64_t timeout_ms, size_t max_checkpoint_size, rumqttc_error_t **error_out);

@@ -1,3 +1,7 @@
+#[cfg(feature = "use-native-tls")]
+#[path = "native_tls_io.rs"]
+mod native_tls_io;
+
 #[cfg(feature = "use-rustls-no-provider")]
 use tokio_rustls::TlsConnector as RustlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
@@ -325,7 +329,7 @@ pub async fn tls_connect(
         | TlsConfiguration::NativeConnector(_)
         | TlsConfiguration::SimpleNative { .. } => {
             let connector = native_tls_connector(tls_config)?;
-            Box::new(connector.connect(addr, tcp).await?)
+            Box::new(native_tls_io::connect(&connector, addr, tcp).await?)
         }
         #[allow(unreachable_patterns)]
         _ => return Err(Error::UnsupportedBackendConfiguration),

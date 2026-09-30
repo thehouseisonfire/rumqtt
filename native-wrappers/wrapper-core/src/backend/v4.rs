@@ -14,6 +14,9 @@ pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
+    if let Some(failure) = super::transport::failure(&error) {
+        return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
     if let rumqttc_v4::ConnectionError::SessionStore(source) = &error {
         return Error::store(
             source
@@ -240,6 +243,7 @@ fn build_options(
             &common.client_id,
         )?);
     }
+    super::transport::configure_v4(&mut options, common);
     options.validate().map_err(|error| {
         Error::sourced(
             ErrorKind::Configuration,
@@ -362,7 +366,9 @@ pub async fn run(
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v4::ConnectionError::DisconnectTimeout);
                 let error = shared.contextualize(map_connection_error(error));
-                if error.kind() == ErrorKind::Persistence {
+                if error.kind() == ErrorKind::Persistence
+                    || (error.transport_failure().is_some() && !error.retryable())
+                {
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
                     return TerminalStatus::Failed(error);

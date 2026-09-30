@@ -13,6 +13,15 @@
 
 This crate is not a full MQTT client and does not expose the v4 or v5 protocol APIs by itself.
 
+## Terminal transport failures
+
+Socket connectors and custom streams can return
+`TerminalTransportError::new(original_io_error).into_io()` to prevent MQTT 5 SRV
+redirects from trying further candidates. The marker preserves the original
+error as a source through transport composition; `TerminalTransportError::find`
+recovers it from a connection error. Unmarked candidate errors retain the usual
+SRV fallback behavior. The protocol crates also reexport this marker.
+
 ## Eager rustls configuration
 
 With a rustls feature enabled, `TlsConfiguration::try_rustls_with_native_roots`

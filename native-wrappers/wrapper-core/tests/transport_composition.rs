@@ -165,11 +165,23 @@ fn proxy_handshake(stream: &mut impl tls::Duplex, socks: bool, host: &str, rejec
 }
 
 #[test]
+fn proxy_tls_and_websocket_compositions_reconnect_for_both_protocols() {
+    compositions(false);
+}
+
+#[test]
+fn custom_connectors_preserve_proxy_tls_and_websocket_composition() {
+    compositions(true);
+}
+
+#[path = "support/custom_transport.rs"]
+mod custom;
+
 #[expect(
     clippy::result_large_err,
     reason = "tungstenite handshake callback error type"
 )]
-fn proxy_tls_and_websocket_compositions_reconnect_for_both_protocols() {
+fn compositions(custom_connector: bool) {
     capture::start();
     let broker_tls = tls::Fixture::new();
     let proxy_tls = tls::Fixture::new();
@@ -217,6 +229,9 @@ fn proxy_tls_and_websocket_compositions_reconnect_for_both_protocols() {
                         };
                         let broker_port = if proxy == "direct" { port } else { 1883 };
                         let mut config = config(mqtt5, broker_port);
+                        if custom_connector {
+                            config.common.connector = Some(custom::configured().0);
+                        }
                         config.common.broker = BrokerTarget::Tcp {
                             host: host.into(),
                             port: broker_port,

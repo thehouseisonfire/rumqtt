@@ -1,6 +1,19 @@
 ## [Unreleased]
 
 ### Added
+- Native wrappers: Add owned asynchronous custom transport connectors for both
+  MQTT versions, including the C registration/stream/completion API and transport
+  capability/error detail. Preserve native proxy, TLS and WebSocket composition
+  for base streams; validate established streams, socket settings and exact
+  attempt deadlines. Bound buffers and retained C operations, cancel deferred
+  work, reject stale results, and retain independent owners through teardown.
+  Include portable C socket/tunnel examples and native lifecycle/composition
+  fixtures. Wrapper-core adds defaulted `CommonConfig::connector`; exhaustive
+  Rust struct literals need updating.
+- Native client socket connectors: Expose the connection attempt's absolute
+  deadline and requested socket tuning through `NetworkOptions` getters.
+- Rust transports: Add `TerminalTransportError` to retain original I/O errors
+  and stop MQTT 5 SRV candidate fallback when a connector or stream cannot retry.
 - Rust v4/v5 clients: Add `ProtocolCompatibility` as the home for deliberate
   interoperability exceptions. MQTT 3.1.1 gains opt-in
   `SessionPresentMismatchPolicy::AcceptAsClean` for successful clean-session
@@ -15,6 +28,21 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- MQTT 5 custom transports: Stop SRV fallback immediately on terminal failures,
+  including failures during composed TLS setup. Preserve both redirect and typed
+  transport failure details in wrapper terminal events, pending operations and
+  first-connection observers. Retryable candidate failures still allow fallback.
+- Native TLS: Preserve original stream errors through handshakes independently
+  of platform TLS error sources, including Schannel on Windows. Custom transport
+  failures retain their typed classification so terminal failures stop both
+  wrapper drivers and resolve pending operations instead of reconnecting.
+- Native wrappers: Stop both protocol drivers on terminal custom transport
+  failures, resolve pending operations and connection observers with the typed
+  error, and preserve reconnects for retryable failures. Preserve the MQTT 5
+  framing error source so stream failures retain their transport classification.
+- Native TLS: Handle asynchronous underlying flushes through the platform BIO
+  read boundary, avoiding false handshake failure on buffered custom streams.
+  Outer flush and shutdown still wait for real output completion.
 - Native C examples: Enable MSVC C11 atomics when building the session-store
   example, matching its callback ownership checks.
 - Native-wrapper MQTT 5 reauthentication: Reject an overlapping request with

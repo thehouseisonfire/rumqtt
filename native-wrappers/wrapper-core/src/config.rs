@@ -208,6 +208,7 @@ pub struct CommonConfig {
     pub network: NetworkConfig,
     pub last_will: Option<LastWillConfig>,
     pub proxy: Option<crate::ProxyConfig>,
+    pub connector: Option<crate::TransportConnectorConfig>,
     pub websocket_headers: Vec<crate::WebSocketHeader>,
     pub emit_outgoing_events: bool,
 }
@@ -235,6 +236,7 @@ impl std::fmt::Debug for CommonConfig {
             .field("network", &self.network)
             .field("last_will", &self.last_will.as_ref().map(|_| "[REDACTED]"))
             .field("proxy", &self.proxy)
+            .field("connector", &self.connector)
             .field("websocket_headers", &self.websocket_headers)
             .finish_non_exhaustive()
     }
@@ -265,12 +267,27 @@ impl CommonConfig {
             network: NetworkConfig::default(),
             last_will: None,
             proxy: None,
+            connector: None,
             websocket_headers: Vec::new(),
             emit_outgoing_events: false,
         }
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        if let Some(connector) = &self.connector {
+            if matches!(self.transport, TransportConfig::Unix) {
+                return Err(Error::configuration(
+                    "custom connectors require a TCP or WebSocket target",
+                ));
+            }
+            if connector.mode == crate::TransportMode::Established
+                && (!matches!(self.transport, TransportConfig::Tcp) || self.proxy.is_some())
+            {
+                return Err(Error::configuration(
+                    "established custom streams require TCP without native proxy/TLS/WebSocket layers",
+                ));
+            }
+        }
         if let Some(proxy) = &self.proxy {
             proxy.validate()?;
             if let crate::ProxyConfig::Http { tls: Some(tls), .. } = proxy {
@@ -670,6 +687,18 @@ impl ClientConfig {
                 }
             }
             ProtocolConfig::V5(v5) => {
+                if self
+                    .common
+                    .connector
+                    .as_ref()
+                    .is_some_and(|c| c.mode == crate::TransportMode::Established)
+                    && let crate::RedirectPolicy::Follow { transport, .. } = &v5.redirect_policy
+                    && !matches!(transport, TransportConfig::Tcp)
+                {
+                    return Err(Error::configuration(
+                        "established custom streams require TCP redirects",
+                    ));
+                }
                 if let crate::RedirectPolicy::Follow {
                     max_attempts,
                     transport,

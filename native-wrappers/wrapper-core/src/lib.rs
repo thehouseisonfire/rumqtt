@@ -28,7 +28,6 @@ mod runtime;
 pub mod rust_session_store;
 mod session;
 mod shutdown;
-#[cfg(all(test, feature = "transport-proof"))]
 mod transport;
 pub use redirect::{
     RedirectEvent, RedirectFailure, RedirectPolicy, RedirectReason, RedirectSource, SrvFailure,
@@ -37,6 +36,11 @@ pub use redirect::{
 pub use session::{
     BrokerSessionResumePolicy, SessionCheckpoint, SessionPresentMismatchPolicy, SessionStore,
     SessionStoreConfig, SessionStoreKey, StoreFailure, StoreFuture,
+};
+pub use transport::{
+    IoFuture as TransportIoFuture, NetworkHandling, OwnedIo as TransportIo, TransportConnection,
+    TransportConnector, TransportConnectorConfig, TransportFailure, TransportFuture, TransportMode,
+    TransportRequest,
 };
 mod validation;
 mod websocket;

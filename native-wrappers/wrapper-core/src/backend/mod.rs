@@ -1,6 +1,8 @@
 mod auth;
 mod redirect;
 pub mod session;
+mod transport;
+pub(crate) use transport::{io_error as transport_io_error, io_failure as transport_io_failure};
 pub mod v4;
 pub mod v5;
 

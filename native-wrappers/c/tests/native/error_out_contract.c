@@ -30,6 +30,26 @@ static void coverage_auth_callback(void *user_data,
 
 static void coverage_destroy(void *user_data) { (void)user_data; }
 
+static void coverage_transport_cancel(void *data, uint64_t id) { (void)data; (void)id; }
+static void coverage_transport_io(void *data, const rumqttc_transport_io_request_t *request,
+                                  rumqttc_callback_completion_t *completion) {
+  (void)data; (void)request; (void)completion;
+}
+static void coverage_transport_connect(void *data, const rumqttc_transport_connect_request_t *request,
+                                       rumqttc_callback_completion_t *completion) {
+  (void)request;
+  rumqttc_transport_stream_vtable_t table = RUMQTTC_TRANSPORT_STREAM_VTABLE_INIT;
+  table.perform = coverage_transport_io; table.cancel = coverage_transport_cancel; table.destroy = coverage_destroy;
+  rumqttc_transport_stream_t *stream = NULL;
+  /* ERROR_OUT_SUCCESS: rumqttc_transport_stream_new */
+  CHECK(rumqttc_transport_stream_new(completion, &table, NULL, &stream, NULL));
+  rumqttc_transport_stream_destroy(stream);
+  *(int *)data = 1;
+  rumqttc_transport_response_t response = RUMQTTC_TRANSPORT_RESPONSE_INIT;
+  response.result = RUMQTTC_TRANSPORT_FAILURE_NETWORK_OPTIONS;
+  CHECK(rumqttc_callback_transport_complete(completion, &response));
+}
+
 /*
  * Keep calls explicit: check_error_out_coverage.py derives the API list from
  * rumqttc.h and requires both markers whenever an optional error output is
@@ -676,5 +696,50 @@ void native_test_error_out_contract(void) {
     }
   }
 
+  {
+    int invoked = 0;
+    rumqttc_transport_vtable_t table = RUMQTTC_TRANSPORT_VTABLE_INIT;
+    table.connect = coverage_transport_connect; table.cancel = coverage_transport_cancel; table.destroy = coverage_destroy;
+    rumqttc_transport_registration_t *registration = NULL;
+    rumqttc_config_t *transport_config = NULL;
+    rumqttc_client_t *transport_client = NULL;
+    /* ERROR_OUT_SUCCESS: rumqttc_transport_registration_new */
+    CHECK(rumqttc_transport_registration_new(&table, &invoked, &registration, NULL));
+    rumqttc_transport_registration_t *invalid_registration = NULL;
+    /* ERROR_OUT_FAILURE: rumqttc_transport_registration_new */
+    EXPECT_FAILURE(rumqttc_transport_registration_new(NULL, NULL, &invalid_registration, NULL));
+    CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &transport_config, NULL));
+    CHECK(rumqttc_config_set_broker(transport_config, native_string("supplied.invalid"), 1883, NULL));
+    CHECK(rumqttc_config_set_client_id(transport_config, native_string("transport-error-coverage"), NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_connector */
+    CHECK(rumqttc_config_set_transport_connector(transport_config, registration, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_connector */
+    EXPECT_FAILURE(rumqttc_config_set_transport_connector(NULL, registration, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_transport_connector */
+    CHECK(rumqttc_config_clear_transport_connector(transport_config, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_transport_connector */
+    EXPECT_FAILURE(rumqttc_config_clear_transport_connector(NULL, NULL));
+    CHECK(rumqttc_config_set_transport_connector(transport_config, registration, NULL));
+    rumqttc_transport_registration_destroy(registration);
+    rumqttc_transport_stream_t *invalid_stream = NULL;
+    /* ERROR_OUT_FAILURE: rumqttc_transport_stream_new */
+    EXPECT_FAILURE(rumqttc_transport_stream_new(NULL, NULL, NULL, &invalid_stream, NULL));
+    CHECK(rumqttc_client_start(transport_config, &transport_client, NULL));
+    rumqttc_event_t *event = native_wait_event(transport_client, RUMQTTC_EVENT_DRIVER_TERMINATED);
+    rumqttc_error_t *error = NULL;
+    uint8_t present = 0, retryable = 1;
+    uint32_t failure = 0;
+    CHECK(rumqttc_event_disconnected(event, NULL, &error));
+    CHECK(rumqttc_error_transport_failure(error, &present, &failure));
+    REQUIRE(present && failure == RUMQTTC_TRANSPORT_FAILURE_NETWORK_OPTIONS);
+    CHECK(rumqttc_error_flags(error, &retryable, NULL));
+    REQUIRE(!retryable);
+    rumqttc_error_destroy(error);
+    rumqttc_event_destroy(event);
+    CHECK(rumqttc_client_close_now_timeout_ms(transport_client, 5000, NULL));
+    CHECK(rumqttc_client_destroy_timeout_ms(transport_client, 5000, NULL));
+    rumqttc_config_destroy(transport_config);
+    REQUIRE(invoked == 1);
+  }
   (void)ignored_error;
 }

@@ -121,7 +121,10 @@ jobs:
           cargo test --locked -p rumqttc-wrapper-core-next --lib --no-default-features --features transport-proof transport::
 
       - name: TLS backends and transport composition
-        run: cargo test --locked -p rumqttc-wrapper-core-next --features use-native-tls,websocket,proxy
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next --features use-native-tls,websocket,proxy
+          cargo test --locked --manifest-path ../Cargo.toml -p rumqttc-core-next \
+            --no-default-features --features use-native-tls --lib native_tls_io::tests
 
       - name: Independent tracing and log-fallback redaction
         if: ${{ runner.os == 'Linux' }}
@@ -345,7 +348,7 @@ jobs:
       - name: Run raw conversion tests under Miri
         run: cargo miri test -p rumqttc-c-next --lib
 
-      - name: Check private C stream ownership under sanitizers
+      - name: Check custom transport ownership under sanitizers
         env:
           CARGO_TARGET_DIR: target/transport-proof-asan
           CC: clang
@@ -353,10 +356,12 @@ jobs:
           RUSTFLAGS: -D warnings -Zsanitizer=address -C linker=clang
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1
-        run: >-
-          cargo test --locked -p rumqttc-wrapper-core-next --lib
-          --no-default-features --features transport-proof
-          --target x86_64-unknown-linux-gnu transport::
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next --lib \
+            --no-default-features --features transport-proof \
+            --target x86_64-unknown-linux-gnu transport::
+          cargo test --locked -p rumqttc-c-next --lib --no-default-features \
+            --target x86_64-unknown-linux-gnu ffi::transport::tests::
 
       - name: Build C library and sanitized native suite
         id: native_validation
@@ -379,7 +384,7 @@ jobs:
           cmake --build target/rumqttc-c-native-valgrind
           leak_tests='rumqttc-native-(integration|stress|store-ownership|auth-overlap|'
           leak_tests+='callback-races|event-queue|event-properties|wire-options|auth$|'
-          leak_tests+='close-options|store-write-failure)'
+          leak_tests+='close-options|store-write-failure|custom-transport)'
           ctest --test-dir target/rumqttc-c-native-valgrind -R "$leak_tests" --output-on-failure
 
       - name: Clean up platform trust after interrupted fixtures
@@ -449,7 +454,7 @@ jobs:
           cmake --build target/rumqttc-c-native-leaks
           leak_tests='rumqttc-native-(integration|stress|store-ownership|auth-overlap|'
           leak_tests+='callback-races|event-queue|event-properties|wire-options|auth$|'
-          leak_tests+='close-options|store-write-failure)'
+          leak_tests+='close-options|store-write-failure|custom-transport)'
           ctest --test-dir target/rumqttc-c-native-leaks -R "$leak_tests" --output-on-failure
 
       - name: Build and run sanitized native suite (Windows)

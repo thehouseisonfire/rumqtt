@@ -1718,6 +1718,7 @@ dependencies = [
 name = "rumqttc-wrapper-core-next"
 version = "0.34.0-alpha"
 dependencies = [
+ "async-tungstenite",
  "bytes",
  "cc",
  "flume",
@@ -1736,6 +1737,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tungstenite",
  "zeroize",

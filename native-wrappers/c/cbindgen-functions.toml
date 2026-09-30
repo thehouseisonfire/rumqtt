@@ -20,3 +20,6 @@ item_types = ["functions"]
 "rumqttc_callback_completion" = "rumqttc_callback_completion_t"
 "rumqttc_resolver_registration" = "rumqttc_resolver_registration_t"
 "rumqttc_auth_registration" = "rumqttc_auth_registration_t"
+
+"rumqttc_transport_registration" = "rumqttc_transport_registration_t"
+"rumqttc_transport_stream" = "rumqttc_transport_stream_t"

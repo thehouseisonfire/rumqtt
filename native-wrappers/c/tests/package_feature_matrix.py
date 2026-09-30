@@ -155,7 +155,7 @@ def main() -> None:
                     "--output-junit",
                     "results.xml",
                     "-R",
-                    "rumqttc-native-(proxy|redirect|srv|wire|runtime|tls|network|websocket|unix|socket|auth|"
+                    "rumqttc-native-(proxy|redirect|srv|wire|runtime|tls|network|websocket|unix|socket|custom-transport|auth|"
                     "event-properties|will-process)",
                 ],
                 workspace,

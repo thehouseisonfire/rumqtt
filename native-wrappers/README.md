@@ -47,3 +47,13 @@ and `ConnAckDiagnostic`. Existing `V5Config::broker_session_resume_policy`
 remains flat and maps into the native client's `ProtocolCompatibility`.
 The added defaulted Rust fields require updates to exhaustive struct literals;
 wrapper-core is private infrastructure and has no stable Rust API promise.
+
+## Custom transports
+
+Wrapper-core and C accept application-owned asynchronous byte streams for both
+MQTT versions. Base streams retain native proxy/TLS/WebSocket composition;
+established streams supply MQTT-ready bytes with native layering disabled.
+Owned buffers, explicit cancellation, bounded retained operations, and fresh
+streams on reconnect preserve the managed driver and tracked MQTT operations.
+See [wrapper-core](wrapper-core/README.md#custom-transports) and
+[the C API](c/README.md#custom-transports) for the contract and runnable example.

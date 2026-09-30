@@ -597,6 +597,32 @@ fn buffered_writes_are_bounded_and_pending_accepts_no_new_bytes() {
 }
 
 #[test]
+fn reading_progresses_short_buffered_writes_without_an_explicit_flush() {
+    let (fixture, counts) = fixture(2, 1 << WRITE);
+    let mut io = stream(&fixture);
+    let wakes = Arc::new(Wakes::default());
+    let waker = Waker::from(wakes.clone());
+    let mut cx = Context::from_waker(&waker);
+    assert_eq!(ready(Pin::new(&mut io).poll_write(&mut cx, b"hello")), 5);
+    let mut output = [0; 2];
+    assert!(poll_read(&mut io, &mut cx, &mut output).is_pending());
+    for _ in 0..3 {
+        fixture.finish(WRITE);
+        assert!(poll_read(&mut io, &mut cx, &mut output).is_pending());
+    }
+    assert_eq!(fixture.outgoing(), b"hello");
+    assert_eq!(fixture.starts(WRITE), 3);
+    assert!(!fixture.pending(WRITE));
+    fixture.feed(b"ok");
+    assert_eq!(ready(poll_read(&mut io, &mut cx, &mut output)), 2);
+    assert_eq!(&output, b"ok");
+    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    drop(io);
+    drop(fixture);
+    assert_released(&counts, 1, 1);
+}
+
+#[test]
 fn shutdown_serializes_write_flush_and_close_while_read_may_overlap() {
     let (fixture, counts) = fixture(16, (1 << WRITE) | (1 << FLUSH) | (1 << SHUTDOWN));
     let mut io = stream(&fixture);

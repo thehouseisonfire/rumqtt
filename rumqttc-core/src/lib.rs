@@ -19,6 +19,8 @@ pub mod admission;
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 mod scheduler;
+mod transport_error;
+pub use transport_error::TerminalTransportError;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 mod tls;
 #[cfg(feature = "websocket")]
@@ -223,6 +225,7 @@ pub struct NetworkOptions {
     tcp_recv_buffer_size: Option<u32>,
     tcp_nodelay: bool,
     conn_timeout: u64,
+    connection_deadline: Option<std::time::Instant>,
     bind_addr: Option<SocketAddr>,
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     bind_device: Option<String>,
@@ -238,12 +241,46 @@ impl NetworkOptions {
             tcp_recv_buffer_size: None,
             tcp_nodelay: false,
             conn_timeout: 5,
+            connection_deadline: None,
             bind_addr: None,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             bind_device: None,
             #[cfg(target_os = "linux")]
             mptcp: false,
         }
+    }
+
+    /// Native attempt deadline passed to custom connectors. This includes
+    /// subsequent proxy/TLS/WebSocket and MQTT negotiation; it is not reset
+    /// when the socket connector is invoked.
+    #[must_use]
+    pub const fn connection_deadline(&self) -> Option<std::time::Instant> {
+        self.connection_deadline
+    }
+
+    /// Set by the protocol event loop for each connection attempt.
+    #[doc(hidden)]
+    pub const fn set_connection_deadline(&mut self, deadline: std::time::Instant) {
+        self.connection_deadline = Some(deadline);
+    }
+
+    #[must_use]
+    pub const fn tcp_send_buffer_size(&self) -> Option<u32> {
+        self.tcp_send_buffer_size
+    }
+    #[must_use]
+    pub const fn tcp_recv_buffer_size(&self) -> Option<u32> {
+        self.tcp_recv_buffer_size
+    }
+    #[must_use]
+    pub const fn tcp_nodelay(&self) -> bool {
+        self.tcp_nodelay
+    }
+
+    #[must_use]
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    pub fn bind_device(&self) -> Option<&str> {
+        self.bind_device.as_deref()
     }
 
     pub const fn set_tcp_nodelay(&mut self, nodelay: bool) {

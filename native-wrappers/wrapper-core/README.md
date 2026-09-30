@@ -196,9 +196,63 @@ WebSocket header edits are ordered append/replace/remove operations. Upgrade,
 Host, framing, and `Sec-WebSocket-*` headers are protected. Values are redacted
 in Debug and marked sensitive in the prepared request. Dynamic callbacks are
 not exposed; declarative validation can reject construction before networking.
-Arbitrary custom socket connectors are explicitly deferred: a sound native
-partial-I/O/wakeup/cancellation contract is not yet defined. Unix sockets are
-supported independently on Unix targets.
+Unix sockets are supported independently on Unix targets.
+
+## Custom transports
+
+Set `CommonConfig::connector` to an owned `TransportConnectorConfig`. Its
+`TransportConnector::connect` returns a `TransportConnection` containing an
+`Arc<dyn TransportIo>`, the configured mode, and explicit `NetworkHandling`.
+Each attempt supplies owned target/client-ID strings, protocol, a client-local
+socket-attempt generation, requested network settings, and the exact native
+absolute deadline. The target is the proxy endpoint when a proxy is enabled;
+the deadline includes subsequent proxy/TLS/WebSocket/MQTT negotiation.
+
+`TransportMode::Base` supplies bytes before native proxy, TLS and WebSocket
+layers. `Established` supplies MQTT-ready bytes (including any host-managed
+security/tunnel) and requires TCP with no native proxy or layered redirect
+profile. Custom connectors cannot be combined with Unix broker targets.
+Reconnect calls the connector again; return a fresh stream each time.
+`NetworkHandling::Applied` confirms the host applied all requested settings;
+`NotApplicable` is accepted only for default network settings. Unsupported
+settings must fail explicitly rather than being silently ignored.
+
+`TransportIo` returns owned, sendable futures for read/write/flush/shutdown.
+Reads return owned `Bytes`; writes receive owned `Bytes`. Transfers are bounded
+at 16 KiB, one read can overlap the serialized writer, and short transfers are
+normal. A successful empty read is permanent EOF; pending work stays pending.
+Buffered writes report acceptance immediately. Subsequent writes, reads and
+flushes advance them and observe errors; shutdown drains writes and flushes.
+Host flush must actually flush accepted writes. The native TLS bridge handles
+pending flushes through its BIO read boundary and waits for the real flush
+before handshake completion or exposing outer flush/shutdown success.
+During native TLS handshakes, original stream errors are retained independently
+of the platform TLS error source, preserving transport classifications on Windows
+as well as Linux and macOS.
+
+Callbacks and future polls must return/yield promptly. No lifecycle/admission
+lock is held during a callback. Dropping a future cancels observation; detached
+work must retain its owners and buffers until released. Discard a cancelled
+stream, never reuse it. Destructors must neither block nor panic. Invocation,
+polling and future-destruction panics are contained as `TransportFailure::Panic`. Other failures
+have fixed typed classifications; arbitrary host diagnostic strings are not
+exposed through wrapper errors. See the C README for retained-operation bounds.
+
+`Connect`, `Io`, `Timeout` and `Abandoned` failures allow reconnection. All other
+transport failures terminate the driver with `DriverTerminated` and transition
+the client to `Failed`. Pending operations and first-connection observers receive
+the typed terminal error, and further admission is rejected.
+During an MQTT 5 SRV redirect, terminal failures also stop candidate fallback
+immediately. Retryable candidate failures can try the next endpoint. A failed
+redirect is terminal and its error retains both `redirect_failure()` and any
+underlying `transport_failure()`, including failures during TLS setup.
+
+`tests/custom_transport_memory.rs` covers composition/reconnect for both
+protocols and enabled TLS/proxy/WebSocket backends without sockets.
+`tests/custom_transport_redirect.rs` covers redirect failure classification,
+SRV fallback policy, pending operations and connection observers without sockets.
+`tests/custom_transport.rs` and `tests/transport_composition.rs` additionally
+cover real socket providers; the C examples include a transparent byte tunnel.
 
 ## Persistence and callback ownership
 

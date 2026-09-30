@@ -1454,6 +1454,7 @@ def main() -> int:
     parser.add_argument("--proxy-matrix", action="store_true")
     parser.add_argument("--tls-matrix", action="store_true")
     parser.add_argument("--network-matrix", action="store_true")
+    parser.add_argument("--custom-transport", action="store_true")
     parser.add_argument("argument", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="rumqttc-native-tls-") as directory:
@@ -1561,6 +1562,9 @@ def main() -> int:
             proxy_context, _, proxy_ca, _, _, _ = make_tls_fixture(proxy_directory)
             ports = {broker.port, tls_broker.port, wss_broker.port}
             tunnel_brokers = {item.port: item for item in (broker, tls_broker, wss_broker)}
+            if args.custom_transport:
+                ports.add(websocket_broker.port)
+                tunnel_brokers[websocket_broker.port] = websocket_broker
 
             def observe_tunnel(peer_port: int, target_port: int, kind: str) -> None:
                 target = tunnel_brokers[target_port]
@@ -1579,6 +1583,13 @@ def main() -> int:
                 environment[f"RUMQTTC_TEST_{name}_PORT"] = str(proxy.port)
             with open(proxy_ca, encoding="utf-8") as source:
                 environment["RUMQTTC_TEST_PROXY_CA_PEM"] = source.read()
+        if args.custom_transport:
+            from byte_tunnel_fixture import ByteTunnel
+            tunnel = ByteTunnel({broker.port, tls_broker.port, websocket_broker.port, wss_broker.port,
+                                 *(proxy.port for proxy in proxies)})
+            tunnel.start()
+            proxies.append(tunnel)
+            environment["RUMQTTC_TEST_BYTE_TUNNEL_PORT"] = str(tunnel.port)
         try:
             launcher = shlex.split(environment.get("RUMQTTC_NATIVE_LAUNCHER", ""))
             address_arguments = [] if args.omit_address_arguments else ["127.0.0.1", str(broker.port)]

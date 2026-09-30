@@ -1,4 +1,6 @@
 use std::error::Error as _;
+use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use rumqttc_wrapper_core::{DeliveryStatus, Error, ErrorKind};
 
@@ -37,7 +39,7 @@ pub struct ErrorHandle {
     pub kind: u32,
     pub code: &'static str,
     pub message: Box<str>,
-    pub source_chain: Box<str>,
+    pub source_chain: Arc<String>,
     pub retryable: bool,
     pub ambiguous: bool,
     pub broker_reason: Option<u8>,
@@ -46,9 +48,10 @@ pub struct ErrorHandle {
     pub phase: Option<u32>,
     pub generation: Option<u64>,
     pub delivery_status: u32,
-    pub store_failure: Option<u32>,
-    pub auth_failure: Option<u32>,
-    pub redirect_failure: Option<u32>,
+    pub store_failure: Option<NonZeroU32>,
+    pub auth_failure: Option<NonZeroU32>,
+    pub redirect_failure: Option<NonZeroU32>,
+    pub transport_failure: Option<NonZeroU32>,
 }
 
 impl ErrorHandle {
@@ -97,7 +100,7 @@ impl ErrorHandle {
                 REDIRECT_ERROR => "REDIRECT",
                 _ => "UNKNOWN",
             },
-            source_chain: message.clone().into_boxed_str(),
+            source_chain: Arc::new(message.clone()),
             message: message.into_boxed_str(),
             retryable: false,
             ambiguous: status == AMBIGUOUS,
@@ -110,6 +113,7 @@ impl ErrorHandle {
             store_failure: None,
             auth_failure: None,
             redirect_failure: None,
+            transport_failure: None,
         }
     }
 
@@ -170,7 +174,7 @@ impl ErrorHandle {
             kind,
             code: error.code().as_str(),
             message: error.message().into(),
-            source_chain: source_chain.into_boxed_str(),
+            source_chain: Arc::new(source_chain),
             retryable: error.retryable(),
             ambiguous,
             broker_reason: error.broker_reason(),
@@ -190,39 +194,58 @@ impl ErrorHandle {
                 DeliveryStatus::Rejected => 2,
                 DeliveryStatus::Ambiguous => 3,
             },
-            store_failure: error.store_failure().map(|failure| match failure {
-                rumqttc_wrapper_core::StoreFailure::Load => 1,
-                rumqttc_wrapper_core::StoreFailure::Save => 2,
-                rumqttc_wrapper_core::StoreFailure::Clear => 3,
-                rumqttc_wrapper_core::StoreFailure::Corrupt => 4,
-                rumqttc_wrapper_core::StoreFailure::Version => 5,
-                rumqttc_wrapper_core::StoreFailure::Protocol => 6,
-                rumqttc_wrapper_core::StoreFailure::Oversized => 7,
-                rumqttc_wrapper_core::StoreFailure::Timeout => 8,
-                rumqttc_wrapper_core::StoreFailure::Panic => 9,
-                rumqttc_wrapper_core::StoreFailure::InUse => 10,
+            store_failure: error.store_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::StoreFailure::Load => 1,
+                    rumqttc_wrapper_core::StoreFailure::Save => 2,
+                    rumqttc_wrapper_core::StoreFailure::Clear => 3,
+                    rumqttc_wrapper_core::StoreFailure::Corrupt => 4,
+                    rumqttc_wrapper_core::StoreFailure::Version => 5,
+                    rumqttc_wrapper_core::StoreFailure::Protocol => 6,
+                    rumqttc_wrapper_core::StoreFailure::Oversized => 7,
+                    rumqttc_wrapper_core::StoreFailure::Timeout => 8,
+                    rumqttc_wrapper_core::StoreFailure::Panic => 9,
+                    rumqttc_wrapper_core::StoreFailure::InUse => 10,
+                })
             }),
-            auth_failure: error.auth_failure().map(|failure| match failure {
-                rumqttc_wrapper_core::AuthFailure::Rejected => 1,
-                rumqttc_wrapper_core::AuthFailure::Panic => 2,
-                rumqttc_wrapper_core::AuthFailure::Timeout => 3,
-                rumqttc_wrapper_core::AuthFailure::InvalidResponse => 4,
-                rumqttc_wrapper_core::AuthFailure::Overlapping => 5,
-                rumqttc_wrapper_core::AuthFailure::ConnectionClosed => 6,
-                rumqttc_wrapper_core::AuthFailure::Method => 7,
-                rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
+            auth_failure: error.auth_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::AuthFailure::Rejected => 1,
+                    rumqttc_wrapper_core::AuthFailure::Panic => 2,
+                    rumqttc_wrapper_core::AuthFailure::Timeout => 3,
+                    rumqttc_wrapper_core::AuthFailure::InvalidResponse => 4,
+                    rumqttc_wrapper_core::AuthFailure::Overlapping => 5,
+                    rumqttc_wrapper_core::AuthFailure::ConnectionClosed => 6,
+                    rumqttc_wrapper_core::AuthFailure::Method => 7,
+                    rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
+                })
             }),
-            redirect_failure: error.redirect_failure().map(|failure| match failure {
-                rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
-                rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
-                rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
-                rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
-                rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
-                rumqttc_wrapper_core::RedirectFailure::Loop => 6,
-                rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
-                rumqttc_wrapper_core::RedirectFailure::Dns => 8,
-                rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
-                rumqttc_wrapper_core::RedirectFailure::Transport => 10,
+            transport_failure: error.transport_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::TransportFailure::Connect => 1,
+                    rumqttc_wrapper_core::TransportFailure::NetworkOptions => 2,
+                    rumqttc_wrapper_core::TransportFailure::Composition => 3,
+                    rumqttc_wrapper_core::TransportFailure::InvalidResult => 4,
+                    rumqttc_wrapper_core::TransportFailure::Abandoned => 5,
+                    rumqttc_wrapper_core::TransportFailure::Io => 6,
+                    rumqttc_wrapper_core::TransportFailure::Timeout => 7,
+                    rumqttc_wrapper_core::TransportFailure::Panic => 8,
+                    rumqttc_wrapper_core::TransportFailure::ResourceLimit => 9,
+                })
+            }),
+            redirect_failure: error.redirect_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
+                    rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
+                    rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
+                    rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
+                    rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
+                    rumqttc_wrapper_core::RedirectFailure::Loop => 6,
+                    rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
+                    rumqttc_wrapper_core::RedirectFailure::Dns => 8,
+                    rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
+                    rumqttc_wrapper_core::RedirectFailure::Transport => 10,
+                })
             }),
         }
     }

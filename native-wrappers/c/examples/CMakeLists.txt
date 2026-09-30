@@ -37,7 +37,16 @@ set(RUMQTTC_C_EXAMPLES
     session_store
     authenticator
     shutdown)
-list(APPEND RUMQTTC_C_EXAMPLES resource_limits)
+list(APPEND RUMQTTC_C_EXAMPLES resource_limits custom_transport)
+add_library(rumqttc_transport_socket STATIC transport_socket.c)
+target_compile_features(rumqttc_transport_socket PUBLIC c_std_11)
+target_link_libraries(rumqttc_transport_socket PUBLIC rumqttc_example_common)
+if(MSVC)
+    target_compile_options(rumqttc_transport_socket PRIVATE /W4 /WX /experimental:c11atomics)
+    target_link_libraries(rumqttc_transport_socket PUBLIC ws2_32)
+else()
+    target_compile_options(rumqttc_transport_socket PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 
 foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     set(target "rumqttc-example-${example}")
@@ -59,7 +68,13 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${RUMQTTC_SHARED_LIBRARY}" "$<TARGET_FILE_DIR:${target}>")
     endif()
-    add_test(NAME ${target}
-        COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:${target}>)
+    if(example STREQUAL "custom_transport")
+        target_link_libraries(${target} PRIVATE rumqttc_transport_socket)
+        add_test(NAME ${target} COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}"
+            --custom-transport --binary $<TARGET_FILE:${target}>)
+    else()
+        add_test(NAME ${target}
+            COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:${target}>)
+    endif()
     set_tests_properties(${target} PROPERTIES LABELS "native;example" TIMEOUT 30)
 endforeach()

@@ -203,7 +203,7 @@ pub enum StateError {
     #[error("An Unsubscribe packet must contain at least one filter")]
     EmptyUnsubscription,
     #[error("Mqtt serialization/deserialization error: {0}")]
-    Deserialization(MqttError),
+    Deserialization(#[source] MqttError),
     #[error("MQTT protocol violation: {0}")]
     ProtocolViolation(ProtocolViolation),
     #[error(

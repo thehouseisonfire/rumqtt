@@ -105,6 +105,7 @@ pub struct Error {
     store_failure: Option<crate::StoreFailure>,
     auth_failure: Option<crate::AuthFailure>,
     redirect_failure: Option<crate::RedirectFailure>,
+    transport_failure: Option<crate::TransportFailure>,
     context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
@@ -124,6 +125,7 @@ impl Error {
             store_failure: None,
             auth_failure: None,
             redirect_failure: None,
+            transport_failure: None,
             context: ErrorContext::default(),
             source: None,
         }
@@ -149,6 +151,7 @@ impl Error {
             store_failure: None,
             auth_failure: None,
             redirect_failure: None,
+            transport_failure: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }
@@ -191,6 +194,30 @@ impl Error {
         let mut error = Self::new(ErrorKind::Network, "broker redirect failed");
         error.redirect_failure = Some(failure);
         error.retryable = false;
+        error
+    }
+
+    pub(crate) const fn with_transport_failure(mut self, failure: crate::TransportFailure) -> Self {
+        self.transport_failure = Some(failure);
+        self
+    }
+
+    #[must_use]
+    pub const fn transport_failure(&self) -> Option<crate::TransportFailure> {
+        self.transport_failure
+    }
+
+    pub(crate) fn transport(failure: crate::TransportFailure) -> Self {
+        let mut error = Self::new(
+            if failure == crate::TransportFailure::Timeout {
+                ErrorKind::Timeout
+            } else {
+                ErrorKind::Network
+            },
+            failure.to_string(),
+        );
+        error.transport_failure = Some(failure);
+        error.retryable = failure.retryable();
         error
     }
 
@@ -259,6 +286,7 @@ impl fmt::Debug for Error {
             .field("store_failure", &self.store_failure)
             .field("auth_failure", &self.auth_failure)
             .field("redirect_failure", &self.redirect_failure)
+            .field("transport_failure", &self.transport_failure)
             .field("context", &self.context)
             .finish_non_exhaustive()
     }

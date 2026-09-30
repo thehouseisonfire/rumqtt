@@ -296,3 +296,16 @@ add_test(NAME rumqttc-native-event-properties
 set_tests_properties(rumqttc-native-event-properties PROPERTIES LABELS "native;events" TIMEOUT 90)
 
 add_subdirectory("${RUMQTTC_ROOT}/examples" examples)
+
+rumqttc_native_target(rumqttc-native-custom-transport custom_transport.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-custom-transport PRIVATE /experimental:c11atomics)
+endif()
+add_test(NAME rumqttc-native-custom-transport COMMAND rumqttc-native-custom-transport)
+set_tests_properties(rumqttc-native-custom-transport PROPERTIES LABELS "native;transport;ownership" TIMEOUT 30)
+rumqttc_native_target(rumqttc-native-custom-transport-matrix custom_transport_matrix.c)
+target_link_libraries(rumqttc-native-custom-transport-matrix PRIVATE rumqttc_transport_socket)
+add_test(NAME rumqttc-native-custom-transport-matrix
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --custom-transport --proxy-matrix
+        --binary $<TARGET_FILE:rumqttc-native-custom-transport-matrix>)
+set_tests_properties(rumqttc-native-custom-transport-matrix PROPERTIES LABELS "native;transport;tls;proxy;websocket" TIMEOUT 120)

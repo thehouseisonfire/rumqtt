@@ -123,6 +123,17 @@ pub fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
+    if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
+        let mut terminal = Error::redirect(super::redirect::failure(&redirect.failure))
+            .with_delivery(DeliveryStatus::Ambiguous);
+        if let Some(failure) = super::transport::failure(&error) {
+            terminal = terminal.with_transport_failure(failure);
+        }
+        return terminal;
+    }
+    if let Some(failure) = super::transport::failure(&error) {
+        return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
     if let rumqttc_v5::ConnectionError::SessionStore(source) = &error {
         return Error::store(
             source
@@ -379,6 +390,7 @@ fn build_options(
             &common.client_id,
         )?);
     }
+    super::transport::configure_v5(&mut options, common);
     options.validate().map_err(|error| {
         Error::sourced(
             ErrorKind::Configuration,
@@ -693,8 +705,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         Some(failure),
                         &redirect_diagnostics,
                     );
-                    let terminal =
-                        Error::redirect(failure).with_delivery(DeliveryStatus::Ambiguous);
+                    let terminal = shared.contextualize(map_connection_error(error));
                     shared.fail_acknowledgements(&terminal);
                     fail_pending(&mut senders, &terminal);
                     if !deliver(&delivery, WrapperEvent::Redirect(event)).await {
@@ -705,7 +716,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v5::ConnectionError::DisconnectTimeout);
                 let error = shared.contextualize(map_connection_error(error));
-                if error.kind() == ErrorKind::Persistence {
+                if error.kind() == ErrorKind::Persistence
+                    || (error.transport_failure().is_some() && !error.retryable())
+                {
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
                     return TerminalStatus::Failed(error);

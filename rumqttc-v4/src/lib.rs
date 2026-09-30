@@ -255,6 +255,7 @@ impl From<Unsubscribe> for Request {
 
 /// Custom socket connector used to establish the underlying stream before optional proxy/TLS layers.
 pub(crate) type SocketConnector = rumqttc_core::SocketConnector;
+pub use rumqttc_core::TerminalTransportError;
 
 const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(100);
 

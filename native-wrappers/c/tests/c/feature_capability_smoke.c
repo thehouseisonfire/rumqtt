@@ -19,7 +19,7 @@
 int main(void) {
   const uint64_t capabilities = rumqttc_library_capabilities();
   const uint64_t required = RUMQTTC_CAP_PROTOCOL_V4 | RUMQTTC_CAP_PROTOCOL_V5 | RUMQTTC_CAP_SESSION_STORE_CALLBACKS |
-                            RUMQTTC_CAP_AUTH_CALLBACKS;
+                            RUMQTTC_CAP_AUTH_CALLBACKS | RUMQTTC_CAP_TRANSPORT_CALLBACKS;
   const struct {
     uint64_t bit;
     int expected;

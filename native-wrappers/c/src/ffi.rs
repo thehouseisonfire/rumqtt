@@ -8,6 +8,10 @@
 // unsafe blocks inside the panic boundary.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+#[path = "transport.rs"]
+mod transport;
+pub use transport::*;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -59,6 +63,7 @@ const CAP_SCRAM: u64 = 1 << 9;
 const CAP_TRACING: u64 = 1 << 10;
 const CAP_STORE_CALLBACKS: u64 = 1 << 11;
 const CAP_AUTH_CALLBACKS: u64 = 1 << 12;
+const CAP_TRANSPORT_CALLBACKS: u64 = 1 << 13;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -479,11 +484,20 @@ pub struct rumqttc_callback_completion {
     inner: CallbackCompletion,
 }
 
+impl Drop for rumqttc_callback_completion {
+    fn drop(&mut self) {
+        if let CallbackCompletion::Transport(inner) = &self.inner {
+            inner.release_host();
+        }
+    }
+}
+
 #[derive(Clone)]
 enum CallbackCompletion {
     Store(Arc<StoreCompletion>),
     Resolver(Arc<ResolverCompletion>),
     Auth(Arc<AuthCompletion>),
+    Transport(Arc<transport::TransportOperation>),
 }
 
 struct AuthOwner {
@@ -1169,6 +1183,7 @@ pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
         | CAP_V5
         | CAP_STORE_CALLBACKS
         | CAP_AUTH_CALLBACKS
+        | CAP_TRANSPORT_CALLBACKS
         | if cfg!(any(
             feature = "use-rustls-ring",
             feature = "use-rustls-aws-lc"
@@ -2343,10 +2358,12 @@ pub unsafe extern "C" fn rumqttc_callback_completion_retain(
         if completion.is_null() || out.is_null() {
             return Err(ErrorHandle::argument("completion or output is NULL"));
         }
+        let inner = unsafe { &(*completion).inner }.clone();
+        if let CallbackCompletion::Transport(operation) = &inner {
+            operation.retain_host();
+        }
         unsafe {
-            *out = Box::into_raw(Box::new(rumqttc_callback_completion {
-                inner: (*completion).inner.clone(),
-            }));
+            *out = Box::into_raw(Box::new(rumqttc_callback_completion { inner }));
         }
         Ok(())
     })
@@ -5938,7 +5955,9 @@ pub unsafe extern "C" fn rumqttc_error_store_failure(
     present_out: *mut u8,
     failure_out: *mut u32,
 ) -> u32 {
-    error_detail(error, present_out, failure_out, |error| error.store_failure)
+    error_detail(error, present_out, failure_out, |error| {
+        error.store_failure.map(std::num::NonZeroU32::get)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -5947,7 +5966,9 @@ pub unsafe extern "C" fn rumqttc_error_auth_failure(
     present_out: *mut u8,
     failure_out: *mut u32,
 ) -> u32 {
-    error_detail(error, present_out, failure_out, |error| error.auth_failure)
+    error_detail(error, present_out, failure_out, |error| {
+        error.auth_failure.map(std::num::NonZeroU32::get)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -5957,7 +5978,7 @@ pub unsafe extern "C" fn rumqttc_error_redirect_failure(
     failure_out: *mut u32,
 ) -> u32 {
     error_detail(error, present_out, failure_out, |error| {
-        error.redirect_failure
+        error.redirect_failure.map(std::num::NonZeroU32::get)
     })
 }
 
@@ -6639,10 +6660,12 @@ mod tests {
 
     #[test]
     fn connack_accessors_preserve_presence_order_and_wrong_kind_outputs() {
-        let mut properties = rumqttc_wrapper_core::V5ConnAckProperties::default();
-        properties.reason_string = Some(String::new());
-        properties.receive_maximum = Some(9);
-        properties.user_properties = vec![("a".into(), "1".into()), ("a".into(), "2".into())];
+        let properties = rumqttc_wrapper_core::V5ConnAckProperties {
+            reason_string: Some(String::new()),
+            receive_maximum: Some(9),
+            user_properties: vec![("a".into(), "1".into()), ("a".into(), "2".into())],
+            ..Default::default()
+        };
         let event = rumqttc_event {
             inner: EventObject::new(WrapperEvent::Connected {
                 protocol: ProtocolVersion::V5,
