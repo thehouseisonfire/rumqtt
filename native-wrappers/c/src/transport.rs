@@ -1,6 +1,6 @@
 //! C transport owners and deferred operations. Included under the FFI module
 //! so every exported entry point uses the existing validation/panic boundary.
-use super::*;
+use super::{c_void, rumqttc_callback_completion, rumqttc_string_view_t, rumqttc_bytes_view_t, Arc, Bytes, Mutex, OK, struct_size, ProtocolVersion, view_string, CallbackCompletion, ErrorHandle, rumqttc_error, ptr, boundary, destroy_box, rumqttc_config, config_ref, config_update, catch_unwind, AssertUnwindSafe, bytes_from_view, error_detail};
 use rumqttc_wrapper_core::{
     NetworkHandling, TransportConnection, TransportConnector, TransportConnectorConfig,
     TransportFailure, TransportFuture, TransportIo, TransportIoFuture, TransportMode,
@@ -143,10 +143,10 @@ impl Owner {
     fn cancel(&self, id: u64) {
         match self {
             Self::Connector(owner) => unsafe {
-                owner.vtable.cancel.unwrap()(owner.user_data as *mut c_void, id)
+                owner.vtable.cancel.unwrap()(owner.user_data as *mut c_void, id);
             },
             Self::Stream(owner) => unsafe {
-                owner.vtable.cancel.unwrap()(owner.user_data as *mut c_void, id)
+                owner.vtable.cancel.unwrap()(owner.user_data as *mut c_void, id);
             },
         }
     }
@@ -342,9 +342,9 @@ impl TransportConnector for Connector {
         unsafe {
             self.0.vtable.connect.unwrap()(
                 self.0.user_data as *mut c_void,
-                &request,
+                &raw const request,
                 (&raw const completion).cast_mut(),
-            )
+            );
         };
         Box::pin(async move {
             match future.await? {
@@ -391,9 +391,9 @@ impl StreamIo {
         unsafe {
             self.0.vtable.perform.unwrap()(
                 self.0.user_data as *mut c_void,
-                &request,
+                &raw const request,
                 (&raw const completion).cast_mut(),
-            )
+            );
         };
         future
     }

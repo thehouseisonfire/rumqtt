@@ -131,6 +131,7 @@ const IMMEDIATE_WRITE_BUDGET: usize = 64;
 pub type IoFuture<T> = Pin<Box<dyn Future<Output = io::Result<T>> + Send + 'static>>;
 
 /// Calls must return promptly. A read owns its result; a write owns its input.
+///
 /// Dropping a future stops observation. Detached work must retain its buffers
 /// and owner until released, and a discarded stream must never be reused.
 /// One read may overlap one write, flush, or shutdown; writes are serialized.
@@ -163,7 +164,7 @@ type HostWork<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
 /// Own the host future so cancellation/destruction retains the callback
 /// context too. A panicking destructor must not escape driver teardown.
-pub(crate) struct HostFuture<T, E> {
+pub struct HostFuture<T, E> {
     future: Option<HostWork<T, E>>,
     failure: fn(TransportFailure) -> E,
 }
@@ -257,8 +258,8 @@ struct StreamState {
 
 /// Send futures are held in a Mutex to satisfy the non-WebSocket clients' Sync
 /// bound without unsafe trait implementations. Polling always uses exclusive
-/// get_mut: no mutex or wrapper lock is held while invoking foreign code.
-pub(crate) struct OwnedStream(Mutex<StreamState>);
+/// `get_mut`: no mutex or wrapper lock is held while invoking foreign code.
+pub struct OwnedStream(Mutex<StreamState>);
 
 fn failure(kind: io::ErrorKind) -> io::Error {
     io::Error::new(kind, "foreign stream operation failed")
