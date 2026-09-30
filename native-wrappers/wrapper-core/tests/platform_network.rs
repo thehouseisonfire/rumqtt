@@ -113,6 +113,8 @@ mod unix {
         loop {
             match listener.accept() {
                 Ok((socket, _)) => {
+                    // macOS inherits O_NONBLOCK from the listening socket.
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(DEADLINE)).unwrap();
                     socket.set_write_timeout(Some(DEADLINE)).unwrap();
                     return socket;

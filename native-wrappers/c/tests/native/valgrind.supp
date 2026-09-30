@@ -1,9 +1,13 @@
+# Rust's thread-local handle on a foreign main thread survives until process exit.
+# Some toolchains insert Thread::new_current between new and init_current.
+# Match only this possible leak; keep real client/driver leaks visible.
 {
    rust-std-current-thread-handle-on-foreign-main-thread
    Memcheck:Leak
    match-leak-kinds: possible
    fun:malloc
    ...
-   fun:*std*thread*Thread*new
-   fun:*std*thread*current*init_current
+   fun:*std*thread*Thread*new*
+   ...
+   fun:*std*thread*current*init_current*
 }

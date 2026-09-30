@@ -192,8 +192,20 @@ const overflow = new MqttClient({
 const overflowEvents = overflow.events()
 await overflow.connect()
 await overflowEvents.next()
-await overflow.subscribe([{ filter: 'rumqttc/native/overflow' }])
-await new Promise(resolve => setTimeout(resolve, 150))
+const expectOverflow = error => {
+  assert.ok(error instanceof MqttError)
+  assert.equal(error.code, 'EVENT_BUFFER_OVERFLOW')
+}
+// This topic never receives PUBACK. Its pending operation resolves only when
+// the driver terminates, so no timer is needed before draining the event queue.
+const overflowStopped = assert.rejects(
+  overflow.publish('rumqttc/native/stall', new Uint8Array([1]), { qos: 1 }),
+  error => { expectOverflow(error); return true },
+)
+// The broker sends the burst immediately after SUBACK. Overflow can terminate
+// the driver before the tracked subscription completion is delivered.
+await overflow.subscribe([{ filter: 'rumqttc/native/overflow' }]).catch(expectOverflow)
+await overflowStopped
 let terminal
 while (!terminal) {
   const { value, done } = await overflowEvents.next()

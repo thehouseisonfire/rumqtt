@@ -28,6 +28,8 @@ add_library(native_common STATIC native_common.c event_contract.c)
 target_include_directories(native_common PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(native_common PUBLIC rumqttc_native_shared)
 if(MSVC)
+    # These portable fixtures intentionally use the ISO C stdio/environment API.
+    target_compile_definitions(native_common PUBLIC _CRT_SECURE_NO_WARNINGS)
     target_compile_options(native_common PRIVATE /W4 /WX)
 else()
     target_compile_options(native_common PRIVATE -Wall -Wextra -Wpedantic -Werror)

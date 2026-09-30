@@ -374,6 +374,8 @@ fn failed_followed_srv_connection_retains_terminal_redirect_diagnostics() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let target = TcpListener::bind("127.0.0.1:0").unwrap();
     let mut config = config(true, origin.local_addr().unwrap().port());
+    // localhost may resolve to IPv6, where another fixture can own the same port.
+    config.common.network.local_address = Some("127.0.0.1:0".parse().unwrap());
     let ProtocolConfig::V5(v5) = &mut config.protocol else {
         unreachable!()
     };
@@ -580,12 +582,29 @@ fn server_moved_reports_resolved_srv_diagnostics_before_resetting_redirect_state
 
 fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
-    let preferred = TcpListener::bind("127.0.0.1:0").unwrap();
+    // Reserve both address families at one port. Retry if another fixture
+    // already owns the IPv6 endpoint chosen by the IPv4 ephemeral allocator.
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let (preferred, competing) = loop {
+        let preferred = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = preferred.local_addr().unwrap().port();
+        match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)) {
+            Ok(competing) => break (preferred, competing),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "fixture port reservation timed out"
+                );
+            }
+            Err(error) => panic!("IPv6 fixture bind failed: {error}"),
+        }
+    };
     let backup = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = preferred.local_addr().unwrap().port();
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let mut config = config(true, origin.local_addr().unwrap().port());
+    config.common.network.local_address = Some("127.0.0.1:0".parse().unwrap());
     let ProtocolConfig::V5(v5) = &mut config.protocol else {
         unreachable!()
     };
@@ -666,6 +685,11 @@ fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
         std::io::ErrorKind::WouldBlock
     );
     broker.join();
+    competing.set_nonblocking(true).unwrap();
+    assert_eq!(
+        competing.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]

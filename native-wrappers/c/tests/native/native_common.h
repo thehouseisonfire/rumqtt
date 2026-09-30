@@ -8,6 +8,11 @@
 
 #define NATIVE_DEADLINE_MS 5000u
 
+#if defined(_MSC_VER)
+__declspec(noreturn)
+#else
+_Noreturn
+#endif
 void native_fail(const char *file, int line, const char *expression,
                  rumqttc_status_t status);
 

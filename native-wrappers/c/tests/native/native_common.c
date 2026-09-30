@@ -88,7 +88,6 @@ uint64_t native_fixture_read(const char *name) {
     native_sleep_ms(1);
   } while (native_monotonic_ms() < deadline);
   native_fail(__FILE__, __LINE__, name, RUMQTTC_TIMEOUT);
-  return 0;
 }
 
 rumqttc_string_view_t native_string(const char *value) {
