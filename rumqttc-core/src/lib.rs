@@ -47,8 +47,8 @@ pub use tls::websocket_tls_connector;
 pub use tls::websocket_tls_connector;
 #[cfg(feature = "websocket")]
 pub use websockets::{
-    UrlError, ValidationError, WsAdapter, split_url, split_url_with_default_port,
-    validate_response_headers,
+    UrlError, ValidationError, WebSocketRequestContext, WsAdapter, split_url,
+    split_url_with_default_port, validate_response_headers,
 };
 
 #[cfg(not(feature = "websocket"))]
@@ -68,6 +68,20 @@ pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 
 impl<T> AsyncReadWrite for T where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
 
 pub type DynAsyncReadWrite = Box<dyn AsyncReadWrite>;
+
+/// Formats a host and port as a socket endpoint, bracketing IPv6 literals.
+#[must_use]
+pub fn socket_address(host: &str, port: u16) -> String {
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    if unbracketed.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{unbracketed}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
 
 /// Custom socket connector used to establish the underlying stream before optional proxy/TLS layers.
 pub type SocketConnector = Arc<
@@ -489,10 +503,23 @@ pub async fn default_socket_connect(
 mod tests {
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     use super::TlsConfiguration;
-    use super::{NetworkOptions, connect_socket_addr, default_socket_connect};
+    use super::{NetworkOptions, connect_socket_addr, default_socket_connect, socket_address};
     use std::io;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn socket_endpoints_bracket_ipv6_once_and_preserve_other_hosts() {
+        for (host, expected) in [
+            ("broker.example", "broker.example:1883"),
+            ("127.0.0.1", "127.0.0.1:1883"),
+            ("::1", "[::1]:1883"),
+            ("[::1]", "[::1]:1883"),
+            ("2001:db8::1", "[2001:db8::1]:1883"),
+        ] {
+            assert_eq!(socket_address(host, 1883), expected);
+        }
+    }
 
     #[cfg(all(
         feature = "use-rustls-no-provider",

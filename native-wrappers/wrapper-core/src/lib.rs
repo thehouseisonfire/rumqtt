@@ -46,7 +46,12 @@ mod validation;
 mod websocket;
 mod will;
 pub use proxy::{ProxyConfig, ProxyCredentials};
-pub use websocket::WebSocketHeader;
+pub use websocket::{
+    MAX_WEBSOCKET_BYTES, MAX_WEBSOCKET_EDITS, MAX_WEBSOCKET_HEADERS, MAX_WEBSOCKET_PATH,
+    WebSocketHandshake, WebSocketHandshakeConfig, WebSocketHandshakeFailure,
+    WebSocketHandshakeFuture, WebSocketHandshakeRequest, WebSocketHandshakeResponse,
+    WebSocketHeader, WebSocketRequestHeader,
+};
 
 pub use command::{
     Command, DisconnectProtocolOptions, PublishCommand, PublishProtocolOptions, SubscribeCommand,

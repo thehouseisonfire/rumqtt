@@ -28,6 +28,10 @@ static void coverage_auth_callback(void *user_data,
   (void)completion;
 }
 
+static void coverage_websocket(void *data, const rumqttc_websocket_request_t *request, rumqttc_callback_completion_t *completion) {
+  (void)data; (void)request; CHECK(rumqttc_callback_websocket_reject(completion));
+}
+
 static void coverage_destroy(void *user_data) { (void)user_data; }
 
 static void coverage_transport_cancel(void *data, uint64_t id) { (void)data; (void)id; }
@@ -740,6 +744,45 @@ void native_test_error_out_contract(void) {
     CHECK(rumqttc_client_destroy_timeout_ms(transport_client, 5000, NULL));
     rumqttc_config_destroy(transport_config);
     REQUIRE(invoked == 1);
+  }
+  if (rumqttc_library_capabilities() & RUMQTTC_CAP_WEBSOCKET_CALLBACKS) {
+    rumqttc_config_t *config = NULL;
+    rumqttc_websocket_registration_t *registration = NULL;
+    rumqttc_websocket_response_t *response = NULL;
+    rumqttc_websocket_vtable_t table = RUMQTTC_WEBSOCKET_VTABLE_INIT;
+    table.prepare = coverage_websocket; table.destroy = coverage_destroy;
+    CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &config, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_websocket_registration_new */
+    EXPECT_FAILURE(rumqttc_websocket_registration_new(NULL, NULL, &registration, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_websocket_registration_new */
+    CHECK(rumqttc_websocket_registration_new(&table, NULL, &registration, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_websocket_handshake */
+    EXPECT_FAILURE(rumqttc_config_set_websocket_handshake(NULL, registration, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_websocket_handshake */
+    CHECK(rumqttc_config_set_websocket_handshake(config, registration, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_clear_websocket_handshake */
+    EXPECT_FAILURE(rumqttc_config_clear_websocket_handshake(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_clear_websocket_handshake */
+    CHECK(rumqttc_config_clear_websocket_handshake(config, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_websocket_response_new */
+    EXPECT_FAILURE(rumqttc_websocket_response_new(NULL, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_websocket_response_new */
+    CHECK(rumqttc_websocket_response_new(&response, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_websocket_response_set_authority */
+    EXPECT_FAILURE(rumqttc_websocket_response_set_authority(response, native_string("user@host"), NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_websocket_response_set_authority */
+    CHECK(rumqttc_websocket_response_set_authority(response, native_string("customer.example:443"), NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_websocket_response_set_path_and_query */
+    EXPECT_FAILURE(rumqttc_websocket_response_set_path_and_query(response, native_string("https://invalid"), NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_websocket_response_set_path_and_query */
+    CHECK(rumqttc_websocket_response_set_path_and_query(response, native_string("/mqtt?token=one"), NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_websocket_response_header_edit */
+    EXPECT_FAILURE(rumqttc_websocket_response_header_edit(response, RUMQTTC_WEBSOCKET_HEADER_ADD, native_string("Host"), native_bytes(NULL, 0), NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_websocket_response_header_edit */
+    CHECK(rumqttc_websocket_response_header_edit(response, RUMQTTC_WEBSOCKET_HEADER_ADD, native_string("x-token"), native_bytes(NULL, 0), NULL));
+    rumqttc_websocket_response_destroy(response);
+    rumqttc_websocket_registration_destroy(registration);
+    rumqttc_config_destroy(config);
   }
   (void)ignored_error;
 }

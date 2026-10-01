@@ -1,6 +1,21 @@
 ## [Unreleased]
 
 ### Added
+- Native wrappers: Add owned asynchronous WebSocket handshake preparation for
+  both MQTT versions and WS/WSS, with a retained C registration, borrowed request
+  snapshot, owned response builders, capability bit and typed failure detail.
+  Apply static headers before each dynamic callback; support path/query edits,
+  explicit HTTP authority overrides, and byte-valued headers. Authority setters
+  synchronize URI and Host while preserving configured TCP/proxy routing, TLS
+  SNI and certificate verification; protect upgrade fields and generic Host
+  edits. Bound requests, responses and deferred work by explicit limits and the native
+  connection deadline; reject stale completions and isolate redirects. Include
+  reconnect signing fixtures and a portable token refresh example. Wrapper-core
+  adds defaulted `CommonConfig::websocket_handshake`; exhaustive Rust struct
+  literals need updating.
+- Native WebSocket request modifiers: Expose configured broker, dial target,
+  TLS authority and connection deadline through `WebSocketRequestContext` in
+  the request's HTTP extensions for both protocols.
 - Native wrappers: Add owned asynchronous custom transport connectors for both
   MQTT versions, including the C registration/stream/completion API and transport
   capability/error detail. Preserve native proxy, TLS and WebSocket composition
@@ -28,6 +43,13 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native C examples: Mark the WebSocket token example as skipped in CTest when
+  WebSocket callbacks are unavailable, preserving argument-validation failures.
+- Native wrappers: Preserve typed WebSocket handshake destructor failures when
+  shutdown cancels pending work, including failures of outstanding operations.
+- MQTT v4/v5: Keep IPv6 dial targets bracketed in WebSocket handshake snapshots
+  and consistent with direct and proxy connector addresses. Correct direct
+  IPv6 socket address formatting in v4 as well.
 - Benchmark validation: Include the failing matched client's validity flags and
   delivery/completion counters in CI errors, and retain synthetic/WebSocket
   validation reports as artifacts. Keep invalid runs failing validation.

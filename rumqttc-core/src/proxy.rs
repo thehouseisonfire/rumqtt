@@ -1,9 +1,8 @@
-use crate::default_socket_connect;
 use crate::{AsyncReadWrite, NetworkOptions, SocketConnector};
+use crate::{default_socket_connect, socket_address};
 
 use std::fmt;
 use std::io;
-use std::net::Ipv6Addr;
 
 #[cfg(all(
     feature = "http-proxy",
@@ -204,7 +203,7 @@ impl Proxy {
         network_options: NetworkOptions,
         socket_connector: Option<SocketConnector>,
     ) -> Result<Box<dyn AsyncReadWrite>, ProxyError> {
-        let proxy_addr = endpoint(&self.host, self.port);
+        let proxy_addr = socket_address(&self.host, self.port);
         let tcp: Box<dyn AsyncReadWrite> = if let Some(connector) = socket_connector {
             connector(proxy_addr, network_options).await?
         } else {
@@ -242,14 +241,6 @@ impl Proxy {
     }
 }
 
-fn endpoint(host: &str, port: u16) -> String {
-    if host.parse::<Ipv6Addr>().is_ok() {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
 #[cfg(feature = "http-proxy")]
 async fn http_connect(
     mut stream: Box<dyn AsyncReadWrite>,
@@ -275,6 +266,7 @@ async fn http_connect(
 #[cfg(all(test, feature = "socks-proxy"))]
 mod tests {
     use super::*;
+    use std::net::Ipv6Addr;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 

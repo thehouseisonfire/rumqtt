@@ -831,6 +831,21 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
                 name: "x-absent".into(),
             },
         ];
+        struct OriginHandshake(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl WebSocketHandshake for OriginHandshake {
+            fn prepare(&self, _: WebSocketHandshakeRequest) -> WebSocketHandshakeFuture {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    let mut response = WebSocketHandshakeResponse::default();
+                    response.append_header("x-dynamic-origin", b"dynamic-private-token")?;
+                    Ok(response)
+                })
+            }
+        }
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        config.common.websocket_handshake = Some(WebSocketHandshakeConfig(std::sync::Arc::new(
+            OriginHandshake(calls.clone()),
+        )));
         let ProtocolConfig::V5(v5) = &mut config.protocol else {
             unreachable!()
         };
@@ -859,10 +874,15 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
                         );
                         assert!(!request.headers().contains_key("x-absent"));
                         if redirected {
-                            for header in ["x-order", "authorization", "cookie"] {
+                            for header in ["x-order", "authorization", "cookie", "x-dynamic-origin"]
+                            {
                                 assert!(!request.headers().contains_key(header));
                             }
                         } else {
+                            assert_eq!(
+                                request.headers()["x-dynamic-origin"],
+                                "dynamic-private-token"
+                            );
                             let values: Vec<_> = request
                                 .headers()
                                 .get_all("x-order")
@@ -928,6 +948,7 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
         );
         client.closer().close(DEADLINE).unwrap();
         broker.join();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         capture::assert_redacted(
             "",
             &[

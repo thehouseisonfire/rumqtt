@@ -42,6 +42,7 @@ typedef uint32_t rumqttc_status_t;
 #define RUMQTTC_PERSISTENCE_ERROR 12u
 #define RUMQTTC_AUTHENTICATION_ERROR 13u
 #define RUMQTTC_REDIRECT_ERROR 14u
+#define RUMQTTC_WEBSOCKET_HANDSHAKE_ERROR 15u
 
 typedef uint32_t rumqttc_protocol_t;
 #define RUMQTTC_PROTOCOL_V4 1u
@@ -209,6 +210,7 @@ typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_CAP_SESSION_STORE_CALLBACKS (UINT64_C(1) << 11)
 #define RUMQTTC_CAP_AUTH_CALLBACKS (UINT64_C(1) << 12)
 #define RUMQTTC_CAP_TRANSPORT_CALLBACKS (UINT64_C(1) << 13)
+#define RUMQTTC_CAP_WEBSOCKET_CALLBACKS (UINT64_C(1) << 14)
 
 #define RUMQTTC_TRANSPORT_MAX_TRANSFER 16384u
 #define RUMQTTC_TRANSPORT_BASE 1u
@@ -276,6 +278,8 @@ typedef struct rumqttc_store_registration_t rumqttc_store_registration_t;
 typedef struct rumqttc_callback_completion_t rumqttc_callback_completion_t;
 typedef struct rumqttc_resolver_registration_t rumqttc_resolver_registration_t;
 typedef struct rumqttc_auth_registration_t rumqttc_auth_registration_t;
+typedef struct rumqttc_websocket_registration_t rumqttc_websocket_registration_t;
+typedef struct rumqttc_websocket_response_t rumqttc_websocket_response_t;
 typedef struct rumqttc_transport_registration_t rumqttc_transport_registration_t;
 typedef struct rumqttc_transport_stream_t rumqttc_transport_stream_t;
 
@@ -367,6 +371,54 @@ typedef struct rumqttc_v5_connect_properties_t {
     const rumqttc_user_property_t *user_properties;
     size_t user_property_count;
 } rumqttc_v5_connect_properties_t;
+
+/* Borrowed only during prepare(). Header values are octets, not UTF-8 strings.
+ * Names are sorted; duplicate values preserve their order. This is not wire order. */
+typedef struct rumqttc_websocket_header_t {
+    uint32_t struct_size;
+    rumqttc_string_view_t name;
+    rumqttc_bytes_view_t value;
+} rumqttc_websocket_header_t;
+
+typedef struct rumqttc_websocket_request_t {
+    uint32_t struct_size;
+    uint32_t protocol;
+    uint64_t attempt;
+    uint64_t remaining_ns;
+    rumqttc_string_view_t method;
+    rumqttc_string_view_t version;
+    rumqttc_string_view_t uri;
+    rumqttc_string_view_t path_and_query;
+    rumqttc_string_view_t client_id;
+    rumqttc_string_view_t broker_host;
+    uint32_t broker_port;
+    uint8_t tls_authority_present;
+    uint8_t reserved_flags[3];
+    rumqttc_string_view_t dial_target;
+    rumqttc_string_view_t tls_authority;
+    const rumqttc_websocket_header_t *headers;
+    size_t header_count;
+    uint64_t reserved[2];
+} rumqttc_websocket_request_t;
+
+typedef struct rumqttc_websocket_vtable_t {
+    uint32_t struct_size;
+    void (*prepare)(void *, const rumqttc_websocket_request_t *, rumqttc_callback_completion_t *);
+    void (*destroy)(void *);
+    uint64_t reserved[2];
+} rumqttc_websocket_vtable_t;
+
+#define RUMQTTC_WEBSOCKET_VTABLE_INIT { sizeof(rumqttc_websocket_vtable_t), NULL, NULL, {0, 0} }
+#define RUMQTTC_WEBSOCKET_FAILURE_REJECTED 1u
+#define RUMQTTC_WEBSOCKET_FAILURE_ABANDONED 2u
+#define RUMQTTC_WEBSOCKET_FAILURE_INVALID_RESPONSE 3u
+#define RUMQTTC_WEBSOCKET_FAILURE_RESOURCE_LIMIT 4u
+#define RUMQTTC_WEBSOCKET_FAILURE_TIMEOUT 5u
+#define RUMQTTC_WEBSOCKET_FAILURE_PANIC 6u
+#define RUMQTTC_WEBSOCKET_MAX_HEADERS 128u
+#define RUMQTTC_WEBSOCKET_MAX_PATH_BYTES 8192u
+#define RUMQTTC_WEBSOCKET_MAX_REQUEST_BYTES 65536u
+#define RUMQTTC_WEBSOCKET_MAX_RESPONSE_EDITS 256u
 
 typedef struct rumqttc_websocket_header_edit_t {
     uint32_t struct_size;
@@ -923,6 +975,36 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_clear_v5_connect_properties(rumqttc_
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_topic_alias_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
 /* Unix path bytes use the platform's native Unix encoding; no UTF-8 conversion. */
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_unix_broker(rumqttc_config_t *config, rumqttc_bytes_view_t path, rumqttc_error_t **error_out);
+/* prepare() runs once after static edits on each prepared attempt. Return promptly;
+ * copy request views for deferred work, retain the borrowed completion, and destroy
+ * each retained handle. Do not wait for MQTT progress from the same driver.
+ * One completion wins. Late/duplicate calls return INVALID_STATE before reading
+ * response inputs. Dropping the last host token abandons pending work.
+ * Owners survive reconnects and retained tokens; destroy(user_data) runs once
+ * after all registrations/configurations/clients/tokens release their references.
+ * Failed registration leaves user_data with the caller. */
+RUMQTTC_API rumqttc_status_t rumqttc_websocket_registration_new(const rumqttc_websocket_vtable_t *vtable, void *data, rumqttc_websocket_registration_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_websocket_registration_destroy(rumqttc_websocket_registration_t *registration);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_websocket_handshake(rumqttc_config_t *config, const rumqttc_websocket_registration_t *registration, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_websocket_handshake(rumqttc_config_t *config, rumqttc_error_t **error_out);
+/* Builders copy inputs and serialize concurrent edits. Destruction must not race
+ * use. Completion copies the builder; success means accepted, not connected.
+ * Path/query, explicit HTTP authority, and unprotected headers may change. Empty
+ * header values differ from removal. Dial routing and TLS authority remain fixed. */
+RUMQTTC_API rumqttc_status_t rumqttc_websocket_response_new(rumqttc_websocket_response_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_websocket_response_destroy(rumqttc_websocket_response_t *response);
+/* Copies ASCII host[:port] or [IPv6][:port], with a numeric port in 0..65535
+ * and no user information. Updates URI authority and Host together. Scheme,
+ * dial/proxy destination, TLS SNI, and certificate verification remain tied to
+ * the configured endpoint. A successful
+ * call replaces any prior override; an invalid or oversized value leaves it intact. */
+RUMQTTC_API rumqttc_status_t rumqttc_websocket_response_set_authority(rumqttc_websocket_response_t *response, rumqttc_string_view_t authority, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_websocket_response_set_path_and_query(rumqttc_websocket_response_t *response, rumqttc_string_view_t path, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_websocket_response_header_edit(rumqttc_websocket_response_t *response, uint32_t operation, rumqttc_string_view_t name, rumqttc_bytes_view_t value, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_callback_websocket_complete(rumqttc_callback_completion_t *completion, const rumqttc_websocket_response_t *response);
+RUMQTTC_API rumqttc_status_t rumqttc_callback_websocket_reject(rumqttc_callback_completion_t *completion);
+RUMQTTC_API rumqttc_status_t rumqttc_error_websocket_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);
+
 /* Copies ordered edits; append retains duplicates, replace and remove act in order. */
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_websocket_header_edits(rumqttc_config_t *config, const rumqttc_websocket_header_edit_t *edits, size_t count, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_tcp_send_buffer_size_bytes(rumqttc_config_t *config, uint32_t bytes, rumqttc_error_t **error_out);

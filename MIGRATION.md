@@ -252,6 +252,12 @@ explicitly with `TlsConfiguration::default_rustls()`,
 
 ## WebSocket and WSS
 
+Wrapper-core adds defaulted `CommonConfig::websocket_handshake`; exhaustive
+Rust struct literals need this field. See the wrapper-core and C README guides
+for asynchronous handshake preparation. Explicit authority overrides synchronize
+the URI and Host without changing TCP/proxy routing or TLS identity. Method and
+HTTP version edits remain unavailable.
+
 Upstream `rumqttc 0.25.x` reads a WebSocket URL from its string broker address,
 so changing only the transport is sufficient there. In this fork the
 WebSocket URL is part of `Broker`; a `(host, port)` broker is always a TCP

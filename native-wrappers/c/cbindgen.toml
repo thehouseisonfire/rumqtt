@@ -9,6 +9,11 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_websocket_registration",
+    "rumqttc_websocket_response",
+    "rumqttc_websocket_request_t",
+    "rumqttc_websocket_header_t",
+    "rumqttc_websocket_vtable_t",
     "rumqttc_transport_vtable_t",
     "rumqttc_transport_stream_vtable_t",
     "rumqttc_transport_connect_request_t",
@@ -62,3 +67,6 @@ include = [
 
 "rumqttc_transport_registration" = "rumqttc_transport_registration_t"
 "rumqttc_transport_stream" = "rumqttc_transport_stream_t"
+
+"rumqttc_websocket_registration" = "rumqttc_websocket_registration_t"
+"rumqttc_websocket_response" = "rumqttc_websocket_response_t"

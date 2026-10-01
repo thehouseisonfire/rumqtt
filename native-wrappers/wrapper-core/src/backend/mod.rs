@@ -6,6 +6,9 @@ pub use transport::{io_error as transport_io_error, io_failure as transport_io_f
 pub mod v4;
 pub mod v5;
 
+#[cfg(feature = "websocket")]
+pub use rumqttc_v4::WebSocketRequestContext;
+
 use std::time::Duration;
 
 use crate::operations::CompletionFuture;
@@ -22,7 +25,7 @@ pub enum BackendClient {
 }
 
 pub enum BackendDriver {
-    V4(Box<rumqttc_v4::EventLoop>),
+    V4(Box<v4::Driver>),
     V5(Box<v5::Driver>),
 }
 

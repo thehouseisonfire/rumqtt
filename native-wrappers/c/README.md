@@ -236,6 +236,58 @@ TCP buffer overrides restores operating-system defaults. TCP_NODELAY can be
 disabled independently. The operating system may adjust buffer sizes or tune
 default buffers while the connection is active.
 
+For per-attempt token refresh or signing, initialize `rumqttc_websocket_vtable_t`
+with `RUMQTTC_WEBSOCKET_VTABLE_INIT`, create a registration, and attach it with
+`rumqttc_config_set_websocket_handshake()`. The loaded library must advertise
+`RUMQTTC_CAP_WEBSOCKET_CALLBACKS`; disabled builds reject registration eagerly.
+The registration owns user data only after successful creation. Configurations,
+clients, and retained completion tokens retain it independently. `destroy` runs
+exactly once after their final release; it may run on any participating thread.
+Clearing a configuration affects future clients, not an already started client.
+
+`prepare` runs after static edits once per prepared WS/WSS attempt, including
+reconnects. Its request, header array, and completion handle are borrowed for
+the callback only. Copy any request fields needed later and retain the completion
+with `rumqttc_callback_completion_retain()` before returning. Return promptly;
+defer credential retrieval to a host worker instead of waiting for MQTT work.
+Registrations shared by clients must support concurrent callbacks.
+
+Create an owned `rumqttc_websocket_response`, set its path/query or authority,
+apply header edits, and finish with `rumqttc_callback_websocket_complete()`.
+Setters copy their inputs and completion copies the response; destroy the
+builder after completion.
+Header values are byte views. Add preserves duplicate values and their per-name
+order, replace removes previous values, and remove distinguishes absence from
+an intentional empty value. Snapshot names are sorted, without a global wire
+ordering guarantee. `rumqttc_websocket_response_set_authority()` accepts
+`host[:port]` or `[IPv6][:port]` without user information and updates the URI
+authority and `Host` together. Repeated successful calls replace the override;
+invalid edits leave it intact. Generic `Host` edits remain prohibited. GET,
+HTTP/1.1, scheme, framing, upgrade, and `Sec-WebSocket-*` fields cannot change.
+Sign the final authority, path/query, and selected headers as required by your
+service. Authority overrides select HTTP routing only: broker resolution, TCP
+and proxy destinations, TLS SNI, and certificate verification still use the
+configured endpoint. For example, a connection to `gateway.example` can send
+`Host: mqtt.customer.example`, while TLS authenticates `gateway.example`.
+
+The absolute connection deadline bounds deferred work. Complete or reject only
+once; duplicate and cancelled replies return `RUMQTTC_INVALID_STATE`. Release
+every retained token, including late tokens after timeout or close. Releasing
+the final unanswered token abandons the decision. A late token retains user data
+until it is destroyed, even after the client exits. Callback rejection,
+abandonment, and timeout follow the existing reconnect policy. Invalid final
+requests, resource limits, and callback panics terminate the driver. Query
+`rumqttc_error_websocket_failure()` for the fixed typed detail. Wrapper diagnostics
+exclude handshake credentials. Upstream WebSocket dependency TRACE logging can
+include outgoing requests; configure those log targets accordingly. Isolated
+redirects clear the origin registration and static edits.
+
+Limits are 128 final header values, an 8 KiB path/query, 64 KiB aggregate request
+data, 256 response edits, and 64 KiB copied response data. The portable
+[`websocket_tokens.c`](examples/websocket_tokens.c) example demonstrates deferred
+completion and token refresh on reconnect. The callback is available to C and
+wrapper-core; JavaScript and Python bindings do not expose it yet.
+
 Proxy connections use `rumqttc_proxy_options_t` with
 `RUMQTTC_PROXY_OPTIONS_INIT`. Select HTTP, HTTPS, or SOCKS5; the loaded library
 must have the corresponding proxy capability bit. `RUMQTTC_PROXY_DNS_REMOTE`
@@ -556,6 +608,10 @@ cmake -S native-wrappers/c/tests/native -B native-wrappers/target/rumqttc-c-nati
 cmake --build native-wrappers/target/rumqttc-c-native
 ctest --test-dir native-wrappers/target/rumqttc-c-native -L example --output-on-failure
 ```
+
+The WebSocket token example exits with code 77 when the loaded library lacks
+`RUMQTTC_CAP_WEBSOCKET_CALLBACKS`; CTest reports it as skipped. Invalid invocation
+arguments remain errors.
 
 Keep these distinctions in mind when adapting the examples:
 

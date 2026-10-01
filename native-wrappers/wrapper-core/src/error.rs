@@ -33,6 +33,7 @@ pub enum ErrorCode {
     BrokerRejected,
     EventBufferOverflow,
     InternalPanic,
+    WebSocketHandshake,
     Internal,
 }
 
@@ -52,6 +53,7 @@ impl ErrorCode {
             Self::Shutdown => "SHUTDOWN",
             Self::BrokerRejected => "BROKER_REJECTED",
             Self::EventBufferOverflow => "EVENT_BUFFER_OVERFLOW",
+            Self::WebSocketHandshake => "WEBSOCKET_HANDSHAKE",
             Self::InternalPanic => "INTERNAL_PANIC",
             Self::Internal => "INTERNAL",
         }
@@ -106,6 +108,7 @@ pub struct Error {
     auth_failure: Option<crate::AuthFailure>,
     redirect_failure: Option<crate::RedirectFailure>,
     transport_failure: Option<crate::TransportFailure>,
+    websocket_failure: Option<crate::WebSocketHandshakeFailure>,
     context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
@@ -126,6 +129,7 @@ impl Error {
             auth_failure: None,
             redirect_failure: None,
             transport_failure: None,
+            websocket_failure: None,
             context: ErrorContext::default(),
             source: None,
         }
@@ -152,9 +156,30 @@ impl Error {
             auth_failure: None,
             redirect_failure: None,
             transport_failure: None,
+            websocket_failure: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }
+    }
+
+    pub(crate) fn websocket(failure: crate::WebSocketHandshakeFailure) -> Self {
+        let mut error = Self::new(
+            if failure == crate::WebSocketHandshakeFailure::Timeout {
+                ErrorKind::Timeout
+            } else {
+                ErrorKind::Network
+            },
+            failure.to_string(),
+        );
+        error.code = ErrorCode::WebSocketHandshake;
+        error.websocket_failure = Some(failure);
+        error.retryable = failure.retryable();
+        error
+    }
+
+    #[must_use]
+    pub const fn websocket_failure(&self) -> Option<crate::WebSocketHandshakeFailure> {
+        self.websocket_failure
     }
 
     #[must_use]
@@ -287,6 +312,7 @@ impl fmt::Debug for Error {
             .field("auth_failure", &self.auth_failure)
             .field("redirect_failure", &self.redirect_failure)
             .field("transport_failure", &self.transport_failure)
+            .field("websocket_failure", &self.websocket_failure)
             .field("context", &self.context)
             .finish_non_exhaustive()
     }

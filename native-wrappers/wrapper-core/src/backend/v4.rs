@@ -14,6 +14,12 @@ pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
+    #[cfg(feature = "websocket")]
+    if let rumqttc_v4::ConnectionError::RequestModifier(source) = &error
+        && let Some(failure) = source.downcast_ref::<crate::WebSocketHandshakeFailure>()
+    {
+        return Error::websocket(*failure);
+    }
     if let Some(failure) = super::transport::failure(&error) {
         return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
@@ -210,9 +216,7 @@ fn build_options(
         options.set_proxy(super::build_proxy(proxy)?);
     }
     #[cfg(feature = "websocket")]
-    if !common.websocket_headers.is_empty() {
-        options.set_request_modifier(crate::websocket::prepare(&common.websocket_headers)?);
-    }
+    configure_handshake(&mut options, common, std::sync::Arc::default())?;
     options.set_ack_mode(match common.ack_mode {
         crate::AckMode::Automatic => rumqttc_v4::AckMode::Automatic,
         crate::AckMode::Manual => rumqttc_v4::AckMode::Manual,
@@ -254,11 +258,40 @@ fn build_options(
     Ok(options)
 }
 
+pub struct Driver {
+    eventloop: rumqttc_v4::EventLoop,
+    websocket: std::sync::Arc<crate::websocket::HandshakeMonitor>,
+}
+
+#[cfg(feature = "websocket")]
+fn configure_handshake(
+    options: &mut rumqttc_v4::MqttOptions,
+    common: &crate::CommonConfig,
+    monitor: std::sync::Arc<crate::websocket::HandshakeMonitor>,
+) -> crate::Result<()> {
+    if let Some(config) = &common.websocket_handshake {
+        options.set_fallible_request_modifier(crate::websocket::prepare_dynamic(
+            &common.websocket_headers,
+            config.clone(),
+            crate::ProtocolVersion::V4,
+            common.client_id.clone(),
+            monitor,
+        )?);
+    } else if !common.websocket_headers.is_empty() {
+        options.set_request_modifier(crate::websocket::prepare(&common.websocket_headers)?);
+    }
+    Ok(())
+}
+
 pub fn build(
     common: &crate::CommonConfig,
     protocol: crate::V4Config,
-) -> crate::Result<(rumqttc_v4::AsyncClient, Box<rumqttc_v4::EventLoop>)> {
-    let options = build_options(common, protocol)?;
+) -> crate::Result<(rumqttc_v4::AsyncClient, Box<Driver>)> {
+    #[allow(unused_mut, reason = "WebSocket configuration requires mutation")]
+    let mut options = build_options(common, protocol)?;
+    let websocket = std::sync::Arc::new(crate::websocket::HandshakeMonitor::default());
+    #[cfg(feature = "websocket")]
+    configure_handshake(&mut options, common, websocket.clone())?;
     let (client, mut eventloop) = rumqttc_v4::AsyncClient::builder(options)
         .capacity(common.request_channel_capacity)
         .try_build()
@@ -270,12 +303,19 @@ pub fn build(
             )
         })?;
     eventloop.network_options = super::build_network(common);
-    Ok((client, Box::new(eventloop)))
+    Ok((
+        client,
+        Box::new(Driver {
+            eventloop,
+            websocket,
+        }),
+    ))
 }
-pub async fn run(
-    mut eventloop: Box<rumqttc_v4::EventLoop>,
-    context: DriverContext,
-) -> TerminalStatus {
+pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
+    let Driver {
+        mut eventloop,
+        websocket,
+    } = *driver;
     let DriverContext {
         shared,
         completion_rx,
@@ -305,6 +345,9 @@ pub async fn run(
         // Keep the same future alive across wrapper-control wakeups so those side effects cannot
         // be abandoned by `select!` cancellation. Diagnostics use the last completed snapshot
         // while the poll future holds the mutable event-loop borrow.
+        if !connected {
+            websocket.reset();
+        }
         let polled = {
             let poll = eventloop.poll();
             tokio::pin!(poll);
@@ -332,6 +375,14 @@ pub async fn run(
             }
         };
         let Some(polled) = polled else {
+            // Dropping the poll also destroys pending host handshake work. Its
+            // terminal failure must take precedence over a successful cancellation.
+            if let Some(failure) = websocket.failure().filter(|failure| !failure.retryable()) {
+                let error = shared.contextualize(Error::websocket(failure));
+                shared.fail_acknowledgements(&error);
+                fail_pending(&mut senders, &error);
+                return TerminalStatus::Failed(error);
+            }
             // There is no established MQTT session to close cleanly. Dropping the event loop is
             // the cancellation boundary for DNS/TCP/TLS/CONNACK work; unlike resuming a cancelled
             // poll, termination cannot lose a dequeued request and then continue with corrupt state.
@@ -365,9 +416,14 @@ pub async fn run(
             Err(error) => {
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v4::ConnectionError::DisconnectTimeout);
-                let error = shared.contextualize(map_connection_error(error));
+                let error = shared.contextualize(
+                    websocket
+                        .failure()
+                        .map_or_else(|| map_connection_error(error), Error::websocket),
+                );
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
+                    || (error.websocket_failure().is_some() && !error.retryable())
                 {
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);

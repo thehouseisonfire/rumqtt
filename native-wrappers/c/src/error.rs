@@ -19,6 +19,7 @@ pub const WOULD_BLOCK: u32 = 11;
 pub const PERSISTENCE_ERROR: u32 = 12;
 pub const AUTHENTICATION_ERROR: u32 = 13;
 pub const REDIRECT_ERROR: u32 = 14;
+pub const WEBSOCKET_HANDSHAKE_ERROR: u32 = 15;
 
 pub const ERROR_NONE: u32 = 0;
 const ERROR_CONFIGURATION: u32 = 1;
@@ -44,7 +45,7 @@ pub struct ErrorHandle {
     pub ambiguous: bool,
     pub broker_reason: Option<u8>,
     pub operation_id: Option<u64>,
-    pub protocol: Option<u32>,
+    pub protocol: Option<NonZeroU32>,
     pub phase: Option<u32>,
     pub generation: Option<u64>,
     pub delivery_status: u32,
@@ -52,6 +53,7 @@ pub struct ErrorHandle {
     pub auth_failure: Option<NonZeroU32>,
     pub redirect_failure: Option<NonZeroU32>,
     pub transport_failure: Option<NonZeroU32>,
+    pub websocket_failure: Option<NonZeroU32>,
 }
 
 impl ErrorHandle {
@@ -98,6 +100,7 @@ impl ErrorHandle {
                 PERSISTENCE_ERROR => "PERSISTENCE",
                 AUTHENTICATION_ERROR => "AUTHENTICATION",
                 REDIRECT_ERROR => "REDIRECT",
+                WEBSOCKET_HANDSHAKE_ERROR => "WEBSOCKET_HANDSHAKE",
                 _ => "UNKNOWN",
             },
             source_chain: Arc::new(message.clone()),
@@ -114,6 +117,7 @@ impl ErrorHandle {
             auth_failure: None,
             redirect_failure: None,
             transport_failure: None,
+            websocket_failure: None,
         }
     }
 
@@ -121,6 +125,8 @@ impl ErrorHandle {
         let ambiguous = error.delivery_status() == DeliveryStatus::Ambiguous;
         let status = if error.kind() == ErrorKind::Timeout {
             TIMEOUT
+        } else if error.websocket_failure().is_some() {
+            WEBSOCKET_HANDSHAKE_ERROR
         } else if ambiguous {
             AMBIGUOUS
         } else if error.broker_reason().is_some()
@@ -179,9 +185,11 @@ impl ErrorHandle {
             ambiguous,
             broker_reason: error.broker_reason(),
             operation_id,
-            protocol: error.context().protocol.map(|value| match value {
-                rumqttc_wrapper_core::ProtocolVersion::V4 => 1,
-                rumqttc_wrapper_core::ProtocolVersion::V5 => 2,
+            protocol: error.context().protocol.and_then(|value| {
+                NonZeroU32::new(match value {
+                    rumqttc_wrapper_core::ProtocolVersion::V4 => 1,
+                    rumqttc_wrapper_core::ProtocolVersion::V5 => 2,
+                })
             }),
             phase: error.context().phase.map(|value| match value {
                 rumqttc_wrapper_core::ConnectionPhase::Attempt => 1,
@@ -220,6 +228,9 @@ impl ErrorHandle {
                     rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
                 })
             }),
+            websocket_failure: error
+                .websocket_failure()
+                .and_then(|failure| NonZeroU32::new(failure as u32)),
             transport_failure: error.transport_failure().and_then(|failure| {
                 NonZeroU32::new(match failure {
                     rumqttc_wrapper_core::TransportFailure::Connect => 1,

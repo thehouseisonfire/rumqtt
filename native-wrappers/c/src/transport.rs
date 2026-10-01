@@ -709,8 +709,9 @@ pub unsafe extern "C" fn rumqttc_error_transport_failure(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{rumqttc_callback_completion_destroy, rumqttc_callback_completion_retain};
     use super::*;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     #[derive(Default)]
     struct Host {
         tokens: Mutex<Vec<usize>>,

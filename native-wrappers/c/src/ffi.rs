@@ -8,6 +8,10 @@
 // unsafe blocks inside the panic boundary.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+#[path = "websocket.rs"]
+mod websocket;
+pub use websocket::*;
+
 #[path = "transport.rs"]
 mod transport;
 pub use transport::*;
@@ -64,6 +68,7 @@ const CAP_TRACING: u64 = 1 << 10;
 const CAP_STORE_CALLBACKS: u64 = 1 << 11;
 const CAP_AUTH_CALLBACKS: u64 = 1 << 12;
 const CAP_TRANSPORT_CALLBACKS: u64 = 1 << 13;
+const CAP_WEBSOCKET_CALLBACKS: u64 = 1 << 14;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -489,6 +494,9 @@ impl Drop for rumqttc_callback_completion {
         if let CallbackCompletion::Transport(inner) = &self.inner {
             inner.release_host();
         }
+        if let CallbackCompletion::WebSocket(inner) = &self.inner {
+            inner.release_host();
+        }
     }
 }
 
@@ -498,6 +506,7 @@ enum CallbackCompletion {
     Resolver(Arc<ResolverCompletion>),
     Auth(Arc<AuthCompletion>),
     Transport(Arc<transport::TransportOperation>),
+    WebSocket(Arc<websocket::WebSocketCompletion>),
 }
 
 struct AuthOwner {
@@ -1184,6 +1193,11 @@ pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
         | CAP_STORE_CALLBACKS
         | CAP_AUTH_CALLBACKS
         | CAP_TRANSPORT_CALLBACKS
+        | if cfg!(feature = "websocket") {
+            CAP_WEBSOCKET_CALLBACKS
+        } else {
+            0
+        }
         | if cfg!(any(
             feature = "use-rustls-ring",
             feature = "use-rustls-aws-lc"
@@ -2360,6 +2374,9 @@ pub unsafe extern "C" fn rumqttc_callback_completion_retain(
         }
         let inner = unsafe { &(*completion).inner }.clone();
         if let CallbackCompletion::Transport(operation) = &inner {
+            operation.retain_host();
+        }
+        if let CallbackCompletion::WebSocket(operation) = &inner {
             operation.retain_host();
         }
         unsafe {
@@ -6036,7 +6053,10 @@ pub unsafe extern "C" fn rumqttc_error_context(
         }
         let error = unsafe { error_ref(error) }?;
         unsafe {
-            write_optional(protocol_out, error.protocol.unwrap_or(0));
+            write_optional(
+                protocol_out,
+                error.protocol.map_or(0, std::num::NonZeroU32::get),
+            );
             write_optional(phase_out, error.phase.unwrap_or(0));
             write_optional(generation_present_out, u8::from(error.generation.is_some()));
             write_optional(generation_out, error.generation.unwrap_or(0));

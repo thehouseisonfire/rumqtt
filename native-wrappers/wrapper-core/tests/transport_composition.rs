@@ -4,6 +4,7 @@ mod tls;
 
 use std::io::Write;
 use std::net::TcpListener;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::*;
@@ -166,12 +167,42 @@ fn proxy_handshake(stream: &mut impl tls::Duplex, socks: bool, host: &str, rejec
 
 #[test]
 fn proxy_tls_and_websocket_compositions_reconnect_for_both_protocols() {
-    compositions(false);
+    compositions(false, false);
 }
 
 #[test]
 fn custom_connectors_preserve_proxy_tls_and_websocket_composition() {
-    compositions(true);
+    compositions(true, false);
+}
+
+#[test]
+fn dynamic_handshakes_preserve_proxy_tls_and_custom_connector_composition() {
+    compositions(false, true);
+    compositions(true, true);
+}
+
+struct DynamicHandshake {
+    host: String,
+    port: u16,
+    dial: String,
+    encrypted: bool,
+}
+impl WebSocketHandshake for DynamicHandshake {
+    fn prepare(&self, request: WebSocketHandshakeRequest) -> WebSocketHandshakeFuture {
+        assert_eq!(request.broker_host, self.host);
+        assert_eq!(request.broker_port, self.port);
+        assert_eq!(request.dial_target, self.dial);
+        assert_eq!(
+            request.tls_authority.as_deref(),
+            self.encrypted.then_some(self.host.as_str())
+        );
+        Box::pin(async move {
+            let mut response = WebSocketHandshakeResponse::default();
+            response.set_authority(&format!("customer-{}.example:8443", request.attempt))?;
+            response.replace_header("x-dynamic", request.attempt.to_string().as_bytes())?;
+            Ok(response)
+        })
+    }
 }
 
 #[path = "support/custom_transport.rs"]
@@ -181,7 +212,7 @@ mod custom;
     clippy::result_large_err,
     reason = "tungstenite handshake callback error type"
 )]
-fn compositions(custom_connector: bool) {
+fn compositions(custom_connector: bool, dynamic: bool) {
     capture::start();
     let broker_tls = tls::Fixture::new();
     let proxy_tls = tls::Fixture::new();
@@ -205,6 +236,9 @@ fn compositions(custom_connector: bool) {
                 for transport in ["tcp", "tls", "ws", "wss"] {
                     let encrypted = transport == "tls" || transport == "wss";
                     let websocket = transport == "ws" || transport == "wss";
+                    if dynamic && !websocket {
+                        continue;
+                    }
                     if encrypted && !enabled {
                         continue;
                     }
@@ -259,6 +293,19 @@ fn compositions(custom_connector: bool) {
                                 (proxy == "https").then(|| proxy_tls.client(backend)),
                             ));
                         }
+                        if dynamic {
+                            config.common.websocket_handshake =
+                                Some(WebSocketHandshakeConfig(Arc::new(DynamicHandshake {
+                                    host: host.into(),
+                                    port: broker_port,
+                                    dial: if proxy == "direct" {
+                                        format!("{host}:{broker_port}")
+                                    } else {
+                                        format!("127.0.0.1:{port}")
+                                    },
+                                    encrypted,
+                                })));
+                        }
                         let broker_server = broker_tls.server.clone();
                         let proxy_server = proxy_tls.server.clone();
                         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -280,6 +327,10 @@ fn compositions(custom_connector: bool) {
                                         let values: Vec<_> = request.headers().get_all("x-order").iter().map(|value| value.to_str().unwrap()).collect();
                                         assert_eq!(values, ["first", "second"]);
                                         assert!(!request.headers().contains_key("x-remove"));
+                                        if dynamic {
+                                            assert_eq!(request.headers()["x-dynamic"], (generation + 1).to_string());
+                                            assert_eq!(request.headers()["host"], format!("customer-{}.example:8443", generation + 1));
+                                        }
                                         assert_eq!(request.headers()["authorization"], "Bearer ws-secret");
                                         assert_eq!(request.headers()["cookie"], "cookie-secret");
                                         response.headers_mut().insert("sec-websocket-protocol", "mqtt".parse().unwrap());

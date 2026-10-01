@@ -91,6 +91,8 @@ pub use redirect::{
 pub use rumqttc_core::NetworkOptions;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::TlsConfiguration;
+#[cfg(feature = "websocket")]
+pub use rumqttc_core::WebSocketRequestContext;
 pub use rumqttc_core::default_socket_connect;
 pub use session::{
     PersistedAckMode, PersistedFilter, PersistedIncomingQos2, PersistedPubRel, PersistedPublish,

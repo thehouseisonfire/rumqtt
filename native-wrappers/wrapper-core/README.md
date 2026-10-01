@@ -194,9 +194,45 @@ and the two TLS policies are independent.
 
 WebSocket header edits are ordered append/replace/remove operations. Upgrade,
 Host, framing, and `Sec-WebSocket-*` headers are protected. Values are redacted
-in Debug and marked sensitive in the prepared request. Dynamic callbacks are
-not exposed; declarative validation can reject construction before networking.
+in Debug and marked sensitive in the prepared request. Declarative validation
+can reject construction before networking.
 Unix sockets are supported independently on Unix targets.
+
+Set `CommonConfig::websocket_handshake` to an owned `WebSocketHandshakeConfig`
+for asynchronous token refresh or signing. `WebSocketHandshake::prepare` receives
+an owned snapshot after static header edits and returns an owned response patch.
+It runs once per prepared handshake, including reconnects. Header names are
+sorted; duplicate values preserve their order within a name. Values are bytes,
+so absence, an empty value, and non-UTF-8 values remain distinct. This snapshot
+does not promise global wire header ordering.
+
+Responses can replace the path/query and append, replace, or remove unprotected
+headers. `WebSocketHandshakeResponse::set_authority()` accepts `host[:port]` or
+`[IPv6][:port]` without user information and updates the URI authority and `Host`
+together. Invalid edits leave the previous override intact; generic `Host` edits
+remain prohibited. GET, HTTP/1.1, the URI scheme, and upgrade fields stay fixed.
+Sign the resulting authority, path/query, and selected headers as required by
+your service. The configured
+broker, dial target (possibly a proxy), TLS authority, and absolute connection
+deadline are separate snapshot fields. Authority overrides only select HTTP
+routing; they never change broker resolution, TCP or proxy destinations, TLS SNI,
+or the certificate verification identity.
+An isolated redirect clears both static edits and the dynamic authority.
+
+Callbacks must return promptly; their future may defer credential retrieval.
+Do not wait for MQTT operations from this callback. Construction, polling, and
+future destruction panics become redacted terminal failures. The native
+connection deadline also bounds callback work and cancels late results.
+Rejected, abandoned, and timed-out decisions follow the existing reconnect
+policy; invalid responses, resource limits, and panics terminate the driver.
+`Error::websocket_failure()` retains this classification.
+
+Requests allow at most 128 header values, an 8 KiB path/query, and 64 KiB of
+aggregate request data. Response builders allow 256 edits and 64 KiB of copied
+data; the final request must also fit the request limits. Wrapper Debug/error
+output omits handshake credentials. Upstream WebSocket dependency TRACE logging
+can include outgoing requests; configure those log targets accordingly.
+Registration requires WebSocket support and a WS/WSS transport.
 
 ## Custom transports
 

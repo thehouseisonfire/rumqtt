@@ -109,6 +109,17 @@ def accept_websocket(stream: socket.socket) -> WebSocketStream:
             raise AssertionError("removed WebSocket header survived")
     elif path == "/native-headers-cleared" and ("x-native" in headers or "x-remove" in headers):
         raise AssertionError("cleared WebSocket header edits survived")
+    if path.startswith("/dynamic?token="):
+        token = path.split("token=", 1)[1].split("&", 1)[0]
+        authorization = f"Bearer dynamic-token-{token}"
+        authority = f"customer-{token}.example:8443"
+        if [v for n, v in ordered_headers if n == "host"] != [authority]:
+            raise AssertionError("dynamic WebSocket authority did not replace Host")
+        expected = hmac.new(b"fixture-signing-key", f"GET\n{authority}\n{path}\n{authorization}".encode(), hashlib.sha256).hexdigest()
+        if headers.get("authorization") != authorization or headers.get("x-signature") != expected:
+            raise AssertionError("dynamic WebSocket signature does not match final request")
+        if [v for n, v in ordered_headers if n == "x-static"] != ["one", "two", ""] or "x-remove" in headers:
+            raise AssertionError("dynamic WebSocket composition changed")
     key = headers.get("sec-websocket-key")
     if key is None or "mqtt" not in headers.get("sec-websocket-protocol", "").lower():
         raise ValueError("client did not request the MQTT WebSocket subprotocol")
@@ -617,6 +628,9 @@ class Broker:
             if client_id.startswith(b"native-proxy-") and b"-reconnect-" in client_id and attempt == 1:
                 return
             if client_id.startswith((b"native-unix-reconnect-", b"native-websocket-reconnect-")) and attempt == 1:
+                return
+            if (client_id.startswith(b"native-dynamic-websocket-") or client_id == b"c-websocket-token-example") and attempt == 1:
+                stream.sendall(frame(2, 0, b"\x00\x00" + (b"\x00" if protocol == 5 else b"")))
                 return
             if client_id.startswith(b"python-attempt-recovery-") and attempt == 1:
                 return

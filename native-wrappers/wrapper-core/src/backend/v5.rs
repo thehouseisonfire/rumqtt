@@ -123,6 +123,12 @@ pub fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
+    #[cfg(feature = "websocket")]
+    if let rumqttc_v5::ConnectionError::RequestModifier(source) = &error
+        && let Some(failure) = source.downcast_ref::<crate::WebSocketHandshakeFailure>()
+    {
+        return Error::websocket(*failure);
+    }
     if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
         let mut terminal = Error::redirect(super::redirect::failure(&redirect.failure))
             .with_delivery(DeliveryStatus::Ambiguous);
@@ -327,9 +333,7 @@ fn build_options(
         options.set_proxy(super::build_proxy(proxy)?);
     }
     #[cfg(feature = "websocket")]
-    if !common.websocket_headers.is_empty() {
-        options.set_request_modifier(crate::websocket::prepare(&common.websocket_headers)?);
-    }
+    configure_handshake(&mut options, common, std::sync::Arc::default())?;
     options.set_ack_mode(match common.ack_mode {
         crate::AckMode::Automatic => rumqttc_v5::AckMode::Automatic,
         crate::AckMode::Manual => rumqttc_v5::AckMode::Manual,
@@ -404,6 +408,27 @@ fn build_options(
 pub struct Driver {
     eventloop: rumqttc_v5::EventLoop,
     auth: std::sync::Arc<super::auth::Monitor>,
+    websocket: std::sync::Arc<crate::websocket::HandshakeMonitor>,
+}
+
+#[cfg(feature = "websocket")]
+fn configure_handshake(
+    options: &mut rumqttc_v5::MqttOptions,
+    common: &crate::CommonConfig,
+    monitor: std::sync::Arc<crate::websocket::HandshakeMonitor>,
+) -> crate::Result<()> {
+    if let Some(config) = &common.websocket_handshake {
+        options.set_fallible_request_modifier(crate::websocket::prepare_dynamic(
+            &common.websocket_headers,
+            config.clone(),
+            crate::ProtocolVersion::V5,
+            common.client_id.clone(),
+            monitor,
+        )?);
+    } else if !common.websocket_headers.is_empty() {
+        options.set_request_modifier(crate::websocket::prepare(&common.websocket_headers)?);
+    }
+    Ok(())
 }
 
 pub fn build(
@@ -437,6 +462,9 @@ pub fn build(
             generation: std::sync::atomic::AtomicU64::new(0),
         }));
     }
+    let websocket = std::sync::Arc::new(crate::websocket::HandshakeMonitor::default());
+    #[cfg(feature = "websocket")]
+    configure_handshake(&mut options, common, websocket.clone())?;
     let (client, eventloop) = rumqttc_v5::AsyncClient::builder(options)
         .capacity(common.request_channel_capacity)
         .publish_admission_policy(rumqttc_v5::PublishAdmissionPolicy::RequireNegotiatedCapabilities)
@@ -448,12 +476,20 @@ pub fn build(
                 error,
             )
         })?;
-    Ok((client, Box::new(Driver { eventloop, auth })))
+    Ok((
+        client,
+        Box::new(Driver {
+            eventloop,
+            auth,
+            websocket,
+        }),
+    ))
 }
 pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
     let Driver {
         mut eventloop,
         auth,
+        websocket,
     } = *driver;
     let async_authentication = eventloop.options.async_authenticator().is_some();
     let DriverContext {
@@ -492,6 +528,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
         // registrations, cached diagnostics, and completed notices remain responsive.
         let mut authentication_timed_out = false;
+        if !connected {
+            websocket.reset();
+        }
         let polled = {
             let poll = eventloop.poll();
             tokio::pin!(poll);
@@ -586,6 +625,14 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             polled
         };
         let Some(polled) = polled else {
+            // Dropping the poll also destroys pending host handshake work. Its
+            // terminal failure must take precedence over a successful cancellation.
+            if let Some(failure) = websocket.failure().filter(|failure| !failure.retryable()) {
+                let error = shared.contextualize(Error::websocket(failure));
+                shared.fail_acknowledgements(&error);
+                fail_pending(&mut senders, &error);
+                return TerminalStatus::Failed(error);
+            }
             return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
         };
         shared.notify_progress();
@@ -715,9 +762,14 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v5::ConnectionError::DisconnectTimeout);
-                let error = shared.contextualize(map_connection_error(error));
+                let error = shared.contextualize(
+                    websocket
+                        .failure()
+                        .map_or_else(|| map_connection_error(error), Error::websocket),
+                );
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
+                    || (error.websocket_failure().is_some() && !error.retryable())
                 {
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);

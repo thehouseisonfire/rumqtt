@@ -21,7 +21,9 @@ use rumqttc_core::admission::TryRecvError;
 #[cfg(feature = "ordered-shutdown")]
 use rumqttc_core::admission::{Receiver, Sender, bounded, unbounded};
 
-use rumqttc_core::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
+use rumqttc_core::{
+    OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest, socket_address,
+};
 use tokio::select;
 use tokio::time::{self, Instant, Sleep};
 
@@ -2457,6 +2459,28 @@ async fn network_connect(
             .ok_or(ConnectionError::BrokerTransportMismatch)?,
     };
 
+    #[cfg(feature = "websocket")]
+    let websocket_context = crate::WebSocketRequestContext {
+        broker_host: domain.clone(),
+        broker_port: port,
+        dial_target: {
+            #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+            if let Some(proxy) = options.proxy() {
+                socket_address(proxy.host(), proxy.port())
+            } else {
+                socket_address(&domain, port)
+            }
+            #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
+            socket_address(&domain, port)
+        },
+        tls_authority: if matches!(&transport, Transport::Ws) {
+            None
+        } else {
+            Some(domain.clone())
+        },
+        deadline: network_options.connection_deadline(),
+    };
+
     let tcp_stream: Box<dyn AsyncReadWrite> = {
         #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
         if let Some(proxy) = options.proxy() {
@@ -2469,12 +2493,12 @@ async fn network_connect(
                 )
                 .await?
         } else {
-            let addr = format!("{domain}:{port}");
+            let addr = socket_address(&domain, port);
             options.socket_connect(addr, network_options).await?
         }
         #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
         {
-            let addr = format!("{domain}:{port}");
+            let addr = socket_address(&domain, port);
             options.socket_connect(addr, network_options).await?
         }
     };
@@ -2507,6 +2531,8 @@ async fn network_connect(
                 .headers_mut()
                 .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
 
+            request.extensions_mut().insert(websocket_context.clone());
+
             if let Some(request_modifier) = options.fallible_request_modifier() {
                 request = request_modifier(request)
                     .await
@@ -2538,6 +2564,8 @@ async fn network_connect(
             request
                 .headers_mut()
                 .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
+
+            request.extensions_mut().insert(websocket_context.clone());
 
             if let Some(request_modifier) = options.fallible_request_modifier() {
                 request = request_modifier(request)

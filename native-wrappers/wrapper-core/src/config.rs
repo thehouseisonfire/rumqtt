@@ -210,6 +210,7 @@ pub struct CommonConfig {
     pub proxy: Option<crate::ProxyConfig>,
     pub connector: Option<crate::TransportConnectorConfig>,
     pub websocket_headers: Vec<crate::WebSocketHeader>,
+    pub websocket_handshake: Option<crate::WebSocketHandshakeConfig>,
     pub emit_outgoing_events: bool,
 }
 
@@ -238,6 +239,7 @@ impl std::fmt::Debug for CommonConfig {
             .field("proxy", &self.proxy)
             .field("connector", &self.connector)
             .field("websocket_headers", &self.websocket_headers)
+            .field("websocket_handshake", &self.websocket_handshake)
             .finish_non_exhaustive()
     }
 }
@@ -269,6 +271,7 @@ impl CommonConfig {
             proxy: None,
             connector: None,
             websocket_headers: Vec::new(),
+            websocket_handshake: None,
             emit_outgoing_events: false,
         }
     }
@@ -297,7 +300,10 @@ impl CommonConfig {
                 proxy_config.validate()?;
             }
         }
-        if !self.websocket_headers.is_empty()
+        if self.websocket_handshake.is_some() && !cfg!(feature = "websocket") {
+            return Err(Error::configuration("WebSocket feature is disabled"));
+        }
+        if (!self.websocket_headers.is_empty() || self.websocket_handshake.is_some())
             && !matches!(
                 self.transport,
                 TransportConfig::WebSocket | TransportConfig::Wss(_)

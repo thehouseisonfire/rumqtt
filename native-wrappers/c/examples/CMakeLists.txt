@@ -30,6 +30,7 @@ add_test(NAME rumqttc-thread-join-contract COMMAND rumqttc-thread-join-contract)
 set_tests_properties(rumqttc-thread-join-contract PROPERTIES LABELS "native;concurrency" TIMEOUT 10)
 
 set(RUMQTTC_C_EXAMPLES
+    websocket_tokens
     event_polling
     multithreaded_publishing
     tracked_completion
@@ -56,7 +57,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
         if(example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator"
-                OR example STREQUAL "session_store")
+                OR example STREQUAL "session_store" OR example STREQUAL "websocket_tokens")
             target_compile_options(${target} PRIVATE /experimental:c11atomics)
         endif()
     else()
@@ -77,4 +78,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:${target}>)
     endif()
     set_tests_properties(${target} PROPERTIES LABELS "native;example" TIMEOUT 30)
+    if(example STREQUAL "websocket_tokens")
+        set_tests_properties(${target} PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endforeach()

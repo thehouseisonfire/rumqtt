@@ -2,6 +2,25 @@
 
 use http::{Response, header::ToStrError};
 
+/// Owned routing and deadline metadata attached to each prepared client request.
+/// URI edits do not change these transport choices. `dial_target` names the proxy
+/// endpoint when a proxy is configured, otherwise the broker endpoint. It includes
+/// the port and brackets IPv6 literals, and is not a resolved socket address.
+#[derive(Clone)]
+pub struct WebSocketRequestContext {
+    pub broker_host: String,
+    pub broker_port: u16,
+    pub dial_target: String,
+    pub tls_authority: Option<String>,
+    pub deadline: Option<std::time::Instant>,
+}
+
+impl std::fmt::Debug for WebSocketRequestContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WebSocketRequestContext([REDACTED])")
+    }
+}
+
 #[cfg(feature = "websocket")]
 use async_tungstenite::{
     WebSocketReceiver, WebSocketSender, WebSocketStream,
