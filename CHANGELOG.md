@@ -14,6 +14,14 @@
   an optional OpenSSL EVP example; the Rustls production wrapper does not link
   OpenSSL. Existing C layouts and loader identity remain unchanged. Rust client
   `TlsConfiguration` gains a connector variant; exhaustive matches need updating.
+- Native wrappers: Retain terminal broker acknowledgement details in shared
+  immutable wrapper-core outcomes and additive C completion accessors, including
+  rejected publishes, exact reason codes, identifiers, ordered filter results,
+  Reason String presence, duplicate User Properties, and recovered QoS 2 outcomes.
+  Borrowed C views survive client destruction; existing copy helpers provide
+  caller-owned strings. Preserve legacy classification and Python/JavaScript
+  result APIs. Intermediate QoS packets remain internal and diagnostic property
+  contents are omitted from Debug, automatic logs, and formatted errors.
 - Native wrappers: Add MQTT 5 manual PUBACK/PUBREC contents through wrapper-core
   acknowledgement options and additive nonblocking/tracked C APIs. Preserve
   Reason String presence and ordered duplicate User Properties; validate client

@@ -1,7 +1,9 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use rumqttc_wrapper_core::{
     Completion, CompletionHandle, CompletionWaitOutcome, DeliveryStatus, Error, ErrorKind,
+    TerminalOutcome,
 };
 
 pub struct CompletionObject {
@@ -10,6 +12,9 @@ pub struct CompletionObject {
 }
 
 impl CompletionObject {
+    pub fn outcome(&self) -> Option<Arc<TerminalOutcome>> {
+        self.handle.try_outcome()
+    }
     pub fn new(handle: CompletionHandle) -> Self {
         Self {
             operation_id: handle.operation_id().get(),

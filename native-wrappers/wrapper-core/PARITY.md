@@ -54,11 +54,16 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | event | Packet.ConnAck, Packet.Publish | supported | Connected details / IncomingPublish with owned properties | config_wire, protocol_parity, authentication |
 | v5 | event | Packet.Disconnect | supported | BrokerDisconnect retains properties across poll cleanup | authentication |
 | v4 | event | Packet.Disconnect | not applicable | MQTT 3.1.1 servers cannot send DISCONNECT | docs/spec/mqtt-v3.1.1.md |
-| v4, v5 | event | Packet.PubAck, Packet.PubRec, Packet.PubRel, Packet.PubComp, Packet.SubAck, Packet.UnsubAck | intentionally omitted | Internal QoS/ACK state; tracked completions are the sole operation-result model | protocol_parity, session_store |
+| v4, v5 | event | Packet.PubAck, Packet.PubRec, Packet.PubRel, Packet.PubComp, Packet.SubAck, Packet.UnsubAck | intentionally omitted | No raw ACK stream; tracked terminal outcomes retain v4 identifiers/SUBACK codes and complete v5 terminal ACK details, including rejection/recovery; successful intermediate PUBREC/PUBREL remain internal | completion unit tests, native_acknowledgement_results, protocol_parity, session_store |
 | v4, v5 | event | Packet.Connect, Packet.Subscribe, Packet.Unsubscribe, Packet.PingReq, Packet.PingResp | intentionally omitted | Client-origin packets and keepalive internals have no second raw event stream | protocol_parity, backend event mapping |
 | v5 | event | Packet.Auth | intentionally omitted | Raw AUTH challenges belong to the configured authority, lifecycle events stay observable | authentication |
 | v4, v5 | operation | disconnect_after_queued, disconnect_after_queued_with_timeout, try_disconnect_after_queued, try_disconnect_after_queued_with_timeout | intentionally omitted | Separate optional ordered-shutdown publish fence is not substituted for the existing protocol-drain close contract; requires a separately named native command/completion policy | shutdown, docs/recipes/ordered-shutdown.md |
 | v5 | operation | disconnect_after_queued_with_properties, disconnect_after_queued_with_properties_timeout, try_disconnect_after_queued_with_properties, try_disconnect_after_queued_with_properties_timeout | intentionally omitted | Same optional ordered-shutdown fence decision; ordinary WC-10 payloads are supported without changing ordering semantics | config_wire, shutdown |
+
+Terminal acknowledgement details are exposed through wrapper-core and C only.
+Python/JavaScript retain their coarse completion/error contracts. C detail views
+are completion-owned, survive client destruction, and use existing copy helpers
+for caller-owned strings. Property Debug/log/error output is redacted.
 
 ## C binding progress
 

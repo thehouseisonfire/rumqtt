@@ -98,6 +98,22 @@ For MQTT 5 QoS 2 recovery, a `PUBCOMP` with `PacketIdentifierNotFound` is a
 successful terminal completion only when rumqttc identifies the corresponding
 `PUBREL` as replayed; the same reason on an ordinary flow remains a broker
 rejection.
+`CompletionHandle::try_outcome()` returns an optional shared immutable
+`TerminalOutcome` without propagating its operation error. `None` means pending;
+a terminal outcome contains the legacy result and optional `BrokerAcknowledgement`.
+Existing waits keep their result types and classification. MQTT 5 ACK details
+retain exact codes, packet identifiers, Reason String presence, and ordered duplicate
+User Properties, including on rejected publishes and recovered QoS 2 completions.
+SUBACK/UNSUBACK properties belong to the packet; filter codes remain ordered.
+MQTT 3.1.1 retains identifiers and SUBACK codes but has no scalar reasons or
+MQTT 5 properties, and UNSUBACK has no filter results. QoS 0 and local failures
+have no broker ACK. Successful QoS 2 PUBREC and intermediate PUBREL remain
+internal: these outcomes expose terminal packets, not handshake history or exact
+wire encodings. Snapshots and completion handles share the retained storage,
+may outlive the client, and release it with their final owner. Debug and automatic
+logs omit ACK property contents. C exposes these details; Python/JavaScript
+continue exposing their existing coarse completion/error contracts.
+
 In manual-acknowledgement mode, admission means the PUBACK or PUBREC entered
 rumqttc's request channel, while `Completion::Acknowledged` is reported only
 after the event loop flushes that packet to the network. Cancelling an

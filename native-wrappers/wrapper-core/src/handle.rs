@@ -269,7 +269,7 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.operations.register(Box::pin(async move {
-            future.await.map_err(|error| error.with_context(context))
+            future.await.map_error(|error| error.with_context(context))
         }))
     }
 
@@ -516,6 +516,7 @@ impl ClientHandle {
             return self.shared.admission(Box::pin(async {
                 Err(Error::auth(crate::AuthFailure::Overlapping)
                     .with_delivery(DeliveryStatus::NotAdmitted))
+                .into()
             }));
         }
         let guard = ReauthenticationAdmission(Arc::clone(&self.shared.reauthentication_pending));

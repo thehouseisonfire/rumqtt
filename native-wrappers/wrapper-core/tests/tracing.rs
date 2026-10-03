@@ -1,6 +1,10 @@
 #![cfg(feature = "tracing")]
 
+mod support;
+
 use std::fmt::Write;
+use std::io::Write as IoWrite;
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,6 +15,67 @@ use tracing::{
     field::{Field, Visit},
     span::{Attributes, Id, Record},
 };
+
+fn observe_private_terminal_ack() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = std::thread::spawn(move || {
+        let mut stream = support::accept(&listener);
+        support::connect(&mut stream, true);
+        let publish = support::frame(&mut stream);
+        let topic_len = usize::from(u16::from_be_bytes([publish[2], publish[3]]));
+        let id = &publish[4 + topic_len..6 + topic_len];
+        let properties = b"\x1f\x00\x0eprivate-reason\x26\x00\x0bprivate-key\x00\x0dprivate-value";
+        let mut ack = vec![
+            0x40,
+            u8::try_from(4 + properties.len()).unwrap(),
+            id[0],
+            id[1],
+            0x87,
+            u8::try_from(properties.len()).unwrap(),
+        ];
+        ack.extend_from_slice(properties);
+        stream.write_all(&ack).unwrap();
+        assert_eq!(support::frame(&mut stream)[0], 0xe0);
+    });
+    let mut client = NativeClient::start(support::config(true, port)).unwrap();
+    let mut events = client.take_events().unwrap();
+    assert!(matches!(
+        events.recv_timeout(support::DEADLINE).unwrap(),
+        Some(WrapperEvent::Connected { .. })
+    ));
+    let admission = client
+        .handle()
+        .try_admit(Command::Publish(PublishCommand {
+            topic: "a".into(),
+            payload: bytes::Bytes::new(),
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            protocol: PublishProtocolOptions::VersionNeutral,
+        }))
+        .unwrap();
+    assert_eq!(
+        admission
+            .completion
+            .wait_timeout(support::DEADLINE)
+            .unwrap_err()
+            .broker_reason(),
+        Some(0x87)
+    );
+    let outcome = admission.completion.try_outcome().unwrap();
+    assert_eq!(
+        outcome
+            .acknowledgement()
+            .unwrap()
+            .properties()
+            .unwrap()
+            .reason_string
+            .as_deref(),
+        Some("private-reason")
+    );
+    client.closer().close_now(support::DEADLINE).unwrap();
+    broker.join().unwrap();
+}
 
 #[derive(Default)]
 struct Capture {
@@ -76,6 +141,7 @@ fn lifecycle_and_admission_traces_do_not_capture_credentials_or_commands() {
         }));
         client.closer().close_now(Duration::from_secs(3)).unwrap();
     }
+    observe_private_terminal_ack();
     let output = output.lock().unwrap();
     assert!(output.contains("start"));
     assert!(output.contains("drive"));
@@ -86,6 +152,9 @@ fn lifecycle_and_admission_traces_do_not_capture_credentials_or_commands() {
         "private-password",
         "private-topic",
         "private-payload",
+        "private-reason",
+        "private-key",
+        "private-value",
     ] {
         assert!(!output.contains(secret), "trace leaked {secret}");
     }

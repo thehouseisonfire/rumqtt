@@ -11,11 +11,11 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use crate::completion::CompletionCell;
 use crate::{
     Admission, Completion, CompletionHandle, DeliveryStatus, DiagnosticsSnapshot, Error, ErrorKind,
-    OperationId, Result,
+    OperationId, Result, TerminalOutcome,
 };
 
-pub type CompletionFuture = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'static>>;
-pub type PendingFuture = Pin<Box<dyn Future<Output = (OperationId, Result<Completion>)> + Send>>;
+pub type CompletionFuture = Pin<Box<dyn Future<Output = TerminalOutcome> + Send + 'static>>;
+pub type PendingFuture = Pin<Box<dyn Future<Output = (OperationId, TerminalOutcome)> + Send>>;
 
 pub struct CompletionRegistration {
     operation_id: OperationId,
@@ -163,8 +163,12 @@ impl OperationRegistry {
         Ok(admission)
     }
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.complete", skip_all, fields(operation_id = ?operation_id, success = result.is_ok())))]
     pub(crate) fn complete(&self, operation_id: OperationId, result: Result<Completion>) {
+        self.complete_outcome(operation_id, result.into());
+    }
+
+    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.complete", skip_all, fields(operation_id = ?operation_id, success = outcome.result().is_ok())))]
+    pub(crate) fn complete_outcome(&self, operation_id: OperationId, outcome: TerminalOutcome) {
         if let Some(cell) = self
             .inner
             .cells
@@ -172,7 +176,7 @@ impl OperationRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&operation_id)
         {
-            cell.complete(result.map_err(|error| error.with_operation(operation_id)));
+            cell.complete_outcome(outcome.map_error(|error| error.with_operation(operation_id)));
         }
     }
 
@@ -217,11 +221,11 @@ pub fn accept_registration(
 }
 
 pub fn resolve_pending(
-    (operation_id, result): (OperationId, Result<Completion>),
+    (operation_id, outcome): (OperationId, TerminalOutcome),
     senders: &mut HashMap<OperationId, PendingSender>,
 ) {
     if let Some(sender) = senders.remove(&operation_id) {
-        sender.registry.complete(operation_id, result);
+        sender.registry.complete_outcome(operation_id, outcome);
     }
 }
 

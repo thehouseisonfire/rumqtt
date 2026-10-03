@@ -761,6 +761,43 @@ pairs, and MQTT 5 options submitted to an MQTT 3.1.1 client are rejected
 without admission. Initializer macros are provided for every size-versioned
 record and compile as aggregate initializers in C11 and C++17.
 
+## Terminal broker acknowledgement details
+
+Initialize `rumqttc_acknowledgement_details_t` with
+`RUMQTTC_ACKNOWLEDGEMENT_DETAILS_INIT` and call
+`rumqttc_completion_acknowledgement()`. A pending operation returns
+`RUMQTTC_WOULD_BLOCK`; a terminal operation without an ACK succeeds with
+`present=0`. The accessor succeeds for broker-rejected operations even after
+legacy poll/wait returned an error and that error object was destroyed.
+Existing completion kinds, result accessors, classification, and delivery status
+are unchanged.
+
+Metadata retains the packet kind, identifier, scalar reason where available,
+native property presence, and recovered QoS 2 distinction. The
+`rumqttc_completion_acknowledgement_result_count/at` accessors expose exact
+ordered filter codes; `..._reason_string` and `..._user_property_count/at`
+expose packet-level diagnostic properties. Duplicate User Properties retain
+order. Reason String presence distinguishes absent from present-empty.
+Packet-kind values use the `RUMQTTC_ACKNOWLEDGEMENT_*` constants.
+
+Borrowed string views reference immutable completion-owned storage. They remain
+valid across repeated observations and client destruction, and expire when that
+completion handle is destroyed. Copy with `rumqttc_string_copy()` before
+completion destruction; caller-owned copies remain usable afterward. Never race
+handle destruction with accessors or borrowed-view reads. Property contents are
+omitted from Debug, automatic logs, and formatted errors; explicit caller
+inspection should follow the application's own diagnostic-data policy.
+
+MQTT 5 exposes terminal PUBACK, rejected PUBREC, PUBCOMP, SUBACK, and UNSUBACK.
+Successful intermediate PUBREC and PUBREL remain internal. `recovered=1`
+preserves the native successful replay outcome with PUBCOMP reason `0x92`;
+ordinary `0x92` remains a rejection. QoS 0 and local failures have no broker ACK.
+MQTT 3.1.1 exposes packet identifiers and SUBACK return codes, with no scalar
+reason or MQTT 5 properties. UNSUBACK filter results are unavailable, explicitly
+reported by `result_count`'s presence output. Non-filter packet kinds reject
+filter accessors. These are native decoded terminal details, not raw wire tracing.
+Python and JavaScript retain their existing coarse result APIs.
+
 ## Complete C examples
 
 The [`examples`](examples) directory contains warning-clean C11 programs for:

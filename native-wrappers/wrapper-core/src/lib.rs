@@ -61,9 +61,9 @@ pub use command::{
     V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties,
 };
 pub use completion::{
-    Admission, BrokerReason, Completion, CompletionHandle, CompletionWaitOutcome,
-    PublishCompletion, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
-    UnsubscribeResult,
+    AcknowledgementKind, AcknowledgementProperties, Admission, BrokerAcknowledgement, BrokerReason,
+    Completion, CompletionHandle, CompletionWaitOutcome, PublishCompletion, SubscribeCompletion,
+    SubscribeResult, TerminalOutcome, UnsubscribeCompletion, UnsubscribeResult,
 };
 mod tls_advanced;
 pub use tls_advanced::*;

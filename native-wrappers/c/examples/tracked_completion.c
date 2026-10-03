@@ -23,6 +23,22 @@ static int publish_and_wait(rumqttc_client_t *client) {
   if (!failed)
     failed = example_wait(completion, RUMQTTC_COMPLETION_QOS1_ACKNOWLEDGED);
 
+  if (completion != NULL) {
+    rumqttc_acknowledgement_details_t ack = RUMQTTC_ACKNOWLEDGEMENT_DETAILS_INIT;
+    /* This observation works after broker rejection too, independently of the
+     * legacy poll/wait status. QoS 0 and local failures have present=0. */
+    if (rumqttc_completion_acknowledgement(completion, &ack, NULL) == RUMQTTC_OK && ack.present) {
+      printf("terminal ACK packet %u, identifier %u", (unsigned)ack.packet_kind, (unsigned)ack.packet_id);
+      if (ack.reason_present)
+        printf(", reason 0x%02x", (unsigned)ack.reason);
+      printf(", recovered %u\n", (unsigned)ack.recovered);
+      /* Reason String and User Property views remain valid until completion
+       * destruction, even after client destruction. Use rumqttc_string_copy
+       * before destroying completion for application-owned diagnostic data.
+       * Do not automatically log their contents. */
+    }
+  }
+
   rumqttc_completion_destroy(completion);
   rumqttc_error_destroy(error);
   return failed;

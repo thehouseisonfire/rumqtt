@@ -48,6 +48,14 @@ typedef uint32_t rumqttc_protocol_t;
 #define RUMQTTC_PROTOCOL_V4 1u
 #define RUMQTTC_PROTOCOL_V5 2u
 
+/* MQTT packet-type values; these are terminal observations, not ACK commands. */
+typedef uint32_t rumqttc_acknowledgement_kind_t;
+#define RUMQTTC_ACKNOWLEDGEMENT_PUBACK 4u
+#define RUMQTTC_ACKNOWLEDGEMENT_PUBREC 5u
+#define RUMQTTC_ACKNOWLEDGEMENT_PUBCOMP 7u
+#define RUMQTTC_ACKNOWLEDGEMENT_SUBACK 9u
+#define RUMQTTC_ACKNOWLEDGEMENT_UNSUBACK 11u
+
 typedef uint32_t rumqttc_protocol_options_t;
 #define RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL 0u
 #define RUMQTTC_PROTOCOL_OPTIONS_V5 5u
@@ -326,6 +334,22 @@ typedef struct rumqttc_string_view_t {
     const char *data;
     size_t len;
 } rumqttc_string_view_t;
+
+typedef struct rumqttc_acknowledgement_details_t {
+    uint32_t struct_size;
+    rumqttc_protocol_t protocol;
+    rumqttc_acknowledgement_kind_t packet_kind;
+    uint16_t packet_id;
+    uint8_t present;
+    uint8_t reason_present;
+    uint8_t reason;
+    uint8_t properties_present;
+    uint8_t recovered;
+    uint8_t reserved[5];
+} rumqttc_acknowledgement_details_t;
+
+#define RUMQTTC_ACKNOWLEDGEMENT_DETAILS_INIT \
+    { sizeof(rumqttc_acknowledgement_details_t), 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0 } }
 
 typedef struct rumqttc_user_property_t {
     uint32_t struct_size;
@@ -1316,6 +1340,29 @@ RUMQTTC_API rumqttc_status_t rumqttc_completion_result_at(const rumqttc_completi
  * record and Connected event retain their existing layout and raw semantics. */
 RUMQTTC_API rumqttc_status_t rumqttc_completion_connack_session_diagnostics(const rumqttc_completion_t *completion, uint8_t *present_out, uint8_t *raw_session_present_out, uint8_t *session_resumed_out, uint32_t *diagnostic_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_completion_diagnostics(const rumqttc_completion_t *completion, rumqttc_diagnostics_t *out, rumqttc_error_t **error_out);
+/* Terminal ACK contents, including broker rejection. Pending returns WOULD_BLOCK.
+ * The metadata query succeeds with present=0 for a terminal outcome without an ACK;
+ * ACK-specific accessors then return INVALID_STATE. Broker rejection itself does
+ * not make these accessors fail. Metadata uses the native decoded property presence,
+ * not byte-for-byte wire encoding. Ordinary poll/wait retain their existing behavior.
+ * Views are immutable and owned by this completion handle. They survive client and
+ * returned-error destruction and repeated observations, but expire when this
+ * completion handle is destroyed. Copy with rumqttc_string_copy BEFORE destruction;
+ * caller-owned copies remain usable afterward. Concurrent destruction is forbidden.
+ * All supplied outputs are initialized on failure; struct_size is preserved and
+ * only the declared known record extent is cleared. At least one scalar/view output
+ * is required. No contents are added to automatic logs or formatted errors.
+ * V4 has no scalar reason/properties; SUBACK codes are retained, UNSUBACK has no
+ * per-filter results. result_count reports their availability separately from count.
+ * result_count/at reject non-filter packets; invalid indexes return INVALID_ARGUMENT.
+ * QoS 2 exposes rejected PUBREC or terminal PUBCOMP; successful PUBREC and PUBREL
+ * remain internal. recovered=1 preserves the native recovered terminal distinction. */
+RUMQTTC_API rumqttc_status_t rumqttc_completion_acknowledgement(const rumqttc_completion_t *completion, rumqttc_acknowledgement_details_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_acknowledgement_result_count(const rumqttc_completion_t *completion, uint8_t *present_out, size_t *count_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_acknowledgement_result_at(const rumqttc_completion_t *completion, size_t index, uint8_t *reason_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_acknowledgement_reason_string(const rumqttc_completion_t *completion, uint8_t *present_out, rumqttc_string_view_t *value_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_acknowledgement_user_property_count(const rumqttc_completion_t *completion, size_t *count_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_acknowledgement_user_property_at(const rumqttc_completion_t *completion, size_t index, rumqttc_string_view_t *name_out, rumqttc_string_view_t *value_out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_completion_destroy(rumqttc_completion_t *completion);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_event_try_recv(rumqttc_client_t *client, rumqttc_event_t **event_out, rumqttc_error_t **error_out);

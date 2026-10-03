@@ -900,5 +900,45 @@ void native_test_error_out_contract(void) {
     rumqttc_websocket_registration_destroy(registration);
     rumqttc_config_destroy(config);
   }
+  {
+    rumqttc_client_t *ack_client =
+        native_start_client(RUMQTTC_PROTOCOL_V5, "native-terminal-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+    rumqttc_subscription_t filters[3] = {native_subscription("a", RUMQTTC_QOS_2),
+                                         native_subscription("b", RUMQTTC_QOS_2),
+                                         native_subscription("c", RUMQTTC_QOS_2)};
+    rumqttc_completion_t *ack_completion = NULL;
+    CHECK(rumqttc_client_subscribe_tracked(ack_client, filters, 3, NULL, &ack_completion, NULL));
+    native_wait_completion(ack_completion, RUMQTTC_COMPLETION_SUBSCRIBE);
+    rumqttc_acknowledgement_details_t details = RUMQTTC_ACKNOWLEDGEMENT_DETAILS_INIT;
+    uint8_t present = 0, reason = 0;
+    size_t count = 0;
+    rumqttc_string_view_t name = {NULL, 0}, value = {NULL, 0};
+    /* ERROR_OUT_SUCCESS: rumqttc_completion_acknowledgement */
+    CHECK(rumqttc_completion_acknowledgement(ack_completion, &details, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_completion_acknowledgement */
+    EXPECT_FAILURE(rumqttc_completion_acknowledgement(NULL, &details, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_completion_acknowledgement_result_count */
+    CHECK(rumqttc_completion_acknowledgement_result_count(ack_completion, &present, &count, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_completion_acknowledgement_result_count */
+    EXPECT_FAILURE(rumqttc_completion_acknowledgement_result_count(NULL, &present, &count, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_completion_acknowledgement_result_at */
+    CHECK(rumqttc_completion_acknowledgement_result_at(ack_completion, 0, &reason, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_completion_acknowledgement_result_at */
+    EXPECT_FAILURE(rumqttc_completion_acknowledgement_result_at(ack_completion, SIZE_MAX, &reason, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_completion_acknowledgement_reason_string */
+    CHECK(rumqttc_completion_acknowledgement_reason_string(ack_completion, &present, &value, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_completion_acknowledgement_reason_string */
+    EXPECT_FAILURE(rumqttc_completion_acknowledgement_reason_string(NULL, &present, &value, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_completion_acknowledgement_user_property_count */
+    CHECK(rumqttc_completion_acknowledgement_user_property_count(ack_completion, &count, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_completion_acknowledgement_user_property_count */
+    EXPECT_FAILURE(rumqttc_completion_acknowledgement_user_property_count(NULL, &count, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_completion_acknowledgement_user_property_at */
+    CHECK(rumqttc_completion_acknowledgement_user_property_at(ack_completion, 0, &name, &value, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_completion_acknowledgement_user_property_at */
+    EXPECT_FAILURE(rumqttc_completion_acknowledgement_user_property_at(ack_completion, SIZE_MAX, &name, &value, NULL));
+    rumqttc_completion_destroy(ack_completion);
+    native_close_destroy(ack_client);
+  }
   (void)ignored_error;
 }

@@ -445,6 +445,64 @@ class Broker:
             self.threads.append(thread)
             thread.start()
 
+    def acknowledgement_results(self, stream: socket.socket, protocol: int, client_id: bytes, attempt: int) -> None:
+        suffix_name = "v5" if protocol == 5 else "v4"
+        recovery = client_id == b"native-terminal-recovery"
+        present = int(recovery and attempt == 2)
+        stream.sendall(frame(2, 0, bytes((present, 0)) + (b"\x00" if protocol == 5 else b"")))
+        reason = b"terminal-private-reason"
+        key = b"terminal-private-key"
+        value = b"terminal-private-value"
+        PRIVATE_VALUES.extend((reason, key, value))
+        properties = (
+            b"\x1f" + struct.pack("!H", len(reason)) + reason
+            + b"\x26" + struct.pack("!H", len(key)) + key + struct.pack("!H", len(value)) + value
+            + b"\x26" + struct.pack("!H", len(key)) + key + b"\x00\x00"
+        )
+        self.client_ids.add(client_id)
+        while not self.stopping.is_set():
+            packet = read_frame(stream)
+            if packet is None:
+                return
+            kind, flags, body = packet
+            if kind == 14:
+                return
+            if kind == 12:
+                stream.sendall(frame(13, 0, b""))
+                continue
+            if kind == 3:
+                topic, offset = string_at(body, 0)
+                qos = flags >> 1 & 3
+                if qos == 0:
+                    continue
+                packet_id = body[offset:offset + 2]
+                if topic == b"pending":
+                    suffix = "v5" if protocol == 5 else "v4"
+                    self.signal("terminal-pending-" + suffix)
+                    self.barrier("terminal-release-" + suffix)
+                code = 0x87 if topic == b"rejected" else (0x10 if topic == b"matched" else 0)
+                selected = b"\x1f\x00\x00" if topic == b"empty" else (b"" if topic == b"absent" else properties)
+                suffix = bytes((code,)) + encode_remaining(len(selected)) + selected if protocol == 5 else b""
+                self.signal("terminal-ack-id-" + suffix_name, int.from_bytes(packet_id, "big"))
+                stream.sendall(frame(4 if qos == 1 else 5, 0, packet_id + suffix))
+            elif kind == 6:
+                if recovery and attempt == 1:
+                    self.restart_packet_ids[(client_id, b"terminal")] = body[:2]
+                    return
+                if recovery and body[:2] != self.restart_packet_ids[(client_id, b"terminal")]:
+                    raise AssertionError("replayed PUBREL identifier changed")
+                code = 0x92 if recovery or client_id == b"native-terminal-v5" else 0
+                suffix = bytes((code,)) + encode_remaining(len(properties)) + properties if protocol == 5 else b""
+                self.signal("terminal-ack-id-" + suffix_name, int.from_bytes(body[:2], "big"))
+                stream.sendall(frame(7, 0, body[:2] + suffix))
+            elif kind in {8, 10}:
+                codes = bytes((1, 0x87, 2)) if kind == 8 else bytes((0, 0x11, 0x87))
+                suffix = encode_remaining(len(properties)) + properties + codes if protocol == 5 else (bytes((1, 0x80, 2)) if kind == 8 else b"")
+                self.signal("terminal-ack-id-" + suffix_name, int.from_bytes(body[:2], "big"))
+                stream.sendall(frame(9 if kind == 8 else 11, 0, body[:2] + suffix))
+            else:
+                raise AssertionError(f"unexpected terminal-results packet: {packet!r}")
+
     def acknowledgement_options(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
         with self.failure_lock:
             self.client_ids.add(client_id)
@@ -651,6 +709,9 @@ class Broker:
                     raise AssertionError("wire-options fixture connected more than three times")
                 if offset != len(body):
                     raise AssertionError("unexpected CONNECT payload fields")
+            if client_id.startswith(b"native-terminal-"):
+                self.acknowledgement_results(stream, protocol, client_id, attempt)
+                return
             if client_id.startswith(b"native-ack-options-"):
                 self.acknowledgement_options(stream, protocol, client_id)
                 return

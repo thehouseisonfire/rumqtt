@@ -1,6 +1,7 @@
 use crate::{
-    BrokerReason, Completion, DeliveryStatus, Error, ErrorKind, OutgoingActivity, PublishCommand,
-    PublishCompletion, QoS, Result, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
+    AcknowledgementKind, BrokerAcknowledgement, BrokerReason, Completion, DeliveryStatus, Error,
+    ErrorKind, OutgoingActivity, PublishCommand, PublishCompletion, QoS, SubscribeCompletion,
+    SubscribeResult, TerminalOutcome, UnsubscribeCompletion,
 };
 
 pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
@@ -596,47 +597,100 @@ pub const fn from_qos(qos: rumqttc_v4::QoS) -> QoS {
 
 pub fn map_publish_notice(
     result: std::result::Result<rumqttc_v4::PublishResult, rumqttc_v4::PublishNoticeError>,
-) -> Result<Completion> {
-    result
-        .map(|result| {
-            Completion::Publish(match result {
-                rumqttc_v4::PublishResult::Qos0Flushed => PublishCompletion::Qos0Flushed,
-                rumqttc_v4::PublishResult::Qos1(_) => PublishCompletion::Qos1Acknowledged,
-                rumqttc_v4::PublishResult::Qos2Completed(_) => PublishCompletion::Qos2Completed,
-            })
-        })
-        .map_err(map_notice_error)
+) -> TerminalOutcome {
+    let (kind, packet_id, completion) = match result {
+        Ok(rumqttc_v4::PublishResult::Qos0Flushed) => {
+            return Ok(Completion::Publish(PublishCompletion::Qos0Flushed)).into();
+        }
+        Ok(rumqttc_v4::PublishResult::Qos1(ack)) => (
+            AcknowledgementKind::PubAck,
+            ack.pkid,
+            PublishCompletion::Qos1Acknowledged,
+        ),
+        Ok(rumqttc_v4::PublishResult::Qos2Completed(ack)) => (
+            AcknowledgementKind::PubComp,
+            ack.pkid,
+            PublishCompletion::Qos2Completed,
+        ),
+        Err(error) => return Err(map_notice_error(error)).into(),
+    };
+    TerminalOutcome::with_acknowledgement(
+        Ok(Completion::Publish(completion)),
+        BrokerAcknowledgement::new(
+            ProtocolVersion::V4,
+            kind,
+            packet_id,
+            None,
+            None,
+            None,
+            false,
+        ),
+    )
 }
 
 pub fn map_subscribe_notice(
     result: std::result::Result<rumqttc_v4::SubAck, rumqttc_v4::SubscribeNoticeError>,
-) -> Result<Completion> {
-    result
-        .map(|ack| {
-            Completion::Subscribe(SubscribeCompletion {
-                results: ack
-                    .return_codes
-                    .into_iter()
-                    .map(|reason| match reason {
-                        rumqttc_v4::SubscribeReasonCode::Success(qos) => {
-                            SubscribeResult::Granted(from_qos(qos))
-                        }
-                        rumqttc_v4::SubscribeReasonCode::Failure => {
-                            SubscribeResult::Rejected(BrokerReason { code: 0x80 })
-                        }
-                    })
-                    .collect(),
-            })
+) -> TerminalOutcome {
+    let ack = match result {
+        Ok(ack) => ack,
+        Err(error) => return Err(map_notice_error(error)).into(),
+    };
+    let codes = ack
+        .return_codes
+        .iter()
+        .map(|reason| match reason {
+            rumqttc_v4::SubscribeReasonCode::Success(qos) => *qos as u8,
+            rumqttc_v4::SubscribeReasonCode::Failure => 0x80,
         })
-        .map_err(map_notice_error)
+        .collect();
+    let completion = Completion::Subscribe(SubscribeCompletion {
+        results: ack
+            .return_codes
+            .into_iter()
+            .map(|reason| match reason {
+                rumqttc_v4::SubscribeReasonCode::Success(qos) => {
+                    SubscribeResult::Granted(from_qos(qos))
+                }
+                rumqttc_v4::SubscribeReasonCode::Failure => {
+                    SubscribeResult::Rejected(BrokerReason { code: 0x80 })
+                }
+            })
+            .collect(),
+    });
+    TerminalOutcome::with_acknowledgement(
+        Ok(completion),
+        BrokerAcknowledgement::new(
+            ProtocolVersion::V4,
+            AcknowledgementKind::SubAck,
+            ack.pkid,
+            None,
+            Some(codes),
+            None,
+            false,
+        ),
+    )
 }
 
 pub fn map_unsubscribe_notice(
     result: std::result::Result<rumqttc_v4::UnsubAck, rumqttc_v4::UnsubscribeNoticeError>,
-) -> Result<Completion> {
-    result
-        .map(|_| Completion::Unsubscribe(UnsubscribeCompletion { results: None }))
-        .map_err(map_notice_error)
+) -> TerminalOutcome {
+    match result {
+        Ok(ack) => TerminalOutcome::with_acknowledgement(
+            Ok(Completion::Unsubscribe(UnsubscribeCompletion {
+                results: None,
+            })),
+            BrokerAcknowledgement::new(
+                ProtocolVersion::V4,
+                AcknowledgementKind::UnsubAck,
+                ack.pkid,
+                None,
+                None,
+                None,
+                false,
+            ),
+        ),
+        Err(error) => Err(map_notice_error(error)).into(),
+    }
 }
 
 pub fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {

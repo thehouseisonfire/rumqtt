@@ -1,10 +1,11 @@
 use crate::{
-    BrokerReason, Completion, DeliveryStatus, Error, ErrorKind, OutgoingActivity, PublishCommand,
+    AcknowledgementKind, AcknowledgementProperties, BrokerAcknowledgement, BrokerReason,
+    Completion, DeliveryStatus, Error, ErrorKind, OutgoingActivity, PublishCommand,
     PublishCompletion, PublishProtocolOptions, QoS, Result, SubscribeCommand, SubscribeCompletion,
-    SubscribeProtocolOptions, SubscribeResult, UnsubscribeCommand, UnsubscribeCompletion,
-    UnsubscribeProtocolOptions, UnsubscribeResult, V5IncomingPublishProperties,
-    V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties,
-    V5UnsubscribeProperties,
+    SubscribeProtocolOptions, SubscribeResult, TerminalOutcome, UnsubscribeCommand,
+    UnsubscribeCompletion, UnsubscribeProtocolOptions, UnsubscribeResult,
+    V5IncomingPublishProperties, V5OutgoingPublishProperties, V5RetainForwardRule,
+    V5SubscribeProperties, V5UnsubscribeProperties,
 };
 
 use crate::validation::{protocol_option_error, validate_mqtt_utf8_string};
@@ -1201,79 +1202,162 @@ pub fn from_incoming_publish_properties(
 
 pub fn map_publish_notice(
     result: std::result::Result<rumqttc_v5::PublishResult, rumqttc_v5::PublishNoticeError>,
-) -> Result<Completion> {
-    match result {
-        Ok(rumqttc_v5::PublishResult::Qos0Flushed) => {
-            Ok(Completion::Publish(PublishCompletion::Qos0Flushed))
-        }
-        Ok(rumqttc_v5::PublishResult::Qos1(ack)) if v5_puback_success(ack.reason) => {
-            Ok(Completion::Publish(PublishCompletion::Qos1Acknowledged))
-        }
-        Ok(rumqttc_v5::PublishResult::Qos2Completed(ack)) if v5_pubcomp_success(ack.reason) => {
-            Ok(Completion::Publish(PublishCompletion::Qos2Completed))
-        }
-        Ok(rumqttc_v5::PublishResult::Qos2Recovered(_)) => {
-            Ok(Completion::Publish(PublishCompletion::Qos2Completed))
-        }
-        Ok(rumqttc_v5::PublishResult::Qos1(ack)) => {
-            Err(broker_rejection(v5_puback_code(ack.reason)))
-        }
-        Ok(rumqttc_v5::PublishResult::Qos2Completed(ack)) => {
-            Err(broker_rejection(v5_pubcomp_code(ack.reason)))
-        }
-        Ok(rumqttc_v5::PublishResult::Qos2PubRecRejected(ack)) => {
-            Err(broker_rejection(v5_pubrec_code(ack.reason)))
-        }
-        Err(error) => Err(map_notice_error(error)),
-    }
+) -> TerminalOutcome {
+    use rumqttc_v5::PublishResult as R;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => return Err(map_notice_error(error)).into(),
+    };
+    let (kind, packet_id, reason, properties, recovered, completion) = match result {
+        R::Qos0Flushed => return Ok(Completion::Publish(PublishCompletion::Qos0Flushed)).into(),
+        R::Qos1(ack) => (
+            AcknowledgementKind::PubAck,
+            ack.pkid,
+            v5_puback_code(ack.reason),
+            ack.properties.map(|p| AcknowledgementProperties {
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+            }),
+            false,
+            if v5_puback_success(ack.reason) {
+                Ok(Completion::Publish(PublishCompletion::Qos1Acknowledged))
+            } else {
+                Err(broker_rejection(v5_puback_code(ack.reason)))
+            },
+        ),
+        R::Qos2Completed(ack) => (
+            AcknowledgementKind::PubComp,
+            ack.pkid,
+            v5_pubcomp_code(ack.reason),
+            ack.properties.map(|p| AcknowledgementProperties {
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+            }),
+            false,
+            if v5_pubcomp_success(ack.reason) {
+                Ok(Completion::Publish(PublishCompletion::Qos2Completed))
+            } else {
+                Err(broker_rejection(v5_pubcomp_code(ack.reason)))
+            },
+        ),
+        R::Qos2Recovered(ack) => (
+            AcknowledgementKind::PubComp,
+            ack.pkid,
+            v5_pubcomp_code(ack.reason),
+            ack.properties.map(|p| AcknowledgementProperties {
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+            }),
+            true,
+            Ok(Completion::Publish(PublishCompletion::Qos2Completed)),
+        ),
+        R::Qos2PubRecRejected(ack) => (
+            AcknowledgementKind::PubRec,
+            ack.pkid,
+            v5_pubrec_code(ack.reason),
+            ack.properties.map(|p| AcknowledgementProperties {
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+            }),
+            false,
+            Err(broker_rejection(v5_pubrec_code(ack.reason))),
+        ),
+    };
+    TerminalOutcome::with_acknowledgement(
+        completion,
+        BrokerAcknowledgement::new(
+            ProtocolVersion::V5,
+            kind,
+            packet_id,
+            Some(reason),
+            None,
+            properties,
+            recovered,
+        ),
+    )
 }
 
 pub fn map_subscribe_notice(
     result: std::result::Result<rumqttc_v5::SubAck, rumqttc_v5::SubscribeNoticeError>,
-) -> Result<Completion> {
-    result
-        .map(|ack| {
-            Completion::Subscribe(SubscribeCompletion {
-                results: ack
-                    .return_codes
-                    .into_iter()
-                    .map(|reason| match reason {
-                        rumqttc_v5::SubscribeReasonCode::Success(qos) => {
-                            SubscribeResult::Granted(from_qos(qos))
-                        }
-                        reason => SubscribeResult::Rejected(BrokerReason {
-                            code: v5_suback_code(reason),
-                        }),
-                    })
-                    .collect(),
+) -> TerminalOutcome {
+    let ack = match result {
+        Ok(ack) => ack,
+        Err(error) => return Err(map_notice_error(error)).into(),
+    };
+    let codes = ack
+        .return_codes
+        .iter()
+        .copied()
+        .map(v5_suback_code)
+        .collect();
+    let completion = Completion::Subscribe(SubscribeCompletion {
+        results: ack
+            .return_codes
+            .into_iter()
+            .map(|reason| match reason {
+                rumqttc_v5::SubscribeReasonCode::Success(qos) => {
+                    SubscribeResult::Granted(from_qos(qos))
+                }
+                reason => SubscribeResult::Rejected(BrokerReason {
+                    code: v5_suback_code(reason),
+                }),
             })
-        })
-        .map_err(map_notice_error)
+            .collect(),
+    });
+    TerminalOutcome::with_acknowledgement(
+        Ok(completion),
+        BrokerAcknowledgement::new(
+            ProtocolVersion::V5,
+            AcknowledgementKind::SubAck,
+            ack.pkid,
+            None,
+            Some(codes),
+            ack.properties.map(|p| AcknowledgementProperties {
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+            }),
+            false,
+        ),
+    )
 }
 
 pub fn map_unsubscribe_notice(
     result: std::result::Result<rumqttc_v5::UnsubAck, rumqttc_v5::UnsubscribeNoticeError>,
-) -> Result<Completion> {
-    result
-        .map(|ack| {
-            Completion::Unsubscribe(UnsubscribeCompletion {
-                results: Some(
-                    ack.reasons
-                        .into_iter()
-                        .map(|reason| match reason {
-                            rumqttc_v5::UnsubAckReason::Success => UnsubscribeResult::Success,
-                            rumqttc_v5::UnsubAckReason::NoSubscriptionExisted => {
-                                UnsubscribeResult::NoSubscriptionExisted
-                            }
-                            reason => {
-                                UnsubscribeResult::Rejected(BrokerReason { code: reason as u8 })
-                            }
-                        })
-                        .collect(),
-                ),
-            })
-        })
-        .map_err(map_notice_error)
+) -> TerminalOutcome {
+    let ack = match result {
+        Ok(ack) => ack,
+        Err(error) => return Err(map_notice_error(error)).into(),
+    };
+    let codes = ack.reasons.iter().map(|reason| *reason as u8).collect();
+    let completion = Completion::Unsubscribe(UnsubscribeCompletion {
+        results: Some(
+            ack.reasons
+                .into_iter()
+                .map(|reason| match reason {
+                    rumqttc_v5::UnsubAckReason::Success => UnsubscribeResult::Success,
+                    rumqttc_v5::UnsubAckReason::NoSubscriptionExisted => {
+                        UnsubscribeResult::NoSubscriptionExisted
+                    }
+                    reason => UnsubscribeResult::Rejected(BrokerReason { code: reason as u8 }),
+                })
+                .collect(),
+        ),
+    });
+    TerminalOutcome::with_acknowledgement(
+        Ok(completion),
+        BrokerAcknowledgement::new(
+            ProtocolVersion::V5,
+            AcknowledgementKind::UnsubAck,
+            ack.pkid,
+            None,
+            Some(codes),
+            ack.properties.map(|p| AcknowledgementProperties {
+                reason_string: p.reason_string,
+                user_properties: p.user_properties,
+            }),
+            false,
+        ),
+    )
 }
 
 pub const fn v5_suback_code(reason: rumqttc_v5::SubscribeReasonCode) -> u8 {
@@ -1337,14 +1421,14 @@ mod config_tests {
         // Managed producer admission prevents unknown alias-only publishes.
         // Keep the defensive native replay failure observable if a restored or
         // legacy request nevertheless reaches this path.
-        let error = map_publish_notice(Err(
+        let outcome = map_publish_notice(Err(
             rumqttc_v5::PublishNoticeError::TopicAliasReplayUnavailable(7),
-        ))
-        .unwrap_err();
+        ));
+        let error = outcome.result().as_ref().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Protocol);
         assert_eq!(error.delivery_status(), DeliveryStatus::Ambiguous);
         assert_eq!(
-            std::error::Error::source(&error).unwrap().to_string(),
+            std::error::Error::source(error).unwrap().to_string(),
             rumqttc_v5::PublishNoticeError::TopicAliasReplayUnavailable(7).to_string()
         );
     }

@@ -299,6 +299,45 @@ fn assert_protocol_round_trip(protocol: u32) {
                 0
             );
             assert_eq!(kind, expected_kind);
+            let mut ack = rumqttc_acknowledgement_details_t {
+                struct_size: u32::try_from(size_of::<rumqttc_acknowledgement_details_t>()).unwrap(),
+                protocol: 0,
+                packet_kind: 0,
+                packet_id: 0,
+                present: 0,
+                reason_present: 0,
+                reason: 0,
+                properties_present: 0,
+                recovered: 0,
+                reserved: [0; 5],
+            };
+            assert_eq!(
+                rumqttc_completion_acknowledgement(completion, &mut ack, &mut error),
+                0
+            );
+            assert!(error.is_null());
+            assert_eq!(ack.present, u8::from(qos != 0));
+            if qos != 0 {
+                assert_eq!(ack.protocol, protocol);
+                assert_eq!(ack.packet_kind, if qos == 1 { 4 } else { 7 });
+                assert_ne!(ack.packet_id, 0);
+                assert_eq!(ack.reason_present, u8::from(protocol == 2));
+                assert_eq!(ack.reason, 0);
+            }
+            assert_eq!(ack.properties_present, 0);
+            assert_eq!(ack.recovered, 0);
+            let mut present = 9;
+            let mut count = usize::MAX;
+            assert_eq!(
+                rumqttc_completion_acknowledgement_result_count(
+                    completion,
+                    &mut present,
+                    &mut count,
+                    ptr::null_mut()
+                ),
+                2
+            );
+            assert_eq!((present, count), (0, 0));
             rumqttc_completion_destroy(completion);
         }
 

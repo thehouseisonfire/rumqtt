@@ -23,6 +23,10 @@ pub use websocket::*;
 mod transport;
 pub use transport::*;
 
+#[path = "acknowledgement.rs"]
+mod acknowledgement;
+pub use acknowledgement::*;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;

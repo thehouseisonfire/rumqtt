@@ -108,6 +108,7 @@ impl BackendClient {
                     };
                     Error::auth(failure).with_delivery(crate::DeliveryStatus::Ambiguous)
                 })
+                .into()
         }))
     }
     pub(crate) fn try_publish(&self, command: PublishCommand) -> Result<CompletionFuture> {

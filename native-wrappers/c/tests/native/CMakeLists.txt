@@ -340,6 +340,11 @@ add_test(NAME rumqttc-native-acknowledgement-options
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-acknowledgement-options>)
 set_tests_properties(rumqttc-native-acknowledgement-options PROPERTIES LABELS "native;wire;ownership" TIMEOUT 30)
 
+rumqttc_native_target(rumqttc-native-acknowledgement-results native_acknowledgement_results.c)
+add_test(NAME rumqttc-native-acknowledgement-results
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-acknowledgement-results>)
+set_tests_properties(rumqttc-native-acknowledgement-results PROPERTIES LABELS "native;wire;ownership" TIMEOUT 30)
+
 if(OpenSSL_FOUND)
     rumqttc_native_target(rumqttc-native-tls-advanced native_tls_advanced.c)
     target_sources(rumqttc-native-tls-advanced PRIVATE "${RUMQTTC_ROOT}/examples/external_signer.c")
