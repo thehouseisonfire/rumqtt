@@ -12,6 +12,10 @@ use crate::{BrokerTarget, TransportConfig};
 /// explicit redirect transport. Server Reference supplies the WebSocket path.
 ///
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "cold-path configuration keeps the existing inline transport API; it is not queued per operation"
+)]
 pub enum RedirectPolicy {
     #[default]
     Reject,
