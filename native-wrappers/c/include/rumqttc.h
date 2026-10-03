@@ -449,6 +449,24 @@ typedef struct rumqttc_disconnect_options_t {
     uint64_t reserved[2];
 } rumqttc_disconnect_options_t;
 
+/* Only client-originated PUBACK/PUBREC reasons are accepted. 0x10 is server-only. */
+typedef struct rumqttc_v5_acknowledgement_options_t {
+    uint32_t struct_size;
+    uint32_t reason_code;
+    uint8_t reason_string_present;
+    uint8_t reserved[7];
+    rumqttc_string_view_t reason_string;
+    const rumqttc_user_property_t *user_properties;
+    size_t user_property_count;
+} rumqttc_v5_acknowledgement_options_t;
+
+typedef struct rumqttc_acknowledgement_options_t {
+    uint32_t struct_size;
+    uint32_t protocol_options;
+    const rumqttc_v5_acknowledgement_options_t *v5_options;
+    uint64_t reserved[2];
+} rumqttc_acknowledgement_options_t;
+
 typedef struct rumqttc_tls_pem_identity_t {
     uint32_t struct_size;
     uint32_t reserved;
@@ -701,6 +719,12 @@ typedef struct rumqttc_diagnostics_t {
       0, { NULL, 0 }, { NULL, 0 }, NULL, 0 }
 #define RUMQTTC_DISCONNECT_OPTIONS_INIT \
     { sizeof(rumqttc_disconnect_options_t), RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, \
+      NULL, { 0, 0 } }
+#define RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT \
+    { sizeof(rumqttc_v5_acknowledgement_options_t), 0, 0, { 0, 0, 0, 0, 0, 0, 0 }, \
+      { NULL, 0 }, NULL, 0 }
+#define RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT \
+    { sizeof(rumqttc_acknowledgement_options_t), RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, \
       NULL, { 0, 0 } }
 #define RUMQTTC_TLS_PEM_IDENTITY_INIT \
     { sizeof(rumqttc_tls_pem_identity_t), 0, { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
@@ -1035,6 +1059,13 @@ RUMQTTC_API rumqttc_status_t rumqttc_client_try_unsubscribe(rumqttc_client_t *cl
 RUMQTTC_API rumqttc_status_t rumqttc_client_unsubscribe_tracked(rumqttc_client_t *client, const rumqttc_string_view_t *filters, size_t count, const rumqttc_unsubscribe_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge(rumqttc_client_t *client, rumqttc_event_t *event, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_tracked(rumqttc_client_t *client, rumqttc_event_t *event, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+/* Options and their strings/properties are copied during the call. NULL selects default success.
+ * Admission is nonblocking. Rejection/backpressure leaves the event token available for retry.
+ * Explicit V5 options require MQTT 5, even when every value is default. Completion means local
+ * ACK flush, including a negative ACK; it does not prove broker receipt or request redelivery.
+ * The event remains readable after acknowledgement. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge_with_options(rumqttc_client_t *client, rumqttc_event_t *event, const rumqttc_acknowledgement_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_with_options_tracked(rumqttc_client_t *client, rumqttc_event_t *event, const rumqttc_acknowledgement_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_diagnostics_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_reauthenticate(rumqttc_client_t *client, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_reauthenticate_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);

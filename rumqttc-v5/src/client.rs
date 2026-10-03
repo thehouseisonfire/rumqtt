@@ -1495,9 +1495,9 @@ impl AsyncClient {
     /// };
     ///
     /// if let ManualAck::PubAck(puback) = &mut ack {
-    ///     puback.reason = PubAckReason::NoMatchingSubscribers;
+    ///     puback.reason = PubAckReason::Success;
     ///     puback.properties = Some(PubAckProperties {
-    ///         reason_string: Some("No active subscribers now".to_owned()),
+    ///         reason_string: Some("Publication accepted".to_owned()),
     ///         user_properties: vec![("source".to_owned(), "application".to_owned())],
     ///     });
     /// }

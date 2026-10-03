@@ -1,6 +1,12 @@
 ## [Unreleased]
 
 ### Added
+- Native wrappers: Add MQTT 5 manual PUBACK/PUBREC contents through wrapper-core
+  acknowledgement options and additive nonblocking/tracked C APIs. Preserve
+  Reason String presence and ordered duplicate User Properties; validate client
+  reason codes and generation-bound negotiated packet limits before consuming
+  tokens. Failed admission restores the original default ACK for retry. Negative
+  ACK completions retain local flush semantics; publications remain readable.
 - Native wrappers: Add owned asynchronous WebSocket handshake preparation for
   both MQTT versions and WS/WSS, with a retained C registration, borrowed request
   snapshot, owned response builders, capability bit and typed failure detail.
@@ -43,6 +49,9 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- MQTT 5 manual-ACK documentation: Use client success rather than server-only
+  `NoMatchingSubscribers` in the Rust example. Wrapper ACK reservation rollback
+  no longer restores a token invalidated by a connection change.
 - Native C examples: Mark the WebSocket token example as skipped in CTest when
   WebSocket callbacks are unavailable, preserving argument-validation failures.
 - Native wrappers: Preserve typed WebSocket handshake destructor failures when

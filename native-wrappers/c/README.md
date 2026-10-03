@@ -537,6 +537,43 @@ full past its configured delivery timeout, the driver terminates visibly rather
 than silently dropping incoming publishes. Manual acknowledgement consumes an
 event-bound token; reuse and cross-client acknowledgement are rejected.
 
+`rumqttc_client_try_acknowledge_with_options` and
+`rumqttc_client_acknowledge_with_options_tracked` add MQTT 5 ACK content using
+`rumqttc_acknowledgement_options_t` and `rumqttc_v5_acknowledgement_options_t`.
+Initialize them with `RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT` and
+`RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT`, select
+`RUMQTTC_PROTOCOL_OPTIONS_V5`, and set `v5_options`. NULL options or a
+version-neutral record send default success on either protocol. Explicit V5
+options require MQTT 5 even when all their values are defaults.
+
+The legal client-originated PUBACK/PUBREC reasons are `0x00` (Success), `0x80`
+(Unspecified error), `0x83` (Implementation specific error), `0x87` (Not
+authorized), `0x90` (Topic Name invalid), `0x91` (Packet Identifier in use),
+`0x97` (Quota exceeded), and `0x99` (Payload format invalid). `0x10` (No matching
+subscribers) is server-only and is rejected. Reason String presence is explicit,
+so absent and present-empty values differ; User Properties preserve order and
+duplicate names. All supplied strings and properties are copied during the call.
+Malformed or oversized options and backpressure leave the event's token and
+original default ACK available for retry with different options or the existing
+no-options API. The full encoded packet must fit the broker's Maximum Packet
+Size for that token's connection generation; properties are never silently
+removed. Reconnect invalidates old tokens.
+
+Both APIs admit without waiting for capacity. Tracked
+`RUMQTTC_COMPLETION_ACKNOWLEDGED` means the selected ACK flushed locally,
+including a negative ACK; it does not prove broker receipt or application
+processing. Destroying the completion observer does not cancel an admitted ACK.
+The publication remains readable for the event's lifetime after acknowledgement
+and client destruction; destruction must follow the existing handle lifetime
+rules.
+
+A negative ACK terminates that delivery rather than requesting retry. For
+shared subscriptions the broker must discard the message rather than assign it
+to another subscriber. In particular, sending `QuotaExceeded` during temporary
+overload does not request redelivery. Reason String and User Properties are
+broker-facing diagnostics, not an application response to the original
+publisher.
+
 `rumqttc_client_close_timeout_ms()` performs a bounded graceful drain and is
 idempotent. Its timeout covers coordination with another close caller,
 operation completion, and driver-thread joining.

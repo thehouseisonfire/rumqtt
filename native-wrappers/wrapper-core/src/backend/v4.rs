@@ -474,7 +474,7 @@ fn map_v4_event(
 ) -> Option<WrapperEvent> {
     match event {
         rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::ConnAck(connack)) => {
-            shared.begin_connection(protocol, connack.session_present, || {
+            shared.begin_connection(protocol, connack.session_present, None, || {
                 eventloop.discard_pending_manual_acknowledgements();
             });
             *connected = true;

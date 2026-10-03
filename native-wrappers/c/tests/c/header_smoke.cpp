@@ -6,6 +6,8 @@ static_assert(std::is_same_v<rumqttc_status_t, uint32_t>);
 static_assert(RUMQTTC_ABI_VERSION == 0x00000001u);
 
 int main() {
+  rumqttc_v5_acknowledgement_options_t ack_content = RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT;
+  rumqttc_acknowledgement_options_t ack_options = RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT;
   rumqttc_user_property_t user_property = RUMQTTC_USER_PROPERTY_INIT;
   rumqttc_v5_publish_properties_t properties =
       RUMQTTC_V5_PUBLISH_PROPERTIES_INIT;
@@ -32,6 +34,8 @@ int main() {
   rumqttc_auth_response_t auth_response = RUMQTTC_AUTH_RESPONSE_INIT;
   rumqttc_srv_record_t srv_record = RUMQTTC_SRV_RECORD_INIT;
   rumqttc_config_t *config = nullptr;
+  if (ack_content.struct_size != sizeof(ack_content) || ack_content.reason_code != 0 ||
+      ack_options.struct_size != sizeof(ack_options) || ack_options.v5_options != nullptr) return 1;
   if (user_property.struct_size != sizeof(user_property) ||
       properties.struct_size != sizeof(properties) ||
       publish_options.struct_size != sizeof(publish_options) ||

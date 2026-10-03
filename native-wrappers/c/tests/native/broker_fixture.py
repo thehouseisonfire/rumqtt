@@ -445,6 +445,34 @@ class Broker:
             self.threads.append(thread)
             thread.start()
 
+    def acknowledgement_options(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
+        with self.failure_lock:
+            self.client_ids.add(client_id)
+        properties = b"\x27\x00\x00\x00\x20" if protocol == 5 else b""
+        connack = b"\x00\x00" + (encode_remaining(len(properties)) + properties if protocol == 5 else b"")
+        stream.sendall(frame(2, 0, connack))
+        reasons = [0, 0x80, 0x83, 0x87, 0x90, 0x91, 0x97, 0x99] if protocol == 5 else [0]
+        for qos in [1, 2]:
+            for index, reason in enumerate(reasons):
+                packet_id = struct.pack("!H", 7 + index % 2)
+                publication = b"\x00\x01a" + packet_id + (b"\x00" if protocol == 5 else b"") + b"x"
+                stream.sendall(frame(3, qos << 1, publication))
+                props = b"\x1f\x00\x00\x26\x00\x01k\x00\x01v\x26\x00\x01k\x00\x00" if index % 2 else b""
+                expected = packet_id
+                if protocol == 5 and (reason != 0 or props):
+                    expected += bytes([reason]) + encode_remaining(len(props)) + props
+                if read_frame(stream) != (4 if qos == 1 else 5, 0, expected):
+                    raise AssertionError("manual acknowledgement reason/properties changed")
+                if qos == 2:
+                    # A late PUBREL after rejection must not produce successful QoS2 completion.
+                    stream.sendall(frame(6, 2, packet_id))
+                    expected_comp = packet_id + (b"\x92\x00" if reason >= 0x80 else b"")
+                    if read_frame(stream) != (7, 0, expected_comp):
+                        raise AssertionError("manual PUBREC rejection left successful QoS2 state")
+        stream.sendall(frame(3, 0, b"\x00\x01a" + (b"\x00" if protocol == 5 else b"") + b"done"))
+        if read_frame(stream)[0] != 14:
+            raise AssertionError("unexpected packet after manual ACK fixture")
+
     def batching(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
         name = client_id.decode("ascii")
         reads = b"-read-" in client_id
@@ -622,6 +650,9 @@ class Broker:
                     raise AssertionError("wire-options fixture connected more than three times")
                 if offset != len(body):
                     raise AssertionError("unexpected CONNECT payload fields")
+            if client_id.startswith(b"native-ack-options-"):
+                self.acknowledgement_options(stream, protocol, client_id)
+                return
             if client_id.startswith(b"native-batch-"):
                 self.batching(stream, protocol, client_id)
                 return

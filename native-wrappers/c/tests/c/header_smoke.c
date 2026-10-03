@@ -5,6 +5,10 @@
 #include <string.h>
 
 #if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(rumqttc_v5_acknowledgement_options_t) == 48,
+               "v5 acknowledgement options ABI changed");
+_Static_assert(sizeof(rumqttc_acknowledgement_options_t) == 32,
+               "acknowledgement options ABI changed");
 _Static_assert(sizeof(rumqttc_bytes_view_t) == 16,
                "rumqttc_bytes_view_t ABI changed");
 _Static_assert(sizeof(rumqttc_string_view_t) == 16,
@@ -33,6 +37,8 @@ _Static_assert(offsetof(rumqttc_v5_publish_properties_t, user_properties) == 80,
 #endif
 
 int main(void) {
+  rumqttc_v5_acknowledgement_options_t ack_content = RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT;
+  rumqttc_acknowledgement_options_t ack_options = RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT;
   rumqttc_user_property_t user_property = RUMQTTC_USER_PROPERTY_INIT;
   rumqttc_v5_publish_properties_t properties =
       RUMQTTC_V5_PUBLISH_PROPERTIES_INIT;
@@ -65,6 +71,8 @@ int main(void) {
 
   assert(rumqttc_abi_version() == RUMQTTC_ABI_VERSION);
   assert(rumqttc_library_version() != NULL);
+  assert(ack_content.struct_size == sizeof(ack_content) && ack_content.reason_code == 0);
+  assert(ack_options.struct_size == sizeof(ack_options) && ack_options.v5_options == NULL);
   assert(user_property.struct_size == sizeof(user_property));
   assert(properties.struct_size == sizeof(properties));
   assert(properties.user_properties == NULL &&

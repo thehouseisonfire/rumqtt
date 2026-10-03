@@ -663,6 +663,60 @@ fn assert_manual_ack(protocol: u32) {
             }
         }
 
+        // Every rejected option attempt must preserve the event's acknowledgement token.
+        let mut content: rumqttc_v5_acknowledgement_options_t = std::mem::zeroed();
+        content.struct_size = std::mem::size_of_val(&content) as u32;
+        let mut options: rumqttc_acknowledgement_options_t = std::mem::zeroed();
+        options.struct_size = std::mem::size_of_val(&options) as u32;
+        options.protocol_options = 5;
+        options.v5_options = &content;
+        for reason in if protocol == 1 {
+            vec![0, 0x80]
+        } else {
+            vec![0x10, 0xff]
+        } {
+            content.reason_code = reason;
+            options.v5_options = &raw const content;
+            let mut operation = u64::MAX;
+            let mut rejected_completion = ptr::dangling_mut();
+            assert_ne!(
+                rumqttc_client_try_acknowledge_with_options(
+                    client,
+                    event,
+                    &options,
+                    &mut operation,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            assert_eq!(operation, 0);
+            assert_ne!(
+                rumqttc_client_acknowledge_with_options_tracked(
+                    client,
+                    event,
+                    &options,
+                    &mut rejected_completion,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            assert!(rejected_completion.is_null());
+            let mut available = 0;
+            assert_eq!(
+                rumqttc_event_publish(
+                    event,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut available
+                ),
+                0
+            );
+            assert_eq!(available, 1);
+        }
+
         let mut completion = ptr::null_mut();
         assert_eq!(
             rumqttc_client_acknowledge_tracked(client, event, &mut completion, ptr::null_mut()),
@@ -715,6 +769,133 @@ fn assert_manual_ack(protocol: u32) {
 fn manual_acknowledgement_is_event_bound_for_both_protocols() {
     assert_manual_ack(1);
     assert_manual_ack(2);
+}
+
+#[test]
+fn acknowledgement_options_serialize_duplicate_calls_and_close_races() {
+    // Handles stay live until every concurrent call has returned. Event/client destruction may
+    // then overlap the driver's processing of admitted work, but never a call using their pointers.
+    unsafe {
+        for race_close in [false, true] {
+            let (port, broker) = spawn_incoming_broker(2);
+            let mut config = ptr::null_mut();
+            assert_eq!(rumqttc_config_new(2, &mut config, ptr::null_mut()), 0);
+            assert_eq!(
+                rumqttc_config_set_broker(config, string_view("127.0.0.1"), port, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_client_id(config, string_view("ack-race"), ptr::null_mut()),
+                0
+            );
+            assert_eq!(rumqttc_config_set_ack_mode(config, 1, ptr::null_mut()), 0);
+            let mut client = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_start(config, &mut client, ptr::null_mut()),
+                0
+            );
+            rumqttc_config_destroy(config);
+            let mut event = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
+                0
+            );
+            rumqttc_event_destroy(event);
+            assert_eq!(
+                rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
+                0
+            );
+            let barrier =
+                std::sync::Arc::new(std::sync::Barrier::new(if race_close { 4 } else { 3 }));
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    let client = client as usize;
+                    let event = event as usize;
+                    thread::spawn(move || {
+                        let content = rumqttc_v5_acknowledgement_options_t {
+                            struct_size: std::mem::size_of::<rumqttc_v5_acknowledgement_options_t>()
+                                as u32,
+                            reason_code: 0x99,
+                            reason_string_present: 0,
+                            reserved: [0; 7],
+                            reason_string: string_view(""),
+                            user_properties: ptr::null(),
+                            user_property_count: 0,
+                        };
+                        let options = rumqttc_acknowledgement_options_t {
+                            struct_size: std::mem::size_of::<rumqttc_acknowledgement_options_t>()
+                                as u32,
+                            protocol_options: 5,
+                            v5_options: &content,
+                            reserved: [0; 2],
+                        };
+                        let mut completion = ptr::dangling_mut();
+                        barrier.wait();
+                        let status = rumqttc_client_acknowledge_with_options_tracked(
+                            client as *mut rumqttc_client,
+                            event as *mut rumqttc_event,
+                            &options,
+                            &mut completion,
+                            ptr::null_mut(),
+                        );
+                        if status != 0 {
+                            assert!(completion.is_null());
+                        }
+                        (status, completion as usize)
+                    })
+                })
+                .collect();
+            let closer = race_close.then(|| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let client = client as usize;
+                thread::spawn(move || {
+                    barrier.wait();
+                    assert_eq!(
+                        rumqttc_client_close_now_timeout_ms(
+                            client as *mut rumqttc_client,
+                            5_000,
+                            ptr::null_mut()
+                        ),
+                        0
+                    );
+                })
+            });
+            barrier.wait();
+            let outcomes: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            let admitted = outcomes.iter().filter(|(status, _)| *status == 0).count();
+            assert!(admitted <= 1);
+            if !race_close {
+                assert_eq!(admitted, 1);
+            }
+            if let Some(closer) = closer {
+                closer.join().unwrap();
+            }
+            // Destroy the event while an admitted ACK may still be owned by the driver.
+            rumqttc_event_destroy(event);
+            for (status, completion) in outcomes {
+                if status == 0 {
+                    let completion = completion as *mut rumqttc_completion;
+                    let result =
+                        rumqttc_completion_wait_timeout_ms(completion, 2_000, ptr::null_mut());
+                    if !race_close {
+                        assert_eq!(result, 0);
+                    }
+                    // A concurrent close may make delivery ambiguous, but cannot leave a waiter pending.
+                    assert_ne!(result, 5);
+                    rumqttc_completion_destroy(completion);
+                }
+            }
+            assert_eq!(
+                rumqttc_client_destroy_timeout_ms(client, 5_000, ptr::null_mut()),
+                0
+            );
+            broker.join().unwrap();
+        }
+    }
 }
 
 #[test]

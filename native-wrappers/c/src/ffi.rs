@@ -25,18 +25,19 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    Admission, AsyncAuthChallenge, AsyncAuthenticator, AsyncAuthenticatorConfig, AuthAction,
-    AuthContext, AuthFailure, AuthFuture, AuthProperties, Command, Completion, DiagnosticsSnapshot,
-    DisconnectProtocolOptions, IncomingPublish, LastWillConfig, LastWillProtocolOptions,
-    OutgoingActivity, ProtocolVersion, ProxyConfig, ProxyCredentials, PublishCommand,
-    PublishCompletion, PublishProtocolOptions, QoS, SecretBytes, SessionCheckpoint, SessionStore,
-    SessionStoreConfig, SessionStoreKey, SrvFailure, SrvFuture, SrvRecord, SrvResolver,
-    SrvResolverConfig, StoreFailure, StoreFuture, SubscribeCommand, SubscribeProtocolOptions,
-    SubscribeResult, Subscription, SubscriptionProtocolOptions, TlsBackend, TlsClientIdentity,
-    TlsConfig, TlsRootPolicy, TopicAliasPolicy, UnsubscribeCommand, UnsubscribeProtocolOptions,
-    UnsubscribeResult, V5ConnectProperties, V5DisconnectOptions, V5IncomingPublishProperties,
-    V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
-    V5UnsubscribeProperties, V5WillProperties, WebSocketHeader, WrapperEvent,
+    AcknowledgementProtocolOptions, Admission, AsyncAuthChallenge, AsyncAuthenticator,
+    AsyncAuthenticatorConfig, AuthAction, AuthContext, AuthFailure, AuthFuture, AuthProperties,
+    Command, Completion, DiagnosticsSnapshot, DisconnectProtocolOptions, IncomingPublish,
+    LastWillConfig, LastWillProtocolOptions, OutgoingActivity, ProtocolVersion, ProxyConfig,
+    ProxyCredentials, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, SecretBytes,
+    SessionCheckpoint, SessionStore, SessionStoreConfig, SessionStoreKey, SrvFailure, SrvFuture,
+    SrvRecord, SrvResolver, SrvResolverConfig, StoreFailure, StoreFuture, SubscribeCommand,
+    SubscribeProtocolOptions, SubscribeResult, Subscription, SubscriptionProtocolOptions,
+    TlsBackend, TlsClientIdentity, TlsConfig, TlsRootPolicy, TopicAliasPolicy, UnsubscribeCommand,
+    UnsubscribeProtocolOptions, UnsubscribeResult, V5AcknowledgementOptions, V5ConnectProperties,
+    V5DisconnectOptions, V5IncomingPublishProperties, V5OutgoingPublishProperties,
+    V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions, V5UnsubscribeProperties,
+    V5WillProperties, WebSocketHeader, WrapperEvent,
 };
 
 use crate::client::{ClientError, ClientObject};
@@ -157,6 +158,25 @@ pub struct rumqttc_disconnect_options_t {
     pub struct_size: u32,
     pub protocol_options: u32,
     pub v5_properties: *const rumqttc_v5_disconnect_properties_t,
+    pub reserved: [u64; 2],
+}
+
+#[repr(C)]
+pub struct rumqttc_v5_acknowledgement_options_t {
+    pub struct_size: u32,
+    pub reason_code: u32,
+    pub reason_string_present: u8,
+    pub reserved: [u8; 7],
+    pub reason_string: rumqttc_string_view_t,
+    pub user_properties: *const rumqttc_user_property_t,
+    pub user_property_count: usize,
+}
+
+#[repr(C)]
+pub struct rumqttc_acknowledgement_options_t {
+    pub struct_size: u32,
+    pub protocol_options: u32,
+    pub v5_options: *const rumqttc_v5_acknowledgement_options_t,
     pub reserved: [u64; 2],
 }
 
@@ -4205,9 +4225,65 @@ pub unsafe extern "C" fn rumqttc_client_unsubscribe_tracked(
     )
 }
 
+unsafe fn parse_acknowledgement_options(
+    options: *const rumqttc_acknowledgement_options_t,
+) -> Result<AcknowledgementProtocolOptions, ErrorHandle> {
+    if options.is_null() {
+        return Ok(AcknowledgementProtocolOptions::VersionNeutral);
+    }
+    let options = unsafe { &*options };
+    if options.struct_size < struct_size::<rumqttc_acknowledgement_options_t>()
+        || options.reserved != [0; 2]
+    {
+        return Err(ErrorHandle::argument(
+            "invalid acknowledgement options record",
+        ));
+    }
+    match (options.protocol_options, options.v5_options.is_null()) {
+        (PROTOCOL_OPTIONS_VERSION_NEUTRAL, true) => {
+            Ok(AcknowledgementProtocolOptions::VersionNeutral)
+        }
+        (PROTOCOL_OPTIONS_V5, false) => {
+            let raw = unsafe { &*options.v5_options };
+            if raw.struct_size < struct_size::<rumqttc_v5_acknowledgement_options_t>()
+                || raw.reserved != [0; 7]
+                // Each User Property occupies at least five bytes, before all ACK headers.
+                || raw.user_property_count > (268_435_455 - 7) / 5
+            {
+                return Err(ErrorHandle::argument(
+                    "invalid MQTT 5 acknowledgement options record",
+                ));
+            }
+            let reason_code = u8::try_from(raw.reason_code)
+                .map_err(|_| ErrorHandle::argument("acknowledgement reason exceeds uint8_t"))?;
+            let reason_present = boolean(raw.reason_string_present, "reason_string_present")?;
+            if reason_present && raw.reason_string.len > usize::from(u16::MAX) {
+                return Err(ErrorHandle::argument(
+                    "acknowledgement reason string exceeds MQTT limit",
+                ));
+            }
+            let content = V5AcknowledgementOptions {
+                reason_code,
+                reason_string: reason_present
+                    .then(|| unsafe { string_from_view(raw.reason_string) })
+                    .transpose()?,
+                user_properties: unsafe {
+                    parse_user_properties(raw.user_properties, raw.user_property_count)
+                }?,
+            };
+            content.validate().map_err(|e| core_error(&e, None))?;
+            Ok(AcknowledgementProtocolOptions::V5(content))
+        }
+        _ => Err(ErrorHandle::argument(
+            "invalid acknowledgement selector or options",
+        )),
+    }
+}
+
 fn acknowledge_impl(
     client: *mut rumqttc_client,
     event: *mut rumqttc_event,
+    options: *const rumqttc_acknowledgement_options_t,
     operation_id_out: *mut u64,
     completion_out: *mut *mut rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
@@ -4224,6 +4300,7 @@ fn acknowledge_impl(
         }
         let _client = unsafe { client_ref(client) }?;
         let event = unsafe { event_ref(event) }?;
+        let protocol = unsafe { parse_acknowledgement_options(options) }?;
         let mut token = event
             .ack
             .lock()
@@ -4231,7 +4308,13 @@ fn acknowledge_impl(
         let ack = token
             .take()
             .ok_or_else(|| ErrorHandle::state("event has no available acknowledgement"))?;
-        let admission = match admit(client, Command::Acknowledge(ack)) {
+        let admission = match admit(
+            client,
+            Command::AcknowledgeWithOptions {
+                token: ack,
+                protocol,
+            },
+        ) {
             Ok(admission) => admission,
             Err(error) => {
                 *token = Some(ack);
@@ -4251,7 +4334,14 @@ pub unsafe extern "C" fn rumqttc_client_try_acknowledge(
     operation_id_out: *mut u64,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
-    acknowledge_impl(client, event, operation_id_out, ptr::null_mut(), error_out)
+    acknowledge_impl(
+        client,
+        event,
+        ptr::null(),
+        operation_id_out,
+        ptr::null_mut(),
+        error_out,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -4261,7 +4351,50 @@ pub unsafe extern "C" fn rumqttc_client_acknowledge_tracked(
     completion_out: *mut *mut rumqttc_completion,
     error_out: *mut *mut rumqttc_error,
 ) -> u32 {
-    acknowledge_impl(client, event, ptr::null_mut(), completion_out, error_out)
+    acknowledge_impl(
+        client,
+        event,
+        ptr::null(),
+        ptr::null_mut(),
+        completion_out,
+        error_out,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_try_acknowledge_with_options(
+    client: *mut rumqttc_client,
+    event: *mut rumqttc_event,
+    options: *const rumqttc_acknowledgement_options_t,
+    operation_id_out: *mut u64,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    acknowledge_impl(
+        client,
+        event,
+        options,
+        operation_id_out,
+        ptr::null_mut(),
+        error_out,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_acknowledge_with_options_tracked(
+    client: *mut rumqttc_client,
+    event: *mut rumqttc_event,
+    options: *const rumqttc_acknowledgement_options_t,
+    completion_out: *mut *mut rumqttc_completion,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    acknowledge_impl(
+        client,
+        event,
+        options,
+        ptr::null_mut(),
+        completion_out,
+        error_out,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -6128,6 +6261,97 @@ pub unsafe extern "C" fn rumqttc_string_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acknowledgement_records_validate_sizes_flags_strings_and_counts() {
+        // All pointers refer to live records unless the parser must reject before dereferencing.
+        unsafe {
+            let mut raw: rumqttc_v5_acknowledgement_options_t = std::mem::zeroed();
+            raw.struct_size = struct_size::<rumqttc_v5_acknowledgement_options_t>();
+            let mut options = rumqttc_acknowledgement_options_t {
+                struct_size: struct_size::<rumqttc_acknowledgement_options_t>(),
+                protocol_options: PROTOCOL_OPTIONS_V5,
+                v5_options: &raw,
+                reserved: [0; 2],
+            };
+            macro_rules! parse {
+                () => {{
+                    options.v5_options = &raw const raw;
+                    parse_acknowledgement_options(&options)
+                }};
+            }
+            assert!(parse!().is_ok());
+            for reason in [0x10, 0xff, 256] {
+                raw.reason_code = reason;
+                assert!(parse!().is_err());
+            }
+            raw.reason_code = 0;
+            raw.reserved[6] = 1;
+            assert!(parse!().is_err());
+            raw.reserved[6] = 0;
+            raw.struct_size -= 1;
+            assert!(parse!().is_err());
+            raw.struct_size += 1;
+            raw.reason_string_present = 2;
+            assert!(parse!().is_err());
+            raw.reason_string_present = 1;
+            raw.reason_string = rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 1,
+            };
+            assert!(parse!().is_err());
+            let malformed = [0xffu8];
+            raw.reason_string = rumqttc_string_view_t {
+                data: malformed.as_ptr().cast(),
+                len: 1,
+            };
+            assert!(parse!().is_err());
+            let nul = [0u8];
+            raw.reason_string.data = nul.as_ptr().cast();
+            assert!(parse!().is_err());
+            raw.reason_string = rumqttc_string_view_t {
+                data: ptr::dangling(),
+                len: 65_536,
+            };
+            assert!(parse!().is_err());
+            raw.reason_string = rumqttc_string_view_t {
+                data: ptr::null(),
+                len: 0,
+            };
+            let AcknowledgementProtocolOptions::V5(parsed) = parse!().unwrap() else {
+                panic!()
+            };
+            assert_eq!(parsed.reason_string.as_deref(), Some(""));
+            raw.reason_string_present = 0;
+            raw.user_property_count = 1;
+            assert!(parse!().is_err());
+            raw.user_properties = ptr::dangling();
+            raw.user_property_count = usize::MAX;
+            assert!(parse!().is_err());
+            raw.user_property_count = 0;
+            options.reserved[1] = 1;
+            assert!(parse!().is_err());
+            options.reserved[1] = 0;
+            options.struct_size -= 1;
+            assert!(parse!().is_err());
+            options.struct_size += 1;
+            options.protocol_options = 99;
+            assert!(parse!().is_err());
+            options.protocol_options = PROTOCOL_OPTIONS_VERSION_NEUTRAL;
+            assert!(parse!().is_err());
+            options.v5_options = ptr::null();
+            assert_eq!(
+                parse_acknowledgement_options(&options).unwrap(),
+                AcknowledgementProtocolOptions::VersionNeutral
+            );
+            options.protocol_options = PROTOCOL_OPTIONS_V5;
+            assert!(parse_acknowledgement_options(&options).is_err());
+            assert_eq!(
+                parse_acknowledgement_options(ptr::null()).unwrap(),
+                AcknowledgementProtocolOptions::VersionNeutral
+            );
+        }
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "requires a real TCP broker and driver runtime")]

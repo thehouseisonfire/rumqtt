@@ -116,6 +116,12 @@ pub enum Command {
     Subscribe(SubscribeCommand),
     Unsubscribe(UnsubscribeCommand),
     Acknowledge(AckToken),
+    /// Acknowledges an incoming publication with validated, client-originated contents.
+    /// Completion observes local ACK flush, including when the ACK rejects the publication.
+    AcknowledgeWithOptions {
+        token: AckToken,
+        protocol: crate::AcknowledgementProtocolOptions,
+    },
     /// MQTT 5 only. Admission queues an exchange owned by the configured authenticator;
     /// caller-supplied properties are rejected. Completion observes the exchange outcome.
     Reauthenticate(Option<crate::AuthProperties>),

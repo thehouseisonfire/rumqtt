@@ -144,6 +144,7 @@ impl Shared {
         &self,
         protocol: ProtocolVersion,
         session_present: bool,
+        maximum_packet_size: Option<u32>,
         discard_pending_acknowledgements: impl FnOnce(),
     ) {
         let _admission_guard = self
@@ -159,7 +160,7 @@ impl Shared {
             context.phase = Some(crate::ConnectionPhase::Established);
             context.generation = Some(context.generation.unwrap_or(0).saturating_add(1));
         }
-        self.acknowledgements.begin_connection();
+        self.acknowledgements.begin_connection(maximum_packet_size);
         self.connection.connected(ConnectionResult {
             protocol,
             session_present,
@@ -394,7 +395,10 @@ impl ClientHandle {
             Command::Publish(command) => self.try_publish(command),
             Command::Subscribe(command) => self.try_subscribe(command),
             Command::Unsubscribe(filters) => self.try_unsubscribe(filters),
-            Command::Acknowledge(token) => self.try_acknowledge(token),
+            Command::Acknowledge(token) => self.try_acknowledge(token, &Default::default()),
+            Command::AcknowledgeWithOptions { token, protocol } => {
+                self.try_acknowledge(token, &protocol)
+            }
             Command::Reauthenticate(properties) => self.try_reauthenticate(properties.as_ref()),
             Command::GracefulDisconnect { timeout } => {
                 self.try_close(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
@@ -426,7 +430,10 @@ impl ClientHandle {
             Command::Publish(command) => self.publish(command).await,
             Command::Subscribe(command) => self.subscribe(command).await,
             Command::Unsubscribe(filters) => self.unsubscribe(filters).await,
-            Command::Acknowledge(token) => self.acknowledge(token).await,
+            Command::Acknowledge(token) => self.acknowledge(token, &Default::default()).await,
+            Command::AcknowledgeWithOptions { token, protocol } => {
+                self.acknowledge(token, &protocol).await
+            }
             Command::Reauthenticate(properties) => {
                 self.retry_on_backpressure(|| self.try_reauthenticate(properties.as_ref()))
                     .await
@@ -566,9 +573,13 @@ impl ClientHandle {
             .await
     }
 
-    fn reserve_ack(&self, token: AckToken) -> Result<AckReservation> {
+    fn reserve_ack(
+        &self,
+        token: AckToken,
+        options: &crate::AcknowledgementProtocolOptions,
+    ) -> Result<AckReservation> {
         self.shared.require_running()?;
-        self.shared.acknowledgements.reserve(token)
+        self.shared.acknowledgements.reserve(token, options)
     }
 
     fn try_enqueue_ack(&self, ack: &PreparedAck) -> Result<Admission> {
@@ -585,20 +596,28 @@ impl ClientHandle {
         Ok(admission)
     }
 
-    fn try_acknowledge(&self, token: AckToken) -> Result<Admission> {
+    fn try_acknowledge(
+        &self,
+        token: AckToken,
+        options: &crate::AcknowledgementProtocolOptions,
+    ) -> Result<Admission> {
         let _admission_guard = self
             .shared
             .admission_gate
             .lock()
             .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
-        let reservation = self.reserve_ack(token)?;
+        let reservation = self.reserve_ack(token, options)?;
         let admission = self.try_enqueue_ack(reservation.ack())?;
         reservation.commit();
         Ok(admission)
     }
 
-    async fn acknowledge(&self, token: AckToken) -> Result<Admission> {
-        self.retry_on_backpressure(|| self.try_acknowledge(token))
+    async fn acknowledge(
+        &self,
+        token: AckToken,
+        options: &crate::AcknowledgementProtocolOptions,
+    ) -> Result<Admission> {
+        self.retry_on_backpressure(|| self.try_acknowledge(token, options))
             .await
     }
 
@@ -682,4 +701,125 @@ impl ClientHandle {
 pub fn duration_to_u16(duration: Duration, name: &str) -> Result<u16> {
     u16::try_from(duration.as_secs())
         .map_err(|_| Error::configuration(format!("{name} exceeds u16 seconds")))
+}
+
+#[cfg(test)]
+mod acknowledgement_tests {
+    use super::*;
+    use crate::{AcknowledgementProtocolOptions, Completion, V5AcknowledgementOptions};
+
+    fn client() -> (ClientHandle, flume::Receiver<rumqttc_v5::Request>) {
+        let (tx, rx) = flume::bounded(1);
+        let (operations, _receivers) = OperationRegistry::new(1);
+        let acknowledgements = AcknowledgementCoordinator::new(7, operations.clone());
+        let (immediate_tx, _) = flume::bounded(1);
+        let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_tx);
+        let (panic_tx, _) = flume::bounded(1);
+        let shared = Shared::new(
+            BackendClient::V5(rumqttc_v5::AsyncClient::from_senders(tx)),
+            acknowledgements,
+            ConnectionHandle::new(),
+            operations,
+            shutdown,
+            panic_tx,
+        );
+        shared.begin_connection(ProtocolVersion::V5, false, Some(100), || {});
+        (ClientHandle::new(shared), rx)
+    }
+
+    fn ack_token(handle: &ClientHandle, id: u16) -> AckToken {
+        handle
+            .shared
+            .prepare_ack(PreparedAck::V5(rumqttc_v5::ManualAck::PubAck(
+                rumqttc_v5::PubAck::new(id, None),
+            )))
+            .unwrap()
+    }
+
+    fn custom(token: AckToken, reason_code: u8, text: &str) -> Command {
+        Command::AcknowledgeWithOptions {
+            token,
+            protocol: AcknowledgementProtocolOptions::V5(V5AcknowledgementOptions {
+                reason_code,
+                reason_string: Some(text.into()),
+                user_properties: vec![("k".into(), "v".into())],
+            }),
+        }
+    }
+
+    #[test]
+    fn backpressure_restores_original_ack_for_custom_and_default_retries() {
+        let (handle, rx) = client();
+        handle
+            .try_admit(Command::Acknowledge(ack_token(&handle, 1)))
+            .unwrap();
+        for (id, use_options) in [(2, true), (3, false)] {
+            let token = ack_token(&handle, id);
+            let error = handle.try_admit(custom(token, 0x99, "failed")).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Backpressure);
+            rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let admission = handle
+                .try_admit(if use_options {
+                    custom(token, 0x83, "replacement")
+                } else {
+                    Command::Acknowledge(token)
+                })
+                .unwrap();
+            let rumqttc_v5::Request::PubAck(ack) = rx.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                panic!()
+            };
+            if use_options {
+                assert_eq!(ack.reason as u8, 0x83);
+                assert_eq!(
+                    ack.properties.unwrap().reason_string.as_deref(),
+                    Some("replacement")
+                );
+            } else {
+                assert_eq!(ack.reason as u8, 0);
+                assert!(ack.properties.is_none());
+            }
+            handle.shared.complete_v5_puback(id);
+            assert_eq!(
+                admission.completion.wait().unwrap(),
+                Completion::Acknowledged
+            );
+            // Refill the request channel for the next iteration.
+            handle
+                .try_admit(Command::Acknowledge(ack_token(&handle, id + 10)))
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_capacity_wait_restores_token_and_options_retry_wakes() {
+        let (handle, rx) = client();
+        handle
+            .try_admit(Command::Acknowledge(ack_token(&handle, 1)))
+            .unwrap();
+        let token = ack_token(&handle, 2);
+        {
+            let future = handle.admit_async(custom(token, 0x99, "cancelled"));
+            tokio::pin!(future);
+            assert!(futures_util::poll!(&mut future).is_pending());
+        }
+        let future = handle.admit_async(custom(token, 0x83, "replacement"));
+        tokio::pin!(future);
+        assert!(futures_util::poll!(&mut future).is_pending());
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        handle.shared.notify_progress();
+        let admission = future.await.unwrap();
+        let rumqttc_v5::Request::PubAck(ack) = rx.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(ack.reason as u8, 0x83);
+        assert_eq!(
+            ack.properties.unwrap().reason_string.as_deref(),
+            Some("replacement")
+        );
+        drop(admission.completion);
+        handle.shared.complete_v5_puback(2);
+        assert!(handle.try_admit(Command::Acknowledge(token)).is_err());
+    }
 }

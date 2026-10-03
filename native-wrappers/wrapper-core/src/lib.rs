@@ -4,6 +4,7 @@
 //! values rather than a stable foreign-function ABI.
 
 mod acknowledgement;
+pub use acknowledgement::{AcknowledgementProtocolOptions, V5AcknowledgementOptions};
 mod auth;
 mod scram;
 pub use auth::{

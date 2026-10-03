@@ -988,9 +988,14 @@ fn map_v5_event(
                     }),
                 ));
             }
-            shared.begin_connection(mapping.protocol, connack.session_present, || {
-                eventloop.discard_pending_manual_acknowledgements();
-            });
+            shared.begin_connection(
+                mapping.protocol,
+                connack.session_present,
+                connack.properties.as_ref().and_then(|p| p.max_packet_size),
+                || {
+                    eventloop.discard_pending_manual_acknowledgements();
+                },
+            );
             *connected = true;
             Some(WrapperEvent::Connected {
                 protocol: mapping.protocol,

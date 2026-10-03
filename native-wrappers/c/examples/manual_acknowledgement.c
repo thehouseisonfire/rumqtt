@@ -11,9 +11,10 @@ static int subscribe(rumqttc_client_t *client) {
 
   subscription.filter = example_string("rumqttc/native/incoming");
   subscription.qos = RUMQTTC_QOS_1;
-  failed = example_report(rumqttc_client_subscribe_tracked(
-                              client, &subscription, 1, NULL, &completion, &error),
-                          &error, "subscribe");
+  failed =
+      example_report(rumqttc_client_subscribe_tracked(
+                         client, &subscription, 1, NULL, &completion, &error),
+                     &error, "subscribe");
   if (!failed)
     failed = example_wait(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
 
@@ -32,9 +33,23 @@ static int acknowledge_next_publish(rumqttc_client_t *client) {
   if (event == NULL)
     return 1;
 
-  failed = example_report(
-      rumqttc_client_acknowledge_tracked(client, event, &completion, &error),
-      &error, "acknowledge");
+  rumqttc_v5_acknowledgement_options_t content =
+      RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT;
+  rumqttc_acknowledgement_options_t options =
+      RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT;
+  rumqttc_user_property_t property = RUMQTTC_USER_PROPERTY_INIT;
+  content.reason_string_present = 1;
+  content.reason_string = example_string("Publication accepted");
+  property.name = example_string("source");
+  property.value = example_string("application");
+  content.user_properties = &property;
+  content.user_property_count = 1;
+  options.protocol_options = RUMQTTC_PROTOCOL_OPTIONS_V5;
+  options.v5_options = &content;
+
+  failed = example_report(rumqttc_client_acknowledge_with_options_tracked(
+                              client, event, &options, &completion, &error),
+                          &error, "acknowledge");
   if (!failed)
     failed = example_wait(completion, RUMQTTC_COMPLETION_ACKNOWLEDGED);
 
@@ -60,7 +75,7 @@ int main(int argc, char **argv) {
 
   result = subscribe(client) || acknowledge_next_publish(client);
   if (result == 0)
-    puts("manual acknowledgement completed");
+    puts("manual acknowledgement flushed locally");
 
   (void)rumqttc_client_close_now_timeout_ms(client, 5000, NULL);
   example_destroy_client(&client);

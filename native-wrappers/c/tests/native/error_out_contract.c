@@ -607,7 +607,7 @@ void native_test_error_out_contract(void) {
 
   {
     unsigned tracked;
-    for (tracked = 0; tracked < 2; ++tracked) {
+    for (tracked = 0; tracked < 4; ++tracked) {
       rumqttc_subscription_t subscription =
           native_subscription("rumqttc/native/incoming", RUMQTTC_QOS_1);
       rumqttc_completion_t *completion = NULL;
@@ -615,7 +615,7 @@ void native_test_error_out_contract(void) {
       uint64_t operation = 0;
       client =
           native_start_client(RUMQTTC_PROTOCOL_V4,
-                              tracked ? "error-ack-tracked" : "error-ack-try",
+                              tracked % 2 ? "error-ack-tracked" : "error-ack-try",
                               RUMQTTC_ACK_MANUAL, 8, 8, 1000);
       CHECK(rumqttc_client_subscribe_tracked(client, &subscription, 1, NULL,
                                              &completion, NULL));
@@ -629,7 +629,7 @@ void native_test_error_out_contract(void) {
         /* ERROR_OUT_FAILURE: rumqttc_client_try_acknowledge */
         EXPECT_FAILURE(
             rumqttc_client_try_acknowledge(client, incoming, &operation, NULL));
-      } else {
+      } else if (tracked == 1) {
         completion = NULL;
         /* ERROR_OUT_SUCCESS: rumqttc_client_acknowledge_tracked */
         CHECK(rumqttc_client_acknowledge_tracked(client, incoming, &completion,
@@ -641,8 +641,25 @@ void native_test_error_out_contract(void) {
         EXPECT_FAILURE(rumqttc_client_acknowledge_tracked(client, incoming,
                                                           &completion, NULL));
       }
+      if (tracked == 2) {
+        /* ERROR_OUT_SUCCESS: rumqttc_client_try_acknowledge_with_options */
+        CHECK(rumqttc_client_try_acknowledge_with_options(client, incoming, NULL, &operation, NULL));
+        /* ERROR_OUT_FAILURE: rumqttc_client_try_acknowledge_with_options */
+        EXPECT_FAILURE(rumqttc_client_try_acknowledge_with_options(client, incoming, NULL, &operation, NULL));
+        REQUIRE(operation == 0);
+      } else if (tracked == 3) {
+        completion = NULL;
+        /* ERROR_OUT_SUCCESS: rumqttc_client_acknowledge_with_options_tracked */
+        CHECK(rumqttc_client_acknowledge_with_options_tracked(client, incoming, NULL, &completion, NULL));
+        native_wait_completion(completion, RUMQTTC_COMPLETION_ACKNOWLEDGED);
+        rumqttc_completion_destroy(completion);
+        completion = (rumqttc_completion_t *)(uintptr_t)1;
+        /* ERROR_OUT_FAILURE: rumqttc_client_acknowledge_with_options_tracked */
+        EXPECT_FAILURE(rumqttc_client_acknowledge_with_options_tracked(client, incoming, NULL, &completion, NULL));
+        REQUIRE(completion == NULL);
+      }
       rumqttc_event_destroy(incoming);
-      if (tracked == 0) {
+      if (tracked % 2 == 0) {
         /* The untracked API reports admission, so allow the admitted ACK to
          * flush. */
         native_sleep_ms(100);

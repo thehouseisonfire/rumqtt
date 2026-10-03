@@ -46,6 +46,8 @@ pub enum Completion {
     Publish(PublishCompletion),
     Subscribe(SubscribeCompletion),
     Unsubscribe(UnsubscribeCompletion),
+    /// The selected manual PUBACK/PUBREC flushed locally, including a negative acknowledgement.
+    /// This does not prove broker receipt, application processing, or QoS 2 handshake completion.
     Acknowledged,
     Authenticated,
     Diagnostics(crate::DiagnosticsSnapshot),

@@ -109,6 +109,22 @@ token. Reconnect processing advances the token generation and drains any late
 connection-scoped ACK request under the same admission gate, preventing an ACK
 that raced connection-loss cleanup from entering the replacement connection.
 
+`Command::AcknowledgeWithOptions` accepts
+`AcknowledgementProtocolOptions::V5(V5AcknowledgementOptions)` to choose legal
+client-originated reason codes, an optional Reason String, and ordered duplicate
+User Properties. Explicit V5 defaults are rejected on v4; `VersionNeutral` and
+`Command::Acknowledge` retain default success. Server-only `0x10` is rejected.
+Validation checks MQTT strings and the full encoded ACK against the current
+generation's negotiated Maximum Packet Size before reserving the token or
+allocating an operation. Failed admission restores the original default packet,
+so retries cannot inherit previously attempted content.
+
+Negative PUBREC releases incoming QoS 2 state and receive quota; its completion
+still means local ACK flush. Negative acknowledgements terminate delivery and
+do not request retry or shared-subscription reassignment. Diagnostic properties
+target the broker, not the original publisher. Python and JavaScript currently
+expose default ACK timing; the C wrapper also exposes ACK content.
+
 Request admission and the transition to `Closing` share one ordering gate. A
 request that wins that gate is admitted before the disconnect barrier; a
 capacity-waiting async request that loses it wakes and returns `NotAdmitted`
