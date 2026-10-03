@@ -521,6 +521,7 @@ class Broker:
 
     def serve(self, stream: socket.socket) -> None:
         connection: Connection | None = None
+        client_id: bytes | None = None
         try:
             proxy_kind: str | None = None
             if self.tls_proxy:
@@ -655,6 +656,9 @@ class Broker:
                 return
             if client_id.startswith(b"native-batch-"):
                 self.batching(stream, protocol, client_id)
+                return
+            if client_id.startswith(b"native-external-reconnect-") and attempt == 1:
+                stream.sendall(frame(2, 0, b"\x00\x00" + (b"\x00" if protocol == 5 else b"")))
                 return
             if client_id.startswith(b"native-proxy-") and b"-reconnect-" in client_id and attempt == 1:
                 return
@@ -1024,6 +1028,11 @@ class Broker:
                     PRIVATE_VALUES.append(secret)
                     properties = method + b"\x16" + struct.pack("!H", len(secret)) + secret
                     stream.sendall(frame(15, 0, bytes((code,)) + encode_remaining(len(properties)) + properties))
+        except (BrokenPipeError, ConnectionResetError) as error:
+            # The cancellation consumer closes while TLS/application writes are pending.
+            if client_id is None or not client_id.startswith(b"native-external-cancel-"):
+                with self.failure_lock:
+                    self.failures.append(repr(error))
         except Exception as error:
             # Fixture failures must reach the runner.
             with self.failure_lock:
@@ -1575,6 +1584,8 @@ def main() -> int:
     parser.add_argument("--proxy-matrix", action="store_true")
     parser.add_argument("--tls-matrix", action="store_true")
     parser.add_argument("--tls-profiles", action="store_true")
+    parser.add_argument("--tls-advanced", action="store_true")
+    parser.add_argument("--external-identity-example", action="store_true")
     parser.add_argument("--tls-profile-example", action="store_true")
     parser.add_argument("--network-matrix", action="store_true")
     parser.add_argument("--custom-transport", action="store_true")
@@ -1624,6 +1635,9 @@ def main() -> int:
             "ws": websocket_broker,
             "wss": wss_broker,
         }
+        if args.tls_advanced:
+            broker.redirect_targets["mqtts"] = mtls_broker
+            broker.redirect_targets["wss"] = mtls_wss_broker
         broker.control = Path(directory)
         broker.start()
         if untrusted_broker is not None:
@@ -1683,6 +1697,18 @@ def main() -> int:
             environment["RUMQTTC_TEST_CLIENT_CERT_PEM"] = source.read()
         with open(client_key, encoding="utf-8") as source:
             environment["RUMQTTC_TEST_CLIENT_KEY_PEM"] = source.read()
+        if args.tls_advanced:
+            ec_key = os.path.join(directory, "ec-client.key")
+            ec_csr = os.path.join(directory, "ec-client.csr")
+            ec_cert = os.path.join(directory, "ec-client.pem")
+            for command in (
+                ["openssl", "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=external EC client", "-keyout", ec_key, "-out", ec_csr],
+                ["openssl", "x509", "-req", "-days", "1", "-in", ec_csr, "-CA", ca_cert, "-CAkey", os.path.join(directory, "ca.key"), "-CAcreateserial", "-extfile", os.path.join(directory, "client.ext"), "-out", ec_cert],
+            ):
+                subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            environment["RUMQTTC_TEST_EC_CLIENT_CERT_PEM"] = Path(ec_cert).read_text(encoding="utf-8")
+            environment["RUMQTTC_TEST_EC_CLIENT_KEY_PEM"] = Path(ec_key).read_text(encoding="utf-8")
+            PRIVATE_VALUES.extend((environment["RUMQTTC_TEST_CLIENT_KEY_PEM"].encode(), environment["RUMQTTC_TEST_EC_CLIENT_KEY_PEM"].encode(), b"host-key"))
         if args.tls_matrix:
             archive = os.path.join(directory, "client.p12")
             subprocess.run(
@@ -1714,8 +1740,8 @@ def main() -> int:
             proxy_directory = os.path.join(directory, "proxy")
             os.mkdir(proxy_directory)
             proxy_context, _, proxy_ca, _, _, _ = make_tls_fixture(proxy_directory)
-            ports = {broker.port, tls_broker.port, wss_broker.port}
-            tunnel_brokers = {item.port: item for item in (broker, tls_broker, wss_broker)}
+            ports = {broker.port, tls_broker.port, wss_broker.port, mtls_broker.port, mtls_wss_broker.port}
+            tunnel_brokers = {item.port: item for item in (broker, tls_broker, wss_broker, mtls_broker, mtls_wss_broker)}
             if args.custom_transport:
                 ports.add(websocket_broker.port)
                 tunnel_brokers[websocket_broker.port] = websocket_broker
@@ -1757,6 +1783,8 @@ def main() -> int:
         try:
             launcher = shlex.split(environment.get("RUMQTTC_NATIVE_LAUNCHER", ""))
             address_arguments = [] if args.omit_address_arguments else ["127.0.0.1", str(broker.port)]
+            if args.external_identity_example:
+                address_arguments = ["localhost", str(mtls_broker.port), ca_cert, client_cert, client_key]
             if args.tls_profile_example:
                 address_arguments = ["localhost", str(tls_broker.port), ca_cert, environment["RUMQTTC_TEST_SPKI_PIN"]]
             child_arguments = args.argument[1:] if args.argument[:1] == ["--"] else args.argument

@@ -24,6 +24,14 @@ if(WIN32)
     set_target_properties(rumqttc_native_shared PROPERTIES IMPORTED_IMPLIB "${RUMQTTC_IMPORT_LIBRARY}")
 endif()
 
+# Crypto is optional for general consumers and required in the dedicated signer CI job.
+option(RUMQTTC_REQUIRE_EXTERNAL_SIGNER "Require the native EVP signer consumer" OFF)
+if(RUMQTTC_REQUIRE_EXTERNAL_SIGNER)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+else()
+    find_package(OpenSSL QUIET COMPONENTS Crypto)
+endif()
+
 add_library(native_common STATIC native_common.c event_contract.c)
 target_include_directories(native_common PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(native_common PUBLIC rumqttc_native_shared)
@@ -331,3 +339,17 @@ rumqttc_native_target(rumqttc-native-acknowledgement-options native_acknowledgem
 add_test(NAME rumqttc-native-acknowledgement-options
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-acknowledgement-options>)
 set_tests_properties(rumqttc-native-acknowledgement-options PROPERTIES LABELS "native;wire;ownership" TIMEOUT 30)
+
+if(OpenSSL_FOUND)
+    rumqttc_native_target(rumqttc-native-tls-advanced native_tls_advanced.c)
+    target_sources(rumqttc-native-tls-advanced PRIVATE "${RUMQTTC_ROOT}/examples/external_signer.c")
+    target_include_directories(rumqttc-native-tls-advanced PRIVATE "${RUMQTTC_ROOT}/examples")
+    target_link_libraries(rumqttc-native-tls-advanced PRIVATE OpenSSL::Crypto)
+    if(MSVC)
+        target_compile_options(rumqttc-native-tls-advanced PRIVATE /experimental:c11atomics)
+    endif()
+    add_test(NAME rumqttc-native-tls-advanced
+        COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --tls-advanced --proxy-matrix
+            --binary $<TARGET_FILE:rumqttc-native-tls-advanced>)
+    set_tests_properties(rumqttc-native-tls-advanced PROPERTIES LABELS "native;tls" TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()

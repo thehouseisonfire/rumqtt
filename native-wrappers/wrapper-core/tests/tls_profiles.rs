@@ -402,3 +402,32 @@ fn matching_pins_preserve_handshake_signature_verification() {
         exercise(tls.clone(), Arc::clone(&server), mqtt5, false);
     }
 }
+
+#[test]
+fn disabling_sni_preserves_hostname_verification_for_each_backend() {
+    fixture::install_provider_for_providerless_client();
+    let cert = rcgen::generate_simple_self_signed(vec!["wrong.invalid".into()]).unwrap();
+    for backend in [TlsBackend::Rustls, TlsBackend::Native] {
+        if backend.capabilities().version_policies == 0 {
+            continue;
+        }
+        let tls = TlsConfig {
+            backend,
+            roots: TlsRootPolicy::Pem(cert.cert.pem().into()),
+            sni_policy: rumqttc_wrapper_core::TlsSniPolicy::Disabled,
+            ..Default::default()
+        };
+        for mqtt5 in [false, true] {
+            exercise(
+                tls.clone(),
+                server(
+                    cert.cert.der().clone(),
+                    &cert.signing_key,
+                    &[&rustls::version::TLS13],
+                ),
+                mqtt5,
+                false,
+            );
+        }
+    }
+}

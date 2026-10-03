@@ -11,6 +11,9 @@
 #[path = "tls.rs"]
 mod tls;
 pub use tls::*;
+#[path = "tls_advanced.rs"]
+mod tls_advanced;
+pub use tls_advanced::*;
 
 #[path = "websocket.rs"]
 mod websocket;
@@ -6130,7 +6133,7 @@ pub unsafe extern "C" fn rumqttc_error_store_failure(
     failure_out: *mut u32,
 ) -> u32 {
     error_detail(error, present_out, failure_out, |error| {
-        error.store_failure.map(std::num::NonZeroU32::get)
+        error.failure_details().store.map(std::num::NonZeroU32::get)
     })
 }
 
@@ -6141,7 +6144,7 @@ pub unsafe extern "C" fn rumqttc_error_auth_failure(
     failure_out: *mut u32,
 ) -> u32 {
     error_detail(error, present_out, failure_out, |error| {
-        error.auth_failure.map(std::num::NonZeroU32::get)
+        error.failure_details().auth.map(std::num::NonZeroU32::get)
     })
 }
 
@@ -6152,7 +6155,10 @@ pub unsafe extern "C" fn rumqttc_error_redirect_failure(
     failure_out: *mut u32,
 ) -> u32 {
     error_detail(error, present_out, failure_out, |error| {
-        error.redirect_failure.map(std::num::NonZeroU32::get)
+        error
+            .failure_details()
+            .redirect
+            .map(std::num::NonZeroU32::get)
     })
 }
 

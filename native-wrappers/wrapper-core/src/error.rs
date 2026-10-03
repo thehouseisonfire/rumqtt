@@ -109,6 +109,7 @@ pub struct Error {
     redirect_failure: Option<crate::RedirectFailure>,
     transport_failure: Option<crate::TransportFailure>,
     websocket_failure: Option<crate::WebSocketHandshakeFailure>,
+    tls_callback_failure: Option<crate::TlsCallbackFailure>,
     context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
@@ -130,6 +131,7 @@ impl Error {
             redirect_failure: None,
             transport_failure: None,
             websocket_failure: None,
+            tls_callback_failure: None,
             context: ErrorContext::default(),
             source: None,
         }
@@ -157,9 +159,29 @@ impl Error {
             redirect_failure: None,
             transport_failure: None,
             websocket_failure: None,
+            tls_callback_failure: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }
+    }
+
+    #[must_use]
+    pub const fn tls_callback_failure(&self) -> Option<crate::TlsCallbackFailure> {
+        self.tls_callback_failure
+    }
+
+    pub(crate) const fn with_tls_callback_failure(
+        mut self,
+        failure: crate::TlsCallbackFailure,
+    ) -> Self {
+        self.tls_callback_failure = Some(failure);
+        self
+    }
+    pub(crate) fn tls_callback(failure: crate::TlsCallbackFailure) -> Self {
+        let mut error = Self::new(ErrorKind::Tls, failure.to_string());
+        error.tls_callback_failure = Some(failure);
+        error.retryable = failure.retryable();
+        error
     }
 
     pub(crate) fn websocket(failure: crate::WebSocketHandshakeFailure) -> Self {
@@ -313,6 +335,7 @@ impl fmt::Debug for Error {
             .field("redirect_failure", &self.redirect_failure)
             .field("transport_failure", &self.transport_failure)
             .field("websocket_failure", &self.websocket_failure)
+            .field("tls_callback_failure", &self.tls_callback_failure)
             .field("context", &self.context)
             .finish_non_exhaustive()
     }

@@ -47,6 +47,10 @@ pub struct TlsConfig {
     pub alpn_protocols: Vec<Vec<u8>>,
     pub version_policy: crate::TlsVersionPolicy,
     pub pins: Vec<crate::TlsPin>,
+    pub cipher_suites: Vec<u16>,
+    pub sni_policy: crate::TlsSniPolicy,
+    pub resumption_policy: crate::TlsResumptionPolicy,
+    pub verifier: Option<crate::TlsVerifierConfig>,
 }
 
 /// Owned secret storage, wiped when each owned copy is dropped. Backend TLS
@@ -93,6 +97,7 @@ impl std::fmt::Debug for TlsRootPolicy {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum TlsClientIdentity {
+    External(crate::TlsExternalIdentityConfig),
     RustlsPem {
         certificate: Bytes,
         private_key: SecretBytes,
@@ -106,6 +111,7 @@ pub enum TlsClientIdentity {
 impl std::fmt::Debug for TlsClientIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::External(_) => "External([REDACTED])",
             Self::RustlsPem { .. } => "RustlsPem([REDACTED])",
             Self::NativePkcs12 { .. } => "NativePkcs12([REDACTED])",
         })
@@ -154,6 +160,10 @@ impl std::fmt::Debug for TlsConfig {
             .field("roots", &self.roots)
             .field("identity", &self.identity)
             .field("alpn_protocols", &self.alpn_protocols)
+            .field("cipher_suites", &self.cipher_suites)
+            .field("sni_policy", &self.sni_policy)
+            .field("resumption_policy", &self.resumption_policy)
+            .field("verifier", &self.verifier)
             .field("version_policy", &self.version_policy)
             .field("pins", &format_args!("[REDACTED; {}]", self.pins.len()))
             .finish()

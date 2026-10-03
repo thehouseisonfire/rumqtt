@@ -163,6 +163,23 @@ Native TLS enforcement follows the platform limitations documented in
 [the C profile API](../c/README.md#owned-tls-profiles). No process-global provider
 is installed or changed, and separate TLS layers never merge their policies.
 
+`TlsConfig` also owns ordered cipher IDs, `TlsSniPolicy`,
+`TlsResumptionPolicy`, an optional `TlsVerifierConfig` and
+`TlsClientIdentity::External(TlsExternalIdentityConfig)`. Cipher selection and
+callbacks require Rustls; native TLS supports SNI policy. External catalogs
+contain public certificate PEM, opaque key IDs and ordered signature schemes;
+`TlsIdentityProvider` selects an entry and signs the exact unhashed message.
+Returned signatures are checked against that entry's leaf key. `TlsVerifier`
+supplements standard authentication and pins. Neither hook runs at validation.
+Hooks are synchronous, bounded and retained with `Arc`; they may run concurrently
+across clients and must return promptly without waiting for their driver.
+`TlsCallbackFailure` records stage, reason and connection layer with fixed
+redacted diagnostics. Only timeout/transient callback failures retry. A fresh
+handshake guard prevents failed optional client authentication from exposing an
+anonymous stream. Pins and hooks disable resumption; connection deadlines remain
+absolute across TCP, proxy, TLS and WebSocket setup. See the
+[C contract](../c/README.md#owned-tls-profiles) for algorithms and resource limits.
+
 ## Admission modes and host threads
 
 `ClientHandle::try_admit` is nonblocking and reports request-channel

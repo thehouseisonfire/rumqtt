@@ -104,6 +104,27 @@ impl TlsConfig {
 
     pub(crate) fn validate_options(&self) -> Result<()> {
         let capabilities = self.backend.capabilities();
+        let advanced = self.backend.advanced_capabilities();
+        if advanced.sni_policies & (1 << self.sni_policy as u32) == 0
+            || advanced.resumption_policies & (1 << self.resumption_policy as u32) == 0
+            || (!self.cipher_suites.is_empty() && !advanced.cipher_selection)
+            || (self.verifier.is_some() && !advanced.supplemental_verification)
+            || (matches!(self.identity, Some(TlsClientIdentity::External(_)))
+                && !advanced.external_identities)
+        {
+            return Err(Error::configuration(
+                "advanced TLS policy is unsupported by this backend",
+            ));
+        }
+        if self.cipher_suites.len() > crate::MAX_TLS_CIPHER_SUITES
+            || self
+                .cipher_suites
+                .iter()
+                .enumerate()
+                .any(|(i, id)| self.cipher_suites[..i].contains(id))
+        {
+            return Err(Error::configuration("invalid TLS cipher suite list"));
+        }
         if capabilities.version_policies == 0 {
             return Err(Error::configuration("selected TLS backend is disabled"));
         }

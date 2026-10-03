@@ -49,11 +49,89 @@ pub struct ErrorHandle {
     pub phase: Option<u32>,
     pub generation: Option<u64>,
     pub delivery_status: u32,
-    pub store_failure: Option<NonZeroU32>,
-    pub auth_failure: Option<NonZeroU32>,
-    pub redirect_failure: Option<NonZeroU32>,
-    pub transport_failure: Option<NonZeroU32>,
-    pub websocket_failure: Option<NonZeroU32>,
+    failures: Option<Arc<FailureDetails>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FailureDetails {
+    pub store: Option<NonZeroU32>,
+    pub auth: Option<NonZeroU32>,
+    pub redirect: Option<NonZeroU32>,
+    pub transport: Option<NonZeroU32>,
+    pub websocket: Option<NonZeroU32>,
+    pub tls_callback: Option<rumqttc_wrapper_core::TlsCallbackFailure>,
+}
+const EMPTY_FAILURES: FailureDetails = FailureDetails {
+    store: None,
+    auth: None,
+    redirect: None,
+    transport: None,
+    websocket: None,
+    tls_callback: None,
+};
+
+impl FailureDetails {
+    fn from_core(error: &Error) -> Self {
+        Self {
+            store: error.store_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::StoreFailure::Load => 1,
+                    rumqttc_wrapper_core::StoreFailure::Save => 2,
+                    rumqttc_wrapper_core::StoreFailure::Clear => 3,
+                    rumqttc_wrapper_core::StoreFailure::Corrupt => 4,
+                    rumqttc_wrapper_core::StoreFailure::Version => 5,
+                    rumqttc_wrapper_core::StoreFailure::Protocol => 6,
+                    rumqttc_wrapper_core::StoreFailure::Oversized => 7,
+                    rumqttc_wrapper_core::StoreFailure::Timeout => 8,
+                    rumqttc_wrapper_core::StoreFailure::Panic => 9,
+                    rumqttc_wrapper_core::StoreFailure::InUse => 10,
+                })
+            }),
+            auth: error.auth_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::AuthFailure::Rejected => 1,
+                    rumqttc_wrapper_core::AuthFailure::Panic => 2,
+                    rumqttc_wrapper_core::AuthFailure::Timeout => 3,
+                    rumqttc_wrapper_core::AuthFailure::InvalidResponse => 4,
+                    rumqttc_wrapper_core::AuthFailure::Overlapping => 5,
+                    rumqttc_wrapper_core::AuthFailure::ConnectionClosed => 6,
+                    rumqttc_wrapper_core::AuthFailure::Method => 7,
+                    rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
+                })
+            }),
+            tls_callback: error.tls_callback_failure(),
+            websocket: error
+                .websocket_failure()
+                .and_then(|failure| NonZeroU32::new(failure as u32)),
+            transport: error.transport_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::TransportFailure::Connect => 1,
+                    rumqttc_wrapper_core::TransportFailure::NetworkOptions => 2,
+                    rumqttc_wrapper_core::TransportFailure::Composition => 3,
+                    rumqttc_wrapper_core::TransportFailure::InvalidResult => 4,
+                    rumqttc_wrapper_core::TransportFailure::Abandoned => 5,
+                    rumqttc_wrapper_core::TransportFailure::Io => 6,
+                    rumqttc_wrapper_core::TransportFailure::Timeout => 7,
+                    rumqttc_wrapper_core::TransportFailure::Panic => 8,
+                    rumqttc_wrapper_core::TransportFailure::ResourceLimit => 9,
+                })
+            }),
+            redirect: error.redirect_failure().and_then(|failure| {
+                NonZeroU32::new(match failure {
+                    rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
+                    rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
+                    rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
+                    rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
+                    rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
+                    rumqttc_wrapper_core::RedirectFailure::Loop => 6,
+                    rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
+                    rumqttc_wrapper_core::RedirectFailure::Dns => 8,
+                    rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
+                    rumqttc_wrapper_core::RedirectFailure::Transport => 10,
+                })
+            }),
+        }
+    }
 }
 
 impl ErrorHandle {
@@ -113,11 +191,7 @@ impl ErrorHandle {
             phase: None,
             generation: None,
             delivery_status: 0,
-            store_failure: None,
-            auth_failure: None,
-            redirect_failure: None,
-            transport_failure: None,
-            websocket_failure: None,
+            failures: None,
         }
     }
 
@@ -175,6 +249,8 @@ impl ErrorHandle {
             source_chain.push_str(&next.to_string());
             source = next.source();
         }
+        let details = FailureDetails::from_core(error);
+        let failures = (details != EMPTY_FAILURES).then(|| Arc::new(details));
         Self {
             status,
             kind,
@@ -202,63 +278,12 @@ impl ErrorHandle {
                 DeliveryStatus::Rejected => 2,
                 DeliveryStatus::Ambiguous => 3,
             },
-            store_failure: error.store_failure().and_then(|failure| {
-                NonZeroU32::new(match failure {
-                    rumqttc_wrapper_core::StoreFailure::Load => 1,
-                    rumqttc_wrapper_core::StoreFailure::Save => 2,
-                    rumqttc_wrapper_core::StoreFailure::Clear => 3,
-                    rumqttc_wrapper_core::StoreFailure::Corrupt => 4,
-                    rumqttc_wrapper_core::StoreFailure::Version => 5,
-                    rumqttc_wrapper_core::StoreFailure::Protocol => 6,
-                    rumqttc_wrapper_core::StoreFailure::Oversized => 7,
-                    rumqttc_wrapper_core::StoreFailure::Timeout => 8,
-                    rumqttc_wrapper_core::StoreFailure::Panic => 9,
-                    rumqttc_wrapper_core::StoreFailure::InUse => 10,
-                })
-            }),
-            auth_failure: error.auth_failure().and_then(|failure| {
-                NonZeroU32::new(match failure {
-                    rumqttc_wrapper_core::AuthFailure::Rejected => 1,
-                    rumqttc_wrapper_core::AuthFailure::Panic => 2,
-                    rumqttc_wrapper_core::AuthFailure::Timeout => 3,
-                    rumqttc_wrapper_core::AuthFailure::InvalidResponse => 4,
-                    rumqttc_wrapper_core::AuthFailure::Overlapping => 5,
-                    rumqttc_wrapper_core::AuthFailure::ConnectionClosed => 6,
-                    rumqttc_wrapper_core::AuthFailure::Method => 7,
-                    rumqttc_wrapper_core::AuthFailure::BrokerRejected => 8,
-                })
-            }),
-            websocket_failure: error
-                .websocket_failure()
-                .and_then(|failure| NonZeroU32::new(failure as u32)),
-            transport_failure: error.transport_failure().and_then(|failure| {
-                NonZeroU32::new(match failure {
-                    rumqttc_wrapper_core::TransportFailure::Connect => 1,
-                    rumqttc_wrapper_core::TransportFailure::NetworkOptions => 2,
-                    rumqttc_wrapper_core::TransportFailure::Composition => 3,
-                    rumqttc_wrapper_core::TransportFailure::InvalidResult => 4,
-                    rumqttc_wrapper_core::TransportFailure::Abandoned => 5,
-                    rumqttc_wrapper_core::TransportFailure::Io => 6,
-                    rumqttc_wrapper_core::TransportFailure::Timeout => 7,
-                    rumqttc_wrapper_core::TransportFailure::Panic => 8,
-                    rumqttc_wrapper_core::TransportFailure::ResourceLimit => 9,
-                })
-            }),
-            redirect_failure: error.redirect_failure().and_then(|failure| {
-                NonZeroU32::new(match failure {
-                    rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
-                    rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
-                    rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
-                    rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
-                    rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
-                    rumqttc_wrapper_core::RedirectFailure::Loop => 6,
-                    rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
-                    rumqttc_wrapper_core::RedirectFailure::Dns => 8,
-                    rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
-                    rumqttc_wrapper_core::RedirectFailure::Transport => 10,
-                })
-            }),
+            failures,
         }
+    }
+
+    pub fn failure_details(&self) -> &FailureDetails {
+        self.failures.as_deref().unwrap_or(&EMPTY_FAILURES)
     }
 
     pub const fn with_operation(mut self, operation_id: u64) -> Self {

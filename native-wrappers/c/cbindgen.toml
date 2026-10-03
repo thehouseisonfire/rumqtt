@@ -9,6 +9,17 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_tls_advanced_capabilities_t",
+    "rumqttc_tls_profile_extensions_t",
+    "rumqttc_tls_verification_request_t",
+    "rumqttc_tls_identity_request_t",
+    "rumqttc_tls_signing_request_t",
+    "rumqttc_tls_verifier_vtable_t",
+    "rumqttc_tls_identity_vtable_t",
+    "rumqttc_tls_external_identity_t",
+    "rumqttc_tls_verifier_registration",
+    "rumqttc_tls_identity_registration",
+
     "rumqttc_tls_profile",
     "rumqttc_tls_pin_t",
     "rumqttc_tls_profile_options_t",
@@ -75,3 +86,6 @@ include = [
 
 "rumqttc_websocket_registration" = "rumqttc_websocket_registration_t"
 "rumqttc_websocket_response" = "rumqttc_websocket_response_t"
+
+"rumqttc_tls_verifier_registration" = "rumqttc_tls_verifier_registration_t"
+"rumqttc_tls_identity_registration" = "rumqttc_tls_identity_registration_t"

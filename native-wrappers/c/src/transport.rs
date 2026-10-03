@@ -703,7 +703,10 @@ pub unsafe extern "C" fn rumqttc_error_transport_failure(
     failure_out: *mut u32,
 ) -> u32 {
     error_detail(error, present_out, failure_out, |error| {
-        error.transport_failure.map(std::num::NonZeroU32::get)
+        error
+            .failure_details()
+            .transport
+            .map(std::num::NonZeroU32::get)
     })
 }
 

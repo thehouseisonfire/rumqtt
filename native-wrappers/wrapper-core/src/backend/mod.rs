@@ -1,7 +1,7 @@
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-mod tls;
+pub mod tls;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-pub use tls::build_tls;
+pub use tls::{build_tls, build_tls_for_layer};
 
 mod auth;
 mod redirect;
@@ -401,7 +401,11 @@ fn build_proxy(config: &crate::ProxyConfig) -> Result<rumqttc_v4::Proxy> {
             credentials,
             tls: Some(tls),
         } => (
-            rumqttc_v4::Proxy::https(host.clone(), *port, build_tls(tls)?),
+            rumqttc_v4::Proxy::https(
+                host.clone(),
+                *port,
+                build_tls_for_layer(tls, crate::TlsLayer::Proxy)?,
+            ),
             credentials,
         ),
         #[cfg(feature = "socks-proxy")]

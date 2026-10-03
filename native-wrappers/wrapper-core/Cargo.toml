@@ -18,7 +18,7 @@ name = "rumqttc_wrapper_core"
 [features]
 default = ["use-rustls", "websocket"]
 use-rustls = ["use-rustls-aws-lc"]
-use-rustls-no-provider = ["rumqttc_v4/use-rustls-no-provider", "rumqttc_v5/use-rustls-no-provider", "dep:sha2", "dep:rustls"]
+use-rustls-no-provider = ["rumqttc_v4/use-rustls-no-provider", "rumqttc_v5/use-rustls-no-provider", "dep:sha2", "dep:rustls", "dep:x509-parser", "dep:rustls-webpki"]
 tls12 = ["rustls?/tls12"]
 use-rustls-ring = ["use-rustls-no-provider", "rumqttc_v4/use-rustls-ring", "rumqttc_v5/use-rustls-ring"]
 use-rustls-aws-lc = ["use-rustls-no-provider", "rumqttc_v4/use-rustls-aws-lc", "rumqttc_v5/use-rustls-aws-lc"]
@@ -42,6 +42,8 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 futures-executor = "0.3"
 parking_lot = "0.12"
 zeroize = "1"
+x509-parser = { version = "0.18.1", default-features = false, optional = true }
+rustls-webpki = { version = "0.103.12", default-features = false, features = ["std"], optional = true }
 sha2 = { version = "0.11", optional = true }
 rustls = { version = "0.23.40", default-features = false, features = ["std"], optional = true }
 rumqttc-core-next = { path = "../../rumqttc-core", version = "0.34.0-alpha", default-features = false }

@@ -1,6 +1,7 @@
 #include "native_common.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #define EXPECT_FAILURE(expression) REQUIRE((expression) != RUMQTTC_OK)
 
@@ -54,12 +55,110 @@ static void coverage_transport_connect(void *data, const rumqttc_transport_conne
   CHECK(rumqttc_callback_transport_complete(completion, &response));
 }
 
+static uint32_t coverage_tls_verify(void *data, const rumqttc_tls_verification_request_t *request) {
+  (void)data; (void)request; return RUMQTTC_TLS_CALLBACK_OK;
+}
+static uint32_t coverage_tls_select(void *data, const rumqttc_tls_identity_request_t *request, size_t *index) {
+  (void)data; (void)request; *index = RUMQTTC_TLS_IDENTITY_DECLINE; return RUMQTTC_TLS_CALLBACK_OK;
+}
+static uint32_t coverage_tls_sign(void *data, const rumqttc_tls_signing_request_t *request, uint8_t *buffer, size_t capacity, size_t *written) {
+  (void)data; (void)request; (void)buffer; (void)capacity; *written = 0; return RUMQTTC_TLS_CALLBACK_FAILED;
+}
+static void coverage_tls_profiles(void) {
+  rumqttc_tls_backend_capabilities_t caps = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
+  rumqttc_tls_advanced_capabilities_t advanced = RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT;
+  /* ERROR_OUT_SUCCESS: rumqttc_tls_backend_capabilities */
+  CHECK(rumqttc_tls_backend_capabilities(0, &caps, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_tls_backend_capabilities */
+  EXPECT_FAILURE(rumqttc_tls_backend_capabilities(99, &caps, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_tls_advanced_capabilities */
+  CHECK(rumqttc_tls_advanced_capabilities(0, &advanced, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_tls_advanced_capabilities */
+  EXPECT_FAILURE(rumqttc_tls_advanced_capabilities(99, &advanced, NULL));
+  uint64_t features = rumqttc_library_capabilities();
+  if (!(features & (RUMQTTC_CAP_RUSTLS | RUMQTTC_CAP_NATIVE_TLS))) return;
+  rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
+  tls.backend = features & RUMQTTC_CAP_RUSTLS ? RUMQTTC_TLS_BACKEND_RUSTLS : RUMQTTC_TLS_BACKEND_NATIVE;
+  const char *ca = getenv("RUMQTTC_TEST_CA_PEM"); REQUIRE(ca);
+  tls.root_policy = RUMQTTC_TLS_ROOTS_PEM; tls.ca_pem = native_bytes((const uint8_t *)ca, strlen(ca));
+  rumqttc_tls_profile_options_t options = RUMQTTC_TLS_PROFILE_OPTIONS_INIT; options.tls = &tls;
+  rumqttc_tls_profile_t *profile = NULL;
+  /* ERROR_OUT_FAILURE: rumqttc_tls_profile_new */
+  EXPECT_FAILURE(rumqttc_tls_profile_new(NULL, &profile, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_tls_profile_new */
+  CHECK(rumqttc_tls_profile_new(&options, &profile, NULL));
+  rumqttc_tls_profile_destroy(profile); profile = NULL;
+  rumqttc_tls_profile_extensions_t extensions = RUMQTTC_TLS_PROFILE_EXTENSIONS_INIT;
+  rumqttc_tls_verifier_registration_t *verifier = NULL;
+  rumqttc_tls_identity_registration_t *identity = NULL;
+  if (features & RUMQTTC_CAP_RUSTLS) {
+    size_t count = 0;
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_supported_cipher_suites */
+    CHECK(rumqttc_tls_supported_cipher_suites(0, NULL, 0, &count, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_tls_supported_cipher_suites */
+    EXPECT_FAILURE(rumqttc_tls_supported_cipher_suites(99, NULL, 0, &count, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_supported_signature_schemes */
+    CHECK(rumqttc_tls_supported_signature_schemes(0, NULL, 0, &count, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_tls_supported_signature_schemes */
+    EXPECT_FAILURE(rumqttc_tls_supported_signature_schemes(99, NULL, 0, &count, NULL));
+    rumqttc_tls_verifier_vtable_t verify = RUMQTTC_TLS_VERIFIER_VTABLE_INIT;
+    verify.verify = coverage_tls_verify; verify.destroy = coverage_destroy;
+    /* ERROR_OUT_FAILURE: rumqttc_tls_verifier_registration_new */
+    EXPECT_FAILURE(rumqttc_tls_verifier_registration_new(NULL, NULL, &verifier, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_verifier_registration_new */
+    CHECK(rumqttc_tls_verifier_registration_new(&verify, NULL, &verifier, NULL));
+    rumqttc_tls_identity_vtable_t table = RUMQTTC_TLS_IDENTITY_VTABLE_INIT;
+    table.select = coverage_tls_select; table.sign = coverage_tls_sign; table.destroy = coverage_destroy;
+    const char *pem = getenv("RUMQTTC_TEST_CLIENT_CERT_PEM"); REQUIRE(pem);
+    uint16_t scheme = 0x0804;
+    rumqttc_tls_external_identity_t descriptor = RUMQTTC_TLS_EXTERNAL_IDENTITY_INIT;
+    descriptor.certificate_pem = native_bytes((const uint8_t *)pem, strlen(pem)); descriptor.key_id = native_bytes((const uint8_t *)"key", 3);
+    descriptor.signature_schemes = &scheme; descriptor.signature_scheme_count = 1;
+    /* ERROR_OUT_FAILURE: rumqttc_tls_identity_registration_new */
+    EXPECT_FAILURE(rumqttc_tls_identity_registration_new(NULL, NULL, &descriptor, 1, &identity, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_identity_registration_new */
+    CHECK(rumqttc_tls_identity_registration_new(&table, NULL, &descriptor, 1, &identity, NULL));
+    extensions.verifier = verifier; extensions.external_identity = identity;
+  }
+  /* ERROR_OUT_FAILURE: rumqttc_tls_profile_new_with_extensions */
+  EXPECT_FAILURE(rumqttc_tls_profile_new_with_extensions(&options, NULL, &profile, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_tls_profile_new_with_extensions */
+  CHECK(rumqttc_tls_profile_new_with_extensions(&options, &extensions, &profile, NULL));
+  rumqttc_tls_verifier_registration_destroy(verifier); rumqttc_tls_identity_registration_destroy(identity);
+  rumqttc_config_t *v4 = NULL, *v5 = NULL;
+  CHECK(rumqttc_config_new(1, &v4, NULL)); CHECK(rumqttc_config_new(2, &v5, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_tls_with_profile */
+  CHECK(rumqttc_config_set_transport_tls_with_profile(v4, profile, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_tls_with_profile */
+  EXPECT_FAILURE(rumqttc_config_set_transport_tls_with_profile(NULL, profile, NULL));
+  if (features & RUMQTTC_CAP_WEBSOCKET) {
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_wss_with_profile */
+    CHECK(rumqttc_config_set_transport_wss_with_profile(v4, native_string("wss://localhost"), profile, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_wss_with_profile */
+    EXPECT_FAILURE(rumqttc_config_set_transport_wss_with_profile(NULL, native_string("wss://localhost"), profile, NULL));
+  }
+  if (features & RUMQTTC_CAP_HTTP_PROXY) {
+    rumqttc_proxy_options_t proxy = RUMQTTC_PROXY_OPTIONS_INIT;
+    proxy.protocol = RUMQTTC_PROXY_HTTPS; proxy.host = native_string("localhost"); proxy.port = 443;
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_proxy_with_tls_profile */
+    CHECK(rumqttc_config_set_proxy_with_tls_profile(v4, &proxy, profile, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_proxy_with_tls_profile */
+    EXPECT_FAILURE(rumqttc_config_set_proxy_with_tls_profile(NULL, &proxy, profile, NULL));
+  }
+  /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_redirect_policy_with_tls_profile */
+  CHECK(rumqttc_config_set_v5_redirect_policy_with_tls_profile(v5, 2, RUMQTTC_REDIRECT_TRANSPORT_TLS, profile, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_redirect_policy_with_tls_profile */
+  EXPECT_FAILURE(rumqttc_config_set_v5_redirect_policy_with_tls_profile(NULL, 2, RUMQTTC_REDIRECT_TRANSPORT_TLS, profile, NULL));
+  rumqttc_tls_profile_destroy(profile); rumqttc_config_destroy(v4); rumqttc_config_destroy(v5);
+}
+
 /*
  * Keep calls explicit: check_error_out_coverage.py derives the API list from
  * rumqttc.h and requires both markers whenever an optional error output is
  * added. Each marked function below is called with NULL on both paths.
  */
 void native_test_error_out_contract(void) {
+  coverage_tls_profiles();
   rumqttc_config_t *v4 = NULL;
   rumqttc_config_t *v5 = NULL;
   rumqttc_config_t *start_config = NULL;

@@ -1,6 +1,19 @@
 ## [Unreleased]
 
 ### Added
+- Native wrappers: Complete advanced TLS profiles with ordered Rustls cipher
+  selection, explicit SNI and resumption policy, supplemental verification and
+  externally selected/signed client identities. Owned synchronous C registrations
+  retain host state across profiles, clients and handshakes without importing
+  private keys. Validate returned signatures against the selected certificate;
+  preserve standard trust/name/signature checks and pins. Fresh handshake state
+  prevents callback failures from becoming anonymous TLS, and typed stage/reason/
+  layer details distinguish terminal failures from timeouts/transient failures.
+  Forward the original connection deadline through broker, proxy and redirect
+  TLS. Add provider algorithm queries, native RSA-PSS/ECDSA TLS/WSS consumers and
+  an optional OpenSSL EVP example; the Rustls production wrapper does not link
+  OpenSSL. Existing C layouts and loader identity remain unchanged. Rust client
+  `TlsConfiguration` gains a connector variant; exhaustive matches need updating.
 - Native wrappers: Add MQTT 5 manual PUBACK/PUBREC contents through wrapper-core
   acknowledgement options and additive nonblocking/tracked C APIs. Preserve
   Reason String presence and ordered duplicate User Properties; validate client

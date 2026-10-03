@@ -1734,6 +1734,7 @@ dependencies = [
  "rumqttc-v4-next",
  "rumqttc-v5-next",
  "rustls",
+ "rustls-webpki",
  "scram-rs",
  "sha2",
  "syn 3.0.6",
@@ -1743,6 +1744,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tungstenite",
+ "x509-parser",
  "zeroize",
 ]
 

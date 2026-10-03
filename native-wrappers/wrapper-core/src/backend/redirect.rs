@@ -21,18 +21,18 @@ pub(super) fn configure(
         let transport = match transport {
             TransportConfig::Tcp => rumqttc_v5::Transport::Tcp,
             #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-            TransportConfig::Tls(tls) => {
-                rumqttc_v5::Transport::tls_with_config(super::build_tls(tls)?)
-            }
+            TransportConfig::Tls(tls) => rumqttc_v5::Transport::tls_with_config(
+                super::build_tls_for_layer(tls, crate::TlsLayer::Redirect)?,
+            ),
             #[cfg(feature = "websocket")]
             TransportConfig::WebSocket => rumqttc_v5::Transport::Ws,
             #[cfg(all(
                 feature = "websocket",
                 any(feature = "use-rustls-no-provider", feature = "use-native-tls")
             ))]
-            TransportConfig::Wss(tls) => {
-                rumqttc_v5::Transport::wss_with_config(super::build_tls(tls)?)
-            }
+            TransportConfig::Wss(tls) => rumqttc_v5::Transport::wss_with_config(
+                super::build_tls_for_layer(tls, crate::TlsLayer::Redirect)?,
+            ),
             _ => return Err(Error::configuration("redirect transport is unavailable")),
         };
         let attempts = std::num::NonZeroUsize::new(*max_attempts)

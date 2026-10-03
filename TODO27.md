@@ -37,24 +37,41 @@ reconnects. Header/export, feature packaging and ABI checks cover the additions.
 Platform execution evidence belongs in `native-wrappers/wrapper-core/PARITY.md`;
 Linux results do not imply macOS or Windows execution.
 
-## Deferred advanced extensions
+## Advanced extensions
 
-The following require separate consumers, prototypes and acceptance criteria;
-the full advanced TLS proposal remains incomplete.
+- [x] Backend audit and capability reporting distinguish Rustls cipher selection,
+  supplemental verification, external identities and resumption restrictions
+  from portable SNI policy. Unsupported native policies fail before networking.
+- [x] Ordered, privately cloned Rustls cipher allowlists reject unavailable,
+  duplicate and version-incompatible suites; provider algorithm queries expose
+  the supported IANA cipher and external signature scheme IDs.
+- [x] Verification adapters were proved before defining their C records. They
+  supplement standard chain, validity, hostname, signature and pin enforcement.
+  Typed failures preserve stage/reason/layer without host diagnostic text.
+- [x] External identity selection/signing uses copied immutable certificate/key-ID/
+  scheme catalogs and owned synchronous registrations. Every signature is
+  verified against the selected leaf before use; no foreign cryptographic object
+  is imported. Resource bounds and successful-construction ownership are explicit.
+- [x] Synchronous hooks retain owners across handshakes and clients, check the
+  original connection deadline before/after host work, and cannot use deferred
+  completion or wait for their own driver. Pins and hooks disable resumption.
+  Fresh handshake state prevents failed selection becoming anonymous TLS and
+  terminal callback failures stop SRV fallback.
+- [x] Native C/OpenSSL EVP consumers demonstrate RSA-PSS/ECDSA mutual TLS/WSS,
+  independent proxies and redirects, typed failures, reconnects, nonblocking
+  reentrant admission, cancellation during an active callback, profile sharing
+  and exactly-once destruction. An optional runnable signer example and a
+  required-dependency CI job keep OpenSSL out of Rustls production linkage.
 
-- [ ] Audit remaining backend-specific cipher, SNI, identity-selection and
-  resumption customization points without promising portable parity.
-- [ ] Add enforceable cipher selection where justified by actual consumers.
-- [ ] Prototype verification callbacks before defining their C records. Make
-  supplementation versus replacement explicit and preserve handshake-signature
-  and hostname validation unless equivalent verification is supplied.
-- [ ] Prototype external identity selection/signing against actual backend
-  traits. Define algorithms, signature bounds, owner retention and typed failure
-  without exporting keys or treating foreign keys as Rust pointers.
-- [ ] Respect synchronous backend hooks. Deferred signing needs a demonstrated
-  sound execution adapter; callbacks cannot wait for their own driver progress.
-- [ ] Demonstrate an external signer with native C consumers, including failure,
-  reconnect, cancellation, ownership and secret-redaction coverage.
+## Advanced verification
+
+Rust fixtures additionally prove optional client-auth failure guarding, bad
+external signatures, verifier panics/vetoes, pins before supplemental policy,
+SNI/cipher negotiation, default/disabled reconnect resumption, deadlines and
+terminal SRV fallback. C registration tests prove failed-construction ownership
+and retained profiles. Feature, installed-package, generated-header/export,
+ABI containment and Rust 1.88 checks cover the additions. Platform execution
+is recorded separately in `native-wrappers/wrapper-core/PARITY.md`.
 
 Arbitrary injected Rustls `ClientConfig` or native `TlsConnector` objects cannot
 be represented by the C profile API. Fully external TLS streams can use custom

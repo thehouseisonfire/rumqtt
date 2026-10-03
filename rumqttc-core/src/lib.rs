@@ -31,8 +31,6 @@ pub use proxy::{Proxy, ProxyError, ProxyProtocol};
 pub use scheduler::{OutboundScheduler, RequestClass, RequestReadiness, ScheduledRequest};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::Error as TlsError;
-#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-pub use tls::tls_connect;
 #[cfg(all(
     feature = "websocket",
     feature = "use-native-tls",
@@ -45,6 +43,8 @@ pub use tls::websocket_tls_connector;
     not(feature = "use-native-tls")
 ))]
 pub use tls::websocket_tls_connector;
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+pub use tls::{tls_connect, tls_connect_with_deadline};
 // Shared construction primitives for native adapters. Keep provider selection
 // and platform-root loading identical to the client convenience constructors.
 #[doc(hidden)]
@@ -98,10 +98,25 @@ pub type SocketConnector = Arc<
         + Sync,
 >;
 
+/// Per-connection TLS setup on an already connected base transport.
+/// Implementations must finish all authentication checks before returning the stream.
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+pub trait TlsHandshakeConnector: std::fmt::Debug + Send + Sync {
+    fn connect(
+        &self,
+        server_name: String,
+        port: u16,
+        deadline: Option<std::time::Instant>,
+        stream: DynAsyncReadWrite,
+    ) -> Pin<Box<dyn Future<Output = Result<DynAsyncReadWrite, io::Error>> + Send>>;
+}
+
 /// TLS configuration method
 #[derive(Clone, Debug)]
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub enum TlsConfiguration {
+    /// Connection-local TLS policy and authentication checks.
+    Connector(Arc<dyn TlsHandshakeConnector>),
     #[cfg(feature = "use-rustls-no-provider")]
     Simple {
         /// ca certificate

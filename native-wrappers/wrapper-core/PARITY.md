@@ -85,7 +85,7 @@ duplicate completion rejection, plus final retained-owner destruction.
 | WC-12 sockets and capabilities | covered | `native_network_options` verifies the broker-observed bind port and socket buffer/nodelay values before and after clearing overrides, using reference sockets to account for OS adjustments without accepting ignored options. POSIX descriptor inspection is verified on Linux; Windows process-snapshot socket inspection is implemented with execution pending. It also checks invalid device network failure, error redaction, observable Linux MPTCP (or kernel-unavailable TCP fallback), and unsupported device/MPTCP errors. Feature consumers check exact known capability bits and ignore an unknown future bit across all package profiles. |
 | Custom transport connectors (TODO25) | covered | `native_custom_transport` supplies only bytes while native MQTT performs CONNECT and tracked QoS1/PUBACK for both protocols; short/deferred transfers, reconnect, graceful/immediate close, retained late completion, connect timeout, failed construction and final owner release are asserted. `native_custom_transport_matrix` routes TCP/TLS/WS/WSS and HTTP/HTTPS/SOCKS5 through a transparent C byte tunnel with enabled TLS backends and trust rejection. Rust memory composition and callback budget/abandonment/stale-stream tests cover the same managed lifecycle without sockets. |
 | WC-13 TLS | covered | `native_tls_matrix` verifies PEM and PKCS12 mutual TLS, ALPN, wrong roots/hostname, malformed credentials, failed-start cleanup, owned configuration, transport replacement, disabled backends, TLS/WSS and trusted/untrusted isolated Linux platform roots for both protocols and each enabled backend. macOS keychain/admin trust and Windows current-user Root fixtures include partial-install/child-failure cleanup, ownership checks, persistent cleanup manifests and unconditional CI recovery; Python cleanup regressions pass on Linux, while actual OS-store execution is pending. The seven package profiles cover Rustls-only, native-only and mixed backends with/without proxies. |
-| Owned TLS profiles (TODO27 first stage) | covered | Immutable C profile inputs, additive TLS/WSS/proxy/redirect setters, combined trust, enforced version policies and Rustls certificate/SPKI pins. `native_tls_profiles` checks native C ownership, reuse, failed setters, replacement, version exclusions, independent proxy roots, isolated redirects and ticket-enabled certificate/key rotation. `native_tls_matrix` also checks profile-owned PEM/PKCS#12 identities with mutual TLS/WSS. `tls_profiles` checks wrong names/chains, expiry, invalid handshake signatures, backup pins and ticket-enabled certificate/key rotation; pinned profiles disable resumption. Rustls TLS 1.2-only is opt-in (`tls12`); native TLS limits are exposed by per-backend capability masks. Cipher selection, verification callbacks and external signing remain unsupported. Linux Rust/native C execution passed; macOS/Windows execution is pending in the existing platform matrix. |
+| Owned TLS profiles (TODO27) | covered | Immutable C profile inputs, additive TLS/WSS/proxy/redirect setters, combined trust, enforced version policies and Rustls certificate/SPKI pins. `native_tls_profiles` checks native C ownership, reuse, failed setters, replacement, version exclusions, independent proxy roots, isolated redirects and ticket-enabled certificate/key rotation. `native_tls_matrix` also checks profile-owned PEM/PKCS#12 identities with mutual TLS/WSS. `tls_profiles` checks wrong names/chains, expiry, invalid handshake signatures, backup pins and ticket-enabled certificate/key rotation; pinned profiles disable resumption. Rustls TLS 1.2-only is opt-in (`tls12`); native TLS limits are exposed by per-backend capability masks. `tls_advanced` proves ordered cipher/SNI policy on the wire, default/disabled resumption, supplemental verification, external signature proof, optional-client-auth failure guarding and absolute callback deadlines. `native_tls_advanced` uses native OpenSSL EVP RSA-PSS/ECDSA hosts across v4/v5 TLS/WSS, independent HTTPS proxies, isolated redirects, reconnect authentication, nonblocking reentrant admission and cancellation while a synchronous callback is active. Registrations survive released handles and destroy exactly once; malformed registration and retained-profile ownership have Rust C-ABI tests. Native TLS supports SNI but rejects cipher/resumption restrictions and hooks. Deferred hooks and arbitrary injected backend objects are outside the synchronous profile contract. Linux Rust/native C execution passed; macOS/Windows execution is pending in the existing platform matrix. |
 
 Coverage above describes assertions in the fixtures. Execution evidence is
 tracked separately; implementation or CI wiring alone does not verify a host.
@@ -121,3 +121,32 @@ composition matrix pass on Linux. Socket/tunnel fixtures are implemented and
 compiled, and are required in CI; this implementation session cannot execute
 them because its sandbox rejects local socket creation. macOS/Windows execution
 is pending CI. The historical fixture counts above predate these additions.
+
+### Advanced TLS execution evidence
+
+The completed TODO27 extensions have current Linux x86_64 execution evidence.
+Local socket fixtures ran successfully in this session, including the custom
+transport fixtures that could not run in the earlier session described above.
+These results supplement the historical validation table; they do not imply
+new sanitizer, leak-tool, macOS or Windows execution.
+
+| Validation | Current Linux result |
+| --- | --- |
+| Native C fixtures and runnable examples, including advanced TLS | 57/57 passed with Rustls and native TLS enabled |
+| Rustls Ring advanced adapters | 8/8 passed, including every advertised external signature scheme |
+| Rustls Ring native consumers | Advanced TLS passed with and without WebSocket support; external identity example, general integration and error-output coverage passed |
+| Wrapper-core and C Rust tests | Full crate suites passed with TLS 1.2, native TLS and proxy features |
+| Client each-feature test matrix | 36/36 feature configurations passed |
+| Wrapper-core and C each-feature test matrix | 33/33 feature configurations passed |
+| Installed static/shared CMake and pkg-config consumers | Seven feature profiles passed, 49 consumer checks |
+| Generated C/C++ header, exported symbols and ABI containment | Passed; existing public C record layouts and loader identity preserved |
+| MSRV | Rust 1.88 workspace/all-target checks passed |
+| Formatting and fixture harness | Both workspace formatting checks, diff whitespace check and 26 Python fixture tests passed |
+| Rustls production linkage | `ldd` confirms the Ring-only wrapper links neither libssl nor libcrypto; OpenSSL EVP is confined to host consumers |
+
+The advanced adapters also passed with the AWS-LC provider. The external
+identity algorithm fixture checks each provider's advertised RSA-PSS,
+RSA-PKCS#1, ECDSA and Ed25519 subset using actual handshakes. Native consumers
+prove shared-profile failure isolation and owner retention while synchronous
+callbacks are active. The required OpenSSL consumer job is wired into CI;
+remote CI and macOS/Windows execution remain pending.

@@ -27,3 +27,6 @@ item_types = ["functions"]
 
 "rumqttc_websocket_registration" = "rumqttc_websocket_registration_t"
 "rumqttc_websocket_response" = "rumqttc_websocket_response_t"
+
+"rumqttc_tls_verifier_registration" = "rumqttc_tls_verifier_registration_t"
+"rumqttc_tls_identity_registration" = "rumqttc_tls_identity_registration_t"

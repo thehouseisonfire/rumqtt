@@ -65,6 +65,8 @@ pub use completion::{
     PublishCompletion, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
     UnsubscribeResult,
 };
+mod tls_advanced;
+pub use tls_advanced::*;
 mod tls;
 pub use tls::{MAX_TLS_PINS, TlsCapabilities, TlsPin, TlsPinTarget, TlsVersionPolicy};
 

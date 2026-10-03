@@ -41,11 +41,21 @@ int main(void) {
     rumqttc_tls_backend_capabilities_t tls = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
     if (rumqttc_tls_backend_capabilities(backend, &tls, NULL) != RUMQTTC_OK)
       return 4;
+    rumqttc_tls_advanced_capabilities_t advanced = RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT;
+    if (rumqttc_tls_advanced_capabilities(backend, &advanced, NULL) != RUMQTTC_OK) return 9;
     int enabled = backend == RUMQTTC_TLS_BACKEND_RUSTLS ? RUMQTTC_EXPECT_RUSTLS : RUMQTTC_EXPECT_NATIVE_TLS;
     if (!enabled) {
       if (tls.version_policy_mask != 0 || tls.root_policy_mask != 0 || tls.pin_target_mask != 0)
         return 5;
+      if (advanced.sni_policy_mask || advanced.resumption_policy_mask || advanced.feature_mask || advanced.max_signature_bytes) return 10;
     } else {
+      if (advanced.sni_policy_mask != 7) return 11;
+      if (backend == RUMQTTC_TLS_BACKEND_RUSTLS) {
+        if (advanced.resumption_policy_mask != 3 || advanced.feature_mask != 7 || advanced.max_signature_bytes != 4096) return 12;
+        size_t count = 0;
+        if (rumqttc_tls_supported_cipher_suites(backend, NULL, 0, &count, NULL) != RUMQTTC_OK || count == 0) return 13;
+        if (rumqttc_tls_supported_signature_schemes(backend, NULL, 0, &count, NULL) != RUMQTTC_OK || count == 0) return 14;
+      } else if (advanced.resumption_policy_mask != 1 || advanced.feature_mask || advanced.max_signature_bytes) return 15;
       if (!(tls.version_policy_mask & (1u << RUMQTTC_TLS_VERSION_DEFAULT)) || (tls.root_policy_mask & 7u) != 7u)
         return 6;
       if (backend == RUMQTTC_TLS_BACKEND_RUSTLS && (tls.pin_target_mask & 3u) != 3u)

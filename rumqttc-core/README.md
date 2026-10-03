@@ -31,3 +31,15 @@ optionally install a PEM client certificate chain and private key. They return
 failures before a connection attempt. `try_default_rustls()` delegates to the
 native-root constructor; `default_rustls()` remains the panicking convenience
 adapter.
+
+## Connection-local TLS policies
+
+`TlsConfiguration::Connector(Arc<dyn TlsHandshakeConnector>)` constructs TLS
+on an already connected base stream. Both clients invoke it for broker TLS/WSS
+and HTTPS proxies, forwarding the original absolute connection deadline. The
+connector must return only after all authentication checks succeed and must
+retain its owners until its future completes or is cancelled. Per-handshake
+mutable state belongs in that future, allowing one configuration to be shared
+safely across clients. Return `TerminalTransportError` for authentication
+failures that must stop MQTT 5 SRV candidate fallback. Existing backend variants
+and the deadline-free `tls_connect` helper remain available.

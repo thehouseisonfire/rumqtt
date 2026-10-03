@@ -20,6 +20,9 @@ pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
     {
         return Error::websocket(*failure);
     }
+    if let Some(failure) = crate::tls_advanced::callback_failure(&error) {
+        return Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
     if let Some(failure) = super::transport::failure(&error) {
         return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
@@ -423,6 +426,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 );
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
+                    || (error.tls_callback_failure().is_some() && !error.retryable())
                     || (error.websocket_failure().is_some() && !error.retryable())
                 {
                     shared.fail_acknowledgements(&error);

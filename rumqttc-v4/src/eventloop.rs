@@ -2414,6 +2414,8 @@ async fn network_connect(
     options: &MqttOptions,
     network_options: NetworkOptions,
 ) -> Result<Network, ConnectionError> {
+    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+    let tls_deadline = network_options.connection_deadline();
     let transport = options.transport();
 
     // Process Unix files early, as proxy is not supported for them.
@@ -2511,7 +2513,14 @@ async fn network_connect(
         ),
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         Transport::Tls(tls_config) => {
-            let socket = tls::tls_connect(&domain, port, &tls_config, tcp_stream).await?;
+            let socket = tls::tls_connect_with_deadline(
+                &domain,
+                port,
+                &tls_config,
+                tcp_stream,
+                tls_deadline,
+            )
+            .await?;
             Network::new(
                 socket,
                 options.max_incoming_packet_size,
@@ -2575,7 +2584,14 @@ async fn network_connect(
                 request = request_modifier(request).await;
             }
 
-            let tls_stream = tls::tls_connect(&domain, port, &tls_config, tcp_stream).await?;
+            let tls_stream = tls::tls_connect_with_deadline(
+                &domain,
+                port,
+                &tls_config,
+                tcp_stream,
+                tls_deadline,
+            )
+            .await?;
             let (socket, response) =
                 async_tungstenite::tokio::client_async(request, tls_stream).await?;
             validate_response_headers(&response)?;

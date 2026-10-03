@@ -268,7 +268,7 @@ pub fn websocket_tls_connector(
                 }
                 TlsConfiguration::Native => native_tls::TlsConnector::new()?,
                 TlsConfiguration::NativeConnector(connector) => connector.to_owned(),
-                // No need for catch-all: we're inside a match arm that only matches native-tls variants
+                _ => return Err(Error::UnsupportedBackendConfiguration),
             };
             Ok(connector.into())
         }
@@ -317,7 +317,26 @@ pub async fn tls_connect(
     tls_config: &TlsConfiguration,
     tcp: Box<dyn AsyncReadWrite>,
 ) -> Result<Box<dyn AsyncReadWrite>, Error> {
+    tls_connect_with_deadline(addr, _port, tls_config, tcp, None).await
+}
+
+/// Establish TLS with the original connection attempt's absolute deadline.
+///
+/// # Errors
+/// Returns configuration, handshake, authentication or deadline errors.
+pub async fn tls_connect_with_deadline(
+    addr: &str,
+    port: u16,
+    tls_config: &TlsConfiguration,
+    tcp: Box<dyn AsyncReadWrite>,
+    deadline: Option<std::time::Instant>,
+) -> Result<Box<dyn AsyncReadWrite>, Error> {
     let tls: Box<dyn AsyncReadWrite> = match tls_config {
+        TlsConfiguration::Connector(connector) => {
+            connector
+                .connect(addr.to_owned(), port, deadline, tcp)
+                .await?
+        }
         #[cfg(feature = "use-rustls-no-provider")]
         TlsConfiguration::Simple { .. } | TlsConfiguration::Rustls(_) => {
             let connector = rustls_connector(tls_config)?;

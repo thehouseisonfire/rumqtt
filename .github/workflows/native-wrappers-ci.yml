@@ -768,3 +768,30 @@ jobs:
             python/.venv/bin/python python/tests/lifecycle/panic_client.py async
           python3 c/tests/native/broker_fixture.py --binary \
             python/.venv/bin/python python/tests/lifecycle/panic_client.py driver
+
+  external-signing:
+    name: Native C external TLS signing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: Linux-native-external-signing
+          workspaces: native-wrappers -> target
+      - name: Install native signer dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev cmake openssl
+      - name: Build Rustls wrapper and require the EVP consumers
+        run: |
+          cargo build --locked -p rumqttc-c-next --no-default-features --features use-rustls-ring,websocket,proxy,tls12
+          if ldd target/debug/librumqttc.so | grep -E 'lib(ssl|crypto)'; then
+            echo 'Rustls-only production wrapper must not link OpenSSL' >&2
+            exit 1
+          fi
+          cmake -S c/tests/native -B target/native-external-signing -DRUMQTTC_REQUIRE_EXTERNAL_SIGNER=ON
+          cmake --build target/native-external-signing --target rumqttc-native-tls-advanced rumqttc-example-external_identity
+          ctest --test-dir target/native-external-signing -R '(tls-advanced|external_identity)' --output-on-failure
+      - name: Verify external TLS signing without WebSocket support
+        run: |
+          cargo build --locked -p rumqttc-c-next --no-default-features --features use-rustls-ring
+          ctest --test-dir target/native-external-signing -R '^rumqttc-native-tls-advanced$' --output-on-failure

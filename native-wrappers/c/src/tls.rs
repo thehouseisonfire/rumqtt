@@ -16,7 +16,7 @@ use rumqttc_wrapper_core::{
 
 /// Immutable owned policy inputs. Configurations take independent owned copies.
 pub struct rumqttc_tls_profile {
-    config: TlsConfig,
+    pub(super) config: TlsConfig,
 }
 
 #[repr(C)]
@@ -111,67 +111,77 @@ pub unsafe extern "C" fn rumqttc_tls_profile_new(
                 "TLS profile options or output is NULL",
             ));
         }
-        if unsafe { ptr::addr_of!((*options).struct_size).read() }
-            < struct_size::<rumqttc_tls_profile_options_t>()
-        {
-            return Err(ErrorHandle::argument(
-                "TLS profile options size is too small",
-            ));
-        }
-        let options = unsafe { &*options };
-        if options.reserved != [0; 2] {
-            return Err(ErrorHandle::argument("invalid TLS profile reserved fields"));
-        }
-        let mut config = if options.tls.is_null() {
-            TlsConfig::default()
-        } else {
-            unsafe { parse_tls_options(options.tls) }?
-        };
-        if match config.backend {
-            TlsBackend::Rustls => rumqttc_library_capabilities() & CAP_RUSTLS == 0,
-            TlsBackend::Native => rumqttc_library_capabilities() & CAP_NATIVE_TLS == 0,
-        } {
-            return Err(ErrorHandle::plain(
-                crate::error::CONFIG_ERROR,
-                1,
-                "selected TLS backend is unavailable in this library",
-            ));
-        }
-        config.version_policy = match options.version_policy {
-            0 => TlsVersionPolicy::Default,
-            1 => TlsVersionPolicy::Tls12Only,
-            2 => TlsVersionPolicy::Tls13Only,
-            3 => TlsVersionPolicy::Tls12OrTls13,
-            _ => return Err(ErrorHandle::argument("unknown TLS version policy")),
-        };
-        if options.pin_count > MAX_TLS_PINS || (options.pin_count != 0 && options.pins.is_null()) {
-            return Err(ErrorHandle::argument("invalid TLS pin array"));
-        }
-        let pins = if options.pin_count == 0 {
-            &[][..]
-        } else {
-            unsafe { slice::from_raw_parts(options.pins, options.pin_count) }
-        };
-        for pin in pins {
-            if pin.struct_size < struct_size::<rumqttc_tls_pin_t>() || pin.reserved != [0; 2] {
-                return Err(ErrorHandle::argument("invalid TLS pin record"));
-            }
-            let target = match pin.target {
-                0 => TlsPinTarget::LeafCertificate,
-                1 => TlsPinTarget::LeafSpki,
-                _ => return Err(ErrorHandle::argument("unknown TLS pin target")),
-            };
-            config.pins.push(TlsPin {
-                target,
-                sha256: pin.sha256,
-            });
-        }
+        let config = unsafe { parse_profile_options(options) }?;
         config
             .validate()
             .map_err(|error| ErrorHandle::from_core(&error, None))?;
         unsafe { *out = Box::into_raw(Box::new(rumqttc_tls_profile { config })) };
         Ok(())
     })
+}
+
+pub(super) unsafe fn parse_profile_options(
+    options: *const rumqttc_tls_profile_options_t,
+) -> Result<TlsConfig, ErrorHandle> {
+    if options.is_null() {
+        return Err(ErrorHandle::argument("TLS profile options is NULL"));
+    }
+    if unsafe { ptr::addr_of!((*options).struct_size).read() }
+        < struct_size::<rumqttc_tls_profile_options_t>()
+    {
+        return Err(ErrorHandle::argument(
+            "TLS profile options size is too small",
+        ));
+    }
+    let options = unsafe { &*options };
+    if options.reserved != [0; 2] {
+        return Err(ErrorHandle::argument("invalid TLS profile reserved fields"));
+    }
+    let mut config = if options.tls.is_null() {
+        TlsConfig::default()
+    } else {
+        unsafe { parse_tls_options(options.tls) }?
+    };
+    if match config.backend {
+        TlsBackend::Rustls => rumqttc_library_capabilities() & CAP_RUSTLS == 0,
+        TlsBackend::Native => rumqttc_library_capabilities() & CAP_NATIVE_TLS == 0,
+    } {
+        return Err(ErrorHandle::plain(
+            crate::error::CONFIG_ERROR,
+            1,
+            "selected TLS backend is unavailable in this library",
+        ));
+    }
+    config.version_policy = match options.version_policy {
+        0 => TlsVersionPolicy::Default,
+        1 => TlsVersionPolicy::Tls12Only,
+        2 => TlsVersionPolicy::Tls13Only,
+        3 => TlsVersionPolicy::Tls12OrTls13,
+        _ => return Err(ErrorHandle::argument("unknown TLS version policy")),
+    };
+    if options.pin_count > MAX_TLS_PINS || (options.pin_count != 0 && options.pins.is_null()) {
+        return Err(ErrorHandle::argument("invalid TLS pin array"));
+    }
+    let pins = if options.pin_count == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(options.pins, options.pin_count) }
+    };
+    for pin in pins {
+        if pin.struct_size < struct_size::<rumqttc_tls_pin_t>() || pin.reserved != [0; 2] {
+            return Err(ErrorHandle::argument("invalid TLS pin record"));
+        }
+        let target = match pin.target {
+            0 => TlsPinTarget::LeafCertificate,
+            1 => TlsPinTarget::LeafSpki,
+            _ => return Err(ErrorHandle::argument("unknown TLS pin target")),
+        };
+        config.pins.push(TlsPin {
+            target,
+            sha256: pin.sha256,
+        });
+    }
+    Ok(config)
 }
 
 #[unsafe(no_mangle)]

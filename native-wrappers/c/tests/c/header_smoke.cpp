@@ -28,6 +28,11 @@ int main() {
   rumqttc_tls_pin_t tls_pin = RUMQTTC_TLS_PIN_INIT;
   rumqttc_tls_profile_options_t tls_profile = RUMQTTC_TLS_PROFILE_OPTIONS_INIT;
   rumqttc_tls_backend_capabilities_t tls_caps = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
+  rumqttc_tls_profile_extensions_t tls_extensions = RUMQTTC_TLS_PROFILE_EXTENSIONS_INIT;
+  rumqttc_tls_advanced_capabilities_t tls_advanced = RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT;
+  rumqttc_tls_verifier_vtable_t tls_verifier = RUMQTTC_TLS_VERIFIER_VTABLE_INIT;
+  rumqttc_tls_identity_vtable_t tls_signer = RUMQTTC_TLS_IDENTITY_VTABLE_INIT;
+  rumqttc_tls_external_identity_t tls_external_identity = RUMQTTC_TLS_EXTERNAL_IDENTITY_INIT;
   rumqttc_tls_pem_identity_t pem_identity = RUMQTTC_TLS_PEM_IDENTITY_INIT;
   rumqttc_tls_pkcs12_identity_t pkcs12_identity = RUMQTTC_TLS_PKCS12_IDENTITY_INIT;
   rumqttc_proxy_options_t proxy_options = RUMQTTC_PROXY_OPTIONS_INIT;
@@ -53,6 +58,11 @@ int main() {
       tls_pin.struct_size != sizeof(tls_pin) ||
       tls_profile.struct_size != sizeof(tls_profile) ||
       tls_caps.struct_size != sizeof(tls_caps) ||
+      tls_extensions.struct_size != sizeof(tls_extensions) ||
+      tls_advanced.struct_size != sizeof(tls_advanced) ||
+      tls_verifier.struct_size != sizeof(tls_verifier) ||
+      tls_signer.struct_size != sizeof(tls_signer) ||
+      tls_external_identity.struct_size != sizeof(tls_external_identity) ||
       tls_options.struct_size != sizeof(tls_options) ||
       pem_identity.struct_size != sizeof(pem_identity) ||
       pkcs12_identity.struct_size != sizeof(pkcs12_identity)) {

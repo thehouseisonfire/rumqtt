@@ -203,6 +203,11 @@ impl Proxy {
         network_options: NetworkOptions,
         socket_connector: Option<SocketConnector>,
     ) -> Result<Box<dyn AsyncReadWrite>, ProxyError> {
+        #[cfg(all(
+            feature = "http-proxy",
+            any(feature = "use-rustls-no-provider", feature = "use-native-tls")
+        ))]
+        let deadline = network_options.connection_deadline();
         let proxy_addr = socket_address(&self.host, self.port);
         let tcp: Box<dyn AsyncReadWrite> = if let Some(connector) = socket_connector {
             connector(proxy_addr, network_options).await?
@@ -218,7 +223,14 @@ impl Proxy {
                 any(feature = "use-rustls-no-provider", feature = "use-native-tls")
             ))]
             ProxyKind::Https(tls_config) => {
-                let tcp = tls::tls_connect(&self.host, self.port, &tls_config, tcp).await?;
+                let tcp = tls::tls_connect_with_deadline(
+                    &self.host,
+                    self.port,
+                    &tls_config,
+                    tcp,
+                    deadline,
+                )
+                .await?;
                 http_connect(tcp, broker_addr, broker_port, self.credentials).await
             }
             #[cfg(feature = "socks-proxy")]

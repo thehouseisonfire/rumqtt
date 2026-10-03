@@ -236,9 +236,80 @@ renewal using the same key. Rustls first performs normal chain, validity and
 hostname validation, then checks the pins; handshake signatures remain verified.
 Pins cannot authorize an otherwise untrusted or expired certificate. Native TLS
 rejects pins before networking. Pinned profiles disable TLS resumption so each
-reconnect checks the presented certificate. Unpinned profiles preserve resumption
+reconnect checks the presented certificate. Profiles without pins, callbacks or explicit restrictions preserve resumption
 defaults. Raw pins, certificates and identity material are omitted from wrapper
 diagnostics.
+
+Use `rumqttc_tls_profile_new_with_extensions()` with
+`RUMQTTC_TLS_PROFILE_EXTENSIONS_INIT` for advanced policies. The existing
+profile options and capability records retain their layouts. The extension
+selects SNI `DEFAULT`, `ENABLED` or `DISABLED` (both backends), resumption
+`DEFAULT` or `DISABLED` (Rustls), and an ordered Rustls cipher allowlist of up
+to 64 IANA `uint16_t` suite IDs. Zero suites preserves provider defaults;
+duplicate/unavailable suites and version sets with no usable suite fail before
+networking. Selection clones the provider privately. Disabling SNI preserves
+hostname verification and does not override the TLS authority. Native TLS
+rejects cipher selection, resumption restriction and callback registrations.
+
+`rumqttc_tls_advanced_capabilities()` reports policy masks and feature flags in
+a separate size-versioned record. `rumqttc_tls_supported_cipher_suites()` and
+`rumqttc_tls_supported_signature_schemes()` report the selected Rustls provider's
+algorithms. Call with `NULL`, capacity zero to obtain the required count; then
+supply an array. Insufficient capacity writes no elements and reports the count.
+Build support is separate from server negotiation or host key availability.
+
+A verifier registration supplies synchronous additional policy after standard
+chain/validity/hostname validation and pins. The request borrows the server
+name, layer, leaf-first DER chain, OCSP bytes, verification time and remaining
+connection budget. It cannot approve an invalid certificate or pin, and TLS
+still verifies the peer's handshake signature. Use
+`rumqttc_tls_verifier_registration_new()` and attach `extensions.verifier`.
+
+An external identity registration copies an immutable catalog of certificate
+chains, opaque key IDs and preferred IANA signature schemes. Use
+`rumqttc_tls_identity_registration_new()` and attach
+`extensions.external_identity`; static and external identities are mutually
+exclusive. Selection receives issuer hints and compatible schemes; return a
+catalog index or `RUMQTTC_TLS_IDENTITY_DECLINE` with `CALLBACK_OK`. Signing
+receives the exact **unhashed** TLS message and the selected scheme/key ID.
+Write the signature into the wrapper-owned buffer and set its length. RSA-PSS
+uses MGF1 with the same digest and digest-length salt; ECDSA uses DER `(r,s)`;
+Ed25519 signs the full message. The catalog supports provider-available
+RSA-PSS/PKCS#1 SHA-256/384/512, ECDSA P-256/384/521, and Ed25519. The wrapper
+checks every returned signature against the selected leaf certificate before
+using it. It receives no private key or foreign cryptographic object pointer.
+
+Limits are 32 identities, 32 certificates per chain/request, 1 MiB aggregate
+catalog or request metadata, 256 bytes per nonempty key ID, ten schemes per
+identity and 4096 signature bytes. Validation invokes no callbacks. Callbacks
+return `CALLBACK_OK`, `REJECTED`, `FAILED`, `TIMEOUT` or `TRANSIENT`; other values
+become `INVALID_RESPONSE`. `rumqttc_error_tls_callback_failure()` reports typed
+verification/selection/signing stage, reason and broker/proxy/redirect layer.
+Callback failures are terminal except `TIMEOUT`/`TRANSIENT`, including when a
+server allows anonymous TLS. Retry/fallback remains bounded by the connection
+policy; an exhausted isolated redirect is still terminal. Terminal failures stop redirect/SRV candidate fallback.
+Diagnostics omit callback data, certificate/key IDs and signature bytes.
+
+Successful registration transfers ownership of `data`; failed construction
+leaves it with the caller. Registrations, profiles, configurations and in-flight
+handshakes retain the owner; `destroy` runs exactly once after the final
+reference is released. Callbacks and destructors must be thread-safe and cannot
+unwind; calls can overlap across clients sharing a registration. All request
+views and signature output buffers are borrowed only for the callback.
+Callbacks execute synchronously on the driver thread, return promptly, and may
+use nonblocking MQTT admission. Blocking waits for the same driver's progress
+are unsupported. There is no deferred completion API or forced preemption:
+cancellation and elapsed budgets are processed once a callback returns. The
+absolute original connection deadline is checked before and after callbacks
+and before exposing the stream. Pins, verifiers and external identities force
+resumption off so every reconnect performs authentication again.
+
+[The native EVP example](examples/external_identity.c) takes
+`HOST PORT CA_PEM CLIENT_CHAIN_PEM HOST_KEY_PEM [wss]` and supports RSA-PSS
+SHA-256 or P-256 ECDSA. Its host opens the key and retains it through the
+registration; replace the signing adapter with an HSM integration as needed.
+OpenSSL Crypto is optional for examples/consumers and required by the dedicated
+signer CI job. Rustls-only production builds have no OpenSSL link dependency.
 
 The warning-clean [TLS profile example](examples/tls_profile.c) takes
 `HOST PORT CA_PEM SPKI_SHA256_HEX`, selects TLS 1.3, and destroys its profile

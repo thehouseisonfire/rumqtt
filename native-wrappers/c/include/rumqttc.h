@@ -283,6 +283,8 @@ typedef uint32_t rumqttc_tls_pin_target_t;
 
 typedef struct rumqttc_config_t rumqttc_config_t;
 typedef struct rumqttc_tls_profile_t rumqttc_tls_profile_t;
+typedef struct rumqttc_tls_verifier_registration_t rumqttc_tls_verifier_registration_t;
+typedef struct rumqttc_tls_identity_registration_t rumqttc_tls_identity_registration_t;
 typedef struct rumqttc_client_t rumqttc_client_t;
 typedef struct rumqttc_event_t rumqttc_event_t;
 typedef struct rumqttc_completion_t rumqttc_completion_t;
@@ -543,6 +545,79 @@ typedef struct rumqttc_tls_backend_capabilities_t {
  * policy resolves the broker hostname at the proxy; numeric broker addresses
  * can be supplied through the ordinary broker setter. Credential byte views
  * must contain UTF-8 because the core proxy clients use text credentials. */
+typedef struct rumqttc_tls_advanced_capabilities_t {
+  uint32_t struct_size;
+  uint32_t sni_policy_mask;
+  uint32_t resumption_policy_mask;
+  uint32_t feature_mask;
+  uint32_t max_signature_bytes;
+  uint64_t reserved[2];
+} rumqttc_tls_advanced_capabilities_t;
+typedef struct rumqttc_tls_profile_extensions_t {
+  uint32_t struct_size;
+  uint32_t sni_policy;
+  uint32_t resumption_policy;
+  const uint16_t *cipher_suites;
+  size_t cipher_suite_count;
+  const struct rumqttc_tls_verifier_registration_t *verifier;
+  const struct rumqttc_tls_identity_registration_t *external_identity;
+  uint64_t reserved[2];
+} rumqttc_tls_profile_extensions_t;
+typedef struct rumqttc_tls_verification_request_t {
+  uint32_t struct_size;
+  uint32_t layer;
+  struct rumqttc_string_view_t server_name;
+  const struct rumqttc_bytes_view_t *certificates;
+  size_t certificate_count;
+  struct rumqttc_bytes_view_t ocsp_response;
+  uint64_t unix_time;
+  uint64_t remaining_ns;
+  uint64_t reserved[2];
+} rumqttc_tls_verification_request_t;
+typedef struct rumqttc_tls_identity_request_t {
+  uint32_t struct_size;
+  uint32_t layer;
+  struct rumqttc_string_view_t server_name;
+  const struct rumqttc_bytes_view_t *issuer_hints;
+  size_t issuer_hint_count;
+  const uint16_t *signature_schemes;
+  size_t signature_scheme_count;
+  uint64_t remaining_ns;
+  uint64_t reserved[2];
+} rumqttc_tls_identity_request_t;
+typedef struct rumqttc_tls_signing_request_t {
+  uint32_t struct_size;
+  uint32_t layer;
+  struct rumqttc_string_view_t server_name;
+  size_t identity_index;
+  struct rumqttc_bytes_view_t key_id;
+  uint32_t signature_scheme;
+  struct rumqttc_bytes_view_t message;
+  uint64_t remaining_ns;
+  uint64_t reserved[2];
+} rumqttc_tls_signing_request_t;
+typedef struct rumqttc_tls_verifier_vtable_t {
+  uint32_t struct_size;
+  uint32_t (*verify)(void*, const struct rumqttc_tls_verification_request_t*);
+  void (*destroy)(void*);
+  uint64_t reserved[2];
+} rumqttc_tls_verifier_vtable_t;
+typedef struct rumqttc_tls_identity_vtable_t {
+  uint32_t struct_size;
+  uint32_t (*select)(void*, const struct rumqttc_tls_identity_request_t*, size_t*);
+  uint32_t (*sign)(void*, const struct rumqttc_tls_signing_request_t*, uint8_t*, size_t, size_t*);
+  void (*destroy)(void*);
+  uint64_t reserved[2];
+} rumqttc_tls_identity_vtable_t;
+typedef struct rumqttc_tls_external_identity_t {
+  uint32_t struct_size;
+  struct rumqttc_bytes_view_t certificate_pem;
+  struct rumqttc_bytes_view_t key_id;
+  const uint16_t *signature_schemes;
+  size_t signature_scheme_count;
+  uint64_t reserved[2];
+} rumqttc_tls_external_identity_t;
+
 typedef struct rumqttc_proxy_options_t {
     uint32_t struct_size;
     uint32_t protocol;
@@ -775,6 +850,42 @@ typedef struct rumqttc_diagnostics_t {
     { sizeof(rumqttc_tls_pkcs12_identity_t), 0, { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
 #define RUMQTTC_TLS_PIN_INIT \
     { sizeof(rumqttc_tls_pin_t), RUMQTTC_TLS_PIN_LEAF_CERTIFICATE, { 0 }, { 0, 0 } }
+
+#define RUMQTTC_TLS_SNI_DEFAULT 0u
+#define RUMQTTC_TLS_SNI_ENABLED 1u
+#define RUMQTTC_TLS_SNI_DISABLED 2u
+#define RUMQTTC_TLS_RESUMPTION_DEFAULT 0u
+#define RUMQTTC_TLS_RESUMPTION_DISABLED 1u
+#define RUMQTTC_TLS_ADVANCED_CIPHERS 1u
+#define RUMQTTC_TLS_ADVANCED_VERIFIER 2u
+#define RUMQTTC_TLS_ADVANCED_EXTERNAL_IDENTITY 4u
+#define RUMQTTC_TLS_LAYER_BROKER 0u
+#define RUMQTTC_TLS_LAYER_PROXY 1u
+#define RUMQTTC_TLS_LAYER_REDIRECT 2u
+#define RUMQTTC_TLS_STAGE_VERIFY 0u
+#define RUMQTTC_TLS_STAGE_SELECT 1u
+#define RUMQTTC_TLS_STAGE_SIGN 2u
+#define RUMQTTC_TLS_CALLBACK_OK 0u
+#define RUMQTTC_TLS_CALLBACK_REJECTED 1u
+#define RUMQTTC_TLS_CALLBACK_FAILED 2u
+#define RUMQTTC_TLS_CALLBACK_INVALID_RESPONSE 3u
+#define RUMQTTC_TLS_CALLBACK_INVALID_SIGNATURE 4u
+#define RUMQTTC_TLS_CALLBACK_RESOURCE_LIMIT 5u
+#define RUMQTTC_TLS_CALLBACK_PANIC 6u
+#define RUMQTTC_TLS_CALLBACK_TIMEOUT 7u
+#define RUMQTTC_TLS_CALLBACK_TRANSIENT 8u
+#define RUMQTTC_TLS_IDENTITY_DECLINE SIZE_MAX
+#define RUMQTTC_TLS_PROFILE_EXTENSIONS_INIT \
+    { sizeof(rumqttc_tls_profile_extensions_t), 0, 0, NULL, 0, NULL, NULL, { 0, 0 } }
+#define RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT \
+    { sizeof(rumqttc_tls_advanced_capabilities_t), 0, 0, 0, 0, { 0, 0 } }
+#define RUMQTTC_TLS_VERIFIER_VTABLE_INIT \
+    { sizeof(rumqttc_tls_verifier_vtable_t), NULL, NULL, { 0, 0 } }
+#define RUMQTTC_TLS_IDENTITY_VTABLE_INIT \
+    { sizeof(rumqttc_tls_identity_vtable_t), NULL, NULL, NULL, { 0, 0 } }
+#define RUMQTTC_TLS_EXTERNAL_IDENTITY_INIT \
+    { sizeof(rumqttc_tls_external_identity_t), { NULL, 0 }, { NULL, 0 }, NULL, 0, { 0, 0 } }
+
 #define RUMQTTC_TLS_PROFILE_OPTIONS_INIT \
     { sizeof(rumqttc_tls_profile_options_t), RUMQTTC_TLS_VERSION_DEFAULT, NULL, NULL, 0, { 0, 0 } }
 #define RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT \
@@ -860,6 +971,62 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss_with_options(rumqt
  * Zero pins disables pinning; otherwise pin_count must be at most MAX_PINS.
  * Pins are Rustls-only and disable TLS resumption to revalidate each reconnect.
  * No callback, key export, or global provider installation is performed. */
+/* Callbacks are synchronous, thread-safe and must not unwind. All views are
+ * borrowed for the call only. Successful registration takes data ownership;
+ * destroy runs once after the last profile/configuration/handshake reference.
+ * Return CALLBACK_OK, REJECTED, FAILED, TIMEOUT or TRANSIENT. select sets an
+ * index or IDENTITY_DECLINE; sign writes the unhashed-message signature into
+ * the supplied buffer (at most 4096 bytes). Remaining time is advisory: callbacks
+ * must return promptly and may not wait for their own driver to make progress.
+ * Verification supplements standard trust/name/signature validation and pins.
+ * Pins and callbacks disable resumption. SNI never changes hostname checks.
+ * Zero cipher count retains defaults. Algorithms use IANA u16 identifiers.
+ * Queries accept NULL/zero to retrieve count; insufficient capacity writes no
+ * elements and returns INVALID_ARGUMENT with the required count.
+ */
+RUMQTTC_API uint32_t rumqttc_tls_verifier_registration_new(const struct rumqttc_tls_verifier_vtable_t *vtable,
+                                               void *data,
+                                               struct rumqttc_tls_verifier_registration_t **out,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_tls_verifier_registration_destroy(struct rumqttc_tls_verifier_registration_t *registration);
+
+RUMQTTC_API uint32_t rumqttc_tls_identity_registration_new(const struct rumqttc_tls_identity_vtable_t *vtable,
+                                               void *data,
+                                               const struct rumqttc_tls_external_identity_t *identities,
+                                               size_t identity_count,
+                                               struct rumqttc_tls_identity_registration_t **out,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_tls_identity_registration_destroy(struct rumqttc_tls_identity_registration_t *registration);
+
+RUMQTTC_API uint32_t rumqttc_tls_profile_new_with_extensions(const struct rumqttc_tls_profile_options_t *options,
+                                                 const struct rumqttc_tls_profile_extensions_t *extensions,
+                                                 struct rumqttc_tls_profile_t **out,
+                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_tls_advanced_capabilities(uint32_t backend,
+                                           struct rumqttc_tls_advanced_capabilities_t *out,
+                                           struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_tls_supported_cipher_suites(uint32_t backend,
+                                             uint16_t *out,
+                                             size_t capacity,
+                                             size_t *count,
+                                             struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_tls_supported_signature_schemes(uint32_t backend,
+                                                 uint16_t *out,
+                                                 size_t capacity,
+                                                 size_t *count,
+                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_error_tls_callback_failure(const struct rumqttc_error_t *error,
+                                            uint8_t *present,
+                                            uint32_t *stage,
+                                            uint32_t *reason,
+                                            uint32_t *layer);
+
 RUMQTTC_API rumqttc_status_t rumqttc_tls_backend_capabilities(rumqttc_tls_backend_t backend, rumqttc_tls_backend_capabilities_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_tls_profile_new(const rumqttc_tls_profile_options_t *options, rumqttc_tls_profile_t **out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_tls_profile_destroy(rumqttc_tls_profile_t *profile);
