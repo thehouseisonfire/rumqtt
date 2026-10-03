@@ -9,6 +9,10 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_tls_profile",
+    "rumqttc_tls_pin_t",
+    "rumqttc_tls_profile_options_t",
+    "rumqttc_tls_backend_capabilities_t",
     "rumqttc_websocket_registration",
     "rumqttc_websocket_response",
     "rumqttc_websocket_request_t",
@@ -55,6 +59,7 @@ include = [
 ]
 
 [export.rename]
+"rumqttc_tls_profile" = "rumqttc_tls_profile_t"
 "rumqttc_config" = "rumqttc_config_t"
 "rumqttc_client" = "rumqttc_client_t"
 "rumqttc_completion" = "rumqttc_completion_t"

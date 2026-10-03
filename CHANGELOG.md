@@ -7,6 +7,17 @@
   reason codes and generation-bound negotiated packet limits before consuming
   tokens. Failed admission restores the original default ACK for retry. Negative
   ACK completions retain local flush semantics; publications remain readable.
+- Native wrappers: Add immutable owned C TLS profiles with explicit version
+  restrictions, combined platform/supplied roots, leaf-certificate and SPKI
+  SHA-256 pinning, and per-backend capability queries. Apply profiles independently
+  to broker TLS/WSS, HTTPS proxies and MQTT 5 redirects. Rustls pins supplement
+  standard certificate/name/signature validation and disable TLS resumption so
+  every reconnect revalidates the certificate. Native TLS rejects pins and
+  unsupported version policies before networking. Add an opt-in `tls12` feature
+  for Rustls TLS 1.2 policy support without changing default feature selection,
+  a C profile example, native consumers and rotation tests. Existing C records
+  and loader identity are preserved; wrapper-core adds defaulted `TlsConfig`
+  fields requiring updates to exhaustive Rust literals.
 - Native wrappers: Add owned asynchronous WebSocket handshake preparation for
   both MQTT versions and WS/WSS, with a retained C registration, borrowed request
   snapshot, owned response builders, capability bit and typed failure detail.

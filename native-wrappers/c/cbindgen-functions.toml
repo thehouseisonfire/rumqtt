@@ -11,6 +11,7 @@ parse_deps = false
 item_types = ["functions"]
 
 [export.rename]
+"rumqttc_tls_profile" = "rumqttc_tls_profile_t"
 "rumqttc_config" = "rumqttc_config_t"
 "rumqttc_client" = "rumqttc_client_t"
 "rumqttc_completion" = "rumqttc_completion_t"

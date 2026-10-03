@@ -37,6 +37,25 @@ int main(void) {
     if ((int)((capabilities & checks[index].bit) != 0) != checks[index].expected)
       return 2;
   }
+  for (uint32_t backend = 0; backend <= 1; ++backend) {
+    rumqttc_tls_backend_capabilities_t tls = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
+    if (rumqttc_tls_backend_capabilities(backend, &tls, NULL) != RUMQTTC_OK)
+      return 4;
+    int enabled = backend == RUMQTTC_TLS_BACKEND_RUSTLS ? RUMQTTC_EXPECT_RUSTLS : RUMQTTC_EXPECT_NATIVE_TLS;
+    if (!enabled) {
+      if (tls.version_policy_mask != 0 || tls.root_policy_mask != 0 || tls.pin_target_mask != 0)
+        return 5;
+    } else {
+      if (!(tls.version_policy_mask & (1u << RUMQTTC_TLS_VERSION_DEFAULT)) || (tls.root_policy_mask & 7u) != 7u)
+        return 6;
+      if (backend == RUMQTTC_TLS_BACKEND_RUSTLS && (tls.pin_target_mask & 3u) != 3u)
+        return 7;
+    }
+  }
+  rumqttc_tls_profile_t *profile = (rumqttc_tls_profile_t *)(uintptr_t)1;
+  if (rumqttc_tls_profile_new(NULL, &profile, NULL) != RUMQTTC_INVALID_ARGUMENT || profile != NULL)
+    return 8;
+  rumqttc_tls_profile_destroy(NULL);
   /* A consumer must ignore capabilities added in future ABI-compatible builds. */
   return ((capabilities | (UINT64_C(1) << 63)) & required) == required ? 0 : 3;
 }

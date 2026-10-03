@@ -84,7 +84,7 @@ pub enum Error {
 type RustlsClientConfigBuilder = ConfigBuilder<ClientConfig, WantsVerifier>;
 
 #[cfg(feature = "use-rustls-no-provider")]
-fn rustls_crypto_provider() -> Result<Arc<CryptoProvider>, Error> {
+pub fn rustls_crypto_provider() -> Result<Arc<CryptoProvider>, Error> {
     if let Some(provider) = CryptoProvider::get_default() {
         return Ok(Arc::clone(provider));
     }

@@ -1,3 +1,8 @@
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+mod tls;
+#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+pub use tls::build_tls;
+
 mod auth;
 mod redirect;
 pub mod session;
@@ -351,88 +356,6 @@ pub fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
             Ok((BackendClient::V5(client), BackendDriver::V5(eventloop)))
         }
     }
-}
-
-#[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-fn build_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
-    match config.backend {
-        #[cfg(feature = "use-rustls-no-provider")]
-        crate::TlsBackend::Rustls => build_rustls(config),
-        #[cfg(feature = "use-native-tls")]
-        crate::TlsBackend::Native => build_native_tls(config),
-        #[allow(unreachable_patterns)]
-        _ => Err(Error::configuration("selected TLS backend is disabled")),
-    }
-}
-
-#[cfg(feature = "use-rustls-no-provider")]
-fn build_rustls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
-    let client_auth = match &config.identity {
-        Some(crate::TlsClientIdentity::RustlsPem {
-            certificate,
-            private_key,
-        }) => Some((certificate.to_vec(), private_key.expose().to_vec())),
-        None => None,
-        _ => return Err(Error::configuration("rustls requires a PEM identity")),
-    };
-    let result = if let crate::TlsRootPolicy::Pem(ca) = &config.roots {
-        rumqttc_v4::TlsConfiguration::try_rustls_with_pem_roots(ca, client_auth)
-    } else {
-        rumqttc_v4::TlsConfiguration::try_rustls_with_native_roots(client_auth)
-    };
-    // Do not retain source errors from credential parsing: native host diagnostics may
-    // recursively display their source chains.
-    let mut tls =
-        result.map_err(|_| Error::new(ErrorKind::Tls, "failed to construct rustls credentials"))?;
-    if let rumqttc_v4::TlsConfiguration::Rustls(client) = &mut tls {
-        std::sync::Arc::make_mut(client).alpn_protocols = config.alpn_protocols.clone();
-    }
-    Ok(tls)
-}
-
-#[cfg(feature = "use-native-tls")]
-fn build_native_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
-    let invalid = || Error::new(ErrorKind::Tls, "failed to construct native TLS credentials");
-    let mut builder = native_tls::TlsConnector::builder();
-    if let crate::TlsRootPolicy::Pem(ca) = &config.roots {
-        builder.disable_built_in_roots(true);
-        // native-tls accepts one PEM certificate per call. Split a bundle explicitly.
-        let pem = std::str::from_utf8(ca).map_err(|_| invalid())?;
-        let mut rest = pem.trim();
-        let mut count = 0;
-        while !rest.is_empty() {
-            if !rest.starts_with("-----BEGIN CERTIFICATE-----") {
-                return Err(invalid());
-            }
-            let end = rest.find("-----END CERTIFICATE-----").ok_or_else(invalid)?
-                + "-----END CERTIFICATE-----".len();
-            builder.add_root_certificate(
-                native_tls::Certificate::from_pem(&rest.as_bytes()[..end])
-                    .map_err(|_| invalid())?,
-            );
-            count += 1;
-            rest = rest[end..].trim();
-        }
-        if count == 0 {
-            return Err(invalid());
-        }
-    }
-    if let Some(crate::TlsClientIdentity::NativePkcs12 { identity, password }) = &config.identity {
-        let password = std::str::from_utf8(password.expose()).map_err(|_| invalid())?;
-        builder.identity(
-            native_tls::Identity::from_pkcs12(identity.expose(), password)
-                .map_err(|_| invalid())?,
-        );
-    }
-    let alpn: Vec<&str> = config
-        .alpn_protocols
-        .iter()
-        .map(|value| std::str::from_utf8(value).map_err(|_| invalid()))
-        .collect::<Result<_>>()?;
-    builder.request_alpns(&alpn);
-    Ok(rumqttc_v4::TlsConfiguration::NativeConnector(
-        builder.build().map_err(|_| invalid())?,
-    ))
 }
 
 fn build_network(common: &crate::CommonConfig) -> rumqttc_v4::NetworkOptions {

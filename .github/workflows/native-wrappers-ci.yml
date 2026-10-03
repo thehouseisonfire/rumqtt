@@ -122,7 +122,7 @@ jobs:
 
       - name: TLS backends and transport composition
         run: |
-          cargo test --locked -p rumqttc-wrapper-core-next --features use-native-tls,websocket,proxy
+          cargo test --locked -p rumqttc-wrapper-core-next --features tls12,use-native-tls,websocket,proxy
           cargo test --locked --manifest-path ../Cargo.toml -p rumqttc-core-next \
             --no-default-features --features use-native-tls --lib native_tls_io::tests
 
@@ -197,6 +197,13 @@ jobs:
           cargo build --locked -p rumqttc-c-next --features proxy,auth-scram
           cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-proxy rumqttc-native-proxy-matrix rumqttc-native-scram
           ctest --test-dir target/rumqttc-c-native -C Debug -R 'rumqttc-native-(proxy|scram)' --output-on-failure
+          cargo build --locked -p rumqttc-c-next
+
+      - name: C TLS profiles and version policies
+        run: |
+          cargo build --locked -p rumqttc-c-next --features tls12,use-native-tls,proxy
+          cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-tls-matrix rumqttc-native-tls-profiles rumqttc-example-tls_profile
+          ctest --test-dir target/rumqttc-c-native -C Debug -R '(tls-matrix|tls-profiles|example-tls_profile)' --output-on-failure
           cargo build --locked -p rumqttc-c-next
 
       - name: Installed CMake proxy package consumers

@@ -47,7 +47,7 @@ impl ProxyConfig {
                 host,
                 port,
                 credentials,
-                ..
+                tls,
             } => {
                 if !cfg!(feature = "http-proxy") {
                     return Err(Error::configuration("HTTP proxy feature is disabled"));
@@ -59,6 +59,9 @@ impl ProxyConfig {
                     return Err(Error::configuration(
                         "HTTP proxy username cannot contain a colon",
                     ));
+                }
+                if let Some(tls) = tls {
+                    tls.validate_options()?;
                 }
                 (host, port, credentials)
             }

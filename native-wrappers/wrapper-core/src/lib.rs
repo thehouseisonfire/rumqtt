@@ -65,6 +65,9 @@ pub use completion::{
     PublishCompletion, SubscribeCompletion, SubscribeResult, UnsubscribeCompletion,
     UnsubscribeResult,
 };
+mod tls;
+pub use tls::{MAX_TLS_PINS, TlsCapabilities, TlsPin, TlsPinTarget, TlsVersionPolicy};
+
 pub use config::{
     AckMode, BrokerTarget, ClientConfig, CommonConfig, IncomingPacketLimit, NetworkConfig,
     ProtocolConfig, SecretBytes, TlsBackend, TlsClientIdentity, TlsConfig, TlsRootPolicy,

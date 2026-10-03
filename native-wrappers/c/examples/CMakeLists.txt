@@ -38,7 +38,7 @@ set(RUMQTTC_C_EXAMPLES
     session_store
     authenticator
     shutdown)
-list(APPEND RUMQTTC_C_EXAMPLES resource_limits custom_transport)
+list(APPEND RUMQTTC_C_EXAMPLES resource_limits custom_transport tls_profile)
 add_library(rumqttc_transport_socket STATIC transport_socket.c)
 target_compile_features(rumqttc_transport_socket PUBLIC c_std_11)
 target_link_libraries(rumqttc_transport_socket PUBLIC rumqttc_example_common)
@@ -56,6 +56,9 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     target_link_libraries(${target} PRIVATE rumqttc_example_common)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
+        if(example STREQUAL "tls_profile")
+            target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+        endif()
         if(example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator"
                 OR example STREQUAL "session_store" OR example STREQUAL "websocket_tokens")
             target_compile_options(${target} PRIVATE /experimental:c11atomics)
@@ -69,7 +72,11 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${RUMQTTC_SHARED_LIBRARY}" "$<TARGET_FILE_DIR:${target}>")
     endif()
-    if(example STREQUAL "custom_transport")
+    if(example STREQUAL "tls_profile")
+        add_test(NAME ${target} COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}"
+            --redact --tls-profile-example --binary $<TARGET_FILE:${target}>)
+        set_tests_properties(${target} PROPERTIES SKIP_RETURN_CODE 77)
+    elseif(example STREQUAL "custom_transport")
         target_link_libraries(${target} PRIVATE rumqttc_transport_socket)
         add_test(NAME ${target} COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}"
             --custom-transport --binary $<TARGET_FILE:${target}>)

@@ -8,6 +8,10 @@
 // unsafe blocks inside the panic boundary.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+#[path = "tls.rs"]
+mod tls;
+pub use tls::*;
+
 #[path = "websocket.rs"]
 mod websocket;
 pub use websocket::*;
@@ -1603,12 +1607,16 @@ unsafe fn parse_tls_options(
             }
             TlsRootPolicy::Platform
         }
-        1 => {
+        1 | 2 => {
             let pem = unsafe { bytes_from_view(options.ca_pem) }?;
             if pem.is_empty() {
                 return Err(ErrorHandle::argument("custom roots require CA PEM data"));
             }
-            TlsRootPolicy::Pem(Bytes::copy_from_slice(pem))
+            if options.root_policy == 1 {
+                TlsRootPolicy::Pem(Bytes::copy_from_slice(pem))
+            } else {
+                TlsRootPolicy::PlatformAndPem(Bytes::copy_from_slice(pem))
+            }
         }
         _ => return Err(ErrorHandle::argument("unknown TLS root policy")),
     };
@@ -1693,6 +1701,7 @@ unsafe fn parse_tls_options(
         roots,
         identity,
         alpn_protocols,
+        ..TlsConfig::default()
     })
 }
 
@@ -1746,6 +1755,13 @@ pub unsafe extern "C" fn rumqttc_config_set_transport_wss_with_options(
 unsafe fn parse_proxy_options(
     options: *const rumqttc_proxy_options_t,
 ) -> Result<ProxyConfig, ErrorHandle> {
+    unsafe { parse_proxy_options_with_tls(options, None) }
+}
+
+unsafe fn parse_proxy_options_with_tls(
+    options: *const rumqttc_proxy_options_t,
+    profile: Option<TlsConfig>,
+) -> Result<ProxyConfig, ErrorHandle> {
     if options.is_null() {
         return Err(ErrorHandle::argument("proxy options are NULL"));
     }
@@ -1758,6 +1774,11 @@ unsafe fn parse_proxy_options(
     }
     if options.dns_policy != 0 {
         return Err(ErrorHandle::argument("unsupported proxy DNS policy"));
+    }
+    if profile.is_some() && (options.protocol != 2 || !options.tls.is_null()) {
+        return Err(ErrorHandle::argument(
+            "TLS profile requires HTTPS proxy without legacy TLS options",
+        ));
     }
     let host = unsafe { string_from_view(options.host) }?;
     let port = u16::try_from(options.port)
@@ -1799,7 +1820,10 @@ unsafe fn parse_proxy_options(
                 ));
             }
             let tls = if options.protocol == 2 {
-                Some(unsafe { parse_tls_options(options.tls) }?)
+                Some(match profile {
+                    Some(tls) => tls,
+                    None => unsafe { parse_tls_options(options.tls) }?,
+                })
             } else {
                 None
             };
@@ -6736,9 +6760,10 @@ mod tests {
 
     #[test]
     fn proxy_options_preserve_endpoint_credentials_and_separate_tls() {
+        let capabilities = rumqttc_library_capabilities();
         let tls = rumqttc_tls_options_t {
             struct_size: struct_size::<rumqttc_tls_options_t>(),
-            backend: 0,
+            backend: u32::from(capabilities & CAP_RUSTLS == 0),
             root_policy: 0,
             reserved: 0,
             ca_pem: view_bytes(&[]),
@@ -6761,11 +6786,13 @@ mod tests {
             reserved_tail: [0; 7],
             tls: &raw const tls,
         };
-        if cfg!(feature = "http-proxy") {
+        if cfg!(feature = "http-proxy") && capabilities & (CAP_RUSTLS | CAP_NATIVE_TLS) != 0 {
             let parsed = unsafe { parse_proxy_options(&raw const options) }.unwrap();
             assert!(
                 matches!(parsed, ProxyConfig::Http { host, port: 8443, credentials: Some(_), tls: Some(_) } if host == "proxy.local")
             );
+        } else {
+            assert!(unsafe { parse_proxy_options(&raw const options) }.is_err());
         }
         options.dns_policy = 1;
         assert!(unsafe { parse_proxy_options(&raw const options) }.is_err());

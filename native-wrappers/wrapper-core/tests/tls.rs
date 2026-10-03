@@ -75,6 +75,7 @@ fn tls_input_ownership_is_released_on_every_driver_exit() {
                             None
                         }
                     },
+                    ..TlsConfig::default()
                 });
                 if mode == "failed-start" {
                     assert_eq!(
@@ -589,6 +590,7 @@ fn tls_and_wss_enforce_roots_hostname_identity_and_alpn() {
                             }
                         }),
                         alpn_protocols: vec![b"mqtt".to_vec()],
+                        ..TlsConfig::default()
                     };
                     config.common.transport = if websocket {
                         config.common.broker = BrokerTarget::WebSocket {

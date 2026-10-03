@@ -239,6 +239,18 @@ typedef uint32_t rumqttc_tls_backend_t;
 typedef uint32_t rumqttc_tls_root_policy_t;
 #define RUMQTTC_TLS_ROOTS_PLATFORM 0u
 #define RUMQTTC_TLS_ROOTS_PEM 1u
+#define RUMQTTC_TLS_ROOTS_PLATFORM_AND_PEM 2u
+
+typedef uint32_t rumqttc_tls_version_policy_t;
+#define RUMQTTC_TLS_VERSION_DEFAULT 0u
+#define RUMQTTC_TLS_VERSION_12_ONLY 1u
+#define RUMQTTC_TLS_VERSION_13_ONLY 2u
+#define RUMQTTC_TLS_VERSION_12_OR_13 3u
+
+typedef uint32_t rumqttc_tls_pin_target_t;
+#define RUMQTTC_TLS_PIN_LEAF_CERTIFICATE 0u
+#define RUMQTTC_TLS_PIN_LEAF_SPKI 1u
+#define RUMQTTC_TLS_MAX_PINS 32u
 #define RUMQTTC_INCOMING_PACKET_LIMIT_DEFAULT 0u
 #define RUMQTTC_INCOMING_PACKET_LIMIT_UNLIMITED 1u
 #define RUMQTTC_TOPIC_ALIAS_DISABLED 0u
@@ -270,6 +282,7 @@ typedef uint32_t rumqttc_tls_root_policy_t;
 #define RUMQTTC_AUTH_ACTION_REJECT 2u
 
 typedef struct rumqttc_config_t rumqttc_config_t;
+typedef struct rumqttc_tls_profile_t rumqttc_tls_profile_t;
 typedef struct rumqttc_client_t rumqttc_client_t;
 typedef struct rumqttc_event_t rumqttc_event_t;
 typedef struct rumqttc_completion_t rumqttc_completion_t;
@@ -495,6 +508,36 @@ typedef struct rumqttc_tls_options_t {
     size_t alpn_protocol_count;
     uint64_t reserved_tail[2];
 } rumqttc_tls_options_t;
+
+/* Profile pin digests are SHA-256 of the complete leaf certificate DER or
+ * complete DER SubjectPublicKeyInfo. Any one pin may match; standard chain,
+ * validity, hostname and handshake-signature checks always remain required. */
+typedef struct rumqttc_tls_pin_t {
+    uint32_t struct_size;
+    rumqttc_tls_pin_target_t target;
+    uint8_t sha256[32];
+    uint64_t reserved[2];
+} rumqttc_tls_pin_t;
+
+typedef struct rumqttc_tls_profile_options_t {
+    uint32_t struct_size;
+    rumqttc_tls_version_policy_t version_policy;
+    const rumqttc_tls_options_t *tls;
+    const rumqttc_tls_pin_t *pins;
+    size_t pin_count;
+    uint64_t reserved[2];
+} rumqttc_tls_profile_options_t;
+
+/* Each mask uses bit (1u << selector). Capabilities describe enforceable
+ * policies, not availability of a particular protocol on the host or server.
+ * Disabled backends return zero masks. */
+typedef struct rumqttc_tls_backend_capabilities_t {
+    uint32_t struct_size;
+    uint32_t version_policy_mask;
+    uint32_t root_policy_mask;
+    uint32_t pin_target_mask;
+    uint64_t reserved[2];
+} rumqttc_tls_backend_capabilities_t;
 
 /* Proxy and broker transport/TLS settings are independent. The supported DNS
  * policy resolves the broker hostname at the proxy; numeric broker addresses
@@ -730,6 +773,12 @@ typedef struct rumqttc_diagnostics_t {
     { sizeof(rumqttc_tls_pem_identity_t), 0, { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
 #define RUMQTTC_TLS_PKCS12_IDENTITY_INIT \
     { sizeof(rumqttc_tls_pkcs12_identity_t), 0, { NULL, 0 }, { NULL, 0 }, { 0, 0 } }
+#define RUMQTTC_TLS_PIN_INIT \
+    { sizeof(rumqttc_tls_pin_t), RUMQTTC_TLS_PIN_LEAF_CERTIFICATE, { 0 }, { 0, 0 } }
+#define RUMQTTC_TLS_PROFILE_OPTIONS_INIT \
+    { sizeof(rumqttc_tls_profile_options_t), RUMQTTC_TLS_VERSION_DEFAULT, NULL, NULL, 0, { 0, 0 } }
+#define RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT \
+    { sizeof(rumqttc_tls_backend_capabilities_t), 0, 0, 0, { 0, 0 } }
 #define RUMQTTC_TLS_OPTIONS_INIT \
     { sizeof(rumqttc_tls_options_t), RUMQTTC_TLS_BACKEND_RUSTLS, \
       RUMQTTC_TLS_ROOTS_PLATFORM, 0, { NULL, 0 }, NULL, NULL, NULL, 0, { 0, 0 } }
@@ -795,13 +844,32 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_clear_password(rumqttc_config_t *con
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tcp(rumqttc_config_t *config, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tls(rumqttc_config_t *config, rumqttc_bytes_view_t ca, rumqttc_bytes_view_t certificate, rumqttc_bytes_view_t private_key, rumqttc_error_t **error_out);
 /* Explicit TLS backend and trust policy. All inputs are copied before return.
- * PEM CA roots replace platform roots. Private key, PKCS#12 data, and password
+ * PEM roots replace platform trust; PLATFORM_AND_PEM augments it.
+ * Private key, PKCS#12 data, and password
  * are wiped when wrapper-owned copies are dropped; caller and TLS-library copies
  * have independent lifetimes. The old TLS setter always selects Rustls. */
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tls_with_options(rumqttc_config_t *config, const rumqttc_tls_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_websocket(rumqttc_config_t *config, rumqttc_string_view_t url, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss(rumqttc_config_t *config, rumqttc_string_view_t url, rumqttc_bytes_view_t ca, rumqttc_bytes_view_t certificate, rumqttc_bytes_view_t private_key, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss_with_options(rumqttc_config_t *config, rumqttc_string_view_t url, const rumqttc_tls_options_t *options, rumqttc_error_t **error_out);
+/* Immutable TLS profiles copy all inputs and validate credentials/policy without
+ * networking. NULL options.tls selects default Rustls/platform roots. Platform
+ * trust is consulted at validation and again at client start. Configuration
+ * setters take independent owned copies; profiles may be destroyed immediately
+ * afterwards and reused across configurations. Destruction must not race access.
+ * Zero pins disables pinning; otherwise pin_count must be at most MAX_PINS.
+ * Pins are Rustls-only and disable TLS resumption to revalidate each reconnect.
+ * No callback, key export, or global provider installation is performed. */
+RUMQTTC_API rumqttc_status_t rumqttc_tls_backend_capabilities(rumqttc_tls_backend_t backend, rumqttc_tls_backend_capabilities_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_tls_profile_new(const rumqttc_tls_profile_options_t *options, rumqttc_tls_profile_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_tls_profile_destroy(rumqttc_tls_profile_t *profile);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_tls_with_profile(rumqttc_config_t *config, const rumqttc_tls_profile_t *profile, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss_with_profile(rumqttc_config_t *config, rumqttc_string_view_t url, const rumqttc_tls_profile_t *profile, rumqttc_error_t **error_out);
+/* Requires HTTPS and options.tls == NULL; only the proxy layer gets this profile. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_proxy_with_tls_profile(rumqttc_config_t *config, const rumqttc_proxy_options_t *options, const rumqttc_tls_profile_t *profile, rumqttc_error_t **error_out);
+/* Enables finite, isolated MQTT 5 redirects with TLS (1) or WSS (3).
+ * Use the existing redirect setter to disable following. Origin policy is not inherited. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_redirect_policy_with_tls_profile(rumqttc_config_t *config, uint32_t max_attempts, uint32_t transport, const rumqttc_tls_profile_t *profile, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_proxy(rumqttc_config_t *config, const rumqttc_proxy_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_clear_proxy(rumqttc_config_t *config, rumqttc_error_t **error_out);
 /* Custom transport contract. All records are size-versioned; initialize

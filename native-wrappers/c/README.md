@@ -18,7 +18,7 @@ cargo build --release --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-ne
 `rumqttc_library_capabilities()` reports the features compiled into the loaded
 library. Test bits with the `RUMQTTC_CAP_*` constants; ignore unknown bits for
 forward compatibility. C Cargo features forward to wrapper-core (`use-rustls`,
-`use-rustls-aws-lc`, `use-rustls-ring`,
+`use-rustls-aws-lc`, `use-rustls-ring`, `tls12`,
 `use-native-tls`, `websocket`, `http-proxy`, `socks-proxy`, `proxy`,
 `system-srv-resolver`, `auth-scram`, `tracing`, and `tracing-log-compat`).
 `proxy` enables both HTTP and SOCKS5 proxy support; `tracing-log-compat`
@@ -183,6 +183,73 @@ lifetimes. Configure the CMake/pkg-config package for a native-TLS build with
 `-DRUMQTTC_NATIVE_TLS=ON`; on Linux this adds OpenSSL to static-consumer
 dependencies. The package option must match the Cargo features used to build
 the library.
+
+### Owned TLS profiles
+
+Create an immutable `rumqttc_tls_profile_t` using
+`rumqttc_tls_profile_new()` and `RUMQTTC_TLS_PROFILE_OPTIONS_INIT`. Its `tls`
+pointer supplies the existing backend, roots, identity and ALPN options; `NULL`
+selects Rustls with platform roots. Creation copies all inputs and validates
+credentials and policy without networking. Platform trust is consulted again
+when a client starts. The profile has no mutation API and can be reused across
+configurations; profile setters take independent owned copies, so destroy the
+profile immediately after applying it if desired. Existing clients retain their
+original policy when their source configuration changes.
+
+Apply profiles with `rumqttc_config_set_transport_tls_with_profile()`,
+`rumqttc_config_set_transport_wss_with_profile()`,
+`rumqttc_config_set_proxy_with_tls_profile()`, or
+`rumqttc_config_set_v5_redirect_policy_with_tls_profile()`. The proxy setter
+requires HTTPS and `options.tls == NULL`. The redirect setter enables finite,
+isolated MQTT 5 redirects with TLS or WSS; the existing redirect setter disables
+following. Broker, proxy and redirect profiles are independent, including roots,
+pins and client identities. Established custom transports still supply their
+own TLS and cannot combine with native TLS profiles.
+
+`RUMQTTC_TLS_ROOTS_PLATFORM_AND_PEM` adds nonempty supplied CA PEM to platform
+trust. `RUMQTTC_TLS_ROOTS_PEM` continues to replace it. Malformed supplied roots
+and platform trust loading failures remain errors.
+
+`version_policy` selects `DEFAULT`, `12_ONLY`, `13_ONLY`, or `12_OR_13` using
+the `RUMQTTC_TLS_VERSION_*` constants. Explicit policies are allowed sets,
+never instructions to fall back outside the set. `DEFAULT` preserves backend
+defaults. Rustls TLS 1.2-only policy requires the opt-in Cargo feature `tls12`;
+without it the combined policy uses TLS 1.3. Native TLS on Apple platforms
+supports TLS 1.2-only and the combined set, but rejects TLS 1.3-only. Windows
+uses explicit protocol selection; OpenSSL-based builds expose restrictions only
+when native-tls has enforceable minimum/maximum bounds. Other native builds
+reject explicit policies. Host/provider protocol availability can still cause
+construction or handshake failure.
+
+Query `rumqttc_tls_backend_capabilities()` with
+`RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT` before selecting policy. The version,
+root and pin masks contain bit `1u << selector`; disabled backends return zero
+masks. These masks report enforceable policy independently of the library's
+provider/build features and the server's negotiated capabilities.
+
+Pins use `RUMQTTC_TLS_PIN_INIT` with a fixed 32-byte SHA-256 digest of either the
+complete leaf certificate DER (`LEAF_CERTIFICATE`) or its complete DER
+SubjectPublicKeyInfo (`LEAF_SPKI`). Configure up to `RUMQTTC_TLS_MAX_PINS` (32);
+zero pins disables pinning. Any one configured pin may match, allowing backup
+pins and key rotation. Certificate pins change on renewal; SPKI pins survive
+renewal using the same key. Rustls first performs normal chain, validity and
+hostname validation, then checks the pins; handshake signatures remain verified.
+Pins cannot authorize an otherwise untrusted or expired certificate. Native TLS
+rejects pins before networking. Pinned profiles disable TLS resumption so each
+reconnect checks the presented certificate. Unpinned profiles preserve resumption
+defaults. Raw pins, certificates and identity material are omitted from wrapper
+diagnostics.
+
+The warning-clean [TLS profile example](examples/tls_profile.c) takes
+`HOST PORT CA_PEM SPKI_SHA256_HEX`, selects TLS 1.3, and destroys its profile
+before starting the client. For example:
+
+```sh
+rumqttc-example-tls_profile mqtt.example.com 8883 ca.pem "$SPKI_SHA256_HEX"
+```
+
+Custom verification callbacks, cipher selection and external signing are not
+part of this profile API.
 
 ```c
 rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;

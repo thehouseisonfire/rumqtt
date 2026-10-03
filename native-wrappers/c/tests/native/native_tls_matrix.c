@@ -47,7 +47,7 @@ static void release_bytes(rumqttc_bytes_view_t bytes) {
 }
 
 static void run_case(rumqttc_protocol_t protocol, uint32_t backend, int websocket, int mutual,
-                     enum tls_scenario scenario) {
+                     enum tls_scenario scenario, int owned_profile) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
   rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
@@ -94,8 +94,19 @@ static void run_case(rumqttc_protocol_t protocol, uint32_t backend, int websocke
       tls.pkcs12_identity = &pkcs12;
     }
   }
-  if (websocket) {
+  if (websocket)
     REQUIRE(snprintf(url, sizeof(url), "wss://%s:%u/mqtt", host, port) > 0);
+  if (owned_profile) {
+    rumqttc_tls_profile_options_t options = RUMQTTC_TLS_PROFILE_OPTIONS_INIT;
+    rumqttc_tls_profile_t *profile = NULL;
+    options.tls = &tls;
+    CHECK(rumqttc_tls_profile_new(&options, &profile, NULL));
+    if (websocket)
+      CHECK(rumqttc_config_set_transport_wss_with_profile(config, native_string(url), profile, NULL));
+    else
+      CHECK(rumqttc_config_set_transport_tls_with_profile(config, profile, NULL));
+    rumqttc_tls_profile_destroy(profile);
+  } else if (websocket) {
     CHECK(rumqttc_config_set_transport_wss_with_options(config, native_string(url), &tls, NULL));
   } else {
     CHECK(rumqttc_config_set_transport_tls_with_options(config, &tls, NULL));
@@ -162,17 +173,18 @@ int main(void) {
     }
     for (rumqttc_protocol_t protocol = RUMQTTC_PROTOCOL_V4; protocol <= RUMQTTC_PROTOCOL_V5; ++protocol) {
       for (int websocket = 0; websocket <= !!(capabilities & RUMQTTC_CAP_WEBSOCKET); ++websocket) {
-        run_case(protocol, backend, websocket, 0, POSITIVE);
-        run_case(protocol, backend, websocket, 1, POSITIVE);
-        run_case(protocol, backend, websocket, 0, WRONG_ROOT);
-        run_case(protocol, backend, websocket, 0, WRONG_HOST);
+        run_case(protocol, backend, websocket, 0, POSITIVE, 0);
+        run_case(protocol, backend, websocket, 1, POSITIVE, 0);
+        run_case(protocol, backend, websocket, 1, POSITIVE, 1);
+        run_case(protocol, backend, websocket, 0, WRONG_ROOT, 0);
+        run_case(protocol, backend, websocket, 0, WRONG_HOST, 0);
       }
-      run_case(protocol, backend, 0, 1, MALFORMED_IDENTITY);
+      run_case(protocol, backend, 0, 1, MALFORMED_IDENTITY, 0);
       if (backend == RUMQTTC_TLS_BACKEND_NATIVE)
-        run_case(protocol, backend, 0, 1, WRONG_PASSWORD);
+        run_case(protocol, backend, 0, 1, WRONG_PASSWORD, 0);
       if (getenv("RUMQTTC_TEST_PLATFORM_TRUST") != NULL) {
-        run_case(protocol, backend, 0, 0, PLATFORM_ROOTS);
-        run_case(protocol, backend, 0, 0, PLATFORM_UNTRUSTED);
+        run_case(protocol, backend, 0, 0, PLATFORM_ROOTS, 0);
+        run_case(protocol, backend, 0, 0, PLATFORM_UNTRUSTED, 0);
         printf("platform trust: protocol=%u backend=%u trusted accepted, untrusted rejected\n", protocol, backend);
       }
     }

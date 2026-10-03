@@ -1,65 +1,62 @@
 # C Wrapper Advanced TLS Configuration
 
-## Goal
+## First stage: owned, enforceable policy
 
-Expose useful advanced TLS policy and extension points through typed C APIs,
-including protocol/cipher policy, certificate verification or pinning, and
-external client-key signing where the selected backend can support them.
+The first stage implements owned profiles, version policy, combined roots,
+built-in certificate/public-key pinning, and backend capability reporting.
+It does not promise injected Rust-object parity.
 
-## Current foundation and feasibility
+- [x] Immutable owned C TLS profiles and additive setters preserve existing
+  public record layouts and loader identity. Profiles copy caller inputs,
+  validate without networking, and may be destroyed before client start.
+- [x] Platform, supplied-only, and combined trust policies apply independently
+  to broker TLS/WSS, HTTPS proxies, and explicitly configured MQTT 5 redirects.
+- [x] Typed allowed-version policies are enforced where the selected backend
+  supports them. Unsupported requests fail before networking. Rustls TLS 1.2-only
+  support is opt-in through `tls12`; existing default features are preserved.
+- [x] Rustls leaf-certificate and full-SPKI SHA-256 pins supplement standard
+  chain, validity, hostname, and handshake-signature verification. Up to 32 pins
+  provide alternative accepted identities for rotation; zero disables pinning.
+- [x] Pinned profiles disable TLS resumption so every reconnect revalidates the
+  presented certificate. Unpinned profiles retain backend defaults.
+- [x] Per-backend capability masks distinguish enforceable policy from build
+  features and negotiated availability. Native TLS rejects pinning, Apple
+  native TLS rejects TLS 1.3-only, and older/unknown OpenSSL implementations
+  reject explicit restrictions that they cannot reliably enforce.
+- [x] Sanitized diagnostics and existing secret-copy zeroization are preserved.
+  Configuration replacement and failure leave profile ownership explicit.
 
-`rumqttc-core/src/lib.rs` accepts injected Rustls `ClientConfig` and native
-`TlsConnector` values. Wrapper-core's `TlsConfig` currently contains backend,
-root policy, identity, and ALPN only; `backend/mod.rs` constructs the objects.
+## Verification for the first stage
 
-Typed options and selected callbacks are architecturally feasible. Arbitrary
-Rust objects cannot be injected through C, and platform TLS implementations do
-not necessarily support the same extensions. Implement a documented capability
-set, not an unsafe pointer cast or a promise to represent every Rustls field.
+Native C consumers exercise version restrictions, combined trust, certificate
+and SPKI pins, TLS/WSS, independent proxy policies, redirect profiles, input
+ownership, reuse, transactional setter failures, and configuration replacement.
+Rust fixtures additionally test wrong names/chains, expiry, invalid signatures,
+backup pins, same-key certificate renewal, key rotation, and ticket-enabled
+reconnects. Header/export, feature packaging and ABI checks cover the additions.
+Platform execution evidence belongs in `native-wrappers/wrapper-core/PARITY.md`;
+Linux results do not imply macOS or Windows execution.
 
-## Implementation requirements
+## Deferred advanced extensions
 
-- [ ] Audit customization points actually supported by each enabled backend.
-  Record TLS-version, cipher-selection, SNI, root composition, verification,
-  client-identity selection, key-signing, and session-resumption capabilities.
-- [ ] Introduce immutable owned TLS profile handles and additive option records
-  or setters. Preserve existing TLS/WSS setters and the checked public layouts.
-- [ ] Offer explicit platform roots, supplied roots, and supported combined
-  trust policies. Validate certificates and all options before networking when
-  possible; unsupported combinations must fail rather than be ignored.
-- [ ] Provide typed version/cipher selectors only when the backend can enforce
-  them. Report per-backend capabilities separately from build-time provider
-  selection; do not silently weaken a requested policy.
-- [ ] Define a verification extension that receives bounded certificate-chain
-  and server-name views with an explicit trust decision. State whether it
-  supplements standard validation or replaces it. Preserve handshake-signature
-  verification and hostname checks unless the configured contract explicitly
-  supplies equivalent verification.
-- [ ] Prototype external identity selection and signing against the actual
-  backend traits before freezing their C records. Expose algorithm selection,
-  signature bounds, owner retention, and typed failures. Never require foreign
-  keys to be represented as Rust pointers or exported as PEM.
-- [ ] Respect synchronous backend hooks. Require bounded, prompt callbacks;
-  support deferred signing only if the backend and execution adapter can do so
-  soundly. Do not block a shared driver worker waiting on its own progress.
-- [ ] Keep key material, callback inputs, and verification data out of ordinary
-  logs. Define owner release through handshake failure, reconnect, cancellation,
-  and client/configuration destruction.
-- [ ] Apply profiles consistently to broker TLS, WSS, HTTPS proxies, and
-  explicitly approved redirect targets, without merging their trust policies.
-- [ ] Keep every unrepresentable backend customization listed as unsupported.
-  A fully external TLS stream may use the C wrapper custom transport
-  connectors; it must not be described as native backend configuration parity.
+The following require separate consumers, prototypes and acceptance criteria;
+the full advanced TLS proposal remains incomplete.
 
-## Verification and completion
+- [ ] Audit remaining backend-specific cipher, SNI, identity-selection and
+  resumption customization points without promising portable parity.
+- [ ] Add enforceable cipher selection where justified by actual consumers.
+- [ ] Prototype verification callbacks before defining their C records. Make
+  supplementation versus replacement explicit and preserve handshake-signature
+  and hostname validation unless equivalent verification is supplied.
+- [ ] Prototype external identity selection/signing against actual backend
+  traits. Define algorithms, signature bounds, owner retention and typed failure
+  without exporting keys or treating foreign keys as Rust pointers.
+- [ ] Respect synchronous backend hooks. Deferred signing needs a demonstrated
+  sound execution adapter; callbacks cannot wait for their own driver progress.
+- [ ] Demonstrate an external signer with native C consumers, including failure,
+  reconnect, cancellation, ownership and secret-redaction coverage.
 
-- [ ] Demonstrate enforced TLS version policy, certificate pinning, and one
-  external signer on a backend that supports it, with native C consumers.
-- [ ] Cover wrong names, chains, pins, signatures, unsupported algorithms,
-  callback failure, reconnect, owner release, and secret redaction.
-- [ ] Update capabilities, feature packaging, C header/exports, README,
-  `PARITY.md`, and root `CHANGELOG.md` under the existing ABI policy.
-
-Complete when the supported customization set has enforceable semantics and
-backend-specific limits are explicit. Do not mark full injected-object parity
-on the strength of a few new TLS switches.
+Arbitrary injected Rustls `ClientConfig` or native `TlsConnector` objects cannot
+be represented by the C profile API. Fully external TLS streams can use custom
+transport connectors, which are transport integration rather than native TLS
+configuration parity.

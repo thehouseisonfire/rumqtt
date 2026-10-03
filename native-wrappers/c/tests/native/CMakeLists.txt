@@ -104,6 +104,7 @@ rumqttc_native_target(rumqttc-native-wire-options native_wire_options.c)
 rumqttc_native_target(rumqttc-native-runtime-limits native_runtime_limits.c)
 rumqttc_native_target(rumqttc-native-runtime-batching native_runtime_batching.c)
 rumqttc_native_target(rumqttc-native-tls-matrix native_tls_matrix.c)
+rumqttc_native_target(rumqttc-native-tls-profiles native_tls_profiles.c)
 rumqttc_native_target(rumqttc-native-callback-races native_callback_races.c)
 rumqttc_native_target(rumqttc-native-network-options native_network_options.c)
 if(WIN32)
@@ -265,6 +266,10 @@ add_test(NAME rumqttc-native-tls-matrix
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --tls-matrix
         --binary $<TARGET_FILE:rumqttc-native-tls-matrix>)
 set_tests_properties(rumqttc-native-tls-matrix PROPERTIES LABELS "native;tls" TIMEOUT 90)
+add_test(NAME rumqttc-native-tls-profiles
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --tls-matrix --tls-profiles --proxy-matrix
+        --binary $<TARGET_FILE:rumqttc-native-tls-profiles>)
+set_tests_properties(rumqttc-native-tls-profiles PROPERTIES LABELS "native;tls" TIMEOUT 120)
 
 add_test(NAME rumqttc-native-callback-races
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-callback-races>)

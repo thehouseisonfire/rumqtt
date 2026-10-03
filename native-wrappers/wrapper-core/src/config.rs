@@ -45,6 +45,8 @@ pub struct TlsConfig {
     pub roots: TlsRootPolicy,
     pub identity: Option<TlsClientIdentity>,
     pub alpn_protocols: Vec<Vec<u8>>,
+    pub version_policy: crate::TlsVersionPolicy,
+    pub pins: Vec<crate::TlsPin>,
 }
 
 /// Owned secret storage, wiped when each owned copy is dropped. Backend TLS
@@ -75,6 +77,8 @@ pub enum TlsRootPolicy {
     Platform,
     /// Replaces (does not augment) platform roots.
     Pem(Bytes),
+    /// Adds supplied roots to platform trust.
+    PlatformAndPem(Bytes),
 }
 
 impl std::fmt::Debug for TlsRootPolicy {
@@ -82,6 +86,7 @@ impl std::fmt::Debug for TlsRootPolicy {
         f.write_str(match self {
             Self::Platform => "Platform",
             Self::Pem(_) => "Pem([REDACTED])",
+            Self::PlatformAndPem(_) => "PlatformAndPem([REDACTED])",
         })
     }
 }
@@ -149,6 +154,8 @@ impl std::fmt::Debug for TlsConfig {
             .field("roots", &self.roots)
             .field("identity", &self.identity)
             .field("alpn_protocols", &self.alpn_protocols)
+            .field("version_policy", &self.version_policy)
+            .field("pins", &format_args!("[REDACTED; {}]", self.pins.len()))
             .finish()
     }
 }
@@ -293,12 +300,6 @@ impl CommonConfig {
         }
         if let Some(proxy) = &self.proxy {
             proxy.validate()?;
-            if let crate::ProxyConfig::Http { tls: Some(tls), .. } = proxy {
-                // Reuse the same TLS validation for the independent proxy layer.
-                let mut proxy_config = Self::new("proxy-validation", "proxy", 1);
-                proxy_config.transport = TransportConfig::Tls(tls.clone());
-                proxy_config.validate()?;
-            }
         }
         if self.websocket_handshake.is_some() && !cfg!(feature = "websocket") {
             return Err(Error::configuration("WebSocket feature is disabled"));
@@ -417,46 +418,7 @@ impl CommonConfig {
             TransportConfig::Tcp | TransportConfig::WebSocket | TransportConfig::Unix => None,
         };
         if let Some(tls) = tls {
-            let enabled = match tls.backend {
-                TlsBackend::Rustls => cfg!(feature = "use-rustls-no-provider"),
-                TlsBackend::Native => cfg!(feature = "use-native-tls"),
-            };
-            if !enabled {
-                return Err(Error::configuration("selected TLS backend is disabled"));
-            }
-            if matches!(
-                (&tls.backend, &tls.identity),
-                (
-                    TlsBackend::Rustls,
-                    Some(TlsClientIdentity::NativePkcs12 { .. })
-                ) | (
-                    TlsBackend::Native,
-                    Some(TlsClientIdentity::RustlsPem { .. })
-                )
-            ) {
-                return Err(Error::configuration(
-                    "client identity is incompatible with selected TLS backend",
-                ));
-            }
-            if tls
-                .alpn_protocols
-                .iter()
-                .any(|value| value.is_empty() || value.len() > 255)
-            {
-                return Err(Error::configuration(
-                    "ALPN identifiers must contain 1 to 255 bytes",
-                ));
-            }
-            if tls.backend == TlsBackend::Native
-                && tls
-                    .alpn_protocols
-                    .iter()
-                    .any(|value| std::str::from_utf8(value).is_err())
-            {
-                return Err(Error::configuration(
-                    "native TLS ALPN identifiers must be UTF-8",
-                ));
-            }
+            tls.validate_options()?;
         }
         if matches!(
             self.transport,

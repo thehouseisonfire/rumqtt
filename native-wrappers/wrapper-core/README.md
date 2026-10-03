@@ -141,6 +141,28 @@ outcome, immediate close can escalate an outstanding graceful close, and each
 caller's timeout is one budget spanning completion observation and driver-thread
 join. Finalizer cleanup remains a nonblocking immediate-shutdown signal.
 
+## TLS policy
+
+TLS configuration is shared by broker TLS/WSS, HTTPS proxies and redirect
+transports. `TlsConfig` adds defaulted `version_policy` and `pins` fields;
+exhaustive literals must be updated. `TlsVersionPolicy` selects backend defaults,
+TLS 1.2-only, TLS 1.3-only or the combined allowed set.
+`TlsRootPolicy::PlatformAndPem` augments platform trust with supplied roots.
+`TlsBackend::capabilities()` reports enforceable version/root policies and pin
+formats; disabled backends return empty masks. `TlsConfig::validate()` constructs
+temporary TLS resources without networking, and client startup consults platform
+trust again. All three TLS layers use the same validation and construction.
+
+Rustls pins are SHA-256 digests of leaf certificate DER or complete SPKI DER.
+Any configured pin may match, up to `MAX_TLS_PINS` (32), after normal certificate
+and hostname validation. Handshake signatures remain verified. Pinned profiles
+disable resumption and revalidate on every reconnect. Native TLS rejects pins;
+unsupported policies always fail. Enable the opt-in `tls12` feature for Rustls
+TLS 1.2-only policy support; otherwise the combined allowed set uses TLS 1.3.
+Native TLS enforcement follows the platform limitations documented in
+[the C profile API](../c/README.md#owned-tls-profiles). No process-global provider
+is installed or changed, and separate TLS layers never merge their policies.
+
 ## Admission modes and host threads
 
 `ClientHandle::try_admit` is nonblocking and reports request-channel
@@ -189,7 +211,7 @@ Default features are `use-rustls` (AWS-LC) and `websocket`. Select Ring with
 `--no-default-features --features use-rustls-ring`, or supply a process default
 Rustls crypto provider with `use-rustls-no-provider`. `use-rustls-aws-lc` selects
 AWS-LC explicitly; Ring and AWS-LC cannot be enabled together. Optional features
-are `use-native-tls`, `http-proxy`, `socks-proxy`, `proxy` (both proxy features),
+are `use-native-tls`, `tls12` (Rustls TLS 1.2), `http-proxy`, `socks-proxy`, `proxy` (both proxy features),
 `system-srv-resolver`, `auth-scram`, `tracing`, and `tracing-log-compat`.
 Both TLS backends may be built together: `TlsBackend` always selects one
 explicitly. Without defaults, TCP and Unix remain available. Public value types

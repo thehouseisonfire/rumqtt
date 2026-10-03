@@ -1460,6 +1460,82 @@ def make_tls_fixture(directory: str) -> tuple[ssl.SSLContext, ssl.SSLContext, st
     return context, mtls_context, ca_cert, wrong_cert, client_cert, client_key
 
 
+class ProfileReconnectBroker(Broker):
+    """Rotate identity on the same context, preserving its TLS ticket keys."""
+
+    def __init__(self, directory: str, certificate: str, key: str, name: str) -> None:
+        context = profile_tls_context(directory, ssl.TLSVersion.TLSv1_3)
+        super().__init__(context)
+        self.control = Path(directory)
+        self.certificate = certificate
+        self.key = key
+        self.name = name
+        self.attempts = 0
+
+    def serve(self, stream: socket.socket) -> None:
+        try:
+            packet = read_frame(stream)
+            if packet is None:
+                return
+            if packet[0] != 1:
+                raise AssertionError("profile reconnect did not send CONNECT")
+            _, offset = string_at(packet[2], 0)
+            protocol = packet[2][offset]
+            self.attempts += 1
+            if stream.session_reused:
+                raise AssertionError("pinned TLS profile resumed without fresh verification")
+            stream.sendall(frame(2, 0, b"\x00\x00" + (b"\x00" if protocol == 5 else b"")))
+            if self.attempts == 1:
+                self.barrier(self.name + "-release")
+                assert self.tls_context is not None
+                self.tls_context.load_cert_chain(self.certificate, self.key)
+            else:
+                disconnect = read_frame(stream)
+                if disconnect is None or disconnect[0] != 14:
+                    raise AssertionError("profile reconnect did not close gracefully")
+        except Exception as error:
+            self.failures.append(f"{self.name}: {error}")
+        finally:
+            stream.close()
+
+
+def profile_rotated_certificates(directory: str) -> tuple[str, str, str]:
+    renewed = os.path.join(directory, "renewed.pem")
+    rotated = os.path.join(directory, "rotated.pem")
+    key = os.path.join(directory, "rotated.key")
+    csr = os.path.join(directory, "rotated.csr")
+    commands = [
+        ["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", key, "-out", csr],
+    ]
+    for serial, source, output in ((1002, "server.csr", renewed), (1003, "rotated.csr", rotated)):
+        commands.append([
+            "openssl", "x509", "-req", "-days", "1", "-in", os.path.join(directory, source),
+            "-CA", os.path.join(directory, "ca.pem"), "-CAkey", os.path.join(directory, "ca.key"),
+            "-set_serial", str(serial), "-extfile", os.path.join(directory, "server.ext"), "-out", output,
+        ])
+    for command in commands:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return renewed, rotated, key
+
+
+def profile_tls_context(directory: str, version: ssl.TLSVersion) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.path.join(directory, "server.pem"), os.path.join(directory, "server.key"))
+    context.minimum_version = version
+    context.maximum_version = version
+    return context
+
+
+def profile_pins(directory: str, environment: dict[str, str], prefix: str) -> None:
+    certificate = os.path.join(directory, "server.pem")
+    der = subprocess.check_output(["openssl", "x509", "-in", certificate, "-outform", "DER"])
+    public_key = subprocess.check_output(["openssl", "x509", "-in", certificate, "-pubkey", "-noout"])
+    spki = subprocess.check_output(["openssl", "pkey", "-pubin", "-outform", "DER"], input=public_key)
+    environment[prefix + "CERT_PIN"] = hashlib.sha256(der).hexdigest()
+    environment[prefix + "SPKI_PIN"] = hashlib.sha256(spki).hexdigest()
+    PRIVATE_VALUES.extend((environment[prefix + "CERT_PIN"].encode(), environment[prefix + "SPKI_PIN"].encode()))
+
+
 def run_native(command: list[str], environment: dict[str, str], redact: bool) -> int:
     result = subprocess.run(command, env=environment, capture_output=redact, check=False)
     if redact:
@@ -1498,10 +1574,15 @@ def main() -> int:
     parser.add_argument("--redact", action="store_true")
     parser.add_argument("--proxy-matrix", action="store_true")
     parser.add_argument("--tls-matrix", action="store_true")
+    parser.add_argument("--tls-profiles", action="store_true")
+    parser.add_argument("--tls-profile-example", action="store_true")
     parser.add_argument("--network-matrix", action="store_true")
     parser.add_argument("--custom-transport", action="store_true")
     parser.add_argument("argument", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.tls_profiles:
+        args.tls_matrix = True
+        args.proxy_matrix = True
     with tempfile.TemporaryDirectory(prefix="rumqttc-native-tls-") as directory:
         tls_context, mtls_context, ca_cert, wrong_cert, client_cert, client_key = make_tls_fixture(directory)
         broker = Broker()
@@ -1511,6 +1592,25 @@ def main() -> int:
             os.mkdir(untrusted_directory)
             untrusted_context, _, _, _, _, _ = make_tls_fixture(untrusted_directory)
             untrusted_broker = Broker(untrusted_context)
+        profile_brokers = []
+        rotation_brokers = {}
+        if args.tls_profiles:
+            profile_brokers = [
+                Broker(profile_tls_context(directory, ssl.TLSVersion.TLSv1_2)),
+                Broker(profile_tls_context(directory, ssl.TLSVersion.TLSv1_3)),
+            ]
+            for item in profile_brokers:
+                item.start()
+            renewed, rotated, rotated_key = profile_rotated_certificates(directory)
+            for protocol in ("v4", "v5"):
+                for mode in ("cert", "spki", "key"):
+                    label = f"profile-reconnect-{protocol}-{mode}"
+                    item = ProfileReconnectBroker(
+                        directory, rotated if mode == "key" else renewed,
+                        rotated_key if mode == "key" else os.path.join(directory, "server.key"), label,
+                    )
+                    item.start()
+                    rotation_brokers[(protocol, mode)] = item
         tls_broker = Broker(tls_context)
         tls_proxy_broker = Broker(tls_context, tls_proxy=True)
         websocket_broker = Broker(websocket=True)
@@ -1535,6 +1635,15 @@ def main() -> int:
         mtls_broker.start()
         mtls_wss_broker.start()
         environment = os.environ.copy()
+        if args.tls_profiles:
+            for (protocol, mode), item in rotation_brokers.items():
+                environment[f"RUMQTTC_TEST_RECONNECT_{protocol.upper()}_{mode.upper()}_PORT"] = str(item.port)
+            for label, item in zip(("12", "13"), profile_brokers, strict=True):
+                environment[f"RUMQTTC_TEST_TLS_{label}_PORT"] = str(item.port)
+
+            environment["RUMQTTC_TEST_UNTRUSTED_CA_PEM"] = Path(untrusted_directory, "ca.pem").read_text(encoding="utf-8")
+        if args.tls_profiles or args.tls_profile_example:
+            profile_pins(directory, environment, "RUMQTTC_TEST_")
         environment["RUMQTTC_TEST_CONTROL_DIR"] = directory
         environment["RUMQTTC_TEST_HOST"] = "127.0.0.1"
         environment["RUMQTTC_TEST_PORT"] = str(broker.port)
@@ -1626,6 +1735,8 @@ def main() -> int:
                 proxy.start()
                 proxies.append(proxy)
                 environment[f"RUMQTTC_TEST_{name}_PORT"] = str(proxy.port)
+            if args.tls_profiles:
+                profile_pins(proxy_directory, environment, "RUMQTTC_TEST_PROXY_")
             with open(proxy_ca, encoding="utf-8") as source:
                 environment["RUMQTTC_TEST_PROXY_CA_PEM"] = source.read()
         if args.custom_transport:
@@ -1646,6 +1757,8 @@ def main() -> int:
         try:
             launcher = shlex.split(environment.get("RUMQTTC_NATIVE_LAUNCHER", ""))
             address_arguments = [] if args.omit_address_arguments else ["127.0.0.1", str(broker.port)]
+            if args.tls_profile_example:
+                address_arguments = ["localhost", str(tls_broker.port), ca_cert, environment["RUMQTTC_TEST_SPKI_PIN"]]
             child_arguments = args.argument[1:] if args.argument[:1] == ["--"] else args.argument
             if args.atomic_restart:
                 environment["RUMQTTC_TEST_ATOMIC_FILE"] = os.path.join(directory, "checkpoint")
@@ -1679,6 +1792,8 @@ def main() -> int:
                 unix_broker.stop()
             for proxy in proxies:
                 proxy.stop()
+            for item in [*profile_brokers, *rotation_brokers.values()]:
+                item.stop()
             broker.stop()
             if untrusted_broker is not None:
                 untrusted_broker.stop()

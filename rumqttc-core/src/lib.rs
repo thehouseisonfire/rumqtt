@@ -45,6 +45,11 @@ pub use tls::websocket_tls_connector;
     not(feature = "use-native-tls")
 ))]
 pub use tls::websocket_tls_connector;
+// Shared construction primitives for native adapters. Keep provider selection
+// and platform-root loading identical to the client convenience constructors.
+#[doc(hidden)]
+#[cfg(feature = "use-rustls-no-provider")]
+pub use tls::{rustls_crypto_provider, rustls_native_root_store, rustls_pem_root_store};
 #[cfg(feature = "websocket")]
 pub use websockets::{
     UrlError, ValidationError, WebSocketRequestContext, WsAdapter, split_url,

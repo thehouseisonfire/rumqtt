@@ -56,6 +56,9 @@ int main(void) {
       RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT;
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
   rumqttc_tls_options_t tls_options = RUMQTTC_TLS_OPTIONS_INIT;
+  rumqttc_tls_pin_t tls_pin = RUMQTTC_TLS_PIN_INIT;
+  rumqttc_tls_profile_options_t tls_profile = RUMQTTC_TLS_PROFILE_OPTIONS_INIT;
+  rumqttc_tls_backend_capabilities_t tls_caps = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
   rumqttc_tls_pem_identity_t pem_identity = RUMQTTC_TLS_PEM_IDENTITY_INIT;
   rumqttc_tls_pkcs12_identity_t pkcs12_identity = RUMQTTC_TLS_PKCS12_IDENTITY_INIT;
   rumqttc_proxy_options_t proxy_options = RUMQTTC_PROXY_OPTIONS_INIT;
@@ -97,6 +100,9 @@ int main(void) {
   assert(unsubscribe_options.struct_size == sizeof(unsubscribe_options));
   assert(diagnostics.struct_size == sizeof(diagnostics));
   assert(tls_options.struct_size == sizeof(tls_options));
+  assert(tls_pin.struct_size == sizeof(tls_pin));
+  assert(tls_profile.struct_size == sizeof(tls_profile));
+  assert(tls_caps.struct_size == sizeof(tls_caps));
   assert(pem_identity.struct_size == sizeof(pem_identity));
   assert(pkcs12_identity.struct_size == sizeof(pkcs12_identity));
   assert(proxy_options.struct_size == sizeof(proxy_options));
