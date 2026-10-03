@@ -112,7 +112,7 @@ fn validate_user_properties(properties: &[(String, String)], name: &str) -> Resu
     Ok(())
 }
 
-pub fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
+pub fn map_client_error(error: &rumqttc_v5::ClientError) -> Error {
     let kind = match error {
         rumqttc_v5::ClientError::RequestChannelFull(_)
         | rumqttc_v5::ClientError::PublishAdmissionPending { .. } => ErrorKind::Backpressure,
@@ -123,31 +123,31 @@ pub fn map_client_error(error: rumqttc_v5::ClientError) -> Error {
     Error::new(kind, "MQTT request admission failed").with_delivery(DeliveryStatus::NotAdmitted)
 }
 
-pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
+pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
     #[cfg(feature = "websocket")]
-    if let rumqttc_v5::ConnectionError::RequestModifier(source) = &error
+    if let rumqttc_v5::ConnectionError::RequestModifier(source) = error
         && let Some(failure) = source.downcast_ref::<crate::WebSocketHandshakeFailure>()
     {
         return Error::websocket(*failure);
     }
-    if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
+    if let rumqttc_v5::ConnectionError::Redirect(redirect) = error {
         let mut terminal = Error::redirect(super::redirect::failure(&redirect.failure))
             .with_delivery(DeliveryStatus::Ambiguous);
-        if let Some(failure) = crate::tls_advanced::callback_failure(&error) {
+        if let Some(failure) = crate::tls_advanced::callback_failure(error) {
             terminal = terminal.with_tls_callback_failure(failure);
         }
-        if let Some(failure) = super::transport::failure(&error) {
+        if let Some(failure) = super::transport::failure(error) {
             terminal = terminal.with_transport_failure(failure);
         }
         return terminal;
     }
-    if let Some(failure) = crate::tls_advanced::callback_failure(&error) {
+    if let Some(failure) = crate::tls_advanced::callback_failure(error) {
         return Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
-    if let Some(failure) = super::transport::failure(&error) {
+    if let Some(failure) = super::transport::failure(error) {
         return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
-    if let rumqttc_v5::ConnectionError::SessionStore(source) = &error {
+    if let rumqttc_v5::ConnectionError::SessionStore(source) = error {
         return Error::store(
             source
                 .downcast_ref::<crate::StoreFailure>()
@@ -156,7 +156,7 @@ pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
         )
         .with_delivery(DeliveryStatus::Ambiguous);
     }
-    if let rumqttc_v5::ConnectionError::SessionRestore(source) = &error {
+    if let rumqttc_v5::ConnectionError::SessionRestore(source) = error {
         let failure = match source {
             rumqttc_v5::SessionRestoreError::UnsupportedFormatVersion { .. } => {
                 crate::StoreFailure::Version
@@ -186,7 +186,7 @@ pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
         }
         _ => ErrorKind::Protocol,
     };
-    let reason = match &error {
+    let reason = match error {
         rumqttc_v5::ConnectionError::ConnectionRefused(reason) => Some(connack_reason(*reason)),
         rumqttc_v5::ConnectionError::MqttState(rumqttc_v5::StateError::ServerDisconnect {
             reason_code,
@@ -197,7 +197,8 @@ pub fn map_connection_error(error: rumqttc_v5::ConnectionError) -> Error {
     // Error source chains may contain raw packets, credentials, or peer-supplied
     // text. Owned connection events carry legal details without logging them.
     let error = Error::new(kind, "MQTT connection failed").with_delivery(DeliveryStatus::Ambiguous);
-    reason.map_or(error.clone(), |reason| error.with_broker_reason(reason))
+    let Some(reason) = reason else { return error };
+    error.with_broker_reason(reason)
 }
 
 pub const fn map_outgoing(outgoing: &rumqttc_v5::Outgoing) -> OutgoingActivity {
@@ -234,10 +235,7 @@ use crate::{
     WrapperEvent,
 };
 
-fn build_options(
-    common: &crate::CommonConfig,
-    protocol: crate::V5Config,
-) -> crate::Result<rumqttc_v5::MqttOptions> {
+fn build_transport_options(common: &crate::CommonConfig) -> crate::Result<rumqttc_v5::MqttOptions> {
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     let tls = match &common.transport {
         crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
@@ -245,7 +243,7 @@ fn build_options(
         }
         _ => None,
     };
-    let mut options = match (&common.broker, &common.transport) {
+    let options = match (&common.broker, &common.transport) {
         (
             crate::BrokerTarget::Tcp { host, port },
             crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_),
@@ -293,11 +291,23 @@ fn build_options(
         }
     };
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-    if matches!(common.transport, crate::TransportConfig::Tls(_)) {
+    let options = if matches!(common.transport, crate::TransportConfig::Tls(_)) {
+        let mut options = options;
         options.set_transport(rumqttc_v5::Transport::tls_with_config(
             tls.expect("TLS built"),
         ));
-    }
+        options
+    } else {
+        options
+    };
+    Ok(options)
+}
+
+fn build_options(
+    common: &crate::CommonConfig,
+    protocol: crate::V5Config,
+) -> crate::Result<rumqttc_v5::MqttOptions> {
+    let mut options = build_transport_options(common)?;
     options.set_keep_alive(crate::handle::duration_to_u16(
         common.keep_alive,
         "keep alive",
@@ -315,24 +325,7 @@ fn build_options(
         crate::TopicAliasPolicy::Lru => rumqttc_v5::TopicAliasPolicy::Lru,
     });
     if let Some(will) = &common.last_will {
-        options.set_last_will(rumqttc_v5::LastWill {
-            topic: bytes::Bytes::copy_from_slice(will.topic.as_bytes()),
-            message: will.payload.clone(),
-            qos: to_qos(will.qos),
-            retain: will.retain,
-            properties: match &will.protocol {
-                crate::LastWillProtocolOptions::VersionNeutral => None,
-                crate::LastWillProtocolOptions::V5(p) => Some(rumqttc_v5::LastWillProperties {
-                    delay_interval: p.will_delay_interval,
-                    payload_format_indicator: p.payload_format_indicator,
-                    message_expiry_interval: p.message_expiry_interval,
-                    content_type: p.content_type.clone(),
-                    response_topic: p.response_topic.clone(),
-                    correlation_data: p.correlation_data.clone(),
-                    user_properties: p.user_properties.clone(),
-                }),
-            },
-        });
+        options.set_last_will(last_will(will));
     }
     options.set_request_channel_capacity(common.request_channel_capacity);
     #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
@@ -412,6 +405,27 @@ fn build_options(
     Ok(options)
 }
 
+fn last_will(will: &crate::LastWillConfig) -> rumqttc_v5::LastWill {
+    rumqttc_v5::LastWill {
+        topic: bytes::Bytes::copy_from_slice(will.topic.as_bytes()),
+        message: will.payload.clone(),
+        qos: to_qos(will.qos),
+        retain: will.retain,
+        properties: match &will.protocol {
+            crate::LastWillProtocolOptions::VersionNeutral => None,
+            crate::LastWillProtocolOptions::V5(p) => Some(rumqttc_v5::LastWillProperties {
+                delay_interval: p.will_delay_interval,
+                payload_format_indicator: p.payload_format_indicator,
+                message_expiry_interval: p.message_expiry_interval,
+                content_type: p.content_type.clone(),
+                response_topic: p.response_topic.clone(),
+                correlation_data: p.correlation_data.clone(),
+                user_properties: p.user_properties.clone(),
+            }),
+        },
+    }
+}
+
 pub struct Driver {
     eventloop: rumqttc_v5::EventLoop,
     auth: std::sync::Arc<super::auth::Monitor>,
@@ -445,10 +459,9 @@ pub fn build(
     let authenticator = protocol.authenticator.clone();
     let async_authenticator = protocol.async_authenticator.clone();
     #[cfg(feature = "auth-scram")]
-    let authenticator = match &protocol.scram {
-        Some(scram) => Some(crate::scram::build(scram.clone())),
-        None => authenticator,
-    };
+    let authenticator = protocol.scram.as_ref().map_or(authenticator, |scram| {
+        Some(crate::scram::build(scram.clone()))
+    });
     let mut options = build_options(common, protocol)?;
     let auth = std::sync::Arc::new(super::auth::Monitor::default());
     if let Some(config) = authenticator {
@@ -492,6 +505,10 @@ pub fn build(
         }),
     ))
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep poll ownership and cancellation arbitration in one driver loop"
+)]
 pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
     let Driver {
         mut eventloop,
@@ -759,7 +776,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         Some(failure),
                         &redirect_diagnostics,
                     );
-                    let terminal = shared.contextualize(map_connection_error(error));
+                    let terminal = shared.contextualize(map_connection_error(&error));
                     shared.fail_acknowledgements(&terminal);
                     fail_pending(&mut senders, &terminal);
                     if !deliver(&delivery, WrapperEvent::Redirect(event)).await {
@@ -772,7 +789,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 let error = shared.contextualize(
                     websocket
                         .failure()
-                        .map_or_else(|| map_connection_error(error), Error::websocket),
+                        .map_or_else(|| map_connection_error(&error), Error::websocket),
                 );
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
@@ -885,6 +902,67 @@ struct EventMappingOptions {
     auth_failure: Option<crate::AuthFailure>,
 }
 
+fn map_auth_event(
+    event: rumqttc_v5::AuthEvent,
+    auth_failure: Option<crate::AuthFailure>,
+    pending_auth: &mut Option<(u8, Option<crate::AuthProperties>)>,
+) -> crate::AuthEvent {
+    use rumqttc_v5::AuthEvent as E;
+    let (kind, method, stage, failure) = match event {
+        E::Started { kind, method } => (kind, method, crate::AuthStage::Started, None),
+        E::Continue { kind, method } => (kind, method, crate::AuthStage::Continue, None),
+        E::Succeeded { kind, method } => (kind, method, crate::AuthStage::Succeeded, None),
+        E::Failed {
+            kind,
+            method,
+            reason,
+        } => {
+            let failure = auth_failure.unwrap_or(match reason {
+                rumqttc_v5::AuthFailureReason::BrokerRejected(_)
+                | rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
+                    crate::AuthFailure::BrokerRejected
+                }
+                rumqttc_v5::AuthFailureReason::OverlappingReauth => crate::AuthFailure::Overlapping,
+                rumqttc_v5::AuthFailureReason::MissingAuthenticationMethod => {
+                    crate::AuthFailure::Method
+                }
+                rumqttc_v5::AuthFailureReason::AuthenticationFailed(_) => {
+                    crate::AuthFailure::Rejected
+                }
+                rumqttc_v5::AuthFailureReason::ProtocolError => crate::AuthFailure::InvalidResponse,
+                _ => crate::AuthFailure::ConnectionClosed,
+            });
+            (kind, method, crate::AuthStage::Failed, Some(failure))
+        }
+    };
+    if matches!(stage, crate::AuthStage::Started | crate::AuthStage::Failed) {
+        *pending_auth = None;
+    }
+    let (reason_code, properties) = if matches!(
+        stage,
+        crate::AuthStage::Continue | crate::AuthStage::Succeeded
+    ) {
+        pending_auth
+            .take()
+            .map_or((None, None), |(reason, properties)| {
+                (Some(reason), properties)
+            })
+    } else {
+        (None, None)
+    };
+    crate::AuthEvent {
+        exchange: match kind {
+            rumqttc_v5::AuthExchangeKind::InitialConnect => crate::AuthExchange::Initial,
+            rumqttc_v5::AuthExchangeKind::Reauthentication => crate::AuthExchange::Reauthentication,
+        },
+        method,
+        stage,
+        failure,
+        reason_code,
+        properties,
+    }
+}
+
 fn map_v5_event(
     eventloop: &mut rumqttc_v5::EventLoop,
     event: rumqttc_v5::Event,
@@ -916,68 +994,11 @@ fn map_v5_event(
                 outcome, target, None, &redirect,
             )))
         }
-        rumqttc_v5::Event::Auth(event) => {
-            use rumqttc_v5::AuthEvent as E;
-            let (kind, method, stage, failure) = match event {
-                E::Started { kind, method } => (kind, method, crate::AuthStage::Started, None),
-                E::Continue { kind, method } => (kind, method, crate::AuthStage::Continue, None),
-                E::Succeeded { kind, method } => (kind, method, crate::AuthStage::Succeeded, None),
-                E::Failed {
-                    kind,
-                    method,
-                    reason,
-                } => {
-                    let failure = mapping.auth_failure.unwrap_or(match reason {
-                        rumqttc_v5::AuthFailureReason::BrokerRejected(_)
-                        | rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
-                            crate::AuthFailure::BrokerRejected
-                        }
-                        rumqttc_v5::AuthFailureReason::OverlappingReauth => {
-                            crate::AuthFailure::Overlapping
-                        }
-                        rumqttc_v5::AuthFailureReason::MissingAuthenticationMethod => {
-                            crate::AuthFailure::Method
-                        }
-                        rumqttc_v5::AuthFailureReason::AuthenticationFailed(_) => {
-                            crate::AuthFailure::Rejected
-                        }
-                        rumqttc_v5::AuthFailureReason::ProtocolError => {
-                            crate::AuthFailure::InvalidResponse
-                        }
-                        _ => crate::AuthFailure::ConnectionClosed,
-                    });
-                    (kind, method, crate::AuthStage::Failed, Some(failure))
-                }
-            };
-            if matches!(stage, crate::AuthStage::Started | crate::AuthStage::Failed) {
-                *pending_auth = None;
-            }
-            let (reason_code, properties) = if matches!(
-                stage,
-                crate::AuthStage::Continue | crate::AuthStage::Succeeded
-            ) {
-                pending_auth
-                    .take()
-                    .map_or((None, None), |(reason, properties)| {
-                        (Some(reason), properties)
-                    })
-            } else {
-                (None, None)
-            };
-            Some(WrapperEvent::Authentication(crate::AuthEvent {
-                exchange: match kind {
-                    rumqttc_v5::AuthExchangeKind::InitialConnect => crate::AuthExchange::Initial,
-                    rumqttc_v5::AuthExchangeKind::Reauthentication => {
-                        crate::AuthExchange::Reauthentication
-                    }
-                },
-                method,
-                stage,
-                failure,
-                reason_code,
-                properties,
-            }))
-        }
+        rumqttc_v5::Event::Auth(event) => Some(WrapperEvent::Authentication(map_auth_event(
+            event,
+            mapping.auth_failure,
+            pending_auth,
+        ))),
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::ConnAck(connack)) => {
             if connack.code != rumqttc_v5::ConnectReturnCode::Success {
                 return Some(WrapperEvent::ConnectionRejected(connack_details(connack)));
@@ -1029,57 +1050,73 @@ fn map_v5_event(
             }))
         }
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Publish(publish)) => {
-            let ack_token = if mapping.manual_ack {
-                match publish.qos {
-                    rumqttc_v5::QoS::AtLeastOnce | rumqttc_v5::QoS::ExactlyOnce => shared
-                        .backend()
-                        .prepare_v5_ack(&publish)
-                        .and_then(|ack| shared.prepare_ack(ack)),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            Some(WrapperEvent::IncomingPublish(Box::new(IncomingPublish {
-                topic: publish.topic,
-                payload: publish.payload,
-                qos: from_qos(publish.qos),
-                retain: publish.retain,
-                duplicate: publish.dup,
-                ack_token,
-                v5_properties: publish.properties.map(from_incoming_publish_properties),
-            })))
+            Some(map_incoming_publish(publish, shared, mapping.manual_ack))
         }
         rumqttc_v5::Event::Outgoing(outgoing) => {
-            match outgoing {
-                rumqttc_v5::Outgoing::PubAck(packet_id) => {
-                    shared.complete_v5_puback(packet_id);
-                }
-                rumqttc_v5::Outgoing::PubRec(packet_id) => {
-                    shared.complete_v5_pubrec(packet_id);
-                }
-                _ => {}
-            }
-            mapping.emit_outgoing.then(|| {
-                let packet_id = match outgoing {
-                    rumqttc_v5::Outgoing::Publish(id)
-                    | rumqttc_v5::Outgoing::Subscribe(id)
-                    | rumqttc_v5::Outgoing::Unsubscribe(id)
-                    | rumqttc_v5::Outgoing::PubAck(id)
-                    | rumqttc_v5::Outgoing::PubRec(id)
-                    | rumqttc_v5::Outgoing::PubRel(id)
-                    | rumqttc_v5::Outgoing::PubComp(id)
-                    | rumqttc_v5::Outgoing::AwaitAck(id) => (id != 0).then_some(id),
-                    _ => None,
-                };
-                WrapperEvent::Outgoing(crate::OutgoingEvent {
-                    activity: map_outgoing(&outgoing),
-                    packet_id,
-                })
-            })
+            map_outgoing_event(&outgoing, shared, mapping.emit_outgoing)
         }
-        _ => None,
+        rumqttc_v5::Event::Incoming(_) => None,
     }
+}
+
+fn map_incoming_publish(
+    publish: rumqttc_v5::Publish,
+    shared: &Shared,
+    manual_ack: bool,
+) -> WrapperEvent {
+    let ack_token = if manual_ack {
+        match publish.qos {
+            rumqttc_v5::QoS::AtLeastOnce | rumqttc_v5::QoS::ExactlyOnce => shared
+                .backend()
+                .prepare_v5_ack(&publish)
+                .and_then(|ack| shared.prepare_ack(ack)),
+            rumqttc_v5::QoS::AtMostOnce => None,
+        }
+    } else {
+        None
+    };
+    WrapperEvent::IncomingPublish(Box::new(IncomingPublish {
+        topic: publish.topic,
+        payload: publish.payload,
+        qos: from_qos(publish.qos),
+        retain: publish.retain,
+        duplicate: publish.dup,
+        ack_token,
+        v5_properties: publish.properties.map(from_incoming_publish_properties),
+    }))
+}
+
+fn map_outgoing_event(
+    outgoing: &rumqttc_v5::Outgoing,
+    shared: &Shared,
+    emit_outgoing: bool,
+) -> Option<WrapperEvent> {
+    match outgoing {
+        rumqttc_v5::Outgoing::PubAck(packet_id) => {
+            shared.complete_v5_puback(*packet_id);
+        }
+        rumqttc_v5::Outgoing::PubRec(packet_id) => {
+            shared.complete_v5_pubrec(*packet_id);
+        }
+        _ => {}
+    }
+    emit_outgoing.then(|| {
+        let packet_id = match outgoing {
+            rumqttc_v5::Outgoing::Publish(id)
+            | rumqttc_v5::Outgoing::Subscribe(id)
+            | rumqttc_v5::Outgoing::Unsubscribe(id)
+            | rumqttc_v5::Outgoing::PubAck(id)
+            | rumqttc_v5::Outgoing::PubRec(id)
+            | rumqttc_v5::Outgoing::PubRel(id)
+            | rumqttc_v5::Outgoing::PubComp(id)
+            | rumqttc_v5::Outgoing::AwaitAck(id) => (*id != 0).then_some(*id),
+            _ => None,
+        };
+        WrapperEvent::Outgoing(crate::OutgoingEvent {
+            activity: map_outgoing(outgoing),
+            packet_id,
+        })
+    })
 }
 
 fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Shared) {

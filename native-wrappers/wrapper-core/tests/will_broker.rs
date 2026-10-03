@@ -15,6 +15,10 @@ impl Drop for Broker {
 
 #[test]
 #[ignore = "requires the mosquitto executable (or MOSQUITTO_BIN)"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn real_broker_publishes_will_only_after_ungraceful_disconnect() {
     let directory = tempfile::tempdir().unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -122,6 +122,7 @@ pub type AuthFuture =
 
 /// An owned, cancellable authentication authority. Dropping the future must
 /// release pending work; one client invokes at most one response at a time.
+///
 /// Panics during construction, polling, or destruction of a response future
 /// are contained and reported as [`AuthFailure::Panic`] without logging the payload.
 pub trait AsyncAuthenticator: Send + Sync + 'static {
@@ -193,6 +194,7 @@ pub enum AuthFailure {
 
 /// A synchronous, nonblocking authentication mechanism. Calls for one client are
 /// serialized on its driver thread; clients sharing an owner may call concurrently.
+///
 /// Inputs are owned and no wrapper lifecycle lock is held.
 /// The native backend requires synchronous responses; do not perform blocking
 /// I/O or wait on futures here. Prepare credentials before starting the client.
@@ -208,6 +210,11 @@ pub enum AuthFailure {
 /// abandonment, or failure. Other configuration clones retain their references.
 /// Destructors must not block or panic.
 pub trait Authenticator: Send + Sync + 'static {
+    /// Produces the response to a broker authentication challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication failure when the authority cannot answer the challenge.
     fn respond(
         &self,
         context: AuthContext,

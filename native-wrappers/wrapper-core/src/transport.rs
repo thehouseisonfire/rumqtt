@@ -92,6 +92,7 @@ pub type TransportFuture =
 
 /// Methods and futures must return/yield promptly; cancellation drops the
 /// future. Detached operations retain their owners and buffers until released.
+///
 /// Do not reuse a stream after cancellation. Destructors must not panic/block.
 pub trait TransportConnector: Send + Sync + 'static {
     fn connect(&self, request: TransportRequest) -> TransportFuture;
@@ -259,6 +260,7 @@ struct StreamState {
 /// Send futures are held in a Mutex to satisfy the non-WebSocket clients' Sync
 /// bound without unsafe trait implementations. Polling always uses exclusive
 /// `get_mut`: no mutex or wrapper lock is held while invoking foreign code.
+///
 pub struct OwnedStream(Mutex<StreamState>);
 
 fn failure(kind: io::ErrorKind) -> io::Error {

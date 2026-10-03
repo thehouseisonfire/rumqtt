@@ -212,6 +212,10 @@ mod custom;
     clippy::result_large_err,
     reason = "tungstenite handshake callback error type"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn compositions(custom_connector: bool, dynamic: bool) {
     capture::start();
     let broker_tls = tls::Fixture::new();

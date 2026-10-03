@@ -373,6 +373,7 @@ fn ipv6_handshake_snapshots_match_direct_and_proxy_connector_targets() {
                                 .iter()
                                 .all(|request| request.target == snapshot.dial_target)
                         );
+                        drop(requests);
                     }
                 }
             }

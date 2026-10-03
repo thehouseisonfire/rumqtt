@@ -34,6 +34,11 @@ pub struct V5WillProperties {
 }
 
 impl LastWillConfig {
+    /// Validates the will topic, payload, and properties for the selected MQTT protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error for invalid data or MQTT 5 properties used with MQTT 3.1.1.
     pub fn validate(&self, protocol: ProtocolVersion) -> Result<()> {
         validate_topic(&self.topic, "will topic")?;
         validate_binary(&self.payload, "will payload")?;

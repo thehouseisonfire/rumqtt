@@ -22,25 +22,25 @@ impl CompletionObject {
         }
     }
 
-    pub fn poll(&self) -> Result<Option<Result<Completion, Error>>, &'static str> {
+    pub fn poll(&self) -> Option<Result<Completion, Error>> {
         match self.handle.try_wait() {
-            Ok(None) => Ok(None),
-            Ok(Some(completion)) => Ok(Some(Ok(completion))),
-            Err(error) => Ok(Some(Err(error))),
+            Ok(None) => None,
+            Ok(Some(completion)) => Some(Ok(completion)),
+            Err(error) => Some(Err(error)),
         }
     }
 
-    pub fn wait(&self, timeout: Duration) -> Result<Result<Completion, Error>, &'static str> {
+    pub fn wait(&self, timeout: Duration) -> Result<Completion, Error> {
         match self.handle.wait_timeout_outcome(timeout) {
-            CompletionWaitOutcome::Completed(result) => Ok(result),
-            CompletionWaitOutcome::DeadlineElapsed => Ok(Err(Error::new(
+            CompletionWaitOutcome::Completed(result) => result,
+            CompletionWaitOutcome::DeadlineElapsed => Err(Error::new(
                 ErrorKind::Timeout,
                 format!(
                     "operation {} did not complete before timeout",
                     self.operation_id
                 ),
             )
-            .with_delivery(DeliveryStatus::Ambiguous))),
+            .with_delivery(DeliveryStatus::Ambiguous)),
         }
     }
 }

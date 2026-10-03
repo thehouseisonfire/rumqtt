@@ -74,11 +74,8 @@ impl ClientObject {
         .map_err(ClientError::Core)
     }
 
-    pub fn close(
-        &self,
-        timeout: Duration,
-    ) -> Result<Result<Completion, rumqttc_wrapper_core::Error>, ClientError> {
-        Ok(self.closer.close(timeout))
+    pub fn close(&self, timeout: Duration) -> Result<Completion, rumqttc_wrapper_core::Error> {
+        self.closer.close(timeout)
     }
 
     pub fn close_now(&self, timeout: Duration) -> Result<(), ClientError> {

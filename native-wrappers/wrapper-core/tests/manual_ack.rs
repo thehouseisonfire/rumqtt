@@ -234,7 +234,7 @@ fn client_ack_contents_round_trip_and_negative_pubrec_releases_the_exchange() {
         stream.write_all(&[0x20, 3, 0, 0, 0]).unwrap();
         for qos2 in [false, true] {
             for (index, reason) in reasons.into_iter().enumerate() {
-                let id = 7 + (index % 2) as u8;
+                let id = 7 + u8::try_from(index % 2).unwrap();
                 publish(&mut stream, qos2, id);
                 let (header, body) = read_frame(&mut stream);
                 assert_eq!(header, if qos2 { 0x50 } else { 0x40 });

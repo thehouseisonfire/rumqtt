@@ -57,6 +57,10 @@ const TARGET_CONNACK: &[u8] = b"\x20\x0c\x00\x00\x09\x12\x00\x06target";
     clippy::result_large_err,
     reason = "tungstenite handshake callback error type"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn redirect_reference_forms_select_isolated_endpoints_for_both_sources() {
     let tls = tls::Fixture::new();
     for disconnect in [false, true] {
@@ -580,6 +584,10 @@ fn server_moved_reports_resolved_srv_diagnostics_before_resetting_redirect_state
     assert_resolved_srv_diagnostics(RedirectReason::ServerMoved);
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     // Reserve both address families at one port. Retry if another fixture
@@ -768,7 +776,22 @@ fn isolated_redirect_never_reads_or_writes_the_origin_store_scope() {
     clippy::result_large_err,
     reason = "tungstenite handshake callback error type"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
+    struct OriginHandshake(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl WebSocketHandshake for OriginHandshake {
+        fn prepare(&self, _: WebSocketHandshakeRequest) -> WebSocketHandshakeFuture {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                let mut response = WebSocketHandshakeResponse::default();
+                response.append_header("x-dynamic-origin", b"dynamic-private-token")?;
+                Ok(response)
+            })
+        }
+    }
     capture::start();
     let fixture = tls::Fixture::new();
     for encrypted in [false, true] {
@@ -831,17 +854,7 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
                 name: "x-absent".into(),
             },
         ];
-        struct OriginHandshake(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-        impl WebSocketHandshake for OriginHandshake {
-            fn prepare(&self, _: WebSocketHandshakeRequest) -> WebSocketHandshakeFuture {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Box::pin(async {
-                    let mut response = WebSocketHandshakeResponse::default();
-                    response.append_header("x-dynamic-origin", b"dynamic-private-token")?;
-                    Ok(response)
-                })
-            }
-        }
+
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         config.common.websocket_handshake = Some(WebSocketHandshakeConfig(std::sync::Arc::new(
             OriginHandshake(calls.clone()),

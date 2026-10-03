@@ -846,12 +846,12 @@ mod tests {
             original
                 .headers_mut()
                 .append(http::header::HOST, "duplicate.test".parse().unwrap());
-            let modified = modifier(original).await.unwrap();
-            assert_eq!(modified.uri().scheme_str(), Some("ws"));
-            assert_eq!(modified.uri().authority().unwrap().as_str(), authority);
-            assert_eq!(modified.headers()[http::header::HOST], authority);
+            let handshake = modifier(original).await.unwrap();
+            assert_eq!(handshake.uri().scheme_str(), Some("ws"));
+            assert_eq!(handshake.uri().authority().unwrap().as_str(), authority);
+            assert_eq!(handshake.headers()[http::header::HOST], authority);
             assert_eq!(
-                modified
+                handshake
                     .headers()
                     .get_all(http::header::HOST)
                     .iter()
@@ -859,10 +859,10 @@ mod tests {
                 1
             );
             assert_eq!(
-                modified.uri().path_and_query().unwrap().as_str(),
+                handshake.uri().path_and_query().unwrap().as_str(),
                 path.unwrap_or("/mqtt")
             );
-            let context = modified
+            let context = handshake
                 .extensions()
                 .get::<crate::backend::WebSocketRequestContext>()
                 .unwrap();

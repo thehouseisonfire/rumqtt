@@ -32,6 +32,10 @@ const MAX_REMAINING_LENGTH: usize = 268_435_455;
 
 impl V5AcknowledgementOptions {
     /// Validates sender role, MQTT strings, and encoding limits without admitting an operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error for an invalid reason code, MQTT string, or encoded packet size.
     pub fn validate(&self) -> Result<()> {
         self.encoded_size().map(|_| ())
     }
@@ -209,6 +213,7 @@ impl AcknowledgementCoordinator {
         };
         state.by_token.insert(token, ack);
         state.by_key.insert(key, token);
+        drop(state);
         Some(token)
     }
 
@@ -236,6 +241,7 @@ impl AcknowledgementCoordinator {
                 option_error("acknowledgement token is unknown, reserved, or already consumed")
             })?;
             state.by_key.remove(&ack.key());
+            drop(state);
             (ack, prepared)
         };
         Ok(AckReservation {
@@ -263,6 +269,7 @@ impl AcknowledgementCoordinator {
                 "an acknowledgement for this MQTT packet is already pending",
             ));
         }
+        drop(state);
         Ok(admission)
     }
 
@@ -401,7 +408,7 @@ mod tests {
                 assert_eq!(coordinator.state.lock().unwrap().by_token.len(), 1);
             }
             coordinator
-                .reserve(token, &Default::default())
+                .reserve(token, &AcknowledgementProtocolOptions::default())
                 .unwrap()
                 .commit();
             // Failed validation did not even allocate/cancel an operation.
@@ -419,12 +426,12 @@ mod tests {
             coordinator
                 .reserve(
                     token,
-                    &AcknowledgementProtocolOptions::V5(Default::default())
+                    &AcknowledgementProtocolOptions::V5(V5AcknowledgementOptions::default())
                 )
                 .is_err()
         );
         coordinator
-            .reserve(token, &Default::default())
+            .reserve(token, &AcknowledgementProtocolOptions::default())
             .unwrap()
             .commit();
     }
@@ -441,7 +448,9 @@ mod tests {
             user_properties: vec![("k".into(), "v".into())],
         });
         drop(coordinator.reserve(token, &options).unwrap());
-        let reserved = coordinator.reserve(token, &Default::default()).unwrap();
+        let reserved = coordinator
+            .reserve(token, &AcknowledgementProtocolOptions::default())
+            .unwrap();
         let PreparedAck::V5(rumqttc_v5::ManualAck::PubAck(ack)) = reserved.ack() else {
             panic!()
         };
@@ -461,8 +470,12 @@ mod tests {
                 };
                 let size = content.encoded_size().unwrap();
                 let options = AcknowledgementProtocolOptions::V5(content);
-                let prepared =
-                    customize_ack(&v5_ack(qos2, 3), &options, Some(size as u32)).unwrap();
+                let prepared = customize_ack(
+                    &v5_ack(qos2, 3),
+                    &options,
+                    Some(u32::try_from(size).unwrap()),
+                )
+                .unwrap();
                 let mut bytes = bytes::BytesMut::new();
                 match prepared {
                     PreparedAck::V5(rumqttc_v5::ManualAck::PubAck(ack)) => {
@@ -474,7 +487,14 @@ mod tests {
                     _ => panic!(),
                 }
                 assert_eq!(bytes.len(), size);
-                assert!(customize_ack(&v5_ack(qos2, 3), &options, Some(size as u32 - 1)).is_err());
+                assert!(
+                    customize_ack(
+                        &v5_ack(qos2, 3),
+                        &options,
+                        Some(u32::try_from(size).unwrap() - 1)
+                    )
+                    .is_err()
+                );
             }
         }
     }
@@ -485,12 +505,18 @@ mod tests {
         let coordinator = AcknowledgementCoordinator::new(7, operations);
         coordinator.begin_connection(Some(100));
         let old_token = coordinator.insert(v5_ack(false, 3)).unwrap();
-        let reservation = coordinator.reserve(old_token, &Default::default()).unwrap();
+        let reservation = coordinator
+            .reserve(old_token, &AcknowledgementProtocolOptions::default())
+            .unwrap();
         coordinator.invalidate(&Error::new(ErrorKind::Network, "lost connection"));
         coordinator.begin_connection(Some(4));
         let new_token = coordinator.insert(v5_ack(false, 3)).unwrap();
         drop(reservation);
-        assert!(coordinator.reserve(old_token, &Default::default()).is_err());
+        assert!(
+            coordinator
+                .reserve(old_token, &AcknowledgementProtocolOptions::default())
+                .is_err()
+        );
         assert_eq!(coordinator.state.lock().unwrap().by_token.len(), 1);
         let options = AcknowledgementProtocolOptions::V5(V5AcknowledgementOptions {
             reason_code: 0x80,
@@ -498,7 +524,7 @@ mod tests {
         });
         assert!(coordinator.reserve(new_token, &options).is_err());
         coordinator
-            .reserve(new_token, &Default::default())
+            .reserve(new_token, &AcknowledgementProtocolOptions::default())
             .unwrap()
             .commit();
     }
@@ -513,12 +539,20 @@ mod tests {
         let coordinator = AcknowledgementCoordinator::new(7, operations);
         coordinator.begin_connection(None);
         let token = coordinator.insert(v4_puback(3)).unwrap();
-        drop(coordinator.reserve(token, &Default::default()).unwrap());
+        drop(
+            coordinator
+                .reserve(token, &AcknowledgementProtocolOptions::default())
+                .unwrap(),
+        );
         coordinator
-            .reserve(token, &Default::default())
+            .reserve(token, &AcknowledgementProtocolOptions::default())
             .unwrap()
             .commit();
-        assert!(coordinator.reserve(token, &Default::default()).is_err());
+        assert!(
+            coordinator
+                .reserve(token, &AcknowledgementProtocolOptions::default())
+                .is_err()
+        );
     }
 
     #[test]
@@ -532,12 +566,12 @@ mod tests {
 
         assert_eq!(first, retransmission);
         coordinator
-            .reserve(first, &Default::default())
+            .reserve(first, &AcknowledgementProtocolOptions::default())
             .unwrap()
             .commit();
         assert!(
             coordinator
-                .reserve(retransmission, &Default::default())
+                .reserve(retransmission, &AcknowledgementProtocolOptions::default())
                 .is_err()
         );
     }
@@ -567,7 +601,7 @@ mod tests {
         coordinator.begin_connection(None);
         let token = coordinator.insert(v4_puback(3)).unwrap();
         coordinator
-            .reserve(token, &Default::default())
+            .reserve(token, &AcknowledgementProtocolOptions::default())
             .unwrap()
             .commit();
         let tracked = coordinator.track(AckKey::V4PubAck(3)).unwrap();
@@ -578,6 +612,10 @@ mod tests {
         let failure = tracked.completion.wait().unwrap_err();
         assert_eq!(failure.kind(), ErrorKind::Network);
         assert_eq!(failure.delivery_status(), DeliveryStatus::Ambiguous);
-        assert!(coordinator.reserve(token, &Default::default()).is_err());
+        assert!(
+            coordinator
+                .reserve(token, &AcknowledgementProtocolOptions::default())
+                .is_err()
+        );
     }
 }

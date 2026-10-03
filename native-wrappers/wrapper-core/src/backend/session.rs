@@ -74,7 +74,7 @@ impl Adapter {
         }
     }
 
-    fn envelope(&self, bytes: Vec<u8>) -> Result<SessionCheckpoint, StoreFailure> {
+    fn envelope(&self, bytes: &[u8]) -> Result<SessionCheckpoint, StoreFailure> {
         envelope(bytes, self.protocol_byte(), self.config.max_checkpoint_size)
     }
 
@@ -95,7 +95,7 @@ impl Adapter {
 }
 
 pub fn envelope(
-    bytes: Vec<u8>,
+    bytes: &[u8],
     protocol: u8,
     limit: usize,
 ) -> Result<SessionCheckpoint, StoreFailure> {
@@ -105,7 +105,7 @@ pub fn envelope(
     let mut result = BytesMut::with_capacity(bytes.len() + 8);
     result.extend_from_slice(b"RMWC");
     result.extend_from_slice(&[0, 1, protocol, 0]);
-    result.extend_from_slice(&bytes);
+    result.extend_from_slice(bytes);
     Ok(SessionCheckpoint(result.freeze()))
 }
 
@@ -190,7 +190,7 @@ macro_rules! implement_store {
             ) -> NativeFuture<'a, ()> {
                 Box::pin(async move {
                     let bytes = session.encode().map_err(|_| StoreFailure::Oversized)?;
-                    let checkpoint = self.envelope(bytes)?;
+                    let checkpoint = self.envelope(&bytes)?;
                     self.call(|| self.config.store.save(self.lease.1.clone(), checkpoint))
                         .await
                         .map_err(|e| Box::new(e) as $backend::SessionStoreError)
@@ -277,6 +277,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the scenario setup, actions, and assertions together"
+    )]
     async fn checkpoints_round_trip_full_protocol_models_across_adapter_recreation() {
         use rumqttc_v4 as v4;
         use rumqttc_v5 as v5;

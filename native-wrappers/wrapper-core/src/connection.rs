@@ -87,6 +87,11 @@ impl ConnectionHandle {
         self.observe()
     }
 
+    /// Waits for the first successful connection or terminal driver failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the terminal driver error if the client stops before establishing a connection.
     pub async fn wait_async(&self) -> Result<ConnectionResult> {
         loop {
             let notified = self.cell.notified.notified();

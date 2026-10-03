@@ -28,6 +28,33 @@ impl std::fmt::Debug for AsyncAdapter {
     }
 }
 
+fn validate_async_action(
+    action: AuthAction,
+    deadline: Option<tokio::time::Instant>,
+    is_success: bool,
+    method: &str,
+) -> Result<AuthAction, AuthFailure> {
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        return Err(crate::AuthFailure::Timeout);
+    }
+    if is_success && !matches!(action, crate::AuthAction::Complete) {
+        return Err(crate::AuthFailure::InvalidResponse);
+    }
+    if let crate::AuthAction::Send(properties) = &action {
+        properties
+            .validate()
+            .map_err(|_| crate::AuthFailure::InvalidResponse)?;
+        if properties
+            .method
+            .as_deref()
+            .is_some_and(|value| value != method)
+        {
+            return Err(crate::AuthFailure::Method);
+        }
+    }
+    Ok(action)
+}
+
 impl rumqttc_v5::AsyncAuthenticator for AsyncAdapter {
     fn respond(
         &self,
@@ -108,27 +135,8 @@ impl rumqttc_v5::AsyncAuthenticator for AsyncAdapter {
                 }
                 Err(failure) => Err(failure),
             };
-            let result = result.and_then(|action| {
-                if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-                    return Err(crate::AuthFailure::Timeout);
-                }
-                if is_success && !matches!(action, crate::AuthAction::Complete) {
-                    return Err(crate::AuthFailure::InvalidResponse);
-                }
-                if let crate::AuthAction::Send(properties) = &action {
-                    properties
-                        .validate()
-                        .map_err(|_| crate::AuthFailure::InvalidResponse)?;
-                    if properties
-                        .method
-                        .as_deref()
-                        .is_some_and(|value| value != method)
-                    {
-                        return Err(crate::AuthFailure::Method);
-                    }
-                }
-                Ok(action)
-            });
+            let result = result
+                .and_then(|action| validate_async_action(action, deadline, is_success, &method));
             if is_success || result.is_err() {
                 monitor.deadline(None);
             }

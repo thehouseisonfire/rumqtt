@@ -41,7 +41,7 @@ macro_rules! adapter {
                         .map_err(|_| StoreFailure::Load)?
                         .map(|session| {
                             let bytes = session.encode().map_err(|_| StoreFailure::Oversized)?;
-                            envelope(bytes, $tag, MAX_CHECKPOINT_SIZE)
+                            envelope(&bytes, $tag, MAX_CHECKPOINT_SIZE)
                         })
                         .transpose()
                 })

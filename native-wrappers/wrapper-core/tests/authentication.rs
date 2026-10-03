@@ -281,6 +281,7 @@ fn authentication_reconnect_and_pending_challenge_shutdown_release_exchange() {
                     contexts.iter().any(|context| context.generation == 2
                         && context.exchange == AuthExchange::Initial)
                 );
+                drop(contexts);
             }
             client.closer().close_now(support::DEADLINE).unwrap();
             if let Some(operation) = operation {
@@ -503,6 +504,10 @@ fn authentication_future_destruction_panics_do_not_print_private_payloads() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn authentication_future_destruction_panics_are_typed_on_completion_timeout_and_close() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Clone, Copy)]
@@ -656,6 +661,10 @@ fn authentication_future_destruction_panics_are_typed_on_completion_timeout_and_
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn deferred_reauthentication_survives_publish_and_keepalive_read_arbitration() {
     struct Deferred {
         entered: std::sync::mpsc::Sender<()>,
@@ -975,6 +984,10 @@ fn async_authentication_panics_are_typed_and_release_the_authority() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn authentication_timeout_during_session_save_notifies_the_authority_with_timeout() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1108,6 +1121,10 @@ fn authentication_timeout_during_session_save_notifies_the_authority_with_timeou
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn immediate_close_notifies_pending_initial_authentication_once() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1442,6 +1459,10 @@ fn failed_async_continuation_retains_broker_auth_details() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn failed_async_reauthentication_delivers_broker_details_and_lifecycle_before_termination() {
     struct Authority {
         failure: AuthFailure,
@@ -1590,6 +1611,10 @@ fn failed_async_reauthentication_delivers_broker_details_and_lifecycle_before_te
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn owned_authentication_rejects_caller_properties_and_handles_tracked_reauthentication() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1693,6 +1718,7 @@ fn owned_authentication_rejects_caller_properties_and_handles_tracked_reauthenti
             .iter()
             .any(|context| context.exchange == AuthExchange::Reauthentication)
     );
+    drop(contexts);
 }
 
 #[test]
@@ -1851,7 +1877,31 @@ const fn connack_properties(
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn redirect_policy_preserves_reference_and_isolates_target_credentials() {
+    struct Resolver(bool, Option<u16>);
+    impl SrvResolver for Resolver {
+        fn resolve(&self, owner: String) -> SrvFuture {
+            assert_eq!(owner.trim_end_matches('.'), "_mqtt._tcp.service.invalid");
+            let panic = self.0;
+            let port = self.1;
+            Box::pin(async move {
+                assert!(!panic, "secret host panic payload");
+                Ok(port
+                    .into_iter()
+                    .map(|port| SrvRecord {
+                        priority: 10,
+                        weight: 20,
+                        port,
+                        target: "localhost.".into(),
+                    })
+                    .collect())
+            })
+        }
+    }
     for mode in [
         "disabled",
         "malformed",
@@ -1919,26 +1969,7 @@ fn redirect_policy_preserves_reference_and_isolates_target_credentials() {
                 ));
             }
         });
-        struct Resolver(bool, Option<u16>);
-        impl SrvResolver for Resolver {
-            fn resolve(&self, owner: String) -> SrvFuture {
-                assert_eq!(owner.trim_end_matches('.'), "_mqtt._tcp.service.invalid");
-                let panic = self.0;
-                let port = self.1;
-                Box::pin(async move {
-                    assert!(!panic, "secret host panic payload");
-                    Ok(port
-                        .into_iter()
-                        .map(|port| SrvRecord {
-                            priority: 10,
-                            weight: 20,
-                            port,
-                            target: "localhost.".into(),
-                        })
-                        .collect())
-                })
-            }
-        }
+
         let mut config = ClientConfig::v5("origin-client", "127.0.0.1", origin_port);
         config.common.username = Some("secret-user".into());
         config.common.password = Some(Bytes::from_static(b"secret-password"));
@@ -2021,6 +2052,10 @@ fn redirect_policy_preserves_reference_and_isolates_target_credentials() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn isolated_redirect_restores_origin_authentication_and_session_expiry_admission() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin_port = origin.local_addr().unwrap().port();
@@ -2296,6 +2331,10 @@ fn rejected_connack_and_broker_disconnect_preserve_properties() {
 
 #[cfg(feature = "auth-scram")]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication() {
     use scram::{
         SCRAM_TYPES, ScramAuthServer, ScramCbHelper, ScramHashing, ScramNonce, ScramPassword,
@@ -2501,6 +2540,7 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
             &formatted,
             &secrets.iter().map(String::as_str).collect::<Vec<_>>(),
         );
+        drop(secrets);
         support::capture::assert_activity();
     }
 }

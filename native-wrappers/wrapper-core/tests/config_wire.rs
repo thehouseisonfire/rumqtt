@@ -383,6 +383,10 @@ fn concurrent_close_selects_one_payload_and_coalesces_only_matching_callers() {
 
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn proxy_authentication_and_remote_broker_address_are_preserved() {
     use rumqttc_wrapper_core::{ProxyConfig, ProxyCredentials};
     for mqtt5 in [false, true] {

@@ -81,6 +81,9 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native wrapper validation: Cover TLS-profile and capability APIs with NULL
+  error outputs on success and failure. Resolve strict pedantic/nursery lint
+  warnings and make CI lint checks read-only across the wrapper workspace.
 - MQTT 5 manual-ACK documentation: Use client success rather than server-only
   `NoMatchingSubscribers` in the Rust example. Wrapper ACK reservation rollback
   no longer restores a token invalidated by a connection change.

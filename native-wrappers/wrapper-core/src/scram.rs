@@ -2,9 +2,12 @@ use std::time::Duration;
 
 use crate::{Error, SecretBytes};
 
-/// Built-in SCRAM-SHA-256 without channel binding. Use authenticated TLS to
+/// Built-in SCRAM-SHA-256 without channel binding.
+///
+/// Use authenticated TLS to
 /// protect the exchange. Every client gets independent exchange state, including
 /// when configurations are cloned. Server signatures are verified before success.
+///
 #[derive(Clone, PartialEq, Eq)]
 pub struct ScramConfig {
     pub username: String,
@@ -57,7 +60,7 @@ impl std::fmt::Debug for ScramConfig {
             .field("credentials", &"[REDACTED]")
             .field("exchange_timeout", &self.exchange_timeout)
             .field("max_iterations", &self.max_iterations)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

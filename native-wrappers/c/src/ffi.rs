@@ -589,6 +589,7 @@ impl AuthCompletion {
             else {
                 unreachable!("pending state checked under lock")
             };
+            drop(state);
             (sender, result)
         };
         if sender.send(result).is_ok() {
@@ -802,6 +803,7 @@ impl ResolverCompletion {
             else {
                 unreachable!("pending state checked under lock")
             };
+            drop(state);
             (sender, result)
         };
         if sender.send(result).is_ok() {
@@ -921,6 +923,7 @@ impl StoreCompletion {
             else {
                 unreachable!("pending state was checked under the same lock")
             };
+            drop(state);
             (sender, result)
         };
         if sender.send(result).is_ok() {
@@ -1627,6 +1630,46 @@ unsafe fn parse_tls_options(
         }
         _ => return Err(ErrorHandle::argument("unknown TLS root policy")),
     };
+    let identity = unsafe { parse_tls_identity(options, backend) }?;
+    if options.alpn_protocol_count > isize::MAX as usize / size_of::<rumqttc_bytes_view_t>() {
+        return Err(ErrorHandle::argument("ALPN protocol count is too large"));
+    }
+    if options.alpn_protocol_count != 0 && options.alpn_protocols.is_null() {
+        return Err(ErrorHandle::argument("ALPN protocol pointer is NULL"));
+    }
+    let views = if options.alpn_protocol_count == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(options.alpn_protocols, options.alpn_protocol_count) }
+    };
+    let mut alpn_protocols = Vec::with_capacity(views.len());
+    for view in views {
+        let protocol = unsafe { bytes_from_view(*view) }?;
+        if protocol.is_empty() || protocol.len() > 255 {
+            return Err(ErrorHandle::argument(
+                "ALPN identifiers must contain 1 to 255 bytes",
+            ));
+        }
+        if backend == TlsBackend::Native && std::str::from_utf8(protocol).is_err() {
+            return Err(ErrorHandle::argument(
+                "native TLS ALPN identifiers must be UTF-8",
+            ));
+        }
+        alpn_protocols.push(protocol.to_vec());
+    }
+    Ok(TlsConfig {
+        backend,
+        roots,
+        identity,
+        alpn_protocols,
+        ..TlsConfig::default()
+    })
+}
+
+unsafe fn parse_tls_identity(
+    options: &rumqttc_tls_options_t,
+    backend: TlsBackend,
+) -> Result<Option<TlsClientIdentity>, ErrorHandle> {
     let identity = match (
         backend,
         options.pem_identity.is_null(),
@@ -1677,39 +1720,7 @@ unsafe fn parse_tls_options(
             ));
         }
     };
-    if options.alpn_protocol_count > isize::MAX as usize / size_of::<rumqttc_bytes_view_t>() {
-        return Err(ErrorHandle::argument("ALPN protocol count is too large"));
-    }
-    if options.alpn_protocol_count != 0 && options.alpn_protocols.is_null() {
-        return Err(ErrorHandle::argument("ALPN protocol pointer is NULL"));
-    }
-    let views = if options.alpn_protocol_count == 0 {
-        &[][..]
-    } else {
-        unsafe { slice::from_raw_parts(options.alpn_protocols, options.alpn_protocol_count) }
-    };
-    let mut alpn_protocols = Vec::with_capacity(views.len());
-    for view in views {
-        let protocol = unsafe { bytes_from_view(*view) }?;
-        if protocol.is_empty() || protocol.len() > 255 {
-            return Err(ErrorHandle::argument(
-                "ALPN identifiers must contain 1 to 255 bytes",
-            ));
-        }
-        if backend == TlsBackend::Native && std::str::from_utf8(protocol).is_err() {
-            return Err(ErrorHandle::argument(
-                "native TLS ALPN identifiers must be UTF-8",
-            ));
-        }
-        alpn_protocols.push(protocol.to_vec());
-    }
-    Ok(TlsConfig {
-        backend,
-        roots,
-        identity,
-        alpn_protocols,
-        ..TlsConfig::default()
-    })
+    Ok(identity)
 }
 
 #[unsafe(no_mangle)]
@@ -2987,7 +2998,9 @@ pub unsafe extern "C" fn rumqttc_config_set_v4_outgoing_packet_limit_bytes(
         }
         match &mut config.protocol {
             rumqttc_wrapper_core::ProtocolConfig::V4(v4) => v4.max_outgoing_packet_size = size,
-            _ => return Err(ErrorHandle::argument("v4 packet limit requires MQTT 3.1.1")),
+            rumqttc_wrapper_core::ProtocolConfig::V5(_) => {
+                return Err(ErrorHandle::argument("v4 packet limit requires MQTT 3.1.1"));
+            }
         }
         Ok(())
     })
@@ -3003,7 +3016,9 @@ pub unsafe extern "C" fn rumqttc_config_reset_v4_outgoing_packet_limit(
             v4.max_outgoing_packet_size = usize::MAX;
             Ok(())
         }
-        _ => Err(ErrorHandle::argument("v4 packet limit requires MQTT 3.1.1")),
+        rumqttc_wrapper_core::ProtocolConfig::V5(_) => {
+            Err(ErrorHandle::argument("v4 packet limit requires MQTT 3.1.1"))
+        }
     })
 }
 
@@ -3019,7 +3034,7 @@ pub unsafe extern "C" fn rumqttc_config_set_v4_inflight_limit(
         }
         match &mut config.protocol {
             rumqttc_wrapper_core::ProtocolConfig::V4(v4) => v4.inflight_limit = limit,
-            _ => {
+            rumqttc_wrapper_core::ProtocolConfig::V5(_) => {
                 return Err(ErrorHandle::argument(
                     "v4 inflight limit requires MQTT 3.1.1",
                 ));
@@ -3043,7 +3058,7 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_advertised_max_packet_size_bytes(
             rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
                 v5.connect_properties.maximum_packet_size = Some(bytes);
             }
-            _ => {
+            rumqttc_wrapper_core::ProtocolConfig::V4(_) => {
                 return Err(ErrorHandle::argument(
                     "advertised packet size requires MQTT 5",
                 ));
@@ -3063,7 +3078,7 @@ pub unsafe extern "C" fn rumqttc_config_clear_v5_advertised_max_packet_size(
             v5.connect_properties.maximum_packet_size = None;
             Ok(())
         }
-        _ => Err(ErrorHandle::argument(
+        rumqttc_wrapper_core::ProtocolConfig::V4(_) => Err(ErrorHandle::argument(
             "advertised packet size requires MQTT 5",
         )),
     })
@@ -3085,7 +3100,7 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_outgoing_inflight_upper_limit(
             rumqttc_wrapper_core::ProtocolConfig::V5(v5) => {
                 v5.outgoing_inflight_upper_limit = Some(limit);
             }
-            _ => {
+            rumqttc_wrapper_core::ProtocolConfig::V4(_) => {
                 return Err(ErrorHandle::argument(
                     "v5 inflight upper limit requires MQTT 5",
                 ));
@@ -3105,7 +3120,7 @@ pub unsafe extern "C" fn rumqttc_config_clear_v5_outgoing_inflight_upper_limit(
             v5.outgoing_inflight_upper_limit = None;
             Ok(())
         }
-        _ => Err(ErrorHandle::argument(
+        rumqttc_wrapper_core::ProtocolConfig::V4(_) => Err(ErrorHandle::argument(
             "v5 inflight upper limit requires MQTT 5",
         )),
     })
@@ -3198,7 +3213,9 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_connect_properties(
                     v5.connect_properties = properties;
                     Ok(())
                 }
-                _ => Err(ErrorHandle::argument("CONNECT properties require MQTT 5")),
+                rumqttc_wrapper_core::ProtocolConfig::V4(_) => {
+                    Err(ErrorHandle::argument("CONNECT properties require MQTT 5"))
+                }
             },
             || ErrorHandle::internal("configuration lock is poisoned"),
         )
@@ -3215,7 +3232,9 @@ pub unsafe extern "C" fn rumqttc_config_clear_v5_connect_properties(
             v5.connect_properties = rumqttc_wrapper_core::V5Config::default().connect_properties;
             Ok(())
         }
-        _ => Err(ErrorHandle::argument("CONNECT properties require MQTT 5")),
+        rumqttc_wrapper_core::ProtocolConfig::V4(_) => {
+            Err(ErrorHandle::argument("CONNECT properties require MQTT 5"))
+        }
     })
 }
 
@@ -3234,7 +3253,9 @@ pub unsafe extern "C" fn rumqttc_config_set_v5_topic_alias_policy(
         };
         match &mut config.protocol {
             rumqttc_wrapper_core::ProtocolConfig::V5(v5) => v5.topic_alias_policy = policy,
-            _ => return Err(ErrorHandle::argument("topic alias policy requires MQTT 5")),
+            rumqttc_wrapper_core::ProtocolConfig::V4(_) => {
+                return Err(ErrorHandle::argument("topic alias policy requires MQTT 5"));
+            }
         }
         Ok(())
     })
@@ -3523,13 +3544,10 @@ pub unsafe extern "C" fn rumqttc_client_close_timeout_ms(
 ) -> u32 {
     boundary(error_out, client, || {
         let client = unsafe { client_ref(client) }?;
-        match client
+        client
             .close(Duration::from_millis(timeout_ms))
-            .map_err(client_error)?
-        {
-            Ok(_) => Ok(()),
-            Err(error) => Err(core_error(&error, None)),
-        }
+            .map(|_| ())
+            .map_err(|error| core_error(&error, None))
     })
 }
 
@@ -4454,15 +4472,13 @@ fn observe_completion(
     completion: &CompletionObject,
     timeout: Option<Duration>,
 ) -> Result<Option<Completion>, ErrorHandle> {
-    let result = match timeout {
-        Some(timeout) => Some(completion.wait(timeout).map_err(ErrorHandle::state)?),
-        None => completion.poll().map_err(ErrorHandle::state)?,
-    };
-    match result {
-        None => Ok(None),
-        Some(Ok(result)) => Ok(Some(result)),
-        Some(Err(error)) => Err(core_error(&error, Some(completion.operation_id))),
-    }
+    let result = timeout.map_or_else(
+        || completion.poll(),
+        |timeout| Some(completion.wait(timeout)),
+    );
+    result
+        .transpose()
+        .map_err(|error| core_error(&error, Some(completion.operation_id)))
 }
 
 #[unsafe(no_mangle)]
@@ -4859,11 +4875,10 @@ pub unsafe extern "C" fn rumqttc_event_connack_reason(
             return Err(ErrorHandle::argument("CONNACK reason output is NULL"));
         }
         let event = unsafe { event_ref(event) }?;
-        let details = match &event.event {
-            WrapperEvent::Connected { details, .. } | WrapperEvent::ConnectionRejected(details) => {
-                details
-            }
-            _ => return Err(ErrorHandle::state("event has no CONNACK details")),
+        let (WrapperEvent::Connected { details, .. } | WrapperEvent::ConnectionRejected(details)) =
+            &event.event
+        else {
+            return Err(ErrorHandle::state("event has no CONNACK details"));
         };
         unsafe { *reason_out = details.reason_code };
         Ok(())
@@ -6305,7 +6320,7 @@ mod tests {
             let mut options = rumqttc_acknowledgement_options_t {
                 struct_size: struct_size::<rumqttc_acknowledgement_options_t>(),
                 protocol_options: PROTOCOL_OPTIONS_V5,
-                v5_options: &raw,
+                v5_options: &raw const raw,
                 reserved: [0; 2],
             };
             macro_rules! parse {
@@ -6375,11 +6390,11 @@ mod tests {
             assert!(parse!().is_err());
             options.v5_options = ptr::null();
             assert_eq!(
-                parse_acknowledgement_options(&options).unwrap(),
+                parse_acknowledgement_options(&raw const options).unwrap(),
                 AcknowledgementProtocolOptions::VersionNeutral
             );
             options.protocol_options = PROTOCOL_OPTIONS_V5;
-            assert!(parse_acknowledgement_options(&options).is_err());
+            assert!(parse_acknowledgement_options(&raw const options).is_err());
             assert_eq!(
                 parse_acknowledgement_options(ptr::null()).unwrap(),
                 AcknowledgementProtocolOptions::VersionNeutral
@@ -6483,6 +6498,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the scenario setup, actions, and assertions together"
+    )]
     async fn async_authenticator_preserves_fields_and_rejects_duplicate_or_late_completion() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -6641,6 +6660,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the scenario setup, actions, and assertions together"
+    )]
     fn auth_and_redirect_accessors_preserve_presence_and_clear_wrong_kind_outputs() {
         let auth = rumqttc_event {
             inner: EventObject::new(WrapperEvent::Authentication(
@@ -6814,6 +6837,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the scenario setup, actions, and assertions together"
+    )]
     async fn store_callback_can_complete_later_and_reject_duplicates() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -6876,7 +6903,8 @@ mod tests {
         let checkpoint = view_bytes(b"RMWC\0\x01\x04\0payload");
         let work = tokio::spawn(store.load_with_limit(key.clone(), checkpoint.len));
         let token = loop {
-            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+            let token = unsafe { &*context }.token.lock().unwrap().take();
+            if let Some(token) = token {
                 break token as *mut rumqttc_callback_completion;
             }
             tokio::task::yield_now().await;
@@ -6897,7 +6925,8 @@ mod tests {
 
         let oversized_work = tokio::spawn(store.load_with_limit(key.clone(), checkpoint.len - 1));
         let oversized_token = loop {
-            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+            let token = unsafe { &*context }.token.lock().unwrap().take();
+            if let Some(token) = token {
                 break token as *mut rumqttc_callback_completion;
             }
             tokio::task::yield_now().await;
@@ -6921,7 +6950,8 @@ mod tests {
 
         let cancelled_work = tokio::spawn(store.load(key));
         let late_token = loop {
-            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+            let token = unsafe { &*context }.token.lock().unwrap().take();
+            if let Some(token) = token {
                 break token as *mut rumqttc_callback_completion;
             }
             tokio::task::yield_now().await;
@@ -7076,7 +7106,8 @@ mod tests {
         };
         let work = tokio::spawn(resolver.resolve("_mqtt._tcp.example".into()));
         let token = loop {
-            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+            let token = unsafe { &*context }.token.lock().unwrap().take();
+            if let Some(token) = token {
                 break token as *mut rumqttc_callback_completion;
             }
             tokio::task::yield_now().await;
@@ -7102,7 +7133,8 @@ mod tests {
 
         let cancelled = tokio::spawn(resolver.resolve("_mqtt._tcp.example".into()));
         let late_token = loop {
-            if let Some(token) = unsafe { &*context }.token.lock().unwrap().take() {
+            let token = unsafe { &*context }.token.lock().unwrap().take();
+            if let Some(token) = token {
                 break token as *mut rumqttc_callback_completion;
             }
             tokio::task::yield_now().await;

@@ -38,10 +38,12 @@ struct Io {
 
 impl TransportIo for Io {
     fn read(&self, _: usize) -> TransportIoFuture<Bytes> {
-        if let Some(packet) = self.packet.lock().unwrap().take() {
+        let packet = self.packet.lock().unwrap().take();
+        if let Some(packet) = packet {
             return Box::pin(async move { Ok(packet) });
         }
-        if let Some((failure, release)) = self.failure.lock().unwrap().take() {
+        let failure = self.failure.lock().unwrap().take();
+        if let Some((failure, release)) = failure {
             return Box::pin(async move {
                 release.await.unwrap();
                 Err(failure.into_io())
@@ -137,6 +139,10 @@ impl SrvResolver for Resolver {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn check_redirect(
     failure: TransportFailure,
     srv: bool,

@@ -121,6 +121,10 @@ impl std::fmt::Debug for TlsClientIdentity {
 impl TlsConfig {
     /// Behavior-preserving migration from the original PEM-oriented fields.
     /// A supplied CA replaces platform roots; a certificate and key must be paired.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error if only one of the certificate and private key is supplied.
     pub fn rustls_pem(
         ca: Option<Bytes>,
         certificate: Option<Bytes>,
@@ -294,70 +298,7 @@ impl CommonConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if let Some(connector) = &self.connector {
-            if matches!(self.transport, TransportConfig::Unix) {
-                return Err(Error::configuration(
-                    "custom connectors require a TCP or WebSocket target",
-                ));
-            }
-            if connector.mode == crate::TransportMode::Established
-                && (!matches!(self.transport, TransportConfig::Tcp) || self.proxy.is_some())
-            {
-                return Err(Error::configuration(
-                    "established custom streams require TCP without native proxy/TLS/WebSocket layers",
-                ));
-            }
-        }
-        if let Some(proxy) = &self.proxy {
-            proxy.validate()?;
-        }
-        if self.websocket_handshake.is_some() && !cfg!(feature = "websocket") {
-            return Err(Error::configuration("WebSocket feature is disabled"));
-        }
-        if (!self.websocket_headers.is_empty() || self.websocket_handshake.is_some())
-            && !matches!(
-                self.transport,
-                TransportConfig::WebSocket | TransportConfig::Wss(_)
-            )
-        {
-            return Err(Error::configuration(
-                "WebSocket headers require a WebSocket transport",
-            ));
-        }
-        for header in &self.websocket_headers {
-            header.validate()?;
-        }
-        match (&self.broker, &self.transport) {
-            (BrokerTarget::Tcp { host, port }, TransportConfig::Tcp | TransportConfig::Tls(_)) => {
-                if host.is_empty() || host.contains(['\0', '\r', '\n']) || *port == 0 {
-                    return Err(Error::configuration("invalid TCP broker endpoint"));
-                }
-            }
-            (BrokerTarget::Unix { path }, TransportConfig::Unix) => {
-                if !cfg!(unix) {
-                    return Err(Error::configuration(
-                        "Unix sockets are unsupported on this platform",
-                    ));
-                }
-                if path.as_os_str().is_empty() || path.as_os_str().as_encoded_bytes().contains(&0) {
-                    return Err(Error::configuration("invalid Unix socket path"));
-                }
-                if self.proxy.is_some() || self.network != NetworkConfig::default() {
-                    return Err(Error::configuration(
-                        "Unix sockets cannot use proxy or TCP network options",
-                    ));
-                }
-            }
-            (BrokerTarget::WebSocket { url }, TransportConfig::WebSocket)
-                if url.starts_with("ws://") => {}
-            (BrokerTarget::WebSocket { url }, TransportConfig::Wss(_))
-                if url.starts_with("wss://") => {}
-            _ => {
-                return Err(Error::configuration(
-                    "broker target is incompatible with transport",
-                ));
-            }
-        }
+        self.validate_endpoint()?;
         if self.request_channel_capacity == 0 || self.event_buffer_capacity == 0 {
             return Err(Error::configuration("channel capacities must be nonzero"));
         }
@@ -436,6 +377,74 @@ impl CommonConfig {
         ) && !cfg!(feature = "websocket")
         {
             return Err(Error::configuration("WebSocket feature is disabled"));
+        }
+        Ok(())
+    }
+
+    fn validate_endpoint(&self) -> Result<()> {
+        if let Some(connector) = &self.connector {
+            if matches!(self.transport, TransportConfig::Unix) {
+                return Err(Error::configuration(
+                    "custom connectors require a TCP or WebSocket target",
+                ));
+            }
+            if connector.mode == crate::TransportMode::Established
+                && (!matches!(self.transport, TransportConfig::Tcp) || self.proxy.is_some())
+            {
+                return Err(Error::configuration(
+                    "established custom streams require TCP without native proxy/TLS/WebSocket layers",
+                ));
+            }
+        }
+        if let Some(proxy) = &self.proxy {
+            proxy.validate()?;
+        }
+        if self.websocket_handshake.is_some() && !cfg!(feature = "websocket") {
+            return Err(Error::configuration("WebSocket feature is disabled"));
+        }
+        if (!self.websocket_headers.is_empty() || self.websocket_handshake.is_some())
+            && !matches!(
+                self.transport,
+                TransportConfig::WebSocket | TransportConfig::Wss(_)
+            )
+        {
+            return Err(Error::configuration(
+                "WebSocket headers require a WebSocket transport",
+            ));
+        }
+        for header in &self.websocket_headers {
+            header.validate()?;
+        }
+        match (&self.broker, &self.transport) {
+            (BrokerTarget::Tcp { host, port }, TransportConfig::Tcp | TransportConfig::Tls(_)) => {
+                if host.is_empty() || host.contains(['\0', '\r', '\n']) || *port == 0 {
+                    return Err(Error::configuration("invalid TCP broker endpoint"));
+                }
+            }
+            (BrokerTarget::Unix { path }, TransportConfig::Unix) => {
+                if !cfg!(unix) {
+                    return Err(Error::configuration(
+                        "Unix sockets are unsupported on this platform",
+                    ));
+                }
+                if path.as_os_str().is_empty() || path.as_os_str().as_encoded_bytes().contains(&0) {
+                    return Err(Error::configuration("invalid Unix socket path"));
+                }
+                if self.proxy.is_some() || self.network != NetworkConfig::default() {
+                    return Err(Error::configuration(
+                        "Unix sockets cannot use proxy or TCP network options",
+                    ));
+                }
+            }
+            (BrokerTarget::WebSocket { url }, TransportConfig::WebSocket)
+                if url.starts_with("ws://") => {}
+            (BrokerTarget::WebSocket { url }, TransportConfig::Wss(_))
+                if url.starts_with("wss://") => {}
+            _ => {
+                return Err(Error::configuration(
+                    "broker target is incompatible with transport",
+                ));
+            }
         }
         Ok(())
     }
@@ -528,6 +537,11 @@ impl std::fmt::Debug for V5ConnectProperties {
 }
 
 impl V5ConnectProperties {
+    /// Validates MQTT 5 CONNECT property values and strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error when a property is invalid or authentication data lacks a method.
     pub fn validate(&self) -> Result<()> {
         if self.receive_maximum == Some(0) || self.maximum_packet_size == Some(0) {
             return Err(Error::configuration(
@@ -665,109 +679,8 @@ impl ClientConfig {
                 }
             }
             ProtocolConfig::V5(v5) => {
-                if self
-                    .common
-                    .connector
-                    .as_ref()
-                    .is_some_and(|c| c.mode == crate::TransportMode::Established)
-                    && let crate::RedirectPolicy::Follow { transport, .. } = &v5.redirect_policy
-                    && !matches!(transport, TransportConfig::Tcp)
-                {
-                    return Err(Error::configuration(
-                        "established custom streams require TCP redirects",
-                    ));
-                }
-                if let crate::RedirectPolicy::Follow {
-                    max_attempts,
-                    transport,
-                } = &v5.redirect_policy
-                {
-                    if *max_attempts == 0 || matches!(transport, TransportConfig::Unix) {
-                        return Err(Error::configuration(
-                            "redirect attempts must be nonzero and Unix redirects are unsupported",
-                        ));
-                    }
-                    let mut target = CommonConfig::new("redirect-validation", "redirect", 1);
-                    target.transport = transport.clone();
-                    if matches!(
-                        transport,
-                        TransportConfig::WebSocket | TransportConfig::Wss(_)
-                    ) {
-                        target.broker = BrokerTarget::WebSocket {
-                            url: if matches!(transport, TransportConfig::WebSocket) {
-                                "ws://redirect:1/"
-                            } else {
-                                "wss://redirect:1/"
-                            }
-                            .into(),
-                        };
-                    }
-                    target.validate()?;
-                }
-                if let Some(scram) = &v5.scram {
-                    scram.validate()?;
-                    if v5.authenticator.is_some()
-                        || v5.async_authenticator.is_some()
-                        || v5.connect_properties.authentication_method.as_deref()
-                            != Some("SCRAM-SHA-256")
-                        || v5.connect_properties.authentication_data.is_some()
-                    {
-                        return Err(Error::configuration(
-                            "SCRAM requires method SCRAM-SHA-256 and sole ownership of authentication data",
-                        ));
-                    }
-                }
-                if let Some(auth) = &v5.authenticator {
-                    if v5.async_authenticator.is_some() {
-                        return Err(Error::configuration(
-                            "only one authentication authority is allowed",
-                        ));
-                    }
-                    if v5.connect_properties.authentication_method.is_none() {
-                        return Err(Error::configuration(
-                            "an authenticator requires a CONNECT authentication method",
-                        ));
-                    }
-                    if v5.connect_properties.authentication_data.is_some() {
-                        return Err(Error::configuration(
-                            "initial authentication data must come from the configured authenticator",
-                        ));
-                    }
-                    if auth.exchange_timeout.is_zero()
-                        || std::time::Instant::now()
-                            .checked_add(auth.exchange_timeout)
-                            .is_none()
-                    {
-                        return Err(Error::configuration(
-                            "invalid authentication exchange timeout",
-                        ));
-                    }
-                }
-                if let Some(auth) = &v5.async_authenticator {
-                    if auth.configured_method.as_deref().is_some_and(|method| {
-                        v5.connect_properties.authentication_method.as_deref() != Some(method)
-                    }) {
-                        return Err(Error::configuration(
-                            "CONNECT authentication method differs from the deferred authority",
-                        ));
-                    }
-                    if v5.connect_properties.authentication_method.is_none()
-                        || v5.connect_properties.authentication_data.is_some()
-                    {
-                        return Err(Error::configuration(
-                            "a deferred authenticator requires a CONNECT method and owns initial authentication data",
-                        ));
-                    }
-                    if auth.exchange_timeout.is_zero()
-                        || std::time::Instant::now()
-                            .checked_add(auth.exchange_timeout)
-                            .is_none()
-                    {
-                        return Err(Error::configuration(
-                            "invalid authentication exchange timeout",
-                        ));
-                    }
-                }
+                v5.validate_redirect(&self.common)?;
+                v5.validate_authentication()?;
                 if let Some(store) = &v5.session_store {
                     store.validate()?;
                     if v5.clean_start
@@ -806,6 +719,117 @@ impl ClientConfig {
             return Err(Error::configuration(
                 "MQTT 3.1.1 persistent sessions require a client identifier",
             ));
+        }
+        Ok(())
+    }
+}
+
+impl V5Config {
+    fn validate_redirect(&self, common: &CommonConfig) -> Result<()> {
+        if common
+            .connector
+            .as_ref()
+            .is_some_and(|c| c.mode == crate::TransportMode::Established)
+            && let crate::RedirectPolicy::Follow { transport, .. } = &self.redirect_policy
+            && !matches!(transport, TransportConfig::Tcp)
+        {
+            return Err(Error::configuration(
+                "established custom streams require TCP redirects",
+            ));
+        }
+        if let crate::RedirectPolicy::Follow {
+            max_attempts,
+            transport,
+        } = &self.redirect_policy
+        {
+            if *max_attempts == 0 || matches!(transport, TransportConfig::Unix) {
+                return Err(Error::configuration(
+                    "redirect attempts must be nonzero and Unix redirects are unsupported",
+                ));
+            }
+            let mut target = CommonConfig::new("redirect-validation", "redirect", 1);
+            target.transport = transport.clone();
+            if matches!(
+                transport,
+                TransportConfig::WebSocket | TransportConfig::Wss(_)
+            ) {
+                target.broker = BrokerTarget::WebSocket {
+                    url: if matches!(transport, TransportConfig::WebSocket) {
+                        "ws://redirect:1/"
+                    } else {
+                        "wss://redirect:1/"
+                    }
+                    .into(),
+                };
+            }
+            target.validate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_authentication(&self) -> Result<()> {
+        if let Some(scram) = &self.scram {
+            scram.validate()?;
+            if self.authenticator.is_some()
+                || self.async_authenticator.is_some()
+                || self.connect_properties.authentication_method.as_deref() != Some("SCRAM-SHA-256")
+                || self.connect_properties.authentication_data.is_some()
+            {
+                return Err(Error::configuration(
+                    "SCRAM requires method SCRAM-SHA-256 and sole ownership of authentication data",
+                ));
+            }
+        }
+        if let Some(auth) = &self.authenticator {
+            if self.async_authenticator.is_some() {
+                return Err(Error::configuration(
+                    "only one authentication authority is allowed",
+                ));
+            }
+            if self.connect_properties.authentication_method.is_none() {
+                return Err(Error::configuration(
+                    "an authenticator requires a CONNECT authentication method",
+                ));
+            }
+            if self.connect_properties.authentication_data.is_some() {
+                return Err(Error::configuration(
+                    "initial authentication data must come from the configured authenticator",
+                ));
+            }
+            if auth.exchange_timeout.is_zero()
+                || std::time::Instant::now()
+                    .checked_add(auth.exchange_timeout)
+                    .is_none()
+            {
+                return Err(Error::configuration(
+                    "invalid authentication exchange timeout",
+                ));
+            }
+        }
+        if let Some(auth) = &self.async_authenticator {
+            if auth.configured_method.as_deref().is_some_and(|method| {
+                self.connect_properties.authentication_method.as_deref() != Some(method)
+            }) {
+                return Err(Error::configuration(
+                    "CONNECT authentication method differs from the deferred authority",
+                ));
+            }
+            if self.connect_properties.authentication_method.is_none()
+                || self.connect_properties.authentication_data.is_some()
+            {
+                return Err(Error::configuration(
+                    "a deferred authenticator requires a CONNECT method and owns initial authentication data",
+                ));
+            }
+            if auth.exchange_timeout.is_zero()
+                || std::time::Instant::now()
+                    .checked_add(auth.exchange_timeout)
+                    .is_none()
+            {
+                return Err(Error::configuration(
+                    "invalid authentication exchange timeout",
+                ));
+            }
         }
         Ok(())
     }

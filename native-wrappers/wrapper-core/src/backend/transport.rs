@@ -95,7 +95,7 @@ fn request(
     common: &CommonConfig,
     protocol: ProtocolVersion,
     target: String,
-    options: rumqttc_v4::NetworkOptions,
+    options: &rumqttc_v4::NetworkOptions,
     generation: &AtomicU64,
 ) -> std::io::Result<TransportRequest> {
     let generation = generation
@@ -110,7 +110,7 @@ fn request(
         deadline: options
             .connection_deadline()
             .ok_or_else(|| TransportFailure::InvalidResult.into_io())?,
-        network: network(&options),
+        network: network(options),
         mode: common
             .connector
             .as_ref()
@@ -127,7 +127,7 @@ pub(super) fn configure_v4(options: &mut rumqttc_v4::MqttOptions, common: &Commo
     let generation = Arc::new(AtomicU64::new(0));
     options.set_socket_connector(move |target, options| {
         let config = config.clone();
-        let request = request(&common, ProtocolVersion::V4, target, options, &generation);
+        let request = request(&common, ProtocolVersion::V4, target, &options, &generation);
         async move { connect(config, request?).await }
     });
 }
@@ -140,7 +140,7 @@ pub(super) fn configure_v5(options: &mut rumqttc_v5::MqttOptions, common: &Commo
     let generation = Arc::new(AtomicU64::new(0));
     options.set_socket_connector(move |target, options| {
         let config = config.clone();
-        let request = request(&common, ProtocolVersion::V5, target, options, &generation);
+        let request = request(&common, ProtocolVersion::V5, target, &options, &generation);
         async move { connect(config, request?).await }
     });
 }
@@ -231,9 +231,8 @@ mod tests {
                 request,
             )
             .await;
-            let error = match result {
-                Err(error) => error,
-                Ok(_) => panic!("late connection accepted"),
+            let Err(error) = result else {
+                panic!("late connection accepted")
             };
             assert_eq!(failure(&error), Some(TransportFailure::Timeout));
             assert_eq!(calls.load(Ordering::SeqCst), usize::from(blocking));

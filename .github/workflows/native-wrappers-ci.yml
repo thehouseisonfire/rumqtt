@@ -88,7 +88,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      # Clippy below applies machine suggestions, so package the pristine checkout first.
       - name: Check published package contents
         if: ${{ runner.os == 'Linux' }}
         run: |
@@ -98,10 +97,7 @@ jobs:
       - name: Lint wrapper crates
         env:
           RUSTFLAGS: "-D warnings -W clippy::pedantic -W clippy::nursery"
-        run: |
-          cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-wrapper-core-next
-          cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-c-next
-          cargo clippy --fix --allow-dirty --verbose --all-targets -p rumqttc-python-next
+        run: cargo clippy --locked --workspace --all-targets
 
       - name: Check documentation
         if: ${{ matrix.os != 'windows-latest' }}

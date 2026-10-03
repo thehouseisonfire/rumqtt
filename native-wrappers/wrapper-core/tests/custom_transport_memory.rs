@@ -209,6 +209,10 @@ async fn serve(
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn native_client_composes_and_reconnects_over_short_memory_io() {
     let fixture = tls::Fixture::new();
     for mqtt5 in [false, true] {

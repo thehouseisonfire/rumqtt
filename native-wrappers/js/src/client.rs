@@ -34,7 +34,7 @@ pub struct NativeMqttClient {
 static ACTIVE_NATIVE_CLIENTS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "panic-testing")]
-pub(crate) fn active_native_clients() -> usize {
+pub fn active_native_clients() -> usize {
     ACTIVE_NATIVE_CLIENTS.load(Ordering::Acquire)
 }
 
@@ -92,15 +92,24 @@ impl EnvironmentClients {
 
 #[napi]
 impl NativeMqttClient {
+    /// Starts a client from its JSON configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid configuration, startup failure, or a constructor panic.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API decodes the constructor argument as an owned string"
+    )]
     #[napi(constructor)]
     pub fn new(env: Env, config_json: String) -> napi::Result<Self> {
-        catch_unwind(AssertUnwindSafe(|| Self::new_inner(env, config_json)))
-            .unwrap_or_else(|_| Err(napi_error(internal_panic("native constructor panicked"))))
+        catch_unwind(AssertUnwindSafe(|| Self::new_inner(env, &config_json)))
+            .unwrap_or_else(|_| Err(napi_error(&internal_panic("native constructor panicked"))))
     }
 
-    fn new_inner(env: Env, config_json: String) -> napi::Result<Self> {
-        let config = config::parse(&config_json).map_err(napi_error)?;
-        let mut native = NativeClient::start(config).map_err(napi_error)?;
+    fn new_inner(env: Env, config_json: &str) -> napi::Result<Self> {
+        let config = config::parse(config_json).map_err(|error| napi_error(&error))?;
+        let mut native = NativeClient::start(config).map_err(|error| napi_error(&error))?;
         let handle = native.handle();
         let connection = native.connection();
         let closer = native.closer();
@@ -134,13 +143,14 @@ impl NativeMqttClient {
     where
         F: Future<Output = String>,
     {
-        if let Ok(response) = AssertUnwindSafe(future).catch_unwind().await {
-            response
-        } else {
-            self.boundary_panicked.store(true, Ordering::Release);
-            self.cleanup.signal();
-            internal_panic("native asynchronous boundary panicked")
-        }
+        AssertUnwindSafe(future)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                self.boundary_panicked.store(true, Ordering::Release);
+                self.cleanup.signal();
+                internal_panic("native asynchronous boundary panicked")
+            })
     }
 
     #[napi]
@@ -172,7 +182,7 @@ impl NativeMqttClient {
         self.guard(async {
             let command = match command::publish(topic, payload.to_vec(), options_json.as_deref()) {
                 Ok(command) => command,
-                Err(error) => return local_error(error),
+                Err(error) => return local_error(&error),
             };
             match self.handle.admit_async(Command::Publish(command)).await {
                 Ok(admission) => completion::admission(&admission),
@@ -192,7 +202,7 @@ impl NativeMqttClient {
         self.guard(async {
             let command = match command::publish(topic, payload.to_vec(), options_json.as_deref()) {
                 Ok(command) => command,
-                Err(error) => return local_error(error),
+                Err(error) => return local_error(&error),
             };
             match self.handle.admit_async(Command::Publish(command)).await {
                 Ok(admission) => completion::wait(admission).await,
@@ -207,7 +217,7 @@ impl NativeMqttClient {
         self.guard(async {
             let command = match command::subscribe(&filters_json, options_json.as_deref()) {
                 Ok(command) => command,
-                Err(error) => return local_error(error),
+                Err(error) => return local_error(&error),
             };
             match self.handle.admit_async(Command::Subscribe(command)).await {
                 Ok(admission) => completion::wait(admission).await,
@@ -222,7 +232,7 @@ impl NativeMqttClient {
         self.guard(async {
             let command = match command::unsubscribe(&filters_json, options_json.as_deref()) {
                 Ok(command) => command,
-                Err(error) => return local_error(error),
+                Err(error) => return local_error(&error),
             };
             match self.handle.admit_async(Command::Unsubscribe(command)).await {
                 Ok(admission) => completion::wait(admission).await,
@@ -237,12 +247,10 @@ impl NativeMqttClient {
         self.guard(async {
             let (_, ack_id, lossless) = ack_id.get_u64();
             if !lossless {
-                return local_error("acknowledgement identifier is out of range".to_owned());
+                return local_error("acknowledgement identifier is out of range");
             }
             let Some(token) = self.acknowledgements.take(ack_id) else {
-                return local_error(
-                    "acknowledgement was already consumed or is invalid".to_owned(),
-                );
+                return local_error("acknowledgement was already consumed or is invalid");
             };
             match self.handle.admit_async(Command::Acknowledge(token)).await {
                 Ok(admission) => completion::wait(admission).await,
@@ -266,6 +274,7 @@ impl NativeMqttClient {
                 Ok(None) => json!({ "ok": true, "done": true }).to_string(),
                 Err(error) => response_error(&error, None),
             };
+            drop(events);
             if self.boundary_panicked.load(Ordering::Acquire)
                 && !self.panic_event_reported.swap(true, Ordering::AcqRel)
             {
@@ -303,7 +312,7 @@ impl NativeMqttClient {
             {
                 Ok(Ok(_)) => json!({ "ok": true }).to_string(),
                 Ok(Err(error)) => response_error(&error, None),
-                Err(error) => local_error(format!("close task failed: {error}")),
+                Err(error) => local_error(&format!("close task failed: {error}")),
             }
         })
         .await
@@ -320,7 +329,7 @@ impl NativeMqttClient {
             {
                 Ok(Ok(())) => json!({ "ok": true }).to_string(),
                 Ok(Err(error)) => response_error(&error, None),
-                Err(error) => local_error(format!("immediate-close task failed: {error}")),
+                Err(error) => local_error(&format!("immediate-close task failed: {error}")),
             }
         })
         .await
@@ -331,6 +340,11 @@ impl NativeMqttClient {
 #[napi]
 impl NativeMqttClient {
     #[napi]
+    /// Injects a panic handled by the native boundary for lifecycle testing.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "The injected panic is caught inside the exported boundary"
+    )]
     pub fn inject_sync_panic(&self) -> String {
         let result = catch_unwind(AssertUnwindSafe(|| panic!("synchronous test panic")));
         debug_assert!(result.is_err());
@@ -340,6 +354,11 @@ impl NativeMqttClient {
     }
 
     #[napi]
+    /// Injects a panic handled by the native boundary for lifecycle testing.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "The injected panic is caught inside the exported boundary"
+    )]
     pub async fn inject_async_panic(&self) -> String {
         self.guard(async { panic!("asynchronous test panic") })
             .await
@@ -367,7 +386,7 @@ fn panic_event(message: &str) -> serde_json::Value {
     })
 }
 
-fn local_error(message: String) -> String {
+fn local_error(message: &str) -> String {
     json!({
         "ok": false,
         "error": {

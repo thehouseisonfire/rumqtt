@@ -215,6 +215,7 @@ impl TransportOperation {
             let State::Pending(sender) = std::mem::replace(&mut *state, State::Completed) else {
                 unreachable!()
             };
+            drop(state);
             (sender, result)
         };
         if sender.send(result).is_ok() {
@@ -327,7 +328,8 @@ impl TransportConnector for Connector {
                 .deadline
                 .saturating_duration_since(std::time::Instant::now())
                 .as_nanos()
-                .min(u128::from(u64::MAX)) as u64,
+                .try_into()
+                .unwrap_or(u64::MAX),
             target: view_string(&context.target),
             client_id: view_string(&context.client_id),
             send_buffer_present: u8::from(network.tcp_send_buffer_size.is_some()),
@@ -658,7 +660,7 @@ unsafe fn parse_response(
             if !Arc::ptr_eq(&stream.registration, inner.owner.registration()) {
                 return Err(invalid);
             }
-            if stream.connect_id != inner.id || stream.generation != inner.generation {
+            if (stream.connect_id, stream.generation) != (inner.id, inner.generation) {
                 return Err(crate::error::INVALID_STATE);
             }
             if stream
@@ -742,7 +744,7 @@ mod tests {
     unsafe fn retain(data: *mut c_void, token: *mut rumqttc_callback_completion) {
         let mut retained = ptr::null_mut();
         assert_eq!(
-            unsafe { rumqttc_callback_completion_retain(token, &mut retained) },
+            unsafe { rumqttc_callback_completion_retain(token, &raw mut retained) },
             OK
         );
         unsafe { host(data) }
@@ -782,7 +784,12 @@ mod tests {
         let data = Box::into_raw(Box::new(host.clone())).cast();
         assert_eq!(
             unsafe {
-                rumqttc_transport_registration_new(&table, data, &mut handle, ptr::null_mut())
+                rumqttc_transport_registration_new(
+                    &raw const table,
+                    data,
+                    &raw mut handle,
+                    ptr::null_mut(),
+                )
             },
             OK
         );
@@ -798,7 +805,7 @@ mod tests {
             target: "supplied.invalid:1883".into(),
             generation,
             deadline: Instant::now() + Duration::from_secs(1),
-            network: Default::default(),
+            network: rumqttc_wrapper_core::NetworkConfig::default(),
             mode: TransportMode::Base,
         }
     }
@@ -834,9 +841,9 @@ mod tests {
             unsafe {
                 rumqttc_transport_stream_new(
                     token,
-                    &table,
+                    &raw const table,
                     Box::into_raw(Box::new(host.clone())).cast(),
-                    &mut stream,
+                    &raw mut stream,
                     ptr::null_mut(),
                 )
             },
@@ -846,18 +853,20 @@ mod tests {
     }
     async fn connected(connector: &Connector, host: &Arc<Host>) -> TransportConnection {
         let future = connector.connect(request(1));
-        let token = token(host);
-        let stream = new_stream(token, host);
-        let mut reply = response();
-        reply.stream = stream;
-        reply.network_handling = 2;
-        assert_eq!(
-            unsafe { rumqttc_callback_transport_complete(token, &reply) },
-            OK
-        );
-        unsafe {
-            rumqttc_transport_stream_destroy(stream);
-            rumqttc_callback_completion_destroy(token);
+        {
+            let token = token(host);
+            let stream = new_stream(token, host);
+            let mut reply = response();
+            reply.stream = stream;
+            reply.network_handling = 2;
+            assert_eq!(
+                unsafe { rumqttc_callback_transport_complete(token, &raw const reply) },
+                OK
+            );
+            unsafe {
+                rumqttc_transport_stream_destroy(stream);
+                rumqttc_callback_completion_destroy(token);
+            }
         }
         future.await.unwrap()
     }
@@ -916,13 +925,13 @@ mod tests {
         reply.stream = old_stream;
         reply.network_handling = 2;
         assert_eq!(
-            unsafe { rumqttc_callback_transport_complete(next_token, &reply) },
+            unsafe { rumqttc_callback_transport_complete(next_token, &raw const reply) },
             crate::error::INVALID_STATE
         );
         let fresh = new_stream(next_token, &host);
         reply.stream = fresh;
         assert_eq!(
-            unsafe { rumqttc_callback_transport_complete(next_token, &reply) },
+            unsafe { rumqttc_callback_transport_complete(next_token, &raw const reply) },
             OK
         );
         assert_eq!(
@@ -952,7 +961,7 @@ mod tests {
         reply.bytes.data = std::ptr::dangling();
         reply.bytes.len = 5;
         assert_eq!(
-            unsafe { rumqttc_callback_transport_complete(read_token, &reply) },
+            unsafe { rumqttc_callback_transport_complete(read_token, &raw const reply) },
             OK
         );
         assert_eq!(
@@ -973,7 +982,7 @@ mod tests {
         let mut reply = response();
         reply.count = 2;
         assert_eq!(
-            unsafe { rumqttc_callback_transport_complete(write_token, &reply) },
+            unsafe { rumqttc_callback_transport_complete(write_token, &raw const reply) },
             OK
         );
         assert_eq!(work.await.unwrap(), 2);
@@ -1001,7 +1010,7 @@ mod tests {
         reply.stream = stream;
         reply.network_handling = 2;
         assert_eq!(
-            unsafe { rumqttc_callback_transport_complete(token, &reply) },
+            unsafe { rumqttc_callback_transport_complete(token, &raw const reply) },
             OK
         );
         assert!(matches!(

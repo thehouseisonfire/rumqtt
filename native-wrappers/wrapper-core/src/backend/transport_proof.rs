@@ -185,6 +185,7 @@ impl<T> Operation<T> {
             else {
                 unreachable!("state checked under lock")
             };
+            drop(state);
             (sender, result)
         };
         if sender.send(result).is_ok() {
@@ -316,7 +317,7 @@ impl OwnedIo for CStream {
                 max,
                 complete_read,
                 release::<Bytes>,
-            )
+            );
         };
         future
     }
@@ -334,7 +335,7 @@ impl OwnedIo for CStream {
                 limit,
                 complete_count,
                 release::<usize>,
-            )
+            );
         };
         future
     }
@@ -429,8 +430,8 @@ async fn short_io_eof_and_shutdown_release_every_owner() {
 fn pending_read_survives_a_changed_caller_buffer_and_copies_completion_bytes() {
     let (fixture, counts) = fixture(16, 0);
     let mut io = stream(&fixture);
-    let wakes = Arc::new(Wakes::default());
-    let waker = Waker::from(wakes.clone());
+    let notifications = Arc::new(Wakes::default());
+    let waker = Waker::from(notifications.clone());
     let mut cx = Context::from_waker(&waker);
     let mut original = vec![0; 10];
     assert!(poll_read(&mut io, &mut cx, &mut original).is_pending());
@@ -439,7 +440,7 @@ fn pending_read_survives_a_changed_caller_buffer_and_copies_completion_bytes() {
     std::thread::spawn(move || completion.feed(b"0123456789"))
         .join()
         .unwrap();
-    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    assert!(notifications.0.load(Ordering::SeqCst) > 0);
     // C's completion stack allocation has already disappeared.
     let mut replacement = [0; 3];
     assert_eq!(ready(poll_read(&mut io, &mut cx, &mut replacement)), 3);
@@ -492,9 +493,8 @@ fn assert_ready_read_cannot_complete_a_later_read(ready_on_feed: bool) {
         );
     }
     let worker_fixture = fixture.clone();
-    let worker_pause = pause.clone();
     let worker = std::thread::spawn(move || {
-        let _pause = worker_pause;
+        let _pause = pause;
         if ready_on_feed {
             worker_fixture.feed(b"a");
             None
@@ -566,8 +566,8 @@ fn reading_claims_buffered_input_before_delivering_its_callback() {
 fn buffered_writes_are_bounded_and_pending_accepts_no_new_bytes() {
     let (fixture, counts) = fixture(CHUNK, 1 << WRITE);
     let mut io = stream(&fixture);
-    let wakes = Arc::new(Wakes::default());
-    let waker = Waker::from(wakes.clone());
+    let notifications = Arc::new(Wakes::default());
+    let waker = Waker::from(notifications.clone());
     let mut cx = Context::from_waker(&waker);
     let mut input = vec![7; CHUNK * 2];
     assert_eq!(ready(Pin::new(&mut io).poll_write(&mut cx, &input)), CHUNK);
@@ -582,7 +582,7 @@ fn buffered_writes_are_bounded_and_pending_accepts_no_new_bytes() {
     assert_eq!(fixture.status(true), ACCEPTED);
     assert_eq!(fixture.status(false), INVALID_STATE);
     assert_eq!(fixture.outgoing(), vec![7; CHUNK]);
-    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    assert!(notifications.0.load(Ordering::SeqCst) > 0);
     assert_eq!(ready(Pin::new(&mut io).poll_write(&mut cx, b"next")), 4);
     fixture.finish(WRITE);
     ready(Pin::new(&mut io).poll_flush(&mut cx));
@@ -600,8 +600,8 @@ fn buffered_writes_are_bounded_and_pending_accepts_no_new_bytes() {
 fn reading_progresses_short_buffered_writes_without_an_explicit_flush() {
     let (fixture, counts) = fixture(2, 1 << WRITE);
     let mut io = stream(&fixture);
-    let wakes = Arc::new(Wakes::default());
-    let waker = Waker::from(wakes.clone());
+    let notifications = Arc::new(Wakes::default());
+    let waker = Waker::from(notifications.clone());
     let mut cx = Context::from_waker(&waker);
     assert_eq!(ready(Pin::new(&mut io).poll_write(&mut cx, b"hello")), 5);
     let mut output = [0; 2];
@@ -616,7 +616,7 @@ fn reading_progresses_short_buffered_writes_without_an_explicit_flush() {
     fixture.feed(b"ok");
     assert_eq!(ready(poll_read(&mut io, &mut cx, &mut output)), 2);
     assert_eq!(&output, b"ok");
-    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    assert!(notifications.0.load(Ordering::SeqCst) > 0);
     drop(io);
     drop(fixture);
     assert_released(&counts, 1, 1);
@@ -808,13 +808,13 @@ fn empty_buffers_start_no_operations_and_large_reads_are_bounded() {
 fn released_unfinished_host_work_wakes_its_observer_with_an_error() {
     let (fixture, counts) = fixture(16, 0);
     let mut io = stream(&fixture);
-    let wakes = Arc::new(Wakes::default());
-    let waker = Waker::from(wakes.clone());
+    let notifications = Arc::new(Wakes::default());
+    let waker = Waker::from(notifications.clone());
     let mut cx = Context::from_waker(&waker);
     let mut input = [0; 1];
     assert!(poll_read(&mut io, &mut cx, &mut input).is_pending());
     fixture.release_pending();
-    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    assert!(notifications.0.load(Ordering::SeqCst) > 0);
     assert_eq!(
         error(poll_read(&mut io, &mut cx, &mut input)),
         io::ErrorKind::BrokenPipe
@@ -856,8 +856,8 @@ fn completion_racing_waker_registration_never_loses_a_wakeup() {
         let (fixture, counts) = fixture(16, 1 << READ);
         fixture.feed(b"x");
         let mut read = CStream(fixture.clone()).read(1);
-        let wakes = Arc::new(Wakes::default());
-        let waker = Waker::from(wakes.clone());
+        let notifications = Arc::new(Wakes::default());
+        let waker = Waker::from(notifications.clone());
         let mut cx = Context::from_waker(&waker);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_barrier = barrier.clone();
@@ -870,7 +870,7 @@ fn completion_racing_waker_registration_never_loses_a_wakeup() {
         let first_poll = read.as_mut().poll(&mut cx);
         worker.join().unwrap();
         let result = if first_poll.is_pending() {
-            assert!(wakes.0.load(Ordering::SeqCst) > 0);
+            assert!(notifications.0.load(Ordering::SeqCst) > 0);
             ready(read.as_mut().poll(&mut cx))
         } else {
             ready(first_poll)
@@ -886,7 +886,9 @@ fn completion_racing_waker_registration_never_loses_a_wakeup() {
 async fn synchronous_one_byte_writes_yield_and_preserve_byte_order() {
     let (fixture, counts) = fixture(1, 0);
     let mut io = stream(&fixture);
-    let data: Vec<u8> = (0..1024).map(|index| (index % 256) as u8).collect();
+    let data: Vec<u8> = (0..1024)
+        .map(|index| u8::try_from(index % 256).unwrap())
+        .collect();
     tokio::time::timeout(Duration::from_secs(2), async {
         io.write_all(&data).await.unwrap();
         io.flush().await.unwrap();
@@ -952,6 +954,10 @@ fn publish_id(wire: &[u8]) -> u16 {
 macro_rules! native_protocol_proof {
     ($name:ident, $native:ident, $configure:expr, $connack:expr, $timeout:pat) => {
         #[tokio::test]
+        #[allow(
+            clippy::too_many_lines,
+            reason = "Keep the protocol scenario setup, actions, and assertions together"
+        )]
         async fn $name() {
             let counts = Arc::new(Counts::default());
             let registration = Arc::new(Registration(counts.clone()));

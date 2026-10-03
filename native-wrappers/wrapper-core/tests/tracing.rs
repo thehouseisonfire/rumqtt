@@ -98,6 +98,7 @@ impl Subscriber for Capture {
         let mut output = self.output.lock().unwrap();
         output.push_str(attributes.metadata().name());
         attributes.record(&mut Fields(&mut output));
+        drop(output);
         Id::from_u64(self.next.fetch_add(1, Ordering::Relaxed) + 1)
     }
     fn record(&self, _: &Id, values: &Record<'_>) {
@@ -158,4 +159,5 @@ fn lifecycle_and_admission_traces_do_not_capture_credentials_or_commands() {
     ] {
         assert!(!output.contains(secret), "trace leaked {secret}");
     }
+    drop(output);
 }

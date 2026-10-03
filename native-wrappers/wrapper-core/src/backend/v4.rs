@@ -4,7 +4,7 @@ use crate::{
     SubscribeResult, TerminalOutcome, UnsubscribeCompletion,
 };
 
-pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
+pub fn map_client_error(error: &rumqttc_v4::ClientError) -> Error {
     let kind = match error {
         rumqttc_v4::ClientError::RequestChannelFull(_) => ErrorKind::Backpressure,
         rumqttc_v4::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
@@ -14,20 +14,20 @@ pub fn map_client_error(error: rumqttc_v4::ClientError) -> Error {
     Error::new(kind, "MQTT request admission failed").with_delivery(DeliveryStatus::NotAdmitted)
 }
 
-pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
+pub fn map_connection_error(error: &rumqttc_v4::ConnectionError) -> Error {
     #[cfg(feature = "websocket")]
-    if let rumqttc_v4::ConnectionError::RequestModifier(source) = &error
+    if let rumqttc_v4::ConnectionError::RequestModifier(source) = error
         && let Some(failure) = source.downcast_ref::<crate::WebSocketHandshakeFailure>()
     {
         return Error::websocket(*failure);
     }
-    if let Some(failure) = crate::tls_advanced::callback_failure(&error) {
+    if let Some(failure) = crate::tls_advanced::callback_failure(error) {
         return Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
-    if let Some(failure) = super::transport::failure(&error) {
+    if let Some(failure) = super::transport::failure(error) {
         return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
-    if let rumqttc_v4::ConnectionError::SessionStore(source) = &error {
+    if let rumqttc_v4::ConnectionError::SessionStore(source) = error {
         return Error::store(
             source
                 .downcast_ref::<crate::StoreFailure>()
@@ -36,7 +36,7 @@ pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
         )
         .with_delivery(DeliveryStatus::Ambiguous);
     }
-    if let rumqttc_v4::ConnectionError::SessionRestore(source) = &error {
+    if let rumqttc_v4::ConnectionError::SessionRestore(source) = error {
         let failure = match source {
             rumqttc_v4::SessionRestoreError::UnsupportedFormatVersion { .. } => {
                 crate::StoreFailure::Version
@@ -66,7 +66,7 @@ pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
         }
         _ => ErrorKind::Protocol,
     };
-    let reason = match &error {
+    let reason = match error {
         rumqttc_v4::ConnectionError::ConnectionRefused(reason) => Some(*reason as u8),
 
         _ => None,
@@ -74,7 +74,8 @@ pub fn map_connection_error(error: rumqttc_v4::ConnectionError) -> Error {
     // Error source chains may contain raw packets, credentials, or peer-supplied
     // text. Owned connection events carry legal details without logging them.
     let error = Error::new(kind, "MQTT connection failed").with_delivery(DeliveryStatus::Ambiguous);
-    reason.map_or(error.clone(), |reason| error.with_broker_reason(reason))
+    let Some(reason) = reason else { return error };
+    error.with_broker_reason(reason)
 }
 
 pub const fn map_outgoing(outgoing: &rumqttc_v4::Outgoing) -> OutgoingActivity {
@@ -110,10 +111,7 @@ use crate::{
     WrapperEvent,
 };
 
-fn build_options(
-    common: &crate::CommonConfig,
-    protocol: crate::V4Config,
-) -> crate::Result<rumqttc_v4::MqttOptions> {
+fn build_transport_options(common: &crate::CommonConfig) -> crate::Result<rumqttc_v4::MqttOptions> {
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     let tls = match &common.transport {
         crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
@@ -121,7 +119,7 @@ fn build_options(
         }
         _ => None,
     };
-    let mut options = match (&common.broker, &common.transport) {
+    let options = match (&common.broker, &common.transport) {
         (
             crate::BrokerTarget::Tcp { host, port },
             crate::TransportConfig::Tcp | crate::TransportConfig::Tls(_),
@@ -174,11 +172,23 @@ fn build_options(
         }
     };
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-    if matches!(common.transport, crate::TransportConfig::Tls(_)) {
+    let options = if matches!(common.transport, crate::TransportConfig::Tls(_)) {
+        let mut options = options;
         options.set_transport(rumqttc_v4::Transport::tls_with_config(
             tls.expect("TLS built"),
         ));
-    }
+        options
+    } else {
+        options
+    };
+    Ok(options)
+}
+
+fn build_options(
+    common: &crate::CommonConfig,
+    protocol: crate::V4Config,
+) -> crate::Result<rumqttc_v4::MqttOptions> {
+    let mut options = build_transport_options(common)?;
     options.set_keep_alive(crate::handle::duration_to_u16(
         common.keep_alive,
         "keep alive",
@@ -315,6 +325,10 @@ pub fn build(
         }),
     ))
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep poll ownership and cancellation arbitration in one driver loop"
+)]
 pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
     let Driver {
         mut eventloop,
@@ -423,7 +437,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 let error = shared.contextualize(
                     websocket
                         .failure()
-                        .map_or_else(|| map_connection_error(error), Error::websocket),
+                        .map_or_else(|| map_connection_error(&error), Error::websocket),
                 );
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
@@ -499,7 +513,7 @@ fn map_v4_event(
                         .backend()
                         .prepare_v4_ack(&publish)
                         .and_then(|ack| shared.prepare_ack(ack)),
-                    _ => None,
+                    rumqttc_v4::QoS::AtMostOnce => None,
                 }
             } else {
                 None

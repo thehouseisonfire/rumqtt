@@ -618,6 +618,10 @@ fn concurrent_close_honors_each_callers_timeout() {
     broker.join().unwrap();
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn assert_manual_ack(protocol: u32) {
     // SAFETY: This test owns every handle and provides valid views and output locations for each
     // ABI call.
@@ -704,9 +708,9 @@ fn assert_manual_ack(protocol: u32) {
 
         // Every rejected option attempt must preserve the event's acknowledgement token.
         let mut content: rumqttc_v5_acknowledgement_options_t = std::mem::zeroed();
-        content.struct_size = std::mem::size_of_val(&content) as u32;
+        content.struct_size = u32::try_from(std::mem::size_of_val(&content)).unwrap();
         let mut options: rumqttc_acknowledgement_options_t = std::mem::zeroed();
-        options.struct_size = std::mem::size_of_val(&options) as u32;
+        options.struct_size = u32::try_from(std::mem::size_of_val(&options)).unwrap();
         options.protocol_options = 5;
         options.v5_options = &content;
         for reason in if protocol == 1 {
@@ -811,6 +815,10 @@ fn manual_acknowledgement_is_event_bound_for_both_protocols() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn acknowledgement_options_serialize_duplicate_calls_and_close_races() {
     // Handles stay live until every concurrent call has returned. Event/client destruction may
     // then overlap the driver's processing of admitted work, but never a call using their pointers.
@@ -846,6 +854,10 @@ fn acknowledgement_options_serialize_duplicate_calls_and_close_races() {
             );
             let barrier =
                 std::sync::Arc::new(std::sync::Barrier::new(if race_close { 4 } else { 3 }));
+            #[allow(
+                clippy::needless_collect,
+                reason = "All workers must start before the barrier is released"
+            )]
             let workers: Vec<_> = (0..2)
                 .map(|_| {
                     let barrier = std::sync::Arc::clone(&barrier);
@@ -853,8 +865,10 @@ fn acknowledgement_options_serialize_duplicate_calls_and_close_races() {
                     let event = event as usize;
                     thread::spawn(move || {
                         let content = rumqttc_v5_acknowledgement_options_t {
-                            struct_size: std::mem::size_of::<rumqttc_v5_acknowledgement_options_t>()
-                                as u32,
+                            struct_size: u32::try_from(std::mem::size_of::<
+                                rumqttc_v5_acknowledgement_options_t,
+                            >())
+                            .unwrap(),
                             reason_code: 0x99,
                             reason_string_present: 0,
                             reserved: [0; 7],
@@ -863,8 +877,10 @@ fn acknowledgement_options_serialize_duplicate_calls_and_close_races() {
                             user_property_count: 0,
                         };
                         let options = rumqttc_acknowledgement_options_t {
-                            struct_size: std::mem::size_of::<rumqttc_acknowledgement_options_t>()
-                                as u32,
+                            struct_size: u32::try_from(std::mem::size_of::<
+                                rumqttc_acknowledgement_options_t,
+                            >())
+                            .unwrap(),
                             protocol_options: 5,
                             v5_options: &content,
                             reserved: [0; 2],
@@ -938,6 +954,10 @@ fn acknowledgement_options_serialize_duplicate_calls_and_close_races() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn added_configuration_records_validate_before_start() {
     // SAFETY: All handles and input arrays remain live for each call and are destroyed here.
     unsafe {
@@ -949,7 +969,8 @@ fn added_configuration_records_validate_before_start() {
         assert_eq!(rumqttc_config_new(2, &mut v5, ptr::null_mut()), 0);
 
         let mut properties = rumqttc_v5_will_properties_t {
-            struct_size: std::mem::size_of::<rumqttc_v5_will_properties_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_v5_will_properties_t>())
+                .unwrap(),
             will_delay_present: 0,
             payload_format_present: 0,
             message_expiry_present: 0,
@@ -967,7 +988,7 @@ fn added_configuration_records_validate_before_start() {
             user_property_count: 0,
         };
         let will = rumqttc_last_will_t {
-            struct_size: std::mem::size_of::<rumqttc_last_will_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_last_will_t>()).unwrap(),
             topic: string_view("test/will"),
             payload: bytes_view(b"payload"),
             qos: 1,
@@ -1013,7 +1034,8 @@ fn added_configuration_records_validate_before_start() {
         );
 
         let connect = rumqttc_v5_connect_properties_t {
-            struct_size: std::mem::size_of::<rumqttc_v5_connect_properties_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_v5_connect_properties_t>())
+                .unwrap(),
             session_expiry_present: 0,
             receive_maximum_present: 1,
             maximum_packet_size_present: 0,
@@ -1077,7 +1099,8 @@ fn disconnect_options_reject_v4_without_closing_it() {
         );
         rumqttc_event_destroy(connected);
         let properties = rumqttc_v5_disconnect_properties_t {
-            struct_size: std::mem::size_of::<rumqttc_v5_disconnect_properties_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_v5_disconnect_properties_t>())
+                .unwrap(),
             reason_code: 0,
             session_expiry_present: 0,
             reason_string_present: 0,
@@ -1090,7 +1113,8 @@ fn disconnect_options_reject_v4_without_closing_it() {
             user_property_count: 0,
         };
         let options = rumqttc_disconnect_options_t {
-            struct_size: std::mem::size_of::<rumqttc_disconnect_options_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_disconnect_options_t>())
+                .unwrap(),
             protocol_options: 5,
             v5_properties: &properties,
             reserved: [0; 2],
@@ -1112,6 +1136,10 @@ fn disconnect_options_reject_v4_without_closing_it() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn explicit_tls_backend_matches_loaded_capabilities() {
     // SAFETY: Every C input points to live caller-owned storage for the call;
     // each returned handle is destroyed before the test ends.
@@ -1119,7 +1147,7 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
         let mut config = ptr::null_mut();
         assert_eq!(rumqttc_config_new(1, &mut config, ptr::null_mut()), 0);
         let mut options = rumqttc_tls_options_t {
-            struct_size: std::mem::size_of::<rumqttc_tls_options_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_tls_options_t>()).unwrap(),
             backend: 1,
             root_policy: 0,
             reserved: 0,
@@ -1182,7 +1210,7 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
         rumqttc_config_destroy(config);
 
         let mut malformed = rumqttc_tls_options_t {
-            struct_size: std::mem::size_of::<rumqttc_tls_options_t>() as u32,
+            struct_size: u32::try_from(std::mem::size_of::<rumqttc_tls_options_t>()).unwrap(),
             backend: 1,
             root_policy: 0,
             reserved: 1,
@@ -1202,7 +1230,8 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
         malformed.reserved = 0;
         if capabilities & (1 << 3) != 0 {
             let pkcs12 = rumqttc_tls_pkcs12_identity_t {
-                struct_size: std::mem::size_of::<rumqttc_tls_pkcs12_identity_t>() as u32,
+                struct_size: u32::try_from(std::mem::size_of::<rumqttc_tls_pkcs12_identity_t>())
+                    .unwrap(),
                 reserved: 0,
                 identity: bytes_view(b"dummy"),
                 password: bytes_view(b"secret"),
@@ -1256,6 +1285,10 @@ fn explicit_tls_backend_matches_loaded_capabilities() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn v4_session_present_compatibility_is_additive_and_observed_separately() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

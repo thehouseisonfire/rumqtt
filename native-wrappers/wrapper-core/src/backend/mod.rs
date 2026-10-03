@@ -62,7 +62,7 @@ pub enum AckKey {
 impl BackendClient {
     pub(crate) fn try_reauthenticate(
         &self,
-        properties: Option<crate::AuthProperties>,
+        properties: Option<&crate::AuthProperties>,
     ) -> Result<CompletionFuture> {
         let Self::V5(client) = self else {
             return Err(protocol_option_error("reauthentication requires MQTT 5"));
@@ -74,7 +74,7 @@ impl BackendClient {
         }
         let notice = client
             .try_reauth_tracked(None)
-            .map_err(v5::map_client_error)?;
+            .map_err(|error| v5::map_client_error(&error))?;
         Ok(Box::pin(async move {
             notice
                 .wait_async()
@@ -122,7 +122,7 @@ impl BackendClient {
                 let options = v4::publish_options(&command);
                 let notice = client
                     .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(v4::map_client_error)?;
+                    .map_err(|error| v4::map_client_error(&error))?;
                 Ok(Box::pin(async move {
                     v4::map_publish_notice(notice.wait_async().await)
                 }))
@@ -132,7 +132,7 @@ impl BackendClient {
                 let options = v5::publish_options(&command);
                 let notice = client
                     .try_publish_tracked(command.topic, command.payload, options)
-                    .map_err(v5::map_client_error)?;
+                    .map_err(|error| v5::map_client_error(&error))?;
                 Ok(Box::pin(async move {
                     v5::map_publish_notice(notice.wait_async().await)
                 }))
@@ -162,7 +162,7 @@ impl BackendClient {
                     .collect::<Vec<_>>();
                 let notice = client
                     .try_subscribe_many_tracked(filters)
-                    .map_err(v4::map_client_error)?;
+                    .map_err(|error| v4::map_client_error(&error))?;
                 Ok(Box::pin(async move {
                     v4::map_subscribe_notice(notice.wait_async().await)
                 }))
@@ -199,7 +199,7 @@ impl BackendClient {
                 } else {
                     client.try_subscribe_many_tracked(filters)
                 }
-                .map_err(v5::map_client_error)?;
+                .map_err(|error| v5::map_client_error(&error))?;
                 Ok(Box::pin(async move {
                     v5::map_subscribe_notice(notice.wait_async().await)
                 }))
@@ -217,7 +217,7 @@ impl BackendClient {
                 }
                 let notice = client
                     .try_unsubscribe_many_tracked(command.filters)
-                    .map_err(v4::map_client_error)?;
+                    .map_err(|error| v4::map_client_error(&error))?;
                 Ok(Box::pin(async move {
                     v4::map_unsubscribe_notice(notice.wait_async().await)
                 }))
@@ -234,7 +234,7 @@ impl BackendClient {
                             v5::to_unsubscribe_properties(properties),
                         ),
                 }
-                .map_err(v5::map_client_error)?;
+                .map_err(|error| v5::map_client_error(&error))?;
                 Ok(Box::pin(async move {
                     v5::map_unsubscribe_notice(notice.wait_async().await)
                 }))
@@ -260,10 +260,10 @@ impl BackendClient {
         match (self, ack) {
             (Self::V4(client), PreparedAck::V4(ack)) => client
                 .try_manual_ack(ack.clone())
-                .map_err(v4::map_client_error),
+                .map_err(|error| v4::map_client_error(&error)),
             (Self::V5(client), PreparedAck::V5(ack)) => client
                 .try_manual_ack(ack.clone())
-                .map_err(v5::map_client_error),
+                .map_err(|error| v5::map_client_error(&error)),
             _ => Err(Error::new(
                 ErrorKind::Internal,
                 "acknowledgement protocol mismatch",
@@ -289,7 +289,7 @@ impl BackendClient {
                 }
                 None => client.try_disconnect_with_properties(reason, properties),
             }
-            .map_err(v5::map_client_error);
+            .map_err(|error| v5::map_client_error(&error));
         }
         match self {
             Self::V4(client) => timeout
@@ -297,13 +297,13 @@ impl BackendClient {
                     || client.try_disconnect(),
                     |timeout| client.try_disconnect_with_timeout(timeout),
                 )
-                .map_err(v4::map_client_error),
+                .map_err(|error| v4::map_client_error(&error)),
             Self::V5(client) => timeout
                 .map_or_else(
                     || client.try_disconnect(),
                     |timeout| client.try_disconnect_with_timeout(timeout),
                 )
-                .map_err(v5::map_client_error),
+                .map_err(|error| v5::map_client_error(&error)),
         }
     }
 
@@ -320,11 +320,15 @@ impl BackendClient {
             let (reason, properties) = v5::disconnect_properties(properties)?;
             return client
                 .try_disconnect_now_with_properties(reason, properties)
-                .map_err(v5::map_client_error);
+                .map_err(|error| v5::map_client_error(&error));
         }
         match self {
-            Self::V4(client) => client.try_disconnect_now().map_err(v4::map_client_error),
-            Self::V5(client) => client.try_disconnect_now().map_err(v5::map_client_error),
+            Self::V4(client) => client
+                .try_disconnect_now()
+                .map_err(|error| v4::map_client_error(&error)),
+            Self::V5(client) => client
+                .try_disconnect_now()
+                .map_err(|error| v5::map_client_error(&error)),
         }
     }
 

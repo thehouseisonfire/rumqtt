@@ -197,51 +197,8 @@ impl ErrorHandle {
 
     pub fn from_core(error: &Error, operation_id: Option<u64>) -> Self {
         let ambiguous = error.delivery_status() == DeliveryStatus::Ambiguous;
-        let status = if error.kind() == ErrorKind::Timeout {
-            TIMEOUT
-        } else if error.websocket_failure().is_some() {
-            WEBSOCKET_HANDSHAKE_ERROR
-        } else if ambiguous {
-            AMBIGUOUS
-        } else if error.broker_reason().is_some()
-            || error.delivery_status() == DeliveryStatus::Rejected
-        {
-            BROKER_REJECTED
-        } else if error.store_failure().is_some() {
-            PERSISTENCE_ERROR
-        } else if error.auth_failure().is_some() {
-            AUTHENTICATION_ERROR
-        } else if error.redirect_failure().is_some() {
-            REDIRECT_ERROR
-        } else {
-            match error.kind() {
-                ErrorKind::Configuration => CONFIG_ERROR,
-                ErrorKind::Admission => INVALID_ARGUMENT,
-                ErrorKind::Backpressure => BACKPRESSURE,
-                ErrorKind::Shutdown if error.delivery_status() == DeliveryStatus::NotAdmitted => {
-                    INVALID_STATE
-                }
-                ErrorKind::Network | ErrorKind::Tls | ErrorKind::Shutdown => DISCONNECTED,
-                ErrorKind::Protocol => PROTOCOL_ERROR,
-                ErrorKind::Authentication => AUTHENTICATION_ERROR,
-                ErrorKind::Timeout => TIMEOUT,
-                ErrorKind::Persistence => PERSISTENCE_ERROR,
-                ErrorKind::Internal => INTERNAL_ERROR,
-            }
-        };
-        let kind = match error.kind() {
-            ErrorKind::Configuration => ERROR_CONFIGURATION,
-            ErrorKind::Admission => ERROR_ADMISSION,
-            ErrorKind::Backpressure => ERROR_BACKPRESSURE,
-            ErrorKind::Network => ERROR_NETWORK,
-            ErrorKind::Tls => ERROR_TLS,
-            ErrorKind::Protocol => ERROR_PROTOCOL,
-            ErrorKind::Authentication => ERROR_AUTHENTICATION,
-            ErrorKind::Persistence => ERROR_PERSISTENCE,
-            ErrorKind::Timeout => ERROR_TIMEOUT,
-            ErrorKind::Shutdown => ERROR_SHUTDOWN,
-            ErrorKind::Internal => ERROR_INTERNAL,
-        };
+        let status = core_status(error);
+        let kind = core_kind(error.kind());
         let mut source_chain = error.to_string();
         let mut source = error.source();
         while let Some(next) = source {
@@ -289,6 +246,56 @@ impl ErrorHandle {
     pub const fn with_operation(mut self, operation_id: u64) -> Self {
         self.operation_id = Some(operation_id);
         self
+    }
+}
+
+const fn core_kind(kind: ErrorKind) -> u32 {
+    match kind {
+        ErrorKind::Configuration => ERROR_CONFIGURATION,
+        ErrorKind::Admission => ERROR_ADMISSION,
+        ErrorKind::Backpressure => ERROR_BACKPRESSURE,
+        ErrorKind::Network => ERROR_NETWORK,
+        ErrorKind::Tls => ERROR_TLS,
+        ErrorKind::Protocol => ERROR_PROTOCOL,
+        ErrorKind::Authentication => ERROR_AUTHENTICATION,
+        ErrorKind::Persistence => ERROR_PERSISTENCE,
+        ErrorKind::Timeout => ERROR_TIMEOUT,
+        ErrorKind::Shutdown => ERROR_SHUTDOWN,
+        ErrorKind::Internal => ERROR_INTERNAL,
+    }
+}
+
+fn core_status(error: &Error) -> u32 {
+    if error.kind() == ErrorKind::Timeout {
+        TIMEOUT
+    } else if error.websocket_failure().is_some() {
+        WEBSOCKET_HANDSHAKE_ERROR
+    } else if error.delivery_status() == DeliveryStatus::Ambiguous {
+        AMBIGUOUS
+    } else if error.broker_reason().is_some() || error.delivery_status() == DeliveryStatus::Rejected
+    {
+        BROKER_REJECTED
+    } else if error.store_failure().is_some() {
+        PERSISTENCE_ERROR
+    } else if error.auth_failure().is_some() {
+        AUTHENTICATION_ERROR
+    } else if error.redirect_failure().is_some() {
+        REDIRECT_ERROR
+    } else {
+        match error.kind() {
+            ErrorKind::Configuration => CONFIG_ERROR,
+            ErrorKind::Admission => INVALID_ARGUMENT,
+            ErrorKind::Backpressure => BACKPRESSURE,
+            ErrorKind::Shutdown if error.delivery_status() == DeliveryStatus::NotAdmitted => {
+                INVALID_STATE
+            }
+            ErrorKind::Network | ErrorKind::Tls | ErrorKind::Shutdown => DISCONNECTED,
+            ErrorKind::Protocol => PROTOCOL_ERROR,
+            ErrorKind::Authentication => AUTHENTICATION_ERROR,
+            ErrorKind::Timeout => TIMEOUT,
+            ErrorKind::Persistence => PERSISTENCE_ERROR,
+            ErrorKind::Internal => INTERNAL_ERROR,
+        }
     }
 }
 

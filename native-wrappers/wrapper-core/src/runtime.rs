@@ -296,12 +296,22 @@ impl NativeClientCloser {
             })
     }
 
+    /// Closes the client and waits for driver teardown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the terminal disconnect error, or a timeout before completion and driver teardown.
     pub fn close(&self, timeout: Duration) -> Result<Completion> {
         self.close_with_options(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
     }
 
     /// Coalesces matching close callers. The first admitted payload wins;
     /// conflicting later payloads fail even after the driver closes.
+    /// Closes the client and waits for driver teardown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid disconnect options, immediate closure, a failed disconnect, or a teardown timeout.
     pub fn close_with_options(
         &self,
         timeout: Duration,
@@ -321,6 +331,7 @@ impl NativeClientCloser {
                             })?;
                     let completion = admission.completion;
                     *state = NativeCloseState::Graceful(completion.clone());
+                    drop(state);
                     completion
                 }
                 NativeCloseState::Graceful(completion) => completion.clone(),
@@ -348,10 +359,20 @@ impl NativeClientCloser {
         Ok(completion)
     }
 
+    /// Closes the client and waits for driver teardown.
+    ///
+    /// # Errors
+    ///
+    /// Returns a shutdown error or a timeout before driver teardown.
     pub fn close_now(&self, timeout: Duration) -> Result<()> {
         self.close_now_with_options(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
     }
 
+    /// Closes the client and waits for driver teardown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid disconnect options, failed shutdown, or a teardown timeout.
     pub fn close_now_with_options(
         &self,
         timeout: Duration,
@@ -361,7 +382,6 @@ impl NativeClientCloser {
         let mut state = self.lock_state_until(started, timeout)?;
         self.handle.check_disconnect_payload(&protocol)?;
         match &*state {
-            NativeCloseState::GracefullyClosed => {}
             NativeCloseState::Graceful(completion)
                 if matches!(
                     completion.try_wait(),
@@ -370,7 +390,7 @@ impl NativeClientCloser {
             {
                 *state = NativeCloseState::GracefullyClosed;
             }
-            NativeCloseState::Immediate => {}
+            NativeCloseState::GracefullyClosed | NativeCloseState::Immediate => {}
             NativeCloseState::Open | NativeCloseState::Graceful(_) => {
                 if let Err(error) = self
                     .handle
@@ -429,6 +449,10 @@ impl NativeClient {
     /// Returns an error when configuration validation, protocol client construction, TLS setup,
     /// or driver-thread creation fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.start", skip_all, fields(protocol = ?config.protocol_version())))]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Build the channels, driver thread, and lifetime owners as one startup transaction"
+    )]
     pub fn start(config: ClientConfig) -> Result<Self> {
         install_boundary_panic_hook();
         config.validate()?;
@@ -496,20 +520,20 @@ impl NativeClient {
             .name(thread_name)
             .spawn(move || {
                 let runtime = runtime.into_runtime();
-                let terminal = match catch_unwind(AssertUnwindSafe(|| {
+                let terminal = catch_unwind(AssertUnwindSafe(|| {
                     runtime.block_on(run_driver(driver, context))
-                })) {
-                    Ok(terminal) => terminal,
-                    Err(_) => TerminalStatus::Failed(
+                }))
+                .unwrap_or_else(|_| {
+                    TerminalStatus::Failed(
                         Error::new(ErrorKind::Internal, "driver thread panicked")
                             .with_code(ErrorCode::InternalPanic),
-                    ),
-                };
+                    )
+                });
                 let terminal = match terminal {
                     TerminalStatus::Failed(error) => {
                         TerminalStatus::Failed(driver_shared.contextualize(error))
                     }
-                    other => other,
+                    other @ TerminalStatus::Closed { .. } => other,
                 };
                 let unresolved = match &terminal {
                     TerminalStatus::Closed { graceful } => Error::new(
@@ -535,7 +559,7 @@ impl NativeClient {
                     ),
                     TerminalStatus::Failed(error) => error.clone(),
                 });
-                driver_shared.fail_all_operations(unresolved);
+                driver_shared.fail_all_operations(&unresolved);
                 _ = terminal_tx.send(terminal);
                 _ = done_tx.send(());
             })

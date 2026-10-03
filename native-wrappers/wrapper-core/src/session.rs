@@ -17,6 +17,7 @@ pub struct SessionStoreKey {
 
 /// Owned, opaque protocol checkpoint. The envelope is versioned independently
 /// of the protocol model. Hosts must store the bytes unchanged.
+///
 /// Envelope version 1 wraps the native protocol codec's independently versioned
 /// bytes. Patch releases preserve this format. Minor releases may advance either
 /// version: unsupported versions fail with [`StoreFailure::Version`] and require

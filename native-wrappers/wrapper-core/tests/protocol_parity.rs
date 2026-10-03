@@ -461,6 +461,10 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn mqtt5_subscribe_and_unsubscribe_extensions_reach_the_wire() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

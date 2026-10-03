@@ -184,7 +184,7 @@ pub enum Completion {
     Subscribe(SubscribeCompletion),
     Unsubscribe(UnsubscribeCompletion),
     /// The selected manual PUBACK/PUBREC flushed locally, including a negative acknowledgement.
-    /// This does not prove broker receipt, application processing, or QoS 2 handshake completion.
+    /// This does not prove broker receipt, application processing, or `QoS` 2 handshake completion.
     Acknowledged,
     Authenticated,
     Diagnostics(crate::DiagnosticsSnapshot),
@@ -293,10 +293,9 @@ impl CompletionHandle {
     /// Returns an error when the driver terminates before reporting completion
     /// or when the operation itself fails.
     pub fn try_wait(&self) -> Result<Option<Completion>> {
-        match self.cell.observe() {
-            Some(outcome) => outcome.result.clone().map(Some),
-            None => Ok(None),
-        }
+        self.cell
+            .observe()
+            .map_or_else(|| Ok(None), |outcome| outcome.result.clone().map(Some))
     }
 
     /// Waits asynchronously for the MQTT operation to finish.
@@ -329,14 +328,18 @@ impl CompletionHandle {
             .result
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while state.is_none() {
+        loop {
+            if let Some(outcome) = state.as_ref() {
+                let outcome = outcome.clone();
+                drop(state);
+                return outcome.result.clone();
+            }
             state = self
                 .cell
                 .completed
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        state.as_ref().expect("completion checked").result.clone()
     }
 
     /// Blocks for at most `timeout` while waiting for the MQTT operation to finish.
@@ -372,6 +375,8 @@ impl CompletionHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(result) = state.as_ref() {
+                let result = result.clone();
+                drop(state);
                 return CompletionWaitOutcome::Completed(result.result.clone());
             }
             let (next, wait) = self
@@ -381,6 +386,7 @@ impl CompletionHandle {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
             if wait.timed_out() && state.is_none() {
+                drop(state);
                 return CompletionWaitOutcome::DeadlineElapsed;
             }
             remaining = timeout.saturating_sub(started.elapsed());

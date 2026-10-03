@@ -156,6 +156,11 @@ pub struct V5DisconnectOptions {
 }
 
 impl V5DisconnectOptions {
+    /// Checks that these properties form a legal client DISCONNECT packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error for an invalid reason, MQTT string, or property value.
     pub fn validate(&self) -> crate::Result<()> {
         crate::backend::v5::disconnect_properties(self).map(|_| ())
     }

@@ -26,9 +26,8 @@ impl SessionStore for MemoryStore {
             match failure {
                 Some(StoreFailure::Panic) => panic!("host secret must not be logged"),
                 Some(StoreFailure::Timeout) => std::future::pending().await,
-                Some(StoreFailure::Save | StoreFailure::Clear) => Ok(checkpoint),
+                Some(StoreFailure::Save | StoreFailure::Clear) | None => Ok(checkpoint),
                 Some(failure) => Err(failure),
-                None => Ok(checkpoint),
             }
         })
     }
@@ -49,6 +48,10 @@ impl SessionStore for MemoryStore {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn restart_recovers_mixed_subscriptions_publishes_and_incoming_qos2() {
     use rumqttc_wrapper_core::*;
     use std::collections::BTreeMap;
@@ -425,6 +428,10 @@ fn pending_load_is_cancelled_by_immediate_shutdown() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn store_completion_races_shutdown_and_abandonment_without_retaining_owner() {
     use rumqttc_wrapper_core::{Completion, DeliveryStatus, ErrorKind, LifecycleState};
     use support::DEADLINE;
@@ -603,6 +610,10 @@ fn malformed_envelopes_are_rejected_without_network_io() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn restart_replays_unacknowledged_publish_with_original_packet_identifier() {
     use rumqttc_wrapper_core::{BrokerTarget, PublishCommand, PublishProtocolOptions, QoS};
     use std::io::{Read, Write};

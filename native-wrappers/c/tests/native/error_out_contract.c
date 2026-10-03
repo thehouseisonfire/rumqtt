@@ -176,6 +176,61 @@ void native_test_error_out_contract(void) {
   EXPECT_FAILURE(rumqttc_config_new(99, &v5, NULL));
   CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &v5, NULL));
 
+  {
+    rumqttc_tls_backend_capabilities_t capabilities = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
+    rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
+    rumqttc_tls_profile_options_t options = RUMQTTC_TLS_PROFILE_OPTIONS_INIT;
+    rumqttc_tls_profile_t *profile = NULL;
+    rumqttc_tls_profile_t *failed_profile = NULL;
+    rumqttc_proxy_options_t proxy = RUMQTTC_PROXY_OPTIONS_INIT;
+    uint64_t features = rumqttc_library_capabilities();
+    if (!(features & RUMQTTC_CAP_RUSTLS))
+      tls.backend = RUMQTTC_TLS_BACKEND_NATIVE;
+    options.tls = &tls;
+    proxy.protocol = RUMQTTC_PROXY_HTTPS;
+    proxy.host = native_string("localhost");
+    proxy.port = 443;
+
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_backend_capabilities */
+    CHECK(rumqttc_tls_backend_capabilities(tls.backend, &capabilities, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_tls_backend_capabilities */
+    REQUIRE(rumqttc_tls_backend_capabilities(UINT32_MAX, &capabilities, NULL) == RUMQTTC_INVALID_ARGUMENT);
+    REQUIRE(capabilities.version_policy_mask == 0 && capabilities.root_policy_mask == 0 &&
+            capabilities.pin_target_mask == 0);
+    /* ERROR_OUT_FAILURE: rumqttc_tls_profile_new */
+    REQUIRE(rumqttc_tls_profile_new(NULL, &failed_profile, NULL) == RUMQTTC_INVALID_ARGUMENT);
+    REQUIRE(failed_profile == NULL);
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_tls_with_profile */
+    REQUIRE(rumqttc_config_set_transport_tls_with_profile(v4, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_transport_wss_with_profile */
+    EXPECT_FAILURE(rumqttc_config_set_transport_wss_with_profile(v4, native_string("wss://localhost"), NULL, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_proxy_with_tls_profile */
+    REQUIRE(rumqttc_config_set_proxy_with_tls_profile(v4, &proxy, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_redirect_policy_with_tls_profile */
+    REQUIRE(rumqttc_config_set_v5_redirect_policy_with_tls_profile(
+                v4, 1, RUMQTTC_REDIRECT_TRANSPORT_TLS, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
+
+    if (features & (RUMQTTC_CAP_RUSTLS | RUMQTTC_CAP_NATIVE_TLS)) {
+      /* ERROR_OUT_SUCCESS: rumqttc_tls_profile_new */
+      CHECK(rumqttc_tls_profile_new(&options, &profile, NULL));
+      REQUIRE(profile != NULL);
+      /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_tls_with_profile */
+      CHECK(rumqttc_config_set_transport_tls_with_profile(v4, profile, NULL));
+      if (features & RUMQTTC_CAP_WEBSOCKET) {
+        /* ERROR_OUT_SUCCESS: rumqttc_config_set_transport_wss_with_profile */
+        CHECK(rumqttc_config_set_transport_wss_with_profile(v4, native_string("wss://localhost"), profile, NULL));
+      }
+      if (features & RUMQTTC_CAP_HTTP_PROXY) {
+        /* ERROR_OUT_SUCCESS: rumqttc_config_set_proxy_with_tls_profile */
+        CHECK(rumqttc_config_set_proxy_with_tls_profile(v4, &proxy, profile, NULL));
+      }
+      /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_redirect_policy_with_tls_profile */
+      CHECK(rumqttc_config_set_v5_redirect_policy_with_tls_profile(
+          v5, 1, RUMQTTC_REDIRECT_TRANSPORT_TLS, profile, NULL));
+      rumqttc_tls_profile_destroy(profile);
+    }
+  }
+
   /* ERROR_OUT_SUCCESS: rumqttc_config_set_broker */
   CHECK(rumqttc_config_set_broker(v4, native_string("127.0.0.1"),
                                   native_test_port(), NULL));

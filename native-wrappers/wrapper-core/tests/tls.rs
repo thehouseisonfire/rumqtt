@@ -17,6 +17,10 @@ mod fixture;
 mod support;
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
+)]
 fn tls_input_ownership_is_released_on_every_driver_exit() {
     struct OwnedPem {
         bytes: Vec<u8>,
@@ -440,6 +444,10 @@ fn native_identity(certificate: &str, key: &str) -> TlsClientIdentity {
 #[expect(
     clippy::result_large_err,
     reason = "tungstenite fixes the handshake callback's error type"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the scenario setup, actions, and assertions together"
 )]
 fn tls_and_wss_enforce_roots_hostname_identity_and_alpn() {
     fixture::install_provider_for_providerless_client();

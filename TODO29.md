@@ -130,18 +130,22 @@ Verified on Linux with:
 - Core tracing integration tests with `--features tracing`, final core unit tests,
   and C `ffi_behavior` tests.
 - Root workspace check; wrapper workspace check with all targets; formatting,
-  `git diff --check`, and workspace Clippy with `-D warnings`.
+  `git diff --check`, and wrapper workspace Clippy with
+  `RUSTFLAGS='-D warnings -W clippy::pedantic -W clippy::nursery'`, including
+  core/C without default features and the combined optional-feature configuration.
+- `cargo hack test --each-feature --exclude-all-features` for wrapper-core:
+  all 18 configurations passed. Strict `cargo hack clippy --all-targets
+  --each-feature --exclude-all-features` for wrapper-core and C: all 33
+  configurations passed. Combined optional-feature core tests also passed.
 - `native-wrappers/c/tests/abi/check.sh all`, ABI helper tests, broker-fixture
-  helper tests, and native CTest: 55 passed, one pre-existing scanner failure.
-  Final targeted integration/acknowledgement consumer runs also passed.
+  helper tests, and native CTest: all 56 passed with TLS, proxy, and SCRAM features.
+  The optional-error scanner covers all 118 APIs; the six TLS-profile/capability
+  APIs now have explicit NULL-error success/failure calls in the native consumer.
 - Rebuilt JavaScript addon: Node tests, TypeScript checks, and broker behavior
   suite. Rebuilt Python extension: 118 unit/API tests passed, 69 broker/lifecycle
   tests passed; fixture-dependent tests are skipped in the standalone unit run.
 
-Existing validation limitations are recorded separately from this implementation:
-strict pedantic/nursery Clippy reports existing wrapper warnings. The native
-optional-error coverage scanner already lacks success/failure markers for six
-TLS-profile/capability APIs in HEAD; all six new acknowledgement accessors have
-explicit native success/failure coverage. The mosquitto-dependent Rust Will test
-remains ignored in the normal workspace run. No historical release comparison or
-non-Linux platform execution is claimed.
+Strict pedantic/nursery warnings and the TLS optional-error coverage gaps have
+been resolved. CI now checks the wrapper workspace without applying lint fixes.
+The mosquitto-dependent Rust Will test remains ignored in the normal workspace
+run. No historical release comparison or non-Linux platform execution is claimed.

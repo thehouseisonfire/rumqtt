@@ -216,7 +216,7 @@ impl Shared {
         self.acknowledgements.invalidate(error);
     }
 
-    pub(crate) fn fail_all_operations(&self, error: Error) {
+    pub(crate) fn fail_all_operations(&self, error: &Error) {
         self.operations.fail_all(error);
     }
 
@@ -395,7 +395,9 @@ impl ClientHandle {
             Command::Publish(command) => self.try_publish(command),
             Command::Subscribe(command) => self.try_subscribe(command),
             Command::Unsubscribe(filters) => self.try_unsubscribe(filters),
-            Command::Acknowledge(token) => self.try_acknowledge(token, &Default::default()),
+            Command::Acknowledge(token) => {
+                self.try_acknowledge(token, &crate::AcknowledgementProtocolOptions::default())
+            }
             Command::AcknowledgeWithOptions { token, protocol } => {
                 self.try_acknowledge(token, &protocol)
             }
@@ -430,7 +432,10 @@ impl ClientHandle {
             Command::Publish(command) => self.publish(command).await,
             Command::Subscribe(command) => self.subscribe(command).await,
             Command::Unsubscribe(filters) => self.unsubscribe(filters).await,
-            Command::Acknowledge(token) => self.acknowledge(token, &Default::default()).await,
+            Command::Acknowledge(token) => {
+                self.acknowledge(token, &crate::AcknowledgementProtocolOptions::default())
+                    .await
+            }
             Command::AcknowledgeWithOptions { token, protocol } => {
                 self.acknowledge(token, &protocol).await
             }

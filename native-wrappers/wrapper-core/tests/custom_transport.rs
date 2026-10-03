@@ -21,7 +21,7 @@ fn custom_streams_reconnect_with_fresh_attempts_and_keep_native_tracking() {
                 connect(&mut socket, mqtt5);
                 let id = publish_id(&mut socket, mqtt5);
                 socket
-                    .write_all(&[0x40, 2, (id >> 8) as u8, id as u8])
+                    .write_all(&[0x40, 2, id.to_be_bytes()[0], id.to_be_bytes()[1]])
                     .unwrap();
                 // Close the first connection; wait for DISCONNECT on the next.
                 if attempt == 1 {
@@ -243,7 +243,8 @@ struct FailingStream {
 
 impl TransportIo for FailingStream {
     fn read(&self, max: usize) -> TransportIoFuture<Bytes> {
-        if let Some(connack) = self.connack.lock().unwrap().take() {
+        let connack = self.connack.lock().unwrap().take();
+        if let Some(connack) = connack {
             assert!(connack.len() <= max);
             return Box::pin(async move { Ok(connack) });
         }

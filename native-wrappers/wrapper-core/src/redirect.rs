@@ -4,10 +4,13 @@ use std::sync::Arc;
 
 use crate::{BrokerTarget, TransportConfig};
 
-/// Redirects are opt-in. Each followed target starts an isolated clean session
+/// Redirects are opt-in.
+///
+/// Each followed target starts an isolated clean session
 /// with a fresh client identifier and cleared CONNECT authentication, store,
 /// proxy credentials, and WebSocket headers. TLS credentials come only from the
 /// explicit redirect transport. Server Reference supplies the WebSocket path.
+///
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RedirectPolicy {
     #[default]
@@ -80,7 +83,9 @@ pub enum SrvFailure {
 pub type SrvFuture =
     Pin<Box<dyn Future<Output = Result<Vec<SrvRecord>, SrvFailure>> + Send + 'static>>;
 
-/// Owned async SRV resolution. Calls are serialized per client and may overlap
+/// Owned async SRV resolution.
+///
+/// Calls are serialized per client and may overlap
 /// across clients. Invocation and polling run on the driver thread without
 /// lifecycle locks; neither may block. Reentrant `ClientHandle` admission is
 /// allowed, but waiting for its completion stalls the driver. The backend's
@@ -88,6 +93,7 @@ pub type SrvFuture =
 /// detached work must own its inputs and ignore late completion. Panics become
 /// typed redirect failures. Owners are released on driver teardown, including
 /// failed start, close, abandonment, and failure (except host-owned clones).
+///
 /// Destructors must not block or panic.
 pub trait SrvResolver: Send + Sync + 'static {
     fn resolve(&self, owner: String) -> SrvFuture;

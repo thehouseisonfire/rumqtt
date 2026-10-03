@@ -90,75 +90,9 @@ pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
                 "reconnecting": true,
             })
         }
-        WrapperEvent::IncomingPublish(publish) => {
-            let mut message = Map::from_iter([
-                (
-                    "topicBase64".to_owned(),
-                    json!(base64::engine::general_purpose::STANDARD.encode(&publish.topic)),
-                ),
-                (
-                    "payloadBase64".to_owned(),
-                    json!(base64::engine::general_purpose::STANDARD.encode(&publish.payload)),
-                ),
-                ("qos".to_owned(), json!(publish.qos as u8)),
-                ("retain".to_owned(), json!(publish.retain)),
-                ("duplicate".to_owned(), json!(publish.duplicate)),
-            ]);
-            if let Some(token) = publish.ack_token {
-                message.insert(
-                    "ackId".to_owned(),
-                    json!(acknowledgements.insert(token).to_string()),
-                );
-            }
-            if let Some(properties) = publish.v5_properties {
-                let mut value = Map::from_iter([
-                    (
-                        "subscriptionIdentifiers".to_owned(),
-                        json!(properties.subscription_identifiers),
-                    ),
-                    (
-                        "userProperties".to_owned(),
-                        json!(properties.user_properties),
-                    ),
-                ]);
-                insert_optional(
-                    &mut value,
-                    "responseTopic",
-                    properties.response_topic.map(Value::String),
-                );
-                insert_optional(
-                    &mut value,
-                    "correlationDataBase64",
-                    properties.correlation_data.map(|data| {
-                        Value::String(base64::engine::general_purpose::STANDARD.encode(data))
-                    }),
-                );
-                insert_optional(
-                    &mut value,
-                    "contentType",
-                    properties.content_type.map(Value::String),
-                );
-                insert_optional(
-                    &mut value,
-                    "payloadFormatIndicator",
-                    properties.payload_format_indicator.map(Value::from),
-                );
-                insert_optional(
-                    &mut value,
-                    "topicAlias",
-                    properties.topic_alias.map(Value::from),
-                );
-                insert_optional(
-                    &mut value,
-                    "messageExpiryInterval",
-                    properties.message_expiry_interval.map(Value::from),
-                );
-                message.insert("properties".to_owned(), Value::Object(value));
-            }
-            json!({ "type": "publish", "message": message })
-        }
+        WrapperEvent::IncomingPublish(publish) => publish_event(*publish, acknowledgements),
         WrapperEvent::Outgoing(activity) => {
-            json!({ "type": "outgoing", "packet": outgoing(activity.activity), "packetId": activity.packet_id })
+            json!({ "type": "outgoing", "packet": outgoing(&activity.activity), "packetId": activity.packet_id })
         }
         WrapperEvent::GracefulShutdownCompleted => {
             acknowledgements.clear();
@@ -174,6 +108,77 @@ pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
         }
     };
     event.to_string()
+}
+
+fn publish_event(
+    publish: rumqttc_wrapper_core::IncomingPublish,
+    acknowledgements: &AckRegistry,
+) -> Value {
+    let mut message = Map::from_iter([
+        (
+            "topicBase64".to_owned(),
+            json!(base64::engine::general_purpose::STANDARD.encode(&publish.topic)),
+        ),
+        (
+            "payloadBase64".to_owned(),
+            json!(base64::engine::general_purpose::STANDARD.encode(&publish.payload)),
+        ),
+        ("qos".to_owned(), json!(publish.qos as u8)),
+        ("retain".to_owned(), json!(publish.retain)),
+        ("duplicate".to_owned(), json!(publish.duplicate)),
+    ]);
+    if let Some(token) = publish.ack_token {
+        message.insert(
+            "ackId".to_owned(),
+            json!(acknowledgements.insert(token).to_string()),
+        );
+    }
+    if let Some(properties) = publish.v5_properties {
+        let mut value = Map::from_iter([
+            (
+                "subscriptionIdentifiers".to_owned(),
+                json!(properties.subscription_identifiers),
+            ),
+            (
+                "userProperties".to_owned(),
+                json!(properties.user_properties),
+            ),
+        ]);
+        insert_optional(
+            &mut value,
+            "responseTopic",
+            properties.response_topic.map(Value::String),
+        );
+        insert_optional(
+            &mut value,
+            "correlationDataBase64",
+            properties
+                .correlation_data
+                .map(|data| Value::String(base64::engine::general_purpose::STANDARD.encode(data))),
+        );
+        insert_optional(
+            &mut value,
+            "contentType",
+            properties.content_type.map(Value::String),
+        );
+        insert_optional(
+            &mut value,
+            "payloadFormatIndicator",
+            properties.payload_format_indicator.map(Value::from),
+        );
+        insert_optional(
+            &mut value,
+            "topicAlias",
+            properties.topic_alias.map(Value::from),
+        );
+        insert_optional(
+            &mut value,
+            "messageExpiryInterval",
+            properties.message_expiry_interval.map(Value::from),
+        );
+        message.insert("properties".to_owned(), Value::Object(value));
+    }
+    json!({ "type": "publish", "message": message })
 }
 
 fn connack_details(details: rumqttc_wrapper_core::ConnAckDetails) -> Value {
@@ -230,7 +235,7 @@ const fn protocol_name(protocol: ProtocolVersion) -> &'static str {
     }
 }
 
-const fn outgoing(activity: OutgoingActivity) -> &'static str {
+const fn outgoing(activity: &OutgoingActivity) -> &'static str {
     match activity {
         OutgoingActivity::Publish => "publish",
         OutgoingActivity::Subscribe => "subscribe",

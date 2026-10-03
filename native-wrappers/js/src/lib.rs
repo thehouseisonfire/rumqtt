@@ -29,6 +29,7 @@ fn initialize_environment(env: Env) -> napi::Result<()> {
 
 #[cfg(feature = "panic-testing")]
 #[napi]
+#[must_use]
 pub fn test_active_native_clients() -> u32 {
     client::active_native_clients()
         .try_into()

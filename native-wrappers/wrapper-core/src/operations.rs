@@ -169,18 +169,18 @@ impl OperationRegistry {
 
     #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.complete", skip_all, fields(operation_id = ?operation_id, success = outcome.result().is_ok())))]
     pub(crate) fn complete_outcome(&self, operation_id: OperationId, outcome: TerminalOutcome) {
-        if let Some(cell) = self
+        let cell = self
             .inner
             .cells
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&operation_id)
-        {
+            .remove(&operation_id);
+        if let Some(cell) = cell {
             cell.complete_outcome(outcome.map_error(|error| error.with_operation(operation_id)));
         }
     }
 
-    pub(crate) fn fail_all(&self, error: Error) {
+    pub(crate) fn fail_all(&self, error: &Error) {
         let cells = std::mem::take(
             &mut *self
                 .inner

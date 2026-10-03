@@ -56,7 +56,7 @@ pub fn internal_panic(message: &str) -> String {
     .to_string()
 }
 
-pub fn napi_error(error: impl ToString) -> NapiError {
+pub fn napi_error(error: &(impl ToString + ?Sized)) -> NapiError {
     NapiError::from_reason(error.to_string())
 }
 

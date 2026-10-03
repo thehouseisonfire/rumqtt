@@ -279,9 +279,10 @@ impl ShutdownCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
             ShutdownRecord::Running => PollErrorAction::Reconnect,
-            ShutdownRecord::Graceful { .. } => PollErrorAction::Fail,
+            ShutdownRecord::Graceful { .. }
+            | ShutdownRecord::Closed { .. }
+            | ShutdownRecord::Failed => PollErrorAction::Fail,
             ShutdownRecord::Immediate { .. } => PollErrorAction::CompleteImmediateClose,
-            ShutdownRecord::Closed { .. } | ShutdownRecord::Failed => PollErrorAction::Fail,
         }
     }
 
@@ -319,6 +320,7 @@ impl ShutdownCoordinator {
                 ShutdownRecord::Failed => return ClosedOutcome::Immediate,
             };
             *record = ShutdownRecord::Closed { outcome };
+            drop(record);
             (outcome, operation)
         };
         if let Some((operation_id, completion)) = operation {

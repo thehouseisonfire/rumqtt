@@ -19,7 +19,7 @@ impl TransportConnector for TcpConnector {
         Box::pin(async move {
             // This fixture deliberately rejects settings instead of pretending
             // that Tokio's simple dialer applied them.
-            if network != Default::default() {
+            if network != rumqttc_wrapper_core::NetworkConfig::default() {
                 return Err(TransportFailure::NetworkOptions);
             }
             let socket = tokio::net::TcpStream::connect(target)
