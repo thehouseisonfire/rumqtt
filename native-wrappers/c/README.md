@@ -298,16 +298,65 @@ unwind; calls can overlap across clients sharing a registration. All request
 views and signature output buffers are borrowed only for the callback.
 Callbacks execute synchronously on the driver thread, return promptly, and may
 use nonblocking MQTT admission. Blocking waits for the same driver's progress
-are unsupported. There is no deferred completion API or forced preemption:
-cancellation and elapsed budgets are processed once a callback returns. The
+are unsupported. Synchronous hooks cannot be forcibly preempted; cancellation and elapsed
+budgets are processed once a callback returns. The
 absolute original connection deadline is checked before and after callbacks
 and before exposing the stream. Pins, verifiers and external identities force
 resumption off so every reconnect performs authentication again.
+
+### Deferred TLS hooks
+
+Use `rumqttc_tls_verifier_registration_new_async()` or
+`rumqttc_tls_identity_registration_new_async()` with their async vtables. They
+return the same opaque registrations and attach through the existing profile
+extension fields. Deferred hooks are supported by Rustls and reported by
+`RUMQTTC_TLS_ADVANCED_DEFERRED_VERIFIER` and
+`RUMQTTC_TLS_ADVANCED_DEFERRED_IDENTITY`; native TLS rejects them at profile
+construction. Existing synchronous registrations continue to work.
+
+Each callback receives an operation ID, borrowed request and borrowed completion.
+It may answer immediately with `rumqttc_callback_tls_verify_complete()`,
+`rumqttc_callback_tls_select_complete()` or
+`rumqttc_callback_tls_sign_complete()`. To answer later, retain the completion
+with `rumqttc_callback_completion_retain()`, copy the required request inputs,
+return promptly, and complete on any host thread. Destroy every retained token.
+Signing completion copies the signature. `SIZE_MAX` deliberately declines
+selection. Responses accept OK, REJECTED, FAILED, TIMEOUT or TRANSIENT; malformed
+responses return INVALID_ARGUMENT and leave an active operation available for
+correction. A successful completion accepts one answer; it does not mean the
+handshake has authenticated successfully. The selected entry and signature are
+still checked before use.
+
+Rustls handshakes using deferred hooks run on one worker per active handshake;
+the driver invokes TLS callbacks and waits asynchronously for answers. Its
+original connection deadline includes callback work. Close, timeout and failed
+attempts cancel pending futures and wake workers, including network waits.
+`cancel(data, operation_id)` runs exactly once for unresolved cancelled work,
+outside locks; it must promptly signal cancellation rather than join host work.
+Late, cancelled, expired or duplicate completions return INVALID_STATE before
+reading response views. Dropping the final unanswered host token reports
+ABANDONED, a terminal typed callback failure.
+
+Requests are serialized per handshake; shared registrations may run concurrently
+across clients. `max_retained_operations` defaults to 64 and must be 1..65536.
+It bounds live operations including retained completed/cancelled work; cloning
+a token does not consume another slot. IDs never wrap. Retained tokens keep
+registration data alive after client destruction until their final release.
+Future construction/polling and C callback entry/cancellation must return or
+yield promptly; deferral cannot preempt host code that blocks on entry. Continue
+to avoid waits for the same driver's MQTT progress. Standard trust, hostname,
+pins, signature checks, resumption restrictions and failure retry policy apply
+to deferred hooks too.
 
 [The native EVP example](examples/external_identity.c) takes
 `HOST PORT CA_PEM CLIENT_CHAIN_PEM HOST_KEY_PEM [wss]` and supports RSA-PSS
 SHA-256 or P-256 ECDSA. Its host opens the key and retains it through the
 registration; replace the signing adapter with an HSM integration as needed.
+The `rumqttc-example-external_identity_deferred` target uses the same CLI and
+source, with immediate selection and signing on host threads. It copies the
+message, retains/completes/releases its token and joins host workers after
+client/configuration cleanup. Replace its short-lived workers with a reactor
+or key service for production use.
 OpenSSL Crypto is optional for examples/consumers and required by the dedicated
 signer CI job. Rustls-only production builds have no OpenSSL link dependency.
 
@@ -718,6 +767,14 @@ operation completion, and driver-thread joining.
 `rumqttc_client_close_now_timeout_ms()` is idempotent, can escalate graceful
 shutdown, uses its caller-supplied deadline, and makes no delivery claim for
 unfinished operations.
+It observes its tracked shutdown result after joining, and repeated callers
+retain the same failure if shutdown failed. Client destruction still performs
+cleanup and waits for driver teardown.
+
+If graceful shutdown expires while deferred TLS work is pending, its close
+completion retains the timeout result. A TLS future destruction failure still
+terminates the driver and pending operations with the typed TLS callback error,
+without emitting a successful immediate-shutdown event.
 
 Time units are part of every relevant symbol: keep-alive and connection setup
 use `_seconds`; event delivery, receive, completion wait, close, and destruction

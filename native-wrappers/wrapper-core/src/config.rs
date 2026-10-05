@@ -51,6 +51,7 @@ pub struct TlsConfig {
     pub sni_policy: crate::TlsSniPolicy,
     pub resumption_policy: crate::TlsResumptionPolicy,
     pub verifier: Option<crate::TlsVerifierConfig>,
+    pub async_verifier: Option<crate::AsyncTlsVerifierConfig>,
 }
 
 /// Owned secret storage, wiped when each owned copy is dropped. Backend TLS
@@ -98,6 +99,7 @@ impl std::fmt::Debug for TlsRootPolicy {
 #[derive(Clone, PartialEq, Eq)]
 pub enum TlsClientIdentity {
     External(crate::TlsExternalIdentityConfig),
+    ExternalAsync(crate::AsyncTlsExternalIdentityConfig),
     RustlsPem {
         certificate: Bytes,
         private_key: SecretBytes,
@@ -112,6 +114,7 @@ impl std::fmt::Debug for TlsClientIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::External(_) => "External([REDACTED])",
+            Self::ExternalAsync(_) => "ExternalAsync([REDACTED])",
             Self::RustlsPem { .. } => "RustlsPem([REDACTED])",
             Self::NativePkcs12 { .. } => "NativePkcs12([REDACTED])",
         })
@@ -168,6 +171,7 @@ impl std::fmt::Debug for TlsConfig {
             .field("sni_policy", &self.sni_policy)
             .field("resumption_policy", &self.resumption_policy)
             .field("verifier", &self.verifier)
+            .field("async_verifier", &self.async_verifier)
             .field("version_policy", &self.version_policy)
             .field("pins", &format_args!("[REDACTED; {}]", self.pins.len()))
             .finish()

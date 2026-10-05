@@ -1,6 +1,16 @@
 ## [Unreleased]
 
 ### Added
+- Native wrappers: Add cancellable deferred TLS verification, identity selection
+  and signing through owned async Rust traits and retained C completion tokens.
+  Keep the driver responsive during pending host work while Rustls handshakes
+  run on cancellable workers. Preserve original connection deadlines, standard
+  authentication/pins and external signature proof; reject stale answers and
+  retain owners through cancelled tokens. Add bounded operations, abandonment
+  failures, capability bits, native consumers and a deferred EVP signer example.
+  Existing synchronous APIs and C records are preserved. Wrapper-core adds
+  `TlsConfig::async_verifier` and `TlsClientIdentity::ExternalAsync`; exhaustive
+  Rust literals and matches need updating.
 - Native wrappers: Complete advanced TLS profiles with ordered Rustls cipher
   selection, explicit SNI and resumption policy, supplemental verification and
   externally selected/signed client identities. Owned synchronous C registrations
@@ -81,6 +91,15 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native wrappers: Preserve deferred TLS future destruction panics during
+  cancellation as terminal callback failures in both MQTT drivers, including
+  broker, proxy and redirect TLS. Fail pending operations and shutdown instead
+  of emitting successful shutdown. Graceful-close timeout also checks failures
+  after dropping the backend future, preserving the failed lifecycle and typed
+  errors for pending operations; its admitted close operation retains its timeout.
+  Immediate close retains and returns its tracked shutdown failure to concurrent
+  and repeated callers; joining still reports thread teardown. Keep failures
+  isolated between shared-profile clients.
 - Native wrapper validation: Cover TLS-profile and capability APIs with NULL
   error outputs on success and failure. Resolve strict pedantic/nursery lint
   warnings and make CI lint checks read-only across the wrapper workspace.

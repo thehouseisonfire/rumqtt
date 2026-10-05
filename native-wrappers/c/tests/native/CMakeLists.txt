@@ -349,7 +349,7 @@ if(OpenSSL_FOUND)
     rumqttc_native_target(rumqttc-native-tls-advanced native_tls_advanced.c)
     target_sources(rumqttc-native-tls-advanced PRIVATE "${RUMQTTC_ROOT}/examples/external_signer.c")
     target_include_directories(rumqttc-native-tls-advanced PRIVATE "${RUMQTTC_ROOT}/examples")
-    target_link_libraries(rumqttc-native-tls-advanced PRIVATE OpenSSL::Crypto)
+    target_link_libraries(rumqttc-native-tls-advanced PRIVATE OpenSSL::Crypto rumqttc_transport_socket)
     if(MSVC)
         target_compile_options(rumqttc-native-tls-advanced PRIVATE /experimental:c11atomics)
     endif()
@@ -357,4 +357,8 @@ if(OpenSSL_FOUND)
         COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --tls-advanced --proxy-matrix
             --binary $<TARGET_FILE:rumqttc-native-tls-advanced>)
     set_tests_properties(rumqttc-native-tls-advanced PROPERTIES LABELS "native;tls" TIMEOUT 120 SKIP_RETURN_CODE 77)
+    add_test(NAME rumqttc-native-tls-deferred
+        COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --tls-advanced --proxy-matrix
+            --binary $<TARGET_FILE:rumqttc-native-tls-advanced> deferred)
+    set_tests_properties(rumqttc-native-tls-deferred PROPERTIES LABELS "native;tls;ownership" TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()

@@ -25,6 +25,10 @@ impl Drop for ProxyCredentials {
 /// pre-resolved addresses. SOCKS4 and local-DNS callbacks are not supported by
 /// the underlying clients.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve public proxy literals as owned TLS policies grow; this is cold configuration data"
+)]
 pub enum ProxyConfig {
     Http {
         host: String,

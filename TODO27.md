@@ -53,8 +53,9 @@ Linux results do not imply macOS or Windows execution.
   verified against the selected leaf before use; no foreign cryptographic object
   is imported. Resource bounds and successful-construction ownership are explicit.
 - [x] Synchronous hooks retain owners across handshakes and clients, check the
-  original connection deadline before/after host work, and cannot use deferred
-  completion or wait for their own driver. Pins and hooks disable resumption.
+  original connection deadline before/after host work, and cannot wait for their
+  own driver. Deferred answers use the separately registered asynchronous hooks
+  below. Pins and hooks disable resumption.
   Fresh handshake state prevents failed selection becoming anonymous TLS and
   terminal callback failures stop SRV fallback.
 - [x] Native C/OpenSSL EVP consumers demonstrate RSA-PSS/ECDSA mutual TLS/WSS,
@@ -72,6 +73,29 @@ terminal SRV fallback. C registration tests prove failed-construction ownership
 and retained profiles. Feature, installed-package, generated-header/export,
 ABI containment and Rust 1.88 checks cover the additions. Platform execution
 is recorded separately in `native-wrappers/wrapper-core/PARITY.md`.
+
+## Deferred callbacks
+
+- [x] Owned asynchronous wrapper-core traits support verification, identity
+  selection and signing. C async registrations attach through existing opaque
+  handles and profile fields without changing public C record layouts.
+- [x] Rustls workers bridge synchronous backend hooks to asynchronous driver work.
+  Synchronous-only profiles keep their existing path; mixed-profile TLS callbacks
+  still run on the driver. Pending callbacks and network waits cancel promptly.
+- [x] Retained C tokens support immediate/deferred answers, cancellation notices,
+  abandonment, bounded live operations, nonwrapping IDs and transactional response
+  validation. Late/duplicate/expired results are rejected before buffer access.
+- [x] Standard trust/pins and signature proof remain authoritative. Original
+  connection deadlines, resumption restrictions, typed failures, optional-auth
+  guarding, independent layers and terminal SRV fallback apply to deferred hooks.
+- [x] Rust/C fixtures exercise genuine deferral, future panics, deadlines,
+  shutdown, retained owners, shared profiles, reconnects and custom byte streams.
+  Native cases gate WSS/proxies by capability. A deferred EVP signer example and
+  required CI consumers cover the host integration without production OpenSSL linkage.
+
+Python/JavaScript bindings and arbitrary backend-object injection are separate
+work. Deferred futures and callback entry/cancellation must return or yield
+promptly; forced preemption of blocking host code is outside the contract.
 
 Arbitrary injected Rustls `ClientConfig` or native `TlsConnector` objects cannot
 be represented by the C profile API. Fully external TLS streams can use custom

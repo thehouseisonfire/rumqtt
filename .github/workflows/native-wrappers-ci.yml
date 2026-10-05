@@ -785,9 +785,9 @@ jobs:
             exit 1
           fi
           cmake -S c/tests/native -B target/native-external-signing -DRUMQTTC_REQUIRE_EXTERNAL_SIGNER=ON
-          cmake --build target/native-external-signing --target rumqttc-native-tls-advanced rumqttc-example-external_identity
-          ctest --test-dir target/native-external-signing -R '(tls-advanced|external_identity)' --output-on-failure
+          cmake --build target/native-external-signing --target rumqttc-native-tls-advanced rumqttc-example-external_identity rumqttc-example-external_identity_deferred
+          ctest --test-dir target/native-external-signing -R '(tls-advanced|tls-deferred|external_identity)' --output-on-failure
       - name: Verify external TLS signing without WebSocket support
         run: |
           cargo build --locked -p rumqttc-c-next --no-default-features --features use-rustls-ring
-          ctest --test-dir target/native-external-signing -R '^rumqttc-native-tls-advanced$' --output-on-failure
+          ctest --test-dir target/native-external-signing -R '^rumqttc-native-tls-(advanced|deferred)$' --output-on-failure

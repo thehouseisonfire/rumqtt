@@ -12,29 +12,33 @@ pub(super) fn configure(
     options: &mut rumqttc_v5::MqttOptions,
     policy: &RedirectPolicy,
     resolver: Option<crate::SrvResolverConfig>,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
 ) -> crate::Result<()> {
+    #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
+    let _ = tls_callbacks;
     if let RedirectPolicy::Follow {
         max_attempts,
         transport,
     } = policy
     {
-        let transport = match transport {
-            TransportConfig::Tcp => rumqttc_v5::Transport::Tcp,
-            #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-            TransportConfig::Tls(tls) => rumqttc_v5::Transport::tls_with_config(
-                super::build_tls_for_layer(tls, crate::TlsLayer::Redirect)?,
-            ),
-            #[cfg(feature = "websocket")]
-            TransportConfig::WebSocket => rumqttc_v5::Transport::Ws,
-            #[cfg(all(
-                feature = "websocket",
-                any(feature = "use-rustls-no-provider", feature = "use-native-tls")
-            ))]
-            TransportConfig::Wss(tls) => rumqttc_v5::Transport::wss_with_config(
-                super::build_tls_for_layer(tls, crate::TlsLayer::Redirect)?,
-            ),
-            _ => return Err(Error::configuration("redirect transport is unavailable")),
-        };
+        let transport =
+            match transport {
+                TransportConfig::Tcp => rumqttc_v5::Transport::Tcp,
+                #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
+                TransportConfig::Tls(tls) => rumqttc_v5::Transport::tls_with_config(
+                    super::build_tls(tls, crate::TlsLayer::Redirect, tls_callbacks)?,
+                ),
+                #[cfg(feature = "websocket")]
+                TransportConfig::WebSocket => rumqttc_v5::Transport::Ws,
+                #[cfg(all(
+                    feature = "websocket",
+                    any(feature = "use-rustls-no-provider", feature = "use-native-tls")
+                ))]
+                TransportConfig::Wss(tls) => rumqttc_v5::Transport::wss_with_config(
+                    super::build_tls(tls, crate::TlsLayer::Redirect, tls_callbacks)?,
+                ),
+                _ => return Err(Error::configuration("redirect transport is unavailable")),
+            };
         let attempts = std::num::NonZeroUsize::new(*max_attempts)
             .ok_or_else(|| Error::configuration("redirect attempts must be nonzero"))?;
         options.set_redirect_policy(rumqttc_v5::RedirectPolicy::new(attempts, move |context| {

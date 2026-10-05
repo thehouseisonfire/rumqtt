@@ -630,7 +630,8 @@ fn authentication_future_destruction_panics_are_typed_on_completion_timeout_and_
                 .try_admit(Command::Reauthenticate(None))
                 .unwrap();
             entered_rx.recv_timeout(support::DEADLINE).unwrap();
-            client.closer().close_now(support::DEADLINE).unwrap();
+            let error = client.closer().close_now(support::DEADLINE).unwrap_err();
+            assert_eq!(error.auth_failure(), Some(AuthFailure::Panic));
             Some(operation)
         } else {
             None
@@ -1221,7 +1222,12 @@ fn immediate_close_notifies_pending_initial_authentication_once() {
             .unwrap();
             let mut events = client.take_events().unwrap();
             entered_rx.recv_timeout(support::DEADLINE).unwrap();
-            client.closer().close_now(support::DEADLINE).unwrap();
+            let closed = client.closer().close_now(support::DEADLINE);
+            if panic_on_failure {
+                assert_eq!(closed.unwrap_err().auth_failure(), Some(AuthFailure::Panic));
+            } else {
+                closed.unwrap();
+            }
             let (context, failure) = failed_rx.recv_timeout(support::DEADLINE).unwrap();
             assert_eq!(failure, AuthFailure::ConnectionClosed, "{stage:?}");
             assert_eq!(context.exchange, AuthExchange::Initial);

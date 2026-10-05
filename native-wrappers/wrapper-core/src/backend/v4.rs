@@ -111,12 +111,17 @@ use crate::{
     WrapperEvent,
 };
 
-fn build_transport_options(common: &crate::CommonConfig) -> crate::Result<rumqttc_v4::MqttOptions> {
+fn build_transport_options(
+    common: &crate::CommonConfig,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
+) -> crate::Result<rumqttc_v4::MqttOptions> {
+    #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
+    let _ = tls_callbacks;
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     let tls = match &common.transport {
-        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
-            Some(super::build_tls(tls)?)
-        }
+        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => Some(
+            super::build_tls(tls, crate::TlsLayer::Broker, tls_callbacks)?,
+        ),
         _ => None,
     };
     let options = match (&common.broker, &common.transport) {
@@ -187,8 +192,9 @@ fn build_transport_options(common: &crate::CommonConfig) -> crate::Result<rumqtt
 fn build_options(
     common: &crate::CommonConfig,
     protocol: crate::V4Config,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
 ) -> crate::Result<rumqttc_v4::MqttOptions> {
-    let mut options = build_transport_options(common)?;
+    let mut options = build_transport_options(common, tls_callbacks)?;
     options.set_keep_alive(crate::handle::duration_to_u16(
         common.keep_alive,
         "keep alive",
@@ -227,7 +233,7 @@ fn build_options(
     options.set_request_channel_capacity(common.request_channel_capacity);
     #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     if let Some(proxy) = &common.proxy {
-        options.set_proxy(super::build_proxy(proxy)?);
+        options.set_proxy(super::build_proxy(proxy, tls_callbacks)?);
     }
     #[cfg(feature = "websocket")]
     configure_handshake(&mut options, common, std::sync::Arc::default())?;
@@ -274,6 +280,7 @@ fn build_options(
 
 pub struct Driver {
     eventloop: rumqttc_v4::EventLoop,
+    pub(super) tls_callbacks: std::sync::Arc<super::TlsCallbackMonitor>,
     websocket: std::sync::Arc<crate::websocket::HandshakeMonitor>,
 }
 
@@ -301,8 +308,9 @@ pub fn build(
     common: &crate::CommonConfig,
     protocol: crate::V4Config,
 ) -> crate::Result<(rumqttc_v4::AsyncClient, Box<Driver>)> {
+    let tls_callbacks = std::sync::Arc::new(super::TlsCallbackMonitor::default());
     #[allow(unused_mut, reason = "WebSocket configuration requires mutation")]
-    let mut options = build_options(common, protocol)?;
+    let mut options = build_options(common, protocol, &tls_callbacks)?;
     let websocket = std::sync::Arc::new(crate::websocket::HandshakeMonitor::default());
     #[cfg(feature = "websocket")]
     configure_handshake(&mut options, common, websocket.clone())?;
@@ -321,6 +329,7 @@ pub fn build(
         client,
         Box::new(Driver {
             eventloop,
+            tls_callbacks,
             websocket,
         }),
     ))
@@ -332,6 +341,7 @@ pub fn build(
 pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
     let Driver {
         mut eventloop,
+        tls_callbacks,
         websocket,
     } = *driver;
     let DriverContext {
@@ -392,6 +402,17 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
             }
         };
+        // The poll has been dropped, including any pending TLS host future.
+        // A destructor failure must survive cancellation and take precedence
+        // over completing shutdown successfully.
+        if let Some(failure) = tls_callbacks.failure() {
+            let error = shared.contextualize(
+                Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
+            );
+            shared.fail_acknowledgements(&error);
+            fail_pending(&mut senders, &error);
+            return TerminalStatus::Failed(error);
+        }
         let Some(polled) = polled else {
             // Dropping the poll also destroys pending host handshake work. Its
             // terminal failure must take precedence over a successful cancellation.
@@ -737,6 +758,7 @@ mod config_tests {
                 max_outgoing_packet_size: 121,
                 ..Default::default()
             },
+            &std::sync::Arc::default(),
         )
         .unwrap();
         assert_eq!(options.max_request_batch(), 17);

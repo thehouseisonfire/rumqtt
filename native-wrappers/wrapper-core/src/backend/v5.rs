@@ -235,12 +235,17 @@ use crate::{
     WrapperEvent,
 };
 
-fn build_transport_options(common: &crate::CommonConfig) -> crate::Result<rumqttc_v5::MqttOptions> {
+fn build_transport_options(
+    common: &crate::CommonConfig,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
+) -> crate::Result<rumqttc_v5::MqttOptions> {
+    #[cfg(not(any(feature = "use-rustls-no-provider", feature = "use-native-tls")))]
+    let _ = tls_callbacks;
     #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
     let tls = match &common.transport {
-        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => {
-            Some(super::build_tls(tls)?)
-        }
+        crate::TransportConfig::Tls(tls) | crate::TransportConfig::Wss(tls) => Some(
+            super::build_tls(tls, crate::TlsLayer::Broker, tls_callbacks)?,
+        ),
         _ => None,
     };
     let options = match (&common.broker, &common.transport) {
@@ -306,8 +311,9 @@ fn build_transport_options(common: &crate::CommonConfig) -> crate::Result<rumqtt
 fn build_options(
     common: &crate::CommonConfig,
     protocol: crate::V5Config,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
 ) -> crate::Result<rumqttc_v5::MqttOptions> {
-    let mut options = build_transport_options(common)?;
+    let mut options = build_transport_options(common, tls_callbacks)?;
     options.set_keep_alive(crate::handle::duration_to_u16(
         common.keep_alive,
         "keep alive",
@@ -330,7 +336,7 @@ fn build_options(
     options.set_request_channel_capacity(common.request_channel_capacity);
     #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
     if let Some(proxy) = &common.proxy {
-        options.set_proxy(super::build_proxy(proxy)?);
+        options.set_proxy(super::build_proxy(proxy, tls_callbacks)?);
     }
     #[cfg(feature = "websocket")]
     configure_handshake(&mut options, common, std::sync::Arc::default())?;
@@ -356,6 +362,7 @@ fn build_options(
         &mut options,
         &protocol.redirect_policy,
         protocol.srv_resolver,
+        tls_callbacks,
     )?;
     options
         .protocol_compatibility_mut()
@@ -428,6 +435,7 @@ fn last_will(will: &crate::LastWillConfig) -> rumqttc_v5::LastWill {
 
 pub struct Driver {
     eventloop: rumqttc_v5::EventLoop,
+    pub(super) tls_callbacks: std::sync::Arc<super::TlsCallbackMonitor>,
     auth: std::sync::Arc<super::auth::Monitor>,
     websocket: std::sync::Arc<crate::websocket::HandshakeMonitor>,
 }
@@ -462,7 +470,8 @@ pub fn build(
     let authenticator = protocol.scram.as_ref().map_or(authenticator, |scram| {
         Some(crate::scram::build(scram.clone()))
     });
-    let mut options = build_options(common, protocol)?;
+    let tls_callbacks = std::sync::Arc::new(super::TlsCallbackMonitor::default());
+    let mut options = build_options(common, protocol, &tls_callbacks)?;
     let auth = std::sync::Arc::new(super::auth::Monitor::default());
     if let Some(config) = authenticator {
         options.set_authenticator(std::sync::Arc::new(std::sync::Mutex::new(
@@ -500,6 +509,7 @@ pub fn build(
         client,
         Box::new(Driver {
             eventloop,
+            tls_callbacks,
             auth,
             websocket,
         }),
@@ -512,6 +522,7 @@ pub fn build(
 pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus {
     let Driver {
         mut eventloop,
+        tls_callbacks,
         auth,
         websocket,
     } = *driver;
@@ -648,6 +659,17 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         } else {
             polled
         };
+        // The poll has been dropped and its authentication authority notified.
+        // Preserve TLS destructor failures before completing shutdown, even
+        // though the cancelled connecting future cannot return its error.
+        if let Some(failure) = tls_callbacks.failure() {
+            let error = shared.contextualize(
+                Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
+            );
+            shared.fail_acknowledgements(&error);
+            fail_pending(&mut senders, &error);
+            return TerminalStatus::Failed(error);
+        }
         let Some(polled) = polled else {
             // Dropping the poll also destroys pending host handshake work. Its
             // terminal failure must take precedence over a successful cancellation.
@@ -1562,6 +1584,7 @@ mod config_tests {
                 outgoing_inflight_upper_limit: Some(7),
                 ..Default::default()
             },
+            &std::sync::Arc::default(),
         )
         .unwrap();
         let actual = options.connect_properties().unwrap();

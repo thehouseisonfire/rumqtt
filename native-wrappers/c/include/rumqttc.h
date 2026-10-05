@@ -633,6 +633,36 @@ typedef struct rumqttc_tls_identity_vtable_t {
   void (*destroy)(void*);
   uint64_t reserved[2];
 } rumqttc_tls_identity_vtable_t;
+/* Deferred callbacks receive borrowed requests and completion handles.
+ * Copy inputs needed later and retain completion before returning. Calls are
+ * serialized per handshake on its driver and may overlap across clients.
+ * cancel(data, operation_id) runs once for unresolved cancelled work, outside
+ * locks; signal cancellation promptly. Dropping the last host token without
+ * answering reports ABANDONED. Late/duplicate completions return INVALID_STATE
+ * before reading response buffers. Live operations, including retained completed
+ * or cancelled tokens, count against max_retained_operations (1..65536).
+ * All callbacks/destructors must return promptly, be thread-safe and not unwind.
+ * Successful registration owns data; failed construction leaves it with the
+ * caller. Destroy runs once after profiles, clients, calls and tokens release.
+ * Release all tokens before unloading the library. */
+typedef struct rumqttc_tls_async_verifier_vtable_t {
+  uint32_t struct_size;
+  uint32_t max_retained_operations;
+  void (*verify)(void *data, uint64_t operation_id, const rumqttc_tls_verification_request_t *request, rumqttc_callback_completion_t *completion);
+  void (*cancel)(void *data, uint64_t operation_id);
+  void (*destroy)(void *data);
+  uint64_t reserved[2];
+} rumqttc_tls_async_verifier_vtable_t;
+typedef struct rumqttc_tls_async_identity_vtable_t {
+  uint32_t struct_size;
+  uint32_t max_retained_operations;
+  void (*select)(void *data, uint64_t operation_id, const rumqttc_tls_identity_request_t *request, rumqttc_callback_completion_t *completion);
+  void (*sign)(void *data, uint64_t operation_id, const rumqttc_tls_signing_request_t *request, rumqttc_callback_completion_t *completion);
+  void (*cancel)(void *data, uint64_t operation_id);
+  void (*destroy)(void *data);
+  uint64_t reserved[2];
+} rumqttc_tls_async_identity_vtable_t;
+
 typedef struct rumqttc_tls_external_identity_t {
   uint32_t struct_size;
   struct rumqttc_bytes_view_t certificate_pem;
@@ -883,6 +913,8 @@ typedef struct rumqttc_diagnostics_t {
 #define RUMQTTC_TLS_ADVANCED_CIPHERS 1u
 #define RUMQTTC_TLS_ADVANCED_VERIFIER 2u
 #define RUMQTTC_TLS_ADVANCED_EXTERNAL_IDENTITY 4u
+#define RUMQTTC_TLS_ADVANCED_DEFERRED_VERIFIER 8u
+#define RUMQTTC_TLS_ADVANCED_DEFERRED_IDENTITY 16u
 #define RUMQTTC_TLS_LAYER_BROKER 0u
 #define RUMQTTC_TLS_LAYER_PROXY 1u
 #define RUMQTTC_TLS_LAYER_REDIRECT 2u
@@ -898,11 +930,16 @@ typedef struct rumqttc_diagnostics_t {
 #define RUMQTTC_TLS_CALLBACK_PANIC 6u
 #define RUMQTTC_TLS_CALLBACK_TIMEOUT 7u
 #define RUMQTTC_TLS_CALLBACK_TRANSIENT 8u
+#define RUMQTTC_TLS_CALLBACK_ABANDONED 9u
 #define RUMQTTC_TLS_IDENTITY_DECLINE SIZE_MAX
 #define RUMQTTC_TLS_PROFILE_EXTENSIONS_INIT \
     { sizeof(rumqttc_tls_profile_extensions_t), 0, 0, NULL, 0, NULL, NULL, { 0, 0 } }
 #define RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT \
     { sizeof(rumqttc_tls_advanced_capabilities_t), 0, 0, 0, 0, { 0, 0 } }
+#define RUMQTTC_TLS_ASYNC_VERIFIER_VTABLE_INIT \
+    { sizeof(rumqttc_tls_async_verifier_vtable_t), 64, NULL, NULL, NULL, { 0, 0 } }
+#define RUMQTTC_TLS_ASYNC_IDENTITY_VTABLE_INIT \
+    { sizeof(rumqttc_tls_async_identity_vtable_t), 64, NULL, NULL, NULL, NULL, { 0, 0 } }
 #define RUMQTTC_TLS_VERIFIER_VTABLE_INIT \
     { sizeof(rumqttc_tls_verifier_vtable_t), NULL, NULL, { 0, 0 } }
 #define RUMQTTC_TLS_IDENTITY_VTABLE_INIT \
@@ -1008,6 +1045,22 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_set_transport_wss_with_options(rumqt
  * Queries accept NULL/zero to retrieve count; insufficient capacity writes no
  * elements and returns INVALID_ARGUMENT with the required count.
  */
+/* Deferred registrations use the existing profile extension fields. Native TLS
+ * rejects these registrations when constructing a profile. Answers share the
+ * original connection deadline. Hooks disable resumption.
+ * Complete with OK/REJECTED/FAILED/TIMEOUT/TRANSIENT; SIZE_MAX deliberately
+ * declines selection. Successful signatures are copied and cryptographically
+ * checked against the selected leaf. Invalid responses leave a pending token
+ * available for correction; a successful completion consumes its answer once. */
+RUMQTTC_API uint32_t rumqttc_tls_verifier_registration_new_async(const rumqttc_tls_async_verifier_vtable_t *table,
+    void *data, rumqttc_tls_verifier_registration_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_tls_identity_registration_new_async(const rumqttc_tls_async_identity_vtable_t *table,
+    void *data, const rumqttc_tls_external_identity_t *identities, size_t count,
+    rumqttc_tls_identity_registration_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_callback_tls_verify_complete(rumqttc_callback_completion_t *token, uint32_t reason);
+RUMQTTC_API uint32_t rumqttc_callback_tls_select_complete(rumqttc_callback_completion_t *token, uint32_t reason, size_t index);
+RUMQTTC_API uint32_t rumqttc_callback_tls_sign_complete(rumqttc_callback_completion_t *token, uint32_t reason, rumqttc_bytes_view_t signature);
+
 RUMQTTC_API uint32_t rumqttc_tls_verifier_registration_new(const struct rumqttc_tls_verifier_vtable_t *vtable,
                                                void *data,
                                                struct rumqttc_tls_verifier_registration_t **out,

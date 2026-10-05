@@ -528,6 +528,9 @@ impl Drop for rumqttc_callback_completion {
         if let CallbackCompletion::WebSocket(inner) = &self.inner {
             inner.release_host();
         }
+        if let CallbackCompletion::Tls(inner) = &self.inner {
+            inner.release_host();
+        }
     }
 }
 
@@ -538,6 +541,7 @@ enum CallbackCompletion {
     Auth(Arc<AuthCompletion>),
     Transport(Arc<transport::TransportOperation>),
     WebSocket(Arc<websocket::WebSocketCompletion>),
+    Tls(Arc<tls_advanced::TlsOperation>),
 }
 
 struct AuthOwner {
@@ -2439,6 +2443,9 @@ pub unsafe extern "C" fn rumqttc_callback_completion_retain(
             operation.retain_host();
         }
         if let CallbackCompletion::WebSocket(operation) = &inner {
+            operation.retain_host();
+        }
+        if let CallbackCompletion::Tls(operation) = &inner {
             operation.retain_host();
         }
         unsafe {

@@ -97,18 +97,26 @@ impl TlsConfig {
         self.validate_options()?;
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
         {
-            crate::backend::build_tls(self)?;
+            crate::backend::build_tls(self, crate::TlsLayer::Broker, &std::sync::Arc::default())?;
         }
         Ok(())
     }
 
     pub(crate) fn validate_options(&self) -> Result<()> {
+        if self.verifier.is_some() && self.async_verifier.is_some() {
+            return Err(Error::configuration(
+                "synchronous and asynchronous TLS verifiers are mutually exclusive",
+            ));
+        }
         let capabilities = self.backend.capabilities();
         let advanced = self.backend.advanced_capabilities();
         if advanced.sni_policies & (1 << self.sni_policy as u32) == 0
             || advanced.resumption_policies & (1 << self.resumption_policy as u32) == 0
             || (!self.cipher_suites.is_empty() && !advanced.cipher_selection)
             || (self.verifier.is_some() && !advanced.supplemental_verification)
+            || (self.async_verifier.is_some() && !advanced.deferred_verification)
+            || (matches!(self.identity, Some(TlsClientIdentity::ExternalAsync(_)))
+                && !advanced.deferred_identities)
             || (matches!(self.identity, Some(TlsClientIdentity::External(_)))
                 && !advanced.external_identities)
         {

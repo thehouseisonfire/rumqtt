@@ -1,4 +1,4 @@
-//! Synchronous owned TLS registrations. Callback views never escape a call.
+//! Owned TLS registrations. Callback views never escape a call.
 use super::{
     CAP_RUSTLS, boundary, bytes_from_view, destroy_box, error_ref, ptr, rumqttc_bytes_view_t,
     rumqttc_error, rumqttc_library_capabilities, rumqttc_string_view_t, rumqttc_tls_profile,
@@ -21,6 +21,20 @@ use std::{
     },
     time::Instant,
 };
+
+#[path = "tls_deferred.rs"]
+mod deferred;
+pub use deferred::*;
+#[derive(Clone)]
+enum VerifierConfig {
+    Sync(TlsVerifierConfig),
+    Async(rumqttc_wrapper_core::AsyncTlsVerifierConfig),
+}
+#[derive(Clone)]
+enum IdentityConfig {
+    Sync(TlsExternalIdentityConfig),
+    Async(rumqttc_wrapper_core::AsyncTlsExternalIdentityConfig),
+}
 
 #[repr(C)]
 pub struct rumqttc_tls_advanced_capabilities_t {
@@ -117,10 +131,10 @@ pub struct rumqttc_tls_external_identity_t {
     pub reserved: [u64; 2],
 }
 pub struct rumqttc_tls_verifier_registration {
-    config: TlsVerifierConfig,
+    config: VerifierConfig,
 }
 pub struct rumqttc_tls_identity_registration {
-    config: TlsExternalIdentityConfig,
+    config: IdentityConfig,
 }
 struct Owner {
     data: usize,
@@ -272,6 +286,46 @@ unsafe fn checked<'a, T>(value: *const T) -> std::result::Result<&'a T, ErrorHan
     }
     Ok(unsafe { &*value })
 }
+unsafe fn catalog(
+    identities: *const rumqttc_tls_external_identity_t,
+    identity_count: usize,
+) -> Result<Vec<TlsExternalIdentity>, ErrorHandle> {
+    if identities.is_null() || identity_count == 0 || identity_count > MAX_TLS_IDENTITIES {
+        return Err(ErrorHandle::argument("invalid TLS identity count"));
+    }
+    let mut catalog = Vec::with_capacity(identity_count);
+    let mut total = 0usize;
+    for item in unsafe { slice::from_raw_parts(identities, identity_count) } {
+        if item.struct_size < struct_size::<rumqttc_tls_external_identity_t>()
+            || item.reserved != [0; 2]
+            || item.signature_scheme_count == 0
+            || item.signature_scheme_count > 10
+            || item.signature_schemes.is_null()
+            || item.key_id.len == 0
+            || item.key_id.len > MAX_TLS_KEY_ID_BYTES
+        {
+            return Err(ErrorHandle::argument("invalid TLS identity descriptor"));
+        }
+        total = total
+            .checked_add(item.certificate_pem.len)
+            .and_then(|n| n.checked_add(item.key_id.len))
+            .ok_or_else(|| ErrorHandle::argument("TLS identity catalog too large"))?;
+        if total > MAX_TLS_METADATA_BYTES {
+            return Err(ErrorHandle::argument("TLS identity catalog too large"));
+        }
+        catalog.push(TlsExternalIdentity {
+            certificate_pem: bytes::Bytes::copy_from_slice(unsafe {
+                bytes_from_view(item.certificate_pem)
+            }?),
+            key_id: bytes::Bytes::copy_from_slice(unsafe { bytes_from_view(item.key_id) }?),
+            signature_schemes: unsafe {
+                slice::from_raw_parts(item.signature_schemes, item.signature_scheme_count)
+            }
+            .to_vec(),
+        });
+    }
+    Ok(catalog)
+}
 /// # Safety
 /// Non-null pointers must satisfy the ownership, lifetime and alignment contract
 /// in `rumqttc.h`; input records and output storage must cover their declared sizes.
@@ -307,7 +361,7 @@ pub unsafe extern "C" fn rumqttc_tls_verifier_registration_new(
         });
         unsafe {
             *out = Box::into_raw(Box::new(rumqttc_tls_verifier_registration {
-                config: TlsVerifierConfig(verifier),
+                config: VerifierConfig::Sync(TlsVerifierConfig(verifier)),
             }));
         }
         Ok(())
@@ -344,37 +398,7 @@ pub unsafe extern "C" fn rumqttc_tls_identity_registration_new(
         {
             return Err(ErrorHandle::argument("invalid TLS identity registration"));
         }
-        let mut catalog = Vec::with_capacity(identity_count);
-        let mut total = 0usize;
-        for item in unsafe { slice::from_raw_parts(identities, identity_count) } {
-            if item.struct_size < struct_size::<rumqttc_tls_external_identity_t>()
-                || item.reserved != [0; 2]
-                || item.signature_scheme_count == 0
-                || item.signature_scheme_count > 10
-                || item.signature_schemes.is_null()
-                || item.key_id.len == 0
-                || item.key_id.len > MAX_TLS_KEY_ID_BYTES
-            {
-                return Err(ErrorHandle::argument("invalid TLS identity descriptor"));
-            }
-            total = total
-                .checked_add(item.certificate_pem.len)
-                .and_then(|n| n.checked_add(item.key_id.len))
-                .ok_or_else(|| ErrorHandle::argument("TLS identity catalog too large"))?;
-            if total > MAX_TLS_METADATA_BYTES {
-                return Err(ErrorHandle::argument("TLS identity catalog too large"));
-            }
-            catalog.push(TlsExternalIdentity {
-                certificate_pem: bytes::Bytes::copy_from_slice(unsafe {
-                    bytes_from_view(item.certificate_pem)
-                }?),
-                key_id: bytes::Bytes::copy_from_slice(unsafe { bytes_from_view(item.key_id) }?),
-                signature_schemes: unsafe {
-                    slice::from_raw_parts(item.signature_schemes, item.signature_scheme_count)
-                }
-                .to_vec(),
-            });
-        }
+        let catalog = unsafe { catalog(identities, identity_count) }?;
         let destroy = vtable
             .destroy
             .ok_or_else(|| ErrorHandle::argument("TLS destructor is NULL"))?;
@@ -388,7 +412,9 @@ pub unsafe extern "C" fn rumqttc_tls_identity_registration_new(
         });
         let config = TlsExternalIdentityConfig::new(catalog, identity.clone())
             .map_err(|e| ErrorHandle::from_core(&e, None))?;
-        let registration = Box::new(rumqttc_tls_identity_registration { config });
+        let registration = Box::new(rumqttc_tls_identity_registration {
+            config: IdentityConfig::Sync(config),
+        });
         identity.owner.armed.store(true, Ordering::Release);
         unsafe {
             *out = Box::into_raw(registration);
@@ -461,7 +487,10 @@ pub unsafe extern "C" fn rumqttc_tls_profile_new_with_extensions(
             .to_vec();
         }
         if !extensions.verifier.is_null() {
-            config.verifier = Some(unsafe { &*extensions.verifier }.config.clone());
+            match &unsafe { &*extensions.verifier }.config {
+                VerifierConfig::Sync(v) => config.verifier = Some(v.clone()),
+                VerifierConfig::Async(v) => config.async_verifier = Some(v.clone()),
+            }
         }
         if !extensions.external_identity.is_null() {
             if config.identity.is_some() {
@@ -469,9 +498,10 @@ pub unsafe extern "C" fn rumqttc_tls_profile_new_with_extensions(
                     "static and external TLS identities are mutually exclusive",
                 ));
             }
-            config.identity = Some(TlsClientIdentity::External(
-                unsafe { &*extensions.external_identity }.config.clone(),
-            ));
+            config.identity = Some(match &unsafe { &*extensions.external_identity }.config {
+                IdentityConfig::Sync(v) => TlsClientIdentity::External(v.clone()),
+                IdentityConfig::Async(v) => TlsClientIdentity::ExternalAsync(v.clone()),
+            });
         }
         config
             .validate()
@@ -522,7 +552,9 @@ pub unsafe extern "C" fn rumqttc_tls_advanced_capabilities(
             (*out).resumption_policy_mask = caps.resumption_policies;
             (*out).feature_mask = u32::from(caps.cipher_selection)
                 | (u32::from(caps.supplemental_verification) << 1)
-                | (u32::from(caps.external_identities) << 2);
+                | (u32::from(caps.external_identities) << 2)
+                | (u32::from(caps.deferred_verification) << 3)
+                | (u32::from(caps.deferred_identities) << 4);
             (*out).max_signature_bytes = if caps.external_identities {
                 u32::try_from(MAX_TLS_SIGNATURE_BYTES).map_err(|_| {
                     ErrorHandle::internal("TLS signature limit is not representable")

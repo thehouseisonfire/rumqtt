@@ -259,7 +259,7 @@ enum NativeCloseState {
     Open,
     Graceful(CompletionHandle),
     GracefullyClosed,
-    Immediate,
+    Immediate(Option<CompletionHandle>),
 }
 
 /// Cloneable, host-neutral ownership for idempotent close and bounded driver joining.
@@ -338,7 +338,7 @@ impl NativeClientCloser {
                 NativeCloseState::GracefullyClosed => {
                     return Ok(Completion::GracefulShutdown);
                 }
-                NativeCloseState::Immediate => {
+                NativeCloseState::Immediate(_) => {
                     return Err(Error::new(
                         ErrorKind::Shutdown,
                         "client was already closed immediately",
@@ -381,7 +381,7 @@ impl NativeClientCloser {
         let started = Instant::now();
         let mut state = self.lock_state_until(started, timeout)?;
         self.handle.check_disconnect_payload(&protocol)?;
-        match &*state {
+        let completion = match &*state {
             NativeCloseState::Graceful(completion)
                 if matches!(
                     completion.try_wait(),
@@ -389,22 +389,38 @@ impl NativeClientCloser {
                 ) =>
             {
                 *state = NativeCloseState::GracefullyClosed;
+                None
             }
-            NativeCloseState::GracefullyClosed | NativeCloseState::Immediate => {}
+            NativeCloseState::GracefullyClosed => None,
+            NativeCloseState::Immediate(completion) => completion.clone(),
             NativeCloseState::Open | NativeCloseState::Graceful(_) => {
-                if let Err(error) = self
+                let completion = match self
                     .handle
                     .try_admit(Command::ImmediateDisconnectWithOptions { protocol })
-                    && !(error.kind() == ErrorKind::Shutdown
-                        && self.handle.state() != crate::LifecycleState::Running)
                 {
-                    return Err(error);
-                }
-                *state = NativeCloseState::Immediate;
+                    Ok(admission) => Some(admission.completion),
+                    Err(error)
+                        if error.kind() == ErrorKind::Shutdown
+                            && self.handle.state() != crate::LifecycleState::Running =>
+                    {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
+                *state = NativeCloseState::Immediate(completion.clone());
+                completion
             }
-        }
+        };
         drop(state);
-        self.thread.join(timeout.saturating_sub(started.elapsed()))
+        self.thread
+            .join(timeout.saturating_sub(started.elapsed()))?;
+        // Joining reports teardown, not the shutdown result. Preserve the
+        // admitted completion for this caller and concurrent/idempotent callers.
+        completion.map_or(Ok(()), |completion| {
+            completion
+                .wait_timeout(timeout.saturating_sub(started.elapsed()))
+                .map(|_| ())
+        })
     }
 }
 
@@ -676,13 +692,23 @@ impl<'a> ShutdownInputs<'a> {
 #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.driver", skip_all, fields(protocol = ?context.protocol)))]
 async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalStatus {
     let shared = Arc::clone(&context.shared);
-    tokio::select! {
-        terminal = driver.run(context) => terminal,
-        () = shared.wait_graceful_timeout() => {
-            shared.reconcile_closed();
-            TerminalStatus::Closed { graceful: false }
-        }
+    let tls_callbacks = driver.tls_callback_monitor();
+    let terminal = tokio::select! {
+        terminal = driver.run(context) => Some(terminal),
+        () = shared.wait_graceful_timeout() => None,
+    };
+    if let Some(terminal) = terminal {
+        return terminal;
     }
+    // The select has dropped the entire backend future. Its inner cancellation
+    // checks cannot run, so inspect destruction failures here before closing.
+    if let Some(failure) = tls_callbacks.failure() {
+        return TerminalStatus::Failed(
+            Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
+        );
+    }
+    shared.reconcile_closed();
+    TerminalStatus::Closed { graceful: false }
 }
 
 pub struct EventDelivery<'a> {

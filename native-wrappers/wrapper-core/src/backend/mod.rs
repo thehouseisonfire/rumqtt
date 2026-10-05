@@ -1,7 +1,7 @@
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub mod tls;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-pub use tls::{build_tls, build_tls_for_layer};
+pub use tls::build_tls;
 
 mod auth;
 mod redirect;
@@ -23,6 +23,21 @@ use crate::{
     SubscribeCommand, SubscribeProtocolOptions, SubscriptionProtocolOptions, UnsubscribeCommand,
     UnsubscribeProtocolOptions,
 };
+
+/// Client-owned failures from destroying host TLS work. These are terminal,
+/// so they remain visible through poll or driver cancellation and are never reset.
+/// Each client owns its monitor even when TLS profiles are shared.
+#[derive(Default)]
+pub struct TlsCallbackMonitor(parking_lot::Mutex<Option<crate::TlsCallbackFailure>>);
+impl TlsCallbackMonitor {
+    pub fn failure(&self) -> Option<crate::TlsCallbackFailure> {
+        *self.0.lock()
+    }
+    #[cfg(feature = "use-rustls-no-provider")]
+    pub fn fail(&self, failure: crate::TlsCallbackFailure) {
+        self.0.lock().get_or_insert(failure);
+    }
+}
 
 pub enum BackendClient {
     V4(rumqttc_v4::AsyncClient),
@@ -338,6 +353,13 @@ impl BackendClient {
 }
 
 impl BackendDriver {
+    pub(crate) fn tls_callback_monitor(&self) -> std::sync::Arc<TlsCallbackMonitor> {
+        match self {
+            Self::V4(driver) => std::sync::Arc::clone(&driver.tls_callbacks),
+            Self::V5(driver) => std::sync::Arc::clone(&driver.tls_callbacks),
+        }
+    }
+
     pub(crate) async fn run(
         self,
         context: crate::runtime::DriverContext,
@@ -387,7 +409,15 @@ fn build_network(common: &crate::CommonConfig) -> rumqttc_v4::NetworkOptions {
 }
 
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
-fn build_proxy(config: &crate::ProxyConfig) -> Result<rumqttc_v4::Proxy> {
+fn build_proxy(
+    config: &crate::ProxyConfig,
+    tls_callbacks: &std::sync::Arc<TlsCallbackMonitor>,
+) -> Result<rumqttc_v4::Proxy> {
+    #[cfg(not(all(
+        feature = "http-proxy",
+        any(feature = "use-rustls-no-provider", feature = "use-native-tls")
+    )))]
+    let _ = tls_callbacks;
     let (proxy, credentials) = match config {
         #[cfg(feature = "http-proxy")]
         crate::ProxyConfig::Http {
@@ -409,7 +439,7 @@ fn build_proxy(config: &crate::ProxyConfig) -> Result<rumqttc_v4::Proxy> {
             rumqttc_v4::Proxy::https(
                 host.clone(),
                 *port,
-                build_tls_for_layer(tls, crate::TlsLayer::Proxy)?,
+                build_tls(tls, crate::TlsLayer::Proxy, tls_callbacks)?,
             ),
             credentials,
         ),

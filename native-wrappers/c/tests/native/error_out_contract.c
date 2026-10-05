@@ -64,6 +64,16 @@ static uint32_t coverage_tls_select(void *data, const rumqttc_tls_identity_reque
 static uint32_t coverage_tls_sign(void *data, const rumqttc_tls_signing_request_t *request, uint8_t *buffer, size_t capacity, size_t *written) {
   (void)data; (void)request; (void)buffer; (void)capacity; *written = 0; return RUMQTTC_TLS_CALLBACK_FAILED;
 }
+static void coverage_tls_verify_async(void *data, uint64_t id, const rumqttc_tls_verification_request_t *request, rumqttc_callback_completion_t *token) {
+  (void)data; (void)id; (void)request; CHECK(rumqttc_callback_tls_verify_complete(token, 0));
+}
+static void coverage_tls_select_async(void *data, uint64_t id, const rumqttc_tls_identity_request_t *request, rumqttc_callback_completion_t *token) {
+  (void)data; (void)id; (void)request; CHECK(rumqttc_callback_tls_select_complete(token, 0, SIZE_MAX));
+}
+static void coverage_tls_sign_async(void *data, uint64_t id, const rumqttc_tls_signing_request_t *request, rumqttc_callback_completion_t *token) {
+  (void)data; (void)id; (void)request; CHECK(rumqttc_callback_tls_sign_complete(token, 2, native_bytes(NULL, 0)));
+}
+static void coverage_tls_cancel(void *data, uint64_t id) { (void)data; (void)id; }
 static void coverage_tls_profiles(void) {
   rumqttc_tls_backend_capabilities_t caps = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
   rumqttc_tls_advanced_capabilities_t advanced = RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT;
@@ -118,6 +128,22 @@ static void coverage_tls_profiles(void) {
     EXPECT_FAILURE(rumqttc_tls_identity_registration_new(NULL, NULL, &descriptor, 1, &identity, NULL));
     /* ERROR_OUT_SUCCESS: rumqttc_tls_identity_registration_new */
     CHECK(rumqttc_tls_identity_registration_new(&table, NULL, &descriptor, 1, &identity, NULL));
+    rumqttc_tls_async_verifier_vtable_t deferred_verify = RUMQTTC_TLS_ASYNC_VERIFIER_VTABLE_INIT;
+    deferred_verify.verify = coverage_tls_verify_async; deferred_verify.cancel = coverage_tls_cancel; deferred_verify.destroy = coverage_destroy;
+    rumqttc_tls_verifier_registration_t *deferred_verifier = NULL;
+    /* ERROR_OUT_FAILURE: rumqttc_tls_verifier_registration_new_async */
+    EXPECT_FAILURE(rumqttc_tls_verifier_registration_new_async(NULL, NULL, &deferred_verifier, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_verifier_registration_new_async */
+    CHECK(rumqttc_tls_verifier_registration_new_async(&deferred_verify, NULL, &deferred_verifier, NULL));
+    rumqttc_tls_async_identity_vtable_t deferred_identity = RUMQTTC_TLS_ASYNC_IDENTITY_VTABLE_INIT;
+    deferred_identity.select = coverage_tls_select_async; deferred_identity.sign = coverage_tls_sign_async;
+    deferred_identity.cancel = coverage_tls_cancel; deferred_identity.destroy = coverage_destroy;
+    rumqttc_tls_identity_registration_t *deferred_registration = NULL;
+    /* ERROR_OUT_FAILURE: rumqttc_tls_identity_registration_new_async */
+    EXPECT_FAILURE(rumqttc_tls_identity_registration_new_async(NULL, NULL, &descriptor, 1, &deferred_registration, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_tls_identity_registration_new_async */
+    CHECK(rumqttc_tls_identity_registration_new_async(&deferred_identity, NULL, &descriptor, 1, &deferred_registration, NULL));
+    rumqttc_tls_verifier_registration_destroy(deferred_verifier); rumqttc_tls_identity_registration_destroy(deferred_registration);
     extensions.verifier = verifier; extensions.external_identity = identity;
   }
   /* ERROR_OUT_FAILURE: rumqttc_tls_profile_new_with_extensions */

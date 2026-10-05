@@ -242,7 +242,11 @@ fn pending_handshake_destructor_failures_are_terminal_on_timeout_and_close() {
                 .unwrap();
             let mut events = client.take_events().unwrap();
             if close {
-                client.closer().close_now(DEADLINE).unwrap();
+                let error = client.closer().close_now(DEADLINE).unwrap_err();
+                assert_eq!(
+                    error.websocket_failure(),
+                    Some(WebSocketHandshakeFailure::Panic)
+                );
             }
             let terminal = until(&mut events, |event| {
                 matches!(
@@ -263,7 +267,15 @@ fn pending_handshake_destructor_failures_are_terminal_on_timeout_and_close() {
                 error.websocket_failure(),
                 Some(WebSocketHandshakeFailure::Panic)
             );
-            client.closer().close_now(DEADLINE).unwrap();
+            let result = client.closer().close_now(DEADLINE);
+            if close {
+                assert_eq!(
+                    result.unwrap_err().websocket_failure(),
+                    Some(WebSocketHandshakeFailure::Panic)
+                );
+            } else {
+                result.unwrap();
+            }
         }
     }
 }

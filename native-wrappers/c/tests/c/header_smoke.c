@@ -61,6 +61,10 @@ int main(void) {
   rumqttc_tls_backend_capabilities_t tls_caps = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
   rumqttc_tls_profile_extensions_t tls_extensions = RUMQTTC_TLS_PROFILE_EXTENSIONS_INIT;
   rumqttc_tls_advanced_capabilities_t tls_advanced = RUMQTTC_TLS_ADVANCED_CAPABILITIES_INIT;
+  rumqttc_tls_async_verifier_vtable_t deferred_verifier = RUMQTTC_TLS_ASYNC_VERIFIER_VTABLE_INIT;
+  rumqttc_tls_async_identity_vtable_t deferred_identity = RUMQTTC_TLS_ASYNC_IDENTITY_VTABLE_INIT;
+  assert(deferred_verifier.struct_size == sizeof(deferred_verifier) && deferred_verifier.max_retained_operations == 64);
+  assert(deferred_identity.struct_size == sizeof(deferred_identity) && deferred_identity.max_retained_operations == 64);
   rumqttc_tls_verifier_vtable_t tls_verifier = RUMQTTC_TLS_VERIFIER_VTABLE_INIT;
   rumqttc_tls_identity_vtable_t tls_signer = RUMQTTC_TLS_IDENTITY_VTABLE_INIT;
   rumqttc_tls_external_identity_t tls_external_identity = RUMQTTC_TLS_EXTERNAL_IDENTITY_INIT;

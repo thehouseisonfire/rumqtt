@@ -7,20 +7,17 @@ use super::{Error, ErrorKind, Result};
 use rumqttc_v4::tokio_rustls::rustls;
 
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-pub fn build_tls(config: &crate::TlsConfig) -> Result<rumqttc_v4::TlsConfiguration> {
-    build_tls_for_layer(config, crate::TlsLayer::Broker)
-}
-
-pub fn build_tls_for_layer(
+pub fn build_tls(
     config: &crate::TlsConfig,
     layer: crate::TlsLayer,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
 ) -> Result<rumqttc_v4::TlsConfiguration> {
     #[cfg(not(feature = "use-rustls-no-provider"))]
-    let _ = layer;
+    let _ = (layer, tls_callbacks);
     config.validate_options()?;
     match config.backend {
         #[cfg(feature = "use-rustls-no-provider")]
-        crate::TlsBackend::Rustls => build_rustls(config, layer),
+        crate::TlsBackend::Rustls => build_rustls(config, layer, tls_callbacks),
         #[cfg(feature = "use-native-tls")]
         crate::TlsBackend::Native => build_native_tls(config),
         #[allow(unreachable_patterns)]
@@ -29,23 +26,12 @@ pub fn build_tls_for_layer(
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
-fn build_rustls(
+fn rustls_provider(
     config: &crate::TlsConfig,
-    layer: crate::TlsLayer,
-) -> Result<rumqttc_v4::TlsConfiguration> {
-    use rumqttc_v4::tokio_rustls::rustls::{
-        ClientConfig, RootCertStore,
-        client::WebPkiServerVerifier,
-        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
-    };
+) -> Result<std::sync::Arc<rustls::crypto::CryptoProvider>> {
     use std::sync::Arc;
-    let invalid = || {
-        Error::new(
-            ErrorKind::Tls,
-            "failed to construct rustls credentials or policy",
-        )
-    };
-    let mut provider = rumqttc_core::rustls_crypto_provider().map_err(|_| invalid())?;
+    let mut provider = rumqttc_core::rustls_crypto_provider()
+        .map_err(|_| Error::new(ErrorKind::Tls, "Rustls provider is unavailable"))?;
     if !config.cipher_suites.is_empty() {
         let mut selected = (*provider).clone();
         selected.cipher_suites = config
@@ -64,6 +50,28 @@ fn build_rustls(
             .collect::<Result<_>>()?;
         provider = Arc::new(selected);
     }
+    Ok(provider)
+}
+
+#[cfg(feature = "use-rustls-no-provider")]
+fn build_rustls(
+    config: &crate::TlsConfig,
+    layer: crate::TlsLayer,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
+) -> Result<rumqttc_v4::TlsConfiguration> {
+    use rumqttc_v4::tokio_rustls::rustls::{
+        ClientConfig, RootCertStore,
+        client::WebPkiServerVerifier,
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    };
+    use std::sync::Arc;
+    let invalid = || {
+        Error::new(
+            ErrorKind::Tls,
+            "failed to construct rustls credentials or policy",
+        )
+    };
+    let provider = rustls_provider(config)?;
     let mut roots = match &config.roots {
         crate::TlsRootPolicy::Platform | crate::TlsRootPolicy::PlatformAndPem(_) => {
             rumqttc_core::rustls_native_root_store().map_err(|_| invalid())?
@@ -101,7 +109,13 @@ fn build_rustls(
     }
     .map_err(|_| Error::configuration("TLS cipher suites and versions have no usable overlap"))?;
     let has_hooks = config.verifier.is_some()
-        || matches!(config.identity, Some(crate::TlsClientIdentity::External(_)));
+        || config.async_verifier.is_some()
+        || matches!(
+            config.identity,
+            Some(
+                crate::TlsClientIdentity::External(_) | crate::TlsClientIdentity::ExternalAsync(_)
+            )
+        );
     let verifier = if config.pins.is_empty() && !has_hooks {
         None
     } else {
@@ -128,10 +142,13 @@ fn build_rustls(
                 .with_client_auth_cert(chain, key)
                 .map_err(|_| invalid())?
         }
-        None | Some(crate::TlsClientIdentity::External(_)) => builder.with_no_client_auth(),
+        None
+        | Some(
+            crate::TlsClientIdentity::External(_) | crate::TlsClientIdentity::ExternalAsync(_),
+        ) => builder.with_no_client_auth(),
         _ => return Err(Error::configuration("rustls requires a PEM identity")),
     };
-    finish_rustls(config, client, verifier, layer)
+    finish_rustls(config, client, verifier, layer, tls_callbacks)
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
@@ -140,11 +157,18 @@ fn finish_rustls(
     mut client: rustls::ClientConfig,
     verifier: Option<std::sync::Arc<rustls::client::WebPkiServerVerifier>>,
     layer: crate::TlsLayer,
+    tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
 ) -> Result<rumqttc_v4::TlsConfiguration> {
     use rustls::client::Resumption;
     use std::sync::Arc;
     let has_hooks = config.verifier.is_some()
-        || matches!(config.identity, Some(crate::TlsClientIdentity::External(_)));
+        || config.async_verifier.is_some()
+        || matches!(
+            config.identity,
+            Some(
+                crate::TlsClientIdentity::External(_) | crate::TlsClientIdentity::ExternalAsync(_)
+            )
+        );
     client.alpn_protocols.clone_from(&config.alpn_protocols);
     if config.sni_policy != crate::TlsSniPolicy::Default {
         client.enable_sni = config.sni_policy == crate::TlsSniPolicy::Enabled;
@@ -170,9 +194,20 @@ fn finish_rustls(
                 Some(crate::TlsClientIdentity::External(value)) => Some(value.clone()),
                 _ => None,
             };
-            let identities = external
+            let async_external = match &config.identity {
+                Some(crate::TlsClientIdentity::ExternalAsync(value)) => Some(value.clone()),
+                _ => None,
+            };
+            let catalog = external
                 .as_ref()
-                .map(|value| advanced::parse_identities(value.identities()))
+                .map(crate::TlsExternalIdentityConfig::identities)
+                .or_else(|| {
+                    async_external
+                        .as_ref()
+                        .map(crate::AsyncTlsExternalIdentityConfig::identities)
+                });
+            let identities = catalog
+                .map(advanced::parse_identities)
                 .transpose()?
                 .unwrap_or_default();
             return Ok(rumqttc_v4::TlsConfiguration::Connector(Arc::new(
@@ -180,9 +215,12 @@ fn finish_rustls(
                     template: Arc::new(client),
                     standard,
                     verifier: config.verifier.clone(),
+                    async_verifier: config.async_verifier.clone(),
+                    async_external,
                     external,
                     identities,
                     layer,
+                    tls_callbacks: tls_callbacks.clone(),
                 },
             )));
         }

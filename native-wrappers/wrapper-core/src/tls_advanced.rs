@@ -1,6 +1,7 @@
-//! Owned synchronous TLS hooks and enforceable advanced policies.
+//! Owned TLS hooks and enforceable advanced policies.
 use std::sync::Arc;
 use std::time::Instant;
+use std::{future::Future, pin::Pin};
 
 use crate::{Error, Result, TlsBackend};
 use bytes::Bytes;
@@ -61,6 +62,8 @@ pub enum TlsCallbackReason {
     Timeout = 7,
     #[error("TLS callback temporarily unavailable")]
     Transient = 8,
+    #[error("TLS callback operation was abandoned")]
+    Abandoned = 9,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{reason}")]
@@ -80,12 +83,18 @@ impl TlsCallbackFailure {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Backend capabilities are independent flags, not states"
+)]
 pub struct TlsAdvancedCapabilities {
     pub sni_policies: u32,
     pub resumption_policies: u32,
     pub cipher_selection: bool,
     pub supplemental_verification: bool,
     pub external_identities: bool,
+    pub deferred_verification: bool,
+    pub deferred_identities: bool,
 }
 impl TlsBackend {
     #[must_use]
@@ -97,6 +106,8 @@ impl TlsBackend {
                 cipher_selection: true,
                 supplemental_verification: true,
                 external_identities: true,
+                deferred_verification: true,
+                deferred_identities: true,
             },
             Self::Native if cfg!(feature = "use-native-tls") => TlsAdvancedCapabilities {
                 sni_policies: 7,
@@ -104,6 +115,8 @@ impl TlsBackend {
                 cipher_selection: false,
                 supplemental_verification: false,
                 external_identities: false,
+                deferred_verification: false,
+                deferred_identities: false,
             },
             _ => TlsAdvancedCapabilities {
                 sni_policies: 0,
@@ -111,6 +124,8 @@ impl TlsBackend {
                 cipher_selection: false,
                 supplemental_verification: false,
                 external_identities: false,
+                deferred_verification: false,
+                deferred_identities: false,
             },
         }
     }
@@ -248,43 +263,51 @@ impl TlsExternalIdentityConfig {
         identities: Vec<TlsExternalIdentity>,
         provider: Arc<dyn TlsIdentityProvider>,
     ) -> Result<Self> {
-        if identities.is_empty() || identities.len() > MAX_TLS_IDENTITIES {
-            return Err(Error::configuration("invalid external TLS identity count"));
-        }
-        let mut bytes = 0usize;
-        for identity in &identities {
-            bytes = bytes
-                .checked_add(identity.certificate_pem.len())
-                .and_then(|n| n.checked_add(identity.key_id.len()))
-                .ok_or_else(|| Error::configuration("external TLS catalog is too large"))?;
-            if bytes > MAX_TLS_METADATA_BYTES
-                || identity.key_id.is_empty()
-                || identity.key_id.len() > MAX_TLS_KEY_ID_BYTES
-            {
-                return Err(Error::configuration(
-                    "external TLS catalog exceeds resource bounds",
-                ));
-            }
-        }
-        #[cfg(feature = "use-rustls-no-provider")]
-        crate::backend::tls::validate_external_identities(&identities)?;
-        #[cfg(not(feature = "use-rustls-no-provider"))]
-        {
-            let _ = provider;
-            return Err(Error::configuration(
-                "external TLS identities require Rustls",
-            ));
-        }
-        #[cfg(feature = "use-rustls-no-provider")]
+        validate_catalog(&identities)?;
         Ok(Self {
             identities: identities.into(),
             provider,
         })
     }
+    #[cfg(feature = "use-rustls-no-provider")]
+    pub(crate) fn with_provider(&self, provider: Arc<dyn TlsIdentityProvider>) -> Self {
+        Self {
+            identities: self.identities.clone(),
+            provider,
+        }
+    }
     #[must_use]
     pub fn identities(&self) -> &[TlsExternalIdentity] {
         &self.identities
     }
+}
+fn validate_catalog(identities: &[TlsExternalIdentity]) -> Result<()> {
+    if identities.is_empty() || identities.len() > MAX_TLS_IDENTITIES {
+        return Err(Error::configuration("invalid external TLS identity count"));
+    }
+    let mut bytes = 0usize;
+    for identity in identities {
+        bytes = bytes
+            .checked_add(identity.certificate_pem.len())
+            .and_then(|n| n.checked_add(identity.key_id.len()))
+            .ok_or_else(|| Error::configuration("external TLS catalog is too large"))?;
+        if bytes > MAX_TLS_METADATA_BYTES
+            || identity.key_id.is_empty()
+            || identity.key_id.len() > MAX_TLS_KEY_ID_BYTES
+        {
+            return Err(Error::configuration(
+                "external TLS catalog exceeds resource bounds",
+            ));
+        }
+    }
+    #[cfg(feature = "use-rustls-no-provider")]
+    crate::backend::tls::validate_external_identities(identities)?;
+    #[cfg(not(feature = "use-rustls-no-provider"))]
+    return Err(Error::configuration(
+        "external TLS identities require Rustls",
+    ));
+    #[cfg(feature = "use-rustls-no-provider")]
+    Ok(())
 }
 impl std::fmt::Debug for TlsExternalIdentityConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -297,6 +320,115 @@ impl PartialEq for TlsExternalIdentityConfig {
     }
 }
 impl Eq for TlsExternalIdentityConfig {}
+
+/// An owned response. Construction, polling and destruction must return promptly.
+/// Dropping the future cancels pending work; keys remain owned by the host.
+pub type TlsCallbackFuture<T> =
+    Pin<Box<dyn Future<Output = std::result::Result<T, TlsCallbackReason>> + Send + 'static>>;
+
+pub struct AsyncTlsVerificationRequest {
+    pub server_name: String,
+    pub layer: TlsLayer,
+    pub certificates: Vec<Bytes>,
+    pub ocsp_response: Bytes,
+    pub unix_time: u64,
+    pub deadline: Option<Instant>,
+}
+pub struct AsyncTlsIdentityRequest {
+    pub server_name: String,
+    pub layer: TlsLayer,
+    pub issuer_hints: Vec<Bytes>,
+    pub signature_schemes: Vec<u16>,
+    pub deadline: Option<Instant>,
+}
+pub struct AsyncTlsSigningRequest {
+    pub server_name: String,
+    pub layer: TlsLayer,
+    pub identity_index: usize,
+    pub key_id: Bytes,
+    pub signature_scheme: u16,
+    /// The exact unhashed Rustls message. Hash according to the selected scheme.
+    pub message: Bytes,
+    pub deadline: Option<Instant>,
+}
+macro_rules! redacted_owned {
+    ($($t:ty),+ $(,)?) => {$(
+        impl std::fmt::Debug for $t {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(concat!(stringify!($t), "([REDACTED])"))
+            }
+        }
+    )+};
+}
+redacted_owned!(
+    AsyncTlsVerificationRequest,
+    AsyncTlsIdentityRequest,
+    AsyncTlsSigningRequest
+);
+
+/// Supplemental, cancellable verification. Standard trust and pins run first.
+/// Futures run on the driver; never wait for that driver's MQTT progress.
+pub trait AsyncTlsVerifier: Send + Sync + 'static {
+    fn verify(&self, request: AsyncTlsVerificationRequest) -> TlsCallbackFuture<()>;
+}
+/// Cancellable selection and signing over a fixed, owned public identity catalog.
+/// Calls are serialized per handshake and may overlap across clients.
+pub trait AsyncTlsIdentityProvider: Send + Sync + 'static {
+    /// `Ok(None)` deliberately declines client authentication.
+    fn select(&self, request: AsyncTlsIdentityRequest) -> TlsCallbackFuture<Option<usize>>;
+    fn sign(&self, request: AsyncTlsSigningRequest) -> TlsCallbackFuture<Vec<u8>>;
+}
+#[derive(Clone)]
+pub struct AsyncTlsVerifierConfig(pub Arc<dyn AsyncTlsVerifier>);
+impl PartialEq for AsyncTlsVerifierConfig {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for AsyncTlsVerifierConfig {}
+#[derive(Clone)]
+pub struct AsyncTlsExternalIdentityConfig {
+    identities: Arc<[TlsExternalIdentity]>,
+    pub(crate) provider: Arc<dyn AsyncTlsIdentityProvider>,
+}
+impl AsyncTlsExternalIdentityConfig {
+    /// Validate the catalog without invoking host code.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported algorithms, malformed credentials or resource bounds.
+    pub fn new(
+        identities: Vec<TlsExternalIdentity>,
+        provider: Arc<dyn AsyncTlsIdentityProvider>,
+    ) -> Result<Self> {
+        validate_catalog(&identities)?;
+        Ok(Self {
+            identities: identities.into(),
+            provider,
+        })
+    }
+
+    #[cfg(feature = "use-rustls-no-provider")]
+    pub(crate) fn synchronous(
+        &self,
+        provider: Arc<dyn TlsIdentityProvider>,
+    ) -> TlsExternalIdentityConfig {
+        TlsExternalIdentityConfig {
+            identities: self.identities.clone(),
+            provider,
+        }
+    }
+    #[must_use]
+    pub fn identities(&self) -> &[TlsExternalIdentity] {
+        &self.identities
+    }
+}
+impl PartialEq for AsyncTlsExternalIdentityConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.identities == other.identities && Arc::ptr_eq(&self.provider, &other.provider)
+    }
+}
+impl Eq for AsyncTlsExternalIdentityConfig {}
+redacted_owned!(AsyncTlsVerifierConfig, AsyncTlsExternalIdentityConfig);
 
 #[allow(clippy::redundant_pub_crate)] // This helper must not enter the public glob export.
 pub(crate) fn callback_failure(

@@ -51,7 +51,7 @@ int main(void) {
     } else {
       if (advanced.sni_policy_mask != 7) return 11;
       if (backend == RUMQTTC_TLS_BACKEND_RUSTLS) {
-        if (advanced.resumption_policy_mask != 3 || advanced.feature_mask != 7 || advanced.max_signature_bytes != 4096) return 12;
+        if (advanced.resumption_policy_mask != 3 || advanced.feature_mask != 31 || advanced.max_signature_bytes != 4096) return 12;
         size_t count = 0;
         if (rumqttc_tls_supported_cipher_suites(backend, NULL, 0, &count, NULL) != RUMQTTC_OK || count == 0) return 13;
         if (rumqttc_tls_supported_signature_schemes(backend, NULL, 0, &count, NULL) != RUMQTTC_OK || count == 0) return 14;

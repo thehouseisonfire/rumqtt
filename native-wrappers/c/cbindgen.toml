@@ -9,6 +9,8 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_tls_async_verifier_vtable_t",
+    "rumqttc_tls_async_identity_vtable_t",
     "rumqttc_tls_advanced_capabilities_t",
     "rumqttc_tls_profile_extensions_t",
     "rumqttc_tls_verification_request_t",

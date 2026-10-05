@@ -23,6 +23,8 @@ use rustls::pki_types::{
 };
 use rustls::sign::{CertifiedKey, Signer, SigningKey};
 use rustls::{ClientConfig, SignatureAlgorithm, SignatureScheme};
+#[path = "tls_deferred.rs"]
+mod deferred;
 
 pub struct Identity {
     pub descriptor: TlsExternalIdentity,
@@ -126,10 +128,26 @@ struct State {
     layer: TlsLayer,
     deadline: Option<Instant>,
     failure: Mutex<Option<TlsCallbackFailure>>,
+    pending: Mutex<Option<Stage>>,
+    tls_callbacks: Arc<crate::backend::TlsCallbackMonitor>,
 }
 impl State {
+    fn fail_destruction(&self, stage: Stage, reason: Reason) {
+        self.fail(stage, reason);
+        // The connecting future may itself be getting dropped. Publish this
+        // failure independently of the return path through io_failure().
+        self.tls_callbacks.fail(TlsCallbackFailure {
+            stage,
+            reason,
+            layer: self.layer,
+        });
+    }
     fn fail(&self, stage: Stage, reason: Reason) {
-        self.failure.lock().get_or_insert(TlsCallbackFailure {
+        let mut current = self.failure.lock();
+        if reason == Reason::Panic && current.is_some_and(|f| f.reason == Reason::Timeout) {
+            *current = None;
+        }
+        current.get_or_insert(TlsCallbackFailure {
             stage,
             reason,
             layer: self.layer,
@@ -191,8 +209,11 @@ pub struct Connector {
     pub standard: Arc<dyn ServerCertVerifier>,
     pub verifier: Option<TlsVerifierConfig>,
     pub external: Option<TlsExternalIdentityConfig>,
+    pub async_verifier: Option<crate::AsyncTlsVerifierConfig>,
+    pub async_external: Option<crate::AsyncTlsExternalIdentityConfig>,
     pub identities: Vec<Arc<Identity>>,
     pub layer: TlsLayer,
+    pub tls_callbacks: Arc<crate::backend::TlsCallbackMonitor>,
 }
 impl rumqttc_core::TlsHandshakeConnector for Connector {
     fn connect(
@@ -207,18 +228,32 @@ impl rumqttc_core::TlsHandshakeConnector for Connector {
             layer: self.layer,
             deadline,
             failure: Mutex::new(None),
+            pending: Mutex::new(None),
+            tls_callbacks: self.tls_callbacks.clone(),
         });
+        let dispatch = if self.async_verifier.is_some() || self.async_external.is_some() {
+            Some(deferred::Dispatch::new(self, state.clone()))
+        } else {
+            None
+        };
         let mut config = (*self.template).clone();
         config
             .dangerous()
             .set_certificate_verifier(Arc::new(Verifier {
                 standard: self.standard.clone(),
-                host: self.verifier.clone(),
+                host: dispatch
+                    .as_ref()
+                    .and_then(deferred::Dispatch::verifier)
+                    .or_else(|| self.verifier.clone()),
                 state: state.clone(),
             }));
-        if let Some(external) = &self.external {
+        let external = dispatch
+            .as_ref()
+            .and_then(deferred::Dispatch::external)
+            .or_else(|| self.external.clone());
+        if let Some(external) = external {
             config.client_auth_cert_resolver = Arc::new(Resolver {
-                config: external.clone(),
+                config: external,
                 identities: self.identities.clone(),
                 provider: config.crypto_provider().clone(),
                 state: state.clone(),
@@ -233,6 +268,9 @@ impl rumqttc_core::TlsHandshakeConnector for Connector {
             })?;
             let connector = TlsConnector::from(Arc::new(config));
             let handshake = connector.connect(name, stream);
+            if let Some(dispatch) = dispatch {
+                return dispatch.connect(handshake).await;
+            }
             let result = if let Some(deadline) = deadline {
                 if let Ok(result) = tokio::time::timeout_at(deadline.into(), handshake).await {
                     result

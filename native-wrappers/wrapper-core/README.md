@@ -155,7 +155,9 @@ still leave unfinished diagnostics ambiguous.
 callers share one completion, successful repeated calls return the same graceful
 outcome, immediate close can escalate an outstanding graceful close, and each
 caller's timeout is one budget spanning completion observation and driver-thread
-join. Finalizer cleanup remains a nonblocking immediate-shutdown signal.
+join. Immediate callers also retain their tracked completion and observe the
+same shutdown failure on repeated calls. Joining alone reports thread teardown.
+Finalizer cleanup remains a nonblocking immediate-shutdown signal.
 
 ## TLS policy
 
@@ -187,7 +189,7 @@ contain public certificate PEM, opaque key IDs and ordered signature schemes;
 `TlsIdentityProvider` selects an entry and signs the exact unhashed message.
 Returned signatures are checked against that entry's leaf key. `TlsVerifier`
 supplements standard authentication and pins. Neither hook runs at validation.
-Hooks are synchronous, bounded and retained with `Arc`; they may run concurrently
+These hooks are synchronous, bounded and retained with `Arc`; they may run concurrently
 across clients and must return promptly without waiting for their driver.
 `TlsCallbackFailure` records stage, reason and connection layer with fixed
 redacted diagnostics. Only timeout/transient callback failures retry. A fresh
@@ -195,6 +197,34 @@ handshake guard prevents failed optional client authentication from exposing an
 anonymous stream. Pins and hooks disable resumption; connection deadlines remain
 absolute across TCP, proxy, TLS and WebSocket setup. See the
 [C contract](../c/README.md#owned-tls-profiles) for algorithms and resource limits.
+
+For deferred answers, set `TlsConfig::async_verifier` to `AsyncTlsVerifierConfig`
+or use `TlsClientIdentity::ExternalAsync(AsyncTlsExternalIdentityConfig)`.
+`AsyncTlsVerifier` and `AsyncTlsIdentityProvider` receive owned, redacted request
+snapshots and return `TlsCallbackFuture<T>`. They may return immediately or await
+remote services. Synchronous and asynchronous verifiers are mutually exclusive;
+selection/signing share one fixed, validated catalog. Native TLS rejects these
+hooks eagerly. All hooks preserve standard authentication and pins, validate
+returned signatures and disable resumption.
+
+Deferred profiles drive Rustls on one cancellable worker per active handshake.
+The driver constructs/polls/drops host futures, including synchronous TLS hooks
+in mixed profiles; synchronous-only profiles keep their existing path. The
+original connection deadline covers queued and pending work. Dropping a future
+cancels observation; detached host work must own its data and ignore late answers.
+Close and timeout wake worker callback and network waits before runtime teardown.
+Panics during future construction, polling or destruction become sanitized
+terminal `TlsCallbackReason::Panic` failures. Methods and future polls/destructors
+must return or yield promptly and cannot wait for their own driver's MQTT work.
+Destruction failures during cancellation remain visible to the driver and fail
+shutdown and pending operations; they override retryable timeout failures.
+If graceful close expires, the close operation retains its timeout result, while
+a TLS destruction failure makes the driver and pending operations fail with the
+typed callback error instead of reporting completed immediate shutdown.
+Failure tracking belongs to each client, including its proxy and redirect TLS
+layers, so shared profiles cannot transfer these failures between clients.
+The C binding supplies retained completion tokens and bounded operation ownership.
+
 
 ## Admission modes and host threads
 
