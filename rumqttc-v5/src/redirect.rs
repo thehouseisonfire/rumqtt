@@ -3,7 +3,10 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use crate::{Broker, ConnectAuth, SrvLookupError, Transport, broker_transport_matches};
+use crate::{
+    Broker, ConnectAuth, MqttOptions, SessionStore, SrvLookupError, Transport,
+    broker_transport_matches,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedirectReason {
@@ -698,9 +701,28 @@ pub enum RedirectSession {
     },
 }
 
+/// Credential-free failures from an application redirect policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RedirectPolicyFailure {
+    #[error("redirect callback failed")]
+    Callback,
+    #[error("redirect callback panicked")]
+    Panic,
+    #[error("redirect decision deadline expired")]
+    Timeout,
+    #[error("invalid redirect response")]
+    InvalidResponse,
+    #[error("redirect policy resource limit exceeded")]
+    ResourceLimit,
+    #[error("redirect session store key is already owned")]
+    StoreInUse,
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RedirectTargetError {
+    #[error("{0}")]
+    Policy(#[from] RedirectPolicyFailure),
     #[error("Server Reference scheme {scheme:?} is incompatible with the selected transport")]
     TransportMismatch { scheme: Option<RedirectScheme> },
     #[error("Server Reference requires the disabled `websocket` feature")]
@@ -722,6 +744,8 @@ pub struct RedirectTargetProfile {
     authentication: Option<ConnectAuth>,
     reuse_authenticator: bool,
     reuse_network_credentials: bool,
+    pub(crate) session_store: Option<Arc<dyn SessionStore>>,
+    decision_deadline: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -788,6 +812,8 @@ impl RedirectTargetProfile {
             authentication: None,
             reuse_authenticator: false,
             reuse_network_credentials: false,
+            session_store: None,
+            decision_deadline: None,
         })
     }
 
@@ -836,6 +862,68 @@ impl RedirectTargetProfile {
     pub const fn reuse_network_credentials(mut self) -> Self {
         self.reuse_network_credentials = true;
         self
+    }
+
+    /// Attach the owned store for an explicitly reused session key.
+    ///
+    /// Ignored by isolated sessions. The previous options retain the origin store for rollback.
+    #[must_use]
+    pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    /// Reject this decision if its original synchronous budget expires before application.
+    #[must_use]
+    pub const fn decision_deadline(mut self, deadline: std::time::Instant) -> Self {
+        self.decision_deadline = Some(deadline);
+        self
+    }
+
+    pub(crate) fn validate(&self, options: &MqttOptions) -> Result<(), RedirectTargetError> {
+        if self
+            .decision_deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            return Err(RedirectPolicyFailure::Timeout.into());
+        }
+        let current_id = options.client_id();
+        let client_id = match &self.client_id {
+            RedirectClientId::Fresh => "",
+            RedirectClientId::Reuse => current_id.as_str(),
+            RedirectClientId::Replace(id) => id.as_str(),
+        };
+        // Validate wire strings before applying any options, including requests from Rust policies.
+        let valid_string =
+            |value: &str| u16::try_from(value.len()).is_ok() && !value.contains('\0');
+        if !valid_string(client_id) {
+            return Err(RedirectPolicyFailure::InvalidResponse.into());
+        }
+        let (username, password) = match self.authentication.as_ref().unwrap_or(&ConnectAuth::None)
+        {
+            ConnectAuth::None => (None, None),
+            ConnectAuth::Username { username } => (Some(username.as_str()), None),
+            ConnectAuth::Password { password } => (None, Some(password)),
+            ConnectAuth::UsernamePassword { username, password } => {
+                (Some(username.as_str()), Some(password))
+            }
+        };
+        if username.is_some_and(|u| !valid_string(u))
+            || password.is_some_and(|p| u16::try_from(p.len()).is_err())
+        {
+            return Err(RedirectPolicyFailure::InvalidResponse.into());
+        }
+        if let RedirectSession::Reuse { store_scope } = &self.session {
+            if store_scope.contains('\0') || u16::try_from(store_scope.len()).is_err() {
+                return Err(RedirectPolicyFailure::InvalidResponse.into());
+            }
+            if (options.session_store().is_some() || self.session_store.is_some())
+                && (client_id.is_empty() || store_scope.is_empty())
+            {
+                return Err(RedirectPolicyFailure::InvalidResponse.into());
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -907,6 +995,12 @@ pub struct RedirectContext<'a> {
     pub references: &'a [RedirectReference],
     /// One-based decision number in the current redirect chain.
     pub attempt: usize,
+    /// Effective identity and persistence metadata; no credentials are exposed.
+    pub client_id: &'a str,
+    pub store_scope: &'a str,
+    pub has_session_store: bool,
+    pub clean_start: bool,
+    pub session_expiry_interval: Option<u32>,
 }
 
 #[derive(Clone, Debug)]

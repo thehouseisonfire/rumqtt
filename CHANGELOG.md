@@ -24,6 +24,17 @@
   exhaustive matches/literals require updates. Native notices expose immutable
   admitted fence sequence/deadline metadata. Include concurrent native consumers,
   lifecycle regressions, an example and release benchmark evidence.
+- Native wrappers: Add owned synchronous MQTT 5 application redirect authorities
+  and retained C request snapshots. Approve an advertised target with independent
+  transport/TLS, identity, supplied CONNECT credentials, authentication-authority
+  and network-credential reuse decisions. Explicit scoped session reuse acquires
+  exact checkpoint-key leases before applying a profile and preserves native
+  session reconciliation, temporary restoration and permanent-move ownership.
+  Add redacted typed policy failures, selected-reference observations, a finite
+  decision budget and a runnable C example. Synchronous callbacks cannot be
+  preempted; deferred decisions and chain-wide deadlines remain outside this API.
+  Native authentication contexts now include effective/broker-assigned client IDs;
+  exhaustive Rust context/event/diagnostic literals and error matches need updating.
 - Native wrappers: Complete advanced TLS profiles with ordered Rustls cipher
   selection, explicit SNI and resumption policy, supplemental verification and
   externally selected/signed client identities. Owned synchronous C registrations

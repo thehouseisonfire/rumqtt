@@ -146,6 +146,22 @@ pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
         if let Some(failure) = super::transport::failure(error) {
             terminal = terminal.with_transport_failure(failure);
         }
+        if matches!(
+            redirect.failure,
+            rumqttc_v5::RedirectFailure::Target(rumqttc_v5::RedirectTargetError::Policy(
+                rumqttc_v5::RedirectPolicyFailure::StoreInUse
+            ))
+        ) {
+            terminal = terminal.with_store_failure(crate::StoreFailure::InUse);
+        }
+        if let rumqttc_v5::RedirectFailure::FollowFailed(source)
+        | rumqttc_v5::RedirectFailure::SrvTargetsExhausted {
+            last_error: source, ..
+        } = &redirect.failure
+            && let Some(failure) = map_connection_error(source).store_failure()
+        {
+            terminal = terminal.with_store_failure(failure);
+        }
         return terminal;
     }
     if let Some(failure) = crate::tls_advanced::callback_failure(error) {
@@ -365,12 +381,6 @@ fn build_options(
         (None, None) => {}
     }
     options.set_clean_start(protocol.clean_start);
-    super::redirect::configure(
-        &mut options,
-        &protocol.redirect_policy,
-        protocol.srv_resolver,
-        tls_callbacks,
-    )?;
     options
         .protocol_compatibility_mut()
         .set_broker_session_resume_policy(match protocol.broker_session_resume_policy {
@@ -400,14 +410,15 @@ fn build_options(
         }
         crate::IncomingPacketLimit::Unlimited => rumqttc_v5::IncomingPacketSizeLimit::Unlimited,
     });
-    if let Some(store) = protocol.session_store {
-        options.set_session_store_scope(store.scope.clone());
-        options.set_session_store(super::session::Adapter::new(
-            store,
-            ProtocolVersion::V5,
-            &common.client_id,
-        )?);
-    }
+    let store_factory = configure_store(&mut options, protocol.session_store, &common.client_id)?;
+    super::redirect::configure(
+        &mut options,
+        &protocol.redirect_policy,
+        protocol.srv_resolver,
+        common,
+        store_factory,
+        tls_callbacks,
+    )?;
     super::transport::configure_v5(&mut options, common);
     options.validate().map_err(|error| {
         Error::sourced(
@@ -417,6 +428,19 @@ fn build_options(
         )
     })?;
     Ok(options)
+}
+
+fn configure_store(
+    options: &mut rumqttc_v5::MqttOptions,
+    store: Option<crate::SessionStoreConfig>,
+    client_id: &str,
+) -> crate::Result<Option<std::sync::Arc<super::session::AdapterFactory>>> {
+    let Some(store) = store else { return Ok(None) };
+    let scope = store.scope.clone();
+    let factory = std::sync::Arc::new(super::session::AdapterFactory::new(store));
+    options.set_session_store_scope(scope.clone());
+    options.set_session_store_arc(factory.prepare(&scope, client_id)?);
+    Ok(Some(factory))
 }
 
 fn last_will(will: &crate::LastWillConfig) -> rumqttc_v5::LastWill {
@@ -483,7 +507,6 @@ pub fn build(
     if let Some(config) = authenticator {
         options.set_authenticator(std::sync::Arc::new(std::sync::Mutex::new(
             super::auth::Adapter {
-                client_id: common.client_id.clone(),
                 config,
                 monitor: auth.clone(),
                 generation: 0,
@@ -492,7 +515,6 @@ pub fn build(
     }
     if let Some(config) = async_authenticator {
         options.set_async_authenticator(std::sync::Arc::new(super::auth::AsyncAdapter {
-            client_id: common.client_id.clone(),
             config,
             monitor: auth.clone(),
             generation: std::sync::atomic::AtomicU64::new(0),

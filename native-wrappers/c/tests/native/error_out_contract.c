@@ -183,7 +183,83 @@ static void coverage_tls_profiles(void) {
  * rumqttc.h and requires both markers whenever an optional error output is
  * added. Each marked function below is called with NULL on both paths.
  */
+static uint32_t coverage_redirect(void *data, const rumqttc_redirect_request_t *request, rumqttc_redirect_response_t *response) {
+  (void)data;
+  rumqttc_redirect_request_t *retained = NULL;
+  rumqttc_redirect_request_info_t info = RUMQTTC_REDIRECT_REQUEST_INFO_INIT;
+  rumqttc_redirect_reference_t reference = RUMQTTC_REDIRECT_REFERENCE_INIT;
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_request_retain */
+  CHECK(rumqttc_redirect_request_retain(request, &retained, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_request_retain */
+  EXPECT_FAILURE(rumqttc_redirect_request_retain(NULL, NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_request_info */
+  CHECK(rumqttc_redirect_request_info(request, &info, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_request_info */
+  EXPECT_FAILURE(rumqttc_redirect_request_info(NULL, &info, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_request_reference */
+  CHECK(rumqttc_redirect_request_reference(request, 1, &reference, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_request_reference */
+  EXPECT_FAILURE(rumqttc_redirect_request_reference(request, SIZE_MAX, &reference, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_response_follow */
+  CHECK(rumqttc_redirect_response_follow(response, request, 1, RUMQTTC_REDIRECT_TRANSPORT_TCP, NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_response_set_client_id */
+  CHECK(rumqttc_redirect_response_set_client_id(response, RUMQTTC_REDIRECT_CLIENT_ID_REPLACE, native_string("target"), NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_response_set_credentials */
+  CHECK(rumqttc_redirect_response_set_credentials(response, 1, native_string("user"), 1, native_bytes(NULL, 0), NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_response_set_session */
+  CHECK(rumqttc_redirect_response_set_session(response, RUMQTTC_REDIRECT_SESSION_REUSE, native_string("target"), NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_response_set_reuse */
+  CHECK(rumqttc_redirect_response_set_reuse(response, 0, 0, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_response_follow */
+  EXPECT_FAILURE(rumqttc_redirect_response_follow(response, request, SIZE_MAX, 0, NULL, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_response_set_client_id */
+  EXPECT_FAILURE(rumqttc_redirect_response_set_client_id(response, 99, native_string(""), NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_response_set_credentials */
+  EXPECT_FAILURE(rumqttc_redirect_response_set_credentials(response, 2, native_string(""), 0, native_bytes(NULL, 0), NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_response_set_session */
+  EXPECT_FAILURE(rumqttc_redirect_response_set_session(response, 99, native_string(""), NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_response_set_reuse */
+  EXPECT_FAILURE(rumqttc_redirect_response_set_reuse(response, 2, 0, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_response_reject */
+  CHECK(rumqttc_redirect_response_reject(response, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_response_reject */
+  EXPECT_FAILURE(rumqttc_redirect_response_reject(NULL, NULL));
+  rumqttc_redirect_request_destroy(retained);
+  return RUMQTTC_OK;
+}
+static void coverage_redirect_authority(void) {
+  rumqttc_redirect_vtable_t table = RUMQTTC_REDIRECT_VTABLE_INIT;
+  rumqttc_redirect_registration_t *registration = NULL;
+  rumqttc_config_t *config = NULL;
+  rumqttc_client_t *client = NULL;
+  table.decide = coverage_redirect; table.destroy = coverage_destroy;
+  /* ERROR_OUT_SUCCESS: rumqttc_redirect_registration_new */
+  CHECK(rumqttc_redirect_registration_new(&table, NULL, 1, 5000, &registration, NULL));
+  rumqttc_redirect_registration_t *invalid = NULL;
+  /* ERROR_OUT_FAILURE: rumqttc_redirect_registration_new */
+  EXPECT_FAILURE(rumqttc_redirect_registration_new(&table, NULL, 0, 5000, &invalid, NULL));
+  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &config, NULL));
+  CHECK(rumqttc_config_set_broker(config, native_string("127.0.0.1"), native_test_port(), NULL));
+  CHECK(rumqttc_config_set_client_id(config, native_string("native-redirect-authority-coverage"), NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_redirect_authority */
+  CHECK(rumqttc_config_set_v5_redirect_authority(config, registration, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_redirect_authority */
+  EXPECT_FAILURE(rumqttc_config_set_v5_redirect_authority(config, NULL, NULL));
+  CHECK(rumqttc_client_start(config, &client, NULL));
+  rumqttc_redirect_registration_destroy(registration); rumqttc_config_destroy(config);
+  rumqttc_event_t *event = native_wait_event(client, RUMQTTC_EVENT_REDIRECT);
+  uint8_t present = 0; rumqttc_string_view_t reference = {NULL, 0};
+  /* ERROR_OUT_SUCCESS: rumqttc_event_redirect_selected_reference */
+  CHECK(rumqttc_event_redirect_selected_reference(event, &present, &reference, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_event_redirect_selected_reference */
+  EXPECT_FAILURE(rumqttc_event_redirect_selected_reference(NULL, &present, &reference, NULL));
+  rumqttc_event_destroy(event);
+  event = native_wait_event(client, RUMQTTC_EVENT_DRIVER_TERMINATED); rumqttc_event_destroy(event);
+  CHECK(rumqttc_client_destroy_timeout_ms(client, NATIVE_DEADLINE_MS, NULL));
+}
+
 void native_test_error_out_contract(void) {
+  coverage_redirect_authority();
   coverage_tls_profiles();
   rumqttc_config_t *v4 = NULL;
   rumqttc_config_t *v5 = NULL;

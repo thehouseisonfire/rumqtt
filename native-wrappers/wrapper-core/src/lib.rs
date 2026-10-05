@@ -33,8 +33,11 @@ mod session;
 mod shutdown;
 mod transport;
 pub use redirect::{
-    RedirectEvent, RedirectFailure, RedirectPolicy, RedirectReason, RedirectSource, SrvFailure,
-    SrvFuture, SrvRecord, SrvResolver, SrvResolverConfig,
+    MAX_REDIRECT_REFERENCES, MAX_REDIRECT_REQUEST_BYTES, MAX_REDIRECT_RESPONSE_BYTES,
+    RedirectAuthority, RedirectAuthorityConfig, RedirectClientId, RedirectDecisionFailure,
+    RedirectEvent, RedirectFailure, RedirectPolicy, RedirectReason, RedirectReference,
+    RedirectRequest, RedirectResponse, RedirectScheme, RedirectSession, RedirectSource,
+    RedirectTargetConfig, SrvFailure, SrvFuture, SrvRecord, SrvResolver, SrvResolverConfig,
 };
 pub use session::{
     BrokerSessionResumePolicy, SessionCheckpoint, SessionPresentMismatchPolicy, SessionStore,

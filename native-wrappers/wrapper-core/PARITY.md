@@ -26,7 +26,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | option | set_session_store, set_session_store_arc, clear_session_store, set_session_store_scope, clear_session_store_scope | supported | WC-02 optional owned store and explicit stable scope | session_store::restart_recovers_mixed_subscriptions_publishes_and_incoming_qos2, session_store::store_completion_races_shutdown_and_abandonment_without_retaining_owner, backend session tests |
 | v5 | option | set_broker_session_resume_policy | supported | Strict default; explicit AllowBrokerOnly | backend config_tests, session_store |
 | v5 | option | set_authenticator, set_async_authenticator, set_auth_manager | supported | WC-05 owned nonblocking callback or per-client SCRAM | authentication::broker_authentication_method_change_retains_typed_failure, authentication::explicit_callback_rejection_is_terminal_and_releases_owner, authentication::authentication_reconnect_and_pending_challenge_shutdown_release_exchange, authentication::scram_verifies_server_proof_for_initial_authentication_and_reauthentication |
-| v5 | option | set_redirect_policy, clear_redirect_policy | supported | WC-06 Reject or finite isolated-target Follow policy | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::rejected_redirects_preserve_context_and_resolve_pending_operations, redirect_policy::redirect_loops_and_attempt_exhaustion_are_terminal, redirect_policy::isolated_redirect_never_reads_or_writes_the_origin_store_scope, transport_composition::disabled_redirect_transports_fail_before_driver_start |
+| v5 | option | set_redirect_policy, clear_redirect_policy | supported | WC-06 reject/fixed isolated follow or synchronous application authority with explicit scoped reuse | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::rejected_redirects_preserve_context_and_resolve_pending_operations, redirect_policy::redirect_loops_and_attempt_exhaustion_are_terminal, redirect_policy::isolated_redirect_never_reads_or_writes_the_origin_store_scope, transport_composition::disabled_redirect_transports_fail_before_driver_start |
 | v5 | option | set_srv_resolver, clear_srv_resolver | supported | WC-06 owned async resolver; native seeded weighted-selection tests supplement broker priority coverage | redirect_policy::srv_lookup_failure_empty_answers_and_cancellation_release_owner, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported; rumqttc-v5 srv::tests::inclusive_zero_draw_can_select_a_zero_weight_record, srv::tests::higher_weight_is_selected_first_materially_more_often |
 | v4, v5 | option | set_proxy | supported | WC-07 HTTP CONNECT, HTTPS proxy, SOCKS5; native has no SOCKS4 | transport_composition::proxy_tls_and_websocket_compositions_reconnect_for_both_protocols, transport_composition::proxy_negotiation_failures_and_shutdown_resolve_pending_work, transport_composition::proxy_and_broker_tls_trust_policies_are_independent, transport_composition::proxy_failure_process_output_is_redacted |
 | v4, v5 | option | set_request_modifier | supported | WC-09 static edits then bounded dynamic path/query/authority/header edits; isolated redirects clear origin authority | transport_composition::proxy_tls_and_websocket_compositions_reconnect_for_both_protocols, redirect_policy::websocket_redirect_uses_target_uri_and_clears_origin_header_edits, transport_composition::disabled_transports_fail_before_opening_a_socket |
@@ -226,3 +226,33 @@ passed all three tests. The wrapper-core/C each-feature test matrix passed all
 33 configurations. Strict Clippy and Rust 1.88 checks passed across the whole
 workspace and all targets with TLS 1.2, native TLS and proxies enabled. Formatting
 and diff checks passed. macOS/Windows and remote CI execution remain pending.
+
+## Application redirect authorities (TODO31)
+
+Wrapper-core and C support synchronous advertised-reference approval and explicit
+scoped session reuse. Fixed reject/follow policies retain their defaults.
+`redirect_policy.rs` exercises both packet sources, later-reference selection,
+copied credentials, exact keys/conflicts, permanent origin-lease release, nested
+temporary restoration and obsolete target-lease release, QoS 1/2 replay with
+original packet IDs, renegotiated aliases, stale manual-ACK tokens,
+sync/async effective auth identities, independent auth/header reuse,
+panic/invalid/oversized/late responses and reentrant shutdown. Adapter tests reject mismatched native keys
+before host I/O and verify transactional target leasing with weak cache pruning.
+`native_redirect_authority.c` verifies C copied inputs, retained snapshots,
+registration ownership/sharing, stale/invalid choices, typed rejection/timeout/callback
+failures, scoped checkpoint failures and cancellation/late completion. C auth contexts
+report the replaced target identity, and approved/isolated WebSocket headers are
+verified on the wire independently of authentication-authority reuse.
+`native_tls_profiles.c` also exercises application TLS/WSS selection after
+destroying the selected C profile inside the callback, proving retained policy
+through the eventual handshake. Existing native session, manual-ACK,
+alias, redirect/SRV, TLS profile and cancellation suites remain the reconciliation
+and transport evidence; MQTT reconciliation is never delegated to the application.
+The runnable `redirect_authority.c` demonstrates exact allowlist approval.
+
+Requests are inspectable after teardown; response builders cannot be retained or
+deferred. The decision budget rejects late results without preempting host code.
+There is no chain-wide deadline, replacement enhanced-auth authority, selective
+proxy/header reuse or automatic checkpoint migration. Foreign callbacks must not
+unwind or block. New native C execution in this change is on Linux; remote CI and
+macOS/Windows execution remain pending.

@@ -470,6 +470,8 @@ pub struct RuntimeConfigDiagnostics {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RedirectDiagnostics {
+    /// Approved advertised reference, before any SRV endpoint selection.
+    pub selected_reference: Option<String>,
     pub policy_configured: bool,
     pub attempts: usize,
     pub attempt_limit: Option<usize>,
@@ -599,6 +601,7 @@ pub struct EventLoop {
     pending_connection_error: Option<ConnectionError>,
     pending_redirect_shutdown: bool,
     redirect_attempts: usize,
+    redirect_selected_reference: Option<String>,
     redirect_visited: Vec<String>,
     last_redirect_diagnostics: Option<RedirectDiagnostics>,
     last_connect_failure_phase: Option<ConnectFailurePhase>,
@@ -947,6 +950,7 @@ impl EventLoop {
             pending_connection_error: None,
             pending_redirect_shutdown: false,
             redirect_attempts: 0,
+            redirect_selected_reference: None,
             redirect_visited: Vec::new(),
             last_redirect_diagnostics: None,
             last_connect_failure_phase: None,
@@ -1269,6 +1273,7 @@ impl EventLoop {
                 max_request_batch: self.options.max_request_batch(),
             },
             redirect: RedirectDiagnostics {
+                selected_reference: self.redirect_selected_reference.clone(),
                 policy_configured: self.options.redirect_policy().is_some(),
                 attempts: self.redirect_attempts,
                 attempt_limit: self
@@ -1844,6 +1849,7 @@ impl EventLoop {
             return;
         };
         self.options = active.previous_options;
+        self.state.set_authenticator(self.options.authenticator());
         self.state
             .set_async_authenticator(self.options.async_authenticator());
         if let Some(origin) = active.origin_session {
@@ -1866,12 +1872,14 @@ impl EventLoop {
             self.reset_session_state_for_redirect();
         }
         self.redirect_attempts = 0;
+        self.redirect_selected_reference = None;
         self.redirect_visited.clear();
     }
 
     fn apply_redirect_profile(&mut self, profile: &RedirectTargetProfile) -> bool {
         let old_client_id = self.options.client_id();
         let old_scope = self.options.session_store_scope().to_owned();
+        let old_store = self.options.session_store();
         let old_authenticator = self.options.authenticator();
         let old_async_authenticator = self.options.async_authenticator();
 
@@ -1930,9 +1938,17 @@ impl EventLoop {
             }
             RedirectSession::Reuse { store_scope } => {
                 self.options.set_session_store_scope(store_scope.clone());
+                if let Some(store) = &profile.session_store {
+                    self.options.set_session_store_arc(store.clone());
+                }
                 matches!(profile.client_id_policy(), RedirectClientId::Reuse)
                     && old_client_id == self.options.client_id()
                     && old_scope == *store_scope
+                    && match (old_store.as_ref(), self.options.session_store().as_ref()) {
+                        (None, None) => true,
+                        (Some(old), Some(new)) => std::sync::Arc::ptr_eq(old, new),
+                        _ => false,
+                    }
             }
         };
 
@@ -1941,6 +1957,7 @@ impl EventLoop {
         } else {
             self.reset_session_state_for_redirect();
         }
+        self.state.set_authenticator(self.options.authenticator());
         self.state
             .set_async_authenticator(self.options.async_authenticator());
         preserve_session
@@ -1958,11 +1975,43 @@ impl EventLoop {
         RedirectError { outcome, failure }.into()
     }
 
+    fn prepare_redirect_target(
+        &mut self,
+        outcome: &RedirectOutcome,
+        references: &[crate::RedirectReference],
+        profile: &RedirectTargetProfile,
+    ) -> Result<Option<String>, ConnectionError> {
+        if !references.contains(profile.reference()) {
+            return Err(self.redirect_failure(outcome.clone(), RedirectFailure::UnadvertisedTarget));
+        }
+
+        self.redirect_selected_reference = Some(profile.reference().raw().to_owned());
+        if self.redirect_visited.is_empty()
+            && let Some(endpoint) = self.current_redirect_endpoint_key()
+        {
+            self.redirect_visited.push(endpoint);
+        }
+        let target_transport = profile.transport();
+        let endpoint = profile.reference().endpoint_key(&target_transport);
+        if endpoint
+            .as_ref()
+            .is_some_and(|endpoint| self.redirect_visited.contains(endpoint))
+        {
+            return Err(self.redirect_failure(outcome.clone(), RedirectFailure::Loop));
+        }
+
+        if let Err(error) = profile.validate(&self.options) {
+            return Err(self.redirect_failure(outcome.clone(), RedirectFailure::Target(error)));
+        }
+        Ok(endpoint)
+    }
+
     fn handle_redirect_outcome(
         &mut self,
         outcome: RedirectOutcome,
     ) -> Result<Event, ConnectionError> {
         self.last_redirect_diagnostics = None;
+        self.redirect_selected_reference = None;
         #[cfg(feature = "ordered-shutdown")]
         if self.requests_rx.gate().has_fence() {
             return Err(crate::DisconnectNoticeError::Redirected.into());
@@ -1992,8 +2041,17 @@ impl EventLoop {
             outcome: &outcome,
             references: &references,
             attempt: self.redirect_attempts + 1,
+            client_id: &self.options.client_id,
+            store_scope: self.options.session_store_scope(),
+            has_session_store: self.options.session_store().is_some(),
+            clean_start: self.options.clean_start(),
+            session_expiry_interval: self.options.session_expiry_interval(),
         };
-        let decision = match policy.decide(&context) {
+        let decision = policy.decide(&context);
+        if self.pending_redirect_shutdown || self.redirect_shutdown_requested() {
+            return Err(self.finish_redirected_shutdown());
+        }
+        let decision = match decision {
             Ok(decision) => decision,
             Err(error) => {
                 return Err(self.redirect_failure(outcome, RedirectFailure::Target(error)));
@@ -2002,25 +2060,12 @@ impl EventLoop {
         let RedirectDecision::Follow(profile) = decision else {
             return Err(self.redirect_failure(outcome, RedirectFailure::Rejected));
         };
-        if !references.contains(profile.reference()) {
-            return Err(self.redirect_failure(outcome, RedirectFailure::UnadvertisedTarget));
-        }
-
-        if self.redirect_visited.is_empty()
-            && let Some(endpoint) = self.current_redirect_endpoint_key()
-        {
-            self.redirect_visited.push(endpoint);
-        }
-        let target_transport = profile.transport();
-        let endpoint = profile.reference().endpoint_key(&target_transport);
-        if endpoint
-            .as_ref()
-            .is_some_and(|endpoint| self.redirect_visited.contains(endpoint))
-        {
-            return Err(self.redirect_failure(outcome, RedirectFailure::Loop));
-        }
-
+        let endpoint = self.prepare_redirect_target(&outcome, &references, &profile)?;
         let current_origin_session = self.redirect_origin_session();
+        // Snapshotting pending session state is part of the synchronous decision budget.
+        if let Err(error) = profile.validate(&self.options) {
+            return Err(self.redirect_failure(outcome, RedirectFailure::Target(error)));
+        }
         let (previous_options, previous_origin_session, previous_session_preserved) =
             self.active_redirect.take().map_or_else(
                 || (self.options.clone(), current_origin_session, true),
@@ -2370,6 +2415,7 @@ impl EventLoop {
         {
             self.active_redirect = None;
             self.redirect_attempts = 0;
+            self.redirect_selected_reference = None;
             self.redirect_visited.clear();
         }
     }
@@ -4145,6 +4191,7 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
+    state.auth_client_id = options.client_id();
     state.connection_failure_packet = None;
     network.set_max_outgoing_size(None);
     state.set_client_topic_alias_max(options.topic_alias_max());
@@ -4256,6 +4303,7 @@ async fn mqtt_connect_inner(
                             if !assigned_client_identifier.is_empty() =>
                         {
                             options.set_client_id(assigned_client_identifier.clone());
+                            state.auth_client_id = options.client_id();
                         }
                         (Some(_) | None, true) | (Some(_), false) => {
                             send_protocol_error_disconnect(network).await;
@@ -13117,6 +13165,111 @@ mod tests {
             eventloop.options.broker().websocket_url(),
             Some("ws://broker.example/a/b?tenant=blue")
         );
+    }
+
+    #[test]
+    fn invalid_or_expired_redirect_profiles_leave_origin_options_and_store_unchanged() {
+        for expired in [false, true] {
+            let origin = Arc::new(CapturingSessionStore::new());
+            let target = Arc::new(CapturingSessionStore::new());
+            let policy_store = target.clone();
+            let policy = crate::RedirectPolicy::new(
+                std::num::NonZeroUsize::new(1).unwrap(),
+                move |context| {
+                    let mut profile = RedirectTargetProfile::isolated(
+                        context.references[0].clone(),
+                        Transport::tcp(),
+                    )
+                    .unwrap()
+                    .client_id(RedirectClientId::Replace(
+                        if expired { "target" } else { "bad\0id" }.into(),
+                    ))
+                    .session(RedirectSession::Reuse {
+                        store_scope: "target".into(),
+                    })
+                    .session_store_arc(policy_store.clone());
+                    if expired {
+                        profile = profile
+                            .decision_deadline(std::time::Instant::now() - Duration::from_secs(1));
+                    }
+                    RedirectDecision::follow(profile)
+                },
+            );
+            let mut options = MqttOptions::new("origin", "primary.example");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(60))
+                .set_session_store_scope("origin")
+                .set_session_store_arc(origin.clone())
+                .set_redirect_policy(policy);
+            let mut eventloop = EventLoop::new(options, 1);
+            let error = eventloop
+                .handle_redirect_outcome(redirect_outcome(
+                    RedirectReason::ServerMoved,
+                    RedirectSource::ConnAck,
+                    Some("backup.example"),
+                ))
+                .unwrap_err();
+            let ConnectionError::Redirect(RedirectError {
+                failure: RedirectFailure::Target(crate::RedirectTargetError::Policy(failure)),
+                ..
+            }) = error
+            else {
+                panic!("typed policy validation failure")
+            };
+            assert_eq!(
+                failure,
+                if expired {
+                    crate::RedirectPolicyFailure::Timeout
+                } else {
+                    crate::RedirectPolicyFailure::InvalidResponse
+                }
+            );
+            assert_eq!(eventloop.options.client_id(), "origin");
+            assert_eq!(eventloop.options.session_store_scope(), "origin");
+            assert_eq!(
+                eventloop.options.broker().tcp_address(),
+                Some(("primary.example", 1883))
+            );
+            let origin: Arc<dyn crate::SessionStore> = origin;
+            assert!(Arc::ptr_eq(
+                &origin,
+                &eventloop.options.session_store().unwrap()
+            ));
+            assert_eq!(Arc::strong_count(&target), 2);
+            assert!(eventloop.active_redirect.is_none());
+        }
+    }
+
+    #[test]
+    fn shutdown_admitted_by_a_failing_redirect_callback_wins_before_applying_the_result() {
+        let options = MqttOptions::new("origin", "primary.example");
+        let (mut eventloop, _, _, immediate_tx) = EventLoop::new_for_async_client_with_capacity(
+            options,
+            RequestChannelCapacity::Bounded(1),
+        );
+        eventloop
+            .options
+            .set_redirect_policy(crate::RedirectPolicy::try_new(
+                std::num::NonZeroUsize::new(1).unwrap(),
+                move |_| {
+                    immediate_tx
+                        .try_send(RequestEnvelope::plain(Request::DisconnectNow(
+                            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+                        )))
+                        .unwrap();
+                    Err(crate::RedirectPolicyFailure::Callback.into())
+                },
+            ));
+        assert!(matches!(
+            eventloop.handle_redirect_outcome(redirect_outcome(
+                RedirectReason::ServerMoved,
+                RedirectSource::ConnAck,
+                Some("backup.example"),
+            )),
+            Err(ConnectionError::RequestsDone)
+        ));
+        assert!(eventloop.active_redirect.is_none());
     }
 
     #[test]

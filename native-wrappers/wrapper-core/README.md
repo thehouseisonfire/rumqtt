@@ -434,9 +434,58 @@ Redirects are rejected by default. `Follow` sets a finite attempt limit and an
 explicit target transport. It uses native isolated-target policy: a fresh client
 identity and no inherited broker credentials, auth mechanism, session store,
 proxy, or header edits. Redirect TLS credentials are supplied explicitly. A
-custom `SrvResolver` overrides system discovery and follows the total connection
-deadline. An accepted SRV redirect initially has no selected endpoint while DNS
+custom `SrvResolver` overrides system discovery and uses the native lookup
+timeout. Each target connection has its own connection deadline. An accepted SRV redirect initially has no selected endpoint while DNS
 is unresolved; it never reports the previous endpoint as the selected target.
+
+
+`RedirectPolicy::Application(RedirectAuthorityConfig)` instead calls an owned
+synchronous `RedirectAuthority` once per validated redirect. `RedirectRequest`
+contains source, reason, one-based attempt, effective client ID/store scope and
+all advertised references in order. `RedirectResponse::follow(request, index,
+target)` binds a choice to that exact request. Requests may be retained for
+inspection; responses cannot be deferred. Fixed and application policies replace
+each other, and rejection remains the default.
+
+`RedirectTargetConfig` starts isolated, with a fresh ID and no credentials.
+Choose `RedirectClientId::{Fresh, Reuse, Replace}` independently of
+`RedirectSession`. Supply target username/password explicitly; no origin CONNECT
+credentials are inherited. `reuse_authentication_authority` retains the current
+sync/async authority **and** CONNECT authentication method/data; it does not
+install a new authority or reuse origin username/password. Auth contexts report
+the effective target ID, including broker assignment. `reuse_network_credentials`
+retains the native proxy configuration and WebSocket modifiers together, including
+static edits/dynamic authority. These flags are independent; selective proxy or
+header reuse is unavailable. Target TLS credentials always come from the selected
+transport profile. For SRV, approve a reference and leave candidate resolution,
+weighted selection and fallback to the native client.
+
+Session reuse is explicit: `RedirectSession::Reuse { store_scope }` with reused
+ID and unchanged scope preserves live native state. Changing either key resets
+live state and may load that target key's checkpoint. This neither migrates
+checkpoints nor proves that brokers share a session. Stores require nonempty keys,
+`clean_start=false` and nonzero session expiry. A per-driver factory acquires the
+exact target key before applying a profile; conflicts fail with `StoreInUse`
+without target I/O. Same-key adapters share a lease. Native options retain the
+origin lease until restoration or permanent establishment; obsolete intermediate
+leases and all teardown leases are released. Load/save/clear reject any key not
+covered by the adapter's lease (`StoreFailure::KeyMismatch`). Isolated hops clear
+the store and cannot resurrect it on a later hop. Strict Session Present checks,
+packet-ID reconciliation, manual-ACK and alias connection generations remain
+native responsibilities.
+
+The decision timeout covers callback invocation and profile preparation. Late
+results fail before application; cancellation is checked after callback return.
+It cannot preempt a synchronous callback or bound a stalled driver's shutdown.
+Callbacks/destructors must return promptly, be thread-safe across clients, and
+must not wait for driver work or destroy/join their active client. Nonblocking
+admission is supported; no wrapper admission/lifecycle lock is held during the
+callback. Rust panics, callback errors, invalid/stale responses, timeouts and
+resource limits have redacted typed `RedirectDecisionFailure` values. Snapshots
+allow at most 256 references and 64 KiB of copied text; response fields allow
+256 KiB total and MQTT wire-length limits. Selected advertised references are
+reported separately from resolved endpoints. There is no chain-wide deadline or
+replacement enhanced-authentication authority in this API.
 
 ## Close payloads and richer observations
 

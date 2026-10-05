@@ -35,6 +35,8 @@ impl std::fmt::Debug for SessionCheckpoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StoreFailure {
+    #[error("native session store key does not match its lease")]
+    KeyMismatch,
     #[error("session store load failed")]
     Load,
     #[error("session store save failed")]

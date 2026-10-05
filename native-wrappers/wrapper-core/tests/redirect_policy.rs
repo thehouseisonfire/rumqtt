@@ -616,9 +616,19 @@ fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
     let ProtocolConfig::V5(v5) = &mut config.protocol else {
         unreachable!()
     };
-    v5.redirect_policy = RedirectPolicy::Follow {
-        max_attempts: 2,
-        transport: TransportConfig::Tcp,
+    v5.redirect_policy = if reason == RedirectReason::UseAnotherServer {
+        application_policy(|request| {
+            assert_eq!(
+                request.references[0].srv_owner.as_deref(),
+                Some("_mqtt._tcp.service.invalid")
+            );
+            RedirectResponse::follow(request, 0, RedirectTargetConfig::new(TransportConfig::Tcp))
+        })
+    } else {
+        RedirectPolicy::Follow {
+            max_attempts: 2,
+            transport: TransportConfig::Tcp,
+        }
     };
     v5.srv_resolver = Some(SrvResolverConfig(Arc::new(Resolver {
         result: Mutex::new(Some(result_rx)),
@@ -970,5 +980,879 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
                 "target-query-private",
             ],
         );
+    }
+}
+
+struct ApplicationPolicy<F>(F);
+impl<F> RedirectAuthority for ApplicationPolicy<F>
+where
+    F: Fn(Arc<RedirectRequest>) -> std::result::Result<RedirectResponse, RedirectDecisionFailure>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn decide(
+        &self,
+        request: Arc<RedirectRequest>,
+    ) -> std::result::Result<RedirectResponse, RedirectDecisionFailure> {
+        (self.0)(request)
+    }
+}
+fn application_policy(
+    decide: impl Fn(
+        Arc<RedirectRequest>,
+    ) -> std::result::Result<RedirectResponse, RedirectDecisionFailure>
+    + Send
+    + Sync
+    + 'static,
+) -> RedirectPolicy {
+    RedirectPolicy::Application(RedirectAuthorityConfig {
+        authority: Arc::new(ApplicationPolicy(decide)),
+        max_attempts: 2,
+        decision_timeout: DEADLINE,
+    })
+}
+#[derive(Default)]
+struct RedirectStore(Mutex<Vec<(u8, SessionStoreKey)>>);
+impl SessionStore for RedirectStore {
+    fn load(&self, key: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>> {
+        self.0.lock().unwrap().push((1, key));
+        Box::pin(async { Ok(None) })
+    }
+    fn save(&self, key: SessionStoreKey, _: SessionCheckpoint) -> StoreFuture<()> {
+        self.0.lock().unwrap().push((2, key));
+        Box::pin(async { Ok(()) })
+    }
+    fn clear(&self, key: SessionStoreKey) -> StoreFuture<()> {
+        self.0.lock().unwrap().push((3, key));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "wire, checkpoint and lifetime assertions belong to one redirect scenario"
+)]
+fn application_redirect_selects_second_reference_with_copied_credentials_and_scoped_store() {
+    for disconnect in [false, true] {
+        for (changed_id, changed_scope) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let changed_key = changed_id || changed_scope;
+            let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target = TcpListener::bind("127.0.0.1:0").unwrap();
+            let reference = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+            let advertised = format!("127.0.0.2:1 {reference}");
+            let store = Arc::new(RedirectStore::default());
+            let saved_request = Arc::new(Mutex::new(None));
+            let capture = saved_request.clone();
+            let mut config = config(true, origin.local_addr().unwrap().port());
+            config.common.username = Some("origin-private-username".into());
+            config.common.password = Some(Bytes::from_static(b"origin-private-password"));
+            let ProtocolConfig::V5(v5) = &mut config.protocol else {
+                unreachable!()
+            };
+            v5.clean_start = false;
+            v5.connect_properties.session_expiry_interval = Some(60);
+            v5.session_store = Some(SessionStoreConfig::new(store.clone(), "origin"));
+            v5.redirect_policy = application_policy(move |request| {
+                assert_eq!(request.attempt, 1);
+                assert_eq!(
+                    request.source,
+                    if disconnect {
+                        RedirectSource::Disconnect
+                    } else {
+                        RedirectSource::ConnAck
+                    }
+                );
+                assert_eq!(request.references.len(), 2);
+                assert_eq!(request.store_scope, "origin");
+                let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+                profile.client_id = if changed_id {
+                    RedirectClientId::Replace("target-id".into())
+                } else {
+                    RedirectClientId::Reuse
+                };
+                profile.session = RedirectSession::Reuse {
+                    store_scope: if changed_scope { "target" } else { "origin" }.into(),
+                };
+                profile.username = Some("target-private-username".into());
+                profile.password = Some(SecretBytes::new(b"target-private-password".to_vec()));
+                assert!(!format!("{profile:?}").contains("target-private"));
+                *capture.lock().unwrap() = Some(request.clone());
+                RedirectResponse::follow(request, 1, profile)
+            });
+            let expected_id = if changed_id { "target-id" } else { "parity" };
+            let broker = Broker::spawn(move || {
+                let mut socket = accept(&origin);
+                frame(&mut socket);
+                if disconnect {
+                    socket.write_all(b"\x20\x03\x00\x00\x00").unwrap();
+                }
+                redirect_with_reason(
+                    &mut socket,
+                    &advertised,
+                    disconnect,
+                    RedirectReason::ServerMoved,
+                );
+                let mut socket = accept(&target);
+                let rumqttc_v5::Packet::Connect(connect, _, auth) =
+                    rumqttc_v5::Packet::read(&mut frame(&mut socket), None).unwrap()
+                else {
+                    panic!("CONNECT")
+                };
+                assert_eq!(connect.client_id, expected_id);
+                assert!(!connect.clean_start);
+                assert_eq!(
+                    auth,
+                    rumqttc_v5::ConnectAuth::UsernamePassword {
+                        username: "target-private-username".into(),
+                        password: Bytes::from_static(b"target-private-password"),
+                    }
+                );
+                socket.write_all(b"\x20\x03\x00\x00\x00").unwrap();
+                let id = publish_id(&mut socket, true);
+                puback(&mut socket, id);
+                assert_eq!(frame(&mut socket)[0], 0xe0);
+            });
+            let mut client = NativeClient::start(config.clone()).unwrap();
+            let mut events = client.take_events().unwrap();
+            let event = until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)));
+            let WrapperEvent::Redirect(event) = event else {
+                unreachable!()
+            };
+            assert_eq!(
+                event.selected_reference.as_deref(),
+                Some(reference.as_str())
+            );
+            until(&mut events, |e| {
+                matches!(e, WrapperEvent::Connected { .. })
+                    && saved_request.lock().unwrap().is_some()
+            });
+            // The target lease conflicts with a second driver before any target store I/O.
+            let mut probe = config.clone();
+            probe.common.client_id = expected_id.into();
+            let ProtocolConfig::V5(v5) = &mut probe.protocol else {
+                unreachable!()
+            };
+            v5.redirect_policy = RedirectPolicy::Reject;
+            v5.session_store.as_mut().unwrap().scope =
+                if changed_scope { "target" } else { "origin" }.into();
+            assert_eq!(
+                NativeClient::start(probe.clone())
+                    .unwrap_err()
+                    .store_failure(),
+                Some(StoreFailure::InUse)
+            );
+            if changed_key {
+                let mut origin_probe = config.clone();
+                let ProtocolConfig::V5(v5) = &mut origin_probe.protocol else {
+                    unreachable!()
+                };
+                v5.redirect_policy = RedirectPolicy::Reject;
+                let origin_owner = NativeClient::start(origin_probe).unwrap();
+                origin_owner.closer().close_now(DEADLINE).unwrap();
+            }
+            assert_eq!(
+                terminal(&publish(&client, b"target-work")).unwrap(),
+                Completion::Publish(PublishCompletion::Qos1Acknowledged)
+            );
+            client.closer().close(DEADLINE).unwrap();
+            broker.join();
+            let calls = store.0.lock().unwrap().clone();
+            assert!(calls.iter().any(|(_, key)| key.scope == "origin"));
+            assert!(calls.iter().any(|(_, key)| key.scope
+                == if changed_scope { "target" } else { "origin" }
+                && key.client_id == expected_id));
+            drop(client);
+            let owner = NativeClient::start(probe).unwrap();
+            owner.closer().close_now(DEADLINE).unwrap();
+            let request = saved_request.lock().unwrap().take().unwrap();
+            assert_eq!(request.references[1].raw, reference);
+        }
+    }
+}
+
+#[test]
+fn application_rejection_failures_and_expired_decisions_are_terminal_before_target_dial() {
+    for mode in [
+        "reject", "invalid", "panic", "timeout", "callback", "resource",
+    ] {
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = config(true, origin.local_addr().unwrap().port());
+        let ProtocolConfig::V5(v5) = &mut config.protocol else {
+            unreachable!()
+        };
+        v5.redirect_policy = application_policy(move |request| match mode {
+            "reject" => Ok(RedirectResponse::reject(request)),
+            "invalid" => RedirectResponse::follow(request, 0, {
+                let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+                profile.client_id = RedirectClientId::Replace("bad\0id".into());
+                profile
+            }),
+            "panic" => panic!("private-host-error"),
+            "resource" => RedirectResponse::follow(request, 0, {
+                let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+                profile.username = Some("x".repeat(MAX_REDIRECT_RESPONSE_BYTES + 1));
+                profile
+            }),
+            "timeout" => {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+                Ok(RedirectResponse::reject(request))
+            }
+            _ => Err(RedirectDecisionFailure::Callback),
+        });
+        if mode == "timeout" {
+            let RedirectPolicy::Application(policy) = &mut v5.redirect_policy else {
+                unreachable!()
+            };
+            policy.decision_timeout = std::time::Duration::from_millis(1);
+        }
+        let broker = Broker::spawn(move || {
+            let mut socket = accept(&origin);
+            frame(&mut socket);
+            redirect(&mut socket, "127.0.0.2:1", false);
+        });
+        let mut client = NativeClient::start(config).unwrap();
+        let mut events = client.take_events().unwrap();
+        let WrapperEvent::Redirect(event) =
+            until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)))
+        else {
+            unreachable!()
+        };
+        let expected = match mode {
+            "reject" => RedirectFailure::Rejected,
+            "invalid" => RedirectFailure::Policy(RedirectDecisionFailure::InvalidResponse),
+            "panic" => RedirectFailure::Policy(RedirectDecisionFailure::Panic),
+            "timeout" => RedirectFailure::Policy(RedirectDecisionFailure::Timeout),
+            "resource" => RedirectFailure::Policy(RedirectDecisionFailure::ResourceLimit),
+            _ => RedirectFailure::Policy(RedirectDecisionFailure::Callback),
+        };
+        assert_eq!(event.failure, Some(expected));
+        assert!(!event.followed);
+        assert!(!format!("{event:?}").contains("private-host-error"));
+        until(&mut events, |e| {
+            matches!(e, WrapperEvent::DriverTerminated(_))
+        });
+        let _ = client.closer().close_now(DEADLINE);
+        broker.join();
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep resumed/refused QoS and alias wire assertions together"
+)]
+fn approved_same_session_redirect_preserves_tracked_qos_flows_and_packet_ids() {
+    for resume in [false, true] {
+        for qos2 in [false, true] {
+            let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target = TcpListener::bind("127.0.0.1:0").unwrap();
+            let reference = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+            let mut config = config(true, origin.local_addr().unwrap().port());
+            let ProtocolConfig::V5(v5) = &mut config.protocol else {
+                unreachable!()
+            };
+            v5.topic_alias_policy = TopicAliasPolicy::Monotonic;
+            v5.clean_start = false;
+            v5.connect_properties.session_expiry_interval = Some(60);
+            v5.session_store = Some(SessionStoreConfig::new(
+                Arc::new(RedirectStore::default()),
+                "cluster",
+            ));
+            v5.redirect_policy = application_policy(|request| {
+                let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+                profile.client_id = RedirectClientId::Reuse;
+                profile.session = RedirectSession::Reuse {
+                    store_scope: "cluster".into(),
+                };
+                RedirectResponse::follow(request, 0, profile)
+            });
+            let broker = Broker::spawn(move || {
+                let mut socket = accept(&origin);
+                frame(&mut socket);
+                socket
+                    .write_all(b"\x20\x06\x00\x00\x03\x22\x00\x01")
+                    .unwrap();
+                let rumqttc_v5::Packet::Publish(original) =
+                    rumqttc_v5::Packet::read(&mut frame(&mut socket), None).unwrap()
+                else {
+                    panic!("origin PUBLISH")
+                };
+                assert_eq!(
+                    original.properties.as_ref().and_then(|p| p.topic_alias),
+                    Some(1)
+                );
+                let id = original.pkid;
+                redirect_with_reason(&mut socket, &reference, true, RedirectReason::ServerMoved);
+                let mut socket = accept(&target);
+                frame(&mut socket);
+                socket
+                    .write_all(&[0x20, 3, u8::from(resume), 0, 0])
+                    .unwrap();
+                if !resume {
+                    assert_eq!(frame(&mut socket)[0], 0xe0);
+                    return;
+                }
+                let rumqttc_v5::Packet::Publish(replay) =
+                    rumqttc_v5::Packet::read(&mut frame(&mut socket), None).unwrap()
+                else {
+                    panic!("replayed PUBLISH")
+                };
+                assert_eq!(replay.pkid, id);
+                assert!(replay.dup);
+                assert_eq!(replay.topic.as_ref(), b"replay");
+                assert!(
+                    replay
+                        .properties
+                        .as_ref()
+                        .and_then(|p| p.topic_alias)
+                        .is_none()
+                );
+                assert_eq!(replay.payload.as_ref(), b"tracked-origin-work");
+                if qos2 {
+                    let [high, low] = id.to_be_bytes();
+                    socket.write_all(&[0x50, 2, high, low]).unwrap();
+                    assert_eq!(frame(&mut socket)[0], 0x62);
+                    socket.write_all(&[0x70, 2, high, low]).unwrap();
+                } else {
+                    puback(&mut socket, id);
+                }
+                assert_eq!(frame(&mut socket)[0], 0xe0);
+            });
+            let mut client = NativeClient::start(config).unwrap();
+            let mut events = connected(&mut client);
+            let operation = client
+                .handle()
+                .try_admit(Command::Publish(PublishCommand {
+                    topic: "replay".into(),
+                    payload: Bytes::from_static(b"tracked-origin-work"),
+                    qos: if qos2 {
+                        QoS::ExactlyOnce
+                    } else {
+                        QoS::AtLeastOnce
+                    },
+                    retain: false,
+                    protocol: PublishProtocolOptions::VersionNeutral,
+                }))
+                .unwrap();
+            until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)));
+            until(&mut events, |e| matches!(e, WrapperEvent::Connected { .. }));
+            if resume {
+                assert_eq!(
+                    terminal(&operation).unwrap(),
+                    Completion::Publish(if qos2 {
+                        PublishCompletion::Qos2Completed
+                    } else {
+                        PublishCompletion::Qos1Acknowledged
+                    })
+                );
+            } else {
+                assert_eq!(
+                    terminal(&operation).unwrap_err().delivery_status(),
+                    DeliveryStatus::Ambiguous
+                );
+            }
+            client.closer().close(DEADLINE).unwrap();
+            broker.join();
+        }
+    }
+}
+
+#[derive(Default)]
+struct IdentityAuthority(Mutex<Vec<(String, bool)>>);
+impl Authenticator for IdentityAuthority {
+    fn respond(
+        &self,
+        context: AuthContext,
+        challenge: AuthChallenge,
+    ) -> std::result::Result<AuthAction, AuthFailure> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((context.client_id, matches!(challenge, AuthChallenge::Start)));
+        if matches!(challenge, AuthChallenge::Start) {
+            Ok(AuthAction::Send(AuthProperties::default()))
+        } else {
+            Ok(AuthAction::Complete)
+        }
+    }
+}
+impl AsyncAuthenticator for IdentityAuthority {
+    fn respond(&self, context: AuthContext, challenge: AsyncAuthChallenge) -> AuthFuture {
+        let start = matches!(challenge, AsyncAuthChallenge::Start);
+        self.0.lock().unwrap().push((context.client_id, start));
+        Box::pin(async move {
+            if start {
+                Ok(AuthAction::Send(AuthProperties::default()))
+            } else {
+                Ok(AuthAction::Complete)
+            }
+        })
+    }
+}
+#[test]
+fn reused_authentication_authority_observes_effective_redirect_and_assigned_identities() {
+    for asynchronous in [false, true] {
+        for fresh in [false, true] {
+            let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target = TcpListener::bind("127.0.0.1:0").unwrap();
+            let reference = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+            let authority = Arc::new(IdentityAuthority::default());
+            let mut config = config(true, origin.local_addr().unwrap().port());
+            let ProtocolConfig::V5(v5) = &mut config.protocol else {
+                unreachable!()
+            };
+            v5.connect_properties.authentication_method = Some("test".into());
+            if asynchronous {
+                v5.async_authenticator = Some(AsyncAuthenticatorConfig::new(authority.clone()));
+            } else {
+                v5.authenticator = Some(AuthenticatorConfig::new(authority.clone()));
+            }
+            v5.redirect_policy = application_policy(move |request| {
+                let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+                profile.client_id = if fresh {
+                    RedirectClientId::Fresh
+                } else {
+                    RedirectClientId::Replace("replacement".into())
+                };
+                profile.reuse_authentication_authority = true;
+                RedirectResponse::follow(request, 0, profile)
+            });
+            let broker = Broker::spawn(move || {
+                let mut socket = accept(&origin);
+                frame(&mut socket);
+                redirect(&mut socket, &reference, false);
+                let mut socket = accept(&target);
+                frame(&mut socket);
+                let mut properties = b"\x15\x00\x04test".to_vec();
+                if fresh {
+                    properties.extend_from_slice(b"\x12\x00\x08assigned");
+                }
+                let mut packet = vec![
+                    0x20,
+                    u8::try_from(properties.len() + 3).unwrap(),
+                    0,
+                    0,
+                    u8::try_from(properties.len()).unwrap(),
+                ];
+                packet.extend(properties);
+                socket.write_all(&packet).unwrap();
+                assert_eq!(frame(&mut socket)[0], 0xe0);
+            });
+            let mut client = NativeClient::start(config).unwrap();
+            let _events = connected(&mut client);
+            let contexts = authority.0.lock().unwrap().clone();
+            assert!(contexts.contains(&("parity".into(), true)));
+            assert!(contexts.contains(&(if fresh { "" } else { "replacement" }.into(), true)));
+            assert!(
+                contexts.contains(&(if fresh { "assigned" } else { "replacement" }.into(), false)),
+                "async={asynchronous} fresh={fresh}: {contexts:?}"
+            );
+            client.closer().close(DEADLINE).unwrap();
+            broker.join();
+        }
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "nested wire hops and lease assertions form one scenario"
+)]
+fn temporary_nested_scoped_redirect_restores_origin_and_releases_target_leases() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let intermediate = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let first = format!("127.0.0.1:{}", intermediate.local_addr().unwrap().port());
+    let second = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+    let store = Arc::new(RedirectStore::default());
+    let mut config = config(true, origin.local_addr().unwrap().port());
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.clean_start = false;
+    v5.connect_properties.session_expiry_interval = Some(60);
+    v5.session_store = Some(SessionStoreConfig::new(store.clone(), "origin"));
+    v5.redirect_policy = application_policy(|request| {
+        let mut target = RedirectTargetConfig::new(TransportConfig::Tcp);
+        let id = if request.attempt == 1 {
+            "intermediate"
+        } else {
+            "target"
+        };
+        target.client_id = RedirectClientId::Replace(id.into());
+        target.session = RedirectSession::Reuse {
+            store_scope: id.into(),
+        };
+        RedirectResponse::follow(request, 0, target)
+    });
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let broker = Broker::spawn(move || {
+        let mut socket = accept(&origin);
+        frame(&mut socket);
+        redirect(&mut socket, &first, false);
+        let mut socket = accept(&intermediate);
+        frame(&mut socket);
+        socket.write_all(b"\x20\x03\x00\x00\x00").unwrap();
+        redirect(&mut socket, &second, true);
+        let mut socket = accept(&target);
+        frame(&mut socket);
+        socket.write_all(b"\x20\x03\x00\x00\x00").unwrap();
+        release_rx.recv_timeout(DEADLINE).unwrap();
+        drop(socket);
+        let mut socket = accept(&origin);
+        let rumqttc_v5::Packet::Connect(connect, _, _) =
+            rumqttc_v5::Packet::read(&mut frame(&mut socket), None).unwrap()
+        else {
+            panic!("origin CONNECT")
+        };
+        assert_eq!(connect.client_id, "parity");
+        socket.write_all(b"\x20\x03\x00\x00\x00").unwrap();
+        assert_eq!(frame(&mut socket)[0], 0xe0);
+    });
+    let mut client = NativeClient::start(config.clone()).unwrap();
+    let mut events = connected(&mut client);
+    until(&mut events, |event| {
+        matches!(event, WrapperEvent::Connected { .. })
+    });
+    let probe = |scope: &str, id: &str| {
+        let mut probe = config.clone();
+        probe.common.client_id = id.into();
+        let ProtocolConfig::V5(v5) = &mut probe.protocol else {
+            unreachable!()
+        };
+        v5.redirect_policy = RedirectPolicy::Reject;
+        v5.session_store.as_mut().unwrap().scope = scope.into();
+        probe.common.broker = BrokerTarget::Tcp {
+            host: "127.0.0.2".into(),
+            port: 1,
+        };
+        NativeClient::start(probe).map(|owner| owner.closer().close_now(DEADLINE).unwrap())
+    };
+    assert_eq!(
+        probe("origin", "parity").unwrap_err().store_failure(),
+        Some(StoreFailure::InUse)
+    );
+    assert_eq!(
+        probe("target", "target").unwrap_err().store_failure(),
+        Some(StoreFailure::InUse)
+    );
+    probe("intermediate", "intermediate").unwrap();
+    release_tx.send(()).unwrap();
+    until(&mut events, |event| {
+        matches!(event, WrapperEvent::Connected { .. })
+    });
+    probe("target", "target").unwrap();
+    assert_eq!(
+        probe("origin", "parity").unwrap_err().store_failure(),
+        Some(StoreFailure::InUse)
+    );
+    let calls = store.0.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .any(|(_, key)| key.scope == "target" && key.client_id == "target")
+    );
+    assert!(
+        calls
+            .iter()
+            .filter(|(op, key)| *op == 1 && key.scope == "origin")
+            .count()
+            >= 2
+    );
+    client.closer().close(DEADLINE).unwrap();
+    broker.join();
+    probe("origin", "parity").unwrap();
+}
+
+#[test]
+fn application_target_lease_conflict_is_typed_and_never_dials_the_target() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let reference = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+    let mut config = config(true, origin.local_addr().unwrap().port());
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.clean_start = false;
+    v5.connect_properties.session_expiry_interval = Some(60);
+    v5.session_store = Some(SessionStoreConfig::new(
+        Arc::new(RedirectStore::default()),
+        "origin",
+    ));
+    let mut competing_config = config.clone();
+    competing_config.common.client_id = "target".into();
+    competing_config.common.broker = BrokerTarget::Tcp {
+        host: "127.0.0.2".into(),
+        port: 1,
+    };
+    let ProtocolConfig::V5(v5) = &mut competing_config.protocol else {
+        unreachable!()
+    };
+    v5.session_store.as_mut().unwrap().scope = "target".into();
+    let competing = NativeClient::start(competing_config).unwrap();
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.redirect_policy = application_policy(|request| {
+        let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+        profile.client_id = RedirectClientId::Replace("target".into());
+        profile.session = RedirectSession::Reuse {
+            store_scope: "target".into(),
+        };
+        RedirectResponse::follow(request, 0, profile)
+    });
+    let broker = Broker::spawn(move || {
+        let mut socket = accept(&origin);
+        frame(&mut socket);
+        redirect(&mut socket, &reference, false);
+    });
+    let mut client = NativeClient::start(config).unwrap();
+    let mut events = client.take_events().unwrap();
+    let WrapperEvent::Redirect(event) =
+        until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)))
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        event.failure,
+        Some(RedirectFailure::Policy(RedirectDecisionFailure::StoreInUse))
+    );
+    let WrapperEvent::DriverTerminated(error) = until(&mut events, |e| {
+        matches!(e, WrapperEvent::DriverTerminated(_))
+    }) else {
+        unreachable!()
+    };
+    assert_eq!(error.store_failure(), Some(StoreFailure::InUse));
+    target.set_nonblocking(true).unwrap();
+    assert_eq!(
+        target.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let _ = client.closer().close_now(DEADLINE);
+    competing.closer().close_now(DEADLINE).unwrap();
+    broker.join();
+}
+
+#[test]
+fn reentrant_shutdown_from_redirect_callback_prevents_target_dial() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let reference = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+    let handle = Arc::new(Mutex::new(None::<ClientHandle>));
+    let captured = handle.clone();
+    let mut config = config(true, origin.local_addr().unwrap().port());
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.redirect_policy = application_policy(move |request| {
+        captured
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .try_admit(Command::ImmediateDisconnect)
+            .unwrap();
+        RedirectResponse::follow(request, 0, RedirectTargetConfig::new(TransportConfig::Tcp))
+    });
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let broker = Broker::spawn(move || {
+        let mut socket = accept(&origin);
+        frame(&mut socket);
+        ready_rx.recv_timeout(DEADLINE).unwrap();
+        redirect(&mut socket, &reference, false);
+    });
+    let mut client = NativeClient::start(config).unwrap();
+    *handle.lock().unwrap() = Some(client.handle());
+    ready_tx.send(()).unwrap();
+    let mut events = client.take_events().unwrap();
+    while let Some(event) = events.recv_timeout(DEADLINE).unwrap() {
+        assert!(!matches!(event, WrapperEvent::Connected { .. }));
+    }
+    target.set_nonblocking(true).unwrap();
+    assert_eq!(
+        target.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    broker.join();
+    let _ = client.closer().close_now(DEADLINE);
+}
+
+#[test]
+fn same_session_redirect_invalidates_manual_ack_tokens_for_the_previous_connection() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let reference = format!("127.0.0.1:{}", target.local_addr().unwrap().port());
+    let mut config = config(true, origin.local_addr().unwrap().port());
+    config.common.ack_mode = AckMode::Manual;
+    let ProtocolConfig::V5(v5) = &mut config.protocol else {
+        unreachable!()
+    };
+    v5.clean_start = false;
+    v5.connect_properties.session_expiry_interval = Some(60);
+    v5.redirect_policy = application_policy(|request| {
+        let mut profile = RedirectTargetConfig::new(TransportConfig::Tcp);
+        profile.client_id = RedirectClientId::Reuse;
+        profile.session = RedirectSession::Reuse {
+            store_scope: String::new(),
+        };
+        RedirectResponse::follow(request, 0, profile)
+    });
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let broker = Broker::spawn(move || {
+        let mut socket = accept(&origin);
+        connect(&mut socket, true);
+        socket.write_all(b"\x32\x07\x00\x01a\x00\x07\x00x").unwrap();
+        release_rx.recv_timeout(DEADLINE).unwrap();
+        redirect_with_reason(&mut socket, &reference, true, RedirectReason::ServerMoved);
+        let mut socket = accept(&target);
+        frame(&mut socket);
+        socket.write_all(b"\x20\x03\x01\x00\x00").unwrap();
+        // Same packet ID, newly delivered on the target connection.
+        socket.write_all(b"\x3a\x07\x00\x01a\x00\x07\x00x").unwrap();
+        assert_eq!(frame(&mut socket).as_ref(), b"\x40\x02\x00\x07");
+        assert_eq!(frame(&mut socket)[0], 0xe0);
+    });
+    let mut client = NativeClient::start(config).unwrap();
+    let mut events = connected(&mut client);
+    let publication = |events: &mut EventConsumer| {
+        let WrapperEvent::IncomingPublish(publish) =
+            until(events, |e| matches!(e, WrapperEvent::IncomingPublish(_)))
+        else {
+            unreachable!()
+        };
+        publish
+    };
+    let previous = publication(&mut events).ack_token.unwrap();
+    release_tx.send(()).unwrap();
+    until(&mut events, |e| matches!(e, WrapperEvent::Connected { .. }));
+    let current = publication(&mut events).ack_token.unwrap();
+    assert_ne!(previous, current);
+    assert!(
+        client
+            .handle()
+            .try_admit(Command::Acknowledge(previous))
+            .is_err()
+    );
+    terminal(
+        &client
+            .handle()
+            .try_admit(Command::Acknowledge(current))
+            .unwrap(),
+    )
+    .unwrap();
+    client.closer().close(DEADLINE).unwrap();
+    broker.join();
+}
+
+#[cfg(feature = "websocket")]
+#[test]
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite handshake callback error type"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exercise independent reuse flags on both network and MQTT wire"
+)]
+fn application_authentication_and_websocket_network_reuse_are_independent() {
+    for reuse_auth in [false, true] {
+        for reuse_network in [false, true] {
+            let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target = TcpListener::bind("127.0.0.1:0").unwrap();
+            let reference = format!(
+                "ws://127.0.0.1:{}/target",
+                target.local_addr().unwrap().port()
+            );
+            let authority = Arc::new(IdentityAuthority::default());
+            let mut config = config(true, 1);
+            config.common.broker = BrokerTarget::WebSocket {
+                url: format!(
+                    "ws://127.0.0.1:{}/origin",
+                    origin.local_addr().unwrap().port()
+                ),
+            };
+            config.common.transport = TransportConfig::WebSocket;
+            config.common.username = Some("private-origin-user".into());
+            config.common.password = Some(Bytes::from_static(b"private-origin-password"));
+            config.common.websocket_headers = vec![WebSocketHeader::Replace {
+                name: "authorization".into(),
+                value: "Bearer private-origin-header".into(),
+            }];
+            let ProtocolConfig::V5(v5) = &mut config.protocol else {
+                unreachable!()
+            };
+            v5.connect_properties.authentication_method = Some("test".into());
+            v5.authenticator = Some(AuthenticatorConfig::new(authority.clone()));
+            v5.redirect_policy = application_policy(move |request| {
+                let mut profile = RedirectTargetConfig::new(TransportConfig::WebSocket);
+                profile.client_id = RedirectClientId::Replace("target".into());
+                profile.reuse_authentication_authority = reuse_auth;
+                profile.reuse_network_credentials = reuse_network;
+                RedirectResponse::follow(request, 0, profile)
+            });
+            let broker = Broker::spawn(move || {
+                for (listener, redirected) in [(&origin, false), (&target, true)] {
+                    let mut socket = tungstenite::accept_hdr(accept(listener),
+                        |request: &tungstenite::handshake::server::Request,
+                         mut response: tungstenite::handshake::server::Response| {
+                            assert_eq!(request.headers().contains_key("authorization"), !redirected || reuse_network);
+                            assert_eq!(request.uri().path(), if redirected { "/target" } else { "/origin" });
+                            response.headers_mut().insert("sec-websocket-protocol", "mqtt".parse().unwrap());
+                            Ok(response)
+                        }).unwrap();
+                    let mut packet = BytesMut::from(socket.read().unwrap().into_data().as_ref());
+                    let rumqttc_v5::Packet::Connect(connect, _, auth) =
+                        rumqttc_v5::Packet::read(&mut packet, None).unwrap()
+                    else {
+                        panic!("CONNECT")
+                    };
+                    assert_eq!(
+                        connect
+                            .properties
+                            .as_ref()
+                            .and_then(|p| p.authentication_method.as_ref())
+                            .is_some(),
+                        !redirected || reuse_auth
+                    );
+                    if redirected {
+                        assert_eq!(connect.client_id, "target");
+                        assert_eq!(auth, rumqttc_v5::ConnectAuth::None);
+                        let connack: &[u8] = if reuse_auth {
+                            b"\x20\x0a\x00\x00\x07\x15\x00\x04test"
+                        } else {
+                            b"\x20\x03\x00\x00\x00"
+                        };
+                        socket
+                            .send(tungstenite::Message::Binary(Bytes::copy_from_slice(
+                                connack,
+                            )))
+                            .unwrap();
+                        assert_eq!(socket.read().unwrap().into_data()[0], 0xe0);
+                    } else {
+                        let mut packet = Vec::new();
+                        redirect_with_reason(
+                            &mut packet,
+                            &reference,
+                            false,
+                            RedirectReason::ServerMoved,
+                        );
+                        socket
+                            .send(tungstenite::Message::Binary(packet.into()))
+                            .unwrap();
+                    }
+                }
+            });
+            let mut client = NativeClient::start(config).unwrap();
+            let _events = connected(&mut client);
+            let contexts = authority.0.lock().unwrap().clone();
+            assert_eq!(contexts.contains(&("target".into(), true)), reuse_auth);
+            assert_eq!(contexts.contains(&("target".into(), false)), reuse_auth);
+            client.closer().close(DEADLINE).unwrap();
+            broker.join();
+        }
     }
 }

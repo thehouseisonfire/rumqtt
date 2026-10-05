@@ -730,6 +730,15 @@ impl ClientConfig {
 
 impl V5Config {
     fn validate_redirect(&self, common: &CommonConfig) -> Result<()> {
+        if let crate::RedirectPolicy::Application(policy) = &self.redirect_policy
+            && (policy.max_attempts == 0
+                || policy.decision_timeout.is_zero()
+                || std::time::Instant::now()
+                    .checked_add(policy.decision_timeout)
+                    .is_none())
+        {
+            return Err(Error::configuration("invalid redirect policy bounds"));
+        }
         if common
             .connector
             .as_ref()

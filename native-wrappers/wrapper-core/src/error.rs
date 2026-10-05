@@ -232,6 +232,11 @@ impl Error {
         self.store_failure
     }
 
+    pub(crate) const fn with_store_failure(mut self, failure: crate::StoreFailure) -> Self {
+        self.store_failure = Some(failure);
+        self
+    }
+
     pub(crate) fn store(failure: crate::StoreFailure) -> Self {
         let mut error = Self::new(ErrorKind::Persistence, failure.to_string());
         error.store_failure = Some(failure);

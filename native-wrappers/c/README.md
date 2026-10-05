@@ -555,6 +555,70 @@ count and limit, visited endpoints, loop flag, and SRV candidate position. A
 fixed reject policy reports `RUMQTTC_REDIRECT_FAILURE_DISABLED`; a detected
 loop reports `RUMQTTC_REDIRECT_FAILURE_LOOP` and a reject decision.
 
+
+Application decisions use `rumqttc_redirect_vtable_t` and
+`rumqttc_redirect_registration_new()`, installed with
+`rumqttc_config_set_v5_redirect_authority()`. The most recent successful fixed or
+authority setter wins; failed setters leave configuration unchanged. Construction
+transfers host ownership only on success. Registrations/configurations/clients
+share the owner, and its destroy callback runs exactly once after the last owner
+is released. See [`examples/redirect_authority.c`](examples/redirect_authority.c)
+for exact advertised-target approval and an isolated replacement identity.
+
+The synchronous callback receives a borrowed request and response builder.
+`rumqttc_redirect_request_info()` and `_reference()` expose source, reason,
+attempt, current client ID/scope, and validated reference kind/scheme/host/port/
+WebSocket resource/SRV owner. Initialize output records with their `_INIT`
+macros. String views last as long as the request; `request_retain()` creates an
+owned snapshot that can survive client destruction. It does not extend the
+decision lifetime. The response is valid only during the callback and cannot be
+retained or completed later. `response_follow()` selects a zero-based index
+from that exact request and a TCP/TLS/WS/WSS transport. TLS/WSS require an existing
+owned TLS profile, retained with its hooks through use. Every failed builder
+operation invalidates the decision even if its status is ignored; input fields
+are copied transactionally. Returning nonzero from the callback fails the
+decision. Leaving the response untouched rejects it.
+
+Target defaults are a fresh ID and an isolated clean session, with origin
+credentials, store, proxy and header modifiers cleared. `response_set_client_id()`
+chooses fresh/reused/replaced identity; identity reuse alone preserves no session.
+`response_set_credentials()` supplies target username/password independently,
+including present-empty values. `response_set_reuse()` independently approves
+existing enhanced-auth authority/method/data and native network credentials.
+Network approval retains proxy configuration and all WebSocket modifiers as one
+unit. Authentication approval retains the current authority, reports the actual
+target/broker-assigned client ID, and never inherits origin username/password.
+Replacement enhanced-auth authorities and selective proxy/header reuse are not
+supported. Target TLS policy always comes from the selected profile.
+
+`response_set_session(RUMQTTC_REDIRECT_SESSION_REUSE, scope)` explicitly enables
+scoped session reuse. Unchanged client ID and scope can preserve live state;
+a changed key resets live state and may load that key's checkpoint. Broker
+Session Present and strict local-state checks still apply. Stores require
+nonempty IDs/scopes, clean start disabled and nonzero expiry. A target key's
+exclusive lease is acquired before applying the profile; a conflict returns
+`RUMQTTC_REDIRECT_FAILURE_STORE_IN_USE` and `RUMQTTC_STORE_FAILURE_IN_USE`.
+Origin leases remain available for temporary restoration; permanent establishment
+and rollback release obsolete leases, and teardown releases all remaining leases.
+This does not copy checkpoints between brokers. Isolated hops discard store reuse.
+
+Callbacks run without wrapper lifecycle/admission locks, may overlap across
+clients, and must return promptly. Nonblocking admission is allowed; waiting for
+completion or destroying/joining the active client is prohibited. Foreign
+callbacks/destructors must never unwind across C. The finite decision budget
+covers callback and profile preparation; late results are rejected and shutdown
+is checked on return. It cannot interrupt a blocking callback or bound driver
+stalls/shutdown latency. Existing attempt bounds, loop detection, native SRV
+fallback, lookup timeout and individual connection deadlines remain; no total
+redirect-chain deadline is promised. Limits are 256 references, 64 KiB copied
+request text and 256 KiB response fields plus MQTT wire-length limits.
+
+Policy failures add callback, panic, timeout, invalid-response, resource-limit
+and store-in-use selectors without renumbering existing failure codes.
+`rumqttc_event_redirect_selected_reference()` returns the selected advertised
+reference separately from the eventual endpoint/candidate diagnostics. Diagnostic
+errors and Debug output omit CONNECT credentials.
+
 Define `RUMQTTC_STATIC` before including the header when linking the static
 library on Windows. Static consumers must also link the platform libraries
 required by Rust, networking, and the bundled rustls/AWS-LC TLS provider:

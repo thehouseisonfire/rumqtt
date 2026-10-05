@@ -14,7 +14,6 @@ use crate::{
 };
 
 pub(super) struct AsyncAdapter {
-    pub client_id: String,
     pub config: crate::AsyncAuthenticatorConfig,
     pub monitor: Arc<Monitor>,
     pub generation: AtomicU64,
@@ -22,9 +21,7 @@ pub(super) struct AsyncAdapter {
 
 impl std::fmt::Debug for AsyncAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AsyncAdapter")
-            .field("client_id", &self.client_id)
-            .finish_non_exhaustive()
+        f.debug_struct("AsyncAdapter").finish_non_exhaustive()
     }
 }
 
@@ -95,7 +92,7 @@ impl rumqttc_v5::AsyncAuthenticator for AsyncAdapter {
             },
         };
         let context = crate::AuthContext {
-            client_id: self.client_id.clone(),
+            client_id: context.client_id,
             exchange,
             generation: self.generation.load(Ordering::Relaxed),
             method: method.clone(),
@@ -163,7 +160,7 @@ impl rumqttc_v5::AsyncAuthenticator for AsyncAdapter {
             _ => crate::AuthFailure::ConnectionClosed,
         });
         let context = crate::AuthContext {
-            client_id: self.client_id.clone(),
+            client_id: context.client_id,
             exchange: match context.kind {
                 rumqttc_v5::AuthExchangeKind::InitialConnect => crate::AuthExchange::Initial,
                 rumqttc_v5::AuthExchangeKind::Reauthentication => {
@@ -281,7 +278,6 @@ impl Drop for AsyncCallbackGuard {
 
 #[derive(Debug)]
 pub(super) struct Adapter {
-    pub client_id: String,
     pub config: AuthenticatorConfig,
     pub monitor: Arc<Monitor>,
     pub generation: u64,
@@ -294,7 +290,7 @@ impl Adapter {
         challenge: AuthChallenge,
     ) -> Result<AuthAction, rumqttc_v5::AuthError> {
         let context = AuthContext {
-            client_id: self.client_id.clone(),
+            client_id: context.client_id.to_owned(),
             exchange: match context.kind {
                 rumqttc_v5::AuthExchangeKind::InitialConnect => AuthExchange::Initial,
                 rumqttc_v5::AuthExchangeKind::Reauthentication => AuthExchange::Reauthentication,

@@ -30,3 +30,7 @@ item_types = ["functions"]
 
 "rumqttc_tls_verifier_registration" = "rumqttc_tls_verifier_registration_t"
 "rumqttc_tls_identity_registration" = "rumqttc_tls_identity_registration_t"
+
+"rumqttc_redirect_registration" = "rumqttc_redirect_registration_t"
+"rumqttc_redirect_request" = "rumqttc_redirect_request_t"
+"rumqttc_redirect_response" = "rumqttc_redirect_response_t"

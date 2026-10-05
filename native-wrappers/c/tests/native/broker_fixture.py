@@ -120,6 +120,11 @@ def accept_websocket(stream: socket.socket) -> WebSocketStream:
             raise AssertionError("dynamic WebSocket signature does not match final request")
         if [v for n, v in ordered_headers if n == "x-static"] != ["one", "two", ""] or "x-remove" in headers:
             raise AssertionError("dynamic WebSocket composition changed")
+    if path in ("/authority-origin", "/authority-target-network-reuse"):
+        if headers.get("authorization") != "Bearer origin-private-header":
+            raise AssertionError("approved redirect network credentials were not retained")
+    elif path == "/authority-target-network-isolate" and "authorization" in headers:
+        raise AssertionError("origin network credentials crossed an isolated redirect")
     key = headers.get("sec-websocket-key")
     if key is None or "mqtt" not in headers.get("sec-websocket-protocol", "").lower():
         raise ValueError("client did not request the MQTT WebSocket subprotocol")
@@ -787,6 +792,40 @@ class Broker:
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
             elif client_id.startswith(b"native-unix-timeout-"):
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id in (b"c-redirect-example", b"c-redirect-target"):
+                if client_id == b"c-redirect-example":
+                    reference = f"127.0.0.2:1 localhost:{self.port}".encode()
+                    properties = b"\x1c" + struct.pack("!H", len(reference)) + reference
+                    stream.sendall(frame(2, 0, b"\x00\x9d" + encode_remaining(len(properties)) + properties))
+                else:
+                    if connect_flags != 2:
+                        raise AssertionError("example redirect must remain isolated")
+                    stream.sendall(frame(2, 0, b"\x00\x00\x00"))
+                connection = Connection(stream, protocol, client_id)
+                self.client_ids.add(client_id)
+            elif client_id.startswith(b"native-redirect-authority-") or client_id.startswith(b"native-authority-target-"):
+                origin = client_id.startswith(b"native-redirect-authority-")
+                mode = client_id.decode().removeprefix("native-redirect-authority-").removeprefix("native-authority-target-")
+                if origin and attempt == 1:
+                    reference = f"127.0.0.2:1 localhost:{self.port}".encode()
+                    if mode.startswith("network-"):
+                        reference = f"127.0.0.2:1 ws://localhost:{self.port}/authority-target-{mode}".encode()
+                    properties = b"\x1c" + struct.pack("!H", len(reference)) + reference
+                    stream.sendall(frame(2, 0, b"\x00\x9d" + encode_remaining(len(properties)) + properties))
+                else:
+                    if connect_flags != (0xC2 if mode == "isolated" or mode.startswith(("auth-", "network-")) else 0xC0):
+                        raise AssertionError("application redirect session/credentials flags changed")
+                    username, offset = string_at(body, offset)
+                    password, offset = string_at(body, offset)
+                    if username != b"target-private-user" or password != b"target-private-password" or offset != len(body):
+                        raise AssertionError("application target credentials were not copied or isolated")
+                    auth = b"\x15\x00\x04test"
+                    if (auth in connect_properties) != (mode == "auth-reuse"):
+                        raise AssertionError("authentication authority reused without approval")
+                    properties = auth if mode == "auth-reuse" else b""
+                    stream.sendall(frame(2, 0, b"\x00\x00" + encode_remaining(len(properties)) + properties))
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
             elif client_id.startswith(b"native-redirect-matrix-"):

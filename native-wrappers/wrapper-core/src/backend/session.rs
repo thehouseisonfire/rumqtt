@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::FutureExt;
@@ -94,6 +94,43 @@ impl Adapter {
     }
 }
 
+/// Per-driver store factory; weak entries never retain an obsolete lease.
+#[derive(Debug)]
+pub(super) struct AdapterFactory {
+    config: SessionStoreConfig,
+    adapters: Mutex<HashMap<SessionStoreKey, Weak<Adapter>>>,
+}
+impl AdapterFactory {
+    pub(super) fn new(config: SessionStoreConfig) -> Self {
+        Self {
+            config,
+            adapters: Mutex::new(HashMap::new()),
+        }
+    }
+    pub(super) fn prepare(&self, scope: &str, client_id: &str) -> crate::Result<Arc<Adapter>> {
+        let key = SessionStoreKey {
+            protocol: ProtocolVersion::V5,
+            scope: scope.into(),
+            client_id: client_id.into(),
+        };
+        let mut adapters = self
+            .adapters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adapters.retain(|_, adapter| adapter.strong_count() != 0);
+        if let Some(adapter) = adapters.get(&key).and_then(Weak::upgrade) {
+            return Ok(adapter);
+        }
+        let mut config = self.config.clone();
+        config.scope = scope.into();
+        config.validate()?;
+        let adapter = Arc::new(Adapter::new(config, ProtocolVersion::V5, client_id)?);
+        adapters.insert(key, Arc::downgrade(&adapter));
+        drop(adapters);
+        Ok(adapter)
+    }
+}
+
 pub fn envelope(
     bytes: &[u8],
     protocol: u8,
@@ -145,13 +182,21 @@ impl Drop for Adapter {
 }
 
 macro_rules! implement_store {
-    ($backend:ident) => {
+    ($backend:ident, $protocol:ident) => {
         impl $backend::SessionStore for Adapter {
             fn load<'a>(
                 &'a self,
-                _: &'a $backend::SessionStoreKey,
+                key: &'a $backend::SessionStoreKey,
             ) -> NativeFuture<'a, Option<$backend::PersistedSession>> {
                 Box::pin(async move {
+                    if self.lease.1.protocol != ProtocolVersion::$protocol
+                        || key.scope() != self.lease.1.scope
+                        || key.client_id() != self.lease.1.client_id
+                    {
+                        return Err(
+                            Box::new(StoreFailure::KeyMismatch) as $backend::SessionStoreError
+                        );
+                    }
                     let checkpoint = self
                         .call(|| {
                             self.config.store.load_with_limit(
@@ -185,10 +230,18 @@ macro_rules! implement_store {
 
             fn save<'a>(
                 &'a self,
-                _: &'a $backend::SessionStoreKey,
+                key: &'a $backend::SessionStoreKey,
                 session: &'a $backend::PersistedSession,
             ) -> NativeFuture<'a, ()> {
                 Box::pin(async move {
+                    if self.lease.1.protocol != ProtocolVersion::$protocol
+                        || key.scope() != self.lease.1.scope
+                        || key.client_id() != self.lease.1.client_id
+                    {
+                        return Err(
+                            Box::new(StoreFailure::KeyMismatch) as $backend::SessionStoreError
+                        );
+                    }
                     let bytes = session.encode().map_err(|_| StoreFailure::Oversized)?;
                     let checkpoint = self.envelope(&bytes)?;
                     self.call(|| self.config.store.save(self.lease.1.clone(), checkpoint))
@@ -197,8 +250,16 @@ macro_rules! implement_store {
                 })
             }
 
-            fn clear<'a>(&'a self, _: &'a $backend::SessionStoreKey) -> NativeFuture<'a, ()> {
+            fn clear<'a>(&'a self, key: &'a $backend::SessionStoreKey) -> NativeFuture<'a, ()> {
                 Box::pin(async move {
+                    if self.lease.1.protocol != ProtocolVersion::$protocol
+                        || key.scope() != self.lease.1.scope
+                        || key.client_id() != self.lease.1.client_id
+                    {
+                        return Err(
+                            Box::new(StoreFailure::KeyMismatch) as $backend::SessionStoreError
+                        );
+                    }
                     self.call(|| self.config.store.clear(self.lease.1.clone()))
                         .await
                         .map_err(|e| Box::new(e) as $backend::SessionStoreError)
@@ -208,8 +269,8 @@ macro_rules! implement_store {
     };
 }
 
-implement_store!(rumqttc_v4);
-implement_store!(rumqttc_v5);
+implement_store!(rumqttc_v4, V4);
+implement_store!(rumqttc_v5, V5);
 
 #[cfg(test)]
 mod tests {
@@ -231,6 +292,81 @@ mod tests {
             *self.0.lock().unwrap() = None;
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[tokio::test]
+    async fn mismatched_native_keys_are_rejected_before_host_io() {
+        let memory = Arc::new(Memory::default());
+        let adapter = Adapter::new(
+            SessionStoreConfig::new(memory.clone(), "scope"),
+            ProtocolVersion::V5,
+            "client",
+        )
+        .unwrap();
+        for key in [
+            rumqttc_v5::SessionStoreKey::new("other", "client"),
+            rumqttc_v5::SessionStoreKey::new("scope", "other"),
+        ] {
+            let error = rumqttc_v5::SessionStore::load(&adapter, &key)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<StoreFailure>(),
+                Some(&StoreFailure::KeyMismatch)
+            );
+            let error = rumqttc_v5::SessionStore::clear(&adapter, &key)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<StoreFailure>(),
+                Some(&StoreFailure::KeyMismatch)
+            );
+        }
+        let error = rumqttc_v4::SessionStore::load(
+            &adapter,
+            &rumqttc_v4::SessionStoreKey::new("scope", "client"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<StoreFailure>(),
+            Some(&StoreFailure::KeyMismatch)
+        );
+        assert!(memory.0.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn scoped_factory_reuses_live_adapters_and_releases_obsolete_leases() {
+        let config = SessionStoreConfig::new(Arc::new(Memory::default()), "origin");
+        let factory = AdapterFactory::new(config.clone());
+        let origin = factory.prepare("origin", "client").unwrap();
+        assert!(Arc::ptr_eq(
+            &origin,
+            &factory.prepare("origin", "client").unwrap()
+        ));
+        let competing = AdapterFactory::new(config);
+        let target = competing.prepare("target", "replacement").unwrap();
+        assert_eq!(
+            factory
+                .prepare("target", "replacement")
+                .unwrap_err()
+                .store_failure(),
+            Some(StoreFailure::InUse)
+        );
+        assert!(Arc::ptr_eq(
+            &origin,
+            &factory.prepare("origin", "client").unwrap()
+        ));
+        drop(target);
+        let prepared = factory.prepare("target", "replacement").unwrap();
+        drop(prepared);
+        assert!(competing.prepare("target", "replacement").is_ok());
+        // Weak cache entries are pruned on every preparation and cannot retain a lease.
+        assert_eq!(factory.adapters.lock().unwrap().len(), 2);
+        factory.prepare("origin", "client").unwrap();
+        assert_eq!(factory.adapters.lock().unwrap().len(), 1);
+        drop(origin);
+        assert!(competing.prepare("origin", "client").is_ok());
     }
 
     #[tokio::test]

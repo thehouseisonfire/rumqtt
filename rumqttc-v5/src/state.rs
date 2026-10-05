@@ -504,6 +504,8 @@ pub struct MqttState {
     /// Authentication callback
     authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
     async_authenticator: Option<Arc<dyn AsyncAuthenticator>>,
+    /// Effective identity used by authentication callbacks on this connection.
+    pub(crate) auth_client_id: String,
     /// Authentication lifecycle state.
     auth: AuthLifecycle,
 }
@@ -784,8 +786,16 @@ impl MqttState {
             max_outgoing_inflight_upper_limit: max_inflight,
             authenticator,
             async_authenticator: None,
+            auth_client_id: String::new(),
             auth: AuthLifecycle::new(authentication_method),
         }
+    }
+
+    pub(crate) fn set_authenticator(
+        &mut self,
+        authenticator: Option<Arc<Mutex<dyn Authenticator>>>,
+    ) {
+        self.authenticator = authenticator;
     }
 
     pub(crate) fn set_async_authenticator(
@@ -808,6 +818,7 @@ impl MqttState {
             return Ok(result);
         };
         let context = AsyncAuthContext {
+            client_id: self.auth_client_id.clone(),
             kind: AuthExchangeKind::InitialConnect,
             method: method.clone(),
         };
@@ -889,6 +900,7 @@ impl MqttState {
             return Ok(None);
         };
         let context = AuthContext {
+            client_id: &self.auth_client_id,
             kind: AuthExchangeKind::InitialConnect,
             method: &method,
         };
@@ -1392,6 +1404,7 @@ impl MqttState {
             authentication_method,
             authenticator,
         );
+        reset.auth_client_id = std::mem::take(&mut self.auth_client_id);
         reset.async_authenticator = async_authenticator;
         reset.events = events;
         reset.auth = auth;
@@ -1431,6 +1444,7 @@ impl MqttState {
             match authenticator.lock() {
                 Ok(mut locked) => locked.failure(
                     AuthContext {
+                        client_id: &self.auth_client_id,
                         kind: AuthExchangeKind::Reauthentication,
                         method: &method,
                     },
@@ -1444,6 +1458,7 @@ impl MqttState {
         if let Some(authenticator) = &self.async_authenticator {
             authenticator.failure(
                 AsyncAuthContext {
+                    client_id: self.auth_client_id.clone(),
                     kind: AuthExchangeKind::Reauthentication,
                     method,
                 },
@@ -1535,6 +1550,7 @@ impl MqttState {
             .and_then(|properties| properties.method.clone())
             .expect("reauthentication has a normalized method");
         let context = AsyncAuthContext {
+            client_id: self.auth_client_id.clone(),
             kind: AuthExchangeKind::Reauthentication,
             method: method.clone(),
         };
@@ -1823,6 +1839,7 @@ impl MqttState {
             let action = authenticator
                 .respond(
                     AsyncAuthContext {
+                        client_id: self.auth_client_id.clone(),
                         kind: AuthExchangeKind::InitialConnect,
                         method,
                     },
@@ -1878,6 +1895,7 @@ impl MqttState {
         match effect {
             IncomingAuthEffect::Success { kind, method } => {
                 let context = AsyncAuthContext {
+                    client_id: self.auth_client_id.clone(),
                     kind,
                     method: method.clone(),
                 };
@@ -1905,7 +1923,11 @@ impl MqttState {
                     .active_exchange()
                     .expect("validated AUTH continuation has an active exchange")
                     .1;
-                let context = AsyncAuthContext { kind, method };
+                let context = AsyncAuthContext {
+                    client_id: self.auth_client_id.clone(),
+                    kind,
+                    method,
+                };
                 let action = authenticator
                     .respond(
                         context,
@@ -2434,7 +2456,11 @@ impl MqttState {
         properties: Option<crate::AuthProperties>,
     ) -> Result<(), StateError> {
         if let Some(authenticator) = self.authenticator.clone() {
-            let context = AuthContext { kind, method };
+            let context = AuthContext {
+                client_id: &self.auth_client_id,
+                kind,
+                method,
+            };
             let result = match authenticator.lock() {
                 Ok(mut locked) => locked.success(context, properties),
                 Err(poisoned) => {
@@ -2483,7 +2509,11 @@ impl MqttState {
                     .as_ref()
                     .and_then(|props| props.method.as_deref())
                     .unwrap_or_default();
-                let context = AuthContext { kind, method };
+                let context = AuthContext {
+                    client_id: &self.auth_client_id,
+                    kind,
+                    method,
+                };
                 let continue_result = match authenticator.lock() {
                     Ok(mut locked) => locked.continue_auth(context, auth.properties.clone()),
                     Err(poisoned) => {
@@ -2533,7 +2563,14 @@ impl MqttState {
         if let Some((kind, method)) = self.auth.active_exchange()
             && let Some(authenticator) = &self.async_authenticator
         {
-            authenticator.failure(AsyncAuthContext { kind, method }, callback_error.clone());
+            authenticator.failure(
+                AsyncAuthContext {
+                    client_id: self.auth_client_id.clone(),
+                    kind,
+                    method,
+                },
+                callback_error.clone(),
+            );
         }
         if let Some((kind, method)) = self.auth.active_exchange()
             && let Some(authenticator) = self.authenticator.clone()
@@ -2541,6 +2578,7 @@ impl MqttState {
             match authenticator.lock() {
                 Ok(mut locked) => locked.failure(
                     AuthContext {
+                        client_id: &self.auth_client_id,
                         kind,
                         method: &method,
                     },
@@ -3028,6 +3066,7 @@ impl MqttState {
 
         if let Some(authenticator) = self.authenticator.clone() {
             let context = AuthContext {
+                client_id: &self.auth_client_id,
                 kind: AuthExchangeKind::Reauthentication,
                 method: &method,
             };
@@ -3981,6 +4020,7 @@ impl Clone for MqttState {
             max_outgoing_inflight_upper_limit: self.max_outgoing_inflight_upper_limit,
             authenticator: self.authenticator.clone(),
             async_authenticator: self.async_authenticator.clone(),
+            auth_client_id: self.auth_client_id.clone(),
             auth: self.auth.clone(),
         }
     }

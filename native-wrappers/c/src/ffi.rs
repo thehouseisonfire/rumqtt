@@ -15,6 +15,10 @@ pub use tls::*;
 mod tls_advanced;
 pub use tls_advanced::*;
 
+#[path = "redirect.rs"]
+mod redirect;
+pub use redirect::*;
+
 #[path = "websocket.rs"]
 mod websocket;
 pub use websocket::*;
@@ -5482,18 +5486,9 @@ pub unsafe extern "C" fn rumqttc_event_redirect(
             write_optional(failure_present_out, u8::from(redirect.failure.is_some()));
             write_optional(
                 failure_out,
-                redirect.failure.map_or(0, |failure| match failure {
-                    rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
-                    rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
-                    rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
-                    rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
-                    rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
-                    rumqttc_wrapper_core::RedirectFailure::Loop => 6,
-                    rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
-                    rumqttc_wrapper_core::RedirectFailure::Dns => 8,
-                    rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
-                    rumqttc_wrapper_core::RedirectFailure::Transport => 10,
-                }),
+                redirect
+                    .failure
+                    .map_or(0, rumqttc_wrapper_core::RedirectFailure::code),
             );
             write_optional(
                 reference_present_out,
@@ -6734,6 +6729,7 @@ mod tests {
         let redirect = rumqttc_event {
             inner: EventObject::new(WrapperEvent::Redirect(
                 rumqttc_wrapper_core::RedirectEvent {
+                    selected_reference: None,
                     source: rumqttc_wrapper_core::RedirectSource::ConnAck,
                     reason: rumqttc_wrapper_core::RedirectReason::ServerMoved,
                     server_reference: Some("example:1883".into()),

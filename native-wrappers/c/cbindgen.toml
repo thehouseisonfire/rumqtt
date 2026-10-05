@@ -11,6 +11,13 @@ parse_deps = false
 include = [
     "rumqttc_tls_async_verifier_vtable_t",
     "rumqttc_tls_async_identity_vtable_t",
+    "rumqttc_redirect_registration",
+    "rumqttc_redirect_request",
+    "rumqttc_redirect_response",
+    "rumqttc_redirect_vtable_t",
+    "rumqttc_redirect_request_info_t",
+    "rumqttc_redirect_reference_t",
+
     "rumqttc_tls_advanced_capabilities_t",
     "rumqttc_tls_profile_extensions_t",
     "rumqttc_tls_verification_request_t",
@@ -93,3 +100,7 @@ include = [
 
 "rumqttc_tls_verifier_registration" = "rumqttc_tls_verifier_registration_t"
 "rumqttc_tls_identity_registration" = "rumqttc_tls_identity_registration_t"
+
+"rumqttc_redirect_registration" = "rumqttc_redirect_registration_t"
+"rumqttc_redirect_request" = "rumqttc_redirect_request_t"
+"rumqttc_redirect_response" = "rumqttc_redirect_response_t"

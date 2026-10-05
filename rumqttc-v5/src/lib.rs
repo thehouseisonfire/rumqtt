@@ -84,9 +84,9 @@ pub use publish_admission::{
 };
 pub use redirect::{
     RedirectClientId, RedirectContext, RedirectDecision, RedirectError, RedirectFailure,
-    RedirectOutcome, RedirectPolicy, RedirectPolicyResult, RedirectReason, RedirectReference,
-    RedirectReferenceError, RedirectScheme, RedirectSession, RedirectSource, RedirectTargetError,
-    RedirectTargetProfile, parse_server_references,
+    RedirectOutcome, RedirectPolicy, RedirectPolicyFailure, RedirectPolicyResult, RedirectReason,
+    RedirectReference, RedirectReferenceError, RedirectScheme, RedirectSession, RedirectSource,
+    RedirectTargetError, RedirectTargetProfile, parse_server_references,
 };
 pub use rumqttc_core::NetworkOptions;
 #[cfg(feature = "websocket")]
@@ -605,6 +605,8 @@ pub enum AuthExchangeKind {
 /// Context supplied to MQTT 5 enhanced-authentication callbacks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuthContext<'a> {
+    /// Effective identity for this exchange, refreshed on redirect and assigned-ID adoption.
+    pub client_id: &'a str,
     pub kind: AuthExchangeKind,
     pub method: &'a str,
 }
@@ -620,6 +622,8 @@ pub enum AuthAction {
 /// Owned context for an asynchronous MQTT 5 authentication exchange.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AsyncAuthContext {
+    /// Effective identity for this exchange.
+    pub client_id: String,
     pub kind: AuthExchangeKind,
     pub method: String,
 }

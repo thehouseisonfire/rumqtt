@@ -5,7 +5,7 @@
 #include <string.h>
 
 enum { NO_PIN = -1, CERT_PIN = 0, SPKI_PIN = 1, WRONG_PIN = 2, BACKUP_PIN = 3 };
-enum { DIRECT_TLS, DIRECT_WSS, HTTPS_PROXY, REDIRECT_TLS, REDIRECT_WSS };
+enum { DIRECT_TLS, DIRECT_WSS, HTTPS_PROXY, REDIRECT_TLS, REDIRECT_WSS, APPLICATION_REDIRECT_TLS, APPLICATION_REDIRECT_WSS };
 
 static uint16_t port_env(const char *name) {
   const char *value = getenv(name);
@@ -72,6 +72,27 @@ static rumqttc_tls_profile_t *profile(uint32_t backend, uint32_t version, uint32
   return result;
 }
 
+typedef struct redirect_profile_context {
+  rumqttc_tls_profile_t *profile;
+  uint32_t transport;
+} redirect_profile_context;
+
+static uint32_t approve_profile(void *data, const rumqttc_redirect_request_t *request,
+                                rumqttc_redirect_response_t *response) {
+  redirect_profile_context *context = data;
+  uint32_t result = rumqttc_redirect_response_follow(response, request, 0, context->transport,
+                                                     context->profile, NULL);
+  /* The response now retains the profile for its eventual handshake. */
+  rumqttc_tls_profile_destroy(context->profile);
+  context->profile = NULL;
+  return result;
+}
+static void destroy_redirect_profile(void *data) {
+  redirect_profile_context *context = data;
+  rumqttc_tls_profile_destroy(context->profile);
+  free(context);
+}
+
 static void run_case(uint32_t protocol, uint32_t backend, uint32_t version, uint32_t roots,
                      const char *ca_name, int pin_mode, int transport, const char *port_name,
                      int wrong_name, int succeeds) {
@@ -87,14 +108,30 @@ static void run_case(uint32_t protocol, uint32_t backend, uint32_t version, uint
     char url[128];
     REQUIRE(snprintf(url, sizeof(url), "wss://%s:%u/mqtt", host, port) > 0);
     CHECK(rumqttc_config_set_transport_wss_with_profile(config, native_string(url), tls, NULL));
-  } else if (transport == REDIRECT_TLS || transport == REDIRECT_WSS) {
-    const char *id = transport == REDIRECT_TLS ? "native-redirect-matrix-connack-mqtts"
+  } else if (transport == REDIRECT_TLS || transport == REDIRECT_WSS ||
+             transport == APPLICATION_REDIRECT_TLS || transport == APPLICATION_REDIRECT_WSS) {
+    const char *id = (transport == REDIRECT_TLS || transport == APPLICATION_REDIRECT_TLS) ? "native-redirect-matrix-connack-mqtts"
                                               : "native-redirect-matrix-connack-wss";
     CHECK(rumqttc_config_set_broker(config, native_string("127.0.0.1"), native_test_port(), NULL));
     CHECK(rumqttc_config_set_client_id(config, native_string(id), NULL));
-    CHECK(rumqttc_config_set_v5_redirect_policy_with_tls_profile(
-        config, 2, transport == REDIRECT_TLS ? RUMQTTC_REDIRECT_TRANSPORT_TLS : RUMQTTC_REDIRECT_TRANSPORT_WSS,
-        tls, NULL));
+    uint32_t target_transport = (transport == REDIRECT_TLS || transport == APPLICATION_REDIRECT_TLS)
+        ? RUMQTTC_REDIRECT_TRANSPORT_TLS : RUMQTTC_REDIRECT_TRANSPORT_WSS;
+    if (transport == APPLICATION_REDIRECT_TLS || transport == APPLICATION_REDIRECT_WSS) {
+      redirect_profile_context *context = malloc(sizeof(*context));
+      REQUIRE(context != NULL);
+      context->profile = tls;
+      context->transport = target_transport;
+      rumqttc_redirect_vtable_t vtable = RUMQTTC_REDIRECT_VTABLE_INIT;
+      vtable.decide = approve_profile;
+      vtable.destroy = destroy_redirect_profile;
+      rumqttc_redirect_registration_t *registration = NULL;
+      CHECK(rumqttc_redirect_registration_new(&vtable, context, 2, 5000, &registration, NULL));
+      CHECK(rumqttc_config_set_v5_redirect_authority(config, registration, NULL));
+      rumqttc_redirect_registration_destroy(registration);
+      tls = NULL;
+    } else {
+      CHECK(rumqttc_config_set_v5_redirect_policy_with_tls_profile(config, 2, target_transport, tls, NULL));
+    }
   } else {
     CHECK(rumqttc_config_set_transport_tls_with_profile(config, tls, NULL));
   }
@@ -305,9 +342,14 @@ int main(void) {
     }
     run_case(RUMQTTC_PROTOCOL_V5, backend, 0, RUMQTTC_TLS_ROOTS_PEM, "RUMQTTC_TEST_CA_PEM",
              caps.pin_target_mask != 0 ? CERT_PIN : NO_PIN, REDIRECT_TLS, "RUMQTTC_TEST_TLS_PORT", 0, 1);
-    if (rumqttc_library_capabilities() & RUMQTTC_CAP_WEBSOCKET)
+    run_case(RUMQTTC_PROTOCOL_V5, backend, 0, RUMQTTC_TLS_ROOTS_PEM, "RUMQTTC_TEST_CA_PEM",
+             caps.pin_target_mask != 0 ? CERT_PIN : NO_PIN, APPLICATION_REDIRECT_TLS, "RUMQTTC_TEST_TLS_PORT", 0, 1);
+    if (rumqttc_library_capabilities() & RUMQTTC_CAP_WEBSOCKET) {
       run_case(RUMQTTC_PROTOCOL_V5, backend, 0, RUMQTTC_TLS_ROOTS_PEM, "RUMQTTC_TEST_CA_PEM",
                caps.pin_target_mask != 0 ? SPKI_PIN : NO_PIN, REDIRECT_WSS, "RUMQTTC_TEST_WSS_PORT", 0, 1);
+      run_case(RUMQTTC_PROTOCOL_V5, backend, 0, RUMQTTC_TLS_ROOTS_PEM, "RUMQTTC_TEST_CA_PEM",
+               caps.pin_target_mask != 0 ? SPKI_PIN : NO_PIN, APPLICATION_REDIRECT_WSS, "RUMQTTC_TEST_WSS_PORT", 0, 1);
+    }
   }
   rumqttc_tls_backend_capabilities_t caps = RUMQTTC_TLS_BACKEND_CAPABILITIES_INIT;
   caps.version_policy_mask = UINT32_MAX;

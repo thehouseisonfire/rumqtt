@@ -1532,6 +1532,152 @@ RUMQTTC_API void rumqttc_error_destroy(rumqttc_error_t *error);
 RUMQTTC_API rumqttc_status_t rumqttc_bytes_copy(rumqttc_bytes_view_t view, uint8_t *buffer, size_t capacity, size_t *required_out);
 RUMQTTC_API rumqttc_status_t rumqttc_string_copy(rumqttc_string_view_t view, char *buffer, size_t capacity, size_t *required_out);
 
+/* Application-controlled MQTT 5 redirects. Registrations own user_data only after
+ * successful construction and destroy it once after the last config/client owner.
+ * decide runs synchronously on the driver and returns RUMQTTC_OK or a failure status.
+ * request and response are borrowed during decide. Retain request to inspect it later;
+ * response cannot be retained, destroyed, or completed later. Select using this request
+ * (or a retained handle to this same request). Credential/profile setters copy/retain
+ * inputs immediately; TLS/WSS requires a TLS profile. Response defaults to rejection.
+ * A failed response setter makes the entire decision invalid, even if its error is ignored.
+ * Callbacks/destructors must be thread-safe, prompt, and never unwind or wait for MQTT
+ * completion. Do not join/destroy the active client from decide. Timeouts reject late
+ * results but cannot preempt blocked foreign code or guarantee shutdown latency.
+ * Successful policy setters replace each other. Failure leaves the old policy intact.
+ * Views returned by request accessors remain valid while that request handle is alive;
+ * caller-owned output records must use the initializer macros. Outputs remain unchanged
+ * on accessor failure. Empty optional reference views have length zero; port zero means
+ * no explicitly advertised port. SRV resolution and candidate choice remain native.
+ * Only explicit session reuse can retain recovery state. Same ID/scope may preserve live
+ * state; changed keys load their own checkpoint, never migrate the origin checkpoint.
+ * Authority reuse retains the existing enhanced-auth mechanism and CONNECT method/data;
+ * supplied username/password are independent. Network reuse retains proxy configuration
+ * and WebSocket modifiers together. Target TLS credentials always come from its profile.
+ * Limits: 256 references / 64 KiB copied request reference+identity data, 256 KiB copied
+ * response data, and 65535 bytes per client ID, scope, username or password. */
+typedef struct rumqttc_redirect_registration_t rumqttc_redirect_registration_t;
+typedef struct rumqttc_redirect_request_t rumqttc_redirect_request_t;
+typedef struct rumqttc_redirect_response_t rumqttc_redirect_response_t;
+typedef struct rumqttc_redirect_vtable_t {
+  uint32_t struct_size;
+  uint32_t (*decide)(void*,
+                     const struct rumqttc_redirect_request_t*,
+                     struct rumqttc_redirect_response_t*);
+  void (*destroy)(void*);
+  uint64_t reserved[2];
+} rumqttc_redirect_vtable_t;
+typedef struct rumqttc_redirect_request_info_t {
+  uint32_t struct_size;
+  uint32_t source;
+  uint32_t reason;
+  uint64_t attempt;
+  uint64_t remaining_ns;
+  struct rumqttc_string_view_t client_id;
+  struct rumqttc_string_view_t store_scope;
+  size_t reference_count;
+  uint64_t reserved[2];
+} rumqttc_redirect_request_info_t;
+typedef struct rumqttc_redirect_reference_t {
+  uint32_t struct_size;
+  uint32_t kind;
+  uint32_t scheme;
+  uint32_t port;
+  struct rumqttc_string_view_t raw;
+  struct rumqttc_string_view_t host;
+  struct rumqttc_string_view_t websocket_resource;
+  struct rumqttc_string_view_t srv_owner;
+  uint64_t reserved[2];
+} rumqttc_redirect_reference_t;
+
+#define RUMQTTC_REDIRECT_VTABLE_INIT { sizeof(rumqttc_redirect_vtable_t), NULL, NULL, {0, 0} }
+#define RUMQTTC_REDIRECT_REQUEST_INFO_INIT { sizeof(rumqttc_redirect_request_info_t), 0, 0, 0, 0, {NULL, 0}, {NULL, 0}, 0, {0, 0} }
+#define RUMQTTC_REDIRECT_REFERENCE_INIT { sizeof(rumqttc_redirect_reference_t), 0, 0, 0, {NULL, 0}, {NULL, 0}, {NULL, 0}, {NULL, 0}, {0, 0} }
+#define RUMQTTC_REDIRECT_REFERENCE_AUTHORITY 1u
+#define RUMQTTC_REDIRECT_REFERENCE_URI 2u
+#define RUMQTTC_REDIRECT_REFERENCE_SRV 3u
+#define RUMQTTC_REDIRECT_SCHEME_NONE 0u
+#define RUMQTTC_REDIRECT_SCHEME_MQTT 1u
+#define RUMQTTC_REDIRECT_SCHEME_MQTTS 2u
+#define RUMQTTC_REDIRECT_SCHEME_WS 3u
+#define RUMQTTC_REDIRECT_SCHEME_WSS 4u
+#define RUMQTTC_REDIRECT_CLIENT_ID_FRESH 0u
+#define RUMQTTC_REDIRECT_CLIENT_ID_REUSE 1u
+#define RUMQTTC_REDIRECT_CLIENT_ID_REPLACE 2u
+#define RUMQTTC_REDIRECT_SESSION_ISOLATED 0u
+#define RUMQTTC_REDIRECT_SESSION_REUSE 1u
+#define RUMQTTC_REDIRECT_FAILURE_POLICY_CALLBACK 11u
+#define RUMQTTC_REDIRECT_FAILURE_POLICY_PANIC 12u
+#define RUMQTTC_REDIRECT_FAILURE_POLICY_TIMEOUT 13u
+#define RUMQTTC_REDIRECT_FAILURE_INVALID_RESPONSE 14u
+#define RUMQTTC_REDIRECT_FAILURE_RESOURCE_LIMIT 15u
+#define RUMQTTC_REDIRECT_FAILURE_STORE_IN_USE 16u
+#define RUMQTTC_STORE_FAILURE_KEY_MISMATCH 11u
+
+RUMQTTC_API uint32_t rumqttc_redirect_registration_new(const struct rumqttc_redirect_vtable_t *vtable,
+                                           void *data,
+                                           uint32_t max_attempts,
+                                           uint64_t decision_timeout_ms,
+                                           struct rumqttc_redirect_registration_t **out,
+                                           struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_redirect_registration_destroy(struct rumqttc_redirect_registration_t *registration);
+
+RUMQTTC_API uint32_t rumqttc_config_set_v5_redirect_authority(struct rumqttc_config_t *config,
+                                                  const struct rumqttc_redirect_registration_t *registration,
+                                                  struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_request_retain(const struct rumqttc_redirect_request_t *request,
+                                         struct rumqttc_redirect_request_t **out,
+                                         struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_redirect_request_destroy(struct rumqttc_redirect_request_t *request);
+
+RUMQTTC_API uint32_t rumqttc_redirect_request_info(const struct rumqttc_redirect_request_t *request,
+                                       struct rumqttc_redirect_request_info_t *out,
+                                       struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_request_reference(const struct rumqttc_redirect_request_t *request,
+                                            size_t index,
+                                            struct rumqttc_redirect_reference_t *out,
+                                            struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_response_follow(struct rumqttc_redirect_response_t *response,
+                                          const struct rumqttc_redirect_request_t *request,
+                                          size_t index,
+                                          uint32_t transport,
+                                          const struct rumqttc_tls_profile_t *tls,
+                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_response_reject(struct rumqttc_redirect_response_t *response,
+                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_response_set_client_id(struct rumqttc_redirect_response_t *response,
+                                                 uint32_t policy,
+                                                 struct rumqttc_string_view_t id,
+                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_response_set_credentials(struct rumqttc_redirect_response_t *response,
+                                                   uint8_t username_present,
+                                                   struct rumqttc_string_view_t username,
+                                                   uint8_t password_present,
+                                                   struct rumqttc_bytes_view_t password,
+                                                   struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_response_set_reuse(struct rumqttc_redirect_response_t *response,
+                                             uint8_t authentication_authority,
+                                             uint8_t network_credentials,
+                                             struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_redirect_response_set_session(struct rumqttc_redirect_response_t *response,
+                                               uint32_t policy,
+                                               struct rumqttc_string_view_t scope,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_event_redirect_selected_reference(const struct rumqttc_event_t *event,
+                                                   uint8_t *present_out,
+                                                   struct rumqttc_string_view_t *out,
+                                                   struct rumqttc_error_t **error_out);
+
 #ifdef __cplusplus
 }
 #endif

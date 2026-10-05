@@ -90,6 +90,7 @@ impl FailureDetails {
                     rumqttc_wrapper_core::StoreFailure::Timeout => 8,
                     rumqttc_wrapper_core::StoreFailure::Panic => 9,
                     rumqttc_wrapper_core::StoreFailure::InUse => 10,
+                    rumqttc_wrapper_core::StoreFailure::KeyMismatch => 11,
                 })
             }),
             auth: error.auth_failure().and_then(|failure| {
@@ -121,20 +122,9 @@ impl FailureDetails {
                     rumqttc_wrapper_core::TransportFailure::ResourceLimit => 9,
                 })
             }),
-            redirect: error.redirect_failure().and_then(|failure| {
-                NonZeroU32::new(match failure {
-                    rumqttc_wrapper_core::RedirectFailure::Callback(_) => 1,
-                    rumqttc_wrapper_core::RedirectFailure::Disabled => 2,
-                    rumqttc_wrapper_core::RedirectFailure::Rejected => 3,
-                    rumqttc_wrapper_core::RedirectFailure::InvalidReference => 4,
-                    rumqttc_wrapper_core::RedirectFailure::UnsupportedTarget => 5,
-                    rumqttc_wrapper_core::RedirectFailure::Loop => 6,
-                    rumqttc_wrapper_core::RedirectFailure::AttemptLimit => 7,
-                    rumqttc_wrapper_core::RedirectFailure::Dns => 8,
-                    rumqttc_wrapper_core::RedirectFailure::Timeout => 9,
-                    rumqttc_wrapper_core::RedirectFailure::Transport => 10,
-                })
-            }),
+            redirect: error
+                .redirect_failure()
+                .and_then(|failure| NonZeroU32::new(failure.code())),
         }
     }
 }

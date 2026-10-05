@@ -39,7 +39,7 @@ set(RUMQTTC_C_EXAMPLES
     authenticator
     shutdown
     ordered_shutdown)
-list(APPEND RUMQTTC_C_EXAMPLES resource_limits custom_transport tls_profile)
+list(APPEND RUMQTTC_C_EXAMPLES resource_limits custom_transport tls_profile redirect_authority)
 add_library(rumqttc_transport_socket STATIC transport_socket.c)
 target_compile_features(rumqttc_transport_socket PUBLIC c_std_11)
 target_link_libraries(rumqttc_transport_socket PUBLIC rumqttc_example_common)
