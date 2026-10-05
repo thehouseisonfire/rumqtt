@@ -16,6 +16,11 @@ use crate::{
 };
 
 /// Serializes admission with connection invalidation and shutdown commitment.
+#[cfg(feature = "ordered-shutdown")]
+#[derive(Default)]
+struct AdmissionGate(parking_lot::Mutex<()>);
+
+#[cfg(not(feature = "ordered-shutdown"))]
 #[derive(Default)]
 struct AdmissionGate(Mutex<()>);
 
@@ -31,8 +36,16 @@ impl Drop for ReauthenticationAdmission {
 }
 
 impl AdmissionGate {
-    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
+    #[cfg(feature = "ordered-shutdown")]
+    fn lock(&self) -> parking_lot::MutexGuard<'_, ()> {
         self.0.lock()
+    }
+
+    #[cfg(not(feature = "ordered-shutdown"))]
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -103,10 +116,7 @@ impl Shared {
         session_expiry_zero: bool,
         reauthentication_enabled: bool,
     ) {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.session_expiry_zero
             .store(session_expiry_zero, Ordering::Release);
         self.reauthentication_enabled
@@ -132,6 +142,29 @@ impl Shared {
         self.shutdown.timeout_graceful(error)
     }
 
+    pub(crate) fn has_ordered(&self) -> bool {
+        cfg!(feature = "ordered-shutdown") && self.shutdown.has_ordered()
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn ordered_result(&self) -> Option<Result<crate::Completion>> {
+        self.shutdown.ordered_result()
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) async fn observe_ordered(&self) {
+        self.shutdown.observe_ordered().await;
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) async fn wait_ordered_abort(&self) {
+        self.shutdown.wait_ordered_abort().await;
+    }
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) async fn wait_ordered_deadline(&self) {
+        self.shutdown.wait_ordered_deadline().await;
+    }
+    pub(crate) fn ordered_diagnostics(&self, snapshot: &mut crate::DiagnosticsSnapshot) {
+        self.shutdown.ordered_diagnostics(snapshot);
+    }
+
     pub(crate) async fn wait_graceful_timeout(&self) {
         self.shutdown.wait_graceful_timeout().await;
     }
@@ -147,10 +180,7 @@ impl Shared {
         maximum_packet_size: Option<u32>,
         discard_pending_acknowledgements: impl FnOnce(),
     ) {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         discard_pending_acknowledgements();
         {
             let mut context = self
@@ -177,10 +207,7 @@ impl Shared {
     }
 
     pub(crate) fn prepare_ack(&self, ack: PreparedAck) -> Option<AckToken> {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.acknowledgements.insert(ack)
     }
 
@@ -205,10 +232,7 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .phase = Some(crate::ConnectionPhase::Attempt);
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.acknowledgements.invalidate(error);
     }
 
@@ -224,35 +248,32 @@ impl Shared {
         // Shutdown admission holds this gate from the lifecycle transition through request and
         // completion registration. Waiting here prevents the driver from observing a transient
         // `Closing` state whose admission may still restore `Running`.
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.shutdown.poll_error_action()
     }
 
     pub(crate) fn should_drain_admitted_work(&self) -> bool {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.shutdown.should_drain_admitted_work()
     }
 
     pub(crate) fn reconcile_closed(&self) -> ClosedOutcome {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.shutdown.reconcile_closed()
     }
 
     pub(crate) fn reconcile_failed(&self, error: Error) {
-        let _admission_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _admission_guard = self.admission_gate.lock();
         self.shutdown.reconcile_failed(error);
+    }
+
+    pub(crate) fn finalize_terminal_failure(&self, error: Error) {
+        self.reconcile_failed(error.clone());
+        if self.has_ordered() {
+            // Panic containment drops the observer alongside execution. Prefer the native
+            // receiver's now-ready result before failing the remaining wrapper operations.
+            self.shutdown.finish_ordered(Err(error));
+        }
     }
 
     fn state(&self) -> LifecycleState {
@@ -263,23 +284,22 @@ impl Shared {
         self.shutdown.require_running()
     }
 
-    fn admission(&self, future: crate::operations::CompletionFuture) -> Result<Admission> {
-        let context = *self
+    fn error_context(&self) -> crate::ErrorContext {
+        *self
             .error_context
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn admission(&self, future: crate::operations::CompletionFuture) -> Result<Admission> {
+        let context = self.error_context();
         self.operations.register(Box::pin(async move {
             future.await.map_error(|error| error.with_context(context))
         }))
     }
 
     pub(crate) fn contextualize(&self, error: Error) -> Error {
-        error.with_context(
-            *self
-                .error_context
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        error.with_context(self.error_context())
     }
 
     fn shutdown_admission(&self) -> Result<Admission> {
@@ -295,10 +315,7 @@ impl Shared {
     }
 
     fn best_effort_immediate_close(&self) {
-        let _shutdown_guard = self
-            .admission_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _shutdown_guard = self.admission_gate.lock();
         let Some(admission) = self.shutdown.immediate_admission() else {
             return;
         };
@@ -344,6 +361,10 @@ impl Drop for ClientHandle {
 }
 
 impl ClientHandle {
+    pub(crate) fn has_ordered_close(&self) -> bool {
+        self.shared.has_ordered()
+    }
+
     pub(crate) fn check_disconnect_payload(
         &self,
         payload: &crate::DisconnectProtocolOptions,
@@ -405,6 +426,12 @@ impl ClientHandle {
             Command::GracefulDisconnect { timeout } => {
                 self.try_close(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
             }
+            Command::OrderedDisconnect { timeout } => {
+                self.try_ordered_close(timeout, crate::DisconnectProtocolOptions::VersionNeutral)
+            }
+            Command::OrderedDisconnectWithOptions { timeout, protocol } => {
+                self.try_ordered_close(timeout, protocol)
+            }
             Command::ImmediateDisconnect => {
                 self.try_close_now(crate::DisconnectProtocolOptions::VersionNeutral)
             }
@@ -443,7 +470,20 @@ impl ClientHandle {
                 self.retry_on_backpressure(|| self.try_reauthenticate(properties.as_ref()))
                     .await
             }
-            // Shutdown and diagnostics use priority/control paths and never wait for the publish queue.
+            Command::OrderedDisconnect { timeout } => {
+                self.retry_on_backpressure(|| {
+                    self.try_ordered_close(
+                        timeout,
+                        crate::DisconnectProtocolOptions::VersionNeutral,
+                    )
+                })
+                .await
+            }
+            Command::OrderedDisconnectWithOptions { timeout, protocol } => {
+                self.retry_on_backpressure(|| self.try_ordered_close(timeout, protocol.clone()))
+                    .await
+            }
+            // Ordinary shutdown and diagnostics use priority/control paths and never wait for the publish queue.
             other => self.try_admit(other),
         }
         .map_err(|error| self.shared.contextualize(error))
@@ -482,11 +522,7 @@ impl ClientHandle {
     }
 
     fn try_publish(&self, command: PublishCommand) -> Result<Admission> {
-        let _admission_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
+        let _admission_guard = self.shared.admission_gate.lock();
         self.shared.require_running()?;
         validate_mqtt_utf8_string(&command.topic, "publish topic")?;
         let completion = self.shared.backend.try_publish(command)?;
@@ -494,11 +530,7 @@ impl ClientHandle {
     }
 
     fn try_reauthenticate(&self, properties: Option<&crate::AuthProperties>) -> Result<Admission> {
-        let _guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
+        let _guard = self.shared.admission_gate.lock();
         self.shared.require_running()?;
         if matches!(self.shared.backend, BackendClient::V4(_)) {
             return Err(protocol_option_error("reauthentication requires MQTT 5"));
@@ -538,11 +570,7 @@ impl ClientHandle {
     }
 
     fn try_subscribe(&self, command: SubscribeCommand) -> Result<Admission> {
-        let _admission_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
+        let _admission_guard = self.shared.admission_gate.lock();
         self.shared.require_running()?;
         if command.filters.is_empty() {
             return Err(protocol_option_error(
@@ -559,11 +587,7 @@ impl ClientHandle {
     }
 
     fn try_unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
-        let _admission_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
+        let _admission_guard = self.shared.admission_gate.lock();
         self.shared.require_running()?;
         if command.filters.is_empty() {
             return Err(protocol_option_error(
@@ -607,11 +631,7 @@ impl ClientHandle {
         token: AckToken,
         options: &crate::AcknowledgementProtocolOptions,
     ) -> Result<Admission> {
-        let _admission_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
+        let _admission_guard = self.shared.admission_gate.lock();
         let reservation = self.reserve_ack(token, options)?;
         let admission = self.try_enqueue_ack(reservation.ack())?;
         reservation.commit();
@@ -627,16 +647,85 @@ impl ClientHandle {
             .await
     }
 
+    fn try_ordered_close(
+        &self,
+        timeout: Option<Duration>,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<Admission> {
+        let _guard = self.shared.admission_gate.lock();
+        self.try_ordered_close_locked(timeout, protocol)
+    }
+
+    fn try_ordered_close_locked(
+        &self,
+        timeout: Option<Duration>,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<Admission> {
+        if !cfg!(feature = "ordered-shutdown") {
+            return Err(Error::configuration("ordered-shutdown feature is disabled")
+                .with_delivery(DeliveryStatus::NotAdmitted));
+        }
+        self.shared.require_running()?;
+        self.shared.validate_disconnect(&protocol)?;
+        if timeout.is_some_and(|timeout| std::time::Instant::now().checked_add(timeout).is_none()) {
+            return Err(protocol_option_error("ordered shutdown duration overflow"));
+        }
+        let admission = self.shared.shutdown_admission()?;
+        let admission_context = self.shared.error_context();
+        // The native fence commits first, while this gate excludes all wrapper producers.
+        match self
+            .shared
+            .backend
+            .try_ordered_disconnect(timeout, &protocol)
+        {
+            Ok(native) => {
+                self.shared.transition_to_closing()?;
+                self.shared.shutdown.commit_payload(protocol);
+                self.shared
+                    .shutdown
+                    .commit_ordered(&admission, native, admission_context);
+                Ok(admission)
+            }
+            Err(error) => {
+                self.shared.operations.cancel(admission.operation_id);
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn ordered_close_observer(
+        &self,
+        timeout: Duration,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<crate::CompletionHandle> {
+        if !cfg!(feature = "ordered-shutdown") {
+            return Err(Error::configuration("ordered-shutdown feature is disabled"));
+        }
+        let started = std::time::Instant::now();
+        #[cfg(feature = "ordered-shutdown")]
+        let _guard = self
+            .shared
+            .admission_gate
+            .0
+            .try_lock_for(timeout)
+            .ok_or_else(|| {
+                Error::new(ErrorKind::Timeout, "ordered close admission wait timed out")
+                    .with_delivery(DeliveryStatus::NotAdmitted)
+            })?;
+        self.shared.validate_disconnect(&protocol)?;
+        if let Some(completion) = self.shared.shutdown.ordered_completion() {
+            return Ok(completion);
+        }
+        self.try_ordered_close_locked(Some(timeout.saturating_sub(started.elapsed())), protocol)
+            .map(|admission| admission.completion)
+    }
+
     fn try_close(
         &self,
         timeout: Option<Duration>,
         protocol: crate::DisconnectProtocolOptions,
     ) -> Result<Admission> {
-        let _shutdown_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
+        let _shutdown_guard = self.shared.admission_gate.lock();
         self.shared.validate_disconnect(&protocol)?;
         if !self.shared.shutdown.graceful_admission_allowed() {
             return Err(
@@ -662,11 +751,7 @@ impl ClientHandle {
     }
 
     fn try_close_now(&self, protocol: crate::DisconnectProtocolOptions) -> Result<Admission> {
-        let _shutdown_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "shutdown mutex poisoned"))?;
+        let _shutdown_guard = self.shared.admission_gate.lock();
         self.shared.validate_disconnect(&protocol)?;
         let Some(immediate_admission) = self.shared.shutdown.immediate_admission() else {
             return Err(
@@ -681,7 +766,11 @@ impl ClientHandle {
             return Err(error);
         }
         let result = self.shared.backend.try_disconnect_now(&protocol);
-        if let Err(error) = result {
+        // Expiry closes native admission before retained cleanup ends. Explicit ordered abort
+        // still commits wrapper cancellation when another native request is no longer possible.
+        if let Err(error) = result
+            && !(self.shared.has_ordered() && error.kind() == ErrorKind::Shutdown)
+        {
             if newly_closing {
                 self.shared.restore_running();
             }
@@ -694,12 +783,10 @@ impl ClientHandle {
     }
 
     fn try_diagnostics(&self) -> Result<Admission> {
-        let _admission_guard = self
-            .shared
-            .admission_gate
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "admission mutex poisoned"))?;
-        self.shared.require_running()?;
+        let _admission_guard = self.shared.admission_gate.lock();
+        if !self.shared.has_ordered() {
+            self.shared.require_running()?;
+        }
         self.shared.operations.register_diagnostics()
     }
 }

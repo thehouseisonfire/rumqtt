@@ -11,6 +11,19 @@
   Existing synchronous APIs and C records are preserved. Wrapper-core adds
   `TlsConfig::async_verifier` and `TlsClientIdentity::ExternalAsync`; exhaustive
   Rust literals and matches need updating.
+- Native wrappers: Add disabled-by-default `ordered-shutdown` support in
+  wrapper-core and C, with separately named nonblocking/tracked admissions,
+  finite deadlines, copied MQTT 5 DISCONNECT properties, capability reporting,
+  typed failures and an additive size-versioned diagnostics accessor. Native
+  notices govern collective publish completion and DISCONNECT flush; matching
+  closers retain the original deadline and use independent observer/join budgets.
+  Preserve persistent-session recovery and terminal persistence polling after
+  timeout; explicit immediate close supersedes unresolved fences. Existing C
+  layouts, ordinary close policies and Python/JavaScript public APIs are retained.
+  Wrapper Rust enums gain variants and diagnostics gains an optional field;
+  exhaustive matches/literals require updates. Native notices expose immutable
+  admitted fence sequence/deadline metadata. Include concurrent native consumers,
+  lifecycle regressions, an example and release benchmark evidence.
 - Native wrappers: Complete advanced TLS profiles with ordered Rustls cipher
   selection, explicit SNI and resumption policy, supplemental verification and
   externally selected/signed client identities. Owned synchronous C registrations
@@ -100,6 +113,10 @@
   Immediate close retains and returns its tracked shutdown failure to concurrent
   and repeated callers; joining still reports thread teardown. Keep failures
   isolated between shared-profile clients.
+- Native wrappers: Preserve ordered shutdown's admission protocol, connection
+  phase, generation and operation ID in cached and observed completion failures,
+  including the C error accessors, without replacing more specific failure
+  context.
 - Native wrapper validation: Cover TLS-profile and capability APIs with NULL
   error outputs on success and failure. Resolve strict pedantic/nursery lint
   warnings and make CI lint checks read-only across the wrapper workspace.

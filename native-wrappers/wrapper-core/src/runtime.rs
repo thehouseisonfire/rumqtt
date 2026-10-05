@@ -6,6 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use flume::{Receiver, Sender};
+#[cfg(feature = "ordered-shutdown")]
+use futures_util::FutureExt;
 use futures_util::stream::FuturesUnordered;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 
@@ -317,6 +319,13 @@ impl NativeClientCloser {
         timeout: Duration,
         protocol: crate::DisconnectProtocolOptions,
     ) -> Result<Completion> {
+        if self.handle.has_ordered_close() {
+            return Err(Error::new(
+                ErrorKind::Shutdown,
+                "ordinary close cannot replace an ordered fence",
+            )
+            .with_delivery(DeliveryStatus::NotAdmitted));
+        }
         let started = Instant::now();
         let completion = {
             let mut state = self.lock_state_until(started, timeout)?;
@@ -357,6 +366,51 @@ impl NativeClientCloser {
             }
         }
         Ok(completion)
+    }
+
+    /// Admit or observe an ordered publish fence, then join within one caller budget.
+    /// The first admitted operation deadline is retained by subsequent callers.
+    ///
+    /// # Errors
+    /// Returns admission/backpressure, native fence failure, or observer/join timeout.
+    pub fn close_after_queued(&self, timeout: Duration) -> Result<Completion> {
+        self.close_after_queued_with_options(
+            timeout,
+            crate::DisconnectProtocolOptions::VersionNeutral,
+        )
+    }
+
+    /// Ordered close with owned MQTT 5 DISCONNECT contents and bounded joining.
+    ///
+    /// # Errors
+    /// Returns an error for disabled support, conflicting policies, admission, native failure, or wait timeout.
+    pub fn close_after_queued_with_options(
+        &self,
+        timeout: Duration,
+        protocol: crate::DisconnectProtocolOptions,
+    ) -> Result<Completion> {
+        let started = Instant::now();
+        // The shared admission coordinator also observes raw fences, so it is the authority here.
+        let completion = self.handle.ordered_close_observer(timeout, protocol)?;
+        let outcome = completion.wait_timeout_outcome(timeout.saturating_sub(started.elapsed()));
+        match outcome {
+            crate::CompletionWaitOutcome::Completed(result) => {
+                // A terminal operation error does not imply its cleanup/driver has finished.
+                let joined = self.thread.join(timeout.saturating_sub(started.elapsed()));
+                match result {
+                    Err(error) => Err(error),
+                    Ok(completion) => {
+                        joined?;
+                        Ok(completion)
+                    }
+                }
+            }
+            crate::CompletionWaitOutcome::DeadlineElapsed => Err(Error::new(
+                ErrorKind::Timeout,
+                "ordered close observer timed out",
+            )
+            .with_delivery(DeliveryStatus::Ambiguous)),
+        }
     }
 
     /// Closes the client and waits for driver teardown.
@@ -566,7 +620,7 @@ impl NativeClient {
                     }
                 };
                 if matches!(terminal, TerminalStatus::Failed(_)) {
-                    driver_shared.reconcile_failed(unresolved.clone());
+                    driver_shared.finalize_terminal_failure(unresolved.clone());
                 }
                 driver_shared.terminate_connection_observation(match &terminal {
                     TerminalStatus::Closed { .. } => Error::new(
@@ -693,22 +747,62 @@ impl<'a> ShutdownInputs<'a> {
 async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalStatus {
     let shared = Arc::clone(&context.shared);
     let tls_callbacks = driver.tls_callback_monitor();
+    #[cfg(not(feature = "ordered-shutdown"))]
     let terminal = tokio::select! {
         terminal = driver.run(context) => Some(terminal),
         () = shared.wait_graceful_timeout() => None,
     };
-    if let Some(terminal) = terminal {
-        return terminal;
-    }
-    // The select has dropped the entire backend future. Its inner cancellation
-    // checks cannot run, so inspect destruction failures here before closing.
-    if let Some(failure) = tls_callbacks.failure() {
-        return TerminalStatus::Failed(
+    #[cfg(feature = "ordered-shutdown")]
+    let terminal = {
+        let execution = driver.run(context);
+        let observation = shared.observe_ordered();
+        tokio::pin!(execution, observation);
+        let mut observed = false;
+        let terminal = loop {
+            tokio::select! {
+                biased;
+                () = &mut observation, if !observed => { observed = true; },
+                () = shared.wait_ordered_abort() => {
+                    // Explicit abort is the boundary allowed to cancel pending native cleanup.
+                    break None;
+                },
+                terminal = &mut execution => break Some(terminal),
+                () = shared.wait_graceful_timeout() => break None,
+            }
+        };
+        // The native sender may finish in the same poll that terminates execution.
+        if !observed {
+            let _ = observation.as_mut().now_or_never();
+        }
+        terminal
+    };
+    // The backend future has been dropped. Its inner cancellation checks cannot
+    // run, so inspect destruction failures before reconciling a cancelled close.
+    let terminal = if let Some(terminal) = terminal {
+        terminal
+    } else if let Some(failure) = tls_callbacks.failure() {
+        TerminalStatus::Failed(
             Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
-        );
+        )
+    } else {
+        shared.reconcile_closed();
+        TerminalStatus::Closed { graceful: false }
+    };
+    #[cfg(not(feature = "ordered-shutdown"))]
+    {
+        terminal
     }
-    shared.reconcile_closed();
-    TerminalStatus::Closed { graceful: false }
+    #[cfg(feature = "ordered-shutdown")]
+    {
+        if shared.immediate_shutdown_requested() {
+            return terminal;
+        }
+        match (&terminal, shared.ordered_result()) {
+            (TerminalStatus::Failed(_), _) | (_, None) => terminal,
+            (_, Some(Ok(_))) => TerminalStatus::Closed { graceful: true },
+            (_, Some(Err(error))) => TerminalStatus::Failed(error),
+        }
+    }
 }
 
 pub struct EventDelivery<'a> {
@@ -717,6 +811,8 @@ pub struct EventDelivery<'a> {
     pub(crate) timeout: Duration,
     pub(crate) immediate_shutdown: &'a Receiver<()>,
     pub(crate) panic: &'a Receiver<()>,
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) staged: std::sync::Mutex<Option<WrapperEvent>>,
 }
 
 // The two explicit loops keep protocol types statically checked and make all translation local.
@@ -724,6 +820,30 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
     if delivery.shared.immediate_shutdown_requested() {
         return true;
     }
+    #[cfg(feature = "ordered-shutdown")]
+    {
+        // Watch admission even if this send was blocked before the fence existed.
+        // The fast path avoids cloning events when the application keeps up.
+        let event = match delivery.events.try_send(event) {
+            Ok(()) => return true,
+            Err(flume::TrySendError::Disconnected(_)) => return false,
+            Err(flume::TrySendError::Full(event)) => event,
+        };
+        let send = delivery.events.send_async(event.clone());
+        tokio::pin!(send);
+        tokio::select! {
+            biased;
+            _ = delivery.panic.recv_async() => terminate_driver_for_boundary_panic(),
+            _ = delivery.immediate_shutdown.recv_async() => true,
+            () = delivery.shared.wait_ordered_deadline() => {
+                // Retain one blocked event until teardown while native polling resumes.
+                *delivery.staged.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(event);
+                true
+            },
+            result = tokio::time::timeout(delivery.timeout, &mut send) => matches!(result, Ok(Ok(()))),
+        }
+    }
+    #[cfg(not(feature = "ordered-shutdown"))]
     tokio::select! {
         biased;
         _ = delivery.panic.recv_async() => terminate_driver_for_boundary_panic(),

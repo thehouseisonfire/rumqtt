@@ -57,3 +57,10 @@ Owned buffers, explicit cancellation, bounded retained operations, and fresh
 streams on reconnect preserve the managed driver and tracked MQTT operations.
 See [wrapper-core](wrapper-core/README.md#custom-transports) and
 [the C API](c/README.md#custom-transports) for the contract and runnable example.
+
+C and wrapper-core provide optional `ordered-shutdown` publish fences, disabled
+in standard profiles. This adds native successful-admission ordering and tracked
+collective completion without changing ordinary graceful close. See the
+[C API](c/README.md#ordered-publish-shutdown-optional) and
+[measured feature cost](wrapper-core/benches/README.md). Python and JavaScript
+continue to expose their existing close policies.

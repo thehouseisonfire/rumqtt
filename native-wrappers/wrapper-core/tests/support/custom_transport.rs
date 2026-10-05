@@ -10,12 +10,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub struct TcpConnector {
     pub requests: Arc<Mutex<Vec<TransportRequest>>>,
     pub target_override: Option<String>,
+    pub write_chunk: usize,
 }
 impl TransportConnector for TcpConnector {
     fn connect(&self, request: TransportRequest) -> TransportFuture {
         self.requests.lock().unwrap().push(request.clone());
         let target = self.target_override.clone().unwrap_or(request.target);
         let network = request.network;
+        let write_chunk = self.write_chunk;
         Box::pin(async move {
             // This fixture deliberately rejects settings instead of pretending
             // that Tokio's simple dialer applied them.
@@ -30,6 +32,7 @@ impl TransportConnector for TcpConnector {
                 io: Arc::new(TcpIo {
                     read: Arc::new(tokio::sync::Mutex::new(read)),
                     write: Arc::new(tokio::sync::Mutex::new(write)),
+                    write_chunk,
                 }),
                 mode: TransportMode::Base,
                 network_handling: NetworkHandling::NotApplicable,
@@ -38,6 +41,7 @@ impl TransportConnector for TcpConnector {
     }
 }
 struct TcpIo {
+    write_chunk: usize,
     read: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedReadHalf>>,
     write: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
 }
@@ -53,7 +57,14 @@ impl TransportIo for TcpIo {
     }
     fn write(&self, bytes: Bytes) -> TransportIoFuture<usize> {
         let write = self.write.clone();
-        Box::pin(async move { write.lock().await.write(&bytes[..bytes.len().min(3)]).await })
+        let write_chunk = self.write_chunk;
+        Box::pin(async move {
+            write
+                .lock()
+                .await
+                .write(&bytes[..bytes.len().min(write_chunk)])
+                .await
+        })
     }
     fn flush(&self) -> TransportIoFuture<()> {
         let write = self.write.clone();
@@ -67,12 +78,20 @@ impl TransportIo for TcpIo {
 
 #[allow(dead_code)]
 pub fn configured() -> (TransportConnectorConfig, Arc<Mutex<Vec<TransportRequest>>>) {
+    configured_with_write_chunk(3)
+}
+
+#[allow(dead_code)]
+pub fn configured_with_write_chunk(
+    write_chunk: usize,
+) -> (TransportConnectorConfig, Arc<Mutex<Vec<TransportRequest>>>) {
     let requests = Arc::new(Mutex::new(Vec::new()));
     (
         TransportConnectorConfig {
             connector: Arc::new(TcpConnector {
                 requests: requests.clone(),
                 target_override: None,
+                write_chunk,
             }),
             mode: TransportMode::Base,
         },

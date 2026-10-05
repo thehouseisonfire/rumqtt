@@ -22,6 +22,8 @@ mod error;
 mod event;
 mod handle;
 mod operations;
+mod ordered;
+pub use ordered::{OrderedDisconnectFailure, OrderedShutdownDiagnostics, OrderedShutdownPhase};
 mod protocol;
 mod proxy;
 mod redirect;

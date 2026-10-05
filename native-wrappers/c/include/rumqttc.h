@@ -160,6 +160,46 @@ typedef uint32_t rumqttc_completion_kind_t;
 #define RUMQTTC_COMPLETION_GRACEFUL_SHUTDOWN 8u
 #define RUMQTTC_COMPLETION_IMMEDIATE_SHUTDOWN 9u
 #define RUMQTTC_COMPLETION_AUTHENTICATED 10u
+#define RUMQTTC_COMPLETION_ORDERED_SHUTDOWN 11u
+
+/* Native ordered shutdown failure; operation delivery can remain ambiguous. */
+#define RUMQTTC_ORDERED_FAILURE_TIMEOUT 1u
+#define RUMQTTC_ORDERED_FAILURE_TRANSPORT 2u
+#define RUMQTTC_ORDERED_FAILURE_PROTOCOL 3u
+#define RUMQTTC_ORDERED_FAILURE_PERSISTENCE 4u
+#define RUMQTTC_ORDERED_FAILURE_PUBLISH 5u
+#define RUMQTTC_ORDERED_FAILURE_SUPERSEDED_BY_IMMEDIATE 6u
+#define RUMQTTC_ORDERED_FAILURE_SUPERSEDED 7u
+#define RUMQTTC_ORDERED_FAILURE_RECEIVER_TERMINATED 8u
+#define RUMQTTC_ORDERED_FAILURE_SESSION_RESET 9u
+#define RUMQTTC_ORDERED_FAILURE_REDIRECTED 10u
+#define RUMQTTC_ORDERED_FAILURE_REPLAY_UNAVAILABLE 11u
+#define RUMQTTC_ORDERED_PHASE_OPEN 0u
+#define RUMQTTC_ORDERED_PHASE_ADMITTED_DRAIN 1u
+#define RUMQTTC_ORDERED_PHASE_APPROACHING 2u
+#define RUMQTTC_ORDERED_PHASE_DRAINING 3u
+#define RUMQTTC_ORDERED_PHASE_FLUSHING 4u
+#define RUMQTTC_ORDERED_PHASE_COMPLETED 5u
+#define RUMQTTC_ORDERED_PHASE_TIMED_OUT 6u
+#define RUMQTTC_ORDERED_PHASE_FAILED 7u
+
+/* Cached diagnostics, absent before fence admission. local_queued_publishes excludes channels and in-flight state.
+ * remaining_at_capture_ms is measured at capture, never an ABI representation of Instant. */
+typedef struct rumqttc_ordered_shutdown_diagnostics_t {
+    uint32_t struct_size;
+    uint32_t phase;
+    uint8_t present;
+    uint8_t fence_present;
+    uint8_t deadline_present;
+    uint8_t local_count_present;
+    uint32_t reserved;
+    uint64_t fence_sequence;
+    uint64_t remaining_at_capture_ms;
+    uint64_t local_queued_publishes;
+    uint64_t snapshot_age_ms;
+} rumqttc_ordered_shutdown_diagnostics_t;
+#define RUMQTTC_ORDERED_SHUTDOWN_DIAGNOSTICS_INIT \
+    { sizeof(rumqttc_ordered_shutdown_diagnostics_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 
 typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_ERROR_NONE 0u
@@ -219,6 +259,7 @@ typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_CAP_AUTH_CALLBACKS (UINT64_C(1) << 12)
 #define RUMQTTC_CAP_TRANSPORT_CALLBACKS (UINT64_C(1) << 13)
 #define RUMQTTC_CAP_WEBSOCKET_CALLBACKS (UINT64_C(1) << 14)
+#define RUMQTTC_CAP_ORDERED_SHUTDOWN (UINT64_C(1) << 15)
 
 #define RUMQTTC_TRANSPORT_MAX_TRANSFER 16384u
 #define RUMQTTC_TRANSPORT_BASE 1u
@@ -1362,6 +1403,29 @@ RUMQTTC_API rumqttc_status_t rumqttc_client_close_with_options_timeout_ms(rumqtt
 RUMQTTC_API rumqttc_status_t rumqttc_client_close_now_with_options_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, const rumqttc_disconnect_options_t *options, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_destroy_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_client_abandon(rumqttc_client_t *client);
+
+/* Ordered admission is nonblocking even for tracked forms. BACKPRESSURE leaves
+ * no fence. A timeout starts at successful admission; completion wait timeouts
+ * do not cancel work. Dropping a completion does not cancel its fence.
+ * QoS 0 means local flush; QoS 1/2 mean successful terminal acknowledgement.
+ * Subscriptions and independent inbound ACKs are outside this publish-only scope.
+ * All symbols remain available when support is disabled (CONFIG_ERROR).
+ * Owner destruction/abandonment explicitly aborts ordered shutdown. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_disconnect_after_queued(rumqttc_client_t *client, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_disconnect_after_queued_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_disconnect_after_queued_with_options(rumqttc_client_t *client, const rumqttc_disconnect_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_disconnect_after_queued_with_options_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, const rumqttc_disconnect_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_disconnect_after_queued_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_disconnect_after_queued_timeout_ms_tracked(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_disconnect_after_queued_with_options_tracked(rumqttc_client_t *client, const rumqttc_disconnect_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_disconnect_after_queued_with_options_timeout_ms_tracked(rumqttc_client_t *client, uint64_t timeout_ms, const rumqttc_disconnect_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+/* Ordered closers coalesce matching payloads, preserve the first native deadline,
+ * and use independent caller budgets for observation and joining. A timeout
+ * retains the client/join owner; cleanup may continue after operation timeout. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_close_after_queued_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_close_after_queued_with_options_timeout_ms(rumqttc_client_t *client, uint64_t timeout_ms, const rumqttc_disconnect_options_t *options, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_ordered_disconnect_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_ordered_shutdown_diagnostics(const rumqttc_completion_t *completion, rumqttc_ordered_shutdown_diagnostics_t *out, rumqttc_error_t **error_out);
 
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_publish(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_publish_tracked(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);

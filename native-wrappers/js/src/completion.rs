@@ -67,6 +67,7 @@ fn success(operation_id: u64, completion: Completion) -> Value {
             "outboundDrained": diagnostics.outbound_drained,
             "connack": connack_session(diagnostics.connack),
         }),
+        Completion::OrderedShutdown => json!({"type":"orderedShutdown"}),
         Completion::GracefulShutdown => json!({ "type": "gracefulShutdown" }),
         Completion::ImmediateShutdown => json!({ "type": "immediateShutdown" }),
     };

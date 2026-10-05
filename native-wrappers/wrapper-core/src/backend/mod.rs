@@ -286,6 +286,72 @@ impl BackendClient {
         }
     }
 
+    pub(crate) fn try_ordered_disconnect(
+        &self,
+        timeout: Option<Duration>,
+        protocol: &crate::DisconnectProtocolOptions,
+    ) -> Result<crate::ordered::OrderedAdmission> {
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            let _ = (self, timeout, protocol);
+            Err(Error::configuration("ordered-shutdown feature is disabled"))
+        }
+        #[cfg(feature = "ordered-shutdown")]
+        match self {
+            Self::V4(client) => {
+                if !matches!(protocol, crate::DisconnectProtocolOptions::VersionNeutral) {
+                    return Err(protocol_option_error(
+                        "MQTT 5 disconnect options require MQTT 5",
+                    ));
+                }
+                let notice = timeout
+                    .map_or_else(
+                        || client.try_disconnect_after_queued(),
+                        |timeout| client.try_disconnect_after_queued_with_timeout(timeout),
+                    )
+                    .map_err(|error| v4::map_client_error(&error))?;
+                Ok(crate::ordered::OrderedAdmission {
+                    sequence: notice
+                        .fence_sequence()
+                        .expect("returned native notice is admitted"),
+                    deadline: notice.deadline(),
+                    notice: Box::pin(async move {
+                        notice.wait_async().await.map_err(v4::map_ordered_error)
+                    }),
+                })
+            }
+            Self::V5(client) => {
+                let notice = if let crate::DisconnectProtocolOptions::V5(options) = protocol {
+                    let (reason, properties) = v5::disconnect_properties(options)?;
+                    match timeout {
+                        Some(timeout) => client
+                            .try_disconnect_after_queued_with_properties_timeout(
+                                reason, properties, timeout,
+                            ),
+                        None => {
+                            client.try_disconnect_after_queued_with_properties(reason, properties)
+                        }
+                    }
+                } else {
+                    timeout.map_or_else(
+                        || client.try_disconnect_after_queued(),
+                        |timeout| client.try_disconnect_after_queued_with_timeout(timeout),
+                    )
+                }
+                .map_err(|error| v5::map_client_error(&error))?;
+                Ok(crate::ordered::OrderedAdmission {
+                    sequence: notice
+                        .fence_sequence()
+                        .expect("returned native notice is admitted"),
+                    deadline: notice.deadline(),
+                    notice: Box::pin(async move {
+                        notice.wait_async().await.map_err(v5::map_ordered_error)
+                    }),
+                })
+            }
+        }
+    }
+
     pub(crate) fn try_disconnect(
         &self,
         timeout: Option<Duration>,

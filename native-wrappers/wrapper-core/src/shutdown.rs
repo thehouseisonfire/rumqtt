@@ -2,6 +2,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
+#[cfg(feature = "ordered-shutdown")]
+use futures_util::FutureExt;
 use tokio::sync::{Notify, futures::Notified};
 
 use crate::operations::OperationRegistry;
@@ -32,6 +34,7 @@ impl LifecycleState {
 enum ShutdownRecord {
     Running,
     Graceful { operation_id: OperationId },
+    Ordered,
     Immediate { operation_id: Option<OperationId> },
     Closed { outcome: ClosedOutcome },
     Failed,
@@ -54,6 +57,17 @@ pub enum PollErrorAction {
 pub enum ClosedOutcome {
     Graceful,
     Immediate,
+    Ordered,
+}
+
+struct OrderedOperation {
+    completion: crate::CompletionHandle,
+    admission_context: crate::ErrorContext,
+    sequence: u64,
+    deadline: Option<std::time::Instant>,
+    #[cfg(feature = "ordered-shutdown")]
+    notice: Option<futures_util::future::Shared<crate::ordered::OrderedNotice>>,
+    result: Option<Result<crate::Completion>>,
 }
 
 pub struct ShutdownCoordinator {
@@ -65,6 +79,7 @@ pub struct ShutdownCoordinator {
     immediate_tx: Sender<()>,
     progress: Notify,
     graceful_deadline: Mutex<Option<std::time::Instant>>,
+    ordered: Mutex<Option<OrderedOperation>>,
 }
 
 impl ShutdownCoordinator {
@@ -78,6 +93,7 @@ impl ShutdownCoordinator {
             immediate_tx,
             progress: Notify::new(),
             graceful_deadline: Mutex::new(None),
+            ordered: Mutex::new(None),
         })
     }
 
@@ -169,7 +185,9 @@ impl ShutdownCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
             ShutdownRecord::Running => Some(ImmediateAdmission::StartClosing),
-            ShutdownRecord::Graceful { .. } => Some(ImmediateAdmission::EscalateGraceful),
+            ShutdownRecord::Graceful { .. } | ShutdownRecord::Ordered => {
+                Some(ImmediateAdmission::EscalateGraceful)
+            }
             ShutdownRecord::Immediate { .. }
             | ShutdownRecord::Closed { .. }
             | ShutdownRecord::Failed => None,
@@ -249,7 +267,16 @@ impl ShutdownCoordinator {
                 .with_delivery(DeliveryStatus::Ambiguous)),
             );
         }
+        if matches!(previous, ShutdownRecord::Ordered) {
+            self.finish_ordered(Err(Error::new(
+                ErrorKind::Shutdown,
+                "ordered shutdown superseded by immediate close",
+            )
+            .with_ordered_failure(crate::OrderedDisconnectFailure::SupersededByImmediate)
+            .with_delivery(DeliveryStatus::Ambiguous)));
+        }
         self.phase.store(2, Ordering::Release);
+        self.progress.notify_waiters();
         _ = self.immediate_tx.send(());
     }
 
@@ -278,7 +305,7 @@ impl ShutdownCoordinator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
-            ShutdownRecord::Running => PollErrorAction::Reconnect,
+            ShutdownRecord::Running | ShutdownRecord::Ordered => PollErrorAction::Reconnect,
             ShutdownRecord::Graceful { .. }
             | ShutdownRecord::Closed { .. }
             | ShutdownRecord::Failed => PollErrorAction::Fail,
@@ -292,7 +319,7 @@ impl ShutdownCoordinator {
                 .record
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-            ShutdownRecord::Graceful { .. }
+            ShutdownRecord::Graceful { .. } | ShutdownRecord::Ordered
         )
     }
 
@@ -311,6 +338,7 @@ impl ShutdownCoordinator {
                     ClosedOutcome::Graceful,
                     Some((*operation_id, crate::Completion::GracefulShutdown)),
                 ),
+                ShutdownRecord::Ordered => (ClosedOutcome::Ordered, None),
                 ShutdownRecord::Immediate { operation_id } => (
                     ClosedOutcome::Immediate,
                     operation_id.map(|id| (id, crate::Completion::ImmediateShutdown)),
@@ -341,7 +369,7 @@ impl ShutdownCoordinator {
             let operation_id = match &*record {
                 ShutdownRecord::Graceful { operation_id } => Some(*operation_id),
                 ShutdownRecord::Immediate { operation_id } => *operation_id,
-                ShutdownRecord::Running => None,
+                ShutdownRecord::Running | ShutdownRecord::Ordered => None,
                 ShutdownRecord::Closed { .. } | ShutdownRecord::Failed => return,
             };
             *record = ShutdownRecord::Failed;
@@ -353,6 +381,196 @@ impl ShutdownCoordinator {
         self.lifecycle
             .store(LifecycleState::Failed as u8, Ordering::Release);
         self.progress.notify_waiters();
+    }
+
+    pub(crate) fn commit_ordered(
+        &self,
+        admission: &Admission,
+        native: crate::ordered::OrderedAdmission,
+        admission_context: crate::ErrorContext,
+    ) {
+        *self
+            .ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(OrderedOperation {
+            completion: admission.completion.clone(),
+            admission_context,
+            sequence: native.sequence,
+            deadline: native.deadline,
+            #[cfg(feature = "ordered-shutdown")]
+            notice: Some(native.notice.shared()),
+            result: None,
+        });
+        *self
+            .record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ShutdownRecord::Ordered;
+        self.phase.store(3, Ordering::Release);
+        self.progress.notify_waiters();
+    }
+
+    pub(crate) fn has_ordered(&self) -> bool {
+        self.ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    pub(crate) fn ordered_completion(&self) -> Option<crate::CompletionHandle> {
+        self.ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|ordered| ordered.completion.clone())
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn ordered_result(&self) -> Option<Result<crate::Completion>> {
+        self.ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|ordered| ordered.result.clone())
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn ordered_deadline(&self) -> Option<std::time::Instant> {
+        self.ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|ordered| ordered.result.is_none())
+            .and_then(|ordered| ordered.deadline)
+    }
+
+    pub(crate) fn finish_ordered(&self, result: Result<crate::Completion>) {
+        let mut guard = self
+            .ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(ordered) = guard.as_mut() else {
+            return;
+        };
+        if ordered.result.is_some() {
+            return;
+        }
+        // Preserve an already-ready native result even if explicit abort races its observer.
+        #[cfg(feature = "ordered-shutdown")]
+        let result = ordered
+            .notice
+            .as_ref()
+            .and_then(|notice| notice.clone().now_or_never())
+            .map_or(result, |native| {
+                native.map(|()| crate::Completion::OrderedShutdown)
+            });
+        // Cache the same contextualized result exposed to all operation observers.
+        let operation = ordered.completion.operation_id();
+        let result = result.map_err(|error| {
+            error
+                .with_context(ordered.admission_context)
+                .with_operation(operation)
+        });
+        ordered.result = Some(result.clone());
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            ordered.notice = None;
+        }
+        drop(guard);
+        self.operations.complete(operation, result);
+        self.progress.notify_waiters();
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) async fn observe_ordered(&self) {
+        let notice = loop {
+            let changed = self.progress.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let notice = self
+                .ordered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .and_then(|ordered| ordered.notice.clone());
+            if let Some(notice) = notice {
+                break notice;
+            }
+            if self.ordered_result().is_some() {
+                return;
+            }
+            changed.await;
+        };
+        self.finish_ordered(notice.await.map(|()| crate::Completion::OrderedShutdown));
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) async fn wait_ordered_abort(&self) {
+        loop {
+            let changed = self.progress.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.immediate_requested() && self.has_ordered() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) async fn wait_ordered_deadline(&self) {
+        loop {
+            let changed = self.progress.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if let Some(deadline) = self.ordered_deadline() {
+                tokio::select! {
+                    () = &mut changed => {},
+                    () = tokio::time::sleep_until(deadline.into()) => return,
+                }
+            } else {
+                changed.await;
+            }
+        }
+    }
+
+    pub(crate) fn ordered_diagnostics(&self, snapshot: &mut crate::DiagnosticsSnapshot) {
+        let admission = self
+            .ordered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|ordered| (ordered.sequence, ordered.deadline, ordered.result.clone()));
+        let Some((sequence, deadline, result)) = admission else {
+            return;
+        };
+        let diagnostics = snapshot.ordered_shutdown.get_or_insert_with(|| {
+            Box::new(crate::OrderedShutdownDiagnostics {
+                phase: crate::OrderedShutdownPhase::Approaching,
+                fence_sequence: None,
+                remaining_at_capture: None,
+                local_queued_publishes: None,
+                captured_at: std::time::Instant::now(),
+            })
+        });
+        // A synthesized admission/terminal observation has no fresh native queue count.
+        if diagnostics.fence_sequence.is_none() || result.is_some() {
+            diagnostics.captured_at = std::time::Instant::now();
+            diagnostics.fence_sequence = Some(sequence);
+            diagnostics.local_queued_publishes = None;
+            diagnostics.remaining_at_capture = deadline
+                .map(|deadline| deadline.saturating_duration_since(diagnostics.captured_at));
+            diagnostics.phase = match result {
+                Some(Ok(_)) => crate::OrderedShutdownPhase::Completed,
+                Some(Err(error))
+                    if error.ordered_disconnect_failure()
+                        == Some(crate::OrderedDisconnectFailure::Timeout) =>
+                {
+                    crate::OrderedShutdownPhase::TimedOut
+                }
+                Some(Err(_)) => crate::OrderedShutdownPhase::Failed,
+                None => crate::OrderedShutdownPhase::Approaching,
+            };
+        }
     }
 
     pub(crate) fn notify_progress(&self) {
@@ -375,6 +593,108 @@ mod tests {
             ShutdownCoordinator::new(operations.clone(), immediate_tx),
             operations,
         )
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[test]
+    fn immediate_abort_preserves_a_native_result_ready_before_its_observer_runs() {
+        for result in [
+            Ok(()),
+            Err(Error::new(ErrorKind::Timeout, "native timeout")
+                .with_ordered_failure(crate::OrderedDisconnectFailure::Timeout)),
+        ] {
+            let (shutdown, operations) = coordinator();
+            let admission = operations.allocate().unwrap();
+            shutdown.transition_to_closing().unwrap();
+            shutdown.commit_ordered(
+                &admission,
+                crate::ordered::OrderedAdmission {
+                    sequence: 42,
+                    deadline: None,
+                    notice: Box::pin(futures_util::future::ready(result.clone())),
+                },
+                crate::ErrorContext::default(),
+            );
+            // No observe_ordered future has been polled yet.
+            shutdown.commit_immediate(None);
+            let observed = admission.completion.wait_timeout(std::time::Duration::ZERO);
+            match result {
+                Ok(()) => assert_eq!(observed.unwrap(), crate::Completion::OrderedShutdown),
+                Err(error) => assert_eq!(
+                    observed.unwrap_err().ordered_disconnect_failure(),
+                    error.ordered_disconnect_failure()
+                ),
+            }
+        }
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[test]
+    fn ordered_results_retain_admission_context_without_replacing_failure_context() {
+        for native_ready in [false, true] {
+            for specific in [false, true] {
+                let (shutdown, operations) = coordinator();
+                let admission = operations.allocate().unwrap();
+                let context = crate::ErrorContext {
+                    protocol: Some(crate::ProtocolVersion::V4),
+                    phase: Some(crate::ConnectionPhase::Established),
+                    generation: Some(7),
+                    operation_id: None,
+                };
+                let failure_context = crate::ErrorContext {
+                    phase: specific.then_some(crate::ConnectionPhase::Attempt),
+                    generation: specific.then_some(8),
+                    ..Default::default()
+                };
+                let error = Error::new(ErrorKind::Protocol, "ordered failure")
+                    .with_context(failure_context)
+                    .with_ordered_failure(crate::OrderedDisconnectFailure::Protocol);
+                let notice: crate::ordered::OrderedNotice = if native_ready {
+                    Box::pin(futures_util::future::ready(Err(error.clone())))
+                } else {
+                    Box::pin(std::future::pending())
+                };
+                shutdown.transition_to_closing().unwrap();
+                shutdown.commit_ordered(
+                    &admission,
+                    crate::ordered::OrderedAdmission {
+                        sequence: 42,
+                        deadline: None,
+                        notice,
+                    },
+                    context,
+                );
+                shutdown.finish_ordered(if native_ready {
+                    Err(Error::new(
+                        ErrorKind::Internal,
+                        "fallback must not replace native result",
+                    ))
+                } else {
+                    Err(error)
+                });
+                let expected = crate::ErrorContext {
+                    phase: failure_context.phase.or(context.phase),
+                    generation: failure_context.generation.or(context.generation),
+                    operation_id: Some(admission.operation_id),
+                    ..context
+                };
+                assert_eq!(
+                    shutdown.ordered_result().unwrap().unwrap_err().context(),
+                    expected
+                );
+                let observed = admission.completion.wait().unwrap_err();
+                assert_eq!(observed.context(), expected);
+                assert_eq!(
+                    observed.ordered_disconnect_failure(),
+                    Some(crate::OrderedDisconnectFailure::Protocol)
+                );
+                shutdown.finish_ordered(Err(Error::new(ErrorKind::Timeout, "later failure")));
+                assert_eq!(
+                    shutdown.ordered_result().unwrap().unwrap_err().context(),
+                    expected
+                );
+            }
+        }
     }
 
     #[tokio::test]

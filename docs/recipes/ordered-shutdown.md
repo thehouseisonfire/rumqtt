@@ -125,3 +125,20 @@ by 31--68% and broker-backed MQTT v4 QoS 1 throughput by about 10% in the measur
 workloads. Treat these figures as workload- and machine-specific, and benchmark
 representative traffic before enabling ordered shutdown in a throughput-sensitive
 deployment.
+
+## Native wrappers
+
+C and wrapper-core expose the same native fence behind their optional,
+disabled-by-default `ordered-shutdown` features. Start with the
+[finite-deadline C example](../../native-wrappers/c/examples/ordered_shutdown.c)
+and the [C lifecycle contract](../../native-wrappers/c/README.md#ordered-publish-shutdown-optional).
+Raw admissions return a tracked operation; the separately named ordered closer
+also joins within a caller budget. Matching repeated closers preserve the first
+operation deadline and terminal result. Observer timeout does not cancel cleanup;
+explicit destruction/abandonment is an immediate-abort boundary.
+
+`DisconnectNotice::fence_sequence()` and `deadline()` expose immutable metadata
+stamped by the native successful-admission transaction. Wrapper diagnostics
+report cached phase/count observations separately from this exact admission.
+See [wrapper measurements](../../native-wrappers/wrapper-core/benches/README.md)
+for incremental costs and the decision to keep standard profiles disabled.

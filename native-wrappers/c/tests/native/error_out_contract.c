@@ -1021,5 +1021,125 @@ void native_test_error_out_contract(void) {
     rumqttc_completion_destroy(ack_completion);
     native_close_destroy(ack_client);
   }
+  if (rumqttc_library_capabilities() & RUMQTTC_CAP_ORDERED_SHUTDOWN) {
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      uint64_t id = 0;
+      /* ERROR_OUT_FAILURE: rumqttc_client_try_disconnect_after_queued */
+      EXPECT_FAILURE(rumqttc_client_try_disconnect_after_queued(NULL, &id, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_try_disconnect_after_queued */
+      CHECK(rumqttc_client_try_disconnect_after_queued(ordered, &id, NULL));
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      uint64_t id = 0;
+      /* ERROR_OUT_FAILURE: rumqttc_client_try_disconnect_after_queued_timeout_ms */
+      EXPECT_FAILURE(rumqttc_client_try_disconnect_after_queued_timeout_ms(NULL, NATIVE_DEADLINE_MS, &id, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_try_disconnect_after_queued_timeout_ms */
+      CHECK(rumqttc_client_try_disconnect_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, &id, NULL));
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      uint64_t id = 0;
+      /* ERROR_OUT_FAILURE: rumqttc_client_try_disconnect_after_queued_with_options */
+      EXPECT_FAILURE(rumqttc_client_try_disconnect_after_queued_with_options(NULL, NULL, &id, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_try_disconnect_after_queued_with_options */
+      CHECK(rumqttc_client_try_disconnect_after_queued_with_options(ordered, NULL, &id, NULL));
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      uint64_t id = 0;
+      /* ERROR_OUT_FAILURE: rumqttc_client_try_disconnect_after_queued_with_options_timeout_ms */
+      EXPECT_FAILURE(rumqttc_client_try_disconnect_after_queued_with_options_timeout_ms(NULL, NATIVE_DEADLINE_MS, NULL, &id, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_try_disconnect_after_queued_with_options_timeout_ms */
+      CHECK(rumqttc_client_try_disconnect_after_queued_with_options_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL, &id, NULL));
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      rumqttc_completion_t *completion = NULL;
+      /* ERROR_OUT_FAILURE: rumqttc_client_disconnect_after_queued_tracked */
+      EXPECT_FAILURE(rumqttc_client_disconnect_after_queued_tracked(NULL, &completion, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_disconnect_after_queued_tracked */
+      CHECK(rumqttc_client_disconnect_after_queued_tracked(ordered, &completion, NULL));
+      native_wait_completion(completion, RUMQTTC_COMPLETION_ORDERED_SHUTDOWN);
+      rumqttc_completion_destroy(completion);
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      rumqttc_completion_t *completion = NULL;
+      /* ERROR_OUT_FAILURE: rumqttc_client_disconnect_after_queued_timeout_ms_tracked */
+      EXPECT_FAILURE(rumqttc_client_disconnect_after_queued_timeout_ms_tracked(NULL, NATIVE_DEADLINE_MS, &completion, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_disconnect_after_queued_timeout_ms_tracked */
+      CHECK(rumqttc_client_disconnect_after_queued_timeout_ms_tracked(ordered, NATIVE_DEADLINE_MS, &completion, NULL));
+      native_wait_completion(completion, RUMQTTC_COMPLETION_ORDERED_SHUTDOWN);
+      rumqttc_completion_destroy(completion);
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      rumqttc_completion_t *completion = NULL;
+      /* ERROR_OUT_FAILURE: rumqttc_client_disconnect_after_queued_with_options_tracked */
+      EXPECT_FAILURE(rumqttc_client_disconnect_after_queued_with_options_tracked(NULL, NULL, &completion, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_disconnect_after_queued_with_options_tracked */
+      CHECK(rumqttc_client_disconnect_after_queued_with_options_tracked(ordered, NULL, &completion, NULL));
+      native_wait_completion(completion, RUMQTTC_COMPLETION_ORDERED_SHUTDOWN);
+      rumqttc_completion_destroy(completion);
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      rumqttc_completion_t *completion = NULL;
+      /* ERROR_OUT_FAILURE: rumqttc_client_disconnect_after_queued_with_options_timeout_ms_tracked */
+      EXPECT_FAILURE(rumqttc_client_disconnect_after_queued_with_options_timeout_ms_tracked(NULL, NATIVE_DEADLINE_MS, NULL, &completion, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_disconnect_after_queued_with_options_timeout_ms_tracked */
+      CHECK(rumqttc_client_disconnect_after_queued_with_options_timeout_ms_tracked(ordered, NATIVE_DEADLINE_MS, NULL, &completion, NULL));
+      native_wait_completion(completion, RUMQTTC_COMPLETION_ORDERED_SHUTDOWN);
+      rumqttc_completion_destroy(completion);
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-close-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      /* ERROR_OUT_FAILURE: rumqttc_client_close_after_queued_timeout_ms */
+      EXPECT_FAILURE(rumqttc_client_close_after_queued_timeout_ms(NULL, NATIVE_DEADLINE_MS, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_close_after_queued_timeout_ms */
+      CHECK(rumqttc_client_close_after_queued_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-close-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      /* ERROR_OUT_FAILURE: rumqttc_client_close_after_queued_with_options_timeout_ms */
+      EXPECT_FAILURE(rumqttc_client_close_after_queued_with_options_timeout_ms(NULL, NATIVE_DEADLINE_MS, NULL, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_client_close_after_queued_with_options_timeout_ms */
+      CHECK(rumqttc_client_close_after_queued_with_options_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL, NULL));
+      CHECK(rumqttc_client_destroy_timeout_ms(ordered, NATIVE_DEADLINE_MS, NULL));
+    }
+    {
+      rumqttc_client_t *ordered = native_start_client(RUMQTTC_PROTOCOL_V4, "native-ordered-diagnostics-error-out", RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+      rumqttc_completion_t *diagnostics = NULL;
+      CHECK(rumqttc_client_diagnostics_tracked(ordered, &diagnostics, NULL));
+      native_wait_completion(diagnostics, RUMQTTC_COMPLETION_DIAGNOSTICS);
+      rumqttc_ordered_shutdown_diagnostics_t snapshot = RUMQTTC_ORDERED_SHUTDOWN_DIAGNOSTICS_INIT;
+      /* ERROR_OUT_FAILURE: rumqttc_completion_ordered_shutdown_diagnostics */
+      EXPECT_FAILURE(rumqttc_completion_ordered_shutdown_diagnostics(NULL, &snapshot, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_completion_ordered_shutdown_diagnostics */
+      CHECK(rumqttc_completion_ordered_shutdown_diagnostics(diagnostics, &snapshot, NULL));
+      REQUIRE(!snapshot.present);
+      rumqttc_completion_destroy(diagnostics);
+      native_close_destroy(ordered);
+    }
+  }
   (void)ignored_error;
 }

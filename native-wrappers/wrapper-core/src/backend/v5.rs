@@ -117,6 +117,8 @@ pub fn map_client_error(error: &rumqttc_v5::ClientError) -> Error {
         rumqttc_v5::ClientError::RequestChannelFull(_)
         | rumqttc_v5::ClientError::PublishAdmissionPending { .. } => ErrorKind::Backpressure,
         rumqttc_v5::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
+        #[cfg(feature = "ordered-shutdown")]
+        rumqttc_v5::ClientError::Closing(_) => ErrorKind::Shutdown,
         _ => ErrorKind::Admission,
     };
     // Client errors can own rejected requests, including payloads and AUTH data.
@@ -124,6 +126,11 @@ pub fn map_client_error(error: &rumqttc_v5::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
+    #[cfg(feature = "ordered-shutdown")]
+    if let rumqttc_v5::ConnectionError::OrderedDisconnect(reason) = error {
+        return map_ordered_error(reason.clone());
+    }
+
     #[cfg(feature = "websocket")]
     if let rumqttc_v5::ConnectionError::RequestModifier(source) = error
         && let Some(failure) = source.downcast_ref::<crate::WebSocketHandshakeFailure>()
@@ -558,6 +565,8 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         timeout: delivery_timeout,
         immediate_shutdown: &immediate_shutdown_rx,
         panic: &panic_rx,
+        #[cfg(feature = "ordered-shutdown")]
+        staged: std::sync::Mutex::new(None),
     };
     loop {
         // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
@@ -607,8 +616,8 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     () = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await; } else { std::future::pending::<()>().await; } },
                         if !async_authentication || !auth.callback_active() => {},
                     _ = panic_rx.recv_async() => crate::runtime::terminate_driver_for_boundary_panic(),
-                    _ = immediate_shutdown_rx.recv_async(), if !connected || async_authentication => {
-                        if !connected {
+                    _ = immediate_shutdown_rx.recv_async(), if !connected || async_authentication || shared.has_ordered() => {
+                        if !connected || shared.has_ordered() {
                             break None;
                         }
                     },
@@ -617,7 +626,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         tokio::task::yield_now().await;
                     },
                     request = diagnostics_rx.recv_async() => if let Ok(request) = request {
-                        request.resolve(diagnostics.clone());
+                        let mut snapshot = diagnostics.clone();
+                        shared.ordered_diagnostics(&mut snapshot);
+                        request.resolve(snapshot);
                         tokio::task::yield_now().await;
                     },
                     result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
@@ -787,6 +798,13 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
+                #[cfg(feature = "ordered-shutdown")]
+                if matches!(&error, rumqttc_v5::ConnectionError::OrderedDisconnect(_)) {
+                    // The native error can precede wrapper admission commitment (e.g. zero deadline).
+                    // It remains the authority: further native polls own pending terminal cleanup.
+                    connected = false;
+                    continue;
+                }
                 if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
                     let failure = super::redirect::failure(&redirect.failure);
                     let redirect_diagnostics = eventloop
@@ -1152,6 +1170,34 @@ fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Share
 fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
     let diagnostics = eventloop.diagnostics();
     DiagnosticsSnapshot {
+        #[cfg(not(feature = "ordered-shutdown"))]
+        ordered_shutdown: None,
+        #[cfg(feature = "ordered-shutdown")]
+        ordered_shutdown: diagnostics.disconnect_fence_sequence.map(|sequence| {
+            let captured_at = std::time::Instant::now();
+            Box::new(crate::OrderedShutdownDiagnostics {
+                phase: match diagnostics.shutdown_phase {
+                    rumqttc_v5::ShutdownPhase::Open => crate::OrderedShutdownPhase::Open,
+                    rumqttc_v5::ShutdownPhase::AdmittedDrain => {
+                        crate::OrderedShutdownPhase::AdmittedDrain
+                    }
+                    rumqttc_v5::ShutdownPhase::Approaching => {
+                        crate::OrderedShutdownPhase::Approaching
+                    }
+                    rumqttc_v5::ShutdownPhase::Draining => crate::OrderedShutdownPhase::Draining,
+                    rumqttc_v5::ShutdownPhase::Flushing => crate::OrderedShutdownPhase::Flushing,
+                    rumqttc_v5::ShutdownPhase::Completed => crate::OrderedShutdownPhase::Completed,
+                    rumqttc_v5::ShutdownPhase::TimedOut => crate::OrderedShutdownPhase::TimedOut,
+                    rumqttc_v5::ShutdownPhase::Failed => crate::OrderedShutdownPhase::Failed,
+                },
+                fence_sequence: Some(sequence),
+                remaining_at_capture: diagnostics
+                    .disconnect_deadline
+                    .map(|deadline| deadline.saturating_duration_since(captured_at)),
+                local_queued_publishes: diagnostics.ordered_local_queued_publishes,
+                captured_at,
+            })
+        }),
         connack: diagnostics
             .session
             .connack
@@ -1471,9 +1517,128 @@ pub fn broker_rejection(code: u8) -> Error {
     .with_broker_reason(code)
 }
 
+#[cfg(feature = "ordered-shutdown")]
+pub(super) fn map_ordered_error(error: rumqttc_v5::DisconnectNoticeError) -> Error {
+    use crate::OrderedDisconnectFailure as F;
+    use rumqttc_v5::DisconnectNoticeError as E;
+    let (failure, error) = match error {
+        E::DisconnectTimeout => (
+            F::Timeout,
+            Error::new(ErrorKind::Timeout, "ordered shutdown deadline expired"),
+        ),
+        E::Transport(source) => (F::Transport, map_connection_error(&source)),
+        E::Protocol(source) => (F::Protocol, map_connection_error(&source)),
+        E::Persistence(source) => (F::Persistence, map_connection_error(&source)),
+        E::Publish(source) => return map_ordered_publish_error(&source),
+        E::SupersededByImmediate => (
+            F::SupersededByImmediate,
+            Error::new(
+                ErrorKind::Shutdown,
+                "ordered shutdown superseded by immediate close",
+            ),
+        ),
+        E::Superseded => (
+            F::Superseded,
+            Error::new(ErrorKind::Shutdown, "ordered shutdown superseded"),
+        ),
+        E::ReceiverTerminated => (
+            F::ReceiverTerminated,
+            Error::new(ErrorKind::Shutdown, "ordered shutdown execution terminated"),
+        ),
+        E::SessionReset => (
+            F::SessionReset,
+            Error::new(ErrorKind::Shutdown, "ordered shutdown session reset"),
+        ),
+        E::Redirected => (
+            F::Redirected,
+            Error::new(
+                ErrorKind::Shutdown,
+                "ordered shutdown cannot cross a redirect",
+            ),
+        ),
+        E::ReplayUnavailable => (
+            F::ReplayUnavailable,
+            Error::new(ErrorKind::Shutdown, "ordered shutdown replay unavailable"),
+        ),
+        _ => (
+            F::Protocol,
+            Error::new(ErrorKind::Protocol, "ordered shutdown failed"),
+        ),
+    };
+    error
+        .with_ordered_failure(failure)
+        .with_delivery(DeliveryStatus::Ambiguous)
+}
+
+#[cfg(feature = "ordered-shutdown")]
+fn map_ordered_publish_error(error: &rumqttc_v5::PublishNoticeError) -> Error {
+    use crate::OrderedDisconnectFailure as F;
+    use rumqttc_v5::PublishNoticeError as E;
+    let failure = match error {
+        E::SessionReset => F::SessionReset,
+        E::ShutdownSupersededByImmediate => F::SupersededByImmediate,
+        E::Redirected => F::Redirected,
+        E::BrokerOnlySessionResume | E::TopicAliasReplayUnavailable(_) => F::ReplayUnavailable,
+        _ => F::Publish,
+    };
+    let mapped = match error {
+        E::V5PubAck(reason) => broker_rejection(v5_puback_code(*reason)),
+        E::V5PubRec(reason) => broker_rejection(v5_pubrec_code(*reason)),
+        E::V5PubComp(reason) => broker_rejection(v5_pubcomp_code(*reason)),
+        E::SessionPersistence(_) => Error::new(
+            ErrorKind::Persistence,
+            "preceding publish persistence failed",
+        )
+        .with_delivery(DeliveryStatus::Ambiguous),
+        _ => Error::new(ErrorKind::Protocol, "preceding publish did not complete")
+            .with_delivery(DeliveryStatus::Ambiguous),
+    };
+    mapped
+        .with_ordered_failure(failure)
+        .with_delivery(DeliveryStatus::Ambiguous)
+}
+
 #[cfg(test)]
 mod config_tests {
     use super::*;
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[test]
+    fn ordered_failures_preserve_typed_reasons_and_redact_source_text() {
+        use crate::OrderedDisconnectFailure as F;
+        use rumqttc_v5::DisconnectNoticeError as E;
+        let source = std::sync::Arc::new(rumqttc_v5::ConnectionError::Io(std::io::Error::other(
+            "private host source",
+        )));
+        for (native, expected) in [
+            (E::DisconnectTimeout, F::Timeout),
+            (E::Transport(source.clone()), F::Transport),
+            (E::Protocol(source.clone()), F::Protocol),
+            (E::Persistence(source), F::Persistence),
+            (
+                E::Publish(rumqttc_v5::PublishNoticeError::SessionPersistence(
+                    "private host source".into(),
+                )),
+                F::Publish,
+            ),
+            (E::SupersededByImmediate, F::SupersededByImmediate),
+            (E::Superseded, F::Superseded),
+            (E::ReceiverTerminated, F::ReceiverTerminated),
+            (E::SessionReset, F::SessionReset),
+            (E::Redirected, F::Redirected),
+            (E::ReplayUnavailable, F::ReplayUnavailable),
+            (
+                E::Publish(rumqttc_v5::PublishNoticeError::SessionReset),
+                F::SessionReset,
+            ),
+        ] {
+            let mapped = map_ordered_error(native);
+            assert_eq!(mapped.ordered_disconnect_failure(), Some(expected));
+            assert_eq!(mapped.delivery_status(), DeliveryStatus::Ambiguous);
+            assert!(!mapped.retryable());
+            assert!(!format!("{mapped:?} {mapped}").contains("private host source"));
+        }
+    }
 
     #[test]
     fn unrecoverable_alias_notice_retains_the_native_terminal_reason() {

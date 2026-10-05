@@ -128,6 +128,14 @@ pub enum Command {
     GracefulDisconnect {
         timeout: Option<Duration>,
     },
+    /// Publish-only native admission fence. Return means admission, not completion.
+    OrderedDisconnect {
+        timeout: Option<Duration>,
+    },
+    OrderedDisconnectWithOptions {
+        timeout: Option<Duration>,
+        protocol: DisconnectProtocolOptions,
+    },
     ImmediateDisconnect,
     GracefulDisconnectWithOptions {
         timeout: Option<Duration>,

@@ -671,6 +671,82 @@ target_link_libraries(my_static_client PRIVATE rumqttc::rumqttc_static)
 
 The compatibility target `rumqttc::rumqttc` continues to select the static library.
 
+## Ordered publish shutdown (optional)
+
+Build with `cargo build --manifest-path native-wrappers/Cargo.toml -p rumqttc-c-next --features ordered-shutdown`.
+Standard packages leave this feature disabled.
+Check `RUMQTTC_CAP_ORDERED_SHUTDOWN` in `rumqttc_library_capabilities()` before
+calling the optional APIs. Their declarations and exports exist in all builds;
+disabled calls return `RUMQTTC_CONFIG_ERROR`, initialize outputs, and do
+not admit work or close the client. Cargo feature unification can enable native
+runtime overhead through another dependency without enabling callable C support.
+
+Use the finite deadline form demonstrated in
+[ordered_shutdown.c](examples/ordered_shutdown.c):
+
+```c
+rumqttc_completion_t *fence = NULL;
+rumqttc_status_t status = rumqttc_client_disconnect_after_queued_timeout_ms_tracked(
+    client, 5000, &fence, &error);
+/* After successful admission, observe with the existing completion functions. */
+/* Success has kind RUMQTTC_COMPLETION_ORDERED_SHUTDOWN. */
+```
+
+The eight `disconnect_after_queued` admission functions use the native successful
+admission order across producers. `try_` functions return an operation ID;
+`*_tracked` functions return an owned completion. Both families are nonblocking,
+have optional `_timeout_ms` and `_with_options` variants, and copy MQTT 5 views.
+A full queue returns `RUMQTTC_BACKPRESSURE` without installing a fence. Later
+publishers receive `RUMQTTC_INVALID_STATE`. An untimed fence may wait indefinitely.
+
+Success proves preceding publishes reached their QoS milestone and DISCONNECT
+flushed, including required persistence: QoS 0 transport flush, QoS 1 PUBACK,
+QoS 2 PUBCOMP. Subscriptions, independent inbound ACKs and authentication are
+outside the collective guarantee. Outgoing packet events and driver termination
+are not completion authority. Dropping a completion does not cancel admission;
+retained completions survive client destruction.
+
+`rumqttc_client_close_after_queued_timeout_ms` and its `_with_options_timeout_ms`
+variant admit or attach to the fence, then join within one caller budget.
+
+| Existing policy | Subsequent call | Result |
+| --- | --- | --- |
+| Open | Raw fence / ordered closer | First successful admission owns policy, payload and deadline |
+| Ordered | Raw fence | Invalid state; no duplicate operation |
+| Ordered | Matching ordered closer | Same immutable result; independent observer/join budget |
+| Ordered | Different payload or ordinary graceful close | Invalid state; original fence retained |
+| Ordinary graceful / immediate without a prior fence | Ordered closer | Invalid state |
+| Ordered | Immediate close, destruction or abandonment | Abort; unresolved fence reports superseded by immediate close |
+
+The native absolute deadline starts at successful fence admission and persists
+across supported persistent-session reconnects. Observer timeout does not cancel
+it or reset its deadline. At expiry the operation reports timeout promptly while
+the driver retains required terminal storage cleanup and join ownership. Cleanup
+is not deadline bounded; retry joining or explicitly abort. Cleanup failure remains
+visible as a driver terminal error and cannot turn timeout into success. A join
+timeout retains ownership. Synchronous host callbacks must return promptly.
+
+`rumqttc_error_ordered_disconnect_failure()` retains typed timeout, publish,
+transport, protocol, persistence, session reset, redirect, replay-unavailable,
+receiver termination and supersession reasons. Delivery can remain ambiguous,
+even after timeout. Existing broker/store detail accessors remain available;
+diagnostic text omits host secrets.
+A collective failure can return `RUMQTTC_AMBIGUOUS` while retaining the rejecting
+publish's broker reason; it makes no rejection claim for the entire burst.
+
+`rumqttc_completion_ordered_shutdown_diagnostics()` reads an optional cached
+observation from a diagnostics completion, using the separately size-versioned
+`RUMQTTC_ORDERED_SHUTDOWN_DIAGNOSTICS_INIT` record. Phase, exact fence sequence,
+remaining deadline at capture, optional local queue count and snapshot age are
+observations. The local count excludes channels and inflight work and cannot
+establish a fence or prove delivery. The record is absent before fence admission.
+Diagnostics remain admissible while ordered shutdown is closing. Existing record
+layouts are unchanged.
+
+See [performance measurements](../wrapper-core/benches/README.md) for the optional
+cost, configurations and reproduction commands. JavaScript and Python retain
+their existing public close APIs; ordered exposure is a separate follow-up.
+
 ## Ownership and threading
 
 Every config, client, completion, event, and error returned by the library has
@@ -862,8 +938,9 @@ The [`examples`](examples) directory contains warning-clean C11 programs for:
 - [single-threaded event polling](examples/event_polling.c);
 - [publishing from multiple native threads](examples/multithreaded_publishing.c);
 - [polling and timed waiting for tracked completions](examples/tracked_completion.c);
-- [manual acknowledgement](examples/manual_acknowledgement.c); and
-- [graceful and immediate shutdown](examples/shutdown.c).
+- [manual acknowledgement](examples/manual_acknowledgement.c);
+- [graceful and immediate shutdown](examples/shutdown.c);
+- [optional ordered publish shutdown](examples/ordered_shutdown.c); and
 - [resource-bounded MQTT 5 setup](examples/resource_limits.c).
 
 Each program accepts `HOST PORT`, owns every returned handle explicitly, and

@@ -37,7 +37,8 @@ set(RUMQTTC_C_EXAMPLES
     manual_acknowledgement
     session_store
     authenticator
-    shutdown)
+    shutdown
+    ordered_shutdown)
 list(APPEND RUMQTTC_C_EXAMPLES resource_limits custom_transport tls_profile)
 add_library(rumqttc_transport_socket STATIC transport_socket.c)
 target_compile_features(rumqttc_transport_socket PUBLIC c_std_11)
@@ -85,7 +86,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:${target}>)
     endif()
     set_tests_properties(${target} PROPERTIES LABELS "native;example" TIMEOUT 30)
-    if(example STREQUAL "websocket_tokens")
+    if(example STREQUAL "websocket_tokens" OR example STREQUAL "ordered_shutdown")
         set_tests_properties(${target} PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endforeach()

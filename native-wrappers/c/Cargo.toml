@@ -29,6 +29,7 @@ socks-proxy = ["rumqttc-wrapper-core-next/socks-proxy"]
 proxy = ["http-proxy", "socks-proxy"]
 system-srv-resolver = ["rumqttc-wrapper-core-next/system-srv-resolver"]
 auth-scram = ["rumqttc-wrapper-core-next/auth-scram"]
+ordered-shutdown = ["rumqttc-wrapper-core-next/ordered-shutdown"]
 tracing = ["rumqttc-wrapper-core-next/tracing"]
 tracing-log-compat = ["tracing", "rumqttc-wrapper-core-next/tracing-log-compat"]
 

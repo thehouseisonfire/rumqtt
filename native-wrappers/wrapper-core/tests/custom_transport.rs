@@ -38,6 +38,7 @@ fn custom_streams_reconnect_with_fresh_attempts_and_keep_native_tracking() {
         config.common.connector = Some(TransportConnectorConfig {
             mode: TransportMode::Base,
             connector: Arc::new(custom::TcpConnector {
+                write_chunk: 3,
                 requests: requests.clone(),
                 target_override: Some(format!("127.0.0.1:{port}")),
             }),

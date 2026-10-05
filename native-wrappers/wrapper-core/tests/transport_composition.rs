@@ -268,7 +268,10 @@ fn compositions(custom_connector: bool, dynamic: bool) {
                         let broker_port = if proxy == "direct" { port } else { 1883 };
                         let mut config = config(mqtt5, broker_port);
                         if custom_connector {
-                            config.common.connector = Some(custom::configured().0);
+                            // Keep short writes below tungstenite's small-packet attack threshold
+                            // even when TCP does not coalesce this fixture's writes.
+                            config.common.connector =
+                                Some(custom::configured_with_write_chunk(64).0);
                         }
                         config.common.broker = BrokerTarget::Tcp {
                             host: host.into(),

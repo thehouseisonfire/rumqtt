@@ -16,6 +16,10 @@
 #define RUMQTTC_EXPECT_SOCKS5_PROXY 0
 #endif
 
+#ifndef RUMQTTC_EXPECT_ORDERED_SHUTDOWN
+#define RUMQTTC_EXPECT_ORDERED_SHUTDOWN 0
+#endif
+
 int main(void) {
   const uint64_t capabilities = rumqttc_library_capabilities();
   const uint64_t required = RUMQTTC_CAP_PROTOCOL_V4 | RUMQTTC_CAP_PROTOCOL_V5 | RUMQTTC_CAP_SESSION_STORE_CALLBACKS |
@@ -24,6 +28,7 @@ int main(void) {
     uint64_t bit;
     int expected;
   } checks[] = {
+      {RUMQTTC_CAP_ORDERED_SHUTDOWN, RUMQTTC_EXPECT_ORDERED_SHUTDOWN},
       {RUMQTTC_CAP_RUSTLS, RUMQTTC_EXPECT_RUSTLS},
       {RUMQTTC_CAP_NATIVE_TLS, RUMQTTC_EXPECT_NATIVE_TLS},
       {RUMQTTC_CAP_WEBSOCKET, RUMQTTC_EXPECT_WEBSOCKET},

@@ -108,6 +108,13 @@ jobs:
           cargo test --locked --workspace
           cargo test --locked --workspace --doc
 
+      - name: Ordered shutdown enabled and feature unification
+        run: |
+          cargo test --locked --workspace --features rumqttc-c-next/ordered-shutdown
+          cargo test --locked -p rumqttc-c-next --no-default-features --features rumqttc-wrapper-core-next/ordered-shutdown
+          cargo test --locked -p rumqttc-wrapper-core-next --no-default-features --features ordered-shutdown
+          cargo clippy --locked --workspace --all-targets --features rumqttc-c-next/ordered-shutdown
+
       - name: Audit native API parity
         run: cargo test --locked -p rumqttc-wrapper-core-next --test parity_inventory
 
@@ -141,7 +148,7 @@ jobs:
         run: |
           cargo install cargo-hack --locked
           cargo hack test --each-feature --exclude-all-features -p rumqttc-wrapper-core-next
-          cargo test -p rumqttc-wrapper-core-next --no-default-features --features use-rustls-aws-lc,use-native-tls,websocket,proxy,system-srv-resolver,auth-scram,tracing-log-compat,panic-testing
+          cargo test -p rumqttc-wrapper-core-next --no-default-features --features use-rustls-aws-lc,use-native-tls,websocket,proxy,system-srv-resolver,auth-scram,tracing-log-compat,panic-testing,ordered-shutdown
           cargo test -p rumqttc-wrapper-core-next --no-default-features --features use-rustls-ring,websocket,proxy
           cargo test -p rumqttc-wrapper-core-next --no-default-features --features use-rustls-no-provider --test provider
           cargo test -p rumqttc-c-next --no-default-features --features use-rustls-ring,websocket,proxy,tracing-log-compat
@@ -187,6 +194,13 @@ jobs:
           cmake -S c/tests/native -B target/rumqttc-c-native -DCMAKE_BUILD_TYPE=Debug
           cmake --build target/rumqttc-c-native --config Debug
           ctest --test-dir target/rumqttc-c-native -C Debug --output-on-failure --output-junit results.xml
+
+      - name: C ordered shutdown consumers
+        run: |
+          cargo build --locked -p rumqttc-c-next --features ordered-shutdown
+          cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-ordered-shutdown rumqttc-native-integration rumqttc-example-ordered_shutdown
+          ctest --test-dir target/rumqttc-c-native -C Debug -R '(ordered-shutdown|native-integration|example-ordered_shutdown)' --output-on-failure
+          cargo build --locked -p rumqttc-c-next
 
       - name: C proxy and SCRAM consumers
         run: |

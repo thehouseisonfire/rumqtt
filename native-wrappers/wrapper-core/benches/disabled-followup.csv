@@ -1,0 +1,5 @@
+protocol,qos,producers,capacity,inflight,profile,messages,repetitions,completed_per_second_min,completed_per_second_median,completed_per_second_max,admissions_per_second_min,admissions_per_second_median,admissions_per_second_max
+v4,2,1,64,1,baseline,30000,15,44479.861,49564.797,54101.449,44695.759,49836.364,54564.007
+v4,2,1,64,1,disabled,30000,15,44592.82,50483.338,54915.856,44836.012,50765.743,55333.027
+v5,0,8,64,1,baseline,30000,15,86315.974,94789.392,99809.214,87892.531,96556.611,101124.985
+v5,0,8,64,1,disabled,30000,15,89897.098,96289.226,101310.351,91361.373,97639.33,102798.071

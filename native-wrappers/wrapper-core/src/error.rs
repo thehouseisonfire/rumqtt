@@ -110,6 +110,7 @@ pub struct Error {
     transport_failure: Option<crate::TransportFailure>,
     websocket_failure: Option<crate::WebSocketHandshakeFailure>,
     tls_callback_failure: Option<crate::TlsCallbackFailure>,
+    ordered_failure: Option<crate::OrderedDisconnectFailure>,
     context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
@@ -132,6 +133,7 @@ impl Error {
             transport_failure: None,
             websocket_failure: None,
             tls_callback_failure: None,
+            ordered_failure: None,
             context: ErrorContext::default(),
             source: None,
         }
@@ -160,9 +162,24 @@ impl Error {
             transport_failure: None,
             websocket_failure: None,
             tls_callback_failure: None,
+            ordered_failure: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }
+    }
+
+    #[must_use]
+    pub const fn ordered_disconnect_failure(&self) -> Option<crate::OrderedDisconnectFailure> {
+        self.ordered_failure
+    }
+
+    pub(crate) const fn with_ordered_failure(
+        mut self,
+        failure: crate::OrderedDisconnectFailure,
+    ) -> Self {
+        self.ordered_failure = Some(failure);
+        self.retryable = false;
+        self
     }
 
     #[must_use]
@@ -336,6 +353,7 @@ impl fmt::Debug for Error {
             .field("transport_failure", &self.transport_failure)
             .field("websocket_failure", &self.websocket_failure)
             .field("tls_callback_failure", &self.tls_callback_failure)
+            .field("ordered_failure", &self.ordered_failure)
             .field("context", &self.context)
             .finish_non_exhaustive()
     }

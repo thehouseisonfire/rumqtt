@@ -27,6 +27,10 @@ pub use transport::*;
 mod acknowledgement;
 pub use acknowledgement::*;
 
+#[path = "ordered.rs"]
+mod ordered;
+pub use ordered::*;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -81,6 +85,7 @@ const CAP_STORE_CALLBACKS: u64 = 1 << 11;
 const CAP_AUTH_CALLBACKS: u64 = 1 << 12;
 const CAP_TRANSPORT_CALLBACKS: u64 = 1 << 13;
 const CAP_WEBSOCKET_CALLBACKS: u64 = 1 << 14;
+const CAP_ORDERED_SHUTDOWN: u64 = 1 << 15;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -1227,6 +1232,11 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 #[unsafe(no_mangle)]
 pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
+        | if cfg!(feature = "ordered-shutdown") {
+            CAP_ORDERED_SHUTDOWN
+        } else {
+            0
+        }
         | CAP_V5
         | CAP_STORE_CALLBACKS
         | CAP_AUTH_CALLBACKS
@@ -4540,6 +4550,7 @@ const fn completion_kind(completion: &Completion) -> u32 {
         Completion::Acknowledged => 6,
         Completion::Authenticated => 10,
         Completion::Diagnostics(_) => 7,
+        Completion::OrderedShutdown => 11,
         Completion::GracefulShutdown => 8,
         Completion::ImmediateShutdown => 9,
     }

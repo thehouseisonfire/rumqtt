@@ -118,9 +118,25 @@ impl DisconnectNoticeError {
 /// Dropping this handle does not cancel shutdown.
 #[must_use = "channel admission is not disconnect completion; await or explicitly drop this notice"]
 #[derive(Debug)]
-pub struct DisconnectNotice(oneshot::Receiver<Result<(), DisconnectNoticeError>>);
+pub struct DisconnectNotice {
+    receiver: oneshot::Receiver<Result<(), DisconnectNoticeError>>,
+    admission: Arc<OnceLock<(u64, Option<Instant>)>>,
+}
 
 impl DisconnectNotice {
+    /// Successful native admission sequence. Available before the notice is returned.
+    #[must_use]
+    pub fn fence_sequence(&self) -> Option<u64> {
+        self.admission.get().map(|metadata| metadata.0)
+    }
+
+    /// Original absolute deadline, if the admitted fence has a timeout.
+    /// This remains available after completion and is never reset by reconnect.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.admission.get().and_then(|metadata| metadata.1)
+    }
+
     /// Block until DISCONNECT is flushed or shutdown fails.
     ///
     /// # Panics
@@ -130,7 +146,7 @@ impl DisconnectNotice {
     ///
     /// Returns the terminal ordered-shutdown failure when it does not complete successfully.
     pub fn wait(self) -> Result<(), DisconnectNoticeError> {
-        self.0
+        self.receiver
             .blocking_recv()
             .unwrap_or(Err(DisconnectNoticeError::ReceiverTerminated))
     }
@@ -141,21 +157,34 @@ impl DisconnectNotice {
     ///
     /// Returns the terminal ordered-shutdown failure when it does not complete successfully.
     pub async fn wait_async(self) -> Result<(), DisconnectNoticeError> {
-        self.0
+        self.receiver
             .await
             .unwrap_or(Err(DisconnectNoticeError::ReceiverTerminated))
     }
 }
 
 #[derive(Debug)]
-pub struct Completion(Mutex<Option<oneshot::Sender<Result<(), DisconnectNoticeError>>>>);
+pub struct Completion {
+    sender: Mutex<Option<oneshot::Sender<Result<(), DisconnectNoticeError>>>>,
+    admission: Arc<OnceLock<(u64, Option<Instant>)>>,
+}
 impl Completion {
     pub(crate) fn new() -> (Arc<Self>, DisconnectNotice) {
         let (tx, rx) = oneshot::channel();
-        (Arc::new(Self(Mutex::new(Some(tx)))), DisconnectNotice(rx))
+        let admission = Arc::new(OnceLock::new());
+        (
+            Arc::new(Self {
+                sender: Mutex::new(Some(tx)),
+                admission: Arc::clone(&admission),
+            }),
+            DisconnectNotice {
+                receiver: rx,
+                admission,
+            },
+        )
     }
     pub(crate) fn finish(&self, result: Result<(), DisconnectNoticeError>) {
-        let tx = self.0.lock().unwrap().take();
+        let tx = self.sender.lock().unwrap().take();
         if let Some(tx) = tx {
             let _ = tx.send(result);
         }
@@ -198,6 +227,9 @@ impl rumqttc_core::admission::Item for RequestEnvelope {
     fn admitted(&mut self, sequence: u64, deadline: Option<Instant>) {
         self.meta.sequence = sequence;
         self.meta.deadline = deadline;
+        if let Some(completion) = &self.meta.completion {
+            let _ = completion.admission.set((sequence, deadline));
+        }
     }
     fn closing(&mut self) {
         self.meta.closing = true;
@@ -210,6 +242,35 @@ impl rumqttc_core::admission::Item for RequestEnvelope {
 #[cfg(test)]
 mod ledger_tests {
     use super::*;
+
+    #[test]
+    fn returned_notice_keeps_exact_admission_metadata_after_execution_ends() {
+        for timeout in [Duration::ZERO, Duration::from_secs(1)] {
+            let (client, eventloop) = crate::AsyncClient::builder(crate::MqttOptions::new(
+                "notice-metadata",
+                "localhost",
+            ))
+            .build();
+            let notice = client
+                .try_disconnect_after_queued_with_timeout(timeout)
+                .unwrap();
+            let diagnostics = eventloop.diagnostics();
+            assert_eq!(
+                notice.fence_sequence(),
+                diagnostics.disconnect_fence_sequence
+            );
+            assert_eq!(notice.deadline(), diagnostics.disconnect_deadline);
+            let sequence = notice.fence_sequence();
+            let deadline = notice.deadline();
+            drop(eventloop);
+            assert_eq!(notice.fence_sequence(), sequence);
+            assert_eq!(notice.deadline(), deadline);
+            assert!(matches!(
+                notice.wait(),
+                Err(DisconnectNoticeError::ReceiverTerminated)
+            ));
+        }
+    }
 
     #[test]
     fn replayed_notice_is_not_observed_twice() {

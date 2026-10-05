@@ -119,6 +119,7 @@ if(WIN32)
     target_link_libraries(rumqttc-native-network-options PRIVATE ws2_32 kernel32)
 endif()
 rumqttc_native_target(rumqttc-native-close-options native_close_options.c)
+rumqttc_native_target(rumqttc-native-ordered-shutdown native_ordered_shutdown.c)
 rumqttc_native_target(rumqttc-native-will-process native_will_process.c)
 
 # This executable must not link the imported library or native_common: the
@@ -362,3 +363,7 @@ if(OpenSSL_FOUND)
             --binary $<TARGET_FILE:rumqttc-native-tls-advanced> deferred)
     set_tests_properties(rumqttc-native-tls-deferred PROPERTIES LABELS "native;tls;ownership" TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
+
+add_test(NAME rumqttc-native-ordered-shutdown
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-ordered-shutdown>)
+set_tests_properties(rumqttc-native-ordered-shutdown PROPERTIES LABELS "native;shutdown" TIMEOUT 90)

@@ -2,7 +2,7 @@ use std::error::Error as _;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use rumqttc_wrapper_core::{DeliveryStatus, Error, ErrorKind};
+use rumqttc_wrapper_core::{DeliveryStatus, Error, ErrorKind, OperationId};
 
 pub const OK: u32 = 0;
 pub const INVALID_ARGUMENT: u32 = 1;
@@ -60,6 +60,7 @@ pub struct FailureDetails {
     pub transport: Option<NonZeroU32>,
     pub websocket: Option<NonZeroU32>,
     pub tls_callback: Option<rumqttc_wrapper_core::TlsCallbackFailure>,
+    pub ordered: Option<NonZeroU32>,
 }
 const EMPTY_FAILURES: FailureDetails = FailureDetails {
     store: None,
@@ -68,11 +69,15 @@ const EMPTY_FAILURES: FailureDetails = FailureDetails {
     transport: None,
     websocket: None,
     tls_callback: None,
+    ordered: None,
 };
 
 impl FailureDetails {
     fn from_core(error: &Error) -> Self {
         Self {
+            ordered: error
+                .ordered_disconnect_failure()
+                .and_then(|failure| NonZeroU32::new(failure as u32)),
             store: error.store_failure().and_then(|failure| {
                 NonZeroU32::new(match failure {
                     rumqttc_wrapper_core::StoreFailure::Load => 1,
@@ -217,7 +222,8 @@ impl ErrorHandle {
             retryable: error.retryable(),
             ambiguous,
             broker_reason: error.broker_reason(),
-            operation_id,
+            operation_id: operation_id
+                .or_else(|| error.context().operation_id.map(OperationId::get)),
             protocol: error.context().protocol.and_then(|value| {
                 NonZeroU32::new(match value {
                     rumqttc_wrapper_core::ProtocolVersion::V4 => 1,

@@ -477,3 +477,30 @@ and `ConnAckDiagnostic`. Existing `V5Config::broker_session_resume_policy`
 remains flat and maps into the native client's `ProtocolCompatibility`.
 The added defaulted Rust fields require updates to exhaustive struct literals;
 wrapper-core is private infrastructure and has no stable Rust API promise.
+
+## Optional ordered publish shutdown
+
+The disabled-by-default `ordered-shutdown` feature forwards both native features.
+`Command::OrderedDisconnect` and `OrderedDisconnectWithOptions` install the native
+fence; `Completion::OrderedShutdown` comes only from its terminal notice.
+`NativeClientCloser::close_after_queued*` shares matching admitted fences and waits
+for execution-owner joining within a caller budget. Ordinary graceful close keeps
+its protocol-state drain contract, including when this feature is enabled.
+
+The first admitted fence owns its absolute deadline and owned DISCONNECT payload.
+Subsequent raw fences and conflicting close policies fail; matching closers retain
+the result and deadline. Native-supported persistent reconnect remains active.
+Timeout resolves the operation while the driver continues required terminal
+storage cleanup. Observer cancellation does not abort; explicit immediate close
+or destruction aborts and supersedes an unresolved fence. Retained completions do
+not retain the client and remain readable after destruction.
+
+The optional boxed `DiagnosticsSnapshot::ordered_shutdown` is absent before fence
+admission, keeping publish completion records compact. Its count excludes channel
+and inflight work; `captured_at` identifies observation age. It is not a delivery
+proof. Typed `OrderedDisconnectFailure` preserves native reasons without leaking
+host callback text. Public enums gain variants and exhaustive Rust matches need
+updating. See the [C contract](../c/README.md#ordered-publish-shutdown-optional),
+[recipe](../../docs/recipes/ordered-shutdown.md), and
+[performance harness](benches/README.md). Cargo feature unification can activate
+native costs even if wrapper ordered API support is disabled.

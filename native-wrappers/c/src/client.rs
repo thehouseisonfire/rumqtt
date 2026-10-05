@@ -78,6 +78,15 @@ impl ClientObject {
         self.closer.close(timeout)
     }
 
+    pub fn close_after_queued(
+        &self,
+        timeout: Duration,
+        options: DisconnectProtocolOptions,
+    ) -> Result<Completion, rumqttc_wrapper_core::Error> {
+        self.closer
+            .close_after_queued_with_options(timeout, options)
+    }
+
     pub fn close_now(&self, timeout: Duration) -> Result<(), ClientError> {
         self.closer.close_now(timeout).map_err(ClientError::Core)
     }

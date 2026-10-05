@@ -1028,6 +1028,12 @@ class Broker:
                 elif packet_type == 12:
                     connection.send(frame(13, 0, b""))
                 elif packet_type == 14:
+                    if client_id in {b"native-ordered-v4", b"native-ordered-v5"}:
+                        if getattr(connection, "ordered_expected", [1]):
+                            raise AssertionError("DISCONNECT overtook covered C publishes")
+                        expected = b"" if protocol == 4 else b"\x00\x0a\x1f\x00\x07ordered"
+                        if body != expected:
+                            raise AssertionError("ordered DISCONNECT contents changed after admission")
                     if client_id.startswith(b"native-close-options-"):
                         expected = (
                             b"\x11\x00\x00\x00\x00\x1f\x00\x08selected\x26\x00\x01k\x00\x011\x26\x00\x01k\x00\x012"
@@ -1211,13 +1217,28 @@ class Broker:
                     raise AssertionError("alias state survived the reconnect limit change")
                 if count == 3 and (packet_id != self.alias_packet_ids.get(connection.client_id) or not flags & 8):
                     raise AssertionError("alias replay lost its concrete topic, packet id or DUP bit")
-        if connection.client_id.startswith(b"native-close-options-") and topic == b"native/close/stall":
+        if connection.client_id.startswith((b"native-close-options-", b"native-ordered-")) and topic == b"native/close/stall":
             if qos != 1:
                 raise AssertionError("close fixture did not send pending QoS1")
             with self.failure_lock:
                 self.close_pending[connection.client_id] = (connection, packet_id)
             connection.publish(b"native/close/ready", b"", qos=0)
             return True
+        if topic == b"native/ordered/release":
+            target_id, expected = payload.split(b"|", 1)
+            with self.failure_lock:
+                pending = self.close_pending.pop(target_id, None)
+            if pending is None:
+                raise AssertionError("ordered fixture release had no preceding publish")
+            target, identifier = pending
+            target.ordered_expected = list(expected)
+            suffix = b"" if target.protocol == 4 else b"\x00\x00"
+            target.send(frame(4, 0, identifier + suffix))
+            return True
+        if connection.client_id.startswith(b"native-ordered-") and topic == b"native/ordered/b":
+            expected = getattr(connection, "ordered_expected", None)
+            if not expected or payload != bytes([expected.pop(0)]):
+                raise AssertionError("ordered publish did not follow successful C admission order")
         if topic == b"native/close/release":
             with self.failure_lock:
                 pending = self.close_pending.pop(payload, None)

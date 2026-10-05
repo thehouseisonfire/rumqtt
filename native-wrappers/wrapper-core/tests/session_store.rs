@@ -4,8 +4,8 @@ use std::time::Duration;
 mod support;
 
 use rumqttc_wrapper_core::{
-    ClientConfig, Command, NativeClient, ProtocolConfig, SessionCheckpoint, SessionStore,
-    SessionStoreConfig, SessionStoreKey, StoreFailure, StoreFuture, WrapperEvent,
+    ClientConfig, Command, ErrorKind, NativeClient, ProtocolConfig, SessionCheckpoint,
+    SessionStore, SessionStoreConfig, SessionStoreKey, StoreFailure, StoreFuture, WrapperEvent,
 };
 
 #[derive(Default)]
@@ -294,18 +294,18 @@ fn checkpoint_and_clear_failures_terminate_and_release_the_store() {
                     .unwrap()
                 {
                     WrapperEvent::Connected { .. } => {
-                        publish = Some(
-                            client
-                                .handle()
-                                .try_admit(Command::Publish(PublishCommand {
-                                    topic: "persisted".into(),
-                                    payload: b"payload".as_slice().into(),
-                                    qos: QoS::AtLeastOnce,
-                                    retain: false,
-                                    protocol: PublishProtocolOptions::VersionNeutral,
-                                }))
-                                .unwrap(),
-                        );
+                        // The driver can report CONNECTED before its next persistence poll
+                        // fails. Admission may therefore race that terminal failure.
+                        match client.handle().try_admit(Command::Publish(PublishCommand {
+                            topic: "persisted".into(),
+                            payload: b"payload".as_slice().into(),
+                            qos: QoS::AtLeastOnce,
+                            retain: false,
+                            protocol: PublishProtocolOptions::VersionNeutral,
+                        })) {
+                            Ok(admission) => publish = Some(admission),
+                            Err(error) => assert_eq!(error.kind(), ErrorKind::Shutdown),
+                        }
                     }
                     WrapperEvent::DriverTerminated(error) => {
                         assert_eq!(error.store_failure(), Some(failure));

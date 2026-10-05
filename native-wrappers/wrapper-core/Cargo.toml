@@ -31,6 +31,7 @@ system-srv-resolver = ["rumqttc_v5/system-srv-resolver"]
 auth-scram = ["rumqttc_v5/auth-scram", "dep:scram"]
 tracing = ["rumqttc_v4/tracing", "rumqttc_v5/tracing", "dep:tracing"]
 tracing-log-compat = ["tracing", "rumqttc_v4/tracing-log-compat", "rumqttc_v5/tracing-log-compat", "tracing/log"]
+ordered-shutdown = ["rumqttc_v4/ordered-shutdown", "rumqttc_v5/ordered-shutdown"]
 panic-testing = []
 # Compile the private C regression fixture into adapter unit tests.
 transport-proof = ["dep:cc"]
@@ -72,3 +73,7 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 
 [build-dependencies]
 cc = { version = "1", optional = true }
+
+[[bench]]
+name = "ordered_shutdown"
+harness = false
